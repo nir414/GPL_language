@@ -1,29 +1,23 @@
 # GPL Language
 
-GPL Language is a foundational extension for Microsoft Dynamics 365 Business Central, built using the AL (Application Language) development environment.
+GPL (Guided Parallel Language) is a programming language designed for robot automation and parallel workflow execution. This project provides the foundational GPL language runtime and base libraries.
 
 ## Overview
 
-This extension provides a basic framework and starting point for developing Business Central customizations and extensions.
+GPL combines familiar VB.NET-style syntax with specialized features for robot control and automation tasks, making it easy to develop maintainable and scalable automation applications.
 
 ## Prerequisites
 
-- Microsoft Dynamics 365 Business Central (On-Premises or Cloud)
 - Visual Studio Code
-- AL Language Extension for VS Code
-- Business Central development environment
+- GPL Language Support Extension for VS Code (recommended for syntax highlighting and IntelliSense)
 
 ## Project Structure
 
 ```
 GPL_language/
 ├── src/
-│   └── GPLBase.Codeunit.al    # Base codeunit with core functionality
-├── .vscode/
-│   ├── launch.json             # Debug configuration
-│   ├── settings.json           # AL extension settings
-│   └── ruleset.json            # Code analysis rules
-├── app.json                    # Extension manifest
+│   └── GPLBase.Codeunit.al    # Base GPL runtime codeunit
+├── app.json                    # GPL project configuration
 ├── .gitignore                  # Git ignore rules
 ├── LICENSE                     # MIT License
 └── README.md                   # This file
@@ -31,59 +25,52 @@ GPL_language/
 
 ## Getting Started
 
-### 1. Clone the Repository
+### 1. Install GPL Language Support
 
-```bash
-git clone https://github.com/nir414/GPL_language.git
-cd GPL_language
-```
+Install the GPL Language Support extension for VS Code to get syntax highlighting, IntelliSense, and other language features.
 
-### 2. Configure Your Environment
+### 2. Create Your First GPL Project
 
-Edit `.vscode/launch.json` to match your Business Central server configuration:
+1. Create a new folder for your project
+2. Copy `app.json` as a template
+3. Start writing GPL code in the `src/` directory
 
-```json
-{
-  "server": "http://your-bc-server",
-  "serverInstance": "BC",
-  "authentication": "UserPassword"
-}
-```
+### 3. Development
 
-### 3. Download Symbols
+Write GPL files (`.gpl`, `.gpo` extensions) and use the VS Code extension features:
 
-In VS Code, press `Ctrl+Shift+P` and run:
-- `AL: Download symbols`
-
-### 4. Build and Deploy
-
-Press `F5` to build and deploy the extension to your Business Central instance.
+- **F12**: Go to Definition
+- **Shift+F12**: Find All References
+- **Ctrl+Space**: IntelliSense/Auto-completion
 
 ## Features
 
-- **GPL Base Codeunit**: Provides initialization and validation procedures
-- **Code Analysis**: Includes ruleset for maintaining code quality
-- **Modern AL Practices**: Uses NoImplicitWith and modern AL features
-
-## ID Range
-
-This extension uses object IDs in the range: **50100-50149**
+- **GPL Base Runtime**: Core functionality initialization and version management
+- **VB.NET Compatibility**: GPL supports VB.NET-style syntax and constructs
+- **Module System**: Organize code with classes, modules, and functions
+- **Robot Automation**: Designed for parallel workflow and automation tasks
 
 ## Development
 
-### Adding New Objects
+### Language Features
 
-1. Create new AL files in the `src/` directory
-2. Follow the naming convention: `ObjectName.ObjectType.al`
-3. Use object IDs within the designated range (50100-50149)
-4. Run code analysis before committing changes
+GPL supports:
 
-### Code Quality
+- Functions and Subroutines (Sub/Function)
+- Classes and Modules
+- Public/Private/Shared modifiers
+- VB.NET-compatible syntax
 
-This project uses AL code analyzers:
-- CodeCop: Enforces coding standards
-- UICop: Validates UI elements
-- PerTenantExtensionCop: Ensures extension compatibility
+### Best Practices
+
+1. Use meaningful names for functions, classes, and variables
+2. Organize related code into modules
+3. Follow the project structure conventions
+4. Use the GPL Language Support extension for code quality
+
+## Related Projects
+
+- **GPL Language Support**: VS Code extension providing IntelliSense, Go to Definition, Find References, and VB.NET compatibility checking for GPL files
 
 ## Version
 
@@ -91,12 +78,8 @@ Current version: **1.0.0.0**
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See `LICENSE` for details.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-For issues and questions, please open an issue on the GitHub repository.
+Contributions are welcome. Please submit a Pull Request.

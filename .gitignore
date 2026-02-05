@@ -1,3 +1,12 @@
+## Editor / tooling
+.history/
+.vscode/
+*.code-workspace
+
+## Node / TypeScript
+node_modules/
+out/
+
 ### AL ###
 #Template for AL projects for Dynamics 365 Business Central
 #Cache folder
@@ -16,5 +25,3 @@ rad.json
 *.g.xlf
 #License-file
 *.flf
-#Test results file
-TestResults.xml

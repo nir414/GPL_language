@@ -3,26 +3,12 @@
   "name": "GPL Language",
   "publisher": "GPL",
   "version": "1.0.0.0",
-  "brief": "GPL Language Extension for Business Central",
-  "description": "GPL Language - A foundational extension for Business Central",
-  "privacyStatement": "",
-  "EULA": "",
-  "help": "",
-  "url": "",
-  "logo": "",
-  "dependencies": [],
-  "screenshots": [],
-  "platform": "1.0.0.0",
-  "application": "22.0.0.0",
+  "brief": "GPL (Guided Parallel Language) Runtime",
+  "description": "GPL Language - Base runtime and libraries for robot automation and parallel workflows",
   "idRanges": [
     {
       "from": 50100,
       "to": 50149
     }
-  ],
-  "features": [
-    "NoImplicitWith"
-  ],
-  "runtime": "11.0",
-  "target": "OnPrem"
+  ]
 }

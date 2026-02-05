@@ -1,0 +1,114 @@
+{
+    "name": "gpl-language-support",
+    "displayName": "GPL Language Support",
+    "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
+    "version": "0.2.11",
+    "publisher": "test-robot",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/nir414/GPL_language"
+    },
+    "bugs": {
+        "url": "https://github.com/nir414/GPL_language/issues"
+    },
+    "homepage": "https://github.com/nir414/GPL_language#readme",
+    "engines": {
+        "vscode": "^1.74.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "keywords": [
+        "gpl",
+        "guidance programming language",
+        "brooks automation",
+        "robot control",
+        "motion control",
+        "automation",
+        "preciseflex",
+        "vb.net"
+    ],
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onLanguage:gpl",
+        "workspaceContains:**/*.gpl",
+        "workspaceContains:**/*.gpo",
+        "onCommand:gpl.refreshSymbols",
+        "onCommand:gpl.debugSymbolCache",
+        "onCommand:gpl.showXmlBestPractices",
+        "onCommand:gpl.analyzeXmlEncoding"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "gpl",
+                "aliases": [
+                    "GPL",
+                    "gpl"
+                ],
+                "extensions": [
+                    ".gpl",
+                    ".gpo"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "gpl",
+                "scopeName": "source.gpl",
+                "path": "./syntaxes/gpl.tmGrammar.json"
+            }
+        ],
+        "commands": [
+            {
+                "command": "gpl.refreshSymbols",
+                "title": "GPL: Refresh Symbols"
+            },
+            {
+                "command": "gpl.debugSymbolCache",
+                "title": "GPL: Debug Symbol Cache"
+            },
+            {
+                "command": "gpl.showXmlBestPractices",
+                "title": "GPL: XML 베스트 프랙티스 보기"
+            },
+            {
+                "command": "gpl.analyzeXmlEncoding",
+                "title": "GPL: XML 인코딩 분석"
+            }
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "GPL Language Support",
+            "properties": {
+                "gpl.trace.server": {
+                    "scope": "window",
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "messages",
+                        "verbose"
+                    ],
+                    "default": "off",
+                    "description": "Controls GPL Language Support extension tracing (Output: 'GPL Language Support')."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "package": "npm run compile && node ./scripts/package.js"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.74.0",
+        "@types/node": "16.x",
+        "@vscode/vsce": "^2.26.1",
+        "typescript": "^4.9.4"
+    },
+    "dependencies": {},
+    "author": "nir414",
+    "license": "MIT"
+}

@@ -1,16 +1,13 @@
 {
-  "al.enableCodeActions": true,
-  "al.enableCodeAnalysis": true,
-  "al.codeAnalyzers": [
-    "${CodeCop}",
-    "${UICop}",
-    "${PerTenantExtensionCop}"
-  ],
-  "al.ruleSetPath": "./.vscode/ruleset.json",
-  "files.encoding": "utf8",
-  "files.autoSave": "afterDelay",
-  "editor.formatOnSave": true,
-  "editor.formatOnType": true,
-  "editor.tabSize": 4,
-  "editor.insertSpaces": true
+  "files.associations": {
+    "*.gpl": "gpl"
+  },
+  "gpl.trace.server": "verbose",
+  "files.exclude": {
+    "**/.gitattributes": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/out": true
+  }
 }

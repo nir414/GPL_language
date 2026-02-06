@@ -27,6 +27,8 @@ export class GPLParser {
         const symbols: GPLSymbol[] = [];
         const lines = content.split('\n');
         let currentModule: string | undefined;
+        // Classes can be nested. Track a stack so that `End Class` restores the outer class.
+        const classStack: string[] = [];
         let currentClass: string | undefined;
         // Track whether we're inside a procedure block (Sub/Function/Property body).
         // We intentionally do NOT index local Dim variables as workspace symbols.
@@ -45,6 +47,7 @@ export class GPLParser {
             const moduleMatch = trimmedLine.match(/^Module\s+(\w+)/i);
             if (moduleMatch) {
                 currentModule = moduleMatch[1];
+                classStack.length = 0;
                 currentClass = undefined;
                 blockDepth = 0;
                 const startIndex = line.indexOf(moduleMatch[1]);
@@ -62,7 +65,8 @@ export class GPLParser {
             // Parse Class
             const classMatch = trimmedLine.match(/^(Public|Private)?\s*Class\s+(\w+)/i);
             if (classMatch) {
-                currentClass = classMatch[2];
+                classStack.push(classMatch[2]);
+                currentClass = classStack[classStack.length - 1];
                 blockDepth = 0;
                 const startIndex = line.indexOf(classMatch[2]);
                 symbols.push({
@@ -80,7 +84,10 @@ export class GPLParser {
 
             // Check for End Class to reset currentClass
             if (trimmedLine.match(/^End\s+Class/i)) {
-                currentClass = undefined;
+                if (classStack.length > 0) {
+                    classStack.pop();
+                }
+                currentClass = classStack.length > 0 ? classStack[classStack.length - 1] : undefined;
                 blockDepth = 0;
                 continue;
             }
@@ -96,6 +103,7 @@ export class GPLParser {
             // Check for End Module to reset both
             if (trimmedLine.match(/^End\s+Module/i)) {
                 currentModule = undefined;
+                classStack.length = 0;
                 currentClass = undefined;
                 blockDepth = 0;
                 continue;
@@ -165,10 +173,14 @@ export class GPLParser {
             }
 
             // Parse Property
-            const propertyMatch = trimmedLine.match(/^(Public|Private)?\s*(Shared\s+)?Property\s+(\w+)\s+As\s+(\w+)/i);
+            // Supports: Public/Private, Shared, ReadOnly/WriteOnly, optional parameter list `()`, and array return types `As Foo()`.
+            const propertyMatch = trimmedLine.match(
+                /^(Public|Private)?\s*(Shared\s+)?(?:(ReadOnly|WriteOnly)\s+)?Property\s+(\w+)\s*(\([^)]*\))?\s+As\s+(\w+)\s*(\(\))?/i
+            );
             if (propertyMatch) {
+                const returnType = propertyMatch[6] + (propertyMatch[7] ? '[]' : '');
                 symbols.push({
-                    name: propertyMatch[3],
+                    name: propertyMatch[4],
                     kind: GPLSymbolKind.Property,
                     range: { start: 0, end: line.length },
                     line: i,
@@ -177,7 +189,7 @@ export class GPLParser {
                     className: currentClass,
                     accessModifier: propertyMatch[1] ? (propertyMatch[1].toLowerCase() as 'public' | 'private') : undefined,
                     isShared: !!propertyMatch[2],
-                    returnType: propertyMatch[4]
+                    returnType
                 });
 
                 // Enter property block (if it has Get/Set); End Property will decrement.

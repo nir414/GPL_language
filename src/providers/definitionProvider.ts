@@ -20,6 +20,154 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         }
     }
 
+    private stripComment(line: string): string {
+        const commentIndex = line.indexOf("'");
+        return commentIndex >= 0 ? line.slice(0, commentIndex) : line;
+    }
+
+    private isIdentifierLike(word: string): boolean {
+        return /^[A-Za-z_][A-Za-z0-9_]*$/.test(word);
+    }
+
+    private findEnclosingProcedureStartLine(document: vscode.TextDocument, fromLine: number): number | undefined {
+        // Scan upwards to find the nearest containing Sub/Function/Property header.
+        // Use a simple depth counter to skip over any completed blocks below.
+        let depth = 0;
+        for (let i = fromLine; i >= 0; i--) {
+            const raw = document.lineAt(i).text;
+            const line = this.stripComment(raw).trim();
+            if (!line) continue;
+
+            if (/^End\s+(Sub|Function|Property)\b/i.test(line)) {
+                depth++;
+                continue;
+            }
+
+            // Allow any modifier order (Public/Private/Shared/ReadOnly/WriteOnly/etc.).
+            // Property header may include parentheses: Property Items() As Foo
+            const isProcHeader = /\b(Sub|Function|Property)\s+\w+\s*(\([^)]*\))?/i.test(line);
+            if (isProcHeader) {
+                if (depth === 0) {
+                    return i;
+                }
+                depth--;
+            }
+        }
+        return undefined;
+    }
+
+    private findProcedureEndLine(document: vscode.TextDocument, startLine: number): number | undefined {
+        for (let i = startLine + 1; i < document.lineCount; i++) {
+            const raw = document.lineAt(i).text;
+            const line = this.stripComment(raw).trim();
+            if (!line) continue;
+            if (/^End\s+(Sub|Function|Property)\b/i.test(line)) {
+                return i;
+            }
+        }
+        return undefined;
+    }
+
+    private findLocalDefinition(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        word: string
+    ): vscode.Location | undefined {
+        // Only attempt local resolution for identifier-like tokens.
+        if (!this.isIdentifierLike(word)) {
+            return undefined;
+        }
+
+        const startLine = this.findEnclosingProcedureStartLine(document, position.line);
+        if (startLine === undefined) {
+            return undefined;
+        }
+        const endLine = this.findProcedureEndLine(document, startLine) ?? document.lineCount - 1;
+
+        // 1) Parameters in the procedure signature
+        const headerRaw = document.lineAt(startLine).text;
+        const header = this.stripComment(headerRaw);
+        const open = header.indexOf('(');
+        const close = open >= 0 ? header.indexOf(')', open + 1) : -1;
+        if (open >= 0 && close > open) {
+            const paramText = header.slice(open + 1, close);
+            const parts = paramText.split(',').map(p => p.trim()).filter(Boolean);
+            for (const p of parts) {
+                // Common tokens: ByRef/ByVal/Optional/ParamArray
+                const cleaned = p.replace(/\b(ByRef|ByVal|Optional|ParamArray)\b/gi, ' ').trim();
+                const m = cleaned.match(/\b([A-Za-z_][A-Za-z0-9_]*)\b/);
+                if (m && m[1].toLowerCase() === word.toLowerCase()) {
+                    const idx = headerRaw.toLowerCase().indexOf(m[1].toLowerCase());
+                    if (idx >= 0) {
+                        return new vscode.Location(document.uri, new vscode.Position(startLine, idx));
+                    }
+                    return new vscode.Location(document.uri, new vscode.Position(startLine, 0));
+                }
+            }
+        }
+
+        // 2) Local definitions inside the procedure up to the current position
+        // Prefer the closest preceding definition (simple shadowing support).
+        let bestLine: number | undefined;
+        let bestChar: number | undefined;
+        const maxScanLine = Math.min(position.line, endLine);
+        for (let i = startLine + 1; i <= maxScanLine; i++) {
+            const raw = document.lineAt(i).text;
+            const lineNoComment = this.stripComment(raw);
+            const trimmed = lineNoComment.trim();
+            if (!trimmed) continue;
+
+            // Dim/Const declarations (supports multiple vars per line: Dim a As Integer, b As String)
+            const dimMatch = trimmed.match(/^Dim\s+(.+)$/i);
+            const constMatch = trimmed.match(/^Const\s+(.+)$/i);
+            const declTail = dimMatch?.[1] ?? constMatch?.[1];
+            if (declTail) {
+                const declParts = declTail.split(',').map(p => p.trim()).filter(Boolean);
+                for (const decl of declParts) {
+                    const m = decl.match(/^([A-Za-z_][A-Za-z0-9_]*)\b/);
+                    if (m && m[1].toLowerCase() === word.toLowerCase()) {
+                        const idx = raw.toLowerCase().indexOf(m[1].toLowerCase());
+                        if (idx >= 0) {
+                            bestLine = i;
+                            bestChar = idx;
+                        } else {
+                            bestLine = i;
+                            bestChar = 0;
+                        }
+                    }
+                }
+            }
+
+            // For / For Each loop variables
+            const forEachMatch = trimmed.match(/^For\s+Each\s+([A-Za-z_][A-Za-z0-9_]*)\b/i);
+            if (forEachMatch && forEachMatch[1].toLowerCase() === word.toLowerCase()) {
+                const idx = raw.toLowerCase().indexOf(forEachMatch[1].toLowerCase());
+                bestLine = i;
+                bestChar = idx >= 0 ? idx : 0;
+            }
+            const forMatch = trimmed.match(/^For\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/i);
+            if (forMatch && forMatch[1].toLowerCase() === word.toLowerCase()) {
+                const idx = raw.toLowerCase().indexOf(forMatch[1].toLowerCase());
+                bestLine = i;
+                bestChar = idx >= 0 ? idx : 0;
+            }
+
+            // Catch variable: Catch ex
+            const catchMatch = trimmed.match(/^Catch\s+([A-Za-z_][A-Za-z0-9_]*)\b/i);
+            if (catchMatch && catchMatch[1].toLowerCase() === word.toLowerCase()) {
+                const idx = raw.toLowerCase().indexOf(catchMatch[1].toLowerCase());
+                bestLine = i;
+                bestChar = idx >= 0 ? idx : 0;
+            }
+        }
+
+        if (bestLine !== undefined) {
+            return new vscode.Location(document.uri, new vscode.Position(bestLine, bestChar ?? 0));
+        }
+
+        return undefined;
+    }
+
     async provideDefinition(
         document: vscode.TextDocument,
         position: vscode.Position,
@@ -140,6 +288,13 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             } else {
                 this.log(`[Object NOT Found] "${objectName}"`);
             }
+        }
+
+        // Scope-aware local resolution (procedure parameters / local variables)
+        const local = this.findLocalDefinition(document, position, word);
+        if (local) {
+            this.log(`[Local Scope] Resolved "${word}" within enclosing procedure`);
+            return local;
         }
 
         // Fallback: regular definition search

@@ -63,6 +63,13 @@ jobs:
                   # Node.js 스크립트로 CHANGELOG 추출 (더 안전하고 정확함)
                   node scripts/extract-changelog.js "$VERSION" > release_notes.md
 
+            - name: Delete existing release if present
+              run: |
+                  TAG="${{ steps.extract_version.outputs.tag }}"
+                  gh release delete "$TAG" --yes || true
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
             - name: Create GitHub Release
               uses: softprops/action-gh-release@v1
               with:

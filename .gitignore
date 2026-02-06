@@ -18,6 +18,9 @@ node_modules/
 # Documentation (개발 노트)
 docs/
 
+# Copilot instructions (private)
+.github/copilot-instructions.md
+
 # OS
 .DS_Store
 Thumbs.db

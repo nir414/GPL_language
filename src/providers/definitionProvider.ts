@@ -4,7 +4,7 @@ import { GPLParser } from '../gplParser';
 import { isTraceVerbose } from '../config';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
-    private static readonly PROVIDER_VERSION = '0.2.11';
+    private static readonly PROVIDER_VERSION = '0.2.13-local-scope';
 
     constructor(
         private symbolCache: SymbolCache,
@@ -80,9 +80,12 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
         const startLine = this.findEnclosingProcedureStartLine(document, position.line);
         if (startLine === undefined) {
+            this.log(`[Local Scope] No enclosing Sub/Function/Property found for "${word}" (line ${position.line + 1})`);
             return undefined;
         }
         const endLine = this.findProcedureEndLine(document, startLine) ?? document.lineCount - 1;
+
+        this.log(`[Local Scope] Searching "${word}" in procedure block: ${startLine + 1}..${endLine + 1}`);
 
         // 1) Parameters in the procedure signature
         const headerRaw = document.lineAt(startLine).text;

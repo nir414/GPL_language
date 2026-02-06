@@ -12,14 +12,11 @@ node_modules/
 .history/
 *.code-workspace
 
-# Copilot instructions (개인용)
+# Copilot instructions (private)
 .github/copilot-instructions.md
 
 # Documentation (개발 노트)
 docs/
-
-# Copilot instructions (private)
-.github/copilot-instructions.md
 
 # OS
 .DS_Store

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { GPLParser, GPLSymbol } from './gplParser';
 import { isTraceOn } from './config';
 
-// Re-export GPLSymbol for convenience  
+// Re-export GPLSymbol for convenience
 export { GPLSymbol } from './gplParser';
 
 export class SymbolCache {

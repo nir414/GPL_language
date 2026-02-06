@@ -5,6 +5,37 @@ All notable changes to the "GPL Language Support" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.13] - 2026-02-06
+
+### Added
+
+- **릴리즈 자동화 시스템**: GitHub Actions 기반 자동 릴리즈 워크플로
+  - `v*.*.*` 태그 푸시 시 자동으로 VSIX 빌드 및 GitHub Release 생성
+  - CHANGELOG에서 릴리즈 노트 자동 추출
+  - 프리릴리즈 자동 감지 (alpha, beta, rc)
+  - package.json 버전과 태그 버전 자동 검증
+- **버전 관리 스크립트**: `npm run bump:patch/minor/major` 명령으로 버전 자동 업데이트
+  - package.json과 CHANGELOG.md 동시 업데이트
+  - 오늘 날짜로 새 버전 섹션 자동 생성
+- **릴리즈 전 검증**: `npm run pre-release-check` 명령으로 릴리즈 전 필수 조건 자동 체크
+  - Git 상태, 버전 형식, CHANGELOG 존재 여부 등 검증
+  - TypeScript 컴파일 테스트
+  - 필수 파일 존재 확인
+- **CI 개선**: 모든 커밋에서 VSIX 패키징 및 아티팩트 업로드
+
+### Changed
+
+- **README.md**: 동적 배지로 변경, 설치 안내 개선, GitHub Release 링크 직접 제공
+- **문서 구조**: 릴리즈 프로세스 상세 가이드 및 빠른 참조 가이드 추가
+  - `docs/RELEASE_PROCESS.md`: 전체 릴리즈 체크리스트 및 문제 해결 가이드
+  - `docs/QUICK_RELEASE.md`: 3단계 간단 릴리즈 요약본
+- **CONTRIBUTING.md**: 릴리즈 섹션 추가
+
+### Fixed
+
+- CHANGELOG 추출 로직 개선 (sed 대신 Node.js 스크립트 사용)
+- 버전 범프 스크립트의 CHANGELOG 삽입 위치 계산 개선
+
 ## [0.2.12] - 2026-02-06
 
 ### Fixed

@@ -208,6 +208,34 @@ When modifying `symbolCache.ts`:
 - Maintain backward compatibility for workspaces without `.gpr`
 - Test with large workspaces (1000+ files)
 
+## 🚀 Release Process
+
+For maintainers: Creating a new release is automated through GitHub Actions. See the [Release Process Guide](docs/RELEASE_PROCESS.md) for detailed instructions.
+
+**Quick release steps:**
+
+```powershell
+# 1. Bump version
+npm run bump:patch  # or bump:minor, bump:major
+
+# 2. Edit CHANGELOG.md, commit and push
+git add package.json CHANGELOG.md
+git commit -m "chore: bump version to X.Y.Z"
+git push origin main
+
+# 3. Create and push tag (triggers automatic release)
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+The GitHub Actions workflow will automatically:
+
+- Build and package the VSIX
+- Create a GitHub Release with changelog notes
+- Attach the VSIX file
+
+See [Quick Release Guide](docs/QUICK_RELEASE.md) for a condensed version.
+
 ## ❓ Questions?
 
 If you have questions:

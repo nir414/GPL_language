@@ -100,7 +100,11 @@
         "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
-        "package": "npm run compile && node ./scripts/package.js"
+        "package": "npm run compile && node ./scripts/package.js",
+        "bump:major": "node ./scripts/bump-version.js major",
+        "bump:minor": "node ./scripts/bump-version.js minor",
+        "bump:patch": "node ./scripts/bump-version.js patch",
+        "pre-release-check": "node ./scripts/pre-release-check.js"
     },
     "devDependencies": {
         "@types/node": "^16.18.126",

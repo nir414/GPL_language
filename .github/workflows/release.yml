@@ -1,0 +1,83 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - "v*.*.*" # v0.2.13, v1.0.0 등의 태그에 반응
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write # GitHub Release 생성에 필요
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0 # 전체 히스토리 가져오기 (태그 정보 포함)
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 20
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Compile
+              run: npm run compile
+
+            - name: Package VSIX
+              run: npm run package
+
+            - name: Extract version from tag
+              id: extract_version
+              run: |
+                  VERSION=${GITHUB_REF#refs/tags/v}
+                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+                  echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+                  
+                  # 프리릴리즈 감지 (beta, alpha, rc 등)
+                  if [[ $VERSION =~ -(alpha|beta|rc) ]]; then
+                    echo "is_prerelease=true" >> $GITHUB_OUTPUT
+                  else
+                    echo "is_prerelease=false" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Verify package.json version matches tag
+              run: |
+                  PACKAGE_VERSION=$(node -p "require('./package.json').version")
+                  TAG_VERSION="${{ steps.extract_version.outputs.version }}"
+                  if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+                    echo "❌ Error: package.json version ($PACKAGE_VERSION) does not match tag version ($TAG_VERSION)"
+                    exit 1
+                  fi
+                  echo "✅ Version match confirmed: $PACKAGE_VERSION"
+
+            - name: Extract changelog for this version
+              id: changelog
+              run: |
+                  VERSION="${{ steps.extract_version.outputs.version }}"
+                  # Node.js 스크립트로 CHANGELOG 추출 (더 안전하고 정확함)
+                  node scripts/extract-changelog.js "$VERSION" > release_notes.md
+
+            - name: Create GitHub Release
+              uses: softprops/action-gh-release@v1
+              with:
+                  name: GPL Language Support v${{ steps.extract_version.outputs.version }}
+                  body_path: release_notes.md
+                  files: |
+                      dist/*.vsix
+                  draft: false
+                  prerelease: ${{ steps.extract_version.outputs.is_prerelease }}
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Upload VSIX as artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: gpl-language-support-v${{ steps.extract_version.outputs.version }}
+                  path: dist/*.vsix
+                  retention-days: 90

@@ -1,7 +1,8 @@
 # GPL Language Support
 
-[![Version](https://img.shields.io/badge/version-0.2.11-blue.svg)](https://github.com/nir414/GPL_language/releases)
+[![Version](https://img.shields.io/github/v/release/nir414/GPL_language?label=version)](https://github.com/nir414/GPL_language/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://img.shields.io/github/actions/workflow/status/nir414/GPL_language/ci.yml?branch=main&label=build)](https://github.com/nir414/GPL_language/actions)
 
 GPL (Guidance Programming Language) 지원 VS Code 확장 프로그램입니다. Brooks Automation 로봇 제어를 위한 GPL 언어의 IntelliSense, 정의/참조 탐색, 자동완성 등의 기능을 제공합니다.
 
@@ -16,16 +17,24 @@ GPL (Guidance Programming Language) 지원 VS Code 확장 프로그램입니다.
 
 ## 설치
 
-1. 최신 릴리즈 `.vsix` 파일을 준비합니다. (예: `gpl-language-support.vsix`)
+### GitHub Release에서 설치 (권장)
+
+1. [최신 릴리즈](https://github.com/nir414/GPL_language/releases/latest)에서 `.vsix` 파일 다운로드
 2. VS Code에서 설치:
    - 좌측 Activity Bar에서 **Extensions**(확장) 뷰를 엽니다. (단축키: `Ctrl+Shift+X`)
    - Extensions 패널 우측 상단의 **…(More Actions)** 메뉴를 클릭합니다.
-   - **Install from VSIX...** 를 선택한 뒤, 준비한 `.vsix` 파일을 지정합니다.
+   - **Install from VSIX...** 를 선택한 뒤, 다운로드한 `.vsix` 파일을 지정합니다.
    - 설치 후 안내가 뜨면 **Reload**(창 다시 로드) 또는 VS Code 재시작을 진행합니다.
-3. GPL 파일을 열면 확장이 활성화됨
-   - 설치 확인: Extensions 목록에서 "GPL Language Support"가 **Installed**로 표시되는지 확인합니다.
+3. GPL 파일(`.gpl`, `.gpo`)을 열면 확장이 자동 활성화됩니다.
 
-> 참고: 이 저장소에서 `npm run package`를 실행하면 `.vsix`는 기본적으로 `dist/gpl-language-support-<version>.vsix`로 생성됩니다.
+### 소스에서 빌드 (개발자용)
+
+```bash
+git clone https://github.com/nir414/GPL_language.git
+cd GPL_language
+npm install
+npm run package  # dist/gpl-language-support-v*.vsix 생성
+```
 
 ## GPL 언어 소개
 
@@ -97,6 +106,7 @@ GPL_language/
 - **버그 리포트**: [Issues](https://github.com/nir414/GPL_language/issues)에 상세한 재현 방법과 함께 제출
 - **기능 제안**: 사용 사례와 함께 Issue로 제안
 - **Pull Request**: [기여 가이드라인](CONTRIBUTING.md) 참고
+- **릴리즈 프로세스**: 릴리즈 관련 작업은 [Release Process Guide](docs/RELEASE_PROCESS.md) 참고
 
 ## 변경 이력
 

@@ -2,20 +2,16 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Your own server",
+      "name": "Run GPL Language Extension",
+      "type": "extensionHost",
       "request": "launch",
-      "type": "al",
-      "environmentType": "OnPrem",
-      "server": "http://localhost",
-      "serverInstance": "BC",
-      "authentication": "UserPassword",
-      "startupObjectId": 50100,
-      "startupObjectType": "Codeunit",
-      "breakOnError": true,
-      "launchBrowser": true,
-      "enableLongRunningSqlStatements": true,
-      "enableSqlInformationDebugger": true,
-      "tenant": "default"
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/out/**/*.js"
+      ],
+      "preLaunchTask": "${defaultBuildTask}"
     }
   ]
 }

@@ -1,27 +1,36 @@
-## Editor / tooling
+# Build output
+out/
+dist/
+
+# Dependencies
+node_modules/
+
+# VS Code Extension testing
+.vscode-test/
+
+# Editor
 .history/
-.vscode/
 *.code-workspace
 
-## Node / TypeScript
-node_modules/
-out/
+# Documentation (개발 노트)
+docs/
 
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#Cache folder
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Business Central/AL (불필요)
+*.al
+app.json
 .alcache/
-#Symbols folder
 .alpackages/
-#Snapshots folder
 .snapshots/
-#Testing Output folder
 .output/
-#Extension App-file
 *.app
-#Rapid Application Development File
 rad.json
-#Translation Base-file
 *.g.xlf
-#License-file
 *.flf

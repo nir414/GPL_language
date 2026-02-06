@@ -1,0 +1,108 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "GPL",
+    "scopeName": "source.gpl",
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#keywords" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#operators" },
+        { "include": "#functions" },
+        { "include": "#types" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.apostrophe.gpl",
+                    "match": "'.*$"
+                },
+                {
+                    "name": "comment.block.gpl",
+                    "begin": "/\\*",
+                    "end": "\\*/"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.gpl",
+                    "match": "\\b(If|Then|Else|ElseIf|End If|Select|Case|End Select|For|To|Step|Next|While|End While|Do|Loop|Until|Exit|Continue|Return|Throw|Try|Catch|Finally|End Try)\\b"
+                },
+                {
+                    "name": "keyword.other.gpl",
+                    "match": "\\b(Dim|As|New|Me|MyBase|MyClass|Nothing|True|False|And|Or|Not|Xor|AndAlso|OrElse|Is|IsNot|Like|Mod|AddressOf|GetType|TypeOf)\\b"
+                },
+                {
+                    "name": "storage.type.gpl",
+                    "match": "\\b(Module|Class|Sub|Function|Property|Event|Delegate|Enum|Structure|Interface|Inherits|Implements|Namespace|End Module|End Class|End Sub|End Function|End Property|End Enum|End Structure|End Interface|End Namespace)\\b"
+                },
+                {
+                    "name": "storage.modifier.gpl",
+                    "match": "\\b(Public|Private|Protected|Friend|Protected Friend|Shared|Static|ReadOnly|WriteOnly|Overridable|Overrides|MustInherit|MustOverride|NotInheritable|NotOverridable|Shadows|WithEvents|Optional|ByVal|ByRef|ParamArray|Const)\\b"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.gpl",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.gpl",
+                            "match": "\"\" "
+                        }
+                    ]
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.gpl",
+                    "match": "\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b"
+                },
+                {
+                    "name": "constant.numeric.hex.gpl",
+                    "match": "&H[0-9A-Fa-f]+\\b"
+                },
+                {
+                    "name": "constant.numeric.octal.gpl",
+                    "match": "&O[0-7]+\\b"
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.gpl",
+                    "match": "(\\+|-|\\*|/|\\\\|\\^|=|<>|<|>|<=|>=|&)"
+                }
+            ]
+        },
+        "functions": {
+            "patterns": [
+                {
+                    "name": "entity.name.function.gpl",
+                    "match": "\\b(Sub|Function)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+                    "captures": {
+                        "1": { "name": "storage.type.gpl" },
+                        "2": { "name": "entity.name.function.gpl" }
+                    }
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "storage.type.primitive.gpl",
+                    "match": "\\b(Boolean|Byte|Char|Date|Decimal|Double|Integer|Long|Object|SByte|Short|Single|String|UInteger|ULong|UShort|Variant)\\b"
+                }
+            ]
+        }
+    }
+}

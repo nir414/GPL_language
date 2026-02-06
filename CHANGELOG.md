@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.12] - 2026-02-06
 
+### Fixed
+
+- **숫자 리터럴 정의 검색 방지**: `setFactoryZero(0)` 같은 코드에서 숫자(`0`, `1`, `100`, `3.14` 등)를 Ctrl+클릭해도 불필요한 심볼 검색이 실행되지 않도록 수정
+  - `definitionProvider`: 숫자 리터럴 감지 시 즉시 `undefined` 반환
+  - `referenceProvider`: 숫자 리터럴 감지 시 즉시 빈 배열 반환
+
 ### Added
 
 - **Enhanced Diagnostics**: Comprehensive VB.NET compatibility checks

@@ -35,6 +35,12 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         
         this.log(`\n[Definition Request] v${GPLDefinitionProvider.PROVIDER_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
 
+        // Skip numeric literals (e.g. 0, 1, 100, 3.14) - they are not symbols
+        if (/^\d+(\.\d+)?$/.test(word)) {
+            this.log(`[Skip] Numeric literal "${word}"`);
+            return undefined;
+        }
+
         // Special case: constructor call
         const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const ctorRegex = new RegExp(`\\b(?:As\\s+)?New\\s+${escapedWord}\\s*\\(`, 'i');

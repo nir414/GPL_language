@@ -1,9 +1,8 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { GPLParser, GPLSymbol } from './gplParser';
 import { isTraceOn } from './config';
 
-// Re-export GPLSymbol for convenience
+// Re-export GPLSymbol for convenience  
 export { GPLSymbol } from './gplParser';
 
 export class SymbolCache {
@@ -29,8 +28,6 @@ export class SymbolCache {
         await this.indexWorkspace();
         this.log(`[SymbolCache] Refresh complete. Total symbols: ${this.getAllSymbols().length}`);
     }
-
-    public async indexWorkspace(): Promise<void> {
 
     public updateDocument(document: vscode.TextDocument): void {
         if (document.uri.scheme !== 'file') {
@@ -204,15 +201,19 @@ export class SymbolCache {
     private scoreFilePath(candidateFilePath: string, preferredFilePath: string): number {
         if (candidateFilePath === preferredFilePath) return 1000;
 
-        const preferredDir = path.dirname(preferredFilePath);
-        if (path.dirname(candidateFilePath) === preferredDir) return 800;
+        const preferredUri = vscode.Uri.file(preferredFilePath);
+        const candidateUri = vscode.Uri.file(candidateFilePath);
+        const preferredDir = vscode.Uri.file(preferredUri.fsPath).with({ path: preferredUri.fsPath.substring(0, preferredUri.fsPath.lastIndexOf('/')) });
+        const candidateDir = vscode.Uri.file(candidateUri.fsPath).with({ path: candidateUri.fsPath.substring(0, candidateUri.fsPath.lastIndexOf('/')) });
+        if (candidateDir.fsPath === preferredDir.fsPath) return 800;
 
         const ws = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(preferredFilePath));
         if (ws) {
-            const relPreferred = path.relative(ws.uri.fsPath, preferredFilePath);
-            const relCandidate = path.relative(ws.uri.fsPath, candidateFilePath);
-            const topPreferred = relPreferred.split(path.sep)[0];
-            const topCandidate = relCandidate.split(path.sep)[0];
+            const relPreferred = vscode.workspace.asRelativePath(preferredFilePath);
+            const relCandidate = vscode.workspace.asRelativePath(candidateFilePath);
+            const separator = process.platform === 'win32' ? '\\' : '/';
+            const topPreferred = relPreferred.split(separator)[0];
+            const topCandidate = relCandidate.split(separator)[0];
             if (topPreferred && topPreferred === topCandidate) return 500;
         }
 
@@ -339,7 +340,7 @@ export class SymbolCache {
             for (const gprUri of gprFiles) {
                 try {
                     const bytes = await vscode.workspace.fs.readFile(gprUri);
-                    const text = Buffer.from(bytes).toString('utf8');
+                    const text = new TextDecoder('utf-8').decode(bytes);
 
                     const re = /ProjectSource\s*=\s*["']([^"']+)["']/gi;
                     let match: RegExpExecArray | null;
@@ -347,9 +348,10 @@ export class SymbolCache {
                         const raw = (match[1] || '').trim();
                         if (!raw) continue;
 
-                        const resolved = path.isAbsolute(raw)
+                        const isAbsolute = raw.indexOf(':') > 0 || raw.startsWith('/');
+                        const resolved = isAbsolute
                             ? raw
-                            : path.join(path.dirname(gprUri.fsPath), raw);
+                            : vscode.Uri.joinPath(vscode.Uri.file(gprUri.fsPath + '/..'), raw).fsPath;
 
                         const lower = resolved.toLowerCase();
                         if (!lower.endsWith('.gpl') && !lower.endsWith('.gpo')) continue;
@@ -380,24 +382,6 @@ export class SymbolCache {
             this.updateDocument(document);
         } catch (error) {
             this.log(`[SymbolCache] Error updating file ${filePath}: ${error}`);
-        }
-    }
-
-    /**
-     * Remove symbols for a specific file
-     */
-    public removeFile(filePath: string): void {
-        // Normalize path for case-insensitive comparison on Windows
-        const normalizedPath = path.normalize(filePath).toLowerCase();
-        
-        // Find and remove the matching key
-        for (const key of this.symbols.keys()) {
-            if (path.normalize(key).toLowerCase() === normalizedPath) {
-                this.symbols.delete(key);
-                const fileName = path.basename(filePath);
-                this.log(`[SymbolCache] Removed ${fileName}`);
-                return;
-            }
         }
     }
 

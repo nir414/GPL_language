@@ -37,6 +37,12 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         
         this.log(`\n[Reference Request] v${GPLReferenceProvider.PROVIDER_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
 
+        // Skip numeric literals (e.g. 0, 1, 100, 3.14) - they are not symbols
+        if (/^\d+(\.\d+)?$/.test(word)) {
+            this.log(`[Skip] Numeric literal "${word}"`);
+            return [];
+        }
+
         // Get definition to determine search scope
         const symbol = this.symbolCache.findDefinition(word, document.uri.fsPath);
 

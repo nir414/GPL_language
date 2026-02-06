@@ -5,6 +5,63 @@ All notable changes to the "GPL Language Support" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.12] - 2026-02-06
+
+### Added
+
+- **Enhanced Diagnostics**: Comprehensive VB.NET compatibility checks
+  - Added detection for unsupported functions: `Left`, `Right`, `InStrRev`, `Val`, `UBound`, `EndOfStream`
+  - Added detection for unsupported types: `Long`, `Int64`, `Decimal`, `Char`, `Date`, `Variant`
+  - Performance warning for string concatenation in loops
+  - Best practice warnings for `Nothing` comparisons
+- **Improved Code Actions**: Quick fixes for common issues
+  - `Left()` → `Mid(s, 1, n)` conversion
+  - `Right()` → `Mid(s, Len(s) - n + 1)` conversion
+  - `Val()` → `CInt()` or `CDbl()` conversion
+  - Unsupported type → alternative type suggestions
+- **GPL-Specific Snippets**: Production-ready code patterns
+  - `try_catch`: Standard exception handling template
+  - `thread_lock`: Thread.TestAndSet synchronization pattern
+  - `mid_left`, `mid_right`: String manipulation patterns (Left/Right replacements)
+  - `instr_pattern`: String search with start index
+  - `string_null_check`: Safe Nothing checking
+  - `stream_flush`: StreamWriter with Flush pattern
+  - `file_read`: StreamReader pattern
+  - `cint_safe`: Safe integer conversion with error handling
+  - `module_template`, `class_template`: Boilerplate code
+
+### Changed
+
+- All diagnostic messages and code actions now reference GPL documentation
+- Diagnostic severity levels adjusted based on impact (Warning vs Information)
+- Completion items prioritized: snippets > symbols > keywords
+
+### Documentation
+
+- Aligned extension features with `docs/imported/Test_robot_docs/` guidelines
+- Based diagnostics on `GPL_언어_실무_가이드.md`, `COMMON_MISTAKES.md`, `STRING_API_GUIDE.md`
+- Snippets follow patterns from `GPL_THREAD_CLASS_SUMMARY.md`, `GPL_NETWORKING_GUIDE.md`
+
+## [0.2.11] - 2026-02-06
+
+### Added
+
+- Complete implementation of all core language service providers
+- Definition Provider with constructor detection and qualified/unqualified member access
+- Reference Provider with workspace-wide search and scope-aware patterns
+- Completion Provider for IntelliSense support
+- Document/Workspace Symbol Providers for navigation
+- Folding Range Provider for code folding
+- Diagnostic Provider for VB.NET compatibility warnings
+- Code Action Provider for quick fixes
+
+### Changed
+
+- Fully optimized codebase based on private repository implementation
+- Removed all XML-related features as planned
+- Improved symbol cache with Project.gpr support
+- Enhanced file change watching and diagnostics
+
 ## [0.2.10] - 2026-02-06
 
 ### Added

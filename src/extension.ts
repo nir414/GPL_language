@@ -242,7 +242,7 @@ export async function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(`[GPL Extension] Activation completed in ${totalTime}ms`);
     }
 
-    outputChannel.appendLine(`GPL Language Support v0.2.11 activated`);
+    outputChannel.appendLine(`GPL Language Support v0.2.12 activated`);
 }
 
 export function deactivate() {

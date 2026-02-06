@@ -1,32 +1,33 @@
 {
     "comments": {
-        "lineComment": "'",
-        "blockComment": ["/*", "*/"]
+        "lineComment": "'"
     },
     "brackets": [
-        ["(", ")"],
+        ["{", "}"],
         ["[", "]"],
-        ["{", "}"]
+        ["(", ")"]
     ],
     "autoClosingPairs": [
-        { "open": "(", "close": ")" },
-        { "open": "[", "close": "]" },
-        { "open": "{", "close": "}" },
-        { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
-        { "open": "'", "close": "'", "notIn": ["string", "comment"] }
+        ["{", "}"],
+        ["[", "]"],
+        ["(", ")"],
+        ["\"", "\""]
     ],
     "surroundingPairs": [
-        ["(", ")"],
-        ["[", "]"],
         ["{", "}"],
-        ["\"", "\""],
-        ["'", "'"]
+        ["[", "]"],
+        ["(", ")"],
+        ["\"", "\""]
     ],
+    "indentationRules": {
+        "increaseIndentPattern": "^\\s*(If|For|While|Sub|Function|Class|Module|Try|Catch|Type|Select|With|Do)\\b.*$",
+        "decreaseIndentPattern": "^\\s*(End\\s+(If|For|While|Sub|Function|Class|Module|Try|Type|Select|With)|Next|Catch|Finally|Loop|Case)\\b.*$"
+    },
     "folding": {
         "markers": {
-            "start": "^\\s*(Sub|Function|Class|Module|If|While|For|Select|Try)\\b",
-            "end": "^\\s*(End Sub|End Function|End Class|End Module|End If|End While|Next|End Select|End Try)\\b"
+            "start": "^\\s*(Sub|Function|Class|Module|If|For|While|Try|Type|Select|With|Do)\\b",
+            "end": "^\\s*(End\\s+(Sub|Function|Class|Module|If|For|While|Try|Type|Select|With)|Next|Catch|Finally|Loop|Case)\\b"
         }
     },
-    "wordPattern": "(-?\\d*\\.\\d\\w*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\-\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)"
+    "wordPattern": "[A-Za-z_][A-Za-z0-9_]*"
 }

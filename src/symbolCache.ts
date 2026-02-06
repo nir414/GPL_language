@@ -3,6 +3,9 @@ import * as path from 'path';
 import { GPLParser, GPLSymbol } from './gplParser';
 import { isTraceOn } from './config';
 
+// Re-export GPLSymbol for convenience
+export { GPLSymbol } from './gplParser';
+
 export class SymbolCache {
     private symbols: Map<string, GPLSymbol[]> = new Map();
     private outputChannel?: vscode.OutputChannel;
@@ -26,6 +29,8 @@ export class SymbolCache {
         await this.indexWorkspace();
         this.log(`[SymbolCache] Refresh complete. Total symbols: ${this.getAllSymbols().length}`);
     }
+
+    public async indexWorkspace(): Promise<void> {
 
     public updateDocument(document: vscode.TextDocument): void {
         if (document.uri.scheme !== 'file') {
@@ -292,7 +297,7 @@ export class SymbolCache {
         }
     }
 
-    private async indexWorkspace(): Promise<void> {
+    public async indexWorkspace(): Promise<void> {
         const projectFiles = await this.getProjectSourcesFromGpr();
 
         const filesToIndex = projectFiles ?? (await vscode.workspace.findFiles(
@@ -363,5 +368,54 @@ export class SymbolCache {
         } catch {
             return undefined;
         }
+    }
+
+    /**
+     * Update symbols for a specific file
+     */
+    public async updateFile(filePath: string): Promise<void> {
+        try {
+            const uri = vscode.Uri.file(filePath);
+            const document = await vscode.workspace.openTextDocument(uri);
+            this.updateDocument(document);
+        } catch (error) {
+            this.log(`[SymbolCache] Error updating file ${filePath}: ${error}`);
+        }
+    }
+
+    /**
+     * Remove symbols for a specific file
+     */
+    public removeFile(filePath: string): void {
+        // Normalize path for case-insensitive comparison on Windows
+        const normalizedPath = path.normalize(filePath).toLowerCase();
+        
+        // Find and remove the matching key
+        for (const key of this.symbols.keys()) {
+            if (path.normalize(key).toLowerCase() === normalizedPath) {
+                this.symbols.delete(key);
+                const fileName = path.basename(filePath);
+                this.log(`[SymbolCache] Removed ${fileName}`);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Get all symbols in a specific module
+     */
+    public getSymbolsByModule(moduleName: string): GPLSymbol[] {
+        const result: GPLSymbol[] = [];
+        const moduleNameUpper = moduleName.toUpperCase();
+
+        for (const symbols of this.symbols.values()) {
+            for (const symbol of symbols) {
+                if (symbol.module?.toUpperCase() === moduleNameUpper) {
+                    result.push(symbol);
+                }
+            }
+        }
+
+        return result;
     }
 }

@@ -350,9 +350,4 @@ export class GPLParser {
 
         return usages;
     }
-
-    /**
-     * XML 관련 식별자인지 확인
-     */
-    static isXmlRelatedIdentifier(name: string): boolean {
-        const xmlPatterns = [
+}

@@ -68,7 +68,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.languages.registerCompletionItemProvider(
             GPL_MODE,
-            new GPLCompletionProvider(symbolCache, outputChannel),
+            new GPLCompletionProvider(symbolCache),
             '.' // Trigger character
         )
     );
@@ -77,14 +77,14 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.languages.registerDocumentSymbolProvider(
             GPL_MODE,
-            new GPLDocumentSymbolProvider(outputChannel)
+            new GPLDocumentSymbolProvider()
         )
     );
 
     // Register Workspace Symbol Provider
     context.subscriptions.push(
         vscode.languages.registerWorkspaceSymbolProvider(
-            new GPLWorkspaceSymbolProvider(symbolCache, outputChannel)
+            new GPLWorkspaceSymbolProvider(symbolCache)
         )
     );
 
@@ -92,12 +92,12 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.languages.registerFoldingRangeProvider(
             GPL_MODE,
-            new GPLFoldingRangeProvider(outputChannel)
+            new GPLFoldingRangeProvider()
         )
     );
 
     // Register Diagnostic Provider
-    diagnosticProvider = new GPLDiagnosticProvider(outputChannel);
+    diagnosticProvider = new GPLDiagnosticProvider();
     context.subscriptions.push(diagnosticProvider);
 
     // Register Code Action Provider
@@ -157,7 +157,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 const s = allSymbols[i];
                 const details = [
                     `kind: ${s.kind}`,
-                    s.moduleName ? `module: ${s.moduleName}` : null,
+                    s.module ? `module: ${s.module}` : null,
                     s.className ? `class: ${s.className}` : null,
                     s.returnType ? `type: ${s.returnType}` : null
                 ].filter(Boolean).join(', ');

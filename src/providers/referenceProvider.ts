@@ -64,14 +64,14 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 return [];
             }
         } else {
-            this.log(`[Symbol Found] ${symbol.name} | Kind: ${symbol.kind} | Module: ${symbol.moduleName || 'N/A'} | Class: ${symbol.className || 'N/A'}`);
+            this.log(`[Symbol Found] ${symbol.name} | Kind: ${symbol.kind} | Module: ${symbol.module || 'N/A'} | Class: ${symbol.className || 'N/A'}`);
         }
 
         const locations: vscode.Location[] = [];
 
         // Determine if this is a public module member (potential workspace-wide search)
         const isPublicModuleMember = symbol && 
-            symbol.moduleName && 
+            symbol.module && 
             !symbol.className &&
             (symbol.kind === 'function' || symbol.kind === 'sub');
 
@@ -85,17 +85,17 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             const unqualifiedPattern = new RegExp(`\\b${this.escapeRegex(word)}\\s*\\(`, 'gi');
             
             // Pattern 2: Qualified call (e.g., "ModuleName.FunctionName(")
-            const qualifiedPattern = symbol.moduleName 
-                ? new RegExp(`\\b${this.escapeRegex(symbol.moduleName)}\\.${this.escapeRegex(word)}\\s*\\(`, 'gi')
+            const qualifiedPattern = symbol.module 
+                ? new RegExp(`\\b${this.escapeRegex(symbol.module)}\\.${this.escapeRegex(word)}\\s*\\(`, 'gi')
                 : null;
 
             const workspaceLocations = await this.searchInWorkspace(word, unqualifiedPattern, qualifiedPattern);
             locations.push(...workspaceLocations);
 
-        } else if (symbol?.moduleName) {
+        } else if (symbol?.module) {
             // Module-level symbol (not public function/sub) - search within module files
-            this.log(`[Search Strategy] Module-scoped search for "${symbol.moduleName}"`);
-            const moduleFiles = this.symbolCache.getSymbolsByModule(symbol.moduleName);
+            this.log(`[Search Strategy] Module-scoped search for "${symbol.module}"`);
+            const moduleFiles = this.symbolCache.getSymbolsByModule(symbol.module);
             
             for (const moduleSymbol of moduleFiles) {
                 try {

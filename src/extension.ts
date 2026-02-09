@@ -8,6 +8,7 @@ import { GPLWorkspaceSymbolProvider } from './providers/workspaceSymbolProvider'
 import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
 import { GPLDiagnosticProvider } from './providers/diagnosticProvider';
 import { GPLCodeActionProvider } from './providers/codeActionProvider';
+import { GPLHoverProvider } from './providers/hoverProvider';
 import { isTraceOn } from './config';
 
 const GPL_MODE: vscode.DocumentFilter[] = [
@@ -70,6 +71,14 @@ export async function activate(context: vscode.ExtensionContext) {
             GPL_MODE,
             new GPLCompletionProvider(symbolCache),
             '.' // Trigger character
+        )
+    );
+
+    // Register Hover Provider (e.g., show Const values)
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider(
+            GPL_MODE,
+            new GPLHoverProvider(symbolCache, outputChannel)
         )
     );
 

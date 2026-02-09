@@ -10,6 +10,8 @@ export interface GPLSymbol {
     isShared?: boolean;
     parameters?: string[];
     returnType?: string;
+    /** Raw initializer expression (e.g., "10201" or "\"text\"") when present. */
+    value?: string;
 }
 
 export enum GPLSymbolKind {
@@ -37,6 +39,17 @@ export class GPLParser {
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             const trimmedLine = line.trim();
+
+            // Helper: extract raw initializer expression after '=' (comment stripped).
+            // We keep it as a raw string on purpose (can be numeric, string literal, or expression).
+            const extractInitializer = (): string | undefined => {
+                const commentIndex = line.indexOf("'");
+                const beforeComment = commentIndex >= 0 ? line.slice(0, commentIndex) : line;
+                const eq = beforeComment.indexOf('=');
+                if (eq < 0) return undefined;
+                const rhs = beforeComment.slice(eq + 1).trim();
+                return rhs ? rhs : undefined;
+            };
             
             // Skip comments and empty lines
             if (trimmedLine.startsWith("'") || trimmedLine === '') {
@@ -221,6 +234,7 @@ export class GPLParser {
             const sharedVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+Dim\s+(Const\s+)?(\w+)\s+As\s+(\w+)/i);
             if (sharedVariableMatch) {
                 const isConstant = !!sharedVariableMatch[2];
+                const value = extractInitializer();
                 symbols.push({
                     name: sharedVariableMatch[3],
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -229,7 +243,8 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: sharedVariableMatch[4]
+                    returnType: sharedVariableMatch[4],
+                    value
                 });
                 continue;
             }
@@ -238,6 +253,7 @@ export class GPLParser {
             // MUST be checked BEFORE regular variable pattern
             const newVariableMatch = trimmedLine.match(/^(Private|Public|Dim)\s+(\w+)\s+As\s+New\s+(\w+)/i);
             if (newVariableMatch) {
+                const value = extractInitializer();
                 symbols.push({
                     name: newVariableMatch[2],
                     kind: GPLSymbolKind.Variable,
@@ -246,7 +262,8 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: newVariableMatch[3]
+                    returnType: newVariableMatch[3],
+                    value
                 });
                 continue;
             }
@@ -255,6 +272,7 @@ export class GPLParser {
             const variableMatch = trimmedLine.match(/^(Private|Public|Dim)\s+(Const\s+)?(\w+)\s+As\s+(\w+)/i);
             if (variableMatch) {
                 const isConstant = !!variableMatch[2];
+                const value = extractInitializer();
                 symbols.push({
                     name: variableMatch[3],
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -263,7 +281,8 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: variableMatch[4]
+                    returnType: variableMatch[4],
+                    value
                 });
                 continue;
             }

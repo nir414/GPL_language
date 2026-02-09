@@ -2,9 +2,10 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser } from '../gplParser';
 import { isTraceVerbose } from '../config';
+import * as PATH from 'path';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
-    private static readonly PROVIDER_VERSION = '0.2.13-local-scope';
+    private static readonly PROVIDER_VERSION = '0.2.14-debug-fallbacks';
 
     constructor(
         private symbolCache: SymbolCache,
@@ -27,6 +28,76 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
     private isIdentifierLike(word: string): boolean {
         return /^[A-Za-z_][A-Za-z0-9_]*$/.test(word);
+    }
+
+    private isGplFsPath(fsPath: string): boolean {
+        const lower = fsPath.toLowerCase();
+        return lower.endsWith('.gpl') || lower.endsWith('.gpo');
+    }
+
+    private async findDefinitionInOpenDocuments(word: string, currentFilePath: string): Promise<vscode.Location | undefined> {
+        // Useful when editing multiple GPL files without opening a workspace.
+        const docs = vscode.workspace.textDocuments
+            .filter(d => d.uri.scheme === 'file')
+            .filter(d => this.isGplFsPath(d.uri.fsPath))
+            .slice(0, 50);
+
+        for (const doc of docs) {
+            if (doc.uri.fsPath === currentFilePath) continue;
+            try {
+                const symbols = GPLParser.parseDocument(doc.getText(), doc.uri.fsPath);
+                const hit = symbols.find(s => s.name.toLowerCase() === word.toLowerCase());
+                if (hit) {
+                    this.log(`[OpenDoc Hit] ${word} -> ${doc.uri.fsPath}:${hit.line + 1} (${hit.kind})`);
+                    return new vscode.Location(doc.uri, new vscode.Position(hit.line, 0));
+                }
+            } catch (e) {
+                this.log(`[OpenDoc Scan Error] ${doc.uri.fsPath}: ${e}`);
+            }
+        }
+
+        this.log(`[OpenDoc Miss] "${word}" not found in other open documents`);
+        return undefined;
+    }
+
+    private async findDefinitionInCurrentFolderFallback(word: string, currentFilePath: string): Promise<vscode.Location | undefined> {
+        // Non-recursive folder scan (like ReferenceProvider's last-resort fallback).
+        const currentDir = PATH.dirname(currentFilePath);
+        this.log(`[Folder Fallback] Scanning ${currentDir} for "${word}"`);
+
+        try {
+            const fs = await import('fs');
+            const entries = fs.readdirSync(currentDir);
+            const candidates = entries
+                .filter((f: string) => {
+                    const lower = f.toLowerCase();
+                    return lower.endsWith('.gpl') || lower.endsWith('.gpo');
+                })
+                .slice(0, 200);
+
+            this.log(`[Folder Fallback] Candidate files: ${candidates.length}`);
+
+            for (const file of candidates) {
+                const filePath = PATH.join(currentDir, file);
+                try {
+                    const uri = vscode.Uri.file(filePath);
+                    const doc = await vscode.workspace.openTextDocument(uri);
+                    const symbols = GPLParser.parseDocument(doc.getText(), doc.uri.fsPath);
+                    const hit = symbols.find(s => s.name.toLowerCase() === word.toLowerCase());
+                    if (hit) {
+                        this.log(`[Folder Hit] ${word} -> ${filePath}:${hit.line + 1} (${hit.kind})`);
+                        return new vscode.Location(uri, new vscode.Position(hit.line, 0));
+                    }
+                } catch (e) {
+                    this.log(`[Folder Scan Error] ${filePath}: ${e}`);
+                }
+            }
+        } catch (e) {
+            this.log(`[Folder Fallback Error] ${e}`);
+        }
+
+        this.log(`[Folder Miss] "${word}" not found in ${currentDir}`);
+        return undefined;
     }
 
     private findEnclosingProcedureStartLine(document: vscode.TextDocument, fromLine: number): number | undefined {
@@ -183,8 +254,10 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
         const word = document.getText(wordRange);
         const line = document.lineAt(position.line).text;
-        
+
+        const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri);
         this.log(`\n[Definition Request] v${GPLDefinitionProvider.PROVIDER_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
+        this.log(`[Context] file=${document.uri.fsPath} | inWorkspace=${wsFolder ? 'YES' : 'NO'}`);
 
         // Skip numeric literals (e.g. 0, 1, 100, 3.14) - they are not symbols
         if (/^\d+(\.\d+)?$/.test(word)) {
@@ -309,10 +382,25 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
             try {
                 const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                const local = localSymbols.find(s => s.name === word);
+                const local = localSymbols.find(s => s.name.toLowerCase() === word.toLowerCase());
 
                 if (!local) {
-                    this.log(`[Not Found] Symbol "${word}"`);
+                    this.log(`[Local Parse Miss] "${word}" not found in current document`);
+
+                    const openHit = await this.findDefinitionInOpenDocuments(word, document.uri.fsPath);
+                    if (openHit) {
+                        return openHit;
+                    }
+
+                    // Only do folder fallback when the file isn't part of a workspace.
+                    if (!wsFolder) {
+                        const folderHit = await this.findDefinitionInCurrentFolderFallback(word, document.uri.fsPath);
+                        if (folderHit) {
+                            return folderHit;
+                        }
+                    }
+
+                    this.log(`[Not Found] Symbol "${word}" (cache + local + openDocs${wsFolder ? '' : ' + folder'})`);
                     return undefined;
                 }
 

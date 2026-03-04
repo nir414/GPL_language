@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser } from '../gplParser';
+import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose } from '../config';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
@@ -75,6 +75,107 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             return 0;
         }
         return args + 1;
+    }
+
+    private getEnclosingProcedureRange(
+        document: vscode.TextDocument,
+        atLine: number
+    ): { startLine: number; endLine: number } | undefined {
+        const total = document.lineCount;
+
+        // Find nearest procedure header above.
+        let headerLine = -1;
+        let headerKind: 'Sub' | 'Function' | 'Property' | undefined;
+
+        for (let i = atLine; i >= 0; i--) {
+            const text = document.lineAt(i).text;
+            const trimmed = text.trim();
+            if (trimmed.startsWith("'")) {
+                continue;
+            }
+
+            const m = trimmed.match(/^\s*(Public|Private|Shared|\s)*\b(Sub|Function|Property)\b/i);
+            if (m) {
+                headerLine = i;
+                headerKind = (m[2] as any) as 'Sub' | 'Function' | 'Property';
+                break;
+            }
+
+            // Stop if we hit a new type/module boundary before any header.
+            if (/^\s*(Module|Class)\b/i.test(trimmed)) {
+                break;
+            }
+        }
+
+        if (headerLine < 0 || !headerKind) {
+            return undefined;
+        }
+
+        // Find matching End <Kind>.
+        let endLine = headerLine;
+        const endRe = new RegExp(`^\\s*End\\s+${headerKind}\\b`, 'i');
+        for (let i = headerLine + 1; i < total; i++) {
+            const trimmed = document.lineAt(i).text.trim();
+            if (trimmed.startsWith("'")) {
+                continue;
+            }
+            if (endRe.test(trimmed)) {
+                endLine = i;
+                break;
+            }
+        }
+
+        return { startLine: headerLine, endLine };
+    }
+
+    private pickBestScopedCandidate(
+        candidates: GPLSymbol[],
+        document: vscode.TextDocument,
+        atLine: number
+    ): GPLSymbol | undefined {
+        if (candidates.length === 0) {
+            return undefined;
+        }
+
+        const proc = this.getEnclosingProcedureRange(document, atLine);
+        let scoped = candidates;
+
+        if (proc) {
+            const inProc = candidates.filter(c => c.line >= proc.startLine && c.line <= proc.endLine);
+            if (inProc.length > 0) {
+                scoped = inProc;
+            }
+        }
+
+        // Prefer definitions at or above the usage line; otherwise pick the closest below.
+        const above = scoped
+            .filter(c => c.line <= atLine)
+            .sort((a, b) => b.line - a.line);
+        if (above.length > 0) {
+            return above[0];
+        }
+
+        const below = scoped.sort((a, b) => a.line - b.line);
+        return below[0];
+    }
+
+    private findLocalSymbol(
+        document: vscode.TextDocument,
+        symbolName: string,
+        atLine: number
+    ): GPLSymbol | undefined {
+        try {
+            const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
+                includeLocals: true,
+                includeParameters: true
+            });
+
+            const candidates = localSymbols.filter(s => s.name === symbolName);
+            return this.pickBestScopedCandidate(candidates, document, atLine);
+        } catch (error) {
+            this.log(`[Local Parse Error - findLocalSymbol] ${error}`);
+            return undefined;
+        }
     }
 
     async provideDefinition(
@@ -167,7 +268,10 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             this.log(`[Member Access] Object: "${objectName}" | Member: "${memberName}"`);
             
             // Find the variable/object definition to get its type
-            const objectSymbol = this.symbolCache.findDefinition(objectName, document.uri.fsPath);
+            // NOTE: objectName may be a local Dim variable, which is intentionally NOT indexed in SymbolCache.
+            const objectSymbol =
+                this.symbolCache.findDefinition(objectName, document.uri.fsPath) ??
+                this.findLocalSymbol(document, objectName, position.line);
             
             if (objectSymbol) {
                 this.log(`[Object Found] Name: ${objectSymbol.name} | Type: ${objectSymbol.returnType || 'N/A'} | Kind: ${objectSymbol.kind}`);
@@ -240,27 +344,36 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             // or when VS Code treats *.gpl as 'vb' and cache updates were missed).
             this.log(`[Cache Miss] Symbol "${word}" not found in cache. Trying local parse fallback...`);
 
-            try {
-                const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                const local = localSymbols.find(s => s.name === word);
+            const local = this.findLocalSymbol(document, word, position.line);
 
-                if (!local) {
-                    this.log(`[Not Found] Symbol "${word}" not found (cache + local parse)`);
+            if (!local) {
+                // Try a non-local parse (still useful for stale cache and top-level consts/classes)
+                try {
+                    const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+                    const any = localSymbols.find(s => s.name === word);
+                    if (!any) {
+                        this.log(`[Not Found] Symbol "${word}" not found (cache + scoped local parse)`);
+                        return undefined;
+                    }
+
+                    this.log(`[Local Symbol Found - NonLocalParse] ${any.name} | Line: ${any.line + 1} | Kind: ${any.kind} | ClassName: ${any.className || 'N/A'}`);
+                    const definitionPosition = new vscode.Position(any.line, Math.max(0, any.range?.start ?? 0));
+                    const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
+                    return new vscode.Location(document.uri, definitionRange);
+                } catch (error) {
+                    this.log(`[Local Parse Error] ${error}`);
                     return undefined;
                 }
-
-                this.log(`[Local Symbol Found] ${local.name} | Line: ${local.line + 1} | Kind: ${local.kind} | ClassName: ${local.className || 'N/A'}`);
-
-                const definitionPosition = new vscode.Position(
-                    local.line,
-                    Math.max(0, local.range?.start ?? 0)
-                );
-                const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
-                return new vscode.Location(document.uri, definitionRange);
-            } catch (error) {
-                this.log(`[Local Parse Error] ${error}`);
-                return undefined;
             }
+
+            this.log(`[Local Symbol Found] ${local.name} | Line: ${local.line + 1} | Kind: ${local.kind} | Local: ${local.isLocal ? 'yes' : 'no'} | ClassName: ${local.className || 'N/A'}`);
+
+            const definitionPosition = new vscode.Position(
+                local.line,
+                Math.max(0, local.range?.start ?? 0)
+            );
+            const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
+            return new vscode.Location(document.uri, definitionRange);
         }
 
         const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;

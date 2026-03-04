@@ -55,6 +55,9 @@ export class GPLDiagnosticProvider {
         // VB.NET 호환성 이슈 검사
         diagnostics.push(...this.detectVBCompatibilityIssues(document));
 
+        // 함수/서브 명명 규칙 검사 (첫 글자 대문자)
+        diagnostics.push(...this.detectFunctionNameCasingIssues(document));
+
         this.diagnosticCollection.set(document.uri, diagnostics);
     }
 
@@ -374,6 +377,45 @@ export class GPLDiagnosticProvider {
             }
         }
         
+        return diagnostics;
+    }
+
+    /**
+     * 함수/서브 이름 첫 글자 대문자 규칙 검사
+     * - 대상: Function, Sub (생성자 New는 제외)
+     * - 심각도: Warning
+     */
+    private detectFunctionNameCasingIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const diagnostics: vscode.Diagnostic[] = [];
+        const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+
+        const callableSymbols = symbols.filter(symbol =>
+            (symbol.kind === 'function' || symbol.kind === 'sub') &&
+            symbol.name.toLowerCase() !== 'new'
+        );
+
+        for (const symbol of callableSymbols) {
+            const name = symbol.name || '';
+            if (!name) {
+                continue;
+            }
+
+            const first = name.charAt(0);
+            if (first !== first.toUpperCase()) {
+                const start = Math.max(0, symbol.range?.start ?? 0);
+                const end = Math.max(start + 1, symbol.range?.end ?? (start + name.length));
+
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(symbol.line, start, symbol.line, end),
+                    `함수/서브 이름은 첫 글자를 대문자로 시작하세요: ${name}`,
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'GPL Naming Convention';
+                diagnostic.code = 'function-name-first-letter-uppercase';
+                diagnostics.push(diagnostic);
+            }
+        }
+
         return diagnostics;
     }
 

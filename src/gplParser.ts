@@ -8,10 +8,21 @@ export interface GPLSymbol {
     className?: string;
     accessModifier?: 'public' | 'private';
     isShared?: boolean;
+    /** True when this symbol is declared inside a Sub/Function/Property body (not indexed in workspace cache by default). */
+    isLocal?: boolean;
+    /** True when this symbol represents a procedure parameter. */
+    isParameter?: boolean;
     parameters?: string[];
     returnType?: string;
     isXmlRelated?: boolean;
     hasXmlIssues?: string[];
+}
+
+export interface GPLParseOptions {
+    /** Include local Dim/Const/Static declarations inside Sub/Function/Property bodies. Default: false */
+    includeLocals?: boolean;
+    /** Include procedure parameters as variable symbols. Default: same as includeLocals */
+    includeParameters?: boolean;
 }
 
 export enum GPLSymbolKind {
@@ -25,7 +36,7 @@ export enum GPLSymbolKind {
 }
 
 export class GPLParser {
-    static parseDocument(content: string, filePath: string): GPLSymbol[] {
+    static parseDocument(content: string, filePath: string, options?: GPLParseOptions): GPLSymbol[] {
         const symbols: GPLSymbol[] = [];
         const lines = content.split('\n');
         let currentModule: string | undefined;
@@ -33,6 +44,34 @@ export class GPLParser {
         // Track whether we're inside a procedure block (Sub/Function/Property body).
         // We intentionally do NOT index local Dim variables as workspace symbols.
         let blockDepth = 0;
+
+        const includeLocals = !!options?.includeLocals;
+        const includeParameters = options?.includeParameters ?? includeLocals;
+
+        const extractParamName = (param: string): { name?: string; type?: string } => {
+            // Examples:
+            // - "axis As Integer"
+            // - "ByRef settings() As AxisZeroSetting"
+            // - "Optional speed As Integer = 10"
+            // - "robotArmList() As RobotArm"
+            const cleaned = param
+                .replace(/\b(ByVal|ByRef|Optional|ParamArray)\b/gi, '')
+                .trim();
+
+            const asMatch = cleaned.match(/\bAs\s+(\w+)/i);
+            const type = asMatch ? asMatch[1] : undefined;
+
+            const beforeAs = cleaned.split(/\bAs\b/i)[0].trim();
+            if (!beforeAs) {
+                return { type };
+            }
+
+            // The identifier is typically the last token before "As".
+            const tokens = beforeAs.split(/\s+/).filter(Boolean);
+            const last = tokens[tokens.length - 1] || '';
+            const name = last.replace(/\(.*\)$/, '').replace(/[^A-Za-z0-9_]/g, '');
+            return { name: name || undefined, type };
+        };
 
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
@@ -137,6 +176,29 @@ export class GPLParser {
                     hasXmlIssues: xmlIssues.length > 0 ? xmlIssues : undefined
                 });
 
+                if (includeParameters && params.length > 0) {
+                    for (const p of params) {
+                        const { name: pName, type: pType } = extractParamName(p);
+                        if (!pName) continue;
+
+                        const re = new RegExp(`\\b${pName.replace(/[.*+?^${}()|[\[\]\\]/g, '\\$&')}\\b`, 'i');
+                        const m = re.exec(line);
+                        const pStart = m ? m.index : line.indexOf(pName);
+                        symbols.push({
+                            name: pName,
+                            kind: GPLSymbolKind.Variable,
+                            range: { start: Math.max(0, pStart), end: Math.max(0, pStart) + pName.length },
+                            line: i,
+                            filePath,
+                            module: currentModule,
+                            className: currentClass,
+                            returnType: pType,
+                            isLocal: true,
+                            isParameter: true
+                        });
+                    }
+                }
+
                 // Enter function block: skip local Dim declarations inside
                 blockDepth++;
                 continue;
@@ -168,6 +230,29 @@ export class GPLParser {
                     parameters: params
                 });
 
+                if (includeParameters && params.length > 0) {
+                    for (const p of params) {
+                        const { name: pName, type: pType } = extractParamName(p);
+                        if (!pName) continue;
+
+                        const re = new RegExp(`\\b${pName.replace(/[.*+?^${}()|[\[\]\\]/g, '\\$&')}\\b`, 'i');
+                        const m = re.exec(line);
+                        const pStart = m ? m.index : line.indexOf(pName);
+                        symbols.push({
+                            name: pName,
+                            kind: GPLSymbolKind.Variable,
+                            range: { start: Math.max(0, pStart), end: Math.max(0, pStart) + pName.length },
+                            line: i,
+                            filePath,
+                            module: currentModule,
+                            className: currentClass,
+                            returnType: pType,
+                            isLocal: true,
+                            isParameter: true
+                        });
+                    }
+                }
+
                 // Enter sub block: skip local Dim declarations inside
                 blockDepth++;
                 continue;
@@ -194,9 +279,109 @@ export class GPLParser {
                 continue;
             }
 
+            // When requested, parse local declarations inside procedures.
+            if (blockDepth > 0 && includeLocals) {
+                // Local Const ("Const X As Integer = 1")
+                const localConstMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)/i);
+                if (localConstMatch) {
+                    const name = localConstMatch[1];
+                    const startIndex = line.indexOf(name);
+                    symbols.push({
+                        name,
+                        kind: GPLSymbolKind.Constant,
+                        range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
+                        line: i,
+                        filePath,
+                        module: currentModule,
+                        className: currentClass,
+                        returnType: localConstMatch[2],
+                        isLocal: true
+                    });
+                    continue;
+                }
+
+                // Local Dim/Static with New ("Dim x As New Foo")
+                const localNewVariableMatch = trimmedLine.match(/^(Dim|Static)\s+(\w+)\s+As\s+New\s+(\w+)/i);
+                if (localNewVariableMatch) {
+                    const name = localNewVariableMatch[2];
+                    const startIndex = line.indexOf(name);
+                    symbols.push({
+                        name,
+                        kind: GPLSymbolKind.Variable,
+                        range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
+                        line: i,
+                        filePath,
+                        module: currentModule,
+                        className: currentClass,
+                        returnType: localNewVariableMatch[3],
+                        isLocal: true
+                    });
+                    continue;
+                }
+
+                // Local Dim/Static variable or Const with As ("Dim x As Integer", "Static x As Integer")
+                const localVariableMatch = trimmedLine.match(/^(Dim|Static)\s+(Const\s+)?(\w+)\s*(\([^)]*\))?\s+As\s+(\w+)/i);
+                if (localVariableMatch) {
+                    const isConstant = !!localVariableMatch[2];
+                    const name = localVariableMatch[3];
+                    const startIndex = line.indexOf(name);
+                    const isArray = !!localVariableMatch[4];
+                    const type = localVariableMatch[5] + (isArray ? '[]' : '');
+                    symbols.push({
+                        name,
+                        kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
+                        range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
+                        line: i,
+                        filePath,
+                        module: currentModule,
+                        className: currentClass,
+                        returnType: type,
+                        isLocal: true
+                    });
+                    continue;
+                }
+
+                // Local array form ("Dim xs(10) As Foo")
+                const localArrayMatch = trimmedLine.match(/^(Dim|Static)\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
+                if (localArrayMatch) {
+                    const name = localArrayMatch[2];
+                    const startIndex = line.indexOf(name);
+                    symbols.push({
+                        name,
+                        kind: GPLSymbolKind.Variable,
+                        range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
+                        line: i,
+                        filePath,
+                        module: currentModule,
+                        className: currentClass,
+                        returnType: localArrayMatch[3] + '[]',
+                        isLocal: true
+                    });
+                    continue;
+                }
+            }
+
             // Parse shared variable with New (e.g., "Public Shared Dim storeA As New XmlStore")
             if (blockDepth > 0) {
                 // Local variables inside procedures are not indexed
+                continue;
+            }
+
+            // Parse Const without Dim/Public/Private (e.g., "Const VariableID As Integer = 1869")
+            const constMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)/i);
+            if (constMatch) {
+                const name = constMatch[1];
+                const startIndex = line.indexOf(name);
+                symbols.push({
+                    name,
+                    kind: GPLSymbolKind.Constant,
+                    range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    returnType: constMatch[2]
+                });
                 continue;
             }
             const sharedNewVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+Dim\s+(\w+)\s+As\s+New\s+(\w+)/i);
@@ -231,9 +416,9 @@ export class GPLParser {
                 continue;
             }
 
-            // Parse variable with New (e.g., "Dim storeA As New XmlStore")
+            // Parse variable with New (e.g., "Dim storeA As New XmlStore", "Public Dim t As New Thread(...)")
             // MUST be checked BEFORE regular variable pattern
-            const newVariableMatch = trimmedLine.match(/^(Private|Public|Dim)\s+(\w+)\s+As\s+New\s+(\w+)/i);
+            const newVariableMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(\w+)\s+As\s+New\s+(\w+)/i);
             if (newVariableMatch) {
                 symbols.push({
                     name: newVariableMatch[2],
@@ -248,8 +433,8 @@ export class GPLParser {
                 continue;
             }
 
-            // Parse Variable/Constant
-            const variableMatch = trimmedLine.match(/^(Private|Public|Dim)\s+(Const\s+)?(\w+)\s+As\s+(\w+)/i);
+            // Parse Variable/Constant (e.g., "Public Dim x As Integer", "Private y As String", "Dim z As Double")
+            const variableMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(Const\s+)?(\w+)\s+As\s+(\w+)/i);
             if (variableMatch) {
                 const isConstant = !!variableMatch[2];
                 symbols.push({
@@ -265,8 +450,8 @@ export class GPLParser {
                 continue;
             }
 
-            // Parse array variable (e.g., "Dim kvs(100) As KeyValue")
-            const arrayMatch = trimmedLine.match(/^(Private|Public|Dim)\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
+            // Parse array variable (e.g., "Dim kvs(100) As KeyValue", "Public Dim kvs(100) As KeyValue")
+            const arrayMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
             if (arrayMatch) {
                 symbols.push({
                     name: arrayMatch[2],

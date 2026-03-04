@@ -100,7 +100,9 @@
         "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
-        "package": "npm run compile && node ./scripts/package.js"
+        "package": "npm run compile && node ./scripts/package.js",
+        "dev:cycle": "node ./scripts/dev-cycle.js",
+        "dev:host": "npm run compile && code --extensionDevelopmentPath=. --new-window"
     },
     "devDependencies": {
         "@types/vscode": "^1.74.0",

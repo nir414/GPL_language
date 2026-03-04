@@ -102,7 +102,7 @@ export class SymbolCache {
         return this.pickBestCandidate(candidates, currentFilePath);
     }
 
-    public findMemberInClass(memberName: string, className: string, preferredFilePath?: string): GPLSymbol | undefined {
+    public findMemberInClass(memberName: string, className: string, preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
         // Search for the member in the specified class
         // First, try to find exact match with className
         const exactCandidates: GPLSymbol[] = [];
@@ -117,7 +117,8 @@ export class SymbolCache {
                 }
             }
         }
-        const exactPick = this.pickBestCandidate(exactCandidates, preferredFilePath);
+
+        const exactPick = this.pickBestCallableCandidate(exactCandidates, preferredFilePath, argCount);
         if (exactPick) {
             return exactPick;
         }
@@ -142,7 +143,7 @@ export class SymbolCache {
             }
         }
 
-        const fallbackPick = this.pickBestCandidate(fallbackCandidates, preferredFilePath);
+        const fallbackPick = this.pickBestCallableCandidate(fallbackCandidates, preferredFilePath, argCount);
         if (fallbackPick) {
             return fallbackPick;
         }
@@ -150,7 +151,7 @@ export class SymbolCache {
         return undefined;
     }
 
-    public findMemberInModule(memberName: string, moduleName: string, preferredFilePath?: string): GPLSymbol | undefined {
+    public findMemberInModule(memberName: string, moduleName: string, preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
         // Search for the member in the specified module
         const candidates: GPLSymbol[] = [];
         for (const [, fileSymbols] of this.symbols) {
@@ -166,7 +167,7 @@ export class SymbolCache {
             }
         }
 
-        const pick = this.pickBestCandidate(candidates, preferredFilePath);
+        const pick = this.pickBestCallableCandidate(candidates, preferredFilePath, argCount);
         if (pick) {
             return pick;
         }
@@ -207,6 +208,64 @@ export class SymbolCache {
         }
 
         return this.pickBestCandidate(candidates, preferredFilePath);
+    }
+
+    public findMemberCandidatesInClass(memberName: string, className: string): GPLSymbol[] {
+        const candidates: GPLSymbol[] = [];
+        for (const [, fileSymbols] of this.symbols) {
+            for (const s of fileSymbols) {
+                if (
+                    s.name === memberName &&
+                    s.className === className &&
+                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property')
+                ) {
+                    candidates.push(s);
+                }
+            }
+        }
+        return candidates;
+    }
+
+    public findMemberCandidatesInModule(memberName: string, moduleName: string): GPLSymbol[] {
+        const candidates: GPLSymbol[] = [];
+        for (const [, fileSymbols] of this.symbols) {
+            for (const s of fileSymbols) {
+                if (
+                    s.name === memberName &&
+                    s.module === moduleName &&
+                    !s.className &&
+                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'constant' || s.kind === 'variable')
+                ) {
+                    candidates.push(s);
+                }
+            }
+        }
+        return candidates;
+    }
+
+    private pickBestCallableCandidate(candidates: GPLSymbol[], preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
+        if (candidates.length === 0) {
+            return undefined;
+        }
+
+        if (typeof argCount !== 'number') {
+            return this.pickBestCandidate(candidates, preferredFilePath);
+        }
+
+        const callable = candidates.filter(s => s.kind === 'function' || s.kind === 'sub');
+        if (callable.length === 0) {
+            // In a call context (Foo(...)), non-callable symbols (const/variable/property) should not be selected.
+            return undefined;
+        }
+
+        const exactArgCandidates = callable.filter(s => (s.parameters?.length ?? 0) === argCount);
+
+        if (exactArgCandidates.length > 0) {
+            return this.pickBestCandidate(exactArgCandidates, preferredFilePath);
+        }
+
+        // Keep call-context strictness: if exact arg match is absent, pick best callable candidate only.
+        return this.pickBestCandidate(callable, preferredFilePath);
     }
 
     private pickBestCandidate(candidates: GPLSymbol[], preferredFilePath?: string): GPLSymbol | undefined {

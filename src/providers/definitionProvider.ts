@@ -178,6 +178,22 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         }
     }
 
+    private formatCandidate(symbol: GPLSymbol): string {
+        const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;
+        const paramCount = symbol.parameters ? symbol.parameters.length : 0;
+        return `${symbol.name} [${symbol.kind}] params=${paramCount} file=${fileName} line=${symbol.line + 1} class=${symbol.className || 'N/A'} module=${symbol.module || 'N/A'}`;
+    }
+
+    private logMemberCandidates(context: string, candidates: GPLSymbol[], argCount?: number): void {
+        const argText = typeof argCount === 'number' ? String(argCount) : 'N/A';
+        this.log(`[Candidates:${context}] count=${candidates.length} | callArgCount=${argText}`);
+        if (candidates.length > 0) {
+            for (const c of candidates) {
+                this.log(`  - ${this.formatCandidate(c)}`);
+            }
+        }
+    }
+
     async provideDefinition(
         document: vscode.TextDocument,
         position: vscode.Position,
@@ -190,8 +206,11 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
         const word = document.getText(wordRange);
         const line = document.lineAt(position.line).text;
+        const afterWord = line.substring(wordRange.end.character);
+        const callArgCount = this.countCallArgumentsFromSuffix(afterWord);
         
         this.log(`\n[Definition Request] v${GPLDefinitionProvider.PROVIDER_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
+        this.log(`[Call Context] afterWord="${afterWord.trim()}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
 
         // Special case: constructor call.
         // If the cursor is on a class name used in a "New ClassName(...)" expression,
@@ -206,8 +225,14 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         if (ctorRegex.test(line)) {
             this.log(`[Constructor Call] Detected "New ${word}". Resolving constructor "Sub New" in class ${word}`);
 
+            const ctorArgCount = this.countCallArgumentsFromSuffix(afterWord);
+            this.log(`[Constructor Call Context] class=${word} | ctorArgCount=${typeof ctorArgCount === 'number' ? ctorArgCount : 'N/A'}`);
+
             // Try cache-based constructor lookup
-            const ctorSymbol = this.symbolCache.findMemberInClass('New', word, document.uri.fsPath);
+            const ctorCandidates = this.symbolCache.findMemberCandidatesInClass('New', word);
+            this.logMemberCandidates(`Ctor:${word}.New`, ctorCandidates, ctorArgCount);
+
+            const ctorSymbol = this.symbolCache.findConstructorInClass(word, ctorArgCount, document.uri.fsPath);
             if (ctorSymbol) {
                 const fileName = ctorSymbol.filePath.split('\\').pop() || ctorSymbol.filePath;
                 this.log(`[Constructor Found] New in class ${word}`);
@@ -265,7 +290,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             const objectName = dotMatch[1];
             const memberName = word;
             
-            this.log(`[Member Access] Object: "${objectName}" | Member: "${memberName}"`);
+            this.log(`[Member Access] Object: "${objectName}" | Member: "${memberName}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
             
             // Find the variable/object definition to get its type
             // NOTE: objectName may be a local Dim variable, which is intentionally NOT indexed in SymbolCache.
@@ -279,11 +304,15 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                 if (objectSymbol.kind === 'module') {
                     this.log(`[Branch] Module member resolution path`);
                     // Module.Member access - search in module
-                    const memberSymbol = this.symbolCache.findMemberInModule(memberName, objectSymbol.name, document.uri.fsPath);
+                    const moduleCandidates = this.symbolCache.findMemberCandidatesInModule(memberName, objectSymbol.name);
+                    this.logMemberCandidates(`Module:${objectSymbol.name}.${memberName}`, moduleCandidates, callArgCount);
+
+                    const memberSymbol = this.symbolCache.findMemberInModule(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
                     
                     if (memberSymbol) {
                         const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
                         this.log(`[Module Member Found] ${memberName} in module ${objectSymbol.name}`);
+                        this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                         this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1}`);
                         
                         const uri = vscode.Uri.file(memberSymbol.filePath);
@@ -297,10 +326,14 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                     // Static access: ClassName.Member
                     this.log(`[Branch] Class static member resolution path`);
 
-                    const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.name, document.uri.fsPath);
+                    const classCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, objectSymbol.name);
+                    this.logMemberCandidates(`ClassStatic:${objectSymbol.name}.${memberName}`, classCandidates, callArgCount);
+
+                    const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
                     if (memberSymbol) {
                         const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
                         this.log(`[Member Found] ${memberName} in class ${objectSymbol.name}`);
+                        this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                         this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
 
                         const uri = vscode.Uri.file(memberSymbol.filePath);
@@ -312,11 +345,15 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                     }
                 } else if (objectSymbol.returnType) {
                     // Class instance.Member access - search in class
-                    const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.returnType, document.uri.fsPath);
+                    const instanceCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, objectSymbol.returnType);
+                    this.logMemberCandidates(`ClassInstance:${objectSymbol.returnType}.${memberName}`, instanceCandidates, callArgCount);
+
+                    const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.returnType, document.uri.fsPath, callArgCount);
                     
                     if (memberSymbol) {
                         const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
                         this.log(`[Member Found] ${memberName} in class ${objectSymbol.returnType}`);
+                        this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                         this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
                         
                         const uri = vscode.Uri.file(memberSymbol.filePath);

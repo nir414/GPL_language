@@ -75,6 +75,30 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         }
     }
 
+    private isCommentPosition(lineText: string, charIndex: number): boolean {
+        // GPL/VB comment starts with apostrophe (') when not inside a string literal.
+        let inString = false;
+        for (let i = 0; i < lineText.length; i++) {
+            const ch = lineText[i];
+
+            if (ch === '"') {
+                // VB string escape: doubled quote ""
+                if (inString && i + 1 < lineText.length && lineText[i + 1] === '"') {
+                    i++; // consume escaped quote
+                    continue;
+                }
+                inString = !inString;
+                continue;
+            }
+
+            if (!inString && ch === "'") {
+                return charIndex >= i;
+            }
+        }
+
+        return false;
+    }
+
     // NOTE:
     // - `workspace.findTextInFiles` is available in newer VS Code versions, but some @types/vscode
     //   versions used by this repo don't include its typings.
@@ -234,6 +258,12 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 const startIndex = match.index + (memberOffset >= 0 ? memberOffset : 0);
                 const endIndex = startIndex + word.length;
                 const range = new vscode.Range(doc.positionAt(startIndex), doc.positionAt(endIndex));
+
+                const lineText = doc.lineAt(range.start.line).text;
+                if (this.isCommentPosition(lineText, range.start.character)) {
+                    continue;
+                }
+
                 if (shouldSkipAsDeclaration(doc.uri, range, doc)) {
                     continue;
                 }
@@ -334,6 +364,11 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 const text = doc.getText();
                 const range = r.ranges[0];
                 const startOffset = doc.offsetAt(range.start);
+
+                const lineText = doc.lineAt(range.start.line).text;
+                if (this.isCommentPosition(lineText, range.start.character)) {
+                    return;
+                }
 
                 if (opts.unqualifiedOnly && this.isQualifiedAt(text, startOffset)) {
                     return;

@@ -99,6 +99,53 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         return false;
     }
 
+    private getQualifierBefore(text: string, identifierIndex: number): string | undefined {
+        const before = text.substring(0, identifierIndex);
+        const m = before.match(/(\w+)\s*\.\s*$/);
+        return m ? m[1] : undefined;
+    }
+
+    private shouldAcceptByMemberScope(
+        doc: vscode.TextDocument,
+        text: string,
+        identifierIndex: number,
+        targetClass?: string
+    ): boolean {
+        // Only apply strict qualification filtering for class-member reference search.
+        if (!targetClass) {
+            return true;
+        }
+
+        const qualifier = this.getQualifierBefore(text, identifierIndex);
+        if (!qualifier) {
+            // Unqualified member usage in same class/method body.
+            return true;
+        }
+
+        const qSym = this.symbolCache.findDefinition(qualifier, doc.uri.fsPath);
+        if (!qSym) {
+            // Local variables may not be indexed in cache; keep to avoid false negatives.
+            return true;
+        }
+
+        // Module.Member (e.g., CSL.Acquire) should not be counted as class member reference.
+        if (qSym.kind === 'module') {
+            return false;
+        }
+
+        // Static class usage: keep only same class.
+        if (qSym.kind === 'class') {
+            return qSym.name === targetClass;
+        }
+
+        // Instance usage: keep only matching returnType.
+        if (qSym.returnType) {
+            return qSym.returnType === targetClass;
+        }
+
+        return true;
+    }
+
     // NOTE:
     // - `workspace.findTextInFiles` is available in newer VS Code versions, but some @types/vscode
     //   versions used by this repo don't include its typings.
@@ -257,6 +304,11 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 const memberOffset = full.toLowerCase().lastIndexOf(word.toLowerCase());
                 const startIndex = match.index + (memberOffset >= 0 ? memberOffset : 0);
                 const endIndex = startIndex + word.length;
+
+                if (!this.shouldAcceptByMemberScope(doc, text, startIndex, targetClass)) {
+                    continue;
+                }
+
                 const range = new vscode.Range(doc.positionAt(startIndex), doc.positionAt(endIndex));
 
                 const lineText = doc.lineAt(range.start.line).text;
@@ -365,18 +417,31 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 const range = r.ranges[0];
                 const startOffset = doc.offsetAt(range.start);
 
-                const lineText = doc.lineAt(range.start.line).text;
-                if (this.isCommentPosition(lineText, range.start.character)) {
+                const matchedText = doc.getText(range);
+                const memberOffset = matchedText.toLowerCase().lastIndexOf(word.toLowerCase());
+                const memberStartOffset = startOffset + (memberOffset >= 0 ? memberOffset : 0);
+                const memberEndOffset = memberStartOffset + word.length;
+                const normalizedRange = new vscode.Range(
+                    doc.positionAt(memberStartOffset),
+                    doc.positionAt(memberEndOffset)
+                );
+
+                if (!this.shouldAcceptByMemberScope(doc, text, memberStartOffset, targetClass)) {
                     return;
                 }
 
-                if (opts.unqualifiedOnly && this.isQualifiedAt(text, startOffset)) {
+                const lineText = doc.lineAt(normalizedRange.start.line).text;
+                if (this.isCommentPosition(lineText, normalizedRange.start.character)) {
                     return;
                 }
-                if (shouldSkipAsDeclaration(uri, range, doc)) {
+
+                if (opts.unqualifiedOnly && this.isQualifiedAt(text, memberStartOffset)) {
                     return;
                 }
-                if (addLocation(uri, range)) {
+                if (shouldSkipAsDeclaration(uri, normalizedRange, doc)) {
+                    return;
+                }
+                if (addLocation(uri, normalizedRange)) {
                     workspaceHits += 1;
                 }
             };

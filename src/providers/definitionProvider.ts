@@ -4,7 +4,7 @@ import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose } from '../config';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
-    private static readonly PROVIDER_VERSION = '0.2.4-scope-aware-vars';
+    private static readonly PROVIDER_VERSION = '0.2.12-local-text-fallback';
 
     constructor(
         private symbolCache: SymbolCache,
@@ -176,6 +176,52 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             this.log(`[Local Parse Error - findLocalSymbol] ${error}`);
             return undefined;
         }
+    }
+
+    private findLocalDeclarationByText(
+        document: vscode.TextDocument,
+        symbolName: string,
+        atLine: number
+    ): vscode.Location | undefined {
+        const proc = this.getEnclosingProcedureRange(document, atLine);
+        const scanStartLine = atLine;
+        const scanEndLine = proc ? proc.startLine : 0;
+
+        if (!proc) {
+            this.log(`[Local Text Fallback] procedure range not found. Expanding scan to file top.`);
+        }
+
+        const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const declPatterns = [
+            new RegExp(`^\\s*Const\\s+(${escaped})\\b`, 'i'),
+            new RegExp(`^\\s*(?:Dim|Static)\\s+(?:Const\\s+)?(${escaped})\\b`, 'i'),
+            new RegExp(`^\\s*(?:Public|Private)\\s+Dim\\s+(?:Const\\s+)?(${escaped})\\b`, 'i'),
+            new RegExp(`^\\s*(?:Public|Private)\\s+(?:Const\\s+)?(${escaped})\\b`, 'i')
+        ];
+
+        for (let lineNo = scanStartLine; lineNo >= scanEndLine; lineNo--) {
+            const text = document.lineAt(lineNo).text;
+            const trimmed = text.trim();
+            if (!trimmed || trimmed.startsWith("'")) {
+                continue;
+            }
+
+            for (const p of declPatterns) {
+                const m = p.exec(text);
+                if (!m) {
+                    continue;
+                }
+                const name = m[1] || symbolName;
+                const col = Math.max(0, text.toLowerCase().indexOf(name.toLowerCase()));
+                const pos = new vscode.Position(lineNo, col);
+                this.log(`[Local Text Fallback] Found "${symbolName}" @ line ${lineNo + 1}`);
+                return new vscode.Location(document.uri, new vscode.Range(pos, pos));
+            }
+        }
+
+        this.log(`[Local Text Fallback] "${symbolName}" not found in text scan range (${scanEndLine + 1}..${scanStartLine + 1})`);
+
+        return undefined;
     }
 
     private formatCandidate(symbol: GPLSymbol): string {
@@ -384,6 +430,11 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             const local = this.findLocalSymbol(document, word, position.line);
 
             if (!local) {
+                const textLocal = this.findLocalDeclarationByText(document, word, position.line);
+                if (textLocal) {
+                    return textLocal;
+                }
+
                 // Try a non-local parse (still useful for stale cache and top-level consts/classes)
                 try {
                     const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);

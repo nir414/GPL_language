@@ -102,8 +102,9 @@
         "watch": "tsc -watch -p ./",
         "package": "npm run compile && node ./scripts/package.js",
         "dev:cycle": "node ./scripts/dev-cycle.js",
-        "dev:cycle:open": "node ./scripts/dev-cycle.js",
-        "dev:host": "npm run compile && code --extensionDevelopmentPath=. --new-window"
+        "dev:install": "node -e \"console.error('dev:install is disabled to prevent opening new VS Code windows. Build VSIX with npm run dev:cycle, then install manually from Extensions > Install from VSIX.'); process.exit(1);\"",
+        "dev:cycle:open": "node -e \"console.error('dev:cycle:open is disabled to prevent opening new VS Code windows. Use npm run dev:install only when explicit reinstall is needed.'); process.exit(1);\"",
+        "dev:host": "node -e \"console.error('dev:host is disabled to prevent opening new VS Code windows.'); process.exit(1);\""
     },
     "devDependencies": {
         "@types/vscode": "^1.74.0",

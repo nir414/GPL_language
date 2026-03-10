@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.2.11",
+    "version": "0.2.12",
     "publisher": "test-robot",
     "repository": {
         "type": "git",
@@ -102,7 +102,7 @@
         "watch": "tsc -watch -p ./",
         "package": "npm run compile && node ./scripts/package.js",
         "dev:cycle": "node ./scripts/dev-cycle.js",
-        "dev:cycle:open": "node ./scripts/dev-cycle.js --open-window",
+        "dev:cycle:open": "node ./scripts/dev-cycle.js",
         "dev:host": "npm run compile && code --extensionDevelopmentPath=. --new-window"
     },
     "devDependencies": {

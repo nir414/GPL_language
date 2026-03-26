@@ -55,5 +55,4 @@ scripts/
 media/
 .vscodeignore
 .gitattributes
-tsconfig.json
 package-lock.json

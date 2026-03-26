@@ -294,9 +294,19 @@ export function logMessage(message: string) {
  * XML 베스트 프랙티스 HTML 로드
  */
 async function loadXmlBestPracticesHtml(context: vscode.ExtensionContext): Promise<string> {
-    const uri = vscode.Uri.joinPath(context.extensionUri, 'media', 'xmlBestPractices.html');
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    return Buffer.from(bytes).toString('utf8');
+    try {
+        const uri = vscode.Uri.joinPath(context.extensionUri, 'media', 'xmlBestPractices.html');
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        return Buffer.from(bytes).toString('utf8');
+    } catch (error) {
+        if (outputChannel) {
+            const message =
+                'Failed to load media/xmlBestPractices.html; falling back to inline XML best practices HTML.'
+                + (error instanceof Error && error.message ? ` Reason: ${error.message}` : '');
+            outputChannel.appendLine(message);
+        }
+        return getXmlBestPracticesFallbackHtml();
+    }
 }
 
 /**

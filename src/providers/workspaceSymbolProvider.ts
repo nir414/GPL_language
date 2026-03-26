@@ -3,7 +3,6 @@ import { SymbolCache } from '../symbolCache';
 import { GPLSymbolKind } from '../gplParser';
 
 export class GPLWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProvider {
-    private static readonly PROVIDER_VERSION = '0.2.16';
     constructor(private symbolCache: SymbolCache) {}
 
     provideWorkspaceSymbols(

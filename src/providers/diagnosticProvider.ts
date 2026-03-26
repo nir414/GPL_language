@@ -1,13 +1,8 @@
 import * as vscode from 'vscode';
 import { GPLParser } from '../gplParser';
-
-function isGplFile(document: vscode.TextDocument): boolean {
-    const fsPath = document.uri.fsPath.toLowerCase();
-    return document.uri.scheme === 'file' && (fsPath.endsWith('.gpl') || fsPath.endsWith('.gpo'));
-}
+import { isGplFile } from '../config';
 
 export class GPLDiagnosticProvider {
-    private static readonly PROVIDER_VERSION = '0.2.16';
     private diagnosticCollection: vscode.DiagnosticCollection;
     private pendingTimers: Map<string, NodeJS.Timeout> = new Map();
 
@@ -331,13 +326,6 @@ export class GPLDiagnosticProvider {
         const diagnostics: vscode.Diagnostic[] = [];
         const lines = document.getText().split('\n');
         
-        // 지원되지 않는 VB.NET 함수들 (사전 컴파일된 패턴)
-        const unsupportedFunctions: Array<{ name: string; pattern: RegExp }> = [
-            'Left', 'Right', 'InStrRev', 'Val', 'UBound', 'LBound', 
-            'EndOfStream', 'getCurrentTick', 'IsNumeric', 'IsDate', 
-            'Format', 'DateAdd', 'DateDiff', 'Now', 'Today'
-        ].map(func => ({ name: func, pattern: new RegExp(`\\b${func}\\s*\\(`, 'i') }));
-        
         // Optional 매개변수 패턴
         const optionalPattern = /\bOptional\b/i;
         
@@ -355,20 +343,6 @@ export class GPLDiagnosticProvider {
 
             // 인라인 주석·문자열 리터럴을 제거한 코드만 검사
             const codePart = this.stripCommentsAndStrings(line);
-            
-            // 지원되지 않는 VB.NET 함수 검사
-            for (const { name, pattern } of unsupportedFunctions) {
-                if (pattern.test(codePart)) {
-                    const diagnostic = new vscode.Diagnostic(
-                        new vscode.Range(i, 0, i, line.length),
-                        `지원되지 않는 VB.NET 함수: ${name}. GPL 지원 함수로 교체해주세요.`,
-                        vscode.DiagnosticSeverity.Error
-                    );
-                    diagnostic.source = 'GPL VB Compatibility';
-                    diagnostic.code = `unsupported-function-${name.toLowerCase()}`;
-                    diagnostics.push(diagnostic);
-                }
-            }
             
             // Optional 매개변수 검사
             if (optionalPattern.test(codePart)) {

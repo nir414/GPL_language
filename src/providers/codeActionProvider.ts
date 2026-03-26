@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 import { XmlUtils } from '../xmlUtils';
 
 export class GPLCodeActionProvider implements vscode.CodeActionProvider {
-    private static readonly PROVIDER_VERSION = '0.2.16';
     
     provideCodeActions(
         document: vscode.TextDocument,

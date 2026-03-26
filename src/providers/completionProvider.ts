@@ -3,7 +3,6 @@ import { SymbolCache } from '../symbolCache';
 import { XmlUtils } from '../xmlUtils';
 
 export class GPLCompletionProvider implements vscode.CompletionItemProvider {
-    private static readonly PROVIDER_VERSION = '0.2.16';
     constructor(private symbolCache: SymbolCache) {}
 
     provideCompletionItems(

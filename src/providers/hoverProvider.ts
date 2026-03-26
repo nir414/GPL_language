@@ -1,10 +1,9 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbolKind } from '../gplParser';
-import { isTraceVerbose } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION } from '../config';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
-    private static readonly PROVIDER_VERSION = '0.2.19';
 
     constructor(
         private symbolCache: SymbolCache,
@@ -37,7 +36,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         }
 
         const line = document.lineAt(position.line).text;
-        this.log(`\n[Hover Request] v${GPLHoverProvider.PROVIDER_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
+        this.log(`\n[Hover Request] v${EXTENSION_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
 
         // Prefer cache definition
         let sym = this.symbolCache.findDefinition(word, document.uri.fsPath);

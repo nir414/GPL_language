@@ -7,22 +7,12 @@ import { GPLWorkspaceSymbolProvider } from './providers/workspaceSymbolProvider'
 import { GPLDiagnosticProvider } from './providers/diagnosticProvider';
 import { GPLCodeActionProvider } from './providers/codeActionProvider';
 import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
+import { GPLHoverProvider } from './providers/hoverProvider';
 import { SymbolCache } from './symbolCache';
-import { getTraceServerLevel, isTraceOn } from './config';
+import { getTraceServerLevel, isTraceOn, isGplDocument } from './config';
 
 // Global output channel for GPL extension logging
 let outputChannel: vscode.OutputChannel;
-
-function isGplDocument(document: vscode.TextDocument | undefined): document is vscode.TextDocument {
-    if (!document) {
-        return false;
-    }
-
-    // This extension treats *.gpl (and some projects' *.gpo) files as VB/GPL-like for basic language features.
-    // Therefore, languageId can be 'vb' and must not be used as the sole discriminator.
-    const fsPath = document.uri.fsPath.toLowerCase();
-    return document.uri.scheme === 'file' && (fsPath.endsWith('.gpl') || fsPath.endsWith('.gpo'));
-}
 
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('GPL Language Support');
@@ -99,6 +89,14 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.languages.registerFoldingRangeProvider(
             gplSelectors,
             new GPLFoldingRangeProvider()
+        )
+    );
+
+    // Hover provider (Const value display)
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider(
+            gplSelectors,
+            new GPLHoverProvider(symbolCache, outputChannel)
         )
     );
 

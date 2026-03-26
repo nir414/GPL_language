@@ -1,10 +1,9 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
-import { isTraceVerbose } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION } from '../config';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
-    private static readonly PROVIDER_VERSION = '0.2.16';
 
     constructor(
         private symbolCache: SymbolCache,
@@ -273,7 +272,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         const afterWord = line.substring(wordRange.end.character);
         const callArgCount = this.countCallArgumentsFromSuffix(afterWord);
         
-        this.log(`\n[Definition Request] v${GPLDefinitionProvider.PROVIDER_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
+        this.log(`\n[Definition Request] v${EXTENSION_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
         this.log(`[Call Context] afterWord="${afterWord.trim()}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
 
         // Special case: constructor call.

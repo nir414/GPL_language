@@ -9,7 +9,6 @@ import * as vscode from 'vscode';
  * - Provide explicit, deterministic folding ranges based on control-structure pairs.
  */
 export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
-    private static readonly PROVIDER_VERSION = '0.2.16';
     provideFoldingRanges(
         document: vscode.TextDocument,
         _context: vscode.FoldingContext,

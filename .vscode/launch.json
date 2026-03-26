@@ -1,21 +1,23 @@
 {
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "name": "Your own server",
-      "request": "launch",
-      "type": "al",
-      "environmentType": "OnPrem",
-      "server": "http://localhost",
-      "serverInstance": "BC",
-      "authentication": "UserPassword",
-      "startupObjectId": 50100,
-      "startupObjectType": "Codeunit",
-      "breakOnError": true,
-      "launchBrowser": true,
-      "enableLongRunningSqlStatements": true,
-      "enableSqlInformationDebugger": true,
-      "tenant": "default"
-    }
-  ]
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run GPL Language Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "runtimeExecutable": "${execPath}",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}",
+                "${workspaceFolder}"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/out/**/*.js"
+            ],
+            "preLaunchTask": "npm: compile",
+            "resolveSourceMapLocations": [
+                "${workspaceFolder}/**",
+                "!**/node_modules/**"
+            ]
+        }
+    ]
 }

@@ -14,7 +14,6 @@ export interface GPLSymbol {
     isParameter?: boolean;
     parameters?: string[];
     returnType?: string;
-    value?: string;
     isXmlRelated?: boolean;
     hasXmlIssues?: string[];
 }
@@ -287,8 +286,6 @@ export class GPLParser {
                 if (localConstMatch) {
                     const name = localConstMatch[1];
                     const startIndex = line.indexOf(name);
-                    const eqIdx = trimmedLine.indexOf('=');
-                    const constValue = eqIdx >= 0 ? trimmedLine.substring(eqIdx + 1).trim() : undefined;
                     symbols.push({
                         name,
                         kind: GPLSymbolKind.Constant,
@@ -298,7 +295,6 @@ export class GPLParser {
                         module: currentModule,
                         className: currentClass,
                         returnType: localConstMatch[2],
-                        value: constValue,
                         isLocal: true
                     });
                     continue;
@@ -376,8 +372,6 @@ export class GPLParser {
             if (constMatch) {
                 const name = constMatch[1];
                 const startIndex = line.indexOf(name);
-                const eqIdx = trimmedLine.indexOf('=');
-                const constValue = eqIdx >= 0 ? trimmedLine.substring(eqIdx + 1).trim() : undefined;
                 symbols.push({
                     name,
                     kind: GPLSymbolKind.Constant,
@@ -386,8 +380,7 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: constMatch[2],
-                    value: constValue
+                    returnType: constMatch[2]
                 });
                 continue;
             }
@@ -410,8 +403,6 @@ export class GPLParser {
             const sharedVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+Dim\s+(Const\s+)?(\w+)\s+As\s+(\w+)/i);
             if (sharedVariableMatch) {
                 const isConstant = !!sharedVariableMatch[2];
-                const eqIdx = trimmedLine.indexOf('=');
-                const constValue = isConstant && eqIdx >= 0 ? trimmedLine.substring(eqIdx + 1).trim() : undefined;
                 symbols.push({
                     name: sharedVariableMatch[3],
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -420,8 +411,7 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: sharedVariableMatch[4],
-                    value: constValue
+                    returnType: sharedVariableMatch[4]
                 });
                 continue;
             }
@@ -447,8 +437,6 @@ export class GPLParser {
             const variableMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(Const\s+)?(\w+)\s+As\s+(\w+)/i);
             if (variableMatch) {
                 const isConstant = !!variableMatch[2];
-                const eqIdx = trimmedLine.indexOf('=');
-                const constValue = isConstant && eqIdx >= 0 ? trimmedLine.substring(eqIdx + 1).trim() : undefined;
                 symbols.push({
                     name: variableMatch[3],
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -457,8 +445,7 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: variableMatch[4],
-                    value: constValue
+                    returnType: variableMatch[4]
                 });
                 continue;
             }

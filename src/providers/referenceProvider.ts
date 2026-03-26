@@ -5,6 +5,7 @@ import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose } from '../config';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
+    private static readonly PROVIDER_VERSION = '0.2.16';
     constructor(
         private symbolCache: SymbolCache,
         private outputChannel?: vscode.OutputChannel
@@ -99,10 +100,30 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         return false;
     }
 
+    private extractBaseObjectName(expression: string): string | undefined {
+        // Extract the base object name from complex expressions
+        // Examples:
+        //   "myRobot(index)" → "myRobot"
+        //   "myRobot(index)(subIndex)" → "myRobot"
+        //   "obj.prop" → "obj"
+        //   "array[0]" → "array"
+        const match = expression.match(/^([a-zA-Z_]\w*)/);
+        return match ? match[1] : undefined;
+    }
+
     private getQualifierBefore(text: string, identifierIndex: number): string | undefined {
         const before = text.substring(0, identifierIndex);
-        const m = before.match(/(\w+)\s*\.\s*$/);
-        return m ? m[1] : undefined;
+        const lastDotIndex = before.lastIndexOf('.');
+
+        if (lastDotIndex === -1) {
+            return undefined;
+        }
+
+        // Extract everything before the last dot
+        const objectExpression = before.substring(0, lastDotIndex).trim();
+
+        // Get the base object name from the expression (handles array indexing, etc.)
+        return this.extractBaseObjectName(objectExpression);
     }
 
     private shouldAcceptByMemberScope(
@@ -209,8 +230,10 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // Detect qualified access like Module.Member where the cursor is on Member.
         const lineText = document.lineAt(position.line).text;
         const beforeWord = lineText.substring(0, wordRange.start.character).trimEnd();
-        const dotMatch = beforeWord.match(/(\w+)\s*\.$/);
-        const qualifier = dotMatch ? dotMatch[1] : undefined;
+        const lastDotIndex = beforeWord.lastIndexOf('.');
+        const qualifier = lastDotIndex !== -1
+            ? this.extractBaseObjectName(beforeWord.substring(0, lastDotIndex).trim())
+            : undefined;
 
         // If the cursor is on a qualified member access like obj.Member, the "obj" part is usually
         // a variable, not the defining type/module. Restricting references to only "obj.Member" is

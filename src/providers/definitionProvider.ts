@@ -4,7 +4,7 @@ import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose } from '../config';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
-    private static readonly PROVIDER_VERSION = '0.2.12-local-text-fallback';
+    private static readonly PROVIDER_VERSION = '0.2.16';
 
     constructor(
         private symbolCache: SymbolCache,
@@ -230,6 +230,24 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         return `${symbol.name} [${symbol.kind}] params=${paramCount} file=${fileName} line=${symbol.line + 1} class=${symbol.className || 'N/A'} module=${symbol.module || 'N/A'}`;
     }
 
+    private extractBaseObjectName(expression: string): string | undefined {
+        // Extract the base object name from complex expressions
+        // Examples:
+        //   "myRobot(index)" → "myRobot"
+        //   "myRobot(index)(subIndex)" → "myRobot"
+        //   "obj.prop" → "obj"
+        //   "array[0]" → "array"
+        const match = expression.match(/^([a-zA-Z_]\w*)/);
+        return match ? match[1] : undefined;
+    }
+
+    private buildLocation(symbol: GPLSymbol): vscode.Location {
+        const uri = vscode.Uri.file(symbol.filePath);
+        const definitionPosition = new vscode.Position(symbol.line, 0);
+        const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
+        return new vscode.Location(uri, definitionRange);
+    }
+
     private logMemberCandidates(context: string, candidates: GPLSymbol[], argCount?: number): void {
         const argText = typeof argCount === 'number' ? String(argCount) : 'N/A';
         this.log(`[Candidates:${context}] count=${candidates.length} | callArgCount=${argText}`);
@@ -259,29 +277,43 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         this.log(`[Call Context] afterWord="${afterWord.trim()}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
 
         // Special case: constructor call.
-        // If the cursor is on a class name used in a "New ClassName(...)" expression,
-        // users typically expect Go-to-Definition to jump to the constructor (Sub New)
-        // rather than the class declaration.
+        // Detect "New ClassName(...)" whether cursor is on "New" keyword or on "ClassName".
         // Examples:
         // - Dim x As New TcpCommunication("", "1400")
         // - Set x = New TcpCommunication("", "1400")
         // - New TcpCommunication(...)
-        const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const ctorRegex = new RegExp(`\\b(?:As\\s+)?New\\s+${escapedWord}\\s*\\(`, 'i');
-        if (ctorRegex.test(line)) {
-            this.log(`[Constructor Call] Detected "New ${word}". Resolving constructor "Sub New" in class ${word}`);
+        let constructorClassName: string | undefined;
+        let constructorArgCount: number | undefined;
 
-            const ctorArgCount = this.countCallArgumentsFromSuffix(afterWord);
-            this.log(`[Constructor Call Context] class=${word} | ctorArgCount=${typeof ctorArgCount === 'number' ? ctorArgCount : 'N/A'}`);
+        if (/^New$/i.test(word)) {
+            // Cursor is on the "New" keyword — extract class name from what follows
+            const m = afterWord.match(/^\s+(\w+)\s*(\(.*)/s);
+            if (m) {
+                constructorClassName = m[1];
+                constructorArgCount = this.countCallArgumentsFromSuffix(m[2]);
+            }
+        } else {
+            // Cursor on a word — check if preceded by "New"
+            const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const ctorRegex = new RegExp(`\\b(?:As\\s+)?New\\s+${escapedWord}\\s*\\(`, 'i');
+            if (ctorRegex.test(line)) {
+                constructorClassName = word;
+                constructorArgCount = this.countCallArgumentsFromSuffix(afterWord);
+            }
+        }
+
+        if (constructorClassName) {
+            this.log(`[Constructor Call] Detected "New ${constructorClassName}". Resolving constructor "Sub New" in class ${constructorClassName}`);
+            this.log(`[Constructor Call Context] class=${constructorClassName} | ctorArgCount=${typeof constructorArgCount === 'number' ? constructorArgCount : 'N/A'}`);
 
             // Try cache-based constructor lookup
-            const ctorCandidates = this.symbolCache.findMemberCandidatesInClass('New', word);
-            this.logMemberCandidates(`Ctor:${word}.New`, ctorCandidates, ctorArgCount);
+            const ctorCandidates = this.symbolCache.findMemberCandidatesInClass('New', constructorClassName);
+            this.logMemberCandidates(`Ctor:${constructorClassName}.New`, ctorCandidates, constructorArgCount);
 
-            const ctorSymbol = this.symbolCache.findConstructorInClass(word, ctorArgCount, document.uri.fsPath);
+            const ctorSymbol = this.symbolCache.findConstructorInClass(constructorClassName, constructorArgCount, document.uri.fsPath);
             if (ctorSymbol) {
                 const fileName = ctorSymbol.filePath.split('\\').pop() || ctorSymbol.filePath;
-                this.log(`[Constructor Found] New in class ${word}`);
+                this.log(`[Constructor Found] New in class ${constructorClassName}`);
                 this.log(`[Location] File: ${fileName} | Line: ${ctorSymbol.line + 1} | ClassName: ${ctorSymbol.className || 'N/A'}`);
 
                 const uri = vscode.Uri.file(ctorSymbol.filePath);
@@ -293,9 +325,9 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             // As a fallback, parse the current document on demand.
             try {
                 const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                const localCtor = localSymbols.find(s => s.name === 'New' && s.className === word);
+                const localCtor = localSymbols.find(s => s.name === 'New' && s.className === constructorClassName);
                 if (localCtor) {
-                    this.log(`[Constructor Found - Local] New in class ${word} @line ${localCtor.line + 1}`);
+                    this.log(`[Constructor Found - Local] New in class ${constructorClassName} @line ${localCtor.line + 1}`);
                     const definitionPosition = new vscode.Position(localCtor.line, Math.max(0, localCtor.range?.start ?? 0));
                     const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
                     return new vscode.Location(document.uri, definitionRange);
@@ -306,14 +338,14 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
             // Additional fallback: parse the class-definition file directly (cache may be stale)
             try {
-                const classDef = this.symbolCache.findDefinition(word, document.uri.fsPath);
+                const classDef = this.symbolCache.findDefinition(constructorClassName, document.uri.fsPath);
                 if (classDef && classDef.kind === 'class') {
                     const classDoc = await vscode.workspace.openTextDocument(classDef.filePath);
                     const classSymbols = GPLParser.parseDocument(classDoc.getText(), classDef.filePath);
-                    const fileCtor = classSymbols.find(s => s.name === 'New' && s.className === word);
+                    const fileCtor = classSymbols.find(s => s.name === 'New' && s.className === constructorClassName);
                     if (fileCtor) {
                         const fileName = fileCtor.filePath.split('\\').pop() || fileCtor.filePath;
-                        this.log(`[Constructor Found - ClassFile] New in class ${word} @line ${fileCtor.line + 1}`);
+                        this.log(`[Constructor Found - ClassFile] New in class ${constructorClassName} @line ${fileCtor.line + 1}`);
                         const definitionPosition = new vscode.Position(fileCtor.line, Math.max(0, fileCtor.range?.start ?? 0));
                         const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
                         return new vscode.Location(vscode.Uri.file(fileCtor.filePath), definitionRange);
@@ -323,102 +355,103 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                 this.log(`[Constructor ClassFile Parse Error] ${error}`);
             }
 
-            this.log(`[Constructor NOT Found] Sub New not found for class ${word}`);
+            this.log(`[Constructor NOT Found] Sub New not found for class ${constructorClassName}`);
             // Continue with other resolution paths
         }
         
         // Check if there's a dot before the current word (member access)
-        // Look for pattern: objectName.memberName where cursor is on memberName
+        // Look for pattern: objectExpression.memberName where cursor is on memberName
+        // Handles: obj.member, myRobot(index).member, array[0].member, etc.
         const beforeWord = line.substring(0, wordRange.start.character).trimEnd();
-        const dotMatch = beforeWord.match(/(\w+)\s*\.$/);
-        
-        if (dotMatch) {
-            const objectName = dotMatch[1];
+        const lastDotIndex = beforeWord.lastIndexOf('.');
+
+        if (lastDotIndex !== -1) {
+            // Extract everything before the last dot
+            const objectExpression = beforeWord.substring(0, lastDotIndex).trim();
+            const baseObjectName = this.extractBaseObjectName(objectExpression);
             const memberName = word;
-            
-            this.log(`[Member Access] Object: "${objectName}" | Member: "${memberName}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
-            
-            // Find the variable/object definition to get its type
-            // NOTE: objectName may be a local Dim variable, which is intentionally NOT indexed in SymbolCache.
-            const objectSymbol =
-                this.symbolCache.findDefinition(objectName, document.uri.fsPath) ??
-                this.findLocalSymbol(document, objectName, position.line);
-            
-            if (objectSymbol) {
-                this.log(`[Object Found] Name: ${objectSymbol.name} | Type: ${objectSymbol.returnType || 'N/A'} | Kind: ${objectSymbol.kind}`);
-                
-                if (objectSymbol.kind === 'module') {
-                    this.log(`[Branch] Module member resolution path`);
-                    // Module.Member access - search in module
-                    const moduleCandidates = this.symbolCache.findMemberCandidatesInModule(memberName, objectSymbol.name);
-                    this.logMemberCandidates(`Module:${objectSymbol.name}.${memberName}`, moduleCandidates, callArgCount);
 
-                    const memberSymbol = this.symbolCache.findMemberInModule(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
-                    
-                    if (memberSymbol) {
-                        const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
-                        this.log(`[Module Member Found] ${memberName} in module ${objectSymbol.name}`);
-                        this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                        this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1}`);
-                        
-                        const uri = vscode.Uri.file(memberSymbol.filePath);
-                        const definitionPosition = new vscode.Position(memberSymbol.line, 0);
-                        const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
-                        return new vscode.Location(uri, definitionRange);
+            this.log(`[Member Access] Expression: "${objectExpression}" | Base: "${baseObjectName}" | Member: "${memberName}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
+
+            if (!baseObjectName) {
+                this.log(`[Member Access] Failed to extract base object name from "${objectExpression}"`);
+            } else {
+                // Find the variable/object definition to get its type
+                const objectSymbol =
+                    this.symbolCache.findDefinition(baseObjectName, document.uri.fsPath) ??
+                    this.findLocalSymbol(document, baseObjectName, position.line);
+
+                if (objectSymbol) {
+                    this.log(`[Object Found] Name: ${objectSymbol.name} | Type: ${objectSymbol.returnType || 'N/A'} | Kind: ${objectSymbol.kind}`);
+
+                    if (objectSymbol.kind === 'module') {
+                        this.log(`[Resolution Path] Module.Member → searching "${memberName}" in module "${objectSymbol.name}"`);
+                        // Module.Member access - search in module
+                        const moduleCandidates = this.symbolCache.findMemberCandidatesInModule(memberName, objectSymbol.name);
+                        this.logMemberCandidates(`Module:${objectSymbol.name}.${memberName}`, moduleCandidates, callArgCount);
+
+                        const memberSymbol = this.symbolCache.findMemberInModule(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
+
+                        if (memberSymbol) {
+                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            this.log(`[Member Found] ${memberName} in module ${objectSymbol.name}`);
+                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
+                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1}`);
+                            return this.buildLocation(memberSymbol);
+                        } else {
+                            this.log(`[Member NOT Found] "${memberName}" in module "${objectSymbol.name}"`);
+                        }
+                    } else if (objectSymbol.kind === 'class') {
+                        // Static access: ClassName.Member
+                        this.log(`[Resolution Path] ClassName.Member → static member "${memberName}" in class "${objectSymbol.name}"`);
+
+                        const classCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, objectSymbol.name);
+                        this.logMemberCandidates(`ClassStatic:${objectSymbol.name}.${memberName}`, classCandidates, callArgCount);
+
+                        const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
+                        if (memberSymbol) {
+                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            this.log(`[Member Found] ${memberName} in class ${objectSymbol.name}`);
+                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
+                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
+                            return this.buildLocation(memberSymbol);
+                        } else {
+                            this.log(`[Member NOT Found] "${memberName}" in class "${objectSymbol.name}"`);
+                        }
+                    } else if (objectSymbol.returnType) {
+                        // Class instance.Member access - search in class
+                        // This handles: Dim obj As MyClass; obj.member
+                        // Also: Dim arr(...) As MyClass; arr(index).member
+                        // Strip array suffix "[]" so "RNDRobot[]" → "RNDRobot"
+                        const resolvedType = objectSymbol.returnType.replace(/\[\]$/, '');
+                        this.log(`[Resolution Path] ClassInstance.Member → instance of class "${resolvedType}" | searching "${memberName}"`);
+                        this.log(`[Type Resolution] Variable "${baseObjectName}" has type "${objectSymbol.returnType}"${resolvedType !== objectSymbol.returnType ? ` → stripped to "${resolvedType}"` : ''}`);
+
+                        const instanceCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, resolvedType);
+                        this.logMemberCandidates(`ClassInstance:${resolvedType}.${memberName}`, instanceCandidates, callArgCount);
+
+                        const memberSymbol = this.symbolCache.findMemberInClass(memberName, resolvedType, document.uri.fsPath, callArgCount);
+
+                        if (memberSymbol) {
+                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            this.log(`[Member Found] ${memberName} in class ${resolvedType}`);
+                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
+                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
+                            return this.buildLocation(memberSymbol);
+                        } else {
+                            this.log(`[Member NOT Found] "${memberName}" in class "${resolvedType}"`);
+                        }
                     } else {
-                        this.log(`[Module Member NOT Found] "${memberName}" in module "${objectSymbol.name}"`);
-                    }
-                } else if (objectSymbol.kind === 'class') {
-                    // Static access: ClassName.Member
-                    this.log(`[Branch] Class static member resolution path`);
-
-                    const classCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, objectSymbol.name);
-                    this.logMemberCandidates(`ClassStatic:${objectSymbol.name}.${memberName}`, classCandidates, callArgCount);
-
-                    const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
-                    if (memberSymbol) {
-                        const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
-                        this.log(`[Member Found] ${memberName} in class ${objectSymbol.name}`);
-                        this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                        this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
-
-                        const uri = vscode.Uri.file(memberSymbol.filePath);
-                        const definitionPosition = new vscode.Position(memberSymbol.line, 0);
-                        const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
-                        return new vscode.Location(uri, definitionRange);
-                    } else {
-                        this.log(`[Member NOT Found] "${memberName}" in class "${objectSymbol.name}"`);
-                    }
-                } else if (objectSymbol.returnType) {
-                    // Class instance.Member access - search in class
-                    const instanceCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, objectSymbol.returnType);
-                    this.logMemberCandidates(`ClassInstance:${objectSymbol.returnType}.${memberName}`, instanceCandidates, callArgCount);
-
-                    const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.returnType, document.uri.fsPath, callArgCount);
-                    
-                    if (memberSymbol) {
-                        const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
-                        this.log(`[Member Found] ${memberName} in class ${objectSymbol.returnType}`);
-                        this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                        this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
-                        
-                        const uri = vscode.Uri.file(memberSymbol.filePath);
-                        const definitionPosition = new vscode.Position(memberSymbol.line, 0);
-                        const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
-                        return new vscode.Location(uri, definitionRange);
-                    } else {
-                        this.log(`[Member NOT Found] "${memberName}" in class "${objectSymbol.returnType}"`);
+                        this.log(`[No Type Info] Object "${baseObjectName}" has no returnType and is not a class/module. Cannot resolve member access.`);
                     }
                 } else {
-                    this.log(`[No Type Info] Object "${objectName}" has no returnType`);
+                    this.log(`[Object NOT Found] "${baseObjectName}" not found in cache or local scope`);
                 }
-            } else {
-                this.log(`[Object NOT Found] "${objectName}"`);
             }
         }
 
-        // Fallback to regular definition search
-        this.log(`[Fallback Search] Looking for "${word}"`);
+        // Fallback to regular definition search (when member access path didn't find anything)
+        this.log(`[Fallback Search] Member access resolution did not return. Looking for simple definition of "${word}"`);
         const symbol = this.symbolCache.findDefinition(word, document.uri.fsPath);
 
         if (!symbol) {
@@ -445,9 +478,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                     }
 
                     this.log(`[Local Symbol Found - NonLocalParse] ${any.name} | Line: ${any.line + 1} | Kind: ${any.kind} | ClassName: ${any.className || 'N/A'}`);
-                    const definitionPosition = new vscode.Position(any.line, Math.max(0, any.range?.start ?? 0));
-                    const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
-                    return new vscode.Location(document.uri, definitionRange);
+                    return this.buildLocation(any);
                 } catch (error) {
                     this.log(`[Local Parse Error] ${error}`);
                     return undefined;
@@ -455,22 +486,11 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             }
 
             this.log(`[Local Symbol Found] ${local.name} | Line: ${local.line + 1} | Kind: ${local.kind} | Local: ${local.isLocal ? 'yes' : 'no'} | ClassName: ${local.className || 'N/A'}`);
-
-            const definitionPosition = new vscode.Position(
-                local.line,
-                Math.max(0, local.range?.start ?? 0)
-            );
-            const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
-            return new vscode.Location(document.uri, definitionRange);
+            return this.buildLocation(local);
         }
 
         const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;
         this.log(`[Symbol Found] ${symbol.name} | File: ${fileName} | Line: ${symbol.line + 1} | ClassName: ${symbol.className || 'N/A'}`);
-        
-        const uri = vscode.Uri.file(symbol.filePath);
-        const definitionPosition = new vscode.Position(symbol.line, 0);
-        const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
-
-        return new vscode.Location(uri, definitionRange);
+        return this.buildLocation(symbol);
     }
 }

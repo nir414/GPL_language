@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
 import { GPLParser } from '../gplParser';
 
+function isGplFile(document: vscode.TextDocument): boolean {
+    const fsPath = document.uri.fsPath.toLowerCase();
+    return document.uri.scheme === 'file' && (fsPath.endsWith('.gpl') || fsPath.endsWith('.gpo'));
+}
+
 export class GPLDiagnosticProvider {
+    private static readonly PROVIDER_VERSION = '0.2.16';
     private diagnosticCollection: vscode.DiagnosticCollection;
     private pendingTimers: Map<string, NodeJS.Timeout> = new Map();
 
@@ -13,7 +19,7 @@ export class GPLDiagnosticProvider {
      * 문서의 진단 정보를 업데이트
      */
     public updateDiagnostics(document: vscode.TextDocument): void {
-        if (document.languageId !== 'gpl') {
+        if (!isGplFile(document)) {
             return;
         }
 
@@ -65,7 +71,7 @@ export class GPLDiagnosticProvider {
      * Debounced diagnostics scheduling to avoid frequent recomputation
      */
     public scheduleDiagnostics(document: vscode.TextDocument, delayMs: number = 500): void {
-        if (document.languageId !== 'gpl') {
+        if (!isGplFile(document)) {
             return;
         }
 
@@ -285,18 +291,52 @@ export class GPLDiagnosticProvider {
     }
 
     /**
+     * 인라인 주석과 문자열 리터럴을 제거하여 실제 코드 부분만 반환
+     */
+    private stripCommentsAndStrings(line: string): string {
+        let result = '';
+        let inString = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inString) {
+                if (ch === '"') {
+                    // VB/GPL: 연속 "" 는 이스케이프된 따옴표
+                    if (i + 1 < line.length && line[i + 1] === '"') {
+                        i++; // skip escaped quote
+                        continue;
+                    }
+                    inString = false;
+                }
+                // 문자열 내부 문자는 공백으로 대체 (위치 보존)
+                result += ' ';
+            } else {
+                if (ch === '"') {
+                    inString = true;
+                    result += ' ';
+                } else if (ch === "'") {
+                    // 인라인 주석 시작 — 나머지 무시
+                    break;
+                } else {
+                    result += ch;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
      * VB.NET 호환성 이슈 검사
      */
     private detectVBCompatibilityIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
         const diagnostics: vscode.Diagnostic[] = [];
         const lines = document.getText().split('\n');
         
-        // 지원되지 않는 VB.NET 함수들
-        const unsupportedFunctions = [
+        // 지원되지 않는 VB.NET 함수들 (사전 컴파일된 패턴)
+        const unsupportedFunctions: Array<{ name: string; pattern: RegExp }> = [
             'Left', 'Right', 'InStrRev', 'Val', 'UBound', 'LBound', 
             'EndOfStream', 'getCurrentTick', 'IsNumeric', 'IsDate', 
             'Format', 'DateAdd', 'DateDiff', 'Now', 'Today'
-        ];
+        ].map(func => ({ name: func, pattern: new RegExp(`\\b${func}\\s*\\(`, 'i') }));
         
         // Optional 매개변수 패턴
         const optionalPattern = /\bOptional\b/i;
@@ -308,28 +348,30 @@ export class GPLDiagnosticProvider {
             const line = lines[i];
             const trimmedLine = line.trim();
             
-            // 주석 건너뛰기
+            // 전체 주석 또는 빈 줄 건너뛰기
             if (trimmedLine.startsWith("'") || trimmedLine === '') {
                 continue;
             }
+
+            // 인라인 주석·문자열 리터럴을 제거한 코드만 검사
+            const codePart = this.stripCommentsAndStrings(line);
             
             // 지원되지 않는 VB.NET 함수 검사
-            for (const func of unsupportedFunctions) {
-                const pattern = new RegExp(`\\b${func}\\s*\\(`, 'i');
-                if (pattern.test(line)) {
+            for (const { name, pattern } of unsupportedFunctions) {
+                if (pattern.test(codePart)) {
                     const diagnostic = new vscode.Diagnostic(
                         new vscode.Range(i, 0, i, line.length),
-                        `지원되지 않는 VB.NET 함수: ${func}. GPL 지원 함수로 교체해주세요.`,
+                        `지원되지 않는 VB.NET 함수: ${name}. GPL 지원 함수로 교체해주세요.`,
                         vscode.DiagnosticSeverity.Error
                     );
                     diagnostic.source = 'GPL VB Compatibility';
-                    diagnostic.code = `unsupported-function-${func.toLowerCase()}`;
+                    diagnostic.code = `unsupported-function-${name.toLowerCase()}`;
                     diagnostics.push(diagnostic);
                 }
             }
             
             // Optional 매개변수 검사
-            if (optionalPattern.test(line)) {
+            if (optionalPattern.test(codePart)) {
                 const diagnostic = new vscode.Diagnostic(
                     new vscode.Range(i, 0, i, line.length),
                     'GPL에서는 Optional 매개변수를 지원하지 않습니다. 함수 오버로드로 구현해주세요.',
@@ -341,7 +383,7 @@ export class GPLDiagnosticProvider {
             }
             
             // On Error GoTo 검사
-            if (onErrorPattern.test(line)) {
+            if (onErrorPattern.test(codePart)) {
                 const diagnostic = new vscode.Diagnostic(
                     new vscode.Range(i, 0, i, line.length),
                     'GPL에서는 On Error GoTo를 지원하지 않습니다. Try...Catch 구문을 사용해주세요.',
@@ -353,7 +395,7 @@ export class GPLDiagnosticProvider {
             }
             
             // Dictionary 타입 사용 검사
-            if (/\bDictionary\b/i.test(line)) {
+            if (/\bDictionary\b/i.test(codePart)) {
                 const diagnostic = new vscode.Diagnostic(
                     new vscode.Range(i, 0, i, line.length),
                     'GPL에서는 Dictionary 타입을 지원하지 않습니다. 배열이나 사용자 정의 타입을 사용해주세요.',
@@ -365,7 +407,7 @@ export class GPLDiagnosticProvider {
             }
             
             // Object 타입 사용 검사 (다형성 제한)
-            if (/\bAs\s+Object\b/i.test(line)) {
+            if (/\bAs\s+Object\b/i.test(codePart)) {
                 const diagnostic = new vscode.Diagnostic(
                     new vscode.Range(i, 0, i, line.length),
                     'GPL에서는 Object 타입의 다형적 사용이 제한됩니다. 구체적인 타입을 사용하세요.',

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
 
 export class GPLDocumentSymbolProvider implements vscode.DocumentSymbolProvider {
+    private static readonly PROVIDER_VERSION = '0.2.16';
     provideDocumentSymbols(
         document: vscode.TextDocument,
         token: vscode.CancellationToken

@@ -5,7 +5,6 @@ import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose } from '../config';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
-    private static readonly PROVIDER_VERSION = '0.2.16';
     constructor(
         private symbolCache: SymbolCache,
         private outputChannel?: vscode.OutputChannel

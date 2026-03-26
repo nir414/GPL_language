@@ -2,8 +2,8 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.2.16",
-    "publisher": "test-robot",
+    "version": "0.2.21",
+    "publisher": "nir414",
     "repository": {
         "type": "git",
         "url": "https://github.com/nir414/GPL_language"
@@ -71,11 +71,11 @@
             },
             {
                 "command": "gpl.showXmlBestPractices",
-                "title": "GPL: XML 베스트 프랙티스 보기"
+                "title": "GPL: Show XML Best Practices"
             },
             {
                 "command": "gpl.analyzeXmlEncoding",
-                "title": "GPL: XML 인코딩 분석"
+                "title": "GPL: Analyze XML Encoding"
             }
         ],
         "configuration": {

@@ -13,6 +13,8 @@ export interface GPLSymbol {
     /** True when this symbol represents a procedure parameter. */
     isParameter?: boolean;
     parameters?: string[];
+    /** Initializer value for constants (e.g. "123" from "Const X As Integer = 123"). */
+    value?: string;
     returnType?: string;
     isXmlRelated?: boolean;
     hasXmlIssues?: string[];
@@ -282,10 +284,11 @@ export class GPLParser {
             // When requested, parse local declarations inside procedures.
             if (blockDepth > 0 && includeLocals) {
                 // Local Const ("Const X As Integer = 1")
-                const localConstMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)/i);
+                const localConstMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
                 if (localConstMatch) {
                     const name = localConstMatch[1];
                     const startIndex = line.indexOf(name);
+                    const localConstValue = localConstMatch[3]?.trim();
                     symbols.push({
                         name,
                         kind: GPLSymbolKind.Constant,
@@ -295,6 +298,7 @@ export class GPLParser {
                         module: currentModule,
                         className: currentClass,
                         returnType: localConstMatch[2],
+                        value: localConstValue || undefined,
                         isLocal: true
                     });
                     continue;
@@ -320,13 +324,14 @@ export class GPLParser {
                 }
 
                 // Local Dim/Static variable or Const with As ("Dim x As Integer", "Static x As Integer")
-                const localVariableMatch = trimmedLine.match(/^(Dim|Static)\s+(Const\s+)?(\w+)\s*(\([^)]*\))?\s+As\s+(\w+)/i);
+                const localVariableMatch = trimmedLine.match(/^(Dim|Static)\s+(Const\s+)?(\w+)\s*(\([^)]*\))?\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
                 if (localVariableMatch) {
                     const isConstant = !!localVariableMatch[2];
                     const name = localVariableMatch[3];
                     const startIndex = line.indexOf(name);
                     const isArray = !!localVariableMatch[4];
                     const type = localVariableMatch[5] + (isArray ? '[]' : '');
+                    const dimConstValue = isConstant ? localVariableMatch[6]?.trim() : undefined;
                     symbols.push({
                         name,
                         kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -336,6 +341,7 @@ export class GPLParser {
                         module: currentModule,
                         className: currentClass,
                         returnType: type,
+                        value: dimConstValue || undefined,
                         isLocal: true
                     });
                     continue;
@@ -368,10 +374,11 @@ export class GPLParser {
             }
 
             // Parse Const without Dim/Public/Private (e.g., "Const VariableID As Integer = 1869")
-            const constMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)/i);
+            const constMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
             if (constMatch) {
                 const name = constMatch[1];
                 const startIndex = line.indexOf(name);
+                const rawValue = constMatch[3]?.trim();
                 symbols.push({
                     name,
                     kind: GPLSymbolKind.Constant,
@@ -380,7 +387,8 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: constMatch[2]
+                    returnType: constMatch[2],
+                    value: rawValue || undefined
                 });
                 continue;
             }
@@ -400,9 +408,10 @@ export class GPLParser {
             }
 
             // Parse shared variable/constant (e.g., "Public Shared Dim echoMode As Boolean")
-            const sharedVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+Dim\s+(Const\s+)?(\w+)\s+As\s+(\w+)/i);
+            const sharedVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+Dim\s+(Const\s+)?(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
             if (sharedVariableMatch) {
                 const isConstant = !!sharedVariableMatch[2];
+                const sharedConstValue = isConstant ? sharedVariableMatch[5]?.trim() : undefined;
                 symbols.push({
                     name: sharedVariableMatch[3],
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -411,7 +420,8 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: sharedVariableMatch[4]
+                    returnType: sharedVariableMatch[4],
+                    value: sharedConstValue || undefined
                 });
                 continue;
             }
@@ -434,9 +444,10 @@ export class GPLParser {
             }
 
             // Parse Variable/Constant (e.g., "Public Dim x As Integer", "Private y As String", "Dim z As Double")
-            const variableMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(Const\s+)?(\w+)\s+As\s+(\w+)/i);
+            const variableMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(Const\s+)?(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
             if (variableMatch) {
                 const isConstant = !!variableMatch[2];
+                const varConstValue = isConstant ? variableMatch[5]?.trim() : undefined;
                 symbols.push({
                     name: variableMatch[3],
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -445,7 +456,8 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    returnType: variableMatch[4]
+                    returnType: variableMatch[4],
+                    value: varConstValue || undefined
                 });
                 continue;
             }

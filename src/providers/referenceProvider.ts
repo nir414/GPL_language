@@ -5,7 +5,7 @@ import { isTraceVerbose } from '../config';
 import * as PATH from 'path';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
-    private static readonly PROVIDER_VERSION = '0.2.11';
+    private static readonly PROVIDER_VERSION = '0.2.17';
 
     constructor(
         private symbolCache: SymbolCache,
@@ -169,21 +169,17 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     maxResults: 10000
                 };
 
-                const results = await wsAny.findTextInFiles(
+                await wsAny.findTextInFiles(
                     { pattern: pattern.source },
                     searchOptions,
                     (result: any) => {
-                        // Progress callback
-                        this.log(`[Match] ${result.uri.fsPath}:${result.ranges[0].start.line + 1}`);
+                        if (result.uri && result.ranges) {
+                            for (const range of result.ranges) {
+                                locations.push(new vscode.Location(result.uri, range));
+                            }
+                        }
                     }
                 );
-
-                for (const result of results) {
-                    const uri = result.uri;
-                    for (const match of result.ranges) {
-                        locations.push(new vscode.Location(uri, match));
-                    }
-                }
             }
 
         } catch (error) {

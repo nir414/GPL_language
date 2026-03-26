@@ -5,7 +5,7 @@ import { isTraceVerbose } from '../config';
 import * as PATH from 'path';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
-    private static readonly PROVIDER_VERSION = '0.2.14-debug-fallbacks';
+    private static readonly PROVIDER_VERSION = '0.2.17';
 
     constructor(
         private symbolCache: SymbolCache,

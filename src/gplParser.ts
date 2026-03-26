@@ -192,10 +192,12 @@ export class GPLParser {
             );
             if (propertyMatch) {
                 const returnType = propertyMatch[6] + (propertyMatch[7] ? '[]' : '');
+                const propName = propertyMatch[4];
+                const propStart = line.indexOf(propName);
                 symbols.push({
-                    name: propertyMatch[4],
+                    name: propName,
                     kind: GPLSymbolKind.Property,
-                    range: { start: 0, end: line.length },
+                    range: { start: propStart >= 0 ? propStart : 0, end: (propStart >= 0 ? propStart : 0) + propName.length },
                     line: i,
                     filePath,
                     module: currentModule,
@@ -217,10 +219,12 @@ export class GPLParser {
             }
             const sharedNewVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+Dim\s+(\w+)\s+As\s+New\s+(\w+)/i);
             if (sharedNewVariableMatch) {
+                const snvName = sharedNewVariableMatch[2];
+                const snvStart = line.indexOf(snvName);
                 symbols.push({
-                    name: sharedNewVariableMatch[2],
+                    name: snvName,
                     kind: GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
+                    range: { start: snvStart >= 0 ? snvStart : 0, end: (snvStart >= 0 ? snvStart : 0) + snvName.length },
                     line: i,
                     filePath,
                     module: currentModule,
@@ -235,10 +239,12 @@ export class GPLParser {
             if (sharedVariableMatch) {
                 const isConstant = !!sharedVariableMatch[2];
                 const value = extractInitializer();
+                const svName = sharedVariableMatch[3];
+                const svStart = line.indexOf(svName);
                 symbols.push({
-                    name: sharedVariableMatch[3],
+                    name: svName,
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
+                    range: { start: svStart >= 0 ? svStart : 0, end: (svStart >= 0 ? svStart : 0) + svName.length },
                     line: i,
                     filePath,
                     module: currentModule,
@@ -254,10 +260,12 @@ export class GPLParser {
             const newVariableMatch = trimmedLine.match(/^(Private|Public|Dim)\s+(\w+)\s+As\s+New\s+(\w+)/i);
             if (newVariableMatch) {
                 const value = extractInitializer();
+                const nvName = newVariableMatch[2];
+                const nvStart = line.indexOf(nvName);
                 symbols.push({
-                    name: newVariableMatch[2],
+                    name: nvName,
                     kind: GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
+                    range: { start: nvStart >= 0 ? nvStart : 0, end: (nvStart >= 0 ? nvStart : 0) + nvName.length },
                     line: i,
                     filePath,
                     module: currentModule,
@@ -273,10 +281,12 @@ export class GPLParser {
             if (variableMatch) {
                 const isConstant = !!variableMatch[2];
                 const value = extractInitializer();
+                const vName = variableMatch[3];
+                const vStart = line.indexOf(vName);
                 symbols.push({
-                    name: variableMatch[3],
+                    name: vName,
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
+                    range: { start: vStart >= 0 ? vStart : 0, end: (vStart >= 0 ? vStart : 0) + vName.length },
                     line: i,
                     filePath,
                     module: currentModule,
@@ -290,10 +300,12 @@ export class GPLParser {
             // Parse array variable (e.g., "Dim kvs(100) As KeyValue")
             const arrayMatch = trimmedLine.match(/^(Private|Public|Dim)\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
             if (arrayMatch) {
+                const aName = arrayMatch[2];
+                const aStart = line.indexOf(aName);
                 symbols.push({
-                    name: arrayMatch[2],
+                    name: aName,
                     kind: GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
+                    range: { start: aStart >= 0 ? aStart : 0, end: (aStart >= 0 ? aStart : 0) + aName.length },
                     line: i,
                     filePath,
                     module: currentModule,
@@ -306,10 +318,12 @@ export class GPLParser {
             // Parse Type definition
             const typeMatch = trimmedLine.match(/^(Public\s+)?Type\s+(\w+)/i);
             if (typeMatch) {
+                const tName = typeMatch[2];
+                const tStart = line.indexOf(tName);
                 symbols.push({
-                    name: typeMatch[2],
+                    name: tName,
                     kind: GPLSymbolKind.Class, // Use Class kind for Type definitions
-                    range: { start: 0, end: line.length },
+                    range: { start: tStart >= 0 ? tStart : 0, end: (tStart >= 0 ? tStart : 0) + tName.length },
                     line: i,
                     filePath,
                     module: currentModule

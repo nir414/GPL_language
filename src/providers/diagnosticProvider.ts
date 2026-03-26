@@ -9,10 +9,6 @@ export class GPLDiagnosticProvider {
     }
 
     public updateDiagnostics(document: vscode.TextDocument): void {
-        if (document.languageId !== 'gpl') {
-            return;
-        }
-
         const diagnostics: vscode.Diagnostic[] = [];
         
         // VB.NET 호환성 검사
@@ -22,10 +18,6 @@ export class GPLDiagnosticProvider {
     }
 
     public scheduleDiagnostics(document: vscode.TextDocument, delayMs: number = 500): void {
-        if (document.languageId !== 'gpl') {
-            return;
-        }
-
         const key = document.uri.toString();
         const existing = this.pendingTimers.get(key);
         if (existing) {

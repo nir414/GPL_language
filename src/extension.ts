@@ -3,7 +3,6 @@ import { SymbolCache } from './symbolCache';
 import { GPLDefinitionProvider } from './providers/definitionProvider';
 import { GPLReferenceProvider } from './providers/referenceProvider';
 import { GPLCompletionProvider } from './providers/completionProvider';
-import { GPLDocumentSymbolProvider } from './providers/documentSymbolProvider';
 import { GPLWorkspaceSymbolProvider } from './providers/workspaceSymbolProvider';
 import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
 import { GPLDiagnosticProvider } from './providers/diagnosticProvider';
@@ -79,14 +78,6 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.languages.registerHoverProvider(
             GPL_MODE,
             new GPLHoverProvider(symbolCache, outputChannel)
-        )
-    );
-
-    // Register Document Symbol Provider
-    context.subscriptions.push(
-        vscode.languages.registerDocumentSymbolProvider(
-            GPL_MODE,
-            new GPLDocumentSymbolProvider()
         )
     );
 
@@ -251,7 +242,8 @@ export async function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(`[GPL Extension] Activation completed in ${totalTime}ms`);
     }
 
-    outputChannel.appendLine(`GPL Language Support v0.2.12 activated`);
+    const extVersion = vscode.extensions.getExtension('nir414.gpl-language-support')?.packageJSON?.version ?? 'unknown';
+    outputChannel.appendLine(`GPL Language Support v${extVersion} activated`);
 }
 
 export function deactivate() {

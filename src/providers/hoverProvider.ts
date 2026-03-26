@@ -4,7 +4,7 @@ import { GPLParser, GPLSymbolKind } from '../gplParser';
 import { isTraceVerbose } from '../config';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
-    private static readonly PROVIDER_VERSION = '0.2.14';
+    private static readonly PROVIDER_VERSION = '0.2.17';
 
     constructor(
         private symbolCache: SymbolCache,

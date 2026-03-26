@@ -206,7 +206,7 @@ export class GPLParser {
 
             // Parse Sub: token-based parsing to support any keyword order
             const subMatch = trimmedLine.match(/\bSub\s+(\w+)\s*\(([^)]*)\)/i);
-            if (subMatch && trimmedLine.match(/^\s*(Public|Private|Shared|\s)+Sub\b/i)) {
+            if (subMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Shared)\b\s+)*Sub\b/i)) {
                 const name = subMatch[1];
                 const params = subMatch[2] ? subMatch[2].split(',').map(p => p.trim()) : [];
                 const startIndex = line.indexOf(name);

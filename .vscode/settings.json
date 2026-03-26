@@ -1,6 +1,7 @@
 {
   "files.associations": {
-    "*.gpl": "gpl"
+    "*.gpl": "gpl",
+    "*.gpo": "gpl"
   },
   "gpl.trace.server": "verbose",
   "files.exclude": {

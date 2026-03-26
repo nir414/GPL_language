@@ -2,11 +2,11 @@ import * as vscode from 'vscode';
 import { GPLDefinitionProvider } from './providers/definitionProvider';
 import { GPLReferenceProvider } from './providers/referenceProvider';
 import { GPLCompletionProvider } from './providers/completionProvider';
-import { GPLDocumentSymbolProvider } from './providers/documentSymbolProvider';
 import { GPLWorkspaceSymbolProvider } from './providers/workspaceSymbolProvider';
 import { GPLDiagnosticProvider } from './providers/diagnosticProvider';
 import { GPLCodeActionProvider } from './providers/codeActionProvider';
 import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
+import { GPLHoverProvider } from './providers/hoverProvider';
 import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn } from './config';
 
@@ -79,11 +79,11 @@ export function activate(context: vscode.ExtensionContext) {
         )
     );
 
-    // Document symbol provider (Outline view)
+    // Hover provider (Const value display)
     context.subscriptions.push(
-        vscode.languages.registerDocumentSymbolProvider(
+        vscode.languages.registerHoverProvider(
             gplSelectors,
-            new GPLDocumentSymbolProvider()
+            new GPLHoverProvider(symbolCache, outputChannel)
         )
     );
 
@@ -159,44 +159,6 @@ export function activate(context: vscode.ExtensionContext) {
             
             outputChannel.show();
             vscode.window.showInformationMessage('Symbol cache debug info written to output channel');
-        })
-    );
-
-    // XML 베스트 프랙티스 보기 명령
-    context.subscriptions.push(
-        vscode.commands.registerCommand('gpl.showXmlBestPractices', () => {
-            const panel = vscode.window.createWebviewPanel(
-                'gplXmlBestPractices',
-                'GPL XML 베스트 프랙티스',
-                vscode.ViewColumn.Two,
-                {}
-            );
-
-            // Load HTML from media/ instead of hardcoding a huge template string in TS.
-            // This improves maintainability and keeps src/ focused on logic.
-            loadXmlBestPracticesHtml(context)
-                .then(html => {
-                    panel.webview.html = html;
-                })
-                .catch(err => {
-                    outputChannel.appendLine(`[Webview] Failed to load xmlBestPractices.html: ${err}`);
-                    panel.webview.html = getXmlBestPracticesFallbackHtml();
-                });
-        })
-    );
-
-    // XML 인코딩 분석 명령
-    context.subscriptions.push(
-        vscode.commands.registerCommand('gpl.analyzeXmlEncoding', () => {
-            const activeEditor = vscode.window.activeTextEditor;
-            if (!activeEditor || !isGplDocument(activeEditor.document)) {
-                vscode.window.showWarningMessage('GPL 파일에서만 XML 분석이 가능합니다.');
-                return;
-            }
-
-            // 현재 문서의 진단 업데이트
-            diagnosticProvider.updateDiagnostics(activeEditor.document);
-            vscode.window.showInformationMessage('XML 인코딩 분석이 완료되었습니다. 문제점을 확인하세요.');
         })
     );
 
@@ -288,41 +250,4 @@ export function logMessage(message: string) {
     if (outputChannel) {
         outputChannel.appendLine(message);
     }
-}
-
-/**
- * XML 베스트 프랙티스 HTML 로드
- */
-async function loadXmlBestPracticesHtml(context: vscode.ExtensionContext): Promise<string> {
-    try {
-        const uri = vscode.Uri.joinPath(context.extensionUri, 'media', 'xmlBestPractices.html');
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        return Buffer.from(bytes).toString('utf8');
-    } catch (error) {
-        if (outputChannel) {
-            const message =
-                'Failed to load media/xmlBestPractices.html; falling back to inline XML best practices HTML.'
-                + (error instanceof Error && error.message ? ` Reason: ${error.message}` : '');
-            outputChannel.appendLine(message);
-        }
-        return getXmlBestPracticesFallbackHtml();
-    }
-}
-
-/**
- * 폴백 HTML (리소스 파일 로드 실패 시)
- */
-function getXmlBestPracticesFallbackHtml(): string {
-    return `<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GPL XML 베스트 프랙티스</title>
-</head>
-<body>
-    <h2>GPL XML 베스트 프랙티스</h2>
-    <p>가이드 파일을 로드하지 못했습니다. 확장 로그(Output: "GPL Language Support")를 확인하세요.</p>
-</body>
-</html>`;
 }

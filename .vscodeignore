@@ -1,0 +1,27 @@
+**/*.ts
+src/**
+.vscode/**
+.github/**
+.history/**
+
+# docs/ 는 개발 문서이므로 패키징에서 제외
+docs/**
+
+# build/packaging helpers (not needed at runtime)
+scripts/**
+dist/**
+
+.gitattributes
+
+.gitignore
+.vscodeignore
+
+node_modules/**
+out/**/*.map
+
+# webview/static assets
+# (media/** 는 포함되어야 함)
+
+*.vsix
+tsconfig.json
+package-lock.json

@@ -146,7 +146,7 @@ export class GPLParser {
 
             // Parse Function: token-based parsing to support any keyword order
             const functionMatch = trimmedLine.match(/\bFunction\s+(\w+)\s*\(([^)]*)\)(?:\s+As\s+(\w+))?/i);
-            if (functionMatch && trimmedLine.match(/^\s*(Public|Private|Shared|\s)+Function\b/i)) {
+            if (functionMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Friend|Shared)\s+)*Function\b/i)) {
                 const name = functionMatch[1];
                 const params = functionMatch[2] ? functionMatch[2].split(',').map(p => p.trim()) : [];
                 const returnType = functionMatch[3];

@@ -1,6 +1,6 @@
 # GPL Language Support
 
-현재 버전: **v0.2.10**  
+현재 버전: **v0.2.16**  
 GPL (Guidance Programming Language) 지원 VS Code 확장. 정의/참조 탐색, 자동완성, **VB.NET 호환성 체크**까지 제공합니다.
 
 ## 설치
@@ -134,7 +134,7 @@ npm run watch
 npm run package
 ```
 
-성공하면 `dist/` 폴더에 `gpl-language-support-v0.2.10.vsix` 같은 파일이 생성됩니다
+성공하면 `dist/` 폴더에 `gpl-language-support-v0.2.16.vsix` 같은 파일이 생성됩니다
 - `.gpl` 파일이 **Visual Basic(vb)** 으로 열릴 수 있습니다.
     - 진단(Diagnostics)이 안 뜬다면, 파일 우측 하단 언어 모드를 **GPL**로 바꿔서 확인해 보세요.
 
@@ -146,7 +146,16 @@ GPL Language Support 확장 개발에 이슈 리포트나 기여를 환영합니
 
 ### 변경사항
 
-#### v0.2.10 (현재)
+#### v0.2.16 (현재)
+- 주석 위치 확인 기능 추가: GPL/VB 주석을 식별하여 참조 제공 시 무시
+- 정의 제공자/기호 캐시 호출 가능 기호 검색 개선 및 로깅 추가
+- 지역 심볼 찾기 기능 (로컬 Dim/Const/Static 선언 검색)
+- 함수/서브 명명 규칙 검사 추가
+- Function/Sub 감지 패턴을 optional modifier 방식으로 개선
+- 크로스 플랫폼 호환성 수정 (path.basename 사용)
+- TypeScript strict 모드 빌드 설정 추가
+
+#### v0.2.10
 - 참조 검색 개선
   - Public 모듈 멤버(`Module ...`의 `Public Sub/Function`)의 **unqualified 호출**(`Foo()`)도 워크스페이스에서 탐색
   - 워크스페이스/폴더 폴백 스캔 대상에 `*.gpo` 포함

@@ -42,7 +42,7 @@ export class SymbolCache {
         const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
         this.symbols.set(document.uri.fsPath, symbols);
         
-        const fileName = document.uri.fsPath.split('\\').pop() || document.uri.fsPath;
+        const fileName = path.basename(document.uri.fsPath);
         this.log(`[SymbolCache] Updated ${fileName}: ${symbols.length} symbols`);
     }
 
@@ -53,7 +53,7 @@ export class SymbolCache {
     public removeFile(filePath: string): void {
         const deleted = this.deleteByFsPath(filePath);
         if (deleted) {
-            const fileName = filePath.split('\\').pop() || filePath;
+            const fileName = path.basename(filePath);
             this.log(`[SymbolCache] Removed ${fileName} from cache`);
         }
     }

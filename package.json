@@ -98,9 +98,9 @@
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
-        "compile": "echo \"Skipping TypeScript compilation (no tsconfig.json present).\"",
-        "watch": "echo \"Watch mode disabled (no tsconfig.json present).\"",
-        "package": "vsce package",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "package": "npm run compile && vsce package",
         "dev:cycle": "npm run package",
         "dev:install": "node -e \"console.error('dev:install is disabled to prevent opening new VS Code windows. Build VSIX with npm run dev:cycle, then install manually from Extensions > Install from VSIX.'); process.exit(1);\"",
         "dev:cycle:open": "node -e \"console.error('dev:cycle:open is disabled to prevent opening new VS Code windows. Use npm run dev:install only when explicit reinstall is needed.'); process.exit(1);\"",

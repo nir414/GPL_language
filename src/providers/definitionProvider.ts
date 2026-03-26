@@ -1,11 +1,10 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser } from '../gplParser';
+import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose } from '../config';
-import * as PATH from 'path';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
-    private static readonly PROVIDER_VERSION = '0.2.17';
+    private static readonly PROVIDER_VERSION = '0.2.16';
 
     constructor(
         private symbolCache: SymbolCache,
@@ -21,225 +20,242 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         }
     }
 
-    private stripComment(line: string): string {
-        const commentIndex = line.indexOf("'");
-        return commentIndex >= 0 ? line.slice(0, commentIndex) : line;
-    }
-
-    private isIdentifierLike(word: string): boolean {
-        return /^[A-Za-z_][A-Za-z0-9_]*$/.test(word);
-    }
-
-    private isGplFsPath(fsPath: string): boolean {
-        const lower = fsPath.toLowerCase();
-        return lower.endsWith('.gpl') || lower.endsWith('.gpo');
-    }
-
-    private async findDefinitionInOpenDocuments(word: string, currentFilePath: string): Promise<vscode.Location | undefined> {
-        // Useful when editing multiple GPL files without opening a workspace.
-        const docs = vscode.workspace.textDocuments
-            .filter(d => d.uri.scheme === 'file')
-            .filter(d => this.isGplFsPath(d.uri.fsPath))
-            .slice(0, 50);
-
-        for (const doc of docs) {
-            if (doc.uri.fsPath === currentFilePath) continue;
-            try {
-                const symbols = GPLParser.parseDocument(doc.getText(), doc.uri.fsPath);
-                const hit = symbols.find(s => s.name.toLowerCase() === word.toLowerCase());
-                if (hit) {
-                    this.log(`[OpenDoc Hit] ${word} -> ${doc.uri.fsPath}:${hit.line + 1} (${hit.kind})`);
-                    return new vscode.Location(doc.uri, new vscode.Position(hit.line, 0));
-                }
-            } catch (e) {
-                this.log(`[OpenDoc Scan Error] ${doc.uri.fsPath}: ${e}`);
-            }
+    private countCallArgumentsFromSuffix(afterWord: string): number | undefined {
+        // afterWord begins right after the identifier under cursor.
+        // We only handle the common pattern: Identifier( ... )
+        const s = afterWord.trimStart();
+        if (!s.startsWith('(')) {
+            return undefined;
         }
 
-        this.log(`[OpenDoc Miss] "${word}" not found in other open documents`);
-        return undefined;
-    }
-
-    private async findDefinitionInCurrentFolderFallback(word: string, currentFilePath: string): Promise<vscode.Location | undefined> {
-        // Non-recursive folder scan (like ReferenceProvider's last-resort fallback).
-        const currentDir = PATH.dirname(currentFilePath);
-        this.log(`[Folder Fallback] Scanning ${currentDir} for "${word}"`);
-
-        try {
-            const fs = await import('fs');
-            const entries = fs.readdirSync(currentDir);
-            const candidates = entries
-                .filter((f: string) => {
-                    const lower = f.toLowerCase();
-                    return lower.endsWith('.gpl') || lower.endsWith('.gpo');
-                })
-                .slice(0, 200);
-
-            this.log(`[Folder Fallback] Candidate files: ${candidates.length}`);
-
-            for (const file of candidates) {
-                const filePath = PATH.join(currentDir, file);
-                try {
-                    const uri = vscode.Uri.file(filePath);
-                    const doc = await vscode.workspace.openTextDocument(uri);
-                    const symbols = GPLParser.parseDocument(doc.getText(), doc.uri.fsPath);
-                    const hit = symbols.find(s => s.name.toLowerCase() === word.toLowerCase());
-                    if (hit) {
-                        this.log(`[Folder Hit] ${word} -> ${filePath}:${hit.line + 1} (${hit.kind})`);
-                        return new vscode.Location(uri, new vscode.Position(hit.line, 0));
-                    }
-                } catch (e) {
-                    this.log(`[Folder Scan Error] ${filePath}: ${e}`);
-                }
-            }
-        } catch (e) {
-            this.log(`[Folder Fallback Error] ${e}`);
-        }
-
-        this.log(`[Folder Miss] "${word}" not found in ${currentDir}`);
-        return undefined;
-    }
-
-    private findEnclosingProcedureStartLine(document: vscode.TextDocument, fromLine: number): number | undefined {
-        // Scan upwards to find the nearest containing Sub/Function/Property header.
-        // Use a simple depth counter to skip over any completed blocks below.
         let depth = 0;
-        for (let i = fromLine; i >= 0; i--) {
-            const raw = document.lineAt(i).text;
-            const line = this.stripComment(raw).trim();
-            if (!line) continue;
+        let inString = false;
+        let args = 0;
+        let sawAnyToken = false;
 
-            if (/^End\s+(Sub|Function|Property)\b/i.test(line)) {
-                depth++;
+        for (let i = 0; i < s.length; i++) {
+            const ch = s[i];
+
+            if (ch === '"') {
+                // Toggle string mode. GPL/VB style string escaping isn't handled here;
+                // this is good enough for typical single-line constructor calls.
+                inString = !inString;
+                sawAnyToken = true;
                 continue;
             }
 
-            // Allow any modifier order (Public/Private/Shared/ReadOnly/WriteOnly/etc.).
-            // Property header may include parentheses: Property Items() As Foo
-            const isProcHeader = /\b(Sub|Function|Property)\s+\w+\s*(\([^)]*\))?/i.test(line);
-            if (isProcHeader) {
-                if (depth === 0) {
-                    return i;
-                }
+            if (inString) {
+                continue;
+            }
+
+            if (ch === '(') {
+                depth++;
+                continue;
+            }
+            if (ch === ')') {
                 depth--;
+                if (depth === 0) {
+                    break;
+                }
+                continue;
+            }
+
+            if (depth === 1) {
+                if (ch === ',') {
+                    args++;
+                    continue;
+                }
+                if (!/\s/.test(ch)) {
+                    sawAnyToken = true;
+                }
             }
         }
-        return undefined;
-    }
 
-    private findProcedureEndLine(document: vscode.TextDocument, startLine: number): number | undefined {
-        for (let i = startLine + 1; i < document.lineCount; i++) {
-            const raw = document.lineAt(i).text;
-            const line = this.stripComment(raw).trim();
-            if (!line) continue;
-            if (/^End\s+(Sub|Function|Property)\b/i.test(line)) {
-                return i;
-            }
+        if (!sawAnyToken) {
+            return 0;
         }
-        return undefined;
+        return args + 1;
     }
 
-    private findLocalDefinition(
+    private getEnclosingProcedureRange(
         document: vscode.TextDocument,
-        position: vscode.Position,
-        word: string
+        atLine: number
+    ): { startLine: number; endLine: number } | undefined {
+        const total = document.lineCount;
+
+        // Find nearest procedure header above.
+        let headerLine = -1;
+        let headerKind: 'Sub' | 'Function' | 'Property' | undefined;
+
+        for (let i = atLine; i >= 0; i--) {
+            const text = document.lineAt(i).text;
+            const trimmed = text.trim();
+            if (trimmed.startsWith("'")) {
+                continue;
+            }
+
+            const m = trimmed.match(/^\s*(Public|Private|Shared|\s)*\b(Sub|Function|Property)\b/i);
+            if (m) {
+                headerLine = i;
+                headerKind = (m[2] as any) as 'Sub' | 'Function' | 'Property';
+                break;
+            }
+
+            // Stop if we hit a new type/module boundary before any header.
+            if (/^\s*(Module|Class)\b/i.test(trimmed)) {
+                break;
+            }
+        }
+
+        if (headerLine < 0 || !headerKind) {
+            return undefined;
+        }
+
+        // Find matching End <Kind>.
+        let endLine = headerLine;
+        const endRe = new RegExp(`^\\s*End\\s+${headerKind}\\b`, 'i');
+        for (let i = headerLine + 1; i < total; i++) {
+            const trimmed = document.lineAt(i).text.trim();
+            if (trimmed.startsWith("'")) {
+                continue;
+            }
+            if (endRe.test(trimmed)) {
+                endLine = i;
+                break;
+            }
+        }
+
+        return { startLine: headerLine, endLine };
+    }
+
+    private pickBestScopedCandidate(
+        candidates: GPLSymbol[],
+        document: vscode.TextDocument,
+        atLine: number
+    ): GPLSymbol | undefined {
+        if (candidates.length === 0) {
+            return undefined;
+        }
+
+        const proc = this.getEnclosingProcedureRange(document, atLine);
+        let scoped = candidates;
+
+        if (proc) {
+            const inProc = candidates.filter(c => c.line >= proc.startLine && c.line <= proc.endLine);
+            if (inProc.length > 0) {
+                scoped = inProc;
+            }
+        }
+
+        // Prefer definitions at or above the usage line; otherwise pick the closest below.
+        const above = scoped
+            .filter(c => c.line <= atLine)
+            .sort((a, b) => b.line - a.line);
+        if (above.length > 0) {
+            return above[0];
+        }
+
+        const below = scoped.sort((a, b) => a.line - b.line);
+        return below[0];
+    }
+
+    private findLocalSymbol(
+        document: vscode.TextDocument,
+        symbolName: string,
+        atLine: number
+    ): GPLSymbol | undefined {
+        try {
+            const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
+                includeLocals: true,
+                includeParameters: true
+            });
+
+            const candidates = localSymbols.filter(s => s.name === symbolName);
+            return this.pickBestScopedCandidate(candidates, document, atLine);
+        } catch (error) {
+            this.log(`[Local Parse Error - findLocalSymbol] ${error}`);
+            return undefined;
+        }
+    }
+
+    private findLocalDeclarationByText(
+        document: vscode.TextDocument,
+        symbolName: string,
+        atLine: number
     ): vscode.Location | undefined {
-        // Only attempt local resolution for identifier-like tokens.
-        if (!this.isIdentifierLike(word)) {
-            return undefined;
+        const proc = this.getEnclosingProcedureRange(document, atLine);
+        const scanStartLine = atLine;
+        const scanEndLine = proc ? proc.startLine : 0;
+
+        if (!proc) {
+            this.log(`[Local Text Fallback] procedure range not found. Expanding scan to file top.`);
         }
 
-        const startLine = this.findEnclosingProcedureStartLine(document, position.line);
-        if (startLine === undefined) {
-            this.log(`[Local Scope] No enclosing Sub/Function/Property found for "${word}" (line ${position.line + 1})`);
-            return undefined;
-        }
-        const endLine = this.findProcedureEndLine(document, startLine) ?? document.lineCount - 1;
+        const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const declPatterns = [
+            new RegExp(`^\\s*Const\\s+(${escaped})\\b`, 'i'),
+            new RegExp(`^\\s*(?:Dim|Static)\\s+(?:Const\\s+)?(${escaped})\\b`, 'i'),
+            new RegExp(`^\\s*(?:Public|Private)\\s+Dim\\s+(?:Const\\s+)?(${escaped})\\b`, 'i'),
+            new RegExp(`^\\s*(?:Public|Private)\\s+(?:Const\\s+)?(${escaped})\\b`, 'i')
+        ];
 
-        this.log(`[Local Scope] Searching "${word}" in procedure block: ${startLine + 1}..${endLine + 1}`);
+        for (let lineNo = scanStartLine; lineNo >= scanEndLine; lineNo--) {
+            const text = document.lineAt(lineNo).text;
+            const trimmed = text.trim();
+            if (!trimmed || trimmed.startsWith("'")) {
+                continue;
+            }
 
-        // 1) Parameters in the procedure signature
-        const headerRaw = document.lineAt(startLine).text;
-        const header = this.stripComment(headerRaw);
-        const open = header.indexOf('(');
-        const close = open >= 0 ? header.indexOf(')', open + 1) : -1;
-        if (open >= 0 && close > open) {
-            const paramText = header.slice(open + 1, close);
-            const parts = paramText.split(',').map(p => p.trim()).filter(Boolean);
-            for (const p of parts) {
-                // Common tokens: ByRef/ByVal/Optional/ParamArray
-                const cleaned = p.replace(/\b(ByRef|ByVal|Optional|ParamArray)\b/gi, ' ').trim();
-                const m = cleaned.match(/\b([A-Za-z_][A-Za-z0-9_]*)\b/);
-                if (m && m[1].toLowerCase() === word.toLowerCase()) {
-                    const idx = headerRaw.toLowerCase().indexOf(m[1].toLowerCase());
-                    if (idx >= 0) {
-                        return new vscode.Location(document.uri, new vscode.Position(startLine, idx));
-                    }
-                    return new vscode.Location(document.uri, new vscode.Position(startLine, 0));
+            for (const p of declPatterns) {
+                const m = p.exec(text);
+                if (!m) {
+                    continue;
                 }
+                const name = m[1] || symbolName;
+                const col = Math.max(0, text.toLowerCase().indexOf(name.toLowerCase()));
+                const pos = new vscode.Position(lineNo, col);
+                this.log(`[Local Text Fallback] Found "${symbolName}" @ line ${lineNo + 1}`);
+                return new vscode.Location(document.uri, new vscode.Range(pos, pos));
             }
         }
 
-        // 2) Local definitions inside the procedure up to the current position
-        // Prefer the closest preceding definition (simple shadowing support).
-        let bestLine: number | undefined;
-        let bestChar: number | undefined;
-        const maxScanLine = Math.min(position.line, endLine);
-        for (let i = startLine + 1; i <= maxScanLine; i++) {
-            const raw = document.lineAt(i).text;
-            const lineNoComment = this.stripComment(raw);
-            const trimmed = lineNoComment.trim();
-            if (!trimmed) continue;
-
-            // Dim/Const declarations (supports multiple vars per line: Dim a As Integer, b As String)
-            const dimMatch = trimmed.match(/^Dim\s+(.+)$/i);
-            const constMatch = trimmed.match(/^Const\s+(.+)$/i);
-            const declTail = dimMatch?.[1] ?? constMatch?.[1];
-            if (declTail) {
-                const declParts = declTail.split(',').map(p => p.trim()).filter(Boolean);
-                for (const decl of declParts) {
-                    const m = decl.match(/^([A-Za-z_][A-Za-z0-9_]*)\b/);
-                    if (m && m[1].toLowerCase() === word.toLowerCase()) {
-                        const idx = raw.toLowerCase().indexOf(m[1].toLowerCase());
-                        if (idx >= 0) {
-                            bestLine = i;
-                            bestChar = idx;
-                        } else {
-                            bestLine = i;
-                            bestChar = 0;
-                        }
-                    }
-                }
-            }
-
-            // For / For Each loop variables
-            const forEachMatch = trimmed.match(/^For\s+Each\s+([A-Za-z_][A-Za-z0-9_]*)\b/i);
-            if (forEachMatch && forEachMatch[1].toLowerCase() === word.toLowerCase()) {
-                const idx = raw.toLowerCase().indexOf(forEachMatch[1].toLowerCase());
-                bestLine = i;
-                bestChar = idx >= 0 ? idx : 0;
-            }
-            const forMatch = trimmed.match(/^For\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/i);
-            if (forMatch && forMatch[1].toLowerCase() === word.toLowerCase()) {
-                const idx = raw.toLowerCase().indexOf(forMatch[1].toLowerCase());
-                bestLine = i;
-                bestChar = idx >= 0 ? idx : 0;
-            }
-
-            // Catch variable: Catch ex
-            const catchMatch = trimmed.match(/^Catch\s+([A-Za-z_][A-Za-z0-9_]*)\b/i);
-            if (catchMatch && catchMatch[1].toLowerCase() === word.toLowerCase()) {
-                const idx = raw.toLowerCase().indexOf(catchMatch[1].toLowerCase());
-                bestLine = i;
-                bestChar = idx >= 0 ? idx : 0;
-            }
-        }
-
-        if (bestLine !== undefined) {
-            return new vscode.Location(document.uri, new vscode.Position(bestLine, bestChar ?? 0));
-        }
+        this.log(`[Local Text Fallback] "${symbolName}" not found in text scan range (${scanEndLine + 1}..${scanStartLine + 1})`);
 
         return undefined;
+    }
+
+    private formatCandidate(symbol: GPLSymbol): string {
+        const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;
+        const paramCount = symbol.parameters ? symbol.parameters.length : 0;
+        return `${symbol.name} [${symbol.kind}] params=${paramCount} file=${fileName} line=${symbol.line + 1} class=${symbol.className || 'N/A'} module=${symbol.module || 'N/A'}`;
+    }
+
+    private extractBaseObjectName(expression: string): string | undefined {
+        // Extract the base object name from complex expressions
+        // Examples:
+        //   "myRobot(index)" → "myRobot"
+        //   "myRobot(index)(subIndex)" → "myRobot"
+        //   "obj.prop" → "obj"
+        //   "array[0]" → "array"
+        const match = expression.match(/^([a-zA-Z_]\w*)/);
+        return match ? match[1] : undefined;
+    }
+
+    private buildLocation(symbol: GPLSymbol): vscode.Location {
+        const uri = vscode.Uri.file(symbol.filePath);
+        const definitionPosition = new vscode.Position(symbol.line, 0);
+        const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
+        return new vscode.Location(uri, definitionRange);
+    }
+
+    private logMemberCandidates(context: string, candidates: GPLSymbol[], argCount?: number): void {
+        const argText = typeof argCount === 'number' ? String(argCount) : 'N/A';
+        this.log(`[Candidates:${context}] count=${candidates.length} | callArgCount=${argText}`);
+        if (candidates.length > 0) {
+            for (const c of candidates) {
+                this.log(`  - ${this.formatCandidate(c)}`);
+            }
+        }
     }
 
     async provideDefinition(
@@ -254,167 +270,227 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
         const word = document.getText(wordRange);
         const line = document.lineAt(position.line).text;
-
-        const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+        const afterWord = line.substring(wordRange.end.character);
+        const callArgCount = this.countCallArgumentsFromSuffix(afterWord);
+        
         this.log(`\n[Definition Request] v${GPLDefinitionProvider.PROVIDER_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
-        this.log(`[Context] file=${document.uri.fsPath} | inWorkspace=${wsFolder ? 'YES' : 'NO'}`);
+        this.log(`[Call Context] afterWord="${afterWord.trim()}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
 
-        // Skip numeric literals (e.g. 0, 1, 100, 3.14) - they are not symbols
-        if (/^\d+(\.\d+)?$/.test(word)) {
-            this.log(`[Skip] Numeric literal "${word}"`);
-            return undefined;
+        // Special case: constructor call.
+        // Detect "New ClassName(...)" whether cursor is on "New" keyword or on "ClassName".
+        // Examples:
+        // - Dim x As New TcpCommunication("", "1400")
+        // - Set x = New TcpCommunication("", "1400")
+        // - New TcpCommunication(...)
+        let constructorClassName: string | undefined;
+        let constructorArgCount: number | undefined;
+
+        if (/^New$/i.test(word)) {
+            // Cursor is on the "New" keyword — extract class name from what follows
+            const m = afterWord.match(/^\s+(\w+)\s*(\(.*)/s);
+            if (m) {
+                constructorClassName = m[1];
+                constructorArgCount = this.countCallArgumentsFromSuffix(m[2]);
+            }
+        } else {
+            // Cursor on a word — check if preceded by "New"
+            const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const ctorRegex = new RegExp(`\\b(?:As\\s+)?New\\s+${escapedWord}\\s*\\(`, 'i');
+            if (ctorRegex.test(line)) {
+                constructorClassName = word;
+                constructorArgCount = this.countCallArgumentsFromSuffix(afterWord);
+            }
         }
 
-        // Special case: constructor call
-        const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const ctorRegex = new RegExp(`\\b(?:As\\s+)?New\\s+${escapedWord}\\s*\\(`, 'i');
-        if (ctorRegex.test(line)) {
-            this.log(`[Constructor Call] Detected "New ${word}"`);
+        if (constructorClassName) {
+            this.log(`[Constructor Call] Detected "New ${constructorClassName}". Resolving constructor "Sub New" in class ${constructorClassName}`);
+            this.log(`[Constructor Call Context] class=${constructorClassName} | ctorArgCount=${typeof constructorArgCount === 'number' ? constructorArgCount : 'N/A'}`);
 
-            const ctorSymbol = this.symbolCache.findMemberInClass('New', word, document.uri.fsPath);
+            // Try cache-based constructor lookup
+            const ctorCandidates = this.symbolCache.findMemberCandidatesInClass('New', constructorClassName);
+            this.logMemberCandidates(`Ctor:${constructorClassName}.New`, ctorCandidates, constructorArgCount);
+
+            const ctorSymbol = this.symbolCache.findConstructorInClass(constructorClassName, constructorArgCount, document.uri.fsPath);
             if (ctorSymbol) {
-                this.log(`[Constructor Found] New in class ${word} @line ${ctorSymbol.line + 1}`);
+                const fileName = ctorSymbol.filePath.split('\\').pop() || ctorSymbol.filePath;
+                this.log(`[Constructor Found] New in class ${constructorClassName}`);
+                this.log(`[Location] File: ${fileName} | Line: ${ctorSymbol.line + 1} | ClassName: ${ctorSymbol.className || 'N/A'}`);
+
                 const uri = vscode.Uri.file(ctorSymbol.filePath);
                 const definitionPosition = new vscode.Position(ctorSymbol.line, 0);
-                return new vscode.Location(uri, definitionPosition);
+                const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
+                return new vscode.Location(uri, definitionRange);
             }
 
-            // Fallback: parse current document
+            // As a fallback, parse the current document on demand.
             try {
                 const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                const localCtor = localSymbols.find(s => s.name === 'New' && s.className === word);
+                const localCtor = localSymbols.find(s => s.name === 'New' && s.className === constructorClassName);
                 if (localCtor) {
-                    this.log(`[Constructor Found - Local] @line ${localCtor.line + 1}`);
-                    return new vscode.Location(document.uri, new vscode.Position(localCtor.line, 0));
+                    this.log(`[Constructor Found - Local] New in class ${constructorClassName} @line ${localCtor.line + 1}`);
+                    const definitionPosition = new vscode.Position(localCtor.line, Math.max(0, localCtor.range?.start ?? 0));
+                    const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
+                    return new vscode.Location(document.uri, definitionRange);
                 }
             } catch (error) {
                 this.log(`[Constructor Local Parse Error] ${error}`);
             }
 
-            // Additional fallback: parse class file
+            // Additional fallback: parse the class-definition file directly (cache may be stale)
             try {
-                const classDef = this.symbolCache.findDefinition(word, document.uri.fsPath);
+                const classDef = this.symbolCache.findDefinition(constructorClassName, document.uri.fsPath);
                 if (classDef && classDef.kind === 'class') {
                     const classDoc = await vscode.workspace.openTextDocument(classDef.filePath);
                     const classSymbols = GPLParser.parseDocument(classDoc.getText(), classDef.filePath);
-                    const fileCtor = classSymbols.find(s => s.name === 'New' && s.className === word);
+                    const fileCtor = classSymbols.find(s => s.name === 'New' && s.className === constructorClassName);
                     if (fileCtor) {
-                        this.log(`[Constructor Found - ClassFile] @line ${fileCtor.line + 1}`);
-                        return new vscode.Location(vscode.Uri.file(fileCtor.filePath), new vscode.Position(fileCtor.line, 0));
+                        const fileName = fileCtor.filePath.split('\\').pop() || fileCtor.filePath;
+                        this.log(`[Constructor Found - ClassFile] New in class ${constructorClassName} @line ${fileCtor.line + 1}`);
+                        const definitionPosition = new vscode.Position(fileCtor.line, Math.max(0, fileCtor.range?.start ?? 0));
+                        const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
+                        return new vscode.Location(vscode.Uri.file(fileCtor.filePath), definitionRange);
                     }
                 }
             } catch (error) {
                 this.log(`[Constructor ClassFile Parse Error] ${error}`);
             }
 
-            this.log(`[Constructor NOT Found] for class ${word}`);
+            this.log(`[Constructor NOT Found] Sub New not found for class ${constructorClassName}`);
+            // Continue with other resolution paths
         }
         
-        // Check member access (objectName.memberName)
+        // Check if there's a dot before the current word (member access)
+        // Look for pattern: objectExpression.memberName where cursor is on memberName
+        // Handles: obj.member, myRobot(index).member, array[0].member, etc.
         const beforeWord = line.substring(0, wordRange.start.character).trimEnd();
-        const dotMatch = beforeWord.match(/(\w+)\s*\.$/);
-        
-        if (dotMatch) {
-            const objectName = dotMatch[1];
+        const lastDotIndex = beforeWord.lastIndexOf('.');
+
+        if (lastDotIndex !== -1) {
+            // Extract everything before the last dot
+            const objectExpression = beforeWord.substring(0, lastDotIndex).trim();
+            const baseObjectName = this.extractBaseObjectName(objectExpression);
             const memberName = word;
-            
-            this.log(`[Member Access] Object: "${objectName}" | Member: "${memberName}"`);
-            
-            const objectSymbol = this.symbolCache.findDefinition(objectName, document.uri.fsPath);
-            
-            if (objectSymbol) {
-                this.log(`[Object Found] Name: ${objectSymbol.name} | Type: ${objectSymbol.returnType || 'N/A'} | Kind: ${objectSymbol.kind}`);
-                
-                if (objectSymbol.kind === 'module') {
-                    this.log(`[Branch] Module member resolution`);
-                    const memberSymbol = this.symbolCache.findMemberInModule(memberName, objectSymbol.name, document.uri.fsPath);
-                    
-                    if (memberSymbol) {
-                        this.log(`[Module Member Found] ${memberName} @line ${memberSymbol.line + 1}`);
-                        const uri = vscode.Uri.file(memberSymbol.filePath);
-                        return new vscode.Location(uri, new vscode.Position(memberSymbol.line, 0));
+
+            this.log(`[Member Access] Expression: "${objectExpression}" | Base: "${baseObjectName}" | Member: "${memberName}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
+
+            if (!baseObjectName) {
+                this.log(`[Member Access] Failed to extract base object name from "${objectExpression}"`);
+            } else {
+                // Find the variable/object definition to get its type
+                const objectSymbol =
+                    this.symbolCache.findDefinition(baseObjectName, document.uri.fsPath) ??
+                    this.findLocalSymbol(document, baseObjectName, position.line);
+
+                if (objectSymbol) {
+                    this.log(`[Object Found] Name: ${objectSymbol.name} | Type: ${objectSymbol.returnType || 'N/A'} | Kind: ${objectSymbol.kind}`);
+
+                    if (objectSymbol.kind === 'module') {
+                        this.log(`[Resolution Path] Module.Member → searching "${memberName}" in module "${objectSymbol.name}"`);
+                        // Module.Member access - search in module
+                        const moduleCandidates = this.symbolCache.findMemberCandidatesInModule(memberName, objectSymbol.name);
+                        this.logMemberCandidates(`Module:${objectSymbol.name}.${memberName}`, moduleCandidates, callArgCount);
+
+                        const memberSymbol = this.symbolCache.findMemberInModule(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
+
+                        if (memberSymbol) {
+                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            this.log(`[Member Found] ${memberName} in module ${objectSymbol.name}`);
+                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
+                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1}`);
+                            return this.buildLocation(memberSymbol);
+                        } else {
+                            this.log(`[Member NOT Found] "${memberName}" in module "${objectSymbol.name}"`);
+                        }
+                    } else if (objectSymbol.kind === 'class') {
+                        // Static access: ClassName.Member
+                        this.log(`[Resolution Path] ClassName.Member → static member "${memberName}" in class "${objectSymbol.name}"`);
+
+                        const classCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, objectSymbol.name);
+                        this.logMemberCandidates(`ClassStatic:${objectSymbol.name}.${memberName}`, classCandidates, callArgCount);
+
+                        const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
+                        if (memberSymbol) {
+                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            this.log(`[Member Found] ${memberName} in class ${objectSymbol.name}`);
+                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
+                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
+                            return this.buildLocation(memberSymbol);
+                        } else {
+                            this.log(`[Member NOT Found] "${memberName}" in class "${objectSymbol.name}"`);
+                        }
+                    } else if (objectSymbol.returnType) {
+                        // Class instance.Member access - search in class
+                        // This handles: Dim obj As MyClass; obj.member
+                        // Also: Dim arr(...) As MyClass; arr(index).member
+                        // Strip array suffix "[]" so "RNDRobot[]" → "RNDRobot"
+                        const resolvedType = objectSymbol.returnType.replace(/\[\]$/, '');
+                        this.log(`[Resolution Path] ClassInstance.Member → instance of class "${resolvedType}" | searching "${memberName}"`);
+                        this.log(`[Type Resolution] Variable "${baseObjectName}" has type "${objectSymbol.returnType}"${resolvedType !== objectSymbol.returnType ? ` → stripped to "${resolvedType}"` : ''}`);
+
+                        const instanceCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, resolvedType);
+                        this.logMemberCandidates(`ClassInstance:${resolvedType}.${memberName}`, instanceCandidates, callArgCount);
+
+                        const memberSymbol = this.symbolCache.findMemberInClass(memberName, resolvedType, document.uri.fsPath, callArgCount);
+
+                        if (memberSymbol) {
+                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            this.log(`[Member Found] ${memberName} in class ${resolvedType}`);
+                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
+                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
+                            return this.buildLocation(memberSymbol);
+                        } else {
+                            this.log(`[Member NOT Found] "${memberName}" in class "${resolvedType}"`);
+                        }
                     } else {
-                        this.log(`[Module Member NOT Found] "${memberName}" in module "${objectSymbol.name}"`);
-                    }
-                } else if (objectSymbol.kind === 'class') {
-                    this.log(`[Branch] Class static member resolution`);
-                    const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.name, document.uri.fsPath);
-                    
-                    if (memberSymbol) {
-                        this.log(`[Member Found] ${memberName} @line ${memberSymbol.line + 1}`);
-                        const uri = vscode.Uri.file(memberSymbol.filePath);
-                        return new vscode.Location(uri, new vscode.Position(memberSymbol.line, 0));
-                    } else {
-                        this.log(`[Member NOT Found] "${memberName}" in class "${objectSymbol.name}"`);
-                    }
-                } else if (objectSymbol.returnType) {
-                    this.log(`[Branch] Instance member resolution (type: ${objectSymbol.returnType})`);
-                    const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.returnType, document.uri.fsPath);
-                    
-                    if (memberSymbol) {
-                        this.log(`[Member Found] ${memberName} @line ${memberSymbol.line + 1}`);
-                        const uri = vscode.Uri.file(memberSymbol.filePath);
-                        return new vscode.Location(uri, new vscode.Position(memberSymbol.line, 0));
-                    } else {
-                        this.log(`[Member NOT Found] "${memberName}" in class "${objectSymbol.returnType}"`);
+                        this.log(`[No Type Info] Object "${baseObjectName}" has no returnType and is not a class/module. Cannot resolve member access.`);
                     }
                 } else {
-                    this.log(`[No Type Info] Object "${objectName}" has no returnType`);
+                    this.log(`[Object NOT Found] "${baseObjectName}" not found in cache or local scope`);
                 }
-            } else {
-                this.log(`[Object NOT Found] "${objectName}"`);
             }
         }
 
-        // Scope-aware local resolution (procedure parameters / local variables)
-        const local = this.findLocalDefinition(document, position, word);
-        if (local) {
-            this.log(`[Local Scope] Resolved "${word}" within enclosing procedure`);
-            return local;
-        }
-
-        // Fallback: regular definition search
-        this.log(`[Fallback Search] Looking for "${word}"`);
+        // Fallback to regular definition search (when member access path didn't find anything)
+        this.log(`[Fallback Search] Member access resolution did not return. Looking for simple definition of "${word}"`);
         const symbol = this.symbolCache.findDefinition(word, document.uri.fsPath);
 
         if (!symbol) {
-            this.log(`[Cache Miss] Symbol "${word}" not found. Trying local parse...`);
+            // As a safety net, parse the current document on-demand.
+            // This prevents "Not Found" when the cache is stale (e.g., files copied/created after initial indexing,
+            // or when VS Code treats *.gpl as 'vb' and cache updates were missed).
+            this.log(`[Cache Miss] Symbol "${word}" not found in cache. Trying local parse fallback...`);
 
-            try {
-                const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                const local = localSymbols.find(s => s.name.toLowerCase() === word.toLowerCase());
+            const local = this.findLocalSymbol(document, word, position.line);
 
-                if (!local) {
-                    this.log(`[Local Parse Miss] "${word}" not found in current document`);
-
-                    const openHit = await this.findDefinitionInOpenDocuments(word, document.uri.fsPath);
-                    if (openHit) {
-                        return openHit;
-                    }
-
-                    // Only do folder fallback when the file isn't part of a workspace.
-                    if (!wsFolder) {
-                        const folderHit = await this.findDefinitionInCurrentFolderFallback(word, document.uri.fsPath);
-                        if (folderHit) {
-                            return folderHit;
-                        }
-                    }
-
-                    this.log(`[Not Found] Symbol "${word}" (cache + local + openDocs${wsFolder ? '' : ' + folder'})`);
-                    return undefined;
+            if (!local) {
+                const textLocal = this.findLocalDeclarationByText(document, word, position.line);
+                if (textLocal) {
+                    return textLocal;
                 }
 
-                this.log(`[Local Symbol Found] ${local.name} | Line: ${local.line + 1} | Kind: ${local.kind}`);
-                return new vscode.Location(document.uri, new vscode.Position(local.line, 0));
-            } catch (error) {
-                this.log(`[Local Parse Error] ${error}`);
-                return undefined;
+                // Try a non-local parse (still useful for stale cache and top-level consts/classes)
+                try {
+                    const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+                    const any = localSymbols.find(s => s.name === word);
+                    if (!any) {
+                        this.log(`[Not Found] Symbol "${word}" not found (cache + scoped local parse)`);
+                        return undefined;
+                    }
+
+                    this.log(`[Local Symbol Found - NonLocalParse] ${any.name} | Line: ${any.line + 1} | Kind: ${any.kind} | ClassName: ${any.className || 'N/A'}`);
+                    return this.buildLocation(any);
+                } catch (error) {
+                    this.log(`[Local Parse Error] ${error}`);
+                    return undefined;
+                }
             }
+
+            this.log(`[Local Symbol Found] ${local.name} | Line: ${local.line + 1} | Kind: ${local.kind} | Local: ${local.isLocal ? 'yes' : 'no'} | ClassName: ${local.className || 'N/A'}`);
+            return this.buildLocation(local);
         }
 
-        this.log(`[Symbol Found] ${symbol.name} | Line: ${symbol.line + 1}`);
-        
-        const uri = vscode.Uri.file(symbol.filePath);
-        return new vscode.Location(uri, new vscode.Position(symbol.line, 0));
+        const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;
+        this.log(`[Symbol Found] ${symbol.name} | File: ${fileName} | Line: ${symbol.line + 1} | ClassName: ${symbol.className || 'N/A'}`);
+        return this.buildLocation(symbol);
     }
 }

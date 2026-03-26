@@ -1,265 +1,253 @@
 import * as vscode from 'vscode';
-import { SymbolCache } from './symbolCache';
 import { GPLDefinitionProvider } from './providers/definitionProvider';
 import { GPLReferenceProvider } from './providers/referenceProvider';
 import { GPLCompletionProvider } from './providers/completionProvider';
 import { GPLWorkspaceSymbolProvider } from './providers/workspaceSymbolProvider';
-import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
 import { GPLDiagnosticProvider } from './providers/diagnosticProvider';
 import { GPLCodeActionProvider } from './providers/codeActionProvider';
+import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
 import { GPLHoverProvider } from './providers/hoverProvider';
-import { isTraceOn } from './config';
+import { SymbolCache } from './symbolCache';
+import { getTraceServerLevel, isTraceOn } from './config';
 
-const GPL_MODE: vscode.DocumentFilter[] = [
-    { language: 'gpl', scheme: 'file', pattern: '**/*.gpl' },
-    { language: 'vb', scheme: 'file', pattern: '**/*.gpl' },
-    { scheme: 'file', pattern: '**/*.gpl' },
-    { language: 'gpl', scheme: 'file', pattern: '**/*.gpo' },
-    { language: 'vb', scheme: 'file', pattern: '**/*.gpo' },
-    { scheme: 'file', pattern: '**/*.gpo' }
-];
-
-let symbolCache: SymbolCache;
+// Global output channel for GPL extension logging
 let outputChannel: vscode.OutputChannel;
-let diagnosticProvider: GPLDiagnosticProvider;
 
-export async function activate(context: vscode.ExtensionContext) {
-    const startTime = Date.now();
-    
-    // Create output channel
+function isGplDocument(document: vscode.TextDocument | undefined): document is vscode.TextDocument {
+    if (!document) {
+        return false;
+    }
+
+    // This extension treats *.gpl (and some projects' *.gpo) files as VB/GPL-like for basic language features.
+    // Therefore, languageId can be 'vb' and must not be used as the sole discriminator.
+    const fsPath = document.uri.fsPath.toLowerCase();
+    return document.uri.scheme === 'file' && (fsPath.endsWith('.gpl') || fsPath.endsWith('.gpo'));
+}
+
+export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('GPL Language Support');
     context.subscriptions.push(outputChannel);
 
+    const thisExtension = vscode.extensions.all.find(ext => ext.extensionPath === context.extensionPath);
+    const extVersion = thisExtension?.packageJSON?.version ?? 'unknown';
+    outputChannel.appendLine(`GPL Language Support extension is now active! (v${extVersion})`);
+
+    // Debug/trace logging (workspace/user settings)
+    // - gpl.trace.server = off | messages | verbose
+    const traceLevel = getTraceServerLevel(vscode.workspace);
     if (isTraceOn(vscode.workspace)) {
-        outputChannel.appendLine(`[GPL Extension] Activation started...`);
+        outputChannel.appendLine(`[Trace] gpl.trace.server = ${traceLevel}`);
+        outputChannel.show(true);
     }
 
-    // Initialize Symbol Cache
-    symbolCache = new SymbolCache(outputChannel);
+    const symbolCache = new SymbolCache(outputChannel);
+    const diagnosticProvider = new GPLDiagnosticProvider();
     
-    if (isTraceOn(vscode.workspace)) {
-        outputChannel.appendLine(`[GPL Extension] Indexing workspace symbols...`);
-    }
+    // Register language providers
+    // .gpl 파일은 (권장) gpl 언어로 열고, 호환을 위해 vb로 열린 경우도 지원한다.
+    const gplSelectors: vscode.DocumentSelector = [
+        { language: 'gpl', scheme: 'file', pattern: '**/*.gpl' },
+        { language: 'vb', scheme: 'file', pattern: '**/*.gpl' },
+        { scheme: 'file', pattern: '**/*.gpl' },
+        { language: 'gpl', scheme: 'file', pattern: '**/*.gpo' },
+        { language: 'vb', scheme: 'file', pattern: '**/*.gpo' },
+        { scheme: 'file', pattern: '**/*.gpo' }
+    ];
 
-    await symbolCache.indexWorkspace();
-
-    const indexTime = Date.now() - startTime;
-    if (isTraceOn(vscode.workspace)) {
-        outputChannel.appendLine(`[GPL Extension] Symbol cache built in ${indexTime}ms`);
-    }
-
-    // Register Definition Provider
+    // Definition provider (Go to Definition)
     context.subscriptions.push(
         vscode.languages.registerDefinitionProvider(
-            GPL_MODE,
+            gplSelectors,
             new GPLDefinitionProvider(symbolCache, outputChannel)
         )
     );
 
-    // Register Reference Provider
+    // Reference provider (Find All References)
     context.subscriptions.push(
         vscode.languages.registerReferenceProvider(
-            GPL_MODE,
+            gplSelectors,
             new GPLReferenceProvider(symbolCache, outputChannel)
         )
     );
 
-    // Register Completion Provider
+    // Completion provider (IntelliSense)
     context.subscriptions.push(
         vscode.languages.registerCompletionItemProvider(
-            GPL_MODE,
+            gplSelectors,
             new GPLCompletionProvider(symbolCache),
-            '.' // Trigger character
+            '.', ' ', '&'
         )
     );
 
-    // Register Hover Provider (e.g., show Const values)
+    // Hover provider (Const value display)
     context.subscriptions.push(
         vscode.languages.registerHoverProvider(
-            GPL_MODE,
+            gplSelectors,
             new GPLHoverProvider(symbolCache, outputChannel)
         )
     );
 
-    // Register Workspace Symbol Provider
+    // Workspace symbol provider (Go to Symbol in Workspace)
     context.subscriptions.push(
         vscode.languages.registerWorkspaceSymbolProvider(
             new GPLWorkspaceSymbolProvider(symbolCache)
         )
     );
 
-    // Register Folding Range Provider
+    // Folding provider (fix odd folding behavior on *.gpl)
     context.subscriptions.push(
         vscode.languages.registerFoldingRangeProvider(
-            GPL_MODE,
+            gplSelectors,
             new GPLFoldingRangeProvider()
         )
     );
 
-    // Register Diagnostic Provider
-    diagnosticProvider = new GPLDiagnosticProvider();
-    context.subscriptions.push(diagnosticProvider);
-
-    // Register Code Action Provider
+    // Code Action provider (Quick fixes and refactoring)
     context.subscriptions.push(
         vscode.languages.registerCodeActionsProvider(
-            GPL_MODE,
+            gplSelectors,
             new GPLCodeActionProvider(),
             {
-                providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]
+                providedCodeActionKinds: [
+                    vscode.CodeActionKind.QuickFix,
+                    vscode.CodeActionKind.Refactor,
+                    vscode.CodeActionKind.RefactorRewrite,
+                    vscode.CodeActionKind.Source
+                ]
             }
         )
     );
 
-    // Register Commands
+    // Diagnostic provider registration
+    context.subscriptions.push(diagnosticProvider);
+
+    // Refresh symbols command
     context.subscriptions.push(
         vscode.commands.registerCommand('gpl.refreshSymbols', async () => {
-            outputChannel.appendLine('[Command] Refreshing symbol cache...');
-            await symbolCache.indexWorkspace();
-            outputChannel.appendLine('[Command] Symbol cache refreshed');
-            vscode.window.showInformationMessage('GPL: Symbol cache refreshed');
+            await symbolCache.refresh();
+            outputChannel.appendLine('GPL symbols cache refreshed!');
+            outputChannel.show();
+            vscode.window.showInformationMessage('GPL symbols refreshed!');
         })
     );
-
+    
+    // Debug command to check symbol cache
     context.subscriptions.push(
         vscode.commands.registerCommand('gpl.debugSymbolCache', () => {
-            outputChannel.clear();
-            outputChannel.appendLine('=== GPL Symbol Cache Debug ===\n');
-            
             const allSymbols = symbolCache.getAllSymbols();
-            outputChannel.appendLine(`Total symbols: ${allSymbols.length}\n`);
-
-            const byKind: { [kind: string]: number } = {};
-            const byFile: { [file: string]: number } = {};
-
-            for (const symbol of allSymbols) {
-                byKind[symbol.kind] = (byKind[symbol.kind] || 0) + 1;
-                byFile[symbol.filePath] = (byFile[symbol.filePath] || 0) + 1;
-            }
-
-            outputChannel.appendLine('Symbols by kind:');
-            for (const [kind, count] of Object.entries(byKind)) {
-                outputChannel.appendLine(`  ${kind}: ${count}`);
-            }
-
-            outputChannel.appendLine('\nSymbols by file:');
-            const sortedFiles = Object.entries(byFile)
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, 20);
+            outputChannel.appendLine('=== GPL Symbol Cache Debug ===');
+            outputChannel.appendLine(`Total symbols: ${allSymbols.length}`);
             
-            for (const [file, count] of sortedFiles) {
-                outputChannel.appendLine(`  ${file}: ${count}`);
+            // Group by file and class
+            const byFile = new Map<string, any[]>();
+            for (const sym of allSymbols) {
+                const fileName = sym.filePath.split('\\').pop() || sym.filePath;
+                if (!byFile.has(fileName)) {
+                    byFile.set(fileName, []);
+                }
+                byFile.get(fileName)!.push(sym);
             }
-
-            outputChannel.appendLine('\n=== Sample Symbols ===');
-            const sampleCount = Math.min(50, allSymbols.length);
-            for (let i = 0; i < sampleCount; i++) {
-                const s = allSymbols[i];
-                const details = [
-                    `kind: ${s.kind}`,
-                    s.module ? `module: ${s.module}` : null,
-                    s.className ? `class: ${s.className}` : null,
-                    s.returnType ? `type: ${s.returnType}` : null
-                ].filter(Boolean).join(', ');
-                
-                outputChannel.appendLine(`${i + 1}. ${s.name} (${details})`);
+            
+            for (const [file, symbols] of byFile) {
+                outputChannel.appendLine(`\n${file}:`);
+                for (const sym of symbols) {
+                    const classInfo = sym.className ? ` (in class ${sym.className})` : '';
+                    const typeInfo = sym.returnType ? ` : ${sym.returnType}` : '';
+                    outputChannel.appendLine(`  [${sym.kind}] ${sym.name}${typeInfo}${classInfo} @line ${sym.line + 1}`);
+                }
             }
-
+            
             outputChannel.show();
-            vscode.window.showInformationMessage('GPL: Symbol cache debug info printed to output');
+            vscode.window.showInformationMessage('Symbol cache debug info written to output channel');
         })
     );
 
-    // File change handlers
-    const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*.{gpl,gpo}');
-
-    fileWatcher.onDidChange(async (uri) => {
-        if (isTraceOn(vscode.workspace)) {
-            outputChannel.appendLine(`[FileWatcher] Changed: ${uri.fsPath}`);
-        }
-        await symbolCache.updateFile(uri.fsPath);
-    });
-
-    fileWatcher.onDidCreate(async (uri) => {
-        if (isTraceOn(vscode.workspace)) {
-            outputChannel.appendLine(`[FileWatcher] Created: ${uri.fsPath}`);
-        }
-        await symbolCache.updateFile(uri.fsPath);
-    });
-
-    fileWatcher.onDidDelete((uri) => {
-        if (isTraceOn(vscode.workspace)) {
-            outputChannel.appendLine(`[FileWatcher] Deleted: ${uri.fsPath}`);
-        }
-        symbolCache.removeFile(uri.fsPath);
-    });
-
-    context.subscriptions.push(fileWatcher);
-
-    // Document event handlers
-    context.subscriptions.push(
-        vscode.workspace.onDidOpenTextDocument((document) => {
-            if (isGplDocument(document)) {
-                diagnosticProvider.updateDiagnostics(document);
-            }
-        })
-    );
-
+    // Auto-refresh symbols and diagnostics when GPL files change
     context.subscriptions.push(
         vscode.workspace.onDidChangeTextDocument((event) => {
             if (isGplDocument(event.document)) {
-                diagnosticProvider.scheduleDiagnostics(event.document);
+                symbolCache.updateDocument(event.document);
+                diagnosticProvider.scheduleDiagnostics(event.document, 500);
+            }
+        })
+    );
+
+    // Keep caches clean on delete/rename to avoid stale symbols/diagnostics.
+    context.subscriptions.push(
+        vscode.workspace.onDidDeleteFiles((event) => {
+            for (const uri of event.files) {
+                symbolCache.removeFile(uri.fsPath);
+                diagnosticProvider.clearDiagnostics(uri);
             }
         })
     );
 
     context.subscriptions.push(
-        vscode.workspace.onDidSaveTextDocument(async (document) => {
-            if (isGplDocument(document)) {
-                await symbolCache.updateFile(document.uri.fsPath);
-                diagnosticProvider.updateDiagnostics(document);
+        vscode.workspace.onDidRenameFiles(async (event) => {
+            for (const f of event.files) {
+                // Remove old cache/diagnostics
+                symbolCache.removeFile(f.oldUri.fsPath);
+                diagnosticProvider.clearDiagnostics(f.oldUri);
+
+                // Re-index the new file path so symbol filePath stays correct
+                try {
+                    const document = await vscode.workspace.openTextDocument(f.newUri);
+                    if (isGplDocument(document)) {
+                        symbolCache.updateDocument(document);
+                        diagnosticProvider.scheduleDiagnostics(document, 0);
+                    }
+                } catch (e) {
+                    outputChannel.appendLine(`[Rename] Failed to re-index ${f.newUri.fsPath}: ${e}`);
+                }
             }
         })
     );
 
     context.subscriptions.push(
-        vscode.workspace.onDidCloseTextDocument((document) => {
+        vscode.workspace.onDidOpenTextDocument((document) => {
             if (isGplDocument(document)) {
-                diagnosticProvider.clearDiagnostics(document.uri);
+                symbolCache.updateDocument(document);
+                diagnosticProvider.scheduleDiagnostics(document, 0);
             }
         })
     );
 
-    // Update diagnostics for already open documents
-    for (const document of vscode.workspace.textDocuments) {
-        if (isGplDocument(document)) {
-            diagnosticProvider.updateDiagnostics(document);
+    // 문서 저장 시 진단 업데이트
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument((document) => {
+            if (isGplDocument(document)) {
+                diagnosticProvider.scheduleDiagnostics(document, 0);
+            }
+        })
+    );
+
+    // Initialize symbol cache and diagnostics for open documents
+    outputChannel.appendLine('Initializing symbol cache...');
+    symbolCache.refresh().then(() => {
+        outputChannel.appendLine('Symbol cache initialized!');
+        if (isTraceOn(vscode.workspace)) {
+            outputChannel.show(true);
         }
-    }
-
-    const totalTime = Date.now() - startTime;
-    if (isTraceOn(vscode.workspace)) {
-        outputChannel.appendLine(`[GPL Extension] Activation completed in ${totalTime}ms`);
-    }
-
-    const extVersion = vscode.extensions.getExtension('nir414.gpl-language-support')?.packageJSON?.version ?? 'unknown';
-    outputChannel.appendLine(`GPL Language Support v${extVersion} activated`);
+    });
+    
+    // 열려있는 GPL 문서들에 대해 진단 실행
+    vscode.workspace.textDocuments.forEach(document => {
+        if (isGplDocument(document)) {
+            diagnosticProvider.scheduleDiagnostics(document, 0);
+        }
+    });
 }
 
 export function deactivate() {
     if (outputChannel) {
-        outputChannel.appendLine('[GPL Extension] Deactivating...');
+        outputChannel.appendLine('GPL Language Support extension is now deactivated!');
+        outputChannel.dispose();
     }
 }
 
-/**
- * Check if document is a GPL file (*.gpl or *.gpo)
- */
-function isGplDocument(document: vscode.TextDocument): boolean {
-    if (document.uri.scheme !== 'file') {
-        return false;
+// Export logging function for use in other modules
+export function logMessage(message: string) {
+    if (outputChannel) {
+        outputChannel.appendLine(message);
     }
-    
-    const fsPath = document.uri.fsPath.toLowerCase();
-    return fsPath.endsWith('.gpl') || fsPath.endsWith('.gpo');
 }

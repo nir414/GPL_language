@@ -1,9 +1,7 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { GPLParser, GPLSymbol } from './gplParser';
 import { isTraceOn } from './config';
-
-// Re-export GPLSymbol for convenience
-export { GPLSymbol } from './gplParser';
 
 export class SymbolCache {
     private symbols: Map<string, GPLSymbol[]> = new Map();
@@ -44,7 +42,7 @@ export class SymbolCache {
         const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
         this.symbols.set(document.uri.fsPath, symbols);
         
-        const fileName = document.uri.fsPath.split('\\').pop() || document.uri.fsPath;
+        const fileName = path.basename(document.uri.fsPath);
         this.log(`[SymbolCache] Updated ${fileName}: ${symbols.length} symbols`);
     }
 
@@ -55,7 +53,7 @@ export class SymbolCache {
     public removeFile(filePath: string): void {
         const deleted = this.deleteByFsPath(filePath);
         if (deleted) {
-            const fileName = filePath.split('\\').pop() || filePath;
+            const fileName = path.basename(filePath);
             this.log(`[SymbolCache] Removed ${fileName} from cache`);
         }
     }
@@ -87,6 +85,7 @@ export class SymbolCache {
         }
 
         // Then search in all files, preferring files closer to the current file path
+        // (This avoids jumping between duplicate project copies like workspace root vs Test_robot/)
         const candidates: GPLSymbol[] = [];
         for (const [, fileSymbols] of this.symbols) {
             for (const sym of fileSymbols) {
@@ -103,7 +102,9 @@ export class SymbolCache {
         return this.pickBestCandidate(candidates, currentFilePath);
     }
 
-    public findMemberInClass(memberName: string, className: string, preferredFilePath?: string): GPLSymbol | undefined {
+    public findMemberInClass(memberName: string, className: string, preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
+        // Search for the member in the specified class
+        // First, try to find exact match with className
         const exactCandidates: GPLSymbol[] = [];
         for (const [, fileSymbols] of this.symbols) {
             for (const s of fileSymbols) {
@@ -116,21 +117,25 @@ export class SymbolCache {
                 }
             }
         }
-        const exactPick = this.pickBestCandidate(exactCandidates, preferredFilePath);
+
+        const exactPick = this.pickBestCallableCandidate(exactCandidates, preferredFilePath, argCount);
         if (exactPick) {
             return exactPick;
         }
 
-        // Fallback: search in files that contain the class definition
+        // If not found, also search in files that contain the class definition
+        // This handles cases where the parser might not set className correctly
         const fallbackCandidates: GPLSymbol[] = [];
-        for (const [, fileSymbols] of this.symbols) {
+        for (const [filePath, fileSymbols] of this.symbols) {
+            // Find if this file has the class definition
             const classSymbol = fileSymbols.find(s => s.name === className && s.kind === 'class');
             if (classSymbol) {
+                // Look for the member in this file
                 for (const s of fileSymbols) {
                     if (
                         s.name === memberName &&
                         (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property') &&
-                        s.line > classSymbol.line
+                        s.line > classSymbol.line // Member should be after class definition
                     ) {
                         fallbackCandidates.push(s);
                     }
@@ -138,10 +143,16 @@ export class SymbolCache {
             }
         }
 
-        return this.pickBestCandidate(fallbackCandidates, preferredFilePath);
+        const fallbackPick = this.pickBestCallableCandidate(fallbackCandidates, preferredFilePath, argCount);
+        if (fallbackPick) {
+            return fallbackPick;
+        }
+
+        return undefined;
     }
 
-    public findMemberInModule(memberName: string, moduleName: string, preferredFilePath?: string): GPLSymbol | undefined {
+    public findMemberInModule(memberName: string, moduleName: string, preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
+        // Search for the member in the specified module
         const candidates: GPLSymbol[] = [];
         for (const [, fileSymbols] of this.symbols) {
             for (const s of fileSymbols) {
@@ -156,26 +167,42 @@ export class SymbolCache {
             }
         }
 
-        return this.pickBestCandidate(candidates, preferredFilePath);
+        const pick = this.pickBestCallableCandidate(candidates, preferredFilePath, argCount);
+        if (pick) {
+            return pick;
+        }
+
+        return undefined;
     }
 
     public findConstructorInClass(className: string, argCount?: number, preferredFilePath?: string): GPLSymbol | undefined {
+        // In GPL/VB style, constructors are represented as `Sub New(...)`.
+        // The parser records these as kind 'sub' with name 'New' and className set.
         const candidates: GPLSymbol[] = [];
 
         for (const [, fileSymbols] of this.symbols) {
             for (const s of fileSymbols) {
-                if (s.kind !== 'sub') continue;
-                if (s.className !== className) continue;
-                if (s.name !== 'New') continue;
+                if (s.kind !== 'sub') {
+                    continue;
+                }
+                if (s.className !== className) {
+                    continue;
+                }
+                if (s.name !== 'New') {
+                    continue;
+                }
                 if (typeof argCount === 'number') {
                     const paramCount = s.parameters ? s.parameters.length : 0;
-                    if (paramCount !== argCount) continue;
+                    if (paramCount !== argCount) {
+                        continue;
+                    }
                 }
 
                 candidates.push(s);
             }
         }
 
+        // If we tried to match by argCount and found none, fall back to any constructor.
         if (candidates.length === 0 && typeof argCount === 'number') {
             return this.findConstructorInClass(className, undefined, preferredFilePath);
         }
@@ -183,14 +210,77 @@ export class SymbolCache {
         return this.pickBestCandidate(candidates, preferredFilePath);
     }
 
+    public findMemberCandidatesInClass(memberName: string, className: string): GPLSymbol[] {
+        const candidates: GPLSymbol[] = [];
+        for (const [, fileSymbols] of this.symbols) {
+            for (const s of fileSymbols) {
+                if (
+                    s.name === memberName &&
+                    s.className === className &&
+                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property')
+                ) {
+                    candidates.push(s);
+                }
+            }
+        }
+        return candidates;
+    }
+
+    public findMemberCandidatesInModule(memberName: string, moduleName: string): GPLSymbol[] {
+        const candidates: GPLSymbol[] = [];
+        for (const [, fileSymbols] of this.symbols) {
+            for (const s of fileSymbols) {
+                if (
+                    s.name === memberName &&
+                    s.module === moduleName &&
+                    !s.className &&
+                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'constant' || s.kind === 'variable')
+                ) {
+                    candidates.push(s);
+                }
+            }
+        }
+        return candidates;
+    }
+
+    private pickBestCallableCandidate(candidates: GPLSymbol[], preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
+        if (candidates.length === 0) {
+            return undefined;
+        }
+
+        if (typeof argCount !== 'number') {
+            return this.pickBestCandidate(candidates, preferredFilePath);
+        }
+
+        const callable = candidates.filter(s => s.kind === 'function' || s.kind === 'sub');
+        if (callable.length === 0) {
+            // In a call context (Foo(...)), non-callable symbols (const/variable/property) should not be selected.
+            return undefined;
+        }
+
+        const exactArgCandidates = callable.filter(s => (s.parameters?.length ?? 0) === argCount);
+
+        if (exactArgCandidates.length > 0) {
+            return this.pickBestCandidate(exactArgCandidates, preferredFilePath);
+        }
+
+        // Keep call-context strictness: if exact arg match is absent, pick best callable candidate only.
+        return this.pickBestCandidate(callable, preferredFilePath);
+    }
+
     private pickBestCandidate(candidates: GPLSymbol[], preferredFilePath?: string): GPLSymbol | undefined {
-        if (candidates.length === 0) return undefined;
-        if (!preferredFilePath) return candidates[0];
+        if (candidates.length === 0) {
+            return undefined;
+        }
+        if (!preferredFilePath) {
+            return candidates[0];
+        }
 
         const scored = candidates
             .map(sym => ({ sym, score: this.scoreFilePath(sym.filePath, preferredFilePath) }))
             .sort((a, b) => {
                 if (b.score !== a.score) return b.score - a.score;
+                // stable-ish tiebreakers: prefer same file, then earlier definition
                 if (a.sym.filePath !== b.sym.filePath) return a.sym.filePath.localeCompare(b.sym.filePath);
                 return a.sym.line - b.sym.line;
             });
@@ -199,22 +289,26 @@ export class SymbolCache {
     }
 
     private scoreFilePath(candidateFilePath: string, preferredFilePath: string): number {
-        if (candidateFilePath === preferredFilePath) return 1000;
+        // Higher is better
+        if (candidateFilePath === preferredFilePath) {
+            return 1000;
+        }
 
-        const preferredUri = vscode.Uri.file(preferredFilePath);
-        const candidateUri = vscode.Uri.file(candidateFilePath);
-        const preferredDir = vscode.Uri.file(preferredUri.fsPath).with({ path: preferredUri.fsPath.substring(0, preferredUri.fsPath.lastIndexOf('/')) });
-        const candidateDir = vscode.Uri.file(candidateUri.fsPath).with({ path: candidateUri.fsPath.substring(0, candidateUri.fsPath.lastIndexOf('/')) });
-        if (candidateDir.fsPath === preferredDir.fsPath) return 800;
+        const preferredDir = path.dirname(preferredFilePath);
+        if (path.dirname(candidateFilePath) === preferredDir) {
+            return 800;
+        }
 
+        // Prefer same top-level folder relative to workspace folder
         const ws = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(preferredFilePath));
         if (ws) {
-            const relPreferred = vscode.workspace.asRelativePath(preferredFilePath);
-            const relCandidate = vscode.workspace.asRelativePath(candidateFilePath);
-            const separator = process.platform === 'win32' ? '\\' : '/';
-            const topPreferred = relPreferred.split(separator)[0];
-            const topCandidate = relCandidate.split(separator)[0];
-            if (topPreferred && topPreferred === topCandidate) return 500;
+            const relPreferred = path.relative(ws.uri.fsPath, preferredFilePath);
+            const relCandidate = path.relative(ws.uri.fsPath, candidateFilePath);
+            const topPreferred = relPreferred.split(path.sep)[0];
+            const topCandidate = relCandidate.split(path.sep)[0];
+            if (topPreferred && topPreferred === topCandidate) {
+                return 500;
+            }
         }
 
         return 0;
@@ -226,6 +320,7 @@ export class SymbolCache {
         for (const [filePath, fileSymbols] of this.symbols) {
             const symbol = fileSymbols.find(s => s.name === symbolName);
             if (symbol) {
+                // Read the file content to find usages
                 const document = vscode.workspace.textDocuments.find((doc: vscode.TextDocument) => doc.uri.fsPath === filePath);
                 if (document) {
                     const usages = GPLParser.findSymbolUsages(document.getText(), symbolName);
@@ -252,11 +347,14 @@ export class SymbolCache {
         const seenNames = new Set<string>();
 
         for (const symbol of this.getAllSymbols()) {
-            if (seenNames.has(symbol.name)) continue;
+            if (seenNames.has(symbol.name)) {
+                continue;
+            }
             seenNames.add(symbol.name);
 
             const item = new vscode.CompletionItem(symbol.name, this.getCompletionItemKind(symbol.kind));
             
+            // Add detail information
             let detail: string = symbol.kind;
             if (symbol.module) {
                 detail += ` (${symbol.module}`;
@@ -267,6 +365,7 @@ export class SymbolCache {
             }
             item.detail = detail;
 
+            // Add documentation
             if (symbol.parameters && symbol.parameters.length > 0) {
                 item.documentation = `Parameters: ${symbol.parameters.join(', ')}`;
             }
@@ -274,6 +373,7 @@ export class SymbolCache {
                 item.documentation = (item.documentation || '') + `\nReturns: ${symbol.returnType}`;
             }
 
+            // Add snippet for functions/subs
             if ((symbol.kind === 'function' || symbol.kind === 'sub') && symbol.parameters) {
                 const params = symbol.parameters.map((param, index) => `\${${index + 1}:${param}}`).join(', ');
                 item.insertText = new vscode.SnippetString(`${symbol.name}(${params})`);
@@ -298,7 +398,10 @@ export class SymbolCache {
         }
     }
 
-    public async indexWorkspace(): Promise<void> {
+    private async indexWorkspace(): Promise<void> {
+        // Prefer Project.gpr-based indexing when available.
+        // Many GPL projects are single-folder, and Project.gpr defines the actual compile/reference set.
+        // This avoids scanning the entire workspace (which can be huge) when only a handful of sources matter.
         const projectFiles = await this.getProjectSourcesFromGpr();
 
         const filesToIndex = projectFiles ?? (await vscode.workspace.findFiles(
@@ -324,6 +427,10 @@ export class SymbolCache {
         }
     }
 
+    /**
+     * Parse Project.gpr files (if present) and return a deduplicated list of source file URIs.
+     * Returns undefined when no Project.gpr exists in the workspace.
+     */
     private async getProjectSourcesFromGpr(): Promise<vscode.Uri[] | undefined> {
         try {
             const gprFiles = await vscode.workspace.findFiles(
@@ -340,21 +447,25 @@ export class SymbolCache {
             for (const gprUri of gprFiles) {
                 try {
                     const bytes = await vscode.workspace.fs.readFile(gprUri);
-                    const text = new TextDecoder('utf-8').decode(bytes);
+                    const text = Buffer.from(bytes).toString('utf8');
 
+                    // ProjectSource="file.gpl" (also accept single quotes)
                     const re = /ProjectSource\s*=\s*["']([^"']+)["']/gi;
                     let match: RegExpExecArray | null;
                     while ((match = re.exec(text)) !== null) {
                         const raw = (match[1] || '').trim();
-                        if (!raw) continue;
+                        if (!raw) {
+                            continue;
+                        }
 
-                        const isAbsolute = raw.indexOf(':') > 0 || raw.startsWith('/');
-                        const resolved = isAbsolute
+                        const resolved = path.isAbsolute(raw)
                             ? raw
-                            : vscode.Uri.joinPath(vscode.Uri.file(gprUri.fsPath + '/..'), raw).fsPath;
+                            : path.join(path.dirname(gprUri.fsPath), raw);
 
                         const lower = resolved.toLowerCase();
-                        if (!lower.endsWith('.gpl') && !lower.endsWith('.gpo')) continue;
+                        if (!lower.endsWith('.gpl') && !lower.endsWith('.gpo')) {
+                            continue;
+                        }
                         sources.add(resolved);
                     }
                 } catch (e) {
@@ -363,6 +474,7 @@ export class SymbolCache {
             }
 
             if (sources.size === 0) {
+                // Project.gpr exists but had no ProjectSource entries; fall back to glob.
                 return undefined;
             }
 
@@ -370,36 +482,5 @@ export class SymbolCache {
         } catch {
             return undefined;
         }
-    }
-
-    /**
-     * Update symbols for a specific file
-     */
-    public async updateFile(filePath: string): Promise<void> {
-        try {
-            const uri = vscode.Uri.file(filePath);
-            const document = await vscode.workspace.openTextDocument(uri);
-            this.updateDocument(document);
-        } catch (error) {
-            this.log(`[SymbolCache] Error updating file ${filePath}: ${error}`);
-        }
-    }
-
-    /**
-     * Get all symbols in a specific module
-     */
-    public getSymbolsByModule(moduleName: string): GPLSymbol[] {
-        const result: GPLSymbol[] = [];
-        const moduleNameUpper = moduleName.toUpperCase();
-
-        for (const symbols of this.symbols.values()) {
-            for (const symbol of symbols) {
-                if (symbol.module?.toUpperCase() === moduleNameUpper) {
-                    result.push(symbol);
-                }
-            }
-        }
-
-        return result;
     }
 }

@@ -91,17 +91,18 @@
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "package": "npm run compile && node ./scripts/package.js",
-        "bump:major": "node ./scripts/bump-version.js major",
-        "bump:minor": "node ./scripts/bump-version.js minor",
-        "bump:patch": "node ./scripts/bump-version.js patch",
-        "pre-release-check": "node ./scripts/pre-release-check.js"
+        "dev:cycle": "npm run package",
+        "dev:install": "node -e \"console.error('dev:install is disabled to prevent opening new VS Code windows. Build VSIX with npm run dev:cycle, then install manually from Extensions > Install from VSIX.'); process.exit(1);\"",
+        "dev:cycle:open": "node -e \"console.error('dev:cycle:open is disabled to prevent opening new VS Code windows. Use npm run dev:install only when explicit reinstall is needed.'); process.exit(1);\"",
+        "dev:host": "node -e \"console.error('dev:host is disabled to prevent opening new VS Code windows.'); process.exit(1);\""
     },
     "devDependencies": {
-        "@types/node": "^16.18.126",
         "@types/vscode": "^1.74.0",
+        "@types/node": "16.x",
         "@vscode/vsce": "^2.26.1",
         "typescript": "^4.9.4"
     },
+    "dependencies": {},
     "author": "nir414",
     "license": "MIT"
 }

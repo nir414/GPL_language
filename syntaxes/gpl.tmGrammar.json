@@ -1,27 +1,7 @@
 {
-    "name": "GPL",
-    "scopeName": "source.gpl",
-    "patterns": [
-        {
-            "match": "(?i)^\\s*((?:Public|Private)\\s+)?\\b(Class)\\b\\s+([a-zA-Z_]\\w*)",
-            "captures": {
-                "1": { "name": "storage.modifier.gpl" },
-                "2": { "name": "storage.type.class.gpl" },
-                "3": { "name": "entity.name.type.class.gpl" }
-            },
-            "name": "meta.class.declaration.gpl"
-        },
-        {
-            "match": "(?i)^\\s*((?:Public|Private)\\s+)?((?:ReadOnly|WriteOnly)\\s+)?\\b(Property)\\b\\s+([a-zA-Z_]\\w*)(?:\\s+(As)\\s+([a-zA-Z_]\\w*))?",
-            "captures": {
-                "1": { "name": "storage.modifier.gpl" },
-                "2": { "name": "storage.modifier.gpl" },
-                "3": { "name": "storage.type.property.gpl" },
-                "4": { "name": "entity.name.variable.property.gpl" },
-                "5": { "name": "keyword.other.gpl" },
-                "6": { "name": "storage.type.gpl" }
-            },
-            "name": "meta.property.declaration.gpl"
-        }
-    ]
+	"name": "GPL",
+	"scopeName": "source.gpl",
+	"patterns": [
+		{ "include": "source.asp.vb.net" }
+	]
 }

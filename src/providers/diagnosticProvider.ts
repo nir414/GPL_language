@@ -6,6 +6,10 @@ export class GPLDiagnosticProvider {
     private diagnosticCollection: vscode.DiagnosticCollection;
     private pendingTimers: Map<string, NodeJS.Timeout> = new Map();
 
+    // [DISABLED] 진단 기능 비활성화 — 개발 중 미검증 상태이므로 일시 중단.
+    // 검증 완료 후 false로 변경하여 활성화.
+    private static readonly DIAGNOSTICS_DISABLED = true;
+
     constructor() {
         this.diagnosticCollection = vscode.languages.createDiagnosticCollection('gpl');
     }
@@ -15,6 +19,12 @@ export class GPLDiagnosticProvider {
      */
     public updateDiagnostics(document: vscode.TextDocument): void {
         if (!isGplFile(document)) {
+            return;
+        }
+
+        // [DISABLED] 진단 기능 비활성화 중 — DIAGNOSTICS_DISABLED 플래그 참고
+        if (GPLDiagnosticProvider.DIAGNOSTICS_DISABLED) {
+            this.diagnosticCollection.delete(document.uri);
             return;
         }
 
@@ -66,7 +76,7 @@ export class GPLDiagnosticProvider {
      * Debounced diagnostics scheduling to avoid frequent recomputation
      */
     public scheduleDiagnostics(document: vscode.TextDocument, delayMs: number = 500): void {
-        if (!isGplFile(document)) {
+        if (!isGplFile(document) || GPLDiagnosticProvider.DIAGNOSTICS_DISABLED) {
             return;
         }
 

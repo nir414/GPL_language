@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbolKind } from '../gplParser';
-import { isTraceVerbose, EXTENSION_VERSION } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION, ciEq } from '../config';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
 
@@ -45,7 +45,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         if (!sym) {
             try {
                 const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                sym = localSymbols.find(s => s.name === word);
+                sym = localSymbols.find(s => ciEq(s.name, word));
             } catch (e) {
                 this.log(`[Hover Local Parse Error] ${e}`);
             }

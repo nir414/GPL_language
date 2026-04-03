@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { GPLParser, GPLSymbol } from './gplParser';
-import { isTraceOn } from './config';
+import { isTraceOn, ciEq } from './config';
 
 export class SymbolCache {
     private symbols: Map<string, GPLSymbol[]> = new Map();
@@ -78,7 +78,7 @@ export class SymbolCache {
         // First, search in the current file
         if (currentFilePath && this.symbols.has(currentFilePath)) {
             const fileSymbols = this.symbols.get(currentFilePath)!;
-            const localSymbol = fileSymbols.find(s => s.name === symbolName);
+            const localSymbol = fileSymbols.find(s => ciEq(s.name, symbolName));
             if (localSymbol) {
                 return localSymbol;
             }
@@ -89,7 +89,7 @@ export class SymbolCache {
         const candidates: GPLSymbol[] = [];
         for (const [, fileSymbols] of this.symbols) {
             for (const sym of fileSymbols) {
-                if (sym.name === symbolName) {
+                if (ciEq(sym.name, symbolName)) {
                     candidates.push(sym);
                 }
             }
@@ -109,8 +109,8 @@ export class SymbolCache {
         for (const [, fileSymbols] of this.symbols) {
             for (const s of fileSymbols) {
                 if (
-                    s.name === memberName &&
-                    s.className === className &&
+                    ciEq(s.name, memberName) &&
+                    s.className !== undefined && ciEq(s.className, className) &&
                     (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property')
                 ) {
                     exactCandidates.push(s);
@@ -128,12 +128,12 @@ export class SymbolCache {
         const fallbackCandidates: GPLSymbol[] = [];
         for (const [filePath, fileSymbols] of this.symbols) {
             // Find if this file has the class definition
-            const classSymbol = fileSymbols.find(s => s.name === className && s.kind === 'class');
+            const classSymbol = fileSymbols.find(s => ciEq(s.name, className) && s.kind === 'class');
             if (classSymbol) {
                 // Look for the member in this file
                 for (const s of fileSymbols) {
                     if (
-                        s.name === memberName &&
+                        ciEq(s.name, memberName) &&
                         (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property') &&
                         s.line > classSymbol.line // Member should be after class definition
                     ) {
@@ -157,8 +157,8 @@ export class SymbolCache {
         for (const [, fileSymbols] of this.symbols) {
             for (const s of fileSymbols) {
                 if (
-                    s.name === memberName &&
-                    s.module === moduleName &&
+                    ciEq(s.name, memberName) &&
+                    s.module !== undefined && ciEq(s.module, moduleName) &&
                     !s.className &&
                     (s.kind === 'function' || s.kind === 'sub' || s.kind === 'constant' || s.kind === 'variable')
                 ) {
@@ -185,10 +185,10 @@ export class SymbolCache {
                 if (s.kind !== 'sub') {
                     continue;
                 }
-                if (s.className !== className) {
+                if (!s.className || !ciEq(s.className, className)) {
                     continue;
                 }
-                if (s.name !== 'New') {
+                if (!ciEq(s.name, 'New')) {
                     continue;
                 }
                 if (typeof argCount === 'number') {
@@ -215,8 +215,8 @@ export class SymbolCache {
         for (const [, fileSymbols] of this.symbols) {
             for (const s of fileSymbols) {
                 if (
-                    s.name === memberName &&
-                    s.className === className &&
+                    ciEq(s.name, memberName) &&
+                    s.className !== undefined && ciEq(s.className, className) &&
                     (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property')
                 ) {
                     candidates.push(s);
@@ -231,8 +231,8 @@ export class SymbolCache {
         for (const [, fileSymbols] of this.symbols) {
             for (const s of fileSymbols) {
                 if (
-                    s.name === memberName &&
-                    s.module === moduleName &&
+                    ciEq(s.name, memberName) &&
+                    s.module !== undefined && ciEq(s.module, moduleName) &&
                     !s.className &&
                     (s.kind === 'function' || s.kind === 'sub' || s.kind === 'constant' || s.kind === 'variable')
                 ) {
@@ -318,7 +318,7 @@ export class SymbolCache {
         const references: { symbol: GPLSymbol; usages: { line: number; character: number }[] }[] = [];
 
         for (const [filePath, fileSymbols] of this.symbols) {
-            const symbol = fileSymbols.find(s => s.name === symbolName);
+            const symbol = fileSymbols.find(s => ciEq(s.name, symbolName));
             if (symbol) {
                 // Read the file content to find usages
                 const document = vscode.workspace.textDocuments.find((doc: vscode.TextDocument) => doc.uri.fsPath === filePath);
@@ -347,10 +347,11 @@ export class SymbolCache {
         const seenNames = new Set<string>();
 
         for (const symbol of this.getAllSymbols()) {
-            if (seenNames.has(symbol.name)) {
+            const lowerName = symbol.name.toLowerCase();
+            if (seenNames.has(lowerName)) {
                 continue;
             }
-            seenNames.add(symbol.name);
+            seenNames.add(lowerName);
 
             const item = new vscode.CompletionItem(symbol.name, this.getCompletionItemKind(symbol.kind));
             

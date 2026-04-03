@@ -43,3 +43,11 @@ export function isTraceOn(workspace: WorkspaceConfigHost): boolean {
 export function isTraceVerbose(workspace: WorkspaceConfigHost): boolean {
     return getTraceServerLevel(workspace) === 'verbose';
 }
+
+/**
+ * GPL/VB 식별자 대소문자 무시 비교.
+ * GPL은 VB.NET 기반이므로 식별자(함수명, 변수명 등)가 대소문자를 구분하지 않는다.
+ */
+export function ciEq(a: string, b: string): boolean {
+    return a.toLowerCase() === b.toLowerCase();
+}

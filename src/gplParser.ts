@@ -499,55 +499,33 @@ export class GPLParser {
     static findSymbolUsages(content: string, symbolName: string): { line: number; character: number }[] {
         const usages: { line: number; character: number }[] = [];
         const lines = content.split('\n');
+        const symbolLower = symbolName.toLowerCase();
+        const symbolLen = symbolName.length;
         
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             
-            // Skip comments
-            const commentIndex = line.indexOf("'");
-            let searchLine = commentIndex !== -1 ? line.substring(0, commentIndex) : line;
+            // 문자열 리터럴과 주석을 제거하여 순수 코드 영역만 추출.
+            // 기존 indexOf("'") 방식은 "it's" 같은 문자열 내 아포스트로피를 잘못 처리.
+            const searchLine = GPLParser.stripToCode(line);
             
-            // Find all occurrences in this line
+            // 대소문자 무시 검색 (GPL/VB는 대소문자 무시 언어)
+            const searchLineLower = searchLine.toLowerCase();
             let startIndex = 0;
             while (true) {
-                const index = searchLine.indexOf(symbolName, startIndex);
+                const index = searchLineLower.indexOf(symbolLower, startIndex);
                 if (index === -1) break;
-                
-                // Skip if it's inside a string literal
-                const beforeMatch = searchLine.substring(0, index);
-                const doubleQuoteCount = (beforeMatch.match(/"/g) || []).length;
-                if (doubleQuoteCount % 2 === 1) {
-                    startIndex = index + 1;
-                    continue;
-                }
                 
                 // Check word boundaries
                 const prevChar = index > 0 ? searchLine[index - 1] : ' ';
-                const nextChar = index + symbolName.length < searchLine.length ? searchLine[index + symbolName.length] : ' ';
+                const nextChar = index + symbolLen < searchLine.length ? searchLine[index + symbolLen] : ' ';
                 
-                // Valid if surrounded by non-word characters (space, operators, etc.)
+                // Valid if surrounded by non-word characters
                 if (!/[a-zA-Z0-9_]/.test(prevChar) && !/[a-zA-Z0-9_]/.test(nextChar)) {
-                    // Additional check for common GPL patterns
-                    const context = searchLine.substring(Math.max(0, index - 10), index + symbolName.length + 10).trim();
-                    
-                    // Include common usage patterns
-                    const isValidUsage = (
-                        /\bAs\s+New\s+\w+/i.test(context) ||           // "As New XmlStore"
-                        /\bAs\s+\w+/i.test(context) ||                 // "As XmlStore"  
-                        /\bNew\s+\w+/i.test(context) ||                // "New XmlStore"
-                        /\w+\.\w+/.test(context) ||                    // "XmlStore.Method"
-                        /^\s*\w+\s*=/.test(context) ||                 // Variable assignment
-                        /\(\s*\w+/i.test(context) ||                   // Function call
-                        searchLine.trim().startsWith('Public Class') || // Class definition
-                        searchLine.trim().startsWith('Private Class')
-                    );
-                    
-                    if (isValidUsage) {
-                        usages.push({
-                            line: i,
-                            character: index
-                        });
-                    }
+                    usages.push({
+                        line: i,
+                        character: index
+                    });
                 }
                 
                 startIndex = index + 1;
@@ -555,6 +533,41 @@ export class GPLParser {
         }
 
         return usages;
+    }
+
+    /**
+     * 코드에서 문자열 리터럴과 인라인 주석을 제거하여 순수 코드 부분만 반환.
+     * 문자열은 공백으로, 주석 이후는 제거.
+     */
+    static stripToCode(line: string): string {
+        let result = '';
+        let inString = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inString) {
+                if (ch === '"') {
+                    // VB/GPL: "" 는 이스케이프된 따옴표
+                    if (i + 1 < line.length && line[i + 1] === '"') {
+                        result += '  '; // 위치 보존
+                        i++;
+                        continue;
+                    }
+                    inString = false;
+                }
+                result += ' '; // 문자열 내부는 공백으로 대체
+            } else {
+                if (ch === '"') {
+                    inString = true;
+                    result += ' ';
+                } else if (ch === "'") {
+                    // 인라인 주석 시작 — 나머지 무시
+                    break;
+                } else {
+                    result += ch;
+                }
+            }
+        }
+        return result;
     }
 
     /**

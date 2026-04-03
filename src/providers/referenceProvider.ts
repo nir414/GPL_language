@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
-import { isTraceVerbose } from '../config';
+import { isTraceVerbose, ciEq } from '../config';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
     constructor(
@@ -32,7 +32,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
     ): GPLSymbol | undefined {
         try {
             const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-            const inLine = localSymbols.filter(s => s.name === word && s.line === position.line);
+            const inLine = localSymbols.filter(s => ciEq(s.name, word) && s.line === position.line);
 
             // Prefer the symbol whose indexed range covers the cursor.
             const covering = inLine.find(s => {
@@ -155,12 +155,12 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
 
         // Static class usage: keep only same class.
         if (qSym.kind === 'class') {
-            return qSym.name === targetClass;
+            return ciEq(qSym.name, targetClass);
         }
 
         // Instance usage: keep only matching returnType.
         if (qSym.returnType) {
-            return qSym.returnType === targetClass;
+            return ciEq(qSym.returnType, targetClass);
         }
 
         return true;

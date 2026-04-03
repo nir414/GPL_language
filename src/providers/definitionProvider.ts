@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
-import { isTraceVerbose, EXTENSION_VERSION } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION, ciEq } from '../config';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
@@ -169,7 +169,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                 includeParameters: true
             });
 
-            const candidates = localSymbols.filter(s => s.name === symbolName);
+            const candidates = localSymbols.filter(s => ciEq(s.name, symbolName));
             return this.pickBestScopedCandidate(candidates, document, atLine);
         } catch (error) {
             this.log(`[Local Parse Error - findLocalSymbol] ${error}`);
@@ -470,7 +470,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                 // Try a non-local parse (still useful for stale cache and top-level consts/classes)
                 try {
                     const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                    const any = localSymbols.find(s => s.name === word);
+                    const any = localSymbols.find(s => ciEq(s.name, word));
                     if (!any) {
                         this.log(`[Not Found] Symbol "${word}" not found (cache + scoped local parse)`);
                         return undefined;

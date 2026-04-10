@@ -1,7 +1,7 @@
 # GPL Language Support
 
-현재 버전: **v0.2.16**  
-GPL (Guidance Programming Language) 지원 VS Code 확장. 정의/참조 탐색, 자동완성, **VB.NET 호환성 체크**까지 제공합니다.
+현재 버전: **v0.3.0**  
+GPL (Guidance Programming Language) 지원 VS Code 확장. 정의/참조 탐색, 자동완성, **VB.NET 호환성 체크**, **제어기 연결/배포/런타임 콘솔**까지 제공합니다.
 
 ## 설치
 
@@ -26,7 +26,17 @@ GPL_language/
 │   ├── gplParser.ts            # GPL 파서
 │   ├── symbolCache.ts          # 심볼 캐시 관리
 │   ├── xmlUtils.ts             # XML 유틸리티
-│   └── providers/              # 언어 기능 프로바이더
+│   ├── providers/              # 언어 기능 프로바이더
+│   ├── controller/             # 제어기 통신 (TCP/FTP/UDP)
+│   │   ├── controllerConnection.ts  # TCP 명령 송수신
+│   │   ├── responseParser.ts        # 응답 파싱
+│   │   ├── ftpClient.ts             # FTP 파일 업로드
+│   │   ├── deployService.ts         # 배포 워크플로
+│   │   ├── runtimeConsole.ts        # 런타임 콘솔 스트리밍
+│   │   └── controllerDiscovery.ts   # UDP 제어기 검색
+│   └── views/                  # VS Code UI 컴포넌트
+│       ├── threadTreeProvider.ts    # 쓰레드 상태 패널
+│       └── connectionStatusBar.ts   # 연결 상태 표시줄
 ├── syntaxes/                   # 문법 하이라이팅
 ├── scripts/                    # 빌드 스크립트
 ├── package.json                # 확장 매니페스트
@@ -56,6 +66,17 @@ GPL (Guidance Programming Language)은 Brooks Automation에서 개발한 로봇 
 - **로봇 제어**: 모션 제어, 머신 비전, PreciseFlex 로봇 프로그래밍
 - **산업 응용**: 바이오/의료 샘플 핸들링, 전자/반도체 자동화
 
+### 제어기 연결 및 배포 (v0.3.0~)
+
+Brooks Automation 제어기에 직접 연결하여 프로젝트를 배포하고 모니터링합니다:
+
+- **제어기 연결**: TCP(포트 1402)로 제어기와 통신, 상태바에 연결 상태 표시
+- **제어기 검색**: UDP 브로드캐스트로 네트워크 내 제어기 자동 검색
+- **프로젝트 배포**: STOP → FTP 업로드 → COMPILE → START 자동 워크플로
+- **런타임 콘솔**: 제어기 실시간 출력 스트리밍 (포트 1403)
+- **쓰레드 모니터링**: 사이드바에서 제어기 쓰레드 상태를 실시간 확인
+- **컴파일 에러 진단**: 제어기 컴파일 에러를 VS Code Problems 패널에 표시
+
 ### VB.NET 호환성 진단
 
 - 미지원 함수 감지
@@ -72,8 +93,18 @@ GPL 언어 개발을 위한 공식 문서:
 
 ## 명령어
 
+### 언어 기능
 - `GPL: Refresh Symbols` - 심볼 캐시 수동 새로고침
 - `GPL: Debug Symbol Cache` - 파일별 심볼 목록과 파싱 상태 확인
+
+### 제어기
+- `GPL: Connect to Controller` - 제어기 연결
+- `GPL: Disconnect from Controller` - 제어기 연결 해제
+- `GPL: Discover Controllers` - 네트워크에서 제어기 검색
+- `GPL: Deploy Project` - 프로젝트 배포 (STOP → 업로드 → 컴파일 → START)
+- `GPL: Start Runtime Console` - 런타임 콘솔 스트리밍 시작
+- `GPL: Stop Runtime Console` - 런타임 콘솔 중지
+- `GPL: Refresh Threads` - 쓰레드 상태 새로고침
 
 ## 개발자 가이드 (빌드/디버그/패키징)
 
@@ -134,7 +165,7 @@ npm run watch
 npm run package
 ```
 
-성공하면 `dist/` 폴더에 `gpl-language-support-v0.2.16.vsix` 같은 파일이 생성됩니다
+성공하면 `dist/` 폴더에 `gpl-language-support-0.3.0.vsix` 같은 파일이 생성됩니다
 - `.gpl` 파일이 **Visual Basic(vb)** 으로 열릴 수 있습니다.
     - 진단(Diagnostics)이 안 뜬다면, 파일 우측 하단 언어 모드를 **GPL**로 바꿔서 확인해 보세요.
 
@@ -146,7 +177,17 @@ GPL Language Support 확장 개발에 이슈 리포트나 기여를 환영합니
 
 ### 변경사항
 
-#### v0.2.16 (현재)
+#### v0.3.0 (현재)
+- **제어기 통합**: Brooks 제어기 연결, 프로젝트 배포, 런타임 콘솔, 쓰레드 모니터링
+  - TCP 명령 통신 (포트 1402), FTP 파일 업로드, 런타임 스트리밍 (포트 1403)
+  - UDP 브로드캐스트 기반 제어기 자동 검색 (포트 51417)
+  - STOP → UPLOAD → COMPILE → START 배포 워크플로
+  - 컴파일 에러 자동 파싱 → VS Code Diagnostics 연동
+  - 사이드바 쓰레드 상태 패널 + 상태바 연결 표시
+- 프로젝트 구조 확장: `src/controller/`, `src/views/` 추가
+- VSIX 패키징 최적화 (불필요 파일 제외, 180MB → 76KB)
+
+#### v0.2.16
 - 주석 위치 확인 기능 추가: GPL/VB 주석을 식별하여 참조 제공 시 무시
 - 정의 제공자/기호 캐시 호출 가능 기호 검색 개선 및 로깅 추가
 - 지역 심볼 찾기 기능 (로컬 Dim/Const/Static 선언 검색)

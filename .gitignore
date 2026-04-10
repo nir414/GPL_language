@@ -36,6 +36,7 @@ desktop.ini
 # Build outputs
 bin/
 obj/
+pkg/
 
 # Temporary files
 *.tmp
@@ -53,6 +54,5 @@ docs/
 .github/
 scripts/
 media/
-.vscodeignore
 .gitattributes
 package-lock.json

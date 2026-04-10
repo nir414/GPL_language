@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.2.36",
+    "version": "0.3.0",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -16,7 +16,8 @@
         "vscode": "^1.74.0"
     },
     "categories": [
-        "Programming Languages"
+        "Programming Languages",
+        "Debuggers"
     ],
     "keywords": [
         "gpl",
@@ -33,10 +34,18 @@
         "onLanguage:gpl",
         "workspaceContains:**/*.gpl",
         "workspaceContains:**/*.gpo",
+        "onView:gplThreads",
         "onCommand:gpl.refreshSymbols",
         "onCommand:gpl.debugSymbolCache",
         "onCommand:gpl.showXmlBestPractices",
-        "onCommand:gpl.analyzeXmlEncoding"
+        "onCommand:gpl.analyzeXmlEncoding",
+        "onCommand:gpl.controller.connect",
+        "onCommand:gpl.controller.disconnect",
+        "onCommand:gpl.controller.discover",
+        "onCommand:gpl.deploy",
+        "onCommand:gpl.console.start",
+        "onCommand:gpl.console.stop",
+        "onCommand:gpl.threads.refresh"
     ],
     "contributes": {
         "languages": [
@@ -76,8 +85,74 @@
             {
                 "command": "gpl.analyzeXmlEncoding",
                 "title": "GPL: Analyze XML Encoding"
+            },
+            {
+                "command": "gpl.controller.connect",
+                "title": "GPL: Connect to Controller",
+                "icon": "$(plug)"
+            },
+            {
+                "command": "gpl.controller.disconnect",
+                "title": "GPL: Disconnect Controller",
+                "icon": "$(debug-disconnect)"
+            },
+            {
+                "command": "gpl.controller.discover",
+                "title": "GPL: Discover Controllers",
+                "icon": "$(search)"
+            },
+            {
+                "command": "gpl.deploy",
+                "title": "GPL: Deploy to Controller",
+                "icon": "$(rocket)"
+            },
+            {
+                "command": "gpl.console.start",
+                "title": "GPL: Start Runtime Console",
+                "icon": "$(terminal)"
+            },
+            {
+                "command": "gpl.console.stop",
+                "title": "GPL: Stop Runtime Console",
+                "icon": "$(stop)"
+            },
+            {
+                "command": "gpl.threads.refresh",
+                "title": "GPL: Refresh Threads",
+                "icon": "$(refresh)"
             }
         ],
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "gpl-controller",
+                    "title": "GPL Controller",
+                    "icon": "$(server)"
+                }
+            ]
+        },
+        "views": {
+            "gpl-controller": [
+                {
+                    "id": "gplThreads",
+                    "name": "Threads"
+                }
+            ]
+        },
+        "menus": {
+            "view/title": [
+                {
+                    "command": "gpl.threads.refresh",
+                    "when": "view == gplThreads",
+                    "group": "navigation"
+                },
+                {
+                    "command": "gpl.deploy",
+                    "when": "view == gplThreads",
+                    "group": "navigation"
+                }
+            ]
+        },
         "configuration": {
             "type": "object",
             "title": "GPL Language Support",
@@ -92,6 +167,42 @@
                     ],
                     "default": "off",
                     "description": "Controls GPL Language Support extension tracing (Output: 'GPL Language Support')."
+                },
+                "gpl.controller.ip": {
+                    "scope": "window",
+                    "type": "string",
+                    "default": "192.168.0.2",
+                    "description": "Brooks controller IP address."
+                },
+                "gpl.controller.port": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 1402,
+                    "description": "Controller console port (TCP command interface)."
+                },
+                "gpl.controller.consolePort": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 1403,
+                    "description": "Controller runtime console port (live output stream)."
+                },
+                "gpl.controller.timeoutMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 10000,
+                    "description": "Command timeout in milliseconds."
+                },
+                "gpl.controller.ftpBasePath": {
+                    "scope": "window",
+                    "type": "string",
+                    "default": "/GPL",
+                    "description": "FTP base path on the controller for project uploads."
+                },
+                "gpl.controller.threadPollIntervalMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 5000,
+                    "description": "Thread status polling interval in milliseconds."
                 }
             }
         }

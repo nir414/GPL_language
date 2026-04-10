@@ -11,8 +11,21 @@ import { GPLHoverProvider } from './providers/hoverProvider';
 import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn, isGplDocument } from './config';
 
+// Controller integration
+import { testConnection, getControllerConfig } from './controller/controllerConnection';
+import { deploy, findProjectDirs } from './controller/deployService';
+import { RuntimeConsole } from './controller/runtimeConsole';
+import { showControllerPicker } from './controller/controllerDiscovery';
+import { ThreadTreeProvider } from './views/threadTreeProvider';
+import { ConnectionStatusBar } from './views/connectionStatusBar';
+
 // Global output channel for GPL extension logging
 let outputChannel: vscode.OutputChannel;
+let consoleChannel: vscode.OutputChannel;
+let runtimeConsole: RuntimeConsole | undefined;
+let statusBar: ConnectionStatusBar | undefined;
+let threadProvider: ThreadTreeProvider | undefined;
+let deployDiagnostics: vscode.DiagnosticCollection;
 
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('GPL Language Support');
@@ -260,6 +273,149 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    // ════════════════════════════════════════════════════════════
+    // Controller integration – initialization
+    // ════════════════════════════════════════════════════════════
+    consoleChannel = vscode.window.createOutputChannel('GPL Console');
+    context.subscriptions.push(consoleChannel);
+
+    deployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-deploy');
+    context.subscriptions.push(deployDiagnostics);
+
+    statusBar = new ConnectionStatusBar();
+    context.subscriptions.push(statusBar);
+
+    threadProvider = new ThreadTreeProvider();
+    context.subscriptions.push(
+        vscode.window.registerTreeDataProvider('gplThreads', threadProvider)
+    );
+
+    // ── Controller commands ──────────────────────────────────
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gpl.controller.connect', async () => {
+            const cfg = getControllerConfig();
+            outputChannel.appendLine(`[Controller] Connecting to ${cfg.ip}:${cfg.port} …`);
+            try {
+                const ok = await testConnection(cfg);
+                if (ok) {
+                    vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`);
+                    statusBar?.setConnected(true);
+                    statusBar?.startHeartbeat();
+                    threadProvider?.startPolling();
+                } else {
+                    vscode.window.showErrorMessage(`GPL Controller 연결 실패: ${cfg.ip}`);
+                    statusBar?.setConnected(false);
+                }
+            } catch (err: any) {
+                vscode.window.showErrorMessage(`연결 오류: ${err.message ?? err}`);
+                statusBar?.setConnected(false);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gpl.controller.disconnect', () => {
+            runtimeConsole?.stop();
+            runtimeConsole = undefined;
+            statusBar?.stopHeartbeat();
+            statusBar?.setConnected(false);
+            threadProvider?.stopPolling();
+            vscode.window.showInformationMessage('GPL Controller 연결 해제');
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gpl.controller.discover', async () => {
+            const ip = await showControllerPicker();
+            if (ip) {
+                const config = vscode.workspace.getConfiguration('gpl.controller');
+                await config.update('ip', ip, vscode.ConfigurationTarget.Workspace);
+                vscode.window.showInformationMessage(`Controller IP 설정됨: ${ip}`);
+                // Auto-connect after discovery
+                vscode.commands.executeCommand('gpl.controller.connect');
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gpl.deploy', async () => {
+            const cfg = getControllerConfig();
+            const projectDirs = await findProjectDirs();
+            if (projectDirs.length === 0) {
+                vscode.window.showWarningMessage('워크스페이스에서 .gpr 프로젝트 파일을 찾을 수 없습니다.');
+                return;
+            }
+
+            let projectDir: string;
+            if (projectDirs.length === 1) {
+                projectDir = projectDirs[0];
+            } else {
+                const pick = await vscode.window.showQuickPick(
+                    projectDirs.map(d => ({ label: d })),
+                    { placeHolder: '배포할 프로젝트를 선택하세요' }
+                );
+                if (!pick) { return; }
+                projectDir = pick.label;
+            }
+
+            outputChannel.appendLine(`[Deploy] Starting deploy: ${projectDir} → ${cfg.ip}`);
+            outputChannel.show(true);
+
+            try {
+                const result = await deploy({ projectDir }, outputChannel, deployDiagnostics);
+                if (result.success) {
+                    vscode.window.showInformationMessage(`배포 완료: ${result.projectName}`);
+                } else {
+                    const errMsg = result.compileErrors.length > 0
+                        ? `${result.compileErrors.length}개 컴파일 에러`
+                        : '알 수 없는 오류';
+                    vscode.window.showErrorMessage(`배포 실패: ${errMsg}`);
+                }
+            } catch (err: any) {
+                vscode.window.showErrorMessage(`배포 오류: ${err.message ?? err}`);
+                outputChannel.appendLine(`[Deploy] Error: ${err.stack ?? err}`);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gpl.console.start', () => {
+            const cfg = getControllerConfig();
+            if (runtimeConsole) {
+                runtimeConsole.stop();
+            }
+            runtimeConsole = new RuntimeConsole(consoleChannel);
+            runtimeConsole.onDidConnect(() => {
+                outputChannel.appendLine(`[Console] Connected to ${cfg.ip}:${cfg.consolePort}`);
+            });
+            runtimeConsole.onDidDisconnect(() => {
+                outputChannel.appendLine('[Console] Disconnected');
+            });
+            runtimeConsole.start();
+            consoleChannel.show(true);
+            vscode.window.showInformationMessage('GPL 런타임 콘솔 시작');
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gpl.console.stop', () => {
+            runtimeConsole?.stop();
+            runtimeConsole = undefined;
+            vscode.window.showInformationMessage('GPL 런타임 콘솔 중지');
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('gpl.threads.refresh', () => {
+            threadProvider?.refresh();
+        })
+    );
+
+    // ════════════════════════════════════════════════════════════
+    // Symbol cache & diagnostics initialization
+    // ════════════════════════════════════════════════════════════
+
     // Initialize symbol cache and diagnostics for open documents
     outputChannel.appendLine('Initializing symbol cache...');
     symbolCache.refresh().then(() => {
@@ -278,6 +434,11 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
+    // Controller cleanup
+    runtimeConsole?.stop();
+    statusBar?.stopHeartbeat();
+    threadProvider?.stopPolling();
+
     if (outputChannel) {
         outputChannel.appendLine('GPL Language Support extension is now deactivated!');
         outputChannel.dispose();

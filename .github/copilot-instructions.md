@@ -83,5 +83,15 @@ src/
     documentSymbolProvider.ts # Outline
     workspaceSymbolProvider.ts # Ctrl+T
     foldingRangeProvider.ts  # 폴딩
+  controller/
+    controllerConnection.ts  # TCP 명령 송수신 (포트 1402)
+    responseParser.ts        # 응답 파싱 (STATUS, 컴파일 에러, 쓰레드 등)
+    ftpClient.ts             # FTP 업로드 (포트 21, 순수 Node.js)
+    deployService.ts         # 배포 워크플로 (STOP→UPLOAD→COMPILE→START)
+    runtimeConsole.ts        # 런타임 콘솔 스트리밍 (포트 1403)
+    controllerDiscovery.ts   # UDP 브로드캐스트 제어기 검색 (포트 51417)
+  views/
+    threadTreeProvider.ts    # 사이드바 쓰레드 상태 패널
+    connectionStatusBar.ts   # 하단 상태바 연결 표시
 syntaxes/gpl.tmGrammar.json # 구문 강조
 ```

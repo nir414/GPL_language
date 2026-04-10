@@ -230,14 +230,45 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
     }
 
     private extractBaseObjectName(expression: string): string | undefined {
-        // Extract the base object name from complex expressions
+        // Extract the base object name closest to the dot (from end of expression).
+        // The old approach used ^([a-zA-Z_]\w*) which grabbed the FIRST identifier,
+        // failing on lines like "returnError = armList(0).member" where
+        // it would return "returnError" instead of "armList".
         // Examples:
-        //   "myRobot(index)" → "myRobot"
-        //   "myRobot(index)(subIndex)" → "myRobot"
-        //   "obj.prop" → "obj"
-        //   "array[0]" → "array"
-        const match = expression.match(/^([a-zA-Z_]\w*)/);
-        return match ? match[1] : undefined;
+        //   "returnError = armList(0)" → "armList"
+        //   "myRobot(index)"          → "myRobot"
+        //   "obj"                     → "obj"
+        //   "arr(0)(1)"               → "arr"
+        let pos = expression.length - 1;
+
+        // Skip trailing whitespace
+        while (pos >= 0 && /\s/.test(expression[pos])) {
+            pos--;
+        }
+
+        // Skip balanced parentheses groups from right to left
+        while (pos >= 0 && expression[pos] === ')') {
+            let depth = 0;
+            while (pos >= 0) {
+                if (expression[pos] === ')') { depth++; }
+                else if (expression[pos] === '(') { depth--; }
+                if (depth === 0) { pos--; break; }
+                pos--;
+            }
+            // Skip whitespace between consecutive parenthesized groups
+            while (pos >= 0 && /\s/.test(expression[pos])) {
+                pos--;
+            }
+        }
+
+        // Extract the identifier ending at current position
+        const endPos = pos + 1;
+        while (pos >= 0 && /[a-zA-Z0-9_]/.test(expression[pos])) {
+            pos--;
+        }
+
+        const name = expression.substring(pos + 1, endPos);
+        return name.length > 0 && /^[a-zA-Z_]/.test(name) ? name : undefined;
     }
 
     private buildLocation(symbol: GPLSymbol): vscode.Location {
@@ -375,10 +406,24 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             if (!baseObjectName) {
                 this.log(`[Member Access] Failed to extract base object name from "${objectExpression}"`);
             } else {
-                // Find the variable/object definition to get its type
-                const objectSymbol =
-                    this.symbolCache.findDefinition(baseObjectName, document.uri.fsPath) ??
-                    this.findLocalSymbol(document, baseObjectName, position.line);
+                // Find the variable/object definition to get its type.
+                // Prefer local/parameter symbol first — it has accurate type info
+                // (e.g., "armList() As RobotArm" parameter has returnType "RobotArm").
+                // Cache symbols for same-named variables may lack type info.
+                const localSymbol = this.findLocalSymbol(document, baseObjectName, position.line);
+                const cacheSymbol = this.symbolCache.findDefinition(baseObjectName, document.uri.fsPath);
+
+                // Pick local if it has type info, or if cache has no result;
+                // otherwise prefer whichever has returnType.
+                let objectSymbol: GPLSymbol | undefined;
+                if (localSymbol && localSymbol.returnType) {
+                    objectSymbol = localSymbol;
+                } else if (cacheSymbol && cacheSymbol.returnType) {
+                    objectSymbol = cacheSymbol;
+                } else {
+                    // Neither has type — prefer local (closer scope), then cache
+                    objectSymbol = localSymbol ?? cacheSymbol;
+                }
 
                 if (objectSymbol) {
                     this.log(`[Object Found] Name: ${objectSymbol.name} | Type: ${objectSymbol.returnType || 'N/A'} | Kind: ${objectSymbol.kind}`);

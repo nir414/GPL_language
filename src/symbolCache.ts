@@ -6,6 +6,8 @@ import { isTraceOn, ciEq } from './config';
 export class SymbolCache {
     private symbols: Map<string, GPLSymbol[]> = new Map();
     private outputChannel?: vscode.OutputChannel;
+    /** True while refresh/indexWorkspace is running — suppresses duplicate updates from onDidOpenTextDocument. */
+    public isRefreshing = false;
 
     constructor(outputChannel?: vscode.OutputChannel) {
         this.outputChannel = outputChannel;
@@ -22,8 +24,13 @@ export class SymbolCache {
 
     public async refresh(): Promise<void> {
         this.log('[SymbolCache] Starting refresh...');
-        this.symbols.clear();
-        await this.indexWorkspace();
+        this.isRefreshing = true;
+        try {
+            this.symbols.clear();
+            await this.indexWorkspace();
+        } finally {
+            this.isRefreshing = false;
+        }
         this.log(`[SymbolCache] Refresh complete. Total symbols: ${this.getAllSymbols().length}`);
     }
 
@@ -406,7 +413,7 @@ export class SymbolCache {
         const projectFiles = await this.getProjectSourcesFromGpr();
 
         const filesToIndex = projectFiles ?? (await vscode.workspace.findFiles(
-            '{**/*.gpl,**/*.gpo}',
+            '**/*.gpl',
             '{**/node_modules/**,**/bin/**,**/.git/**}'
         ));
 
@@ -419,6 +426,11 @@ export class SymbolCache {
 
         for (const file of filesToIndex) {
             try {
+                const fsPath = (file as vscode.Uri).fsPath ?? String(file);
+                // Skip .gpo files during indexing — they are compiled binary objects
+                if (fsPath.toLowerCase().endsWith('.gpo')) {
+                    continue;
+                }
                 const document = await vscode.workspace.openTextDocument(file);
                 this.updateDocument(document);
             } catch (error) {

@@ -10,5 +10,8 @@
   "search.exclude": {
     "**/node_modules": true,
     "**/out": true
-  }
+  },
+  "githubPullRequests.ignoredPullRequestBranches": [
+    "main"
+  ]
 }

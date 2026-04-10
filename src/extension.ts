@@ -242,7 +242,10 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.workspace.onDidOpenTextDocument((document) => {
             if (isGplDocument(document)) {
-                symbolCache.updateDocument(document);
+                // Skip during refresh — indexWorkspace already calls updateDocument
+                if (!symbolCache.isRefreshing) {
+                    symbolCache.updateDocument(document);
+                }
                 diagnosticProvider.scheduleDiagnostics(document, 0);
             }
         })

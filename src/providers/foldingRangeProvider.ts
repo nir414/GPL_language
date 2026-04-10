@@ -16,8 +16,15 @@ export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
     ): vscode.ProviderResult<vscode.FoldingRange[]> {
         const ranges: vscode.FoldingRange[] = [];
 
-        // Stack of opening constructs: { kind, startLine }
-        const stack: Array<{ kind: string; startLine: number }> = [];
+        // Stack entry tracks current section start for mid-block separator folding
+        interface StackEntry {
+            kind: string;
+            startLine: number;
+            sectionStart: number;   // start of current section (If/ElseIf/Else, Case, Catch/Finally)
+            hasMidBlocks: boolean;  // true if any mid-block separator was encountered
+        }
+
+        const stack: StackEntry[] = [];
 
         const lineCount = document.lineCount;
 
@@ -41,14 +48,16 @@ export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
             { kind: 'class', re: /^\s*(Public\s+|Private\s+|Friend\s+)?Class\b/i },
             { kind: 'type', re: /^\s*Type\b/i },
             { kind: 'enum', re: /^\s*Enum\b/i },
-            { kind: 'sub', re: /^\s*(Public\s+|Private\s+|Friend\s+)?(Shared\s+)?Sub\b/i },
-            { kind: 'function', re: /^\s*(Public\s+|Private\s+|Friend\s+)?(Shared\s+)?Function\b/i },
-            { kind: 'property', re: /^\s*(Public\s+|Private\s+|Friend\s+)?(ReadOnly\s+|WriteOnly\s+)?Property\b/i },
+            { kind: 'sub', re: /^\s*(?:(?:Public|Private|Friend|Shared)\s+)*Sub\b/i },
+            { kind: 'function', re: /^\s*(?:(?:Public|Private|Friend|Shared)\s+)*Function\b/i },
+            { kind: 'property', re: /^\s*(?:(?:Public|Private|Friend|ReadOnly|WriteOnly)\s+)*Property\b/i },
             { kind: 'get', re: /^\s*Get\b/i },
             { kind: 'set', re: /^\s*Set\b/i },
             // Block forms only (single-line If should not fold)
             { kind: 'if', re: /^\s*If\b.*\bThen\s*(?:'.*)?$/i },
-            { kind: 'select', re: /^\s*Select\s+Case\b/i },
+            // GPL uses "Select expr" (without Case keyword), e.g. "Select setupOrder(i)"
+            // VB.NET uses "Select Case expr" — support both forms.
+            { kind: 'select', re: /^\s*Select\b(?:\s+Case\b)?\s+/i },
             { kind: 'for', re: /^\s*For\b/i },
             { kind: 'while', re: /^\s*While\b/i },
             { kind: 'do', re: /^\s*Do\b/i },
@@ -75,6 +84,16 @@ export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
             { kind: 'try', re: /^\s*End\s+Try\b/i }
         ];
 
+        // Mid-block separators: close previous section, start new section within parent block.
+        // Order matters: ElseIf must be checked before Else.
+        const midBlockPatterns: Array<{ parentKind: string; re: RegExp }> = [
+            { parentKind: 'if', re: /^\s*Else\s*If\b/i },           // ElseIf / Else If
+            { parentKind: 'if', re: /^\s*Else\b(?!\s*If\b)/i },     // Else (not ElseIf)
+            { parentKind: 'select', re: /^\s*Case\b/i },             // Case / Case Else
+            { parentKind: 'try', re: /^\s*Catch\b/i },               // Catch
+            { parentKind: 'try', re: /^\s*Finally\b/i },             // Finally
+        ];
+
         const isSingleLineIf = (text: string): boolean => {
             // Single-line If pattern: If ... Then <stmt>
             // We treat it as non-foldable. We accept that this is heuristic.
@@ -98,15 +117,22 @@ export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
         };
 
         for (let line = 0; line < lineCount; line++) {
-            const text = document.lineAt(line).text;
+            let text = document.lineAt(line).text;
+            const logicalStartLine = line;
+
+            // Handle VB/GPL line continuation: " _" at end of line joins with next line.
+            // e.g. "If condition1 And _\n     condition2 Then" → single logical line.
+            while (line + 1 < lineCount && /\s_\s*$/.test(text)) {
+                line++;
+                text = text.replace(/\s_\s*$/, ' ') + document.lineAt(line).text.trimStart();
+            }
 
             // Region folding
             if (regionStart.test(text)) {
-                stack.push({ kind: 'region', startLine: line });
+                stack.push({ kind: 'region', startLine: logicalStartLine, sectionStart: logicalStartLine, hasMidBlocks: false });
                 continue;
             }
             if (regionEnd.test(text)) {
-                // Close nearest region
                 for (let i = stack.length - 1; i >= 0; i--) {
                     if (stack[i].kind === 'region') {
                         const open = stack.splice(i, 1)[0];
@@ -122,35 +148,56 @@ export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
                 continue;
             }
 
-            // Close blocks first (handles End ... at current line)
-            let closed = false;
+            // 1. Close blocks (End ... / Next / Wend / Loop)
+            let handled = false;
             for (const ep of endPatterns) {
                 if (ep.re.test(text)) {
-                    // Close nearest matching kind from stack
                     for (let i = stack.length - 1; i >= 0; i--) {
                         if (stack[i].kind === ep.kind) {
                             const open = stack.splice(i, 1)[0];
-                            // Fold up to the line before the End/Next/Loop keyword (common style)
+                            // Close last section if mid-block separators were used
+                            if (open.hasMidBlocks) {
+                                addRange(open.sectionStart, Math.max(open.sectionStart, line - 1));
+                            }
+                            // Fold the whole block
                             addRange(open.startLine, Math.max(open.startLine, line - 1));
-                            closed = true;
+                            handled = true;
                             break;
                         }
                     }
                     break;
                 }
             }
-            if (closed) {
-                continue;
-            }
+            if (handled) { continue; }
 
-            // Open blocks
+            // 2. Mid-block separators (ElseIf, Else, Case, Catch, Finally)
+            for (const mb of midBlockPatterns) {
+                if (mb.re.test(text)) {
+                    for (let i = stack.length - 1; i >= 0; i--) {
+                        if (stack[i].kind === mb.parentKind) {
+                            const parent = stack[i];
+                            // Close previous section
+                            addRange(parent.sectionStart, Math.max(parent.sectionStart, logicalStartLine - 1));
+                            // Start new section
+                            parent.sectionStart = logicalStartLine;
+                            parent.hasMidBlocks = true;
+                            handled = true;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+            if (handled) { continue; }
+
+            // 3. Open blocks
             for (const bp of beginPatterns) {
                 if (bp.kind === 'if' && isSingleLineIf(text)) {
                     continue;
                 }
 
                 if (bp.re.test(text)) {
-                    stack.push({ kind: bp.kind, startLine: line });
+                    stack.push({ kind: bp.kind, startLine: logicalStartLine, sectionStart: logicalStartLine, hasMidBlocks: false });
                     break;
                 }
             }

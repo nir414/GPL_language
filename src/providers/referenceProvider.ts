@@ -100,14 +100,43 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
     }
 
     private extractBaseObjectName(expression: string): string | undefined {
-        // Extract the base object name from complex expressions
+        // Extract the base object name closest to the dot (from end of expression).
+        // Must scan from the END to handle lines like "returnError = armList(0).member"
+        // where the first identifier (returnError) is NOT the base object (armList).
         // Examples:
-        //   "myRobot(index)" → "myRobot"
-        //   "myRobot(index)(subIndex)" → "myRobot"
-        //   "obj.prop" → "obj"
-        //   "array[0]" → "array"
-        const match = expression.match(/^([a-zA-Z_]\w*)/);
-        return match ? match[1] : undefined;
+        //   "returnError = armList(0)" → "armList"
+        //   "myRobot(index)"          → "myRobot"
+        //   "obj"                     → "obj"
+        //   "arr(0)(1)"               → "arr"
+        let pos = expression.length - 1;
+
+        // Skip trailing whitespace
+        while (pos >= 0 && /\s/.test(expression[pos])) {
+            pos--;
+        }
+
+        // Skip balanced parentheses groups from right to left
+        while (pos >= 0 && expression[pos] === ')') {
+            let depth = 0;
+            while (pos >= 0) {
+                if (expression[pos] === ')') { depth++; }
+                else if (expression[pos] === '(') { depth--; }
+                if (depth === 0) { pos--; break; }
+                pos--;
+            }
+            while (pos >= 0 && /\s/.test(expression[pos])) {
+                pos--;
+            }
+        }
+
+        // Extract the identifier ending at current position
+        const endPos = pos + 1;
+        while (pos >= 0 && /[a-zA-Z0-9_]/.test(expression[pos])) {
+            pos--;
+        }
+
+        const name = expression.substring(pos + 1, endPos);
+        return name.length > 0 && /^[a-zA-Z_]/.test(name) ? name : undefined;
     }
 
     private getQualifierBefore(text: string, identifierIndex: number): string | undefined {
@@ -547,7 +576,8 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                             return false;
                         }
                         const lower = name.toLowerCase();
-                        return lower.endsWith('.gpl') || lower.endsWith('.gpo');
+                        // Skip .gpo — binary compiled files, useless for text search
+                        return lower.endsWith('.gpl');
                     })
                     .slice(0, 200)
                     .map(([name]) => vscode.Uri.file(path.join(dirFsPath, name)));
@@ -563,7 +593,13 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                         continue;
                     }
 
-                    const doc = await vscode.workspace.openTextDocument(uri);
+                    let doc: vscode.TextDocument;
+                    try {
+                        doc = await vscode.workspace.openTextDocument(uri);
+                    } catch {
+                        // Skip files that cannot be opened (binary, encoding issues, etc.)
+                        continue;
+                    }
 
                     if (shouldPreferQualifiedOnly && escapedQualifier) {
                         folderFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedQualifier), {});

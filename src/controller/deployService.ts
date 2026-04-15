@@ -1,5 +1,6 @@
 /**
- * 배포 서비스: STOP → UPLOAD → COMPILE → START 워크플로.
+ * 배포 서비스: STOP → UPLOAD → COMPILE (→ START) 워크플로.
+ * skipStart 옵션으로 Start 단계를 생략하여 디버그 준비용으로 사용 가능.
  * controller-f5.ps1의 핵심 로직을 TypeScript로 포팅.
  */
 
@@ -61,9 +62,11 @@ export async function deploy(
 
     const ftpProjectDir = `${cfg.ftpBasePath}/${folderName}`;
     const loadPath = ftpProjectDir;
+    const totalPhases = options.skipStart ? 4 : 5;
+    let phase = 0;
 
     output.appendLine(`╭──────────────────────────────────────────────────────╮`);
-    output.appendLine(`│  ◆ ${projectName}`);
+    output.appendLine(`│  ◆ ${projectName}${options.skipStart ? ' (Build Only)' : ''}`);
     output.appendLine(`├──────────────────────────────────────────────────────┤`);
     output.appendLine(`│  Local:  ${options.projectDir}`);
     output.appendLine(`│  FTP:    ${ftpProjectDir}`);
@@ -73,7 +76,8 @@ export async function deploy(
     // ── Phase 1: STOP ─────────────────────────────
 
     output.appendLine('');
-    output.appendLine('━━ [1/5] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    phase++;
+    output.appendLine(`━━ [${phase}/${totalPhases}] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     output.appendLine('│ Stop -all');
 
     if (token?.isCancellationRequested) { return result; }
@@ -88,7 +92,8 @@ export async function deploy(
     // ── Phase 2: UPLOAD ───────────────────────────
 
     output.appendLine('');
-    output.appendLine('━━ [2/5] UPLOAD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    phase++;
+    output.appendLine(`━━ [${phase}/${totalPhases}] UPLOAD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
     if (token?.isCancellationRequested) { return result; }
 
@@ -110,7 +115,8 @@ export async function deploy(
     // ── Phase 3: COMPILE ──────────────────────────
 
     output.appendLine('');
-    output.appendLine('━━ [3/5] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    phase++;
+    output.appendLine(`━━ [${phase}/${totalPhases}] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
     if (token?.isCancellationRequested) { return result; }
 
@@ -180,7 +186,8 @@ export async function deploy(
 
     if (!options.skipStart) {
         output.appendLine('');
-        output.appendLine('━━ [4/5] START ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        phase++;
+        output.appendLine(`━━ [${phase}/${totalPhases}] START ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
         if (token?.isCancellationRequested) { return result; }
 
@@ -194,10 +201,11 @@ export async function deploy(
         }
     }
 
-    // ── Phase 5: ERROR CHECK ──────────────────────
+    // ── Phase: ERROR CHECK ─────────────────
 
     output.appendLine('');
-    output.appendLine('━━ [5/5] ERROR CHECK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    phase++;
+    output.appendLine(`━━ [${phase}/${totalPhases}] ERROR CHECK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
     const errorLogResp = await trySendCommand('ErrorLog', cfg);
     if (errorLogResp) {
@@ -214,9 +222,10 @@ export async function deploy(
 
     result.success = compiled;
 
+    const doneLabel = options.skipStart ? 'Build' : 'Deploy';
     output.appendLine('');
     output.appendLine('══════════════════════════════════════════════════════');
-    output.appendLine(`✔ Deploy ${result.success ? 'complete' : 'failed'}: ${result.projectName}`);
+    output.appendLine(`✔ ${doneLabel} ${result.success ? 'complete' : 'failed'}: ${result.projectName}`);
     output.appendLine('══════════════════════════════════════════════════════');
 
     return result;

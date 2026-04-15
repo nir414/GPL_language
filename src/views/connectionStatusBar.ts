@@ -1,15 +1,19 @@
 /**
  * 상태바 — 제어기 연결 상태를 하단 바에 표시.
  * 클릭 시 연결/해제 토글 또는 IP 변경 가능.
+ *
+ * 표시 조건: GPL 파일이 활성 에디터에 열려 있거나, 제어기에 연결된 상태.
+ * 그 외에는 자동으로 숨김.
  */
 
 import * as vscode from 'vscode';
-import { getControllerConfig, testConnection } from '../controller/controllerConnection';
+import { getControllerConfig } from '../controller/controllerConnection';
+import { isGplDocument } from '../config';
 
 export class ConnectionStatusBar implements vscode.Disposable {
     private item: vscode.StatusBarItem;
     private _isConnected = false;
-    private checkTimer: ReturnType<typeof setInterval> | null = null;
+    private disposables: vscode.Disposable[] = [];
 
     get isConnected(): boolean { return this._isConnected; }
 
@@ -17,7 +21,12 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         this.item.command = 'gpl.controller.connect';
         this.updateDisplay(false);
-        this.item.show();
+
+        this.disposables.push(
+            vscode.window.onDidChangeActiveTextEditor(() => this.updateVisibility())
+        );
+
+        this.updateVisibility();
     }
 
     /**
@@ -25,30 +34,22 @@ export class ConnectionStatusBar implements vscode.Disposable {
      */
     setConnected(connected: boolean): void {
         this._isConnected = connected;
+        this.item.command = connected ? 'gpl.controller.disconnect' : 'gpl.controller.connect';
         this.updateDisplay(connected);
-    }
-
-    /**
-     * 주기적 heartbeat 시작.
-     */
-    startHeartbeat(intervalMs: number = 15000): void {
-        this.stopHeartbeat();
-        this.checkTimer = setInterval(async () => {
-            const ok = await testConnection();
-            this.setConnected(ok);
-        }, intervalMs);
-    }
-
-    stopHeartbeat(): void {
-        if (this.checkTimer) {
-            clearInterval(this.checkTimer);
-            this.checkTimer = null;
-        }
+        this.updateVisibility();
     }
 
     dispose(): void {
-        this.stopHeartbeat();
+        this.disposables.forEach(d => d.dispose());
         this.item.dispose();
+    }
+
+    private updateVisibility(): void {
+        if (this._isConnected || isGplDocument(vscode.window.activeTextEditor?.document)) {
+            this.item.show();
+        } else {
+            this.item.hide();
+        }
     }
 
     private updateDisplay(connected: boolean): void {

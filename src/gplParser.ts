@@ -148,7 +148,7 @@ export class GPLParser {
 
             // Parse Function: token-based parsing to support any keyword order
             // Use (.*) instead of ([^)]*) to handle array params like "armList() As RobotArm"
-            const functionMatch = trimmedLine.match(/\bFunction\s+(\w+)\s*\((.*)\)(?:\s+As\s+(\w+))?/i);
+            const functionMatch = trimmedLine.match(/\bFunction\s+(\w+)(?:\s*\((.*)\))?(?:\s+As\s+(\w+))?/i);
             if (functionMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Friend|Shared)\s+)*Function\b/i)) {
                 const name = functionMatch[1];
                 const params = functionMatch[2] ? functionMatch[2].split(',').map(p => p.trim()) : [];
@@ -209,7 +209,7 @@ export class GPLParser {
 
             // Parse Sub: token-based parsing to support any keyword order
             // Use (.*) instead of ([^)]*) to handle array params like "armList() As RobotArm"
-            const subMatch = trimmedLine.match(/\bSub\s+(\w+)\s*\((.*)\)/i);
+            const subMatch = trimmedLine.match(/\bSub\s+(\w+)(?:\s*\((.*)\))?/i);
             if (subMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Shared)\b\s+)*Sub\b/i)) {
                 const name = subMatch[1];
                 const params = subMatch[2] ? subMatch[2].split(',').map(p => p.trim()) : [];

@@ -1,228 +1,77 @@
 /**
- * FTP 클라이언트 — Node.js net 모듈 기반 최소 구현.
- * basic-ftp 등 외부 의존성 없이 동작한다.
+ * FTP 클라이언트 — basic-ftp 패키지 기반.
  * Brooks 제어기 FTP 서버는 anonymous 접속만 지원한다.
  */
 
-import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Client as FtpClient, FileInfo } from 'basic-ftp';
 
-const FTP_PORT = 21;
-const TIMEOUT_MS = 10000;
+const TIMEOUT_MS = 10_000;
 
-interface FtpResponse {
-    code: number;
-    message: string;
+export interface FtpEntry {
+	name: string;
+	isDirectory: boolean;
+	size: number;
+	modifiedAt?: Date;
+}
+
+function toFtpEntry(fi: FileInfo): FtpEntry {
+	return {
+		name: fi.name,
+		isDirectory: fi.isDirectory,
+		size: fi.size,
+		modifiedAt: fi.modifiedAt ?? (fi.rawModifiedAt ? new Date(fi.rawModifiedAt) : undefined),
+	};
 }
 
 /**
- * 단일 FTP 세션을 관리하는 클라이언트.
+ * anonymous 접속된 basic-ftp Client를 생성한다.
+ * 호출자가 반드시 client.close()를 호출해야 한다.
  */
-export class FtpClient {
-    private socket: net.Socket | null = null;
-    private host: string;
-    private port: number;
-    private dataBuffer = '';
+async function createClient(host: string): Promise<FtpClient> {
+	const client = new FtpClient(TIMEOUT_MS);
+	await client.access({ host, user: 'anonymous', password: 'anonymous' });
+	return client;
+}
 
-    constructor(host: string, port: number = FTP_PORT) {
-        this.host = host;
-        this.port = port;
-    }
+// ── Public API (기존 시그니처 유지) ─────────────────────
 
-    async connect(): Promise<void> {
-        this.socket = new net.Socket();
-        await this.socketConnect(this.host, this.port);
-        await this.readResponse(); // 220 welcome
-        await this.command('USER anonymous');
-        // 서버가 331을 보내면 PASS 필요
-        try { await this.command('PASS anonymous'); } catch { /* 일부 서버는 PASS 불필요 */ }
-    }
+/**
+ * 제어기 원격 디렉터리 내용 조회.
+ */
+export async function listRemoteDir(host: string, remotePath: string): Promise<FtpEntry[]> {
+	const client = await createClient(host);
+	try {
+		const list = await client.list(remotePath);
+		return list.map(toFtpEntry);
+	} finally {
+		client.close();
+	}
+}
 
-    async disconnect(): Promise<void> {
-        if (this.socket) {
-            try { await this.command('QUIT'); } catch { /* best-effort */ }
-            this.socket.destroy();
-            this.socket = null;
-        }
-    }
+/**
+ * 제어기 원격 디렉터리 재귀 삭제.
+ */
+export async function removeRemoteDir(host: string, remotePath: string): Promise<void> {
+	const client = await createClient(host);
+	try {
+		await client.removeDir(remotePath);
+	} finally {
+		client.close();
+	}
+}
 
-    /**
-     * 제어기에 파일 업로드.
-     */
-    async uploadFile(localPath: string, remotePath: string): Promise<void> {
-        // 디렉터리 재귀 생성
-        const dir = remotePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-        if (dir) {
-            await this.mkdirRecursive(dir);
-        }
-
-        // Passive 모드로 데이터 연결
-        const dataConn = await this.enterPassive();
-        await this.sendRaw(`STOR ${remotePath}`);
-
-        const fileData = fs.readFileSync(localPath);
-        await this.writeData(dataConn, fileData);
-        dataConn.destroy();
-
-        await this.readResponse(); // 226 Transfer complete
-    }
-
-    /**
-     * 원격 파일 크기 조회.
-     * 실패 시 -1 반환.
-     */
-    async getFileSize(remotePath: string): Promise<number> {
-        try {
-            const resp = await this.command(`SIZE ${remotePath}`);
-            if (resp.code === 213) {
-                return parseInt(resp.message.trim(), 10);
-            }
-        } catch { /* ignore */ }
-        return -1;
-    }
-
-    /**
-     * 원격 파일의 특정 오프셋부터 다운로드.
-     */
-    async downloadFrom(remotePath: string, offset: number = 0): Promise<Buffer> {
-        if (offset > 0) {
-            await this.command(`REST ${offset}`);
-        }
-        const dataConn = await this.enterPassive();
-        await this.sendRaw(`RETR ${remotePath}`);
-
-        const chunks: Buffer[] = [];
-        return new Promise<Buffer>((resolve, reject) => {
-            const timer = setTimeout(() => {
-                dataConn.destroy();
-                resolve(Buffer.concat(chunks));
-            }, TIMEOUT_MS);
-
-            dataConn.on('data', (chunk: Buffer) => chunks.push(chunk));
-            dataConn.on('end', () => {
-                clearTimeout(timer);
-                resolve(Buffer.concat(chunks));
-            });
-            dataConn.on('error', (err) => {
-                clearTimeout(timer);
-                reject(err);
-            });
-        }).finally(() => {
-            // 226 Transfer complete 소비
-            this.readResponse().catch(() => {});
-        });
-    }
-
-    // ── 내부 헬퍼 ──────────────────────────────
-
-    private socketConnect(host: string, port: number): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const sock = this.socket!;
-            const timer = setTimeout(() => {
-                sock.destroy();
-                reject(new Error(`FTP connect timeout: ${host}:${port}`));
-            }, TIMEOUT_MS);
-
-            sock.connect(port, host, () => {
-                clearTimeout(timer);
-                resolve();
-            });
-            sock.on('error', (err) => {
-                clearTimeout(timer);
-                reject(err);
-            });
-        });
-    }
-
-    private async command(cmd: string): Promise<FtpResponse> {
-        await this.sendRaw(cmd);
-        return this.readResponse();
-    }
-
-    private sendRaw(cmd: string): Promise<void> {
-        return new Promise((resolve, reject) => {
-            if (!this.socket) { return reject(new Error('Not connected')); }
-            this.socket.write(cmd + '\r\n', 'ascii', (err) => {
-                if (err) { reject(err); } else { resolve(); }
-            });
-        });
-    }
-
-    private readResponse(): Promise<FtpResponse> {
-        return new Promise((resolve, reject) => {
-            if (!this.socket) { return reject(new Error('Not connected')); }
-
-            const timer = setTimeout(() => reject(new Error('FTP response timeout')), TIMEOUT_MS);
-
-            const onData = (data: Buffer) => {
-                this.dataBuffer += data.toString('ascii');
-                const lines = this.dataBuffer.split('\r\n');
-
-                for (let i = 0; i < lines.length - 1; i++) {
-                    const line = lines[i];
-                    // FTP 응답: "NNN text" (3자리 숫자 + 공백)
-                    const match = line.match(/^(\d{3})\s(.*)$/);
-                    if (match) {
-                        this.dataBuffer = lines.slice(i + 1).join('\r\n');
-                        this.socket!.removeListener('data', onData);
-                        clearTimeout(timer);
-                        resolve({ code: parseInt(match[1], 10), message: match[2] });
-                        return;
-                    }
-                }
-            };
-
-            this.socket.on('data', onData);
-        });
-    }
-
-    private async enterPassive(): Promise<net.Socket> {
-        const resp = await this.command('PASV');
-        // 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
-        const m = resp.message.match(/\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)/);
-        if (!m) { throw new Error(`Cannot parse PASV response: ${resp.message}`); }
-
-        const dataPort = parseInt(m[5], 10) * 256 + parseInt(m[6], 10);
-
-        return new Promise<net.Socket>((resolve, reject) => {
-            const sock = new net.Socket();
-            const timer = setTimeout(() => {
-                sock.destroy();
-                reject(new Error('PASV data connection timeout'));
-            }, TIMEOUT_MS);
-
-            sock.connect(dataPort, this.host, () => {
-                clearTimeout(timer);
-                resolve(sock);
-            });
-            sock.on('error', (err) => {
-                clearTimeout(timer);
-                reject(err);
-            });
-        });
-    }
-
-    private writeData(sock: net.Socket, data: Buffer): Promise<void> {
-        return new Promise((resolve, reject) => {
-            sock.write(data, (err) => {
-                if (err) { reject(err); } else { resolve(); }
-            });
-        });
-    }
-
-    private async mkdirRecursive(dirPath: string): Promise<void> {
-        const parts = dirPath.replace(/\\/g, '/').split('/').filter(p => p.length > 0);
-        let current = '';
-        for (const part of parts) {
-            current += '/' + part;
-            try {
-                await this.command(`MKD ${current}`);
-            } catch {
-                // 이미 존재 (550) 등은 무시
-            }
-        }
-    }
+/**
+ * 제어기 원격 파일 삭제.
+ */
+export async function removeRemoteFile(host: string, remotePath: string): Promise<void> {
+	const client = await createClient(host);
+	try {
+		await client.remove(remotePath);
+	} finally {
+		client.close();
+	}
 }
 
 /**
@@ -230,60 +79,133 @@ export class FtpClient {
  * 반환: { uploaded, skipped, totalBytes }
  */
 export async function uploadProject(
-    host: string,
-    localDir: string,
-    remoteDir: string,
-    options?: { skipUnchanged?: boolean; onProgress?: (current: number, total: number, file: string) => void }
+	host: string,
+	localDir: string,
+	remoteDir: string,
+	options?: { skipUnchanged?: boolean; onProgress?: (current: number, total: number, file: string) => void },
 ): Promise<{ uploaded: number; skipped: number; totalBytes: number }> {
-    const client = new FtpClient(host);
-    await client.connect();
+	const client = await createClient(host);
 
-    try {
-        const files = getAllFiles(localDir);
-        let uploaded = 0;
-        let skipped = 0;
-        let totalBytes = 0;
+	try {
+		const files = getAllFiles(localDir);
+		let uploaded = 0;
+		let skipped = 0;
+		let totalBytes = 0;
 
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            const relative = path.relative(localDir, file).replace(/\\/g, '/');
-            const remotePath = `${remoteDir}/${relative}`;
-            const stat = fs.statSync(file);
-            totalBytes += stat.size;
+		for (let i = 0; i < files.length; i++) {
+			const file = files[i];
+			const relative = path.relative(localDir, file).replace(/\\/g, '/');
+			const remotePath = `${remoteDir}/${relative}`;
+			const stat = fs.statSync(file);
+			totalBytes += stat.size;
 
-            let skip = false;
-            if (options?.skipUnchanged) {
-                const remoteSize = await client.getFileSize(remotePath);
-                if (remoteSize === stat.size) {
-                    skip = true;
-                }
-            }
+			let skip = false;
+			if (options?.skipUnchanged) {
+				try {
+					const remoteSize = await client.size(remotePath);
+					if (remoteSize === stat.size) { skip = true; }
+				} catch {
+					// 원격 파일 없음 → 업로드 필요
+				}
+			}
 
-            if (skip) {
-                skipped++;
-            } else {
-                await client.uploadFile(file, remotePath);
-                uploaded++;
-            }
+			if (skip) {
+				skipped++;
+			} else {
+				const dir = path.posix.dirname(remotePath);
+				await client.ensureDir(dir);
+				await client.cd('/');
+				await client.uploadFrom(file, remotePath);
+				uploaded++;
+			}
 
-            options?.onProgress?.(i + 1, files.length, relative);
-        }
+			options?.onProgress?.(i + 1, files.length, relative);
+		}
 
-        return { uploaded, skipped, totalBytes };
-    } finally {
-        await client.disconnect();
-    }
+		return { uploaded, skipped, totalBytes };
+	} finally {
+		client.close();
+	}
 }
 
 function getAllFiles(dir: string): string[] {
-    const results: string[] = [];
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-            results.push(...getAllFiles(full));
-        } else {
-            results.push(full);
-        }
-    }
-    return results;
+	const results: string[] = [];
+	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+		const full = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			results.push(...getAllFiles(full));
+		} else {
+			results.push(full);
+		}
+	}
+	return results;
+}
+
+/**
+ * 제어기 FTP 프로젝트를 로컬로 다운로드.
+ * 원격 폴더를 재귀 탐색하여 localDir에 동일 구조로 저장한다.
+ */
+export async function downloadProject(
+	host: string,
+	remoteDir: string,
+	localDir: string,
+	onProgress?: (current: number, total: number, file: string) => void,
+): Promise<{ downloaded: number; totalBytes: number }> {
+	const client = await createClient(host);
+
+	try {
+		// 1) 재귀적으로 원격 파일 목록 수집
+		const remoteFiles: { remotePath: string; relativePath: string; size: number }[] = [];
+		await collectRemoteFiles(client, remoteDir, '', remoteFiles);
+
+		let downloaded = 0;
+		let totalBytes = 0;
+
+		// 2) 각 파일 다운로드
+		for (let i = 0; i < remoteFiles.length; i++) {
+			const rf = remoteFiles[i];
+			const localPath = path.join(localDir, rf.relativePath);
+
+			// 로컬 디렉터리 생성
+			const dir = path.dirname(localPath);
+			if (!fs.existsSync(dir)) {
+				fs.mkdirSync(dir, { recursive: true });
+			}
+
+			await client.downloadTo(localPath, rf.remotePath);
+			const stat = fs.statSync(localPath);
+			totalBytes += stat.size;
+			downloaded++;
+
+			onProgress?.(i + 1, remoteFiles.length, rf.relativePath);
+		}
+
+		return { downloaded, totalBytes };
+	} finally {
+		client.close();
+	}
+}
+
+/**
+ * 원격 디렉터리를 재귀 탐색하여 파일 목록을 수집.
+ */
+async function collectRemoteFiles(
+	client: FtpClient,
+	baseDir: string,
+	relative: string,
+	results: { remotePath: string; relativePath: string; size: number }[],
+): Promise<void> {
+	const currentDir = relative ? `${baseDir}/${relative}` : baseDir;
+	const entries = await client.list(currentDir);
+
+	for (const entry of entries) {
+		const rel = relative ? `${relative}/${entry.name}` : entry.name;
+		const full = `${currentDir}/${entry.name}`;
+
+		if (entry.isDirectory) {
+			await collectRemoteFiles(client, baseDir, rel, results);
+		} else {
+			results.push({ remotePath: full, relativePath: rel, size: entry.size });
+		}
+	}
 }

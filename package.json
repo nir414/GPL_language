@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.3.0",
+    "version": "0.5.19",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -41,11 +41,12 @@
         "onCommand:gpl.analyzeXmlEncoding",
         "onCommand:gpl.controller.connect",
         "onCommand:gpl.controller.disconnect",
-        "onCommand:gpl.controller.discover",
         "onCommand:gpl.deploy",
+        "onCommand:gpl.deployRun",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
-        "onCommand:gpl.threads.refresh"
+        "onCommand:gpl.threads.refresh",
+        "onDebug"
     ],
     "contributes": {
         "languages": [
@@ -67,6 +68,65 @@
                 "language": "gpl",
                 "scopeName": "source.gpl",
                 "path": "./syntaxes/gpl.tmGrammar.json"
+            }
+        ],
+        "breakpoints": [
+            {
+                "language": "gpl"
+            }
+        ],
+        "debuggers": [
+            {
+                "type": "brooks-gpl",
+                "languages": [
+                    "gpl"
+                ],
+                "label": "GPL Debug",
+                "configurationAttributes": {
+                    "attach": {
+                        "properties": {
+                            "controllerIp": {
+                                "type": "string",
+                                "description": "Brooks controller IP address (defaults to gpl.controller.ip setting)",
+                                "default": ""
+                            },
+                            "controllerPort": {
+                                "type": "number",
+                                "description": "Controller TCP command port (defaults to gpl.controller.port setting)",
+                                "default": 1402
+                            },
+                            "stopOnEntry": {
+                                "type": "boolean",
+                                "description": "Break all threads on attach",
+                                "default": false
+                            },
+                            "projectName": {
+                                "type": "string",
+                                "description": "GPL project name on the controller (auto-detected from Project.gpr if omitted)",
+                                "default": ""
+                            }
+                        }
+                    }
+                },
+                "initialConfigurations": [
+                    {
+                        "type": "brooks-gpl",
+                        "request": "attach",
+                        "name": "Attach to GPL Controller"
+                    }
+                ],
+                "configurationSnippets": [
+                    {
+                        "label": "GPL Debug: Attach to Controller",
+                        "description": "Attach to a Brooks controller for GPL debugging",
+                        "body": {
+                            "type": "brooks-gpl",
+                            "request": "attach",
+                            "name": "Attach to GPL Controller",
+                            "projectName": ""
+                        }
+                    }
+                ]
             }
         ],
         "commands": [
@@ -97,13 +157,13 @@
                 "icon": "$(debug-disconnect)"
             },
             {
-                "command": "gpl.controller.discover",
-                "title": "GPL: Discover Controllers",
-                "icon": "$(search)"
+                "command": "gpl.deploy",
+                "title": "GPL: Deploy (Build Only)",
+                "icon": "$(cloud-upload)"
             },
             {
-                "command": "gpl.deploy",
-                "title": "GPL: Deploy to Controller",
+                "command": "gpl.deployRun",
+                "title": "GPL: Deploy & Run",
                 "icon": "$(rocket)"
             },
             {
@@ -118,8 +178,98 @@
             },
             {
                 "command": "gpl.threads.refresh",
-                "title": "GPL: Refresh Threads",
+                "title": "GPL: Refresh All",
                 "icon": "$(refresh)"
+            },
+            {
+                "command": "gpl.controller.showTraffic",
+                "title": "GPL: Show Traffic Monitor",
+                "icon": "$(radio-tower)"
+            },
+            {
+                "command": "gpl.controller.sendCommand",
+                "title": "GPL: Send Command to Controller",
+                "icon": "$(debug-console)"
+            },
+            {
+                "command": "gpl.controller.refreshFtp",
+                "title": "GPL: Refresh FTP Files",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "gpl.controller.refreshSystemInfo",
+                "title": "GPL: Refresh System Info",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "gpl.controller.threadStart",
+                "title": "쓰레드 시작",
+                "icon": "$(play)"
+            },
+            {
+                "command": "gpl.controller.threadStop",
+                "title": "쓰레드 정지",
+                "icon": "$(debug-stop)"
+            },
+            {
+                "command": "gpl.controller.threadBreak",
+                "title": "일시정지",
+                "icon": "$(debug-pause)"
+            },
+            {
+                "command": "gpl.controller.threadContinue",
+                "title": "재개",
+                "icon": "$(debug-continue)"
+            },
+            {
+                "command": "gpl.controller.threadContinueNoError",
+                "title": "에러 건너뛰고 재개",
+                "icon": "$(debug-continue)"
+            },
+            {
+                "command": "gpl.controller.threadStep",
+                "title": "스텝 실행",
+                "icon": "$(debug-step-over)"
+            },
+            {
+                "command": "gpl.controller.ftpRun",
+                "title": "컴파일 & 실행",
+                "icon": "$(play)"
+            },
+            {
+                "command": "gpl.controller.ftpStop",
+                "title": "중지",
+                "icon": "$(debug-stop)"
+            },
+            {
+                "command": "gpl.controller.ftpDownload",
+                "title": "다운로드",
+                "icon": "$(cloud-download)"
+            },
+            {
+                "command": "gpl.controller.ftpDelete",
+                "title": "삭제",
+                "icon": "$(trash)"
+            },
+            {
+                "command": "gpl.controller.stopAll",
+                "title": "GPL: 전체 정지",
+                "icon": "$(debug-stop)"
+            },
+            {
+                "command": "gpl.controller.consoleToggle",
+                "title": "GPL: 콘솔 토글",
+                "icon": "$(terminal)"
+            },
+            {
+                "command": "gpl.controller.clearErrors",
+                "title": "에러 로그 초기화",
+                "icon": "$(clear-all)"
+            },
+            {
+                "command": "gpl.controller.ftpUnload",
+                "title": "Unload",
+                "icon": "$(close)"
             }
         ],
         "viewsContainers": {
@@ -135,21 +285,178 @@
             "gpl-controller": [
                 {
                     "id": "gplThreads",
-                    "name": "Threads"
+                    "name": "Status"
                 }
             ]
         },
         "menus": {
             "view/title": [
                 {
-                    "command": "gpl.threads.refresh",
+                    "command": "gpl.controller.stopAll",
                     "when": "view == gplThreads",
-                    "group": "navigation"
+                    "group": "navigation@1"
                 },
                 {
                     "command": "gpl.deploy",
                     "when": "view == gplThreads",
-                    "group": "navigation"
+                    "group": "navigation@2"
+                },
+                {
+                    "command": "gpl.deployRun",
+                    "when": "view == gplThreads",
+                    "group": "navigation@3"
+                },
+                {
+                    "command": "gpl.controller.consoleToggle",
+                    "when": "view == gplThreads",
+                    "group": "navigation@4"
+                },
+                {
+                    "command": "gpl.controller.showTraffic",
+                    "when": "view == gplThreads",
+                    "group": "navigation@5"
+                },
+                {
+                    "command": "gpl.threads.refresh",
+                    "when": "view == gplThreads",
+                    "group": "navigation@6"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "gpl.controller.threadStart",
+                    "when": "view == gplThreads && viewItem == gplThread-stopped",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.threadStop",
+                    "when": "view == gplThreads && viewItem == gplThread-running",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.threadBreak",
+                    "when": "view == gplThreads && viewItem == gplThread-running",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.threadContinue",
+                    "when": "view == gplThreads && viewItem == gplThread-paused",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.threadStep",
+                    "when": "view == gplThreads && viewItem == gplThread-paused",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.threadContinueNoError",
+                    "when": "view == gplThreads && viewItem == gplThread-error",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.threadStart",
+                    "when": "view == gplThreads && viewItem == gplThread-stopped",
+                    "group": "thread@1"
+                },
+                {
+                    "command": "gpl.controller.threadStop",
+                    "when": "view == gplThreads && viewItem == gplThread-running",
+                    "group": "thread@1"
+                },
+                {
+                    "command": "gpl.controller.threadBreak",
+                    "when": "view == gplThreads && viewItem == gplThread-running",
+                    "group": "thread@2"
+                },
+                {
+                    "command": "gpl.controller.threadContinue",
+                    "when": "view == gplThreads && viewItem == gplThread-paused",
+                    "group": "thread@1"
+                },
+                {
+                    "command": "gpl.controller.threadStep",
+                    "when": "view == gplThreads && viewItem == gplThread-paused",
+                    "group": "thread@2"
+                },
+                {
+                    "command": "gpl.controller.threadStop",
+                    "when": "view == gplThreads && viewItem == gplThread-paused",
+                    "group": "thread@3"
+                },
+                {
+                    "command": "gpl.controller.threadContinueNoError",
+                    "when": "view == gplThreads && viewItem == gplThread-error",
+                    "group": "thread@1"
+                },
+                {
+                    "command": "gpl.controller.threadStop",
+                    "when": "view == gplThreads && viewItem == gplThread-error",
+                    "group": "thread@2"
+                },
+                {
+                    "command": "gpl.threads.refresh",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.refreshFtp",
+                    "when": "view == gplThreads && viewItem == section-ftp",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.refreshSystemInfo",
+                    "when": "view == gplThreads && viewItem == section-system",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.clearErrors",
+                    "when": "view == gplThreads && viewItem == section-errors",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.ftpRun",
+                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.ftpStop",
+                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.ftpDownload",
+                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.ftpDelete",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile/",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.ftpRun",
+                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "group": "ftp@1"
+                },
+                {
+                    "command": "gpl.controller.ftpStop",
+                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "group": "ftp@2"
+                },
+                {
+                    "command": "gpl.controller.ftpDelete",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile/",
+                    "group": "ftp@3"
+                },
+                {
+                    "command": "gpl.controller.ftpUnload",
+                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "group": "ftp@4"
+                },
+                {
+                    "command": "gpl.controller.ftpDownload",
+                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "group": "ftp@5"
                 }
             ]
         },
@@ -218,12 +525,15 @@
         "dev:host": "node -e \"console.error('dev:host is disabled to prevent opening new VS Code windows.'); process.exit(1);\""
     },
     "devDependencies": {
-        "@types/vscode": "^1.74.0",
         "@types/node": "16.x",
+        "@types/vscode": "^1.74.0",
         "@vscode/vsce": "^2.26.1",
         "typescript": "^4.9.4"
     },
-    "dependencies": {},
+    "dependencies": {
+        "@vscode/debugadapter": "^1.68.0",
+        "@vscode/debugprotocol": "^1.68.0"
+    },
     "author": "nir414",
     "license": "MIT"
 }

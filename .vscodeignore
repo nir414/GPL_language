@@ -6,10 +6,6 @@
 src/
 scripts/
 docs/
-node_modules/
-bin/
-pkg/
-dist/
 out/**/*.js.map
 *.vsix
 tsconfig.json

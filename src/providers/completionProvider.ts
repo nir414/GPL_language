@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { XmlUtils } from '../xmlUtils';
+import { getAllGplBuiltins, GPLBuiltinEntry } from '../gplBuiltins';
 
 export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     constructor(private symbolCache: SymbolCache) {}
@@ -261,46 +262,53 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
      */
     private getGPLBuiltinCompletions(): vscode.CompletionItem[] {
         const items: vscode.CompletionItem[] = [];
-        
-        // 문자열 함수들
-        const stringFunctions = [
-            { name: 'Mid', params: '${1:string}, ${2:start}, ${3:length}', description: '문자열의 부분 문자열 추출' },
-            { name: 'InStr', params: '${1:start}, ${2:string}, ${3:searchString}', description: '문자열 내에서 부분 문자열의 위치 찾기' },
-            { name: 'Len', params: '${1:string}', description: '문자열의 길이 반환' },
-            { name: 'UCase', params: '${1:string}', description: '문자열을 대문자로 변환' },
-            { name: 'LCase', params: '${1:string}', description: '문자열을 소문자로 변환' },
-            { name: 'Trim', params: '${1:string}', description: '문자열 양쪽 공백 제거' },
-            { name: 'Replace', params: '${1:string}, ${2:find}, ${3:replacement}', description: '문자열 치환' }
-        ];
-        
-        // 변환 함수들
-        const conversionFunctions = [
-            { name: 'CStr', params: '${1:value}', description: '값을 문자열로 변환' },
-            { name: 'CInt', params: '${1:value}', description: '값을 정수로 변환' },
-            { name: 'CDbl', params: '${1:value}', description: '값을 실수로 변환' },
-            { name: 'CBool', params: '${1:value}', description: '값을 불린으로 변환' },
-            { name: 'CByte', params: '${1:value}', description: '값을 바이트로 변환' }
-        ];
-        
-        // XML 관련 함수들
-        const xmlFunctions = [
-            { name: 'XmlDoc.LoadFile', params: '${1:filePath}', description: 'XML 파일 로드' },
-            { name: 'XmlDoc.LoadString', params: '${1:xmlString}', description: 'XML 문자열 파싱' },
-            { name: 'DocumentElement', params: '', description: 'XML 문서의 루트 요소 가져오기' },
-            { name: 'ChildNodeCount', params: '', description: '자식 노드 개수 반환' },
-            { name: 'ChildNodes', params: '${1:index}', description: '지정된 인덱스의 자식 노드 가져오기' }
-        ];
-        
-        // 모든 함수들을 completion items로 변환
-        [...stringFunctions, ...conversionFunctions, ...xmlFunctions].forEach(func => {
-            const item = new vscode.CompletionItem(func.name, vscode.CompletionItemKind.Function);
-            item.detail = func.description;
-            item.insertText = new vscode.SnippetString(`${func.name}(${func.params})`);
-            item.documentation = new vscode.MarkdownString(`**${func.name}**\n\n${func.description}`);
+
+        for (const builtin of getAllGplBuiltins()) {
+            const itemKind = this.mapBuiltinKindToCompletionKind(builtin);
+            const item = new vscode.CompletionItem(builtin.name, itemKind);
+
+            item.detail = `GPL Built-in · ${builtin.category}`;
+            item.documentation = this.buildBuiltinDocumentation(builtin);
+
+            const insert = builtin.insertSnippet ?? builtin.name;
+            item.insertText = new vscode.SnippetString(insert);
+            item.sortText = `0_builtin_${builtin.name}`;
+
+            // foo.Bar 형태도 baz 입력으로 검색되도록 보조 필터 제공
+            const tail = builtin.name.includes('.') ? builtin.name.split('.').pop()! : builtin.name;
+            item.filterText = `${builtin.name} ${tail}`;
+
             items.push(item);
-        });
+        }
         
         return items;
+    }
+
+    private mapBuiltinKindToCompletionKind(builtin: GPLBuiltinEntry): vscode.CompletionItemKind {
+        switch (builtin.kind) {
+            case 'property':
+                return vscode.CompletionItemKind.Constant;
+            case 'method':
+            case 'function':
+            default:
+                return vscode.CompletionItemKind.Function;
+        }
+    }
+
+    private buildBuiltinDocumentation(builtin: GPLBuiltinEntry): vscode.MarkdownString {
+        const parts = [
+            `**${builtin.name}**`,
+            '',
+            `\`${builtin.signature}\``,
+            '',
+            builtin.summary
+        ];
+
+        if (builtin.sourceUrl) {
+            parts.push('', `[Reference](${builtin.sourceUrl})`);
+        }
+
+        return new vscode.MarkdownString(parts.join('\n'));
     }
 
     /**

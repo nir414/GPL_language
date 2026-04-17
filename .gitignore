@@ -55,4 +55,3 @@ docs/
 scripts/
 media/
 .gitattributes
-package-lock.json

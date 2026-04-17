@@ -104,6 +104,21 @@
                                 "type": "string",
                                 "description": "GPL project name on the controller (auto-detected from Project.gpr if omitted)",
                                 "default": ""
+                            },
+                            "deployBeforeAttach": {
+                                "type": "boolean",
+                                "description": "Deploy (STOP→UPLOAD→COMPILE) before attaching debugger.",
+                                "default": false
+                            },
+                            "projectDir": {
+                                "type": "string",
+                                "description": "Local project directory path used when deployBeforeAttach is true.",
+                                "default": ""
+                            },
+                            "skipUnchangedOnDeploy": {
+                                "type": "boolean",
+                                "description": "When deployBeforeAttach is true, skip unchanged files during FTP upload.",
+                                "default": false
                             }
                         }
                     }
@@ -123,6 +138,7 @@
                             "type": "brooks-gpl",
                             "request": "attach",
                             "name": "Attach to GPL Controller",
+                            "deployBeforeAttach": false,
                             "projectName": ""
                         }
                     }

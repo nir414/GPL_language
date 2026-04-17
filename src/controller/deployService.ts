@@ -33,9 +33,10 @@ export async function deploy(
     options: DeployOptions,
     output: vscode.OutputChannel,
     diagnosticCollection: vscode.DiagnosticCollection,
-    token?: vscode.CancellationToken
+    token?: vscode.CancellationToken,
+    controllerOverride?: Partial<ControllerConfig>
 ): Promise<DeployResult> {
-    const cfg = getControllerConfig();
+    const cfg = { ...getControllerConfig(), ...controllerOverride };
     const result: DeployResult = {
         success: false,
         projectName: '',

@@ -29,6 +29,7 @@ import {
     getControllerConfig,
     ControllerConfig,
 } from '../controller/controllerConnection';
+import { deploy, findProjectDirs } from '../controller/deployService';
 import {
     parseThreadList,
     parseThreadDetail,
@@ -48,6 +49,9 @@ interface IAttachRequestArguments extends DebugProtocol.AttachRequestArguments {
     controllerPort?: number;
     stopOnEntry?: boolean;
     projectName?: string;
+    deployBeforeAttach?: boolean;
+    projectDir?: string;
+    skipUnchangedOnDeploy?: boolean;
 }
 
 // ─── Scope handle payload ────────────────────────────────
@@ -122,6 +126,10 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _configurationDone = false;
     private _queuedStoppedEvents: { reason: string; threadId: number }[] = [];
     private _stopOnEntry = false;
+
+    // Debug pre-deploy diagnostics/output
+    private _deployDiagnostics: vscode.DiagnosticCollection | undefined;
+    private _deployOutput: vscode.OutputChannel | undefined;
 
     constructor() {
         super('gpl-debug.txt');
@@ -245,6 +253,18 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         this._isConnected = true;
 
+        // Optional: deploy(build-only) before attaching so F5 can do Upload + Debug.
+        if (args.deployBeforeAttach) {
+            const deployOk = await this._runDeployBeforeAttach(args);
+            if (!deployOk) {
+                this.sendErrorResponse(response, {
+                    id: 1003,
+                    format: 'Attach 전 배포(Upload/Compile)에 실패했습니다. Debug Console 로그를 확인하세요.',
+                });
+                return;
+            }
+        }
+
         // Detect project name: explicit arg → Project.gpr → Show Thread
         this._projectName = args.projectName || '';
         if (!this._projectName) {
@@ -316,6 +336,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._pendingAction = null;
         this._pendingContinuePausedSeen = 0;
         this._clearStaleState();
+        this._deployDiagnostics?.clear();
         this._log('디버거 연결 해제');
         this.sendResponse(response);
     }
@@ -1398,5 +1419,102 @@ export class GPLDebugSession extends LoggingDebugSession {
         } finally {
             this._pollInFlight = false;
         }
+    }
+
+    /**
+     * Run build-only deploy before attach.
+     */
+    private async _runDeployBeforeAttach(args: IAttachRequestArguments): Promise<boolean> {
+        const projectDir = await this._resolveDeployProjectDir(args);
+        if (!projectDir) {
+            this._log('[deploy] 배포할 Project.gpr 폴더를 찾지 못했습니다.');
+            return false;
+        }
+
+        if (!this._deployDiagnostics) {
+            this._deployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-debug-deploy');
+        }
+        if (!this._deployOutput) {
+            this._deployOutput = vscode.window.createOutputChannel('GPL Deploy (Debug)');
+        }
+
+        this._log(`[deploy] Attach 전 배포 시작: ${projectDir}`);
+        const result = await deploy(
+            {
+                projectDir,
+                skipStart: true,
+                skipUnchanged: args.skipUnchangedOnDeploy,
+            },
+            this._deployOutput,
+            this._deployDiagnostics,
+            undefined,
+            this._config,
+        );
+
+        if (!result.success) {
+            this._log(`[deploy] 실패: ${result.compileErrors.length}개 컴파일 에러`);
+            this._deployOutput.show(true);
+            return false;
+        }
+
+        if (!this._projectName && result.projectName) {
+            this._projectName = result.projectName;
+            this._log(`[deploy] 프로젝트 설정: ${this._projectName}`);
+        }
+
+        this._log(`[deploy] 성공: ${result.projectName}`);
+        return true;
+    }
+
+    /**
+     * Choose deploy project directory from args/workspace.
+     */
+    private async _resolveDeployProjectDir(args: IAttachRequestArguments): Promise<string | undefined> {
+        if (args.projectDir && fs.existsSync(args.projectDir)) {
+            return args.projectDir;
+        }
+
+        const dirs = await findProjectDirs();
+        if (dirs.length === 0) {
+            return undefined;
+        }
+        if (dirs.length === 1) {
+            return dirs[0];
+        }
+
+        // 1) projectName 우선 매칭
+        if (args.projectName) {
+            const target = args.projectName.toLowerCase();
+            for (const dir of dirs) {
+                const byFolder = path.basename(dir).toLowerCase() === target;
+                const gprPath = path.join(dir, 'Project.gpr');
+                let byGpr = false;
+                try {
+                    const gprText = fs.readFileSync(gprPath, 'utf-8');
+                    byGpr = (parseGpr(gprText).projectName || '').toLowerCase() === target;
+                } catch {
+                    // ignore parse errors and continue fallback matching
+                }
+                if (byFolder || byGpr) {
+                    return dir;
+                }
+            }
+        }
+
+        // 2) 활성 파일 기준 매칭
+        const activePath = vscode.window.activeTextEditor?.document?.uri.scheme === 'file'
+            ? vscode.window.activeTextEditor.document.uri.fsPath
+            : '';
+        if (activePath) {
+            const matched = dirs
+                .filter(d => this._isPathUnder(activePath, d))
+                .sort((a, b) => b.length - a.length)[0];
+            if (matched) {
+                return matched;
+            }
+        }
+
+        // 3) deterministic fallback
+        return [...dirs].sort((a, b) => a.localeCompare(b))[0];
     }
 }

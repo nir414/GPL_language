@@ -69,10 +69,14 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
     "type": "brooks-gpl",
     "request": "attach",
     "name": "Attach to GPL Controller",
+    "deployBeforeAttach": true,
     "projectName": "GPL_Code",
     "stopOnEntry": true
 }
 ```
+
+- `deployBeforeAttach: true`를 사용하면 F5 시점에 **STOP → UPLOAD → COMPILE**을 먼저 수행한 뒤 디버거가 attach 됩니다.
+- `projectDir`를 지정하면 다중 프로젝트 워크스페이스에서 배포 대상을 고정할 수 있습니다.
 
 | 기능 | 지원 |
 |---|---|
@@ -81,6 +85,7 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
 | 변수 조회 | Variables 패널, Hover, Debug Console |
 | Call Stack / 쓰레드 | 다중 쓰레드 표시 |
 | stopOnEntry | 첫 줄 자동 정지 |
+| deployBeforeAttach | Attach 전 자동 배포(Build Only) |
 
 ## 명령어
 

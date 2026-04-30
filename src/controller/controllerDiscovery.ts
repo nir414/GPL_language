@@ -89,7 +89,7 @@ export async function showControllerPicker(): Promise<DiscoveredController | und
     if (controllers.length === 0) {
         const manual = await vscode.window.showInputBox({
             prompt: 'No controllers found. Enter IP address manually:',
-            placeHolder: '192.168.0.2',
+            placeHolder: '192.168.0.1',
             validateInput: (v) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v) ? null : 'Invalid IP format',
         });
         if (manual) {

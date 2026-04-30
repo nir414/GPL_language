@@ -52,6 +52,8 @@ interface IAttachRequestArguments extends DebugProtocol.AttachRequestArguments {
     deployBeforeAttach?: boolean;
     projectDir?: string;
     skipUnchangedOnDeploy?: boolean;
+    stopAllBeforeAttach?: boolean;
+    clearProjectBreakpointsOnAttach?: boolean;
 }
 
 // ─── Scope handle payload ────────────────────────────────
@@ -60,6 +62,11 @@ interface ScopeRef {
     type: 'locals' | 'globals';
     threadName: string;
     frameIndex: number;
+}
+
+interface GlobalVariableDescriptor {
+    displayName: string;
+    lookupNames: string[];
 }
 
 // ─── Pending action for StoppedEvent reason ──────────────
@@ -271,6 +278,14 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._projectName = await this._detectProjectName();
         }
 
+        // Optional preflight: stop all threads and clear existing breakpoints for clean session.
+        // clearProjectBreakpointsOnAttach 기본값: true (이전 세션의 잔재 BP로 인한 중복 설정 방지)
+        const stopAllBeforeAttach = args.stopAllBeforeAttach === true;
+        const clearProjectBreakpointsOnAttach = args.clearProjectBreakpointsOnAttach !== false;
+        if (stopAllBeforeAttach || clearProjectBreakpointsOnAttach) {
+            await this._runAttachPreflight(stopAllBeforeAttach, clearProjectBreakpointsOnAttach);
+        }
+
         // Build source file map for path resolution
         this._buildSourceFileMap();
 
@@ -368,9 +383,21 @@ export class GPLDebugSession extends LoggingDebugSession {
             return;
         }
 
-        // Clear existing breakpoints for this file on the controller
-        const existing = this._breakpoints.get(baseName) || new Set<number>();
-        for (const line of existing) {
+        // Clear existing breakpoints for this file on the controller.
+        // 로컬 _breakpoints Map만 믿으면 이전 세션 잔재/외부 변경으로 인해 누적될 수 있으므로,
+        // 컨트롤러의 실제 BP 목록을 조회해 해당 파일의 모든 BP를 Nobreak로 정리한다.
+        const existingLines = new Set<number>(this._breakpoints.get(baseName) || []);
+        const preShowResp = await this._sendCmd('Show Break');
+        if (preShowResp) {
+            const controllerBps = parseBreakList(preShowResp).filter(
+                b => b.file.toLowerCase() === baseName.toLowerCase()
+                    && (!b.project || b.project.toLowerCase() === proj.toLowerCase()),
+            );
+            for (const bp of controllerBps) {
+                if (bp.fileLine > 0) { existingLines.add(bp.fileLine); }
+            }
+        }
+        for (const line of existingLines) {
             await this._sendCmd(`Set Nobreak ${proj} "${baseName}" ${line}`);
         }
 
@@ -382,12 +409,19 @@ export class GPLDebugSession extends LoggingDebugSession {
         for (const line of clientLines) {
             const cmd = `Set Break ${proj} "${baseName}" ${line}`;
             const resp = await this._sendCmd(cmd);
-            const isDuplicate = resp !== null && /Duplicate breakpoint/i.test(resp);
-            const verified = resp !== null && (isSuccess(resp) || isDuplicate);
+            // "Duplicate breakpoint" 응답은 컨트롤러에 이미 동일 BP가 있다는 뜻이다.
+            // Nobreak 정리가 실패했을 수 있으므로 한 번 더 정리 후 재설정하여 단일 BP 보장.
+            let finalResp = resp;
+            if (resp !== null && /Duplicate breakpoint/i.test(resp)) {
+                this._log(`⚠ Duplicate BP 감지, 재설정: ${cmd}`);
+                await this._sendCmd(`Set Nobreak ${proj} "${baseName}" ${line}`);
+                finalResp = await this._sendCmd(cmd);
+            }
+            const verified = finalResp !== null && isSuccess(finalResp);
             const bp = new Breakpoint(verified, line) as DebugProtocol.Breakpoint;
             if (!verified) {
-                const msg = resp
-                    ? resp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0]
+                const msg = finalResp
+                    ? finalResp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0]
                     : '응답 없음';
                 bp.message = msg;
                 this._log(`⚠ BP 설정 실패: ${cmd} → ${msg}`);
@@ -554,29 +588,23 @@ export class GPLDebugSession extends LoggingDebugSession {
                 this._log(`로컬 변수 후보를 찾지 못함: ${frame.file}:${frame.fileLine} (${frame.process})`);
             }
         } else if (scopeInfo.type === 'globals') {
-            // 소스 파일에서 모듈 레벨 Public 변수를 열거하고 개별 Show Global로 조회
-            const globalNames = this._getGlobalVariableNames();
+            // 소스 파일에서 모듈 레벨 전역 변수를 열거하고 개별 Show Global로 조회
+            const globals = this._getGlobalVariableDescriptors();
 
-            if (globalNames.length > 0) {
-                for (const gName of globalNames) {
-                    const resp = await this._sendCmd(
-                        this._projectName
-                            ? `Show Global ${gName}, ${this._projectName}`
-                            : `Show Global ${gName}`,
-                    );
-                    if (resp) {
-                        const cleaned = resp.replace(/<[^>]+>/g, '').trim();
-                        const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
-                        if (lines.length > 0) {
-                            variables.push({
-                                name: gName,
-                                value: lines.join(', '),
-                                variablesReference: 0,
-                            });
-                        }
+            if (globals.length > 0) {
+                for (const g of globals) {
+                    const value = await this._readGlobalValue(g.lookupNames);
+                    if (value) {
+                        variables.push({
+                            name: g.displayName,
+                            value,
+                            variablesReference: 0,
+                        });
                     }
                 }
             }
+
+            variables.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'accent' }));
         }
 
         response.body = { variables };
@@ -1124,12 +1152,12 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
-     * 워크스페이스의 모든 GPL 소스에서 모듈 레벨(비로컬) Public 변수를 열거한다.
-     * 디버거 Globals 패널용.
+     * 워크스페이스의 모든 GPL 소스에서 모듈 레벨(비로컬) 전역 변수를 열거한다.
+     * Globals 패널은 public/private 여부와 무관하게 현재 프로젝트의 모듈 전역 상태를 보여주는 것이 유용하다.
      */
-    private _getGlobalVariableNames(): string[] {
+    private _getGlobalVariableDescriptors(): GlobalVariableDescriptor[] {
         const seen = new Set<string>();
-        const names: string[] = [];
+        const globals: GlobalVariableDescriptor[] = [];
 
         for (const [, filePath] of this._sourceFileMap) {
             let content: string;
@@ -1145,18 +1173,61 @@ export class GPLDebugSession extends LoggingDebugSession {
             for (const s of symbols) {
                 if ((s.kind === GPLSymbolKind.Variable || s.kind === GPLSymbolKind.Constant)
                     && !s.isLocal
-                    && s.accessModifier === 'public') {
-                    // Qualified name: Module.VarName
-                    const qName = s.module ? `${s.module}.${s.name}` : s.name;
-                    const lower = qName.toLowerCase();
+                    && !s.className) {
+                    const displayName = s.module ? `${s.module}.${s.name}` : s.name;
+                    const lookupNames = s.module
+                        ? [`${s.module}.${s.name}`, s.name]
+                        : [s.name];
+                    const lower = displayName.toLowerCase();
                     if (!seen.has(lower)) {
                         seen.add(lower);
-                        names.push(qName);
+                        globals.push({ displayName, lookupNames });
                     }
                 }
             }
         }
-        return names;
+
+        return globals.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'accent' }));
+    }
+
+    /**
+     * Show Global 질의는 펌웨어/심볼 형태에 따라 qualified/unqualified 이름 중 하나만 먹을 수 있다.
+     * 후보를 순서대로 시도해서 첫 성공 값을 반환한다.
+     */
+    private async _readGlobalValue(lookupNames: string[]): Promise<string> {
+        for (const name of lookupNames) {
+            const resp = await this._sendCmd(
+                this._projectName
+                    ? `Show Global ${name}, ${this._projectName}`
+                    : `Show Global ${name}`,
+            );
+            if (!resp || !isSuccess(resp)) {
+                continue;
+            }
+
+            const parsedEval = this._parseShowVariableEval(resp);
+            if (parsedEval.value && parsedEval.value !== '(undefined)') {
+                return parsedEval.type
+                    ? `${parsedEval.value}  (${parsedEval.type})`
+                    : parsedEval.value;
+            }
+
+            const parsedVars = parseVariable(resp);
+            if (parsedVars.length > 0) {
+                return parsedVars.map(v => `${v.name} = ${v.value}`).join(', ');
+            }
+
+            const cleaned = resp
+                .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
+                .replace(/<[^>]+>/g, '')
+                .trim();
+            const lines = cleaned.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            if (lines.length > 0) {
+                return lines.join(', ');
+            }
+        }
+
+        return '';
     }
 
     private _enqueueCommand<T>(work: () => Promise<T>): Promise<T> {
@@ -1453,6 +1524,14 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         if (!result.success) {
             this._log(`[deploy] 실패: ${result.compileErrors.length}개 컴파일 에러`);
+            for (const err of result.compileErrors) {
+                this._log(`[deploy]   ${err.file}:${err.line} (${err.code}): ${err.message}`);
+            }
+            if (result.errorLog.length > 0) {
+                for (const el of result.errorLog) {
+                    this._log(`[deploy]   ${el}`);
+                }
+            }
             this._deployOutput.show(true);
             return false;
         }
@@ -1487,11 +1566,16 @@ export class GPLDebugSession extends LoggingDebugSession {
             const target = args.projectName.toLowerCase();
             for (const dir of dirs) {
                 const byFolder = path.basename(dir).toLowerCase() === target;
-                const gprPath = path.join(dir, 'Project.gpr');
                 let byGpr = false;
                 try {
-                    const gprText = fs.readFileSync(gprPath, 'utf-8');
-                    byGpr = (parseGpr(gprText).projectName || '').toLowerCase() === target;
+                    const gprFiles = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.gpr'));
+                    for (const gprFile of gprFiles) {
+                        const gprText = fs.readFileSync(path.join(dir, gprFile), 'utf-8');
+                        if ((parseGpr(gprText).projectName || '').toLowerCase() === target) {
+                            byGpr = true;
+                            break;
+                        }
+                    }
                 } catch {
                     // ignore parse errors and continue fallback matching
                 }
@@ -1516,5 +1600,56 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         // 3) deterministic fallback
         return [...dirs].sort((a, b) => a.localeCompare(b))[0];
+    }
+
+    /**
+     * Preflight for stable debugging sessions.
+     */
+    private async _runAttachPreflight(stopAll: boolean, clearProjectBps: boolean): Promise<void> {
+        if (!this._isConnected) { return; }
+
+        if (stopAll) {
+            const stopResp = await this._sendCmd('Stop -all');
+            if (stopResp) {
+                this._log('attach preflight: Stop -all 완료');
+            } else {
+                this._log('attach preflight: Stop -all 실패(계속 진행)');
+            }
+        }
+
+        if (clearProjectBps && this._projectName) {
+            await this._clearBreakpointsForProject(this._projectName);
+        }
+    }
+
+    /**
+     * Clear all controller breakpoints for the specified project.
+     */
+    private async _clearBreakpointsForProject(projectName: string): Promise<void> {
+        const showResp = await this._sendCmd('Show Break');
+        if (!showResp) {
+            this._log('attach preflight: Show Break 실패(브레이크포인트 정리 스킵)');
+            return;
+        }
+
+        const controllerBps = parseBreakList(showResp).filter(
+            b => (b.project || '').toLowerCase() === projectName.toLowerCase(),
+        );
+
+        if (controllerBps.length === 0) {
+            this._log(`attach preflight: ${projectName} 브레이크포인트 없음`);
+            return;
+        }
+
+        let cleared = 0;
+        for (const bp of controllerBps) {
+            const file = bp.file || '';
+            const line = bp.fileLine || 0;
+            if (!file || line <= 0) { continue; }
+            const resp = await this._sendCmd(`Set Nobreak ${projectName} "${file}" ${line}`);
+            if (resp) { cleared++; }
+        }
+
+        this._log(`attach preflight: ${projectName} 브레이크포인트 ${cleared}/${controllerBps.length} 정리`);
     }
 }

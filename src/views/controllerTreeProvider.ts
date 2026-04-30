@@ -38,6 +38,8 @@ class InfoNode {
 		public readonly command?: vscode.Command,
 		public readonly contextValue?: string,
 		public readonly tooltip?: string,
+		public readonly remotePath?: string,
+		public readonly projectName?: string,
 	) {}
 }
 
@@ -56,12 +58,25 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private errors: string[] = [];
 	private ftpEntries: FtpEntry[] = [];
 	private ftpError: string | null = null;
+	private ftpFlashEntries: FtpEntry[] = [];
+	private ftpFlashError: string | null = null;
 	private sysInfo: { label: string; value: string; tooltip?: string; iconId?: string }[] = [];
 	private pollTimer: ReturnType<typeof setInterval> | null = null;
 	private consecutiveFailures = 0;
+	private lastDetailPollAt = 0;
 	private breakpoints: BreakpointInfo[] = [];
+	private expectedProjectName = '';
 
 	get isConnected(): boolean { return this._connected; }
+
+	setExpectedProjectName(name?: string): void {
+		this.expectedProjectName = (name || '').trim();
+		this._onDidChangeTreeData.fire(undefined);
+	}
+
+	getExpectedProjectName(): string {
+		return this.expectedProjectName;
+	}
 
 	/**
 	 * 연결 상태 변경 — 연결 시 즉시 폴링 시작, 해제 시 정리.
@@ -69,6 +84,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	setConnected(connected: boolean): void {
 		this._connected = connected;
 		this.consecutiveFailures = 0;
+		this.lastDetailPollAt = 0;
 		if (connected) {
 			this.refresh();
 			this.refreshFtp();
@@ -81,6 +97,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			this.breakpoints = [];
 			this.ftpEntries = [];
 			this.ftpError = null;
+			this.ftpFlashEntries = [];
+			this.ftpFlashError = null;
 			this.sysInfo = [];
 			this._onDidChangeTreeData.fire(undefined);
 		}
@@ -106,7 +124,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 * TCP 충돌 방지를 위해 직렬화.
 	 */
 	async refreshAll(): Promise<void> {
-		await this.refresh();
+		await this.refresh(true);
 		await this.refreshFtp();
 		await this.refreshSystemInfo();
 	}
@@ -114,16 +132,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	/**
 	 * 쓰레드 + 에러 로그 + 브레이크포인트 갱신 (순차).
 	 */
-	async refresh(): Promise<void> {
+	async refresh(forceDetails: boolean = false): Promise<void> {
 		if (!this._connected) { return; }
 
-		// TCP 직렬화 — 동시 소켓 방지
+		// 경량 주기 폴링: 기본은 Show Thread만, 상세(Error/Break)는 적응형으로 조회
 		const threadResp = await trySendCommand('Show Thread');
-		const errorResp = await trySendCommand('ErrorLog');
-		const breakResp = await trySendCommand('Show Break');
 
-		// 연결 유실 감지: 3회 연속 실패 시 자동 해제
-		if (threadResp === null && errorResp === null) {
+		// 연결 유실 감지: 핵심 상태(Show Thread) 3회 연속 실패 시 자동 해제
+		if (threadResp === null) {
 			this.consecutiveFailures++;
 			if (this.consecutiveFailures >= 3) {
 				this._connected = false;
@@ -133,6 +149,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				this.breakpoints = [];
 				this.ftpEntries = [];
 				this.ftpError = null;
+				this.ftpFlashEntries = [];
+				this.ftpFlashError = null;
 				this.sysInfo = [];
 				this._onDidChangeTreeData.fire(undefined);
 				this._onDidLoseConnection.fire();
@@ -140,11 +158,33 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			}
 		} else {
 			this.consecutiveFailures = 0;
+			this.threads = parseThreadList(threadResp);
 		}
 
-		this.threads = threadResp ? parseThreadList(threadResp) : [];
-		this.errors = errorResp ? parseErrorLog(errorResp) : [];
-		this.breakpoints = breakResp ? parseBreakList(breakResp) : [];
+		const now = Date.now();
+		const cfg = vscode.workspace.getConfiguration('gpl.controller');
+		const baseInterval = cfg.get<number>('threadPollIntervalMs') ?? 5000;
+		const detailPollIntervalMs = Math.max(baseInterval * 2, 5000);
+		const shouldPollDetailsByState = this.threads.some(
+			t => t.state === 'Error' || t.state === 'Break' || t.state === 'Paused',
+		);
+		const shouldPollDetails =
+			forceDetails ||
+			shouldPollDetailsByState ||
+			(now - this.lastDetailPollAt >= detailPollIntervalMs);
+
+		if (shouldPollDetails) {
+			const errorResp = await trySendCommand('ErrorLog');
+			const breakResp = await trySendCommand('Show Break');
+			if (errorResp !== null) {
+				this.errors = parseErrorLog(errorResp);
+			}
+			if (breakResp !== null) {
+				this.breakpoints = parseBreakList(breakResp);
+			}
+			this.lastDetailPollAt = now;
+		}
+
 		this._onDidChangeTreeData.fire(undefined);
 	}
 
@@ -160,6 +200,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		} catch (err: any) {
 			this.ftpEntries = [];
 			this.ftpError = err.message ?? String(err);
+		}
+
+		try {
+			this.ftpFlashEntries = await listRemoteDir(cfg.ip, cfg.ftpFlashProjectsPath);
+			this.ftpFlashError = null;
+		} catch (err: any) {
+			this.ftpFlashEntries = [];
+			this.ftpFlashError = err.message ?? String(err);
 		}
 		this._onDidChangeTreeData.fire(undefined);
 	}
@@ -262,7 +310,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			const sec = new SectionNode('disconnected', '연결되지 않음', 'debug-disconnect');
 			sec.children = [
 				new InfoNode('제어기에 연결하기', 'plug', '클릭하여 연결', {
-					command: 'gpl.connect',
+					command: 'gpl.controller.connect',
 					title: 'Connect to Controller',
 				}),
 			];
@@ -271,6 +319,49 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		const cfg = getControllerConfig();
 		const sections: SectionNode[] = [];
+
+		// ── 프로젝트 컨텍스트 (불일치 가시화)
+		const runningProjects = [...new Set(
+			this.threads.map(t => (t.project || '').trim()).filter(Boolean),
+		)];
+		const ftpDirs = [
+			...this.ftpEntries.filter(e => e.isDirectory).map(e => e.name),
+			...this.ftpFlashEntries.filter(e => e.isDirectory).map(e => e.name),
+		];
+		const expected = this.expectedProjectName;
+		const hasExpectedRunning = expected
+			? runningProjects.some(p => p.toLowerCase() === expected.toLowerCase())
+			: false;
+		const hasExpectedFtp = expected
+			? ftpDirs.some(p => p.toLowerCase() === expected.toLowerCase())
+			: false;
+		const mismatch = !!expected && (!hasExpectedRunning || !hasExpectedFtp);
+
+		const ctxSec = new SectionNode(
+			'projectContext',
+			mismatch ? '프로젝트 컨텍스트 ⚠' : '프로젝트 컨텍스트',
+			mismatch ? 'warning' : 'pass',
+			mismatch ? '불일치 감지' : '정상',
+		);
+		ctxSec.collapsed = false;
+		ctxSec.children = [
+			new InfoNode(
+				`기대 프로젝트: ${expected || '(미설정)'}`,
+				'target',
+				expected ? undefined : 'Project.gpr 미감지',
+			),
+			new InfoNode(
+				`실행 프로젝트: ${runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)'}`,
+				'run-all',
+				hasExpectedRunning || !expected ? undefined : `${expected} 미실행`,
+			),
+			new InfoNode(
+				`FTP 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}`,
+				'folder-library',
+				hasExpectedFtp || !expected ? undefined : `${expected} 폴더 없음`,
+			),
+		];
+		sections.push(ctxSec);
 
 		// ── 연결 정보 (기본 접힘)
 		const conn = new SectionNode('connection', cfg.ip, 'plug', '연결됨');
@@ -281,10 +372,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				title: '포트 통신 테스트',
 				arguments: ['command', cfg.ip, cfg.port],
 			}),
-			new InfoNode(`콘솔 포트: ${cfg.consolePort}`, 'terminal', undefined, {
+			new InfoNode(`콘솔 포트: ${cfg.consolePort}`, 'terminal', '클릭: 런타임 콘솔 열기', {
 				command: 'gpl.controller.pingPort',
-				title: '포트 통신 테스트',
+				title: '런타임 콘솔 열기',
 				arguments: ['console', cfg.ip, cfg.consolePort],
+			}),
+			new InfoNode('런타임 로그 보기 (GPL Console)', 'output', '간단 로그 전용', {
+				command: 'gpl.console.start',
+				title: '런타임 로그 보기',
 			}),
 			new InfoNode('통신 트래픽 보기', 'radio-tower', undefined, {
 				command: 'gpl.controller.showTraffic',
@@ -351,10 +446,33 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				if (e.modifiedAt) { parts.push(formatDate(e.modifiedAt)); }
 				const desc = parts.join(' · ');
 				const ctx = e.isDirectory ? 'ftpFolder' : 'ftpFile';
-				return new InfoNode(e.name, icon, desc, undefined, ctx);
+				const remotePath = `${cfg.ftpBasePath}/${e.name}`;
+				return new InfoNode(e.name, icon, desc, undefined, ctx, undefined, remotePath, e.name);
 			});
 		}
 		sections.push(ftpSec);
+
+		// ── Flash Projects (/flash/projects)
+		const flashSec = new SectionNode('ftpFlash',
+			`Flash Projects (${cfg.ftpFlashProjectsPath})`, 'archive',
+			this.ftpFlashError ? '조회 실패' : `${this.ftpFlashEntries.length}개`);
+		if (this.ftpFlashError) {
+			flashSec.children = [new InfoNode(this.ftpFlashError, 'error')];
+		} else if (this.ftpFlashEntries.length === 0) {
+			flashSec.children = [new InfoNode('파일 없음', 'info')];
+		} else {
+			flashSec.children = this.ftpFlashEntries.map(e => {
+				const icon = e.isDirectory ? 'folder' : 'file';
+				const parts: string[] = [];
+				if (!e.isDirectory) { parts.push(formatSize(e.size)); }
+				if (e.modifiedAt) { parts.push(formatDate(e.modifiedAt)); }
+				const desc = parts.join(' · ');
+				const ctx = e.isDirectory ? 'ftpFlashFolder' : 'ftpFlashFile';
+				const remotePath = `${cfg.ftpFlashProjectsPath}/${e.name}`;
+				return new InfoNode(e.name, icon, desc, undefined, ctx, undefined, remotePath, e.name);
+			});
+		}
+		sections.push(flashSec);
 
 		// ── 시스템 정보
 		const sysSec = new SectionNode('system', '시스템 정보', 'dashboard',
@@ -377,11 +495,125 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			this.errors.length > 0 ? `에러 (${this.errors.length})` : '에러 없음',
 			this.errors.length > 0 ? 'warning' : 'pass');
 		errSec.children = this.errors.length > 0
-			? this.errors.map(e => new InfoNode(e, 'error', undefined, undefined, 'errorItem'))
+			? this.errors.map(e => new InfoNode(
+				e,
+				'error',
+				'클릭: 클립보드에 복사',
+				{ command: 'gpl.controller.copyError', title: '에러 복사', arguments: [e] },
+				'errorItem',
+				e,
+			))
 			: [new InfoNode('활성 에러 없음', 'pass')];
 		sections.push(errSec);
 
 		return sections;
+	}
+
+	buildSituationSnapshotMarkdown(extra?: { runtimeConsoleConnected?: boolean }): string {
+		const cfg = getControllerConfig();
+		const running = this.threads.filter(t => t.state === 'Running').length;
+		const paused = this.threads.filter(t => t.state === 'Paused' || t.state === 'Break').length;
+		const idle = this.threads.filter(t => t.state === 'Idle').length;
+		const errCount = this.threads.filter(t => t.state === 'Error').length;
+
+		const expected = this.expectedProjectName || '(미설정)';
+		const runningProjects = [...new Set(this.threads.map(t => t.project).filter(Boolean))];
+		const ftpDirs = [
+			...this.ftpEntries.filter(e => e.isDirectory).map(e => e.name),
+			...this.ftpFlashEntries.filter(e => e.isDirectory).map(e => e.name),
+		];
+
+		const lines: string[] = [];
+		lines.push('# GPL Controller 상황 스냅샷');
+		lines.push('');
+
+		// ── 연결 상태
+		lines.push('## 연결');
+		lines.push(`- 명령 포트: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
+		lines.push(`- 콘솔 포트: ${extra?.runtimeConsoleConnected ? `Connected (${cfg.ip}:${cfg.consolePort})` : 'Disconnected'}`);
+		lines.push(`- 시각: ${new Date().toLocaleString('ko-KR')}`);
+		lines.push('');
+
+		// ── 프로젝트 컨텍스트
+		const hasExpectedRunning = expected !== '(미설정)' && runningProjects.some(p => p.toLowerCase() === expected.toLowerCase());
+		const hasExpectedFtp = expected !== '(미설정)' && ftpDirs.some(p => p.toLowerCase() === expected.toLowerCase());
+		const mismatch = expected !== '(미설정)' && (!hasExpectedRunning || !hasExpectedFtp);
+
+		lines.push('## 프로젝트 컨텍스트');
+		lines.push(`- 기대 프로젝트: ${expected}${mismatch ? ' ⚠ 불일치' : ''}`);
+		lines.push(`- 실행 프로젝트: ${runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)'}${expected !== '(미설정)' && !hasExpectedRunning ? ' ⚠ 기대 프로젝트 미실행' : ''}`);
+		lines.push(`- FTP 프로젝트 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}${expected !== '(미설정)' && !hasExpectedFtp ? ' ⚠ 기대 프로젝트 폴더 없음' : ''}`);
+		lines.push('');
+
+		// ── 쓰레드
+		lines.push('## 쓰레드');
+		lines.push(`- 전체 ${this.threads.length}: Running ${running}, Paused ${paused}, Idle ${idle}, Error ${errCount}`);
+		if (this.threads.length > 0) {
+			lines.push('');
+			lines.push('| 이름 | 상태 | 프로젝트 | 파일 |');
+			lines.push('|------|------|----------|------|');
+			for (const t of this.threads) {
+				lines.push(`| ${t.name} | ${t.state} | ${t.project || '-'} | ${t.file || '-'} |`);
+			}
+		}
+		lines.push('');
+
+		// ── 브레이크포인트
+		lines.push('## 브레이크포인트');
+		if (this.breakpoints.length === 0) {
+			lines.push('- 없음');
+		} else {
+			lines.push('');
+			lines.push('| 파일:줄 | 프로시저 | hit 횟수 |');
+			lines.push('|---------|----------|----------|');
+			for (const b of this.breakpoints) {
+				lines.push(`| ${b.file}:${b.fileLine} | ${b.proc} | ${b.hitCount} |`);
+			}
+		}
+		lines.push('');
+
+		// ── FTP 파일 상세
+		lines.push('## FTP 파일');
+		if (this.ftpEntries.length === 0) {
+			lines.push('- 파일 없음');
+		} else {
+			lines.push('');
+			lines.push('| 이름 | 유형 | 크기 | 수정일 |');
+			lines.push('|------|------|------|--------|');
+			for (const e of this.ftpEntries) {
+				const type = e.isDirectory ? '폴더' : '파일';
+				const size = e.isDirectory ? '-' : formatSize(e.size);
+				const date = e.modifiedAt ? formatDate(e.modifiedAt) : '-';
+				lines.push(`| ${e.name} | ${type} | ${size} | ${date} |`);
+			}
+		}
+		if (this.ftpError) {
+			lines.push(`- ⚠ FTP 조회 실패: ${this.ftpError}`);
+		}
+		lines.push('');
+
+		// ── 시스템 정보
+		lines.push('## 시스템 정보');
+		if (this.sysInfo.length === 0) {
+			lines.push('- 조회 안됨');
+		} else {
+			for (const s of this.sysInfo) {
+				lines.push(`- ${s.label}: ${s.value}`);
+			}
+		}
+		lines.push('');
+
+		// ── 에러 로그
+		lines.push('## 에러 로그');
+		if (this.errors.length === 0) {
+			lines.push('- 활성 에러 없음');
+		} else {
+			for (const e of this.errors) {
+				lines.push(`- ${e}`);
+			}
+		}
+
+		return lines.join('\n');
 	}
 
 	// ── TreeItem converters ─────────────────────────────
@@ -459,6 +691,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		if (node.contextValue) {
 			item.contextValue = node.contextValue;
 		}
+		(item as any).remotePath = node.remotePath;
+		(item as any).projectName = node.projectName;
 		return item;
 	}
 

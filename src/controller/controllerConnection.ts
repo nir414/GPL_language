@@ -7,6 +7,7 @@ export interface ControllerConfig {
 	consolePort: number;
 	timeoutMs: number;
 	ftpBasePath: string;
+	ftpFlashProjectsPath: string;
 }
 
 // Brooks 제어기 고정 포트 (하드웨어 결정, 변경 불가)
@@ -14,6 +15,7 @@ const DEFAULT_PORT = 1402;
 const DEFAULT_CONSOLE_PORT = 1403;
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_FTP_BASE_PATH = '/GPL';
+const DEFAULT_FTP_FLASH_PROJECTS_PATH = '/flash/projects';
 
 // ── Traffic Logger ──────────────────────────────────────
 
@@ -46,6 +48,7 @@ export function getControllerConfig(): ControllerConfig {
 		consolePort: cfg.get<number>('consolePort') ?? DEFAULT_CONSOLE_PORT,
 		timeoutMs: cfg.get<number>('timeoutMs') ?? DEFAULT_TIMEOUT_MS,
 		ftpBasePath: cfg.get<string>('ftpBasePath') ?? DEFAULT_FTP_BASE_PATH,
+		ftpFlashProjectsPath: cfg.get<string>('ftpFlashProjectsPath') ?? DEFAULT_FTP_FLASH_PROJECTS_PATH,
 	};
 }
 

@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { sendCommand, trySendCommand, getControllerConfig, ControllerConfig } from './controllerConnection';
 import { uploadProject } from './ftpClient';
-import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, CompileError } from './responseParser';
+import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, CompileError } from './responseParser';
 
 export interface DeployOptions {
     projectDir: string;
@@ -124,49 +124,81 @@ export async function deploy(
     const compileCandidates = [...new Set([projectName, gprInfo.projectName, folderName].filter(Boolean))];
     let compiled = false;
 
+    /** Compile 명령 실행 후 응답의 STATUS와 에러를 검사하는 헬퍼. */
+    async function tryCompile(candidate: string): Promise<{ ok: boolean; statusCode: number; errors: CompileError[]; raw: string }> {
+        try {
+            const resp = await sendCommand(`Compile ${candidate}`, cfg);
+            const status = parseStatus(resp);
+            const errors = parseCompileErrors(resp);
+            if (status.code === 0 && errors.length === 0) {
+                return { ok: true, statusCode: status.code, errors, raw: resp };
+            }
+            return { ok: false, statusCode: status.code, errors, raw: resp };
+        } catch (e: any) {
+            const errText = e.message || '';
+            return { ok: false, statusCode: -9999, errors: parseCompileErrors(errText), raw: errText };
+        }
+    }
+
     for (const candidate of compileCandidates) {
         output.appendLine(`│ Compile ${candidate}`);
-        try {
-            await sendCommand(`Compile ${candidate}`, cfg);
+        const cr = await tryCompile(candidate);
+
+        if (cr.ok) {
             result.projectName = candidate;
             compiled = true;
             output.appendLine(`│ ✔ Compile success: ${candidate}`);
             break;
-        } catch (e: any) {
-            const errText = e.message || '';
-            result.compileErrors = parseCompileErrors(errText);
+        }
 
-            // -745: project already loaded → Unload + Load + Compile
-            if (errText.includes('-745')) {
-                output.appendLine(`│ ⚠ Already loaded. Unload → Load → Compile`);
-                try {
-                    await sendCommand(`Unload ${candidate}`, cfg);
-                    await sendCommand(`Load ${loadPath}`, cfg);
-                    await sendCommand(`Compile ${candidate}`, cfg);
-                    result.projectName = candidate;
-                    compiled = true;
-                    output.appendLine(`│ ✔ Compile success (after reload): ${candidate}`);
-                    break;
-                } catch (e2: any) {
-                    result.compileErrors = parseCompileErrors(e2.message || '');
-                }
-            }
-            // -508/-743: missing/invalid → Load + Compile
-            else if (errText.includes('-508') || errText.includes('-743')) {
-                output.appendLine(`│ ⚠ Not loaded. Load → Compile`);
-                try {
-                    await sendCommand(`Load ${loadPath}`, cfg);
-                    await sendCommand(`Compile ${candidate}`, cfg);
-                    result.projectName = candidate;
-                    compiled = true;
-                    output.appendLine(`│ ✔ Compile success (after load): ${candidate}`);
-                    break;
-                } catch (e2: any) {
-                    result.compileErrors = parseCompileErrors(e2.message || '');
-                }
-            }
+        result.compileErrors = cr.errors;
+        const errText = cr.raw;
 
-            output.appendLine(`│ ✘ Compile failed: ${candidate}`);
+        // -745: project already loaded → Unload + Load + Compile
+        if (cr.statusCode === -745 || errText.includes('-745')) {
+            output.appendLine(`│ ⚠ Already loaded. Unload → Load → Compile`);
+            try {
+                await sendCommand(`Unload ${candidate}`, cfg);
+                await sendCommand(`Load ${loadPath}`, cfg);
+            } catch (e2: any) {
+                output.appendLine(`│ ✘ Unload/Load failed: ${e2.message}`);
+                continue;
+            }
+            const cr2 = await tryCompile(candidate);
+            if (cr2.ok) {
+                result.projectName = candidate;
+                result.compileErrors = [];
+                compiled = true;
+                output.appendLine(`│ ✔ Compile success (after reload): ${candidate}`);
+                break;
+            }
+            result.compileErrors = cr2.errors;
+        }
+        // -508/-743: missing/invalid → Load + Compile
+        else if (cr.statusCode === -508 || cr.statusCode === -743
+            || errText.includes('-508') || errText.includes('-743')) {
+            output.appendLine(`│ ⚠ Not loaded. Load → Compile`);
+            try {
+                await sendCommand(`Load ${loadPath}`, cfg);
+            } catch (e2: any) {
+                output.appendLine(`│ ✘ Load failed: ${e2.message}`);
+                continue;
+            }
+            const cr2 = await tryCompile(candidate);
+            if (cr2.ok) {
+                result.projectName = candidate;
+                result.compileErrors = [];
+                compiled = true;
+                output.appendLine(`│ ✔ Compile success (after load): ${candidate}`);
+                break;
+            }
+            result.compileErrors = cr2.errors;
+        }
+
+        output.appendLine(`│ ✘ Compile failed: ${candidate}`);
+        if (cr.statusCode !== 0) {
+            const status = parseStatus(cr.raw);
+            output.appendLine(`│   STATUS ${status.code}: ${status.message}`);
         }
     }
 
@@ -271,9 +303,10 @@ function applyCompileDiagnostics(
  */
 export async function findProjectDirs(): Promise<string[]> {
     const gprFiles = await vscode.workspace.findFiles(
-        '**/Project.gpr',
+        '**/*.gpr',
         '{**/node_modules/**,**/bin/**,**/.git/**}'
     );
 
-    return gprFiles.map(uri => path.dirname(uri.fsPath));
+    // 동일 폴더 내 여러 .gpr가 있어도 폴더는 중복 없이 반환
+    return [...new Set(gprFiles.map(uri => path.dirname(uri.fsPath)))];
 }

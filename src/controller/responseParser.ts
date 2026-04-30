@@ -57,7 +57,7 @@ export function parseCompileErrors(text: string): CompileError[] {
 
 // ─── Threads ──────────────────────────────────────────────
 
-export type ThreadState = 'Running' | 'Idle' | 'Error' | 'Stopped' | 'Break' | 'Paused' | string;
+export type ThreadState = 'Running' | 'Idle' | 'Error' | 'Stopping' | 'Stopped' | 'Break' | 'Paused' | string;
 
 export interface ThreadInfo {
     name: string;
@@ -185,6 +185,7 @@ function normalizeThreadState(raw: string): ThreadState {
     if (s.includes('run')) { return 'Running'; }
     if (s.includes('idle')) { return 'Idle'; }
     if (s.includes('error') || s.includes('err')) { return 'Error'; }
+    if (s.includes('stopp') || s.includes('stoping')) { return 'Stopping'; }
     if (s.includes('stop')) { return 'Stopped'; }
     if (s.includes('paus')) { return 'Paused'; }
     if (s.includes('break')) { return 'Break'; }

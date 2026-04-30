@@ -404,6 +404,8 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
+                    accessModifier: sharedNewVariableMatch[1].toLowerCase() as 'public' | 'private',
+                    isShared: true,
                     returnType: sharedNewVariableMatch[3]
                 });
                 continue;
@@ -422,6 +424,8 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
+                    accessModifier: sharedVariableMatch[1].toLowerCase() as 'public' | 'private',
+                    isShared: true,
                     returnType: sharedVariableMatch[4],
                     value: sharedConstValue || undefined
                 });
@@ -432,6 +436,9 @@ export class GPLParser {
             // MUST be checked BEFORE regular variable pattern
             const newVariableMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(\w+)\s+As\s+New\s+(\w+)/i);
             if (newVariableMatch) {
+                const upperLine = trimmedLine.toUpperCase();
+                const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
+                    upperLine.includes('PRIVATE') ? 'private' as const : undefined;
                 symbols.push({
                     name: newVariableMatch[2],
                     kind: GPLSymbolKind.Variable,
@@ -440,6 +447,7 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
+                    accessModifier,
                     returnType: newVariableMatch[3]
                 });
                 continue;
@@ -450,6 +458,9 @@ export class GPLParser {
             if (variableMatch) {
                 const isConstant = !!variableMatch[2];
                 const varConstValue = isConstant ? variableMatch[5]?.trim() : undefined;
+                const upperLine = trimmedLine.toUpperCase();
+                const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
+                    upperLine.includes('PRIVATE') ? 'private' as const : undefined;
                 symbols.push({
                     name: variableMatch[3],
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -458,6 +469,7 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
+                    accessModifier,
                     returnType: variableMatch[4],
                     value: varConstValue || undefined
                 });
@@ -467,6 +479,9 @@ export class GPLParser {
             // Parse array variable (e.g., "Dim kvs(100) As KeyValue", "Public Dim kvs(100) As KeyValue")
             const arrayMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
             if (arrayMatch) {
+                const upperLine = trimmedLine.toUpperCase();
+                const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
+                    upperLine.includes('PRIVATE') ? 'private' as const : undefined;
                 symbols.push({
                     name: arrayMatch[2],
                     kind: GPLSymbolKind.Variable,
@@ -475,6 +490,7 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
+                    accessModifier,
                     returnType: arrayMatch[3] + '[]'
                 });
                 continue;

@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.5.20",
+    "version": "0.5.45",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -32,8 +32,6 @@
     "main": "./out/extension.js",
     "activationEvents": [
         "onLanguage:gpl",
-        "workspaceContains:**/*.gpl",
-        "workspaceContains:**/*.gpo",
         "onView:gplThreads",
         "onCommand:gpl.refreshSymbols",
         "onCommand:gpl.debugSymbolCache",
@@ -43,10 +41,12 @@
         "onCommand:gpl.controller.disconnect",
         "onCommand:gpl.deploy",
         "onCommand:gpl.deployRun",
+        "onCommand:gpl.debug.generateLaunch",
+        "onCommand:gpl.debug.attachNow",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
         "onCommand:gpl.threads.refresh",
-        "onDebug"
+        "onDebugResolve:brooks-gpl"
     ],
     "contributes": {
         "languages": [
@@ -119,6 +119,16 @@
                                 "type": "boolean",
                                 "description": "When deployBeforeAttach is true, skip unchanged files during FTP upload.",
                                 "default": false
+                            },
+                            "stopAllBeforeAttach": {
+                                "type": "boolean",
+                                "description": "Run Stop -all before attaching to avoid unrelated running threads.",
+                                "default": false
+                            },
+                            "clearProjectBreakpointsOnAttach": {
+                                "type": "boolean",
+                                "description": "Clear existing controller breakpoints for the target project before attaching. Prevents breakpoint duplication across restarts.",
+                                "default": true
                             }
                         }
                     }
@@ -139,6 +149,8 @@
                             "request": "attach",
                             "name": "Attach to GPL Controller",
                             "deployBeforeAttach": false,
+                            "stopAllBeforeAttach": false,
+                            "clearProjectBreakpointsOnAttach": true,
                             "projectName": ""
                         }
                     }
@@ -183,6 +195,16 @@
                 "icon": "$(rocket)"
             },
             {
+                "command": "gpl.debug.generateLaunch",
+                "title": "GPL: Create/Update Debug launch.json",
+                "icon": "$(gear)"
+            },
+            {
+                "command": "gpl.debug.attachNow",
+                "title": "GPL: Quick Debug Attach (No launch.json)",
+                "icon": "$(debug-alt)"
+            },
+            {
                 "command": "gpl.console.start",
                 "title": "GPL: Start Runtime Console",
                 "icon": "$(terminal)"
@@ -216,6 +238,11 @@
                 "command": "gpl.controller.refreshSystemInfo",
                 "title": "GPL: Refresh System Info",
                 "icon": "$(refresh)"
+            },
+            {
+                "command": "gpl.controller.copySituationForChat",
+                "title": "GPL: Copy Situation for Chat",
+                "icon": "$(copy)"
             },
             {
                 "command": "gpl.controller.threadStart",
@@ -283,6 +310,11 @@
                 "icon": "$(clear-all)"
             },
             {
+                "command": "gpl.controller.copyError",
+                "title": "에러 복사",
+                "icon": "$(copy)"
+            },
+            {
                 "command": "gpl.controller.ftpUnload",
                 "title": "Unload",
                 "icon": "$(close)"
@@ -336,6 +368,21 @@
                     "command": "gpl.threads.refresh",
                     "when": "view == gplThreads",
                     "group": "navigation@6"
+                },
+                {
+                    "command": "gpl.controller.copySituationForChat",
+                    "when": "view == gplThreads",
+                    "group": "navigation@7"
+                },
+                {
+                    "command": "gpl.debug.generateLaunch",
+                    "when": "view == gplThreads",
+                    "group": "navigation@8"
+                },
+                {
+                    "command": "gpl.debug.attachNow",
+                    "when": "view == gplThreads",
+                    "group": "navigation@9"
                 }
             ],
             "view/item/context": [
@@ -420,6 +467,11 @@
                     "group": "inline"
                 },
                 {
+                    "command": "gpl.controller.refreshFtp",
+                    "when": "view == gplThreads && viewItem == section-ftpFlash",
+                    "group": "inline"
+                },
+                {
                     "command": "gpl.controller.refreshSystemInfo",
                     "when": "view == gplThreads && viewItem == section-system",
                     "group": "inline"
@@ -430,48 +482,58 @@
                     "group": "inline"
                 },
                 {
+                    "command": "gpl.controller.copyError",
+                    "when": "view == gplThreads && viewItem == errorItem",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.copyError",
+                    "when": "view == gplThreads && viewItem == errorItem",
+                    "group": "error@1"
+                },
+                {
                     "command": "gpl.controller.ftpRun",
-                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpStop",
-                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpDownload",
-                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpDelete",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile/",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile|ftpFlashFolder|ftpFlashFile/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpRun",
-                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "ftp@1"
                 },
                 {
                     "command": "gpl.controller.ftpStop",
-                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "ftp@2"
                 },
                 {
                     "command": "gpl.controller.ftpDelete",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile/",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile|ftpFlashFolder|ftpFlashFile/",
                     "group": "ftp@3"
                 },
                 {
                     "command": "gpl.controller.ftpUnload",
-                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "ftp@4"
                 },
                 {
                     "command": "gpl.controller.ftpDownload",
-                    "when": "view == gplThreads && viewItem == ftpFolder",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "ftp@5"
                 }
             ]
@@ -494,7 +556,7 @@
                 "gpl.controller.ip": {
                     "scope": "window",
                     "type": "string",
-                    "default": "192.168.0.2",
+                    "default": "192.168.0.1",
                     "description": "Brooks controller IP address."
                 },
                 "gpl.controller.port": {
@@ -520,6 +582,12 @@
                     "type": "string",
                     "default": "/GPL",
                     "description": "FTP base path on the controller for project uploads."
+                },
+                "gpl.controller.ftpFlashProjectsPath": {
+                    "scope": "window",
+                    "type": "string",
+                    "default": "/flash/projects",
+                    "description": "FTP path for controller projects stored under flash/projects."
                 },
                 "gpl.controller.threadPollIntervalMs": {
                     "scope": "window",

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbolKind } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq } from '../config';
-import { findGplBuiltin } from '../gplBuiltins';
+import { findGplBuiltin, getGplBuiltinReferenceUrl } from '../gplBuiltins';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
 
@@ -21,6 +21,26 @@ export class GPLHoverProvider implements vscode.HoverProvider {
     private stripComment(line: string): string {
         const idx = line.indexOf("'");
         return idx >= 0 ? line.slice(0, idx) : line;
+    }
+
+    private getSymbolKindTitle(kind: GPLSymbolKind): string {
+        switch (kind) {
+            case GPLSymbolKind.Module:
+                return 'Module';
+            case GPLSymbolKind.Class:
+                return 'Class';
+            case GPLSymbolKind.Function:
+                return 'Function';
+            case GPLSymbolKind.Sub:
+                return 'Sub';
+            case GPLSymbolKind.Property:
+                return 'Property';
+            case GPLSymbolKind.Constant:
+                return 'Const';
+            case GPLSymbolKind.Variable:
+            default:
+                return 'Variable';
+        }
     }
 
     private getIdentifierAtPosition(document: vscode.TextDocument, position: vscode.Position): { text: string; range: vscode.Range } | undefined {
@@ -78,9 +98,9 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             md.appendMarkdown(`**GPL Built-in** · ${builtin.category}\n\n`);
             md.appendCodeblock(builtin.signature, 'gpl');
             md.appendMarkdown(`\n${builtin.summary}`);
-            if (builtin.sourceUrl) {
-                md.appendMarkdown(`\n\n[Reference](${builtin.sourceUrl})`);
-            }
+            const refUrl = getGplBuiltinReferenceUrl(builtin);
+            const refLabel = builtin.sourceUrl ? 'Reference' : 'GPL Dictionary';
+            md.appendMarkdown(`\n\n[${refLabel}](${refUrl})`);
             md.isTrusted = false;
             return new vscode.Hover(md, wordRange);
         }
@@ -99,19 +119,42 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             }
         }
 
-        if (!sym) return undefined;
-
-        // Only show stable values for constants.
-        if (sym.kind !== GPLSymbolKind.Constant) {
+        if (!sym) {
             return undefined;
         }
 
-        const typeText = sym.returnType ? `: \`${sym.returnType}\`` : '';
-        const valueText = sym.value ? `\n\n값: \`${this.stripComment(sym.value)}\`` : `\n\n값: (초기값 없음)`;
+        const kindTitle = this.getSymbolKindTitle(sym.kind);
+        const md = new vscode.MarkdownString();
+        md.appendMarkdown(`**${kindTitle}** \`${sym.name}\``);
 
-        const md = new vscode.MarkdownString(
-            `**Const** \`${sym.name}\`${typeText}${valueText}`
-        );
+        if (sym.kind === GPLSymbolKind.Function || sym.kind === GPLSymbolKind.Sub) {
+            const params = sym.parameters?.join(', ') ?? '';
+            const signature = sym.kind === GPLSymbolKind.Function
+                ? `Function ${sym.name}(${params})${sym.returnType ? ` As ${sym.returnType}` : ''}`
+                : `Sub ${sym.name}(${params})`;
+            md.appendMarkdown('\n\n');
+            md.appendCodeblock(signature, 'gpl');
+        } else {
+            const typeText = sym.returnType ? `: \`${sym.returnType}\`` : '';
+            md.appendMarkdown(typeText);
+        }
+
+        if (sym.kind === GPLSymbolKind.Constant) {
+            const valueText = sym.value ? this.stripComment(sym.value) : '(초기값 없음)';
+            md.appendMarkdown(`\n\n값: \`${valueText}\``);
+        }
+
+        if (sym.module || sym.className) {
+            const scopes: string[] = [];
+            if (sym.module) {
+                scopes.push(`Module: \`${sym.module}\``);
+            }
+            if (sym.className) {
+                scopes.push(`Class: \`${sym.className}\``);
+            }
+            md.appendMarkdown(`\n\n${scopes.join(' · ')}`);
+        }
+
         md.isTrusted = false;
 
         return new vscode.Hover(md, wordRange);

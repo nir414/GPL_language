@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { XmlUtils } from '../xmlUtils';
-import { getAllGplBuiltins, GPLBuiltinEntry } from '../gplBuiltins';
+import { getAllGplBuiltins, getGplBuiltinReferenceUrl, GPLBuiltinEntry } from '../gplBuiltins';
 
 export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     constructor(private symbolCache: SymbolCache) {}
@@ -304,11 +304,13 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
             builtin.summary
         ];
 
-        if (builtin.sourceUrl) {
-            parts.push('', `[Reference](${builtin.sourceUrl})`);
-        }
+        const refUrl = getGplBuiltinReferenceUrl(builtin);
+        const refLabel = builtin.sourceUrl ? 'Reference' : 'GPL Dictionary';
+        parts.push('', `[${refLabel}](${refUrl})`);
 
-        return new vscode.MarkdownString(parts.join('\n'));
+        const md = new vscode.MarkdownString(parts.join('\n'));
+        md.isTrusted = false;
+        return md;
     }
 
     /**

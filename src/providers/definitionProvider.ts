@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
-import { isTraceVerbose, EXTENSION_VERSION, ciEq } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition } from '../config';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
@@ -293,12 +293,13 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         position: vscode.Position,
         token: vscode.CancellationToken
     ): Promise<vscode.Definition | undefined> {
-        const wordRange = document.getWordRangeAtPosition(position);
-        if (!wordRange) {
+        const ident = getQualifiedWordAtPosition(document, position);
+        if (!ident) {
             return undefined;
         }
 
-        const word = document.getText(wordRange);
+        const word = ident.word;
+        const wordRange = ident.range;
         const line = document.lineAt(position.line).text;
         const afterWord = line.substring(wordRange.end.character);
         const callArgCount = this.countCallArgumentsFromSuffix(afterWord);

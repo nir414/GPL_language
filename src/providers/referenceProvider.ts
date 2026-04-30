@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
-import { isTraceVerbose, ciEq } from '../config';
+import { isTraceVerbose, ciEq, getQualifiedWordAtPosition } from '../config';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
     constructor(
@@ -248,12 +248,13 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         context: vscode.ReferenceContext,
         token: vscode.CancellationToken
     ): Promise<vscode.Location[]> {
-        const wordRange = document.getWordRangeAtPosition(position);
-        if (!wordRange) {
+        const ident = getQualifiedWordAtPosition(document, position);
+        if (!ident) {
             return [];
         }
 
-        const word = document.getText(wordRange);
+        const word = ident.word;
+        const wordRange = ident.range;
 
         // Detect qualified access like Module.Member where the cursor is on Member.
         const lineText = document.lineAt(position.line).text;

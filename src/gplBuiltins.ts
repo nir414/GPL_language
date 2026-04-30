@@ -12,6 +12,8 @@ export interface GPLBuiltinEntry {
     sourceUrl?: string;
 }
 
+export const GPL_DICTIONARY_ROOT_URL = 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/';
+
 const GPL_BUILTINS: GPLBuiltinEntry[] = [
     // Functions
     {
@@ -121,7 +123,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Mid(string, start, length)',
         summary: '문자열의 부분 문자열을 추출합니다.',
         category: 'String',
-        insertSnippet: 'Mid(${1:string}, ${2:start}, ${3:length})'
+        insertSnippet: 'Mid(${1:string}, ${2:start}, ${3:length})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/mid.htm'
     },
     {
         name: 'InStr',
@@ -129,7 +132,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'InStr(start, string, searchString)',
         summary: '문자열에서 검색 문자열의 위치를 찾습니다.',
         category: 'String',
-        insertSnippet: 'InStr(${1:start}, ${2:string}, ${3:searchString})'
+        insertSnippet: 'InStr(${1:start}, ${2:string}, ${3:searchString})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/instr.htm'
     },
     {
         name: 'Len',
@@ -137,7 +141,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Len(string)',
         summary: '문자열 길이를 반환합니다.',
         category: 'String',
-        insertSnippet: 'Len(${1:string})'
+        insertSnippet: 'Len(${1:string})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/len.htm'
     },
     {
         name: 'Trim',
@@ -145,7 +150,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Trim(string)',
         summary: '문자열 양끝 공백을 제거합니다.',
         category: 'String',
-        insertSnippet: 'Trim(${1:string})'
+        insertSnippet: 'Trim(${1:string})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/trim.htm'
     },
     {
         name: 'Replace',
@@ -153,7 +159,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Replace(string, find, replacement)',
         summary: '문자열의 일부를 다른 문자열로 치환합니다.',
         category: 'String',
-        insertSnippet: 'Replace(${1:string}, ${2:find}, ${3:replacement})'
+        insertSnippet: 'Replace(${1:string}, ${2:find}, ${3:replacement})',
+
     },
 
     // Math Class
@@ -172,7 +179,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Acos(expression)',
         summary: '아크코사인 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Acos(${1:expression})'
+        insertSnippet: 'Math.Acos(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/acos.htm'
     },
     {
         name: 'Math.Asin',
@@ -180,7 +188,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Asin(expression)',
         summary: '아크사인 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Asin(${1:expression})'
+        insertSnippet: 'Math.Asin(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/asin.htm'
     },
     {
         name: 'Math.Atan',
@@ -188,7 +197,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Atan(expression)',
         summary: '아크탄젠트 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Atan(${1:expression})'
+        insertSnippet: 'Math.Atan(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/atan.htm'
     },
     {
         name: 'Math.Atan2',
@@ -196,7 +206,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Atan2(y, x)',
         summary: '좌표의 사분면을 고려한 아크탄젠트를 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Atan2(${1:y}, ${2:x})'
+        insertSnippet: 'Math.Atan2(${1:y}, ${2:x})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/atan2.htm'
     },
     {
         name: 'Math.Ceiling',
@@ -204,7 +215,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Ceiling(expression)',
         summary: '천장값(올림 정수)을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Ceiling(${1:expression})'
+        insertSnippet: 'Math.Ceiling(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/ceiling.htm'
     },
     {
         name: 'Math.Cos',
@@ -212,7 +224,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Cos(expression)',
         summary: '코사인 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Cos(${1:expression})'
+        insertSnippet: 'Math.Cos(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/cos.htm'
     },
     {
         name: 'Math.Cosh',
@@ -220,7 +233,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Cosh(expression)',
         summary: '쌍곡 코사인 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Cosh(${1:expression})'
+        insertSnippet: 'Math.Cosh(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/cosh.htm'
     },
     {
         name: 'Math.E',
@@ -236,7 +250,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Exp(expression)',
         summary: '자연상수 밑 지수함수 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Exp(${1:expression})'
+        insertSnippet: 'Math.Exp(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/exp.htm'
     },
     {
         name: 'Math.Floor',
@@ -244,7 +259,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Floor(expression)',
         summary: '바닥값(내림 정수)을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Floor(${1:expression})'
+        insertSnippet: 'Math.Floor(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/floor.htm'
     },
     {
         name: 'Math.Log',
@@ -252,7 +268,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Log(expression)',
         summary: '자연로그 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Log(${1:expression})'
+        insertSnippet: 'Math.Log(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/log.htm'
     },
     {
         name: 'Math.Log10',
@@ -260,7 +277,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Log10(expression)',
         summary: '상용로그 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Log10(${1:expression})'
+        insertSnippet: 'Math.Log10(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/log10.htm'
     },
     {
         name: 'Math.Max',
@@ -268,7 +286,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Max(a, b)',
         summary: '두 값 중 큰 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Max(${1:a}, ${2:b})'
+        insertSnippet: 'Math.Max(${1:a}, ${2:b})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/max.htm'
     },
     {
         name: 'Math.Min',
@@ -276,7 +295,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Min(a, b)',
         summary: '두 값 중 작은 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Min(${1:a}, ${2:b})'
+        insertSnippet: 'Math.Min(${1:a}, ${2:b})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/min.htm'
     },
     {
         name: 'Math.PI',
@@ -292,7 +312,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Pow(x, y)',
         summary: '거듭제곱 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Pow(${1:x}, ${2:y})'
+        insertSnippet: 'Math.Pow(${1:x}, ${2:y})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/pow.htm'
     },
     {
         name: 'Math.Sign',
@@ -300,7 +321,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Sign(expression)',
         summary: '부호값(-1, 0, 1)을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Sign(${1:expression})'
+        insertSnippet: 'Math.Sign(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/sign.htm'
     },
     {
         name: 'Math.Sin',
@@ -308,7 +330,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Sin(expression)',
         summary: '사인 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Sin(${1:expression})'
+        insertSnippet: 'Math.Sin(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/sin.htm'
     },
     {
         name: 'Math.Sinh',
@@ -316,7 +339,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Sinh(expression)',
         summary: '쌍곡 사인 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Sinh(${1:expression})'
+        insertSnippet: 'Math.Sinh(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/sinh.htm'
     },
     {
         name: 'Math.Sqrt',
@@ -324,7 +348,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Sqrt(expression)',
         summary: '제곱근 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Sqrt(${1:expression})'
+        insertSnippet: 'Math.Sqrt(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/sqrt.htm'
     },
     {
         name: 'Math.Tan',
@@ -332,7 +357,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Tan(expression)',
         summary: '탄젠트 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Tan(${1:expression})'
+        insertSnippet: 'Math.Tan(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/tan.htm'
     },
     {
         name: 'Math.Tanh',
@@ -340,7 +366,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Math.Tanh(expression)',
         summary: '쌍곡 탄젠트 값을 반환합니다.',
         category: 'Math Class',
-        insertSnippet: 'Math.Tanh(${1:expression})'
+        insertSnippet: 'Math.Tanh(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/tanh.htm'
     },
 
     // Frequently-used class methods
@@ -350,7 +377,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Thread.Sleep(milliseconds)',
         summary: '현재 스레드를 지정 시간 동안 대기시킵니다.',
         category: 'Thread Class',
-        insertSnippet: 'Thread.Sleep(${1:milliseconds})'
+        insertSnippet: 'Thread.Sleep(${1:milliseconds})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/sleep.htm'
     },
     {
         name: 'Thread.TestAndSet',
@@ -358,7 +386,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Thread.TestAndSet(target, value)',
         summary: '원자적 테스트/설정으로 동기화에 사용합니다.',
         category: 'Thread Class',
-        insertSnippet: 'Thread.TestAndSet(${1:target}, ${2:value})'
+        insertSnippet: 'Thread.TestAndSet(${1:target}, ${2:value})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/testandset.htm'
     },
     {
         name: 'Controller.Timer',
@@ -366,7 +395,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Controller.Timer(mode)',
         summary: '제어기 타이머 값을 반환합니다.',
         category: 'Controller Class',
-        insertSnippet: 'Controller.Timer(${1:mode})'
+        insertSnippet: 'Controller.Timer(${1:mode})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Controller/timer.htm'
     },
     {
         name: 'Controller.Command',
@@ -374,7 +404,8 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
         signature: 'Controller.Command(commandText)',
         summary: '제어기 콘솔 명령을 실행합니다.',
         category: 'Controller Class',
-        insertSnippet: 'Controller.Command(${1:commandText})'
+        insertSnippet: 'Controller.Command(${1:commandText})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Controller/c_command.htm'
     },
     {
         name: 'XmlDoc.EncodeEntities',
@@ -400,6 +431,10 @@ function normalize(value: string): string {
 
 export function getAllGplBuiltins(): readonly GPLBuiltinEntry[] {
     return GPL_BUILTINS;
+}
+
+export function getGplBuiltinReferenceUrl(entry: GPLBuiltinEntry): string {
+    return entry.sourceUrl ?? GPL_DICTIONARY_ROOT_URL;
 }
 
 /**

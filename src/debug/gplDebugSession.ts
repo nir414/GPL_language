@@ -981,9 +981,14 @@ export class GPLDebugSession extends LoggingDebugSession {
      * `Show Variable -eval` 응답 파싱.
      * 제어기 응답 형식: `name, type, value` (예: `i, Integer, 0`)
      * value에 쉼표가 포함될 수 있으므로 세 번째 필드 이후를 모두 value로 취급한다.
+     *
+     * ⚠ 주의: 응답 끝에는 항상 `<STATUS>0, "Success"</STATUS>` 같은 STATUS 블록이 붙는다.
+     * 단순히 태그만 제거하면 `0, "Success"` 텍스트가 남아 변수 값으로 잘못 파싱된다.
+     * → STATUS 블록은 먼저 통째로 제거해야 한다.
      */
     private _parseShowVariableEval(raw: string): { name: string; type: string; value: string } {
-        const cleaned = raw.replace(/<[^>]+>/g, '').trim();
+        const withoutStatus = raw.replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '');
+        const cleaned = withoutStatus.replace(/<[^>]+>/g, '').trim();
         const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
         if (lines.length === 0) {
             return { name: '', type: '', value: '(undefined)' };
@@ -1171,7 +1176,8 @@ export class GPLDebugSession extends LoggingDebugSession {
             });
 
             for (const s of symbols) {
-                if ((s.kind === GPLSymbolKind.Variable || s.kind === GPLSymbolKind.Constant)
+                // 컴파일타임 Const는 런타임 변수가 아니므로 제외 (`Show Global`이 의미 있는 값을 반환하지 않음).
+                if (s.kind === GPLSymbolKind.Variable
                     && !s.isLocal
                     && !s.className) {
                     const displayName = s.module ? `${s.module}.${s.name}` : s.name;

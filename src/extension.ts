@@ -14,7 +14,7 @@ import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn, isGplDocument } from './config';
 
 // Controller integration
-import { testConnection, getControllerConfig, sendCommand, setTrafficChannel, getTrafficChannel } from './controller/controllerConnection';
+import { testConnection, getControllerConfig, sendCommand, setTrafficChannel, getTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
 import { deploy, findProjectDirs } from './controller/deployService';
 import { removeRemoteDir, removeRemoteFile, downloadProject } from './controller/ftpClient';
 import { RuntimeConsole } from './controller/runtimeConsole';
@@ -32,15 +32,18 @@ let statusBar: ConnectionStatusBar | undefined;
 let controllerTree: ControllerTreeProvider | undefined;
 let deployDiagnostics: vscode.DiagnosticCollection;
 
-/** RuntimeConsole 싱글톤 확보 — 이미 실행 중이면 재사용, 아니면 새로 생성·시작 */
+/**
+ * RuntimeConsole 싱글톤 확보.
+ *
+ * 인스턴스를 재사용한다. start()가 idempotent하므로 idle/연결 중/재연결 대기
+ * 어떤 상태에서 호출되어도 좀비 인스턴스나 중복 소켓이 생기지 않는다.
+ * (이전: 끊긴 인스턴스를 stop+재생성 → 좀비의 reconnect timer가 1403을 두고 경쟁)
+ */
 function ensureRuntimeConsole(): RuntimeConsole {
-	if (runtimeConsole?.isConnected) { return runtimeConsole; }
-	// 기존 인스턴스가 있지만 끊겨 있으면 stop 후 새로 생성
-	const hadPrevious = !!runtimeConsole;
-	if (runtimeConsole) { runtimeConsole.stop(); }
-	runtimeConsole = new RuntimeConsole(consoleChannel);
-	// 이전 소켓이 있었으면 TCP 정리 시간 확보 (RST/FIN 처리 대기)
-	runtimeConsole.start(hadPrevious ? 500 : 0);
+	if (!runtimeConsole) {
+		runtimeConsole = new RuntimeConsole(consoleChannel);
+	}
+	runtimeConsole.start();
 	return runtimeConsole;
 }
 
@@ -534,11 +537,6 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	async function createOrUpdateLaunchJson(): Promise<string | undefined> {
-		const folder = getPreferredWorkspaceFolder();
-		if (!folder) {
-			vscode.window.showWarningMessage('워크스페이스 폴더가 없어 launch.json을 만들 수 없습니다.');
-			return undefined;
-		}
 
 		const cfg = getControllerConfig();
 		const detectedProjectName = await detectWorkspaceProjectName();
@@ -690,6 +688,29 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.debug.attachNow', async () => {
+			// 중복 세션 방지: 이미 brooks-gpl 세션이 살아있으면 사용자에게 처리 방식 선택을 요청
+			const existing = (vscode.debug as any).activeDebugSession as vscode.DebugSession | undefined;
+			const hasGplSession = existing?.type === 'brooks-gpl';
+			if (hasGplSession) {
+				const pick = await vscode.window.showWarningMessage(
+					'GPL 디버그 세션이 이미 실행 중입니다.',
+					{ modal: false },
+					'기존 세션 유지',
+					'중단하고 다시 시작',
+				);
+				if (pick === '기존 세션 유지' || pick === undefined) {
+					return;
+				}
+				// 중단하고 다시 시작
+				try {
+					await vscode.debug.stopDebugging(existing);
+					// 세션 정리 시간을 짧게 대기 (DAP terminated 이벤트 처리)
+					await new Promise(r => setTimeout(r, 400));
+				} catch {
+					// 무시: stopDebugging이 실패해도 새 세션 시작은 시도
+				}
+			}
+
 			const cfg = getControllerConfig();
 			const projectName = await detectWorkspaceProjectName();
 
@@ -749,11 +770,13 @@ export function activate(context: vscode.ExtensionContext) {
 		try {
 			const result = await deploy({ projectDir, skipStart }, outputChannel, deployDiagnostics);
 			if (result.success) {
+				// skipStart 여부와 무관하게 콘솔(1403)은 자동 시작.
+				// 디버그 attach 직전이든, 단순 빌드 후 점검이든 런타임 이벤트는 항상 보고 싶다.
+				ensureRuntimeConsole();
 				if (skipStart) {
 					vscode.window.showInformationMessage(`빌드 완료: ${result.projectName} (Start는 별도로 실행하세요)`);
 				} else {
 					vscode.window.showInformationMessage(`배포 완료: ${result.projectName}`);
-					ensureRuntimeConsole();
 					consoleChannel.show(true);
 				}
 			} else {
@@ -1393,6 +1416,11 @@ export function activate(context: vscode.ExtensionContext) {
 					scheduleExpectedProjectSync('debug session started');
 				}
 				controllerTree?.stopPolling();
+				// 디버그 attach 시 1403 런타임 콘솔 자동 시작 (start()는 idempotent).
+				// 사용자가 cehLog/Print 출력을 즉시 볼 수 있게 한다.
+				try { ensureRuntimeConsole(); } catch (err: any) {
+					logOutput(`[Console] auto-start on debug failed: ${err?.message ?? err}`);
+				}
 			}
 		}),
 		vscode.debug.onDidTerminateDebugSession(session => {

@@ -62,10 +62,18 @@ export class RuntimeConsole implements vscode.Disposable {
 
     /**
      * 콘솔 스트리밍 시작.
+     *
+     * Idempotent: 이미 연결되었거나, 연결 시도 중(소켓 존재) 또는
+     * 재연결 대기 중(_reconnectTimer 활성)이면 아무 것도 하지 않는다.
+     * → 여러 진입점(배포 후, attach 시점, 사이드바 클릭 등)에서 안전하게 호출 가능.
+     *
      * @param delayMs 연결 시도 전 대기 (이전 소켓 TCP 정리 여유)
      */
     start(delayMs = 0): void {
+        if (this.disposed) { return; }
+        if (this._isConnected) { return; }
         if (this.socket) { return; }
+        if (this._reconnectTimer) { return; }
         this._explicitStop = false;
         this._reconnectAttempt = 0;
         this._consecutiveEmptySessions = 0;

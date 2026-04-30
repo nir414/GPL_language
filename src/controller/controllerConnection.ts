@@ -38,13 +38,34 @@ function logTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
 	_trafficChannel.appendLine(`[${ts}] ${direction} ${message}`);
 }
 
+// 세션 한정 controller 오버라이드 (메모리 전용, 디스크 미저장).
+// "이번만 사용" 같은 일회성 IP 선택이나 launch.json에서 들어온 IP를
+// 같은 세션의 후속 명령에도 적용하기 위함.
+let _sessionIpOverride: string | undefined;
+let _sessionPortOverride: number | undefined;
+
+export function setSessionControllerOverride(ip?: string, port?: number): void {
+	_sessionIpOverride = ip && ip.trim() ? ip.trim() : undefined;
+	_sessionPortOverride = typeof port === 'number' && port > 0 ? port : undefined;
+}
+
+export function clearSessionControllerOverride(): void {
+	_sessionIpOverride = undefined;
+	_sessionPortOverride = undefined;
+}
+
+export function getSessionControllerOverride(): { ip?: string; port?: number } {
+	return { ip: _sessionIpOverride, port: _sessionPortOverride };
+}
+
 export function getControllerConfig(): ControllerConfig {
 	const cfg = vscode.workspace.getConfiguration('gpl.controller');
 	const rawIp = cfg.get('ip');
-	const ip = typeof rawIp === 'string' ? rawIp : (rawIp as any)?.ip ?? '192.168.0.1';
+	const settingsIp = typeof rawIp === 'string' ? rawIp : (rawIp as any)?.ip ?? '192.168.0.1';
+	const settingsPort = cfg.get<number>('port') ?? DEFAULT_PORT;
 	return {
-		ip,
-		port: cfg.get<number>('port') ?? DEFAULT_PORT,
+		ip: _sessionIpOverride ?? settingsIp,
+		port: _sessionPortOverride ?? settingsPort,
 		consolePort: cfg.get<number>('consolePort') ?? DEFAULT_CONSOLE_PORT,
 		timeoutMs: cfg.get<number>('timeoutMs') ?? DEFAULT_TIMEOUT_MS,
 		ftpBasePath: cfg.get<string>('ftpBasePath') ?? DEFAULT_FTP_BASE_PATH,

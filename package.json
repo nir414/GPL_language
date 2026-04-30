@@ -616,7 +616,8 @@
     },
     "dependencies": {
         "@vscode/debugadapter": "^1.68.0",
-        "@vscode/debugprotocol": "^1.68.0"
+        "@vscode/debugprotocol": "^1.68.0",
+        "basic-ftp": "^5.3.0"
     },
     "author": "nir414",
     "license": "MIT"

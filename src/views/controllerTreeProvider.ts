@@ -587,16 +587,36 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const errSec = new SectionNode('errors',
 			this.errors.length > 0 ? `에러 (${this.errors.length})` : '에러 없음',
 			this.errors.length > 0 ? 'warning' : 'pass');
-		errSec.children = this.errors.length > 0
-			? this.errors.map(e => new InfoNode(
+		// Error 쓰레드 우선 표시 (원인 파악 용이)
+		const errorThreads = this.threads.filter(t => t.state === 'Error');
+		const errorChildren: InfoNode[] = [];
+		
+		for (const et of errorThreads) {
+			errorChildren.push(new InfoNode(
+				`🔴 ${et.name}`,
+				'debug-stop',
+				`${et.file}  [${et.lastStatus}]`,
+				undefined,
+				'errorThread',
+				`${et.name}: ${et.file} - ${et.lastStatus}`,
+			));
+		}
+		
+		// ErrorLog 출력 (Error 쓰레드 이후)
+		if (this.errors.length > 0) {
+			errorChildren.push(...this.errors.map(e => new InfoNode(
 				e,
 				'error',
 				'클릭: 클립보드에 복사',
 				{ command: 'gpl.controller.copyError', title: '에러 복사', arguments: [e] },
 				'errorItem',
 				e,
-			))
-			: [new InfoNode('활성 에러 없음', 'pass')];
+			)));
+		} else if (errorThreads.length === 0) {
+			errorChildren.push(new InfoNode('활성 에러 없음', 'pass'));
+		}
+		
+		errSec.children = errorChildren;
 		sections.push(errSec);
 
 		return sections;

@@ -36,7 +36,17 @@ export function getTrafficChannel(): vscode.OutputChannel | null {
 function logTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
 	const now = new Date();
 	const ts = now.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
-	const line = `[${ts}] ${direction} ${message}`;
+	
+	// 명령 포맷 라벨 추가 (송신 시 자동 판단)
+	let labeledMsg = message;
+	if (direction === '>>>') {
+		// 포맷 판단: XML은 < 시작, 나머지는 plain text
+		const isXml = message.includes('<') || message.includes('/>');
+		const format = isXml ? '[XML]' : '[PLAIN]';
+		labeledMsg = `${format} ${message}`;
+	}
+	
+	const line = `[${ts}] ${direction} ${labeledMsg}`;
 	if (_trafficChannel) {
 		_trafficChannel.appendLine(line);
 	}
@@ -91,11 +101,17 @@ export function sendCommand(
 	const cfg = { ...getControllerConfig(), ...config };
 	const timeout = timeoutMs ?? cfg.timeoutMs;
 
+	// 응답 누적 수신: <STATUS> 찾을 때까지 기다리되,
+	// 최소 바이트 수 && idle 조건으로도 완성 응답으로 판단
+	const MIN_RESPONSE_BYTES = 10;
+	const IDLE_MS = 300;
+
 	return new Promise<string>((resolve, reject) => {
 		const socket = new net.Socket();
 		let responseBuffer = '';
 		let settled = false;
 		let gracefulCloseTimer: ReturnType<typeof setTimeout> | null = null;
+		let idleTimer: ReturnType<typeof setTimeout> | null = null;
 		const startMs = Date.now();
 
 		logTraffic('>>>', `${cfg.ip}:${cfg.port}  ${command}`);
@@ -103,11 +119,30 @@ export function sendCommand(
 		const timer = setTimeout(() => {
 			if (!settled) {
 				settled = true;
+				if (idleTimer) clearTimeout(idleTimer);
 				socket.destroy();
 				logTraffic('---', `TIMEOUT (${timeout}ms): ${command}`);
 				reject(new Error(`Command timeout (${timeout}ms): ${command}`));
 			}
 		}, timeout);
+
+		const completeResponse = () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			if (idleTimer) clearTimeout(idleTimer);
+
+			const elapsed = Date.now() - startMs;
+			const statusMatch = responseBuffer.match(/<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/);
+			const statusStr = statusMatch ? `STATUS ${statusMatch[1]}` : 'OK';
+			const lines = responseBuffer.split(/\r?\n/).filter(l => l.trim() && !l.includes('<STATUS>') && !l.includes('</STATUS>') && !l.includes('<DATA>') && !l.includes('</DATA>')).length;
+			logTraffic('<<<', `${statusStr}  ${lines} lines  ${elapsed}ms`);
+			gracefulCloseTimer = setTimeout(() => {
+				logTraffic('---', `FIN wait over (${cfg.ip}:${cfg.port}) after STATUS for ${command}`);
+			}, 1000);
+			socket.end();
+			resolve(responseBuffer.trim());
+		};
 
 		const connectOptions = cfg.preferIPv4
 			? { host: cfg.ip, port: cfg.port, family: 4 }
@@ -120,20 +155,27 @@ export function sendCommand(
 
 		socket.on('data', (data: Buffer) => {
 			responseBuffer += data.toString('ascii').replace(/\0/g, '');
+
+			// 이전 idle timer 취소
+			if (idleTimer) {
+				clearTimeout(idleTimer);
+				idleTimer = null;
+			}
+
+			// 완성 응답 조건 1: <STATUS> 태그 감지
 			if (responseBuffer.includes('</STATUS>')) {
-				settled = true;
-				clearTimeout(timer);
-				const elapsed = Date.now() - startMs;
-				// 응답에서 STATUS 코드만 추출하여 간결하게 로깅
-				const statusMatch = responseBuffer.match(/<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/);
-				const statusStr = statusMatch ? `STATUS ${statusMatch[1]}` : 'OK';
-				const lines = responseBuffer.split(/\r?\n/).filter(l => l.trim() && !l.includes('<STATUS>') && !l.includes('</STATUS>') && !l.includes('<DATA>') && !l.includes('</DATA>')).length;
-				logTraffic('<<<', `${statusStr}  ${lines} lines  ${elapsed}ms`);
-				gracefulCloseTimer = setTimeout(() => {
-					logTraffic('---', `FIN wait over (${cfg.ip}:${cfg.port}) after STATUS for ${command}`);
-				}, 1000);
-				socket.end();
-				resolve(responseBuffer.trim());
+				completeResponse();
+				return;
+			}
+
+			// 완성 응답 조건 2: 최소 바이트 수 && idle 대기
+			// (부분 수신으로 인한 "무응답" 오해 방지)
+			if (responseBuffer.length >= MIN_RESPONSE_BYTES) {
+				idleTimer = setTimeout(() => {
+					if (!settled) {
+						completeResponse();
+					}
+				}, IDLE_MS);
 			}
 		});
 
@@ -142,6 +184,7 @@ export function sendCommand(
 				clearTimeout(gracefulCloseTimer);
 				gracefulCloseTimer = null;
 			}
+			if (idleTimer) clearTimeout(idleTimer);
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
@@ -155,6 +198,7 @@ export function sendCommand(
 				clearTimeout(gracefulCloseTimer);
 				gracefulCloseTimer = null;
 			}
+			if (idleTimer) clearTimeout(idleTimer);
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);

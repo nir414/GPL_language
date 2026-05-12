@@ -59,9 +59,9 @@ export class ConnectionStatusBar implements vscode.Disposable {
             this.item.backgroundColor = undefined;
             this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect`;
         } else {
-            this.item.text = `$(debug-disconnect) GPL: Disconnected`;
+            this.item.text = `$(debug-disconnect) GPL: ${cfg.ip} (offline)`;
             this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-            this.item.tooltip = 'Click to connect to controller';
+            this.item.tooltip = `Disconnected (${cfg.ip}:${cfg.port}) — click to connect`;
         }
     }
 }

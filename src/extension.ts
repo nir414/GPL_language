@@ -21,7 +21,8 @@ import { RuntimeConsole } from './controller/runtimeConsole';
 import { ControllerTreeProvider } from './views/controllerTreeProvider';
 import { ConnectionStatusBar } from './views/connectionStatusBar';
 import { activateDebug } from './debug/activateDebug';
-import { parseStack, parseThreadDetail, parseGpr, parseStatus, parseThreadList } from './controller/responseParser';
+import { parseCompileErrors, parseStack, parseThreadDetail, parseGpr, parseStatus, parseThreadList } from './controller/responseParser';
+import { startLiveLogTerminal, stopLiveLogTerminal, appendLiveLog, isLiveLogTerminalEnabled } from './log/liveLogTerminal';
 
 // Global output channel for GPL extension logging
 let outputChannel: vscode.OutputChannel;
@@ -41,7 +42,7 @@ let deployDiagnostics: vscode.DiagnosticCollection;
  */
 function ensureRuntimeConsole(): RuntimeConsole {
 	if (!runtimeConsole) {
-		runtimeConsole = new RuntimeConsole(consoleChannel);
+		runtimeConsole = new RuntimeConsole(consoleChannel, outputChannel);
 	}
 	runtimeConsole.start();
 	return runtimeConsole;
@@ -57,18 +58,75 @@ export function activate(context: vscode.ExtensionContext) {
 
 	function logOutput(msg: string): void {
 		outputChannel.appendLine(msg);
+		appendLiveLog(`[main] ${msg}`);
 	}
 
 	function logConsole(msg: string): void {
 		consoleChannel?.appendLine(msg);
+		appendLiveLog(`[console] ${msg}`);
 	}
 
 	function logTraffic(msg: string): void {
 		trafficChannel.appendLine(msg);
+		appendLiveLog(`[traffic] ${msg}`);
 	}
 
 	function sleep(ms: number): Promise<void> {
 		return new Promise(resolve => setTimeout(resolve, ms));
+	}
+
+	function summarizeDeployErrorLog(entry: string): string {
+		const normalized = (entry || '').replace(/\s+/g, ' ').trim();
+		if (!normalized) {
+			return 'ErrorLog 내용 없음';
+		}
+		if (normalized.length <= 140) {
+			return normalized;
+		}
+		return `${normalized.slice(0, 137)}...`;
+	}
+
+	function parseControllerErrorLogEntry(entry: string): { timestamp: string; source: string; code: number; message: string } | undefined {
+		const match = entry.match(/^(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d{3}),\s*([^,]+),\s*(-?\d+),\s*"?([^"]*)"?$/);
+		if (!match) { return undefined; }
+		return {
+			timestamp: match[1],
+			source: match[2].trim(),
+			code: Number(match[3]),
+			message: match[4].trim(),
+		};
+	}
+
+	function classifyDeployErrorLog(entry: string): { summary: string; detail?: string; isControllerError: boolean } {
+		const controllerError = parseControllerErrorLogEntry(entry);
+		if (!controllerError) {
+			return {
+				summary: summarizeDeployErrorLog(entry),
+				isControllerError: false,
+			};
+		}
+
+		if (controllerError.code === -1521) {
+			return {
+				summary: `제어기 PDB 파일 오류 (-1521): ${controllerError.message}`,
+				detail: '분류: controller /flash/config 의 *.pac 파일 형식/로드 문제(공식 문서 기준). GPL 코드 오류로 직접 분류하지 않음.',
+				isControllerError: true,
+			};
+		}
+
+		if (controllerError.code === -1520) {
+			return {
+				summary: `제어기 PDB 파일 누락 (-1520): ${controllerError.message}`,
+				detail: '분류: controller /flash/config 의 parameter DB 파일 누락/열기 실패(공식 문서 기준).',
+				isControllerError: true,
+			};
+		}
+
+		return {
+			summary: `제어기 ErrorLog ${controllerError.source} ${controllerError.code}: ${controllerError.message}`,
+			detail: '분류: controller ErrorLog 항목. 현재 실행 결과와 과거 누적 항목을 분리 확인 필요.',
+			isControllerError: true,
+		};
 	}
 
 	function isBusyStatus(code: number): boolean {
@@ -205,6 +263,26 @@ export function activate(context: vscode.ExtensionContext) {
 	if (isTraceOn(vscode.workspace)) {
 		logOutput(`[Trace] gpl.trace.server = ${traceLevel}`);
 		outputChannel.show(true);
+	}
+
+	function hasOpenGplContext(): boolean {
+		return vscode.workspace.textDocuments.some(doc => isGplDocument(doc));
+	}
+
+	const runtimeConsoleCfg = vscode.workspace.getConfiguration('gpl.runtimeConsole');
+	const autoStartConsoleOnDeploy = runtimeConsoleCfg.get<boolean>('autoStartOnDeploy', false);
+	const autoStartConsoleOnDebug = runtimeConsoleCfg.get<boolean>('autoStartOnDebug', true);
+
+	const autoStartLiveTerminal = vscode.workspace
+		.getConfiguration('gpl.trace')
+		.get<boolean>('liveTerminal.autoStart', false);
+	if (autoStartLiveTerminal) {
+		if (hasOpenGplContext()) {
+			startLiveLogTerminal();
+			logOutput('[Trace] live terminal auto-start enabled');
+		} else {
+			logOutput('[Trace] live terminal auto-start skipped (no open GPL document)');
+		}
 	}
 
 	const symbolCache = new SymbolCache(outputChannel);
@@ -474,9 +552,11 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.registerTreeDataProvider('gplThreads', controllerTree)
 	);
 
-	async function detectWorkspaceProjectName(): Promise<string> {
+	async function detectWorkspaceProjectContext(): Promise<{ projectName: string; folderName: string }> {
 		const dirs = await findProjectDirs();
-		if (dirs.length === 0) { return ''; }
+		if (dirs.length === 0) {
+			return { projectName: '', folderName: '' };
+		}
 
 		const activePath = vscode.window.activeTextEditor?.document?.uri.scheme === 'file'
 			? vscode.window.activeTextEditor.document.uri.fsPath
@@ -496,14 +576,23 @@ export function activate(context: vscode.ExtensionContext) {
 			if (matched) { preferred = matched; }
 		}
 
+		const folderName = path.basename(preferred).trim();
 		try {
 			const gprPath = path.join(preferred, 'Project.gpr');
 			const text = fs.readFileSync(gprPath, 'utf-8');
 			const info = parseGpr(text);
-			return (info.projectName || path.basename(preferred)).trim();
+			return {
+				projectName: (info.projectName || folderName).trim(),
+				folderName,
+			};
 		} catch {
-			return path.basename(preferred).trim();
+			return { projectName: folderName, folderName };
 		}
+	}
+
+	async function detectWorkspaceProjectName(): Promise<string> {
+		const context = await detectWorkspaceProjectContext();
+		return context.projectName;
 	}
 
 	let expectedProjectSyncTimer: ReturnType<typeof setTimeout> | undefined;
@@ -512,10 +601,10 @@ export function activate(context: vscode.ExtensionContext) {
 			clearTimeout(expectedProjectSyncTimer);
 		}
 		expectedProjectSyncTimer = setTimeout(() => {
-			void detectWorkspaceProjectName().then(name => {
-				controllerTree?.setExpectedProjectName(name);
-				if (name) {
-					logOutput(`[ProjectContext] expected project (${reason}): ${name}`);
+			void detectWorkspaceProjectContext().then(projectContext => {
+				controllerTree?.setExpectedProjectContext(projectContext.projectName, projectContext.folderName);
+				if (projectContext.projectName) {
+					logOutput(`[ProjectContext] expected project (${reason}): ${projectContext.projectName} / ftp folder: ${projectContext.folderName}`);
 				}
 			});
 		}, 150);
@@ -536,7 +625,100 @@ export function activate(context: vscode.ExtensionContext) {
 		return folders[0];
 	}
 
+	/**
+	 * .vscode/launch.json에서 첫 brooks-gpl 구성을 읽어 controller 정보를 추출.
+	 * launch.json이 없거나 파싱 실패하면 undefined.
+	 */
+	function readLaunchControllerInfo(): { ip?: string; port?: number; projectName?: string } | undefined {
+		const folder = getPreferredWorkspaceFolder();
+		if (!folder) { return undefined; }
+		const launchPath = path.join(folder.uri.fsPath, '.vscode', 'launch.json');
+		if (!fs.existsSync(launchPath)) { return undefined; }
+		try {
+			const text = fs.readFileSync(launchPath, 'utf8');
+			// launch.json은 주석 허용. 간단한 라인/블록 주석 제거 후 JSON.parse.
+			const stripped = text
+				.replace(/\/\*[\s\S]*?\*\//g, '')
+				.replace(/^\s*\/\/.*$/gm, '');
+			const parsed = JSON.parse(stripped);
+			const configs: any[] = Array.isArray(parsed?.configurations) ? parsed.configurations : [];
+			const gplCfg = configs.find(c => c?.type === 'brooks-gpl');
+			if (!gplCfg) { return undefined; }
+			const rawIp = typeof gplCfg.controllerIp === 'string' ? gplCfg.controllerIp.trim() : '';
+			const rawPort = gplCfg.controllerPort;
+			const rawProject = typeof gplCfg.projectName === 'string' ? gplCfg.projectName.trim() : '';
+
+			const ip = resolveLaunchVariables(rawIp, folder);
+			const projectName = resolveLaunchVariables(rawProject, folder);
+			let port: number | undefined;
+			if (typeof rawPort === 'number') {
+				port = rawPort;
+			} else if (typeof rawPort === 'string') {
+				const resolvedPort = resolveLaunchVariables(rawPort.trim(), folder);
+				const n = Number(resolvedPort);
+				if (Number.isFinite(n) && n > 0) { port = n; }
+			}
+			return {
+				ip: ip || undefined,
+				port,
+				projectName: projectName || undefined,
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * launch.json 값에 포함된 VS Code 변수 placeholder를 해석한다.
+	 * 지원: ${config:NAMESPACE.KEY}, ${env:VAR}, ${workspaceFolder}, ${workspaceFolderBasename}.
+	 * 해석 실패 또는 빈 결과면 빈 문자열 반환 (자기참조 ${config:gpl.controller.ip} 같은 케이스 안전 처리).
+	 */
+	function resolveLaunchVariables(value: string, folder: vscode.WorkspaceFolder): string {
+		if (!value) { return ''; }
+		// placeholder가 없으면 그대로 반환
+		if (!value.includes('${')) { return value; }
+
+		const replaced = value.replace(/\$\{([^}]+)\}/g, (_match, expr: string) => {
+			const trimmed = expr.trim();
+			if (trimmed === 'workspaceFolder') {
+				return folder.uri.fsPath;
+			}
+			if (trimmed === 'workspaceFolderBasename') {
+				return path.basename(folder.uri.fsPath);
+			}
+			if (trimmed.startsWith('config:')) {
+				const key = trimmed.slice('config:'.length).trim();
+				const v = vscode.workspace.getConfiguration().get<unknown>(key);
+				return typeof v === 'string' || typeof v === 'number' ? String(v) : '';
+			}
+			if (trimmed.startsWith('env:')) {
+				const name = trimmed.slice('env:'.length).trim();
+				return process.env[name] ?? '';
+			}
+			// 미지원 placeholder는 빈 문자열 (사이드바에 ${...} 리터럴이 노출되는 것 방지)
+			return '';
+		});
+
+		// 해석 후에도 ${ 가 남아있으면 부분 실패로 간주 — 호출자가 폴백하도록 빈 문자열
+		if (replaced.includes('${')) { return ''; }
+		return replaced.trim();
+	}
+
+	/**
+	 * expected project 이름 결정: launch.json 우선 → Project.gpr 기반 폴백.
+	 */
+	async function resolveExpectedProjectName(): Promise<string> {
+		const fromLaunch = readLaunchControllerInfo()?.projectName;
+		if (fromLaunch) { return fromLaunch; }
+		return await detectWorkspaceProjectName();
+	}
+
 	async function createOrUpdateLaunchJson(): Promise<string | undefined> {
+		const folder = getPreferredWorkspaceFolder();
+		if (!folder) {
+			vscode.window.showWarningMessage('워크스페이스 폴더가 없어 launch.json을 만들 수 없습니다.');
+			return undefined;
+		}
 
 		const cfg = getControllerConfig();
 		const detectedProjectName = await detectWorkspaceProjectName();
@@ -604,6 +786,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// 연결 유실 감지 → 상태바 + 알림 갱신
 	controllerTree.onDidLoseConnection(() => {
+		runtimeConsole?.stop();
 		statusBar?.setConnected(false);
 		logOutput('[Controller] Connection lost (3 consecutive failures)');
 		vscode.window.showWarningMessage('GPL Controller 연결이 끊어졌습니다.');
@@ -614,28 +797,51 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.connect', async () => {
 			const currentCfg = getControllerConfig();
+			const launchInfo = readLaunchControllerInfo();
+			// 기본값 우선순위: launch.json > 현재 cfg(세션 오버라이드 포함) > settings
+			const defaultIp = launchInfo?.ip || currentCfg.ip;
 			const inputIp = await vscode.window.showInputBox({
-				prompt: '제어기 IP 주소를 입력하세요',
-				value: currentCfg.ip,
+				prompt: launchInfo?.ip
+					? `제어기 IP (launch.json 기본값: ${launchInfo.ip})`
+					: '제어기 IP 주소를 입력하세요',
+				value: defaultIp,
 				placeHolder: '192.168.0.1',
 				validateInput: (v) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v) ? null : '올바른 IP 형식이 아닙니다 (예: 192.168.0.1)',
 			});
 			if (!inputIp) { return; }
 
+			// IP 변경 시 저장 여부 확인. launch.json IP를 그대로 받아들인 경우는
+			// settings에 굳이 쓰지 않고 세션 오버라이드만 적용한다.
 			if (inputIp !== currentCfg.ip) {
-				const save = await vscode.window.showQuickPick(
-					[{ label: '저장', description: `settings.json에 ${inputIp} 저장` }, { label: '이번만 사용' }],
-					{ placeHolder: `IP를 ${inputIp}(으)로 변경합니다` }
-				);
+				const fromLaunch = launchInfo?.ip === inputIp;
+				const choices: vscode.QuickPickItem[] = fromLaunch
+					? [
+						{ label: '이번만 사용', description: 'launch.json 값을 세션 한정으로 사용' },
+						{ label: '저장', description: `settings.json에 ${inputIp} 저장` },
+					]
+					: [
+						{ label: '저장', description: `settings.json에 ${inputIp} 저장` },
+						{ label: '이번만 사용', description: '이 세션 동안만 적용 (재시작 시 초기화)' },
+					];
+				const save = await vscode.window.showQuickPick(choices, {
+					placeHolder: `IP를 ${inputIp}(으)로 변경합니다`,
+				});
 				if (!save) { return; }
 				if (save.label === '저장') {
 					await vscode.workspace.getConfiguration('gpl.controller').update('ip', inputIp, vscode.ConfigurationTarget.Global);
+					clearSessionControllerOverride();
+				} else {
+					setSessionControllerOverride(inputIp, launchInfo?.port);
 				}
+			} else if (launchInfo?.port && launchInfo.port !== currentCfg.port) {
+				// IP는 같지만 launch.json이 다른 port를 지정한 경우 세션 오버라이드 적용
+				setSessionControllerOverride(inputIp, launchInfo.port);
 			}
 
-			const expected = await detectWorkspaceProjectName();
-			controllerTree?.setExpectedProjectName(expected);
-			const cfg = { ...currentCfg, ip: inputIp };
+			const expected = await resolveExpectedProjectName();
+			const projectContext = await detectWorkspaceProjectContext();
+			controllerTree?.setExpectedProjectContext(projectContext.projectName || expected, projectContext.folderName || expected);
+			const cfg = getControllerConfig();
 			logOutput(`[Controller] Connecting to ${cfg.ip}:${cfg.port} …`);
 			try {
 				const ok = await testConnection(cfg);
@@ -643,6 +849,10 @@ export function activate(context: vscode.ExtensionContext) {
 					vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`);
 					statusBar?.setConnected(true);
 					controllerTree?.setConnected(true);
+					// controller 연결 성공 시 1403도 바로 유지 연결한다.
+					try { ensureRuntimeConsole(); } catch (err: any) {
+						logOutput(`[Console] auto-start on connect failed: ${err?.message ?? err}`);
+					}
 				} else {
 					vscode.window.showErrorMessage(`GPL Controller 연결 실패: ${cfg.ip}`);
 					statusBar?.setConnected(false);
@@ -712,14 +922,15 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			const cfg = getControllerConfig();
-			const projectName = await detectWorkspaceProjectName();
+			const projectName = await resolveExpectedProjectName();
+			const launchInfo = readLaunchControllerInfo();
 
 			const dynamicConfig: vscode.DebugConfiguration = {
 				type: 'brooks-gpl',
 				request: 'attach',
 				name: projectName ? `GPL Quick Attach (${projectName})` : 'GPL Quick Attach',
-				controllerIp: cfg.ip,
-				controllerPort: cfg.port,
+				controllerIp: launchInfo?.ip || cfg.ip,
+				controllerPort: launchInfo?.port || cfg.port,
 				projectName,
 				deployBeforeAttach: true,
 				stopOnEntry: false,
@@ -734,8 +945,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.disconnect', () => {
+			// 싱글톤 인스턴스는 보존하고 연결만 끊는다 (v0.5.48 일관성).
 			runtimeConsole?.stop();
-			runtimeConsole = undefined;
+			clearSessionControllerOverride();
 			statusBar?.setConnected(false);
 			controllerTree?.setConnected(false);
 			vscode.window.showInformationMessage('GPL Controller 연결 해제');
@@ -767,17 +979,76 @@ export function activate(context: vscode.ExtensionContext) {
 		logOutput(`[Deploy] Starting ${mode}: ${projectDir} → ${cfg.ip}`);
 		outputChannel.show(true);
 
+		let deployRuntimeConsole: RuntimeConsole | undefined;
+		if (!skipStart) {
+			try {
+				deployRuntimeConsole = ensureRuntimeConsole();
+				await deployRuntimeConsole.waitUntilReady(800);
+				logOutput('[Deploy] Runtime console primed before Start');
+			} catch (err: any) {
+				logOutput(`[Console] pre-start failed: ${err?.message ?? err}`);
+			}
+		}
+
 		try {
 			const result = await deploy({ projectDir, skipStart }, outputChannel, deployDiagnostics);
 			if (result.success) {
-				// skipStart 여부와 무관하게 콘솔(1403)은 자동 시작.
-				// 디버그 attach 직전이든, 단순 빌드 후 점검이든 런타임 이벤트는 항상 보고 싶다.
-				ensureRuntimeConsole();
+				const deployedFolderName = path.basename(projectDir).trim();
+				controllerTree?.setExpectedProjectContext(result.projectName, deployedFolderName);
+				await controllerTree?.refreshAll();
 				if (skipStart) {
-					vscode.window.showInformationMessage(`빌드 완료: ${result.projectName} (Start는 별도로 실행하세요)`);
+					// Build Only 성공 후에도 1403 콘솔을 즉시 유지 연결한다.
+					// 디버그 Attach/F5 직전 콘솔 준비를 보장하여 "1403 미연결" 체감 이슈를 줄인다.
+					try {
+						deployRuntimeConsole = ensureRuntimeConsole();
+						await deployRuntimeConsole.waitUntilReady(800);
+						logOutput('[Deploy] Runtime console auto-start after Build Only');
+					} catch (err: any) {
+						logOutput(`[Console] build-only auto-start failed: ${err?.message ?? err}`);
+					}
+					vscode.window.showInformationMessage(`빌드 완료: ${result.projectName} (FTP/컨텍스트 갱신 완료, Start 미실행)`);
 				} else {
-					vscode.window.showInformationMessage(`배포 완료: ${result.projectName}`);
-					consoleChannel.show(true);
+					const firstError = result.errorLog.length > 0
+						? classifyDeployErrorLog(result.errorLog[0])
+						: undefined;
+					if (result.errorLog.length > 0) {
+						for (const entry of result.errorLog) {
+							const classified = classifyDeployErrorLog(entry);
+							if (classified.isControllerError) {
+								logOutput(`[Deploy][ErrorLog] ${classified.summary}`);
+								if (classified.detail) {
+									logOutput(`[Deploy][ErrorLog] ${classified.detail}`);
+								}
+							}
+						}
+					}
+					if (result.errorLog.length > 0) {
+						outputChannel.show(true);
+						const warningText = firstError?.isControllerError
+							? `배포 완료. controller ErrorLog ${result.errorLog.length}건 감지: ${firstError.summary}`
+							: `배포 완료. ErrorLog ${result.errorLog.length}건 감지: ${firstError?.summary ?? ''}`;
+						const action = await vscode.window.showWarningMessage(
+							warningText,
+							'출력 보기',
+							'콘솔 보기',
+						);
+						if (action === '콘솔 보기') {
+							if (!deployRuntimeConsole) {
+								deployRuntimeConsole = ensureRuntimeConsole();
+								await deployRuntimeConsole.waitUntilReady(800);
+							}
+							consoleChannel.show(true);
+						} else {
+							outputChannel.show(true);
+						}
+					} else {
+						vscode.window.showInformationMessage(`배포 완료: ${result.projectName}`);
+						if (!deployRuntimeConsole && autoStartConsoleOnDeploy) {
+							deployRuntimeConsole = ensureRuntimeConsole();
+							await deployRuntimeConsole.waitUntilReady(800);
+						}
+						consoleChannel.show(true);
+					}
 				}
 			} else {
 				const errMsg = result.compileErrors.length > 0
@@ -802,18 +1073,55 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.console.start', () => {
-			ensureRuntimeConsole();
+		vscode.commands.registerCommand('gpl.console.start', async () => {
+			const console = ensureRuntimeConsole();
+			await console.waitUntilReady();
+			const hasPayload = await console.waitForPayload(1500);
 			consoleChannel.show(true);
-			vscode.window.showInformationMessage('GPL 런타임 콘솔 시작');
+			if (hasPayload) {
+				vscode.window.showInformationMessage('GPL 런타임 콘솔 시작 (payload 수신 확인)');
+			} else {
+				vscode.window.showWarningMessage('GPL 런타임 콘솔 소켓은 연결됐지만 payload는 아직 없어. Idle 또는 1403 불안정 가능');
+			}
 		})
 	);
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.console.stop', () => {
 			runtimeConsole?.stop();
-			runtimeConsole = undefined;
 			vscode.window.showInformationMessage('GPL 런타임 콘솔 중지');
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.logs.liveTerminal.start', async () => {
+			startLiveLogTerminal();
+			try {
+				const console = ensureRuntimeConsole();
+				await console.waitUntilReady();
+				const hasPayload = await console.waitForPayload(1500);
+				if (!hasPayload) {
+					logOutput('[Console] live log start: socket connected but no payload yet');
+				}
+			} catch (err: any) {
+				logOutput(`[Console] live log start -> runtime console start failed: ${err?.message ?? err}`);
+			}
+			logOutput('Live log terminal started');
+			vscode.window.showInformationMessage('GPL Live Logs 터미널 시작 (1403 런타임 콘솔 연결 시도)');
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.logs.liveTerminal.stop', () => {
+			if (!isLiveLogTerminalEnabled()) {
+				vscode.window.showInformationMessage('GPL Live Logs 터미널이 이미 중지 상태야.');
+				return;
+			}
+			// Live Log 세션 종료 시 1403 소비자도 함께 정리해 소켓/타이머/리스너를 완전 해제한다.
+			runtimeConsole?.stop();
+			logOutput('Live log terminal stopped');
+			stopLiveLogTerminal();
+			vscode.window.showInformationMessage('GPL Live Logs 터미널 중지 (1403 런타임 콘솔도 정리됨)');
 		})
 	);
 
@@ -871,10 +1179,14 @@ export function activate(context: vscode.ExtensionContext) {
 				// 콘솔 포트: 런타임 콘솔 열기(항상 시작/재사용)
 				// ⚠ 사용자가 "1403 포트 클릭"을 상태 확인으로 인식하는 경우가 많아
 				//   토글 동작은 의도치 않은 중지를 유발한다.
-				ensureRuntimeConsole();
+				const console = ensureRuntimeConsole();
+				await console.waitUntilReady(800);
+				const hasPayload = await console.waitForPayload(1500);
 				consoleChannel.show(true);
-				if (runtimeConsole?.isConnected) {
-					vscode.window.showInformationMessage(`${label} (${ip}:${port}) — 런타임 콘솔 연결됨 (GPL Console 확인)`);
+				if (runtimeConsole?.isConnected && hasPayload) {
+					vscode.window.showInformationMessage(`${label} (${ip}:${port}) — payload 수신 확인 (GPL Console 확인)`);
+				} else if (runtimeConsole?.isConnected) {
+					vscode.window.showWarningMessage(`${label} (${ip}:${port}) — 소켓은 연결됐지만 payload는 아직 없어. Idle 또는 1403 불안정 가능`);
 				} else {
 					vscode.window.showInformationMessage(`${label} (${ip}:${port}) — 런타임 콘솔 연결 시도 중...`);
 				}
@@ -940,7 +1252,6 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('gpl.controller.consoleToggle', () => {
 			if (runtimeConsole?.isConnected) {
 				runtimeConsole.stop();
-				runtimeConsole = undefined;
 				vscode.window.showInformationMessage('런타임 콘솔 중지');
 			} else {
 				ensureRuntimeConsole();
@@ -1170,32 +1481,115 @@ export function activate(context: vscode.ExtensionContext) {
 
 			outputChannel.show(true);
 			logOutput('');
-			logOutput(`━━ [FTP Run] ${name} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+			logOutput(`━━ [FTP Run v${extVersion}] ${name} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+			logOutput(`│ Note: FTP Run uses the uploaded controller copy at ${loadPath}`);
+			logOutput(`│       Local edits are NOT uploaded here. Use GPL: Deploy (Build Only) to verify latest local code.`);
+
+			const runStatusCommand = async (command: string) => {
+				const raw = await sendCommand(command);
+				const status = parseStatus(raw);
+				return { raw, status };
+			};
+
+			const tryCompile = async () => {
+				const raw = await sendCommand(`Compile ${name}`);
+				const status = parseStatus(raw);
+				const errors = parseCompileErrors(raw);
+				return { raw, status, errors, ok: status.code === 0 && errors.length === 0 };
+			};
+
+			const ensureStoppedBeforeCompile = async (): Promise<boolean> => {
+				logOutput('│ Phase: Stop before Compile');
+				logOutput('│ Stop -all');
+				const stopResp = await sendCommandWithBusyRetry('Stop -all', undefined, { maxAttempts: 5, baseDelayMs: 500 });
+				const stopStatus = parseStatus(stopResp);
+				if (stopStatus.code !== 0 && !isBusyStatus(stopStatus.code)) {
+					throw new Error(`Stop -all failed: STATUS ${stopStatus.code} ${stopStatus.message || ''}`.trimEnd());
+				}
+
+				const stopped = await verifyAllStopped(8);
+				if (stopped) {
+					logOutput('│ ✔ Stop complete');
+					return true;
+				}
+
+				logOutput('│ ⚠ Stop sent, but thread stop confirmation is delayed');
+				return false;
+			};
+
+			const ensureLoadedFromFtp = async (): Promise<boolean> => {
+				logOutput(`│ Load ${loadPath}`);
+				const { status } = await runStatusCommand(`Load ${loadPath}`);
+				if (status.code === 0) {
+					logOutput(`│ ✔ Load success`);
+					return true;
+				}
+				if (status.code === -745) {
+					logOutput(`│ ✔ Load skipped (already loaded)`);
+					return true;
+				}
+				logOutput(`│ ✘ Load failed: STATUS ${status.code} ${status.message || ''}`.trimEnd());
+				return false;
+			};
 
 			try {
+				await ensureStoppedBeforeCompile();
+
 				// 1) Compile 시도
+				logOutput('│ Phase: Compile uploaded controller copy');
 				logOutput(`│ Compile ${name}`);
-				try {
-					await sendCommand(`Compile ${name}`);
-					logOutput(`│ ✔ Compile success`);
-				} catch (compErr: any) {
-					const msg = compErr.message || '';
-					if (msg.includes('-745')) {
-						// 이미 로드됨 → Unload → Load → Compile
+				let compile = await tryCompile();
+				if (!compile.ok) {
+					const statusCode = compile.status.code;
+					if (statusCode === -746) {
+						logOutput('│ ⚠ STATUS -746 Interlocked for read');
+						logOutput('│ ⚠ Retry path: Stop → wait → Compile');
+						await ensureStoppedBeforeCompile();
+						await sleep(500);
+						compile = await tryCompile();
+						if (!compile.ok) {
+							throw new Error(`Compile failed after retry: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
+						}
+						logOutput('│ ✔ Compile success (after interlock retry)');
+					} else if (statusCode === -745) {
 						logOutput(`│ ⚠ Already loaded → Unload → Load → Compile`);
-						await sendCommand(`Unload ${name}`);
-						await sendCommand(`Load ${loadPath}`);
-						await sendCommand(`Compile ${name}`);
+						const { status: unloadStatus } = await runStatusCommand(`Unload ${name}`);
+						if (unloadStatus.code === 0) {
+							logOutput(`│ ✔ Unload success`);
+						} else if (unloadStatus.code === -508 || unloadStatus.code === -743) {
+							logOutput(`│ ✔ Unload skipped (project not loaded)`);
+						} else {
+							throw new Error(`Unload failed: STATUS ${unloadStatus.code} ${unloadStatus.message || ''}`.trimEnd());
+						}
+						const loaded = await ensureLoadedFromFtp();
+						if (!loaded) {
+							throw new Error(`Load failed: ${loadPath}`);
+						}
+						compile = await tryCompile();
+						if (!compile.ok) {
+							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
+						}
 						logOutput(`│ ✔ Compile success (after reload)`);
-					} else if (msg.includes('-508') || msg.includes('-743')) {
-						// 로드 안됨 → Load → Compile
+					} else if (statusCode === -508 || statusCode === -743) {
 						logOutput(`│ ⚠ Not loaded → Load → Compile`);
-						await sendCommand(`Load ${loadPath}`);
-						await sendCommand(`Compile ${name}`);
+						const loaded = await ensureLoadedFromFtp();
+						if (!loaded) {
+							throw new Error(`Load failed: ${loadPath}`);
+						}
+						compile = await tryCompile();
+						if (!compile.ok) {
+							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
+						}
 						logOutput(`│ ✔ Compile success (after load)`);
 					} else {
-						throw compErr;
+						const compileError = compile.errors[0];
+						if (compileError) {
+							throw new Error(`Compile failed: ${compileError.file}:${compileError.line} (${compileError.code}) ${compileError.message}`);
+						}
+						throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
 					}
+				} else {
+					logOutput(`│ ✔ Compile success`);
 				}
 
 				// 2) 콘솔 자동 시작 (아직 꺼져 있으면)
@@ -1204,9 +1598,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 				// 3) Start
 				logOutput(`│ Start ${name}`);
-				await sendCommand(`Start ${name}`);
+				const { status: startStatus } = await runStatusCommand(`Start ${name}`);
+				if (startStatus.code !== 0) {
+					throw new Error(`Start failed: STATUS ${startStatus.code} ${startStatus.message || ''}`.trimEnd());
+				}
 				logOutput(`│ ✔ Start success`);
-				vscode.window.showInformationMessage(`${name} 컴파일 & 실행 완료`);
+				vscode.window.showInformationMessage(`${name} 업로드된 제어기 복사본 기준 컴파일 & 실행 완료`);
 				controllerTree?.refresh();
 			} catch (err: any) {
 				logOutput(`│ ✘ 실패: ${err.message ?? err}`);
@@ -1416,10 +1813,11 @@ export function activate(context: vscode.ExtensionContext) {
 					scheduleExpectedProjectSync('debug session started');
 				}
 				controllerTree?.stopPolling();
-				// 디버그 attach 시 1403 런타임 콘솔 자동 시작 (start()는 idempotent).
-				// 사용자가 cehLog/Print 출력을 즉시 볼 수 있게 한다.
-				try { ensureRuntimeConsole(); } catch (err: any) {
-					logOutput(`[Console] auto-start on debug failed: ${err?.message ?? err}`);
+				if (autoStartConsoleOnDebug) {
+					// 디버그 attach 시 1403 런타임 콘솔 자동 시작 (start()는 idempotent).
+					try { ensureRuntimeConsole(); } catch (err: any) {
+						logOutput(`[Console] auto-start on debug failed: ${err?.message ?? err}`);
+					}
 				}
 			}
 		}),
@@ -1435,8 +1833,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// ════════════════════════════════════════════════════════════
 
 	// Initialize symbol cache lazily only when GPL context exists.
-	const hasOpenGplDocument = vscode.workspace.textDocuments.some(doc => isGplDocument(doc));
-	if (hasOpenGplDocument) {
+	if (hasOpenGplContext()) {
 		setTimeout(() => {
 			void ensureSymbolCacheInitialized('open GPL documents detected');
 		}, 300);
@@ -1454,6 +1851,7 @@ export function deactivate() {
 	// Controller cleanup
 	runtimeConsole?.stop();
 	controllerTree?.stopPolling();
+	stopLiveLogTerminal();
 
 	if (outputChannel) {
 		outputChannel.appendLine('GPL Language Support extension is now deactivated!');

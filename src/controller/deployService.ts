@@ -108,6 +108,7 @@ export async function deploy(
         });
         result.uploadStats = stats;
         output.appendLine(`│ ✔ Upload done: ${stats.uploaded} sent, ${stats.skipped} skipped`);
+        output.appendLine(`│   Compile below validates the uploaded controller copy at ${ftpProjectDir}`);
     } catch (e: any) {
         output.appendLine(`│ ✘ Upload failed: ${e.message}`);
         return result;
@@ -140,6 +141,58 @@ export async function deploy(
         }
     }
 
+    async function runStatusCommand(command: string): Promise<{ ok: boolean; statusCode: number; message: string; raw: string }> {
+        try {
+            const raw = await sendCommand(command, cfg);
+            const status = parseStatus(raw);
+            return {
+                ok: status.code === 0,
+                statusCode: status.code,
+                message: status.message,
+                raw,
+            };
+        } catch (e: any) {
+            const raw = e?.message || String(e);
+            const status = parseStatus(raw);
+            return {
+                ok: false,
+                statusCode: status.code,
+                message: status.message,
+                raw,
+            };
+        }
+    }
+
+    async function ensureLoadedFromFtpPath(candidate: string): Promise<boolean> {
+        output.appendLine(`│ Load ${loadPath}`);
+        const load = await runStatusCommand(`Load ${loadPath}`);
+        if (load.ok) {
+            output.appendLine(`│ ✔ Load success: ${candidate} ← ${loadPath}`);
+            return true;
+        }
+        if (load.statusCode === -745) {
+            output.appendLine(`│ ✔ Load skipped: already loaded (${candidate})`);
+            return true;
+        }
+        output.appendLine(`│ ✘ Load failed: STATUS ${load.statusCode}: ${load.message || 'Unknown error'}`);
+        return false;
+    }
+
+    async function tryUnload(candidate: string): Promise<boolean> {
+        output.appendLine(`│ Unload ${candidate}`);
+        const unload = await runStatusCommand(`Unload ${candidate}`);
+        if (unload.ok) {
+            output.appendLine(`│ ✔ Unload success: ${candidate}`);
+            return true;
+        }
+        if (unload.statusCode === -508 || unload.statusCode === -743) {
+            output.appendLine(`│ ✔ Unload skipped: project not loaded (${candidate})`);
+            return true;
+        }
+        output.appendLine(`│ ✘ Unload failed: STATUS ${unload.statusCode}: ${unload.message || 'Unknown error'}`);
+        return false;
+    }
+
     for (const candidate of compileCandidates) {
         output.appendLine(`│ Compile ${candidate}`);
         const cr = await tryCompile(candidate);
@@ -157,11 +210,12 @@ export async function deploy(
         // -745: project already loaded → Unload + Load + Compile
         if (cr.statusCode === -745 || errText.includes('-745')) {
             output.appendLine(`│ ⚠ Already loaded. Unload → Load → Compile`);
-            try {
-                await sendCommand(`Unload ${candidate}`, cfg);
-                await sendCommand(`Load ${loadPath}`, cfg);
-            } catch (e2: any) {
-                output.appendLine(`│ ✘ Unload/Load failed: ${e2.message}`);
+            const unloaded = await tryUnload(candidate);
+            if (!unloaded) {
+                continue;
+            }
+            const loaded = await ensureLoadedFromFtpPath(candidate);
+            if (!loaded) {
                 continue;
             }
             const cr2 = await tryCompile(candidate);
@@ -178,10 +232,8 @@ export async function deploy(
         else if (cr.statusCode === -508 || cr.statusCode === -743
             || errText.includes('-508') || errText.includes('-743')) {
             output.appendLine(`│ ⚠ Not loaded. Load → Compile`);
-            try {
-                await sendCommand(`Load ${loadPath}`, cfg);
-            } catch (e2: any) {
-                output.appendLine(`│ ✘ Load failed: ${e2.message}`);
+            const loaded = await ensureLoadedFromFtpPath(candidate);
+            if (!loaded) {
                 continue;
             }
             const cr2 = await tryCompile(candidate);
@@ -225,11 +277,11 @@ export async function deploy(
         if (token?.isCancellationRequested) { return result; }
 
         output.appendLine(`│ Start ${result.projectName}`);
-        try {
-            await sendCommand(`Start ${result.projectName}`, cfg);
+        const start = await runStatusCommand(`Start ${result.projectName}`);
+        if (start.ok) {
             output.appendLine(`│ ✔ Start success`);
-        } catch (e: any) {
-            output.appendLine(`│ ✘ Start failed: ${e.message}`);
+        } else {
+            output.appendLine(`│ ✘ Start failed: STATUS ${start.statusCode}: ${start.message || 'Unknown error'}`);
             return result;
         }
     }

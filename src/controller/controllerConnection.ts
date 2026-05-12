@@ -1,5 +1,6 @@
 import * as net from 'net';
 import * as vscode from 'vscode';
+import { appendLiveLog } from '../log/liveLogTerminal';
 
 export interface ControllerConfig {
 	ip: string;
@@ -8,6 +9,7 @@ export interface ControllerConfig {
 	timeoutMs: number;
 	ftpBasePath: string;
 	ftpFlashProjectsPath: string;
+	preferIPv4: boolean;
 }
 
 // Brooks 제어기 고정 포트 (하드웨어 결정, 변경 불가)
@@ -32,10 +34,13 @@ export function getTrafficChannel(): vscode.OutputChannel | null {
 }
 
 function logTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
-	if (!_trafficChannel) { return; }
 	const now = new Date();
 	const ts = now.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
-	_trafficChannel.appendLine(`[${ts}] ${direction} ${message}`);
+	const line = `[${ts}] ${direction} ${message}`;
+	if (_trafficChannel) {
+		_trafficChannel.appendLine(line);
+	}
+	appendLiveLog(`[1402] ${line}`);
 }
 
 // 세션 한정 controller 오버라이드 (메모리 전용, 디스크 미저장).
@@ -70,6 +75,7 @@ export function getControllerConfig(): ControllerConfig {
 		timeoutMs: cfg.get<number>('timeoutMs') ?? DEFAULT_TIMEOUT_MS,
 		ftpBasePath: cfg.get<string>('ftpBasePath') ?? DEFAULT_FTP_BASE_PATH,
 		ftpFlashProjectsPath: cfg.get<string>('ftpFlashProjectsPath') ?? DEFAULT_FTP_FLASH_PROJECTS_PATH,
+		preferIPv4: cfg.get<boolean>('preferIPv4') ?? true,
 	};
 }
 
@@ -89,6 +95,7 @@ export function sendCommand(
 		const socket = new net.Socket();
 		let responseBuffer = '';
 		let settled = false;
+		let gracefulCloseTimer: ReturnType<typeof setTimeout> | null = null;
 		const startMs = Date.now();
 
 		logTraffic('>>>', `${cfg.ip}:${cfg.port}  ${command}`);
@@ -102,7 +109,11 @@ export function sendCommand(
 			}
 		}, timeout);
 
-		socket.connect(cfg.port, cfg.ip, () => {
+		const connectOptions = cfg.preferIPv4
+			? { host: cfg.ip, port: cfg.port, family: 4 }
+			: { host: cfg.ip, port: cfg.port };
+
+		socket.connect(connectOptions, () => {
 			const payload = Buffer.from(command + '\r\n', 'ascii');
 			socket.write(payload);
 		});
@@ -112,18 +123,25 @@ export function sendCommand(
 			if (responseBuffer.includes('</STATUS>')) {
 				settled = true;
 				clearTimeout(timer);
-				socket.destroy();
 				const elapsed = Date.now() - startMs;
 				// 응답에서 STATUS 코드만 추출하여 간결하게 로깅
 				const statusMatch = responseBuffer.match(/<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/);
 				const statusStr = statusMatch ? `STATUS ${statusMatch[1]}` : 'OK';
 				const lines = responseBuffer.split(/\r?\n/).filter(l => l.trim() && !l.includes('<STATUS>') && !l.includes('</STATUS>') && !l.includes('<DATA>') && !l.includes('</DATA>')).length;
 				logTraffic('<<<', `${statusStr}  ${lines} lines  ${elapsed}ms`);
+				gracefulCloseTimer = setTimeout(() => {
+					logTraffic('---', `FIN wait over (${cfg.ip}:${cfg.port}) after STATUS for ${command}`);
+				}, 1000);
+				socket.end();
 				resolve(responseBuffer.trim());
 			}
 		});
 
 		socket.on('error', (err: Error) => {
+			if (gracefulCloseTimer) {
+				clearTimeout(gracefulCloseTimer);
+				gracefulCloseTimer = null;
+			}
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
@@ -133,6 +151,10 @@ export function sendCommand(
 		});
 
 		socket.on('close', () => {
+			if (gracefulCloseTimer) {
+				clearTimeout(gracefulCloseTimer);
+				gracefulCloseTimer = null;
+			}
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);

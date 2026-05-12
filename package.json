@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.5.49",
+    "version": "0.5.69",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -45,6 +45,8 @@
         "onCommand:gpl.debug.attachNow",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
+        "onCommand:gpl.logs.liveTerminal.start",
+        "onCommand:gpl.logs.liveTerminal.stop",
         "onCommand:gpl.threads.refresh",
         "onDebugResolve:brooks-gpl"
     ],
@@ -215,6 +217,16 @@
                 "icon": "$(stop)"
             },
             {
+                "command": "gpl.logs.liveTerminal.start",
+                "title": "GPL: Start Live Log Terminal",
+                "icon": "$(terminal)"
+            },
+            {
+                "command": "gpl.logs.liveTerminal.stop",
+                "title": "GPL: Stop Live Log Terminal",
+                "icon": "$(debug-stop)"
+            },
+            {
                 "command": "gpl.threads.refresh",
                 "title": "GPL: Refresh All",
                 "icon": "$(refresh)"
@@ -276,7 +288,7 @@
             },
             {
                 "command": "gpl.controller.ftpRun",
-                "title": "컴파일 & 실행",
+                "title": "업로드된 복사본 컴파일 & 실행",
                 "icon": "$(play)"
             },
             {
@@ -325,7 +337,7 @@
                 {
                     "id": "gpl-controller",
                     "title": "GPL Controller",
-                    "icon": "$(server)"
+                    "icon": "resources/gpl-controller.svg"
                 }
             ]
         },
@@ -333,7 +345,8 @@
             "gpl-controller": [
                 {
                     "id": "gplThreads",
-                    "name": "Status"
+                    "name": "Status",
+                    "icon": "resources/gpl-controller.svg"
                 }
             ]
         },
@@ -360,29 +373,34 @@
                     "group": "navigation@4"
                 },
                 {
-                    "command": "gpl.controller.showTraffic",
+                    "command": "gpl.logs.liveTerminal.start",
                     "when": "view == gplThreads",
                     "group": "navigation@5"
                 },
                 {
-                    "command": "gpl.threads.refresh",
+                    "command": "gpl.controller.showTraffic",
                     "when": "view == gplThreads",
                     "group": "navigation@6"
                 },
                 {
-                    "command": "gpl.controller.copySituationForChat",
+                    "command": "gpl.threads.refresh",
                     "when": "view == gplThreads",
                     "group": "navigation@7"
                 },
                 {
-                    "command": "gpl.debug.generateLaunch",
+                    "command": "gpl.controller.copySituationForChat",
                     "when": "view == gplThreads",
                     "group": "navigation@8"
                 },
                 {
-                    "command": "gpl.debug.attachNow",
+                    "command": "gpl.debug.generateLaunch",
                     "when": "view == gplThreads",
                     "group": "navigation@9"
+                },
+                {
+                    "command": "gpl.debug.attachNow",
+                    "when": "view == gplThreads",
+                    "group": "navigation@10"
                 }
             ],
             "view/item/context": [
@@ -553,6 +571,72 @@
                     "default": "off",
                     "description": "Controls GPL Language Support extension tracing (Output: 'GPL Language Support')."
                 },
+                "gpl.trace.liveTerminal.autoStart": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Auto-start GPL Live Logs terminal when the extension activates."
+                },
+                "gpl.runtimeConsole.autoStartOnDeploy": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Auto-start runtime console (port 1403) after successful deploy/deployRun."
+                },
+                "gpl.runtimeConsole.autoStartOnDebug": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Auto-start runtime console (port 1403) when a brooks-gpl debug session starts."
+                },
+                "gpl.runtimeConsole.showStateInOutputChannel": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Mirror RC1403 state logs (CONNECTED/DISCONNECTED/no_payload) to output channels. Keep false to show payload-only logs in GPL Console."
+                },
+                "gpl.runtimeConsole.noPayloadWarnThreshold": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 3,
+                    "description": "Consecutive no-payload attempts before 1403 unstable warning is shown."
+                },
+                "gpl.runtimeConsole.unstableWarnCooldownMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 60000,
+                    "description": "Cooldown for repeated 1403 unstable warnings in milliseconds."
+                },
+                "gpl.runtimeConsole.emptyNoticeEvery": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 5,
+                    "description": "For repeated no-payload sessions, print detailed console notices every N attempts."
+                },
+                "gpl.runtimeConsole.immediateEofReconnectBaseMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 1000,
+                    "description": "Base reconnect delay for 1403 sessions that close immediately without payload (Immediate EOF)."
+                },
+                "gpl.runtimeConsole.immediateEofReconnectMaxMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 5000,
+                    "description": "Maximum reconnect delay for repeated Immediate EOF 1403 sessions."
+                },
+                "gpl.runtimeConsole.idleReconnectBaseMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 5000,
+                    "description": "Base reconnect delay for idle/no-payload 1403 sessions (adaptive)."
+                },
+                "gpl.runtimeConsole.idleReconnectMaxMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 30000,
+                    "description": "Maximum reconnect delay for idle/no-payload 1403 sessions (adaptive)."
+                },
                 "gpl.controller.ip": {
                     "scope": "window",
                     "type": "string",
@@ -570,6 +654,12 @@
                     "type": "number",
                     "default": 1403,
                     "description": "Controller runtime console port (live output stream)."
+                },
+                "gpl.controller.preferIPv4": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Prefer IPv4 when connecting to controller ports (1402/1403) to avoid address-family issues in some environments."
                 },
                 "gpl.controller.timeoutMs": {
                     "scope": "window",
@@ -602,6 +692,7 @@
         "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
+        "pre-release-check": "node scripts/pre-release-check.js",
         "package": "npm run compile && node scripts/package.js",
         "dev:cycle": "npm run package",
         "dev:install": "node -e \"console.error('dev:install is disabled to prevent opening new VS Code windows. Build VSIX with npm run dev:cycle, then install manually from Extensions > Install from VSIX.'); process.exit(1);\"",

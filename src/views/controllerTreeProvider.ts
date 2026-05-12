@@ -48,6 +48,10 @@ class InfoNode {
 export class ControllerTreeProvider implements vscode.TreeDataProvider<ControllerNode>, vscode.Disposable {
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<ControllerNode | undefined>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+	private _refreshInFlight = false;
+	private _refreshAllInFlight = false;
+	private _refreshFtpInFlight = false;
+	private _refreshSystemInFlight = false;
 
 	/** 연결 유실 감지 시 발생 (3회 연속 실패) */
 	private readonly _onDidLoseConnection = new vscode.EventEmitter<void>();
@@ -66,16 +70,26 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private lastDetailPollAt = 0;
 	private breakpoints: BreakpointInfo[] = [];
 	private expectedProjectName = '';
+	private expectedProjectFolderName = '';
 
 	get isConnected(): boolean { return this._connected; }
 
 	setExpectedProjectName(name?: string): void {
-		this.expectedProjectName = (name || '').trim();
+		this.setExpectedProjectContext(name, name);
+	}
+
+	setExpectedProjectContext(projectName?: string, folderName?: string): void {
+		this.expectedProjectName = (projectName || '').trim();
+		this.expectedProjectFolderName = (folderName || '').trim();
 		this._onDidChangeTreeData.fire(undefined);
 	}
 
 	getExpectedProjectName(): string {
 		return this.expectedProjectName;
+	}
+
+	getExpectedProjectFolderName(): string {
+		return this.expectedProjectFolderName;
 	}
 
 	/**
@@ -124,9 +138,15 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 * TCP 충돌 방지를 위해 직렬화.
 	 */
 	async refreshAll(): Promise<void> {
+		if (this._refreshAllInFlight) { return; }
+		this._refreshAllInFlight = true;
+		try {
 		await this.refresh(true);
 		await this.refreshFtp();
 		await this.refreshSystemInfo();
+		} finally {
+			this._refreshAllInFlight = false;
+		}
 	}
 
 	/**
@@ -134,6 +154,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 */
 	async refresh(forceDetails: boolean = false): Promise<void> {
 		if (!this._connected) { return; }
+		if (this._refreshInFlight) { return; }
+		this._refreshInFlight = true;
+		try {
 
 		// 경량 주기 폴링: 기본은 Show Thread만, 상세(Error/Break)는 적응형으로 조회
 		const threadResp = await trySendCommand('Show Thread');
@@ -186,6 +209,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		}
 
 		this._onDidChangeTreeData.fire(undefined);
+		} finally {
+			this._refreshInFlight = false;
+		}
 	}
 
 	/**
@@ -193,6 +219,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 */
 	async refreshFtp(): Promise<void> {
 		if (!this._connected) { return; }
+		if (this._refreshFtpInFlight) { return; }
+		this._refreshFtpInFlight = true;
+		try {
 		const cfg = getControllerConfig();
 		try {
 			this.ftpEntries = await listRemoteDir(cfg.ip, cfg.ftpBasePath);
@@ -210,6 +239,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			this.ftpFlashError = err.message ?? String(err);
 		}
 		this._onDidChangeTreeData.fire(undefined);
+		} finally {
+			this._refreshFtpInFlight = false;
+		}
 	}
 
 	/**
@@ -217,6 +249,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 */
 	async refreshSystemInfo(): Promise<void> {
 		if (!this._connected) { return; }
+		if (this._refreshSystemInFlight) { return; }
+		this._refreshSystemInFlight = true;
+		try {
 		const items: { label: string; value: string; tooltip?: string; iconId?: string }[] = [];
 
 		// TCP 직렬화
@@ -243,6 +278,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		this.sysInfo = items;
 		this._onDidChangeTreeData.fire(undefined);
+		} finally {
+			this._refreshSystemInFlight = false;
+		}
 	}
 
 	/** 응답에서 <DATA> 또는 본문 추출 (원시 텍스트) */
@@ -329,19 +367,28 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			...this.ftpFlashEntries.filter(e => e.isDirectory).map(e => e.name),
 		];
 		const expected = this.expectedProjectName;
+		const expectedFolder = this.expectedProjectFolderName || expected;
 		const hasExpectedRunning = expected
 			? runningProjects.some(p => p.toLowerCase() === expected.toLowerCase())
 			: false;
-		const hasExpectedFtp = expected
-			? ftpDirs.some(p => p.toLowerCase() === expected.toLowerCase())
+		const hasExpectedFtp = expectedFolder
+			? ftpDirs.some(p => p.toLowerCase() === expectedFolder.toLowerCase())
 			: false;
-		const mismatch = !!expected && (!hasExpectedRunning || !hasExpectedFtp);
+		const hasUnexpectedRunning = !!expected && runningProjects.length > 0 && !hasExpectedRunning;
+		const missingExpectedFtp = !!expectedFolder && !hasExpectedFtp;
+		const buildOnlyReady = !!expected && hasExpectedFtp && runningProjects.length === 0;
+		const mismatch = missingExpectedFtp || hasUnexpectedRunning;
+		const contextDescription = mismatch
+			? '불일치 감지'
+			: buildOnlyReady
+				? '빌드 전용 상태'
+				: '정상';
 
 		const ctxSec = new SectionNode(
 			'projectContext',
 			mismatch ? '프로젝트 컨텍스트 ⚠' : '프로젝트 컨텍스트',
 			mismatch ? 'warning' : 'pass',
-			mismatch ? '불일치 감지' : '정상',
+			contextDescription,
 		);
 		ctxSec.collapsed = false;
 		ctxSec.children = [
@@ -351,21 +398,32 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				expected ? undefined : 'Project.gpr 미감지',
 			),
 			new InfoNode(
+				`기대 FTP 폴더: ${expectedFolder || '(미설정)'}`,
+				'folder-library',
+				expectedFolder ? undefined : '프로젝트 폴더 미감지',
+			),
+			new InfoNode(
 				`실행 프로젝트: ${runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)'}`,
 				'run-all',
-				hasExpectedRunning || !expected ? undefined : `${expected} 미실행`,
+				hasUnexpectedRunning
+					? `${expected} 대신 다른 프로젝트가 실행 중`
+					: buildOnlyReady
+						? 'Build Only 후 미실행 상태일 수 있음'
+						: hasExpectedRunning || !expected
+							? undefined
+							: `${expected} 미실행`,
 			),
 			new InfoNode(
 				`FTP 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}`,
 				'folder-library',
-				hasExpectedFtp || !expected ? undefined : `${expected} 폴더 없음`,
+				hasExpectedFtp || !expectedFolder ? undefined : `${expectedFolder} 폴더 없음`,
 			),
 		];
 		sections.push(ctxSec);
 
-		// ── 연결 정보 (기본 접힘)
+		// ── 연결 정보 (기본 펼침: 콘솔 포트 등 자주 쓰는 항목)
 		const conn = new SectionNode('connection', cfg.ip, 'plug', '연결됨');
-		conn.collapsed = true;
+		conn.collapsed = false;
 		conn.children = [
 			new InfoNode(`명령 포트: ${cfg.port}`, 'server', undefined, {
 				command: 'gpl.controller.pingPort',
@@ -376,6 +434,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				command: 'gpl.controller.pingPort',
 				title: '런타임 콘솔 열기',
 				arguments: ['console', cfg.ip, cfg.consolePort],
+			}),
+			new InfoNode('실시간 로그 터미널 시작', 'terminal-powershell', '1402/1403 트래픽을 터미널로 표시', {
+				command: 'gpl.logs.liveTerminal.start',
+				title: '실시간 로그 터미널 시작',
 			}),
 			new InfoNode('런타임 로그 보기 (GPL Console)', 'output', '간단 로그 전용', {
 				command: 'gpl.console.start',
@@ -412,6 +474,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		const threadSec = new SectionNode('threads',
 			`쓰레드 (${this.threads.length})`, 'symbol-event', threadDesc);
+		threadSec.collapsed = true;
 		threadSec.children = this.threads.length > 0
 			? this.threads.map(t => new ThreadNode(t))
 			: [new InfoNode('쓰레드 없음', 'info')];
@@ -477,6 +540,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		// ── 시스템 정보
 		const sysSec = new SectionNode('system', '시스템 정보', 'dashboard',
 			this.sysInfo.length > 0 ? undefined : '조회 안됨');
+		sysSec.collapsed = true;
 		if (this.sysInfo.length === 0) {
 			sysSec.children = [
 				new InfoNode('새로고침으로 조회하세요', 'info', undefined, {
@@ -517,6 +581,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const errCount = this.threads.filter(t => t.state === 'Error').length;
 
 		const expected = this.expectedProjectName || '(미설정)';
+		const expectedFolder = this.expectedProjectFolderName || this.expectedProjectName || '(미설정)';
 		const runningProjects = [...new Set(this.threads.map(t => t.project).filter(Boolean))];
 		const ftpDirs = [
 			...this.ftpEntries.filter(e => e.isDirectory).map(e => e.name),
@@ -536,13 +601,15 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		// ── 프로젝트 컨텍스트
 		const hasExpectedRunning = expected !== '(미설정)' && runningProjects.some(p => p.toLowerCase() === expected.toLowerCase());
-		const hasExpectedFtp = expected !== '(미설정)' && ftpDirs.some(p => p.toLowerCase() === expected.toLowerCase());
-		const mismatch = expected !== '(미설정)' && (!hasExpectedRunning || !hasExpectedFtp);
+		const hasExpectedFtp = expectedFolder !== '(미설정)' && ftpDirs.some(p => p.toLowerCase() === expectedFolder.toLowerCase());
+		const hasUnexpectedRunning = expected !== '(미설정)' && runningProjects.length > 0 && !hasExpectedRunning;
+		const mismatch = (expectedFolder !== '(미설정)' && !hasExpectedFtp) || hasUnexpectedRunning;
 
 		lines.push('## 프로젝트 컨텍스트');
 		lines.push(`- 기대 프로젝트: ${expected}${mismatch ? ' ⚠ 불일치' : ''}`);
-		lines.push(`- 실행 프로젝트: ${runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)'}${expected !== '(미설정)' && !hasExpectedRunning ? ' ⚠ 기대 프로젝트 미실행' : ''}`);
-		lines.push(`- FTP 프로젝트 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}${expected !== '(미설정)' && !hasExpectedFtp ? ' ⚠ 기대 프로젝트 폴더 없음' : ''}`);
+		lines.push(`- 기대 FTP 폴더: ${expectedFolder}`);
+		lines.push(`- 실행 프로젝트: ${runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)'}${hasUnexpectedRunning ? ' ⚠ 다른 프로젝트 실행 중' : expected !== '(미설정)' && !hasExpectedRunning && hasExpectedFtp ? ' (Build Only 가능)' : expected !== '(미설정)' && !hasExpectedRunning ? ' ⚠ 기대 프로젝트 미실행' : ''}`);
+		lines.push(`- FTP 프로젝트 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}${expectedFolder !== '(미설정)' && !hasExpectedFtp ? ' ⚠ 기대 프로젝트 폴더 없음' : ''}`);
 		lines.push('');
 
 		// ── 쓰레드

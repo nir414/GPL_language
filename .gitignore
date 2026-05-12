@@ -25,7 +25,9 @@ desktop.ini
 
 # Editor / IDE
 .history/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
 .idea/
 *.suo
 *.user
@@ -47,11 +49,8 @@ pkg/
 *.gpo.cache
 .gpl-cache/
 
-# Documentation (private)
-docs/
+# Documentation local history
+docs/.history/
 
-# Development files (private)
-.github/
-scripts/
+# Development files (local only)
 media/
-.gitattributes

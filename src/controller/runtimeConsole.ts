@@ -2,7 +2,7 @@
  * 런타임 콘솔 (포트 1403) — 제어기 이벤트 배치 수신.
  * OutputChannel에 파싱된 메시지를 실시간으로 표시한다.
  *
- * 프로토콜 동작 (테스트 확인):
+ * 프로토콜 동작 (현재 구현/테스트 기반 가설):
  *   - 연결 → 제어기가 이벤트 큐를 전달 → FIN (정상 종료)
  *   - FIN 후 즉시 재연결 → 다음 이벤트 배치 대기
  *   - 이벤트 없으면 연결 유지 (대기 상태)
@@ -16,6 +16,7 @@ import * as net from 'net';
 import * as vscode from 'vscode';
 import { getControllerConfig, getTrafficChannel } from './controllerConnection';
 import { normalizeConsoleLine } from './responseParser';
+import { appendLiveLog } from '../log/liveLogTerminal';
 
 /** FIN+데이터 후 즉시 재연결 대기 (TCP 정리 여유) */
 const RECONNECT_IMMEDIATE_MS = 100;
@@ -25,12 +26,37 @@ const RECONNECT_IDLE_MS = 5_000;
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_MAX_ATTEMPTS = 10;
-/** end() 후 이 시간 안에 안 닫히면 destroy()로 강제 종료 */
+/** end() 후 이 시간 동안 close가 늦어질 수 있어 관찰 로그를 남기는 기준 시간 */
 const GRACEFUL_CLOSE_TIMEOUT_MS = 3_000;
+/** Connected 상태에서 이 시간 동안 데이터가 없으면 idle 힌트 표시 */
+const NO_OUTPUT_HINT_MS = 3_000;
+/** no-payload 경고 스로틀 기본값 (로그 스팸 방지) */
+const DEFAULT_UNSTABLE_WARN_COOLDOWN_MS = 60_000;
+/** no-payload 누적 경고 임계치 기본값 */
+const DEFAULT_NO_PAYLOAD_WARN_THRESHOLD = 3;
+/** empty/immediate 로그 출력 주기 기본값 */
+const DEFAULT_EMPTY_NOTICE_EVERY = 5;
+/** Immediate EOF 재연결 base/max 기본값 (짧은 블라인드 구간 완화) */
+const DEFAULT_IMMEDIATE_EOF_RECONNECT_BASE_MS = 1_000;
+const DEFAULT_IMMEDIATE_EOF_RECONNECT_MAX_MS = 5_000;
+/** 빈 세션 재연결 base/max 기본값 */
+const DEFAULT_IDLE_RECONNECT_BASE_MS = RECONNECT_IDLE_MS;
+const DEFAULT_IDLE_RECONNECT_MAX_MS = RECONNECT_MAX_MS;
+
+interface RuntimeConsoleTuning {
+    noPayloadWarnThreshold: number;
+    unstableWarnCooldownMs: number;
+    emptyNoticeEvery: number;
+    immediateEofReconnectBaseMs: number;
+    immediateEofReconnectMaxMs: number;
+    idleReconnectBaseMs: number;
+    idleReconnectMaxMs: number;
+}
 
 export class RuntimeConsole implements vscode.Disposable {
     private socket: net.Socket | null = null;
     private output: vscode.OutputChannel;
+    private stateOutput: vscode.OutputChannel;
     private _isConnected = false;
     private carry = '';
     private disposed = false;
@@ -43,8 +69,21 @@ export class RuntimeConsole implements vscode.Disposable {
     private _connectedAt = 0;
     /** 현재 세션에서 데이터(바이트)를 수신했는지 여부 */
     private _sessionDataReceived = false;
+    /** 데이터가 전혀 없을 때 UX 힌트 타이머 */
+    private _noOutputHintTimer: ReturnType<typeof setTimeout> | null = null;
+    /** stop() 호출 후 graceful close 로그 타이머 */
+    private _gracefulStopTimer: ReturnType<typeof setTimeout> | null = null;
+    /** 첫 batch를 받기 위한 준비 완료 타이머 */
+    private _readyForBatchTimer: ReturnType<typeof setTimeout> | null = null;
+    private _readyForBatch = false;
     /** 연속 빈 세션 수 (데이터 없이 FIN) — 로그 노이즈 억제용 */
     private _consecutiveEmptySessions = 0;
+    /** 연속 무페이로드 시도 수 (empty batch + connect fail 포함) */
+    private _consecutiveNoPayloadAttempts = 0;
+    /** 마지막 무페이로드 경고 시각 */
+    private _lastUnstableWarnAt = 0;
+    private _readyWaiters: Array<(value: boolean) => void> = [];
+    private _payloadWaiters: Array<(value: boolean) => void> = [];
 
     private readonly _onDidConnect = new vscode.EventEmitter<void>();
     private readonly _onDidDisconnect = new vscode.EventEmitter<void>();
@@ -56,8 +95,60 @@ export class RuntimeConsole implements vscode.Disposable {
 
     get isConnected(): boolean { return this._isConnected; }
 
-    constructor(output: vscode.OutputChannel) {
+    constructor(output: vscode.OutputChannel, stateOutput?: vscode.OutputChannel) {
         this.output = output;
+        this.stateOutput = stateOutput ?? output;
+    }
+
+    private appendStateLine(line: string): void {
+        // 상태 로그는 기본적으로 GPL Console(RT payload)와 분리한다.
+        // 필요 시 설정으로만 Output 채널 미러링.
+        const traffic = getTrafficChannel();
+        if (traffic) {
+            traffic.appendLine(line);
+        }
+        appendLiveLog(line);
+
+        const mirrorToOutput = vscode.workspace
+            .getConfiguration('gpl.runtimeConsole')
+            .get<boolean>('showStateInOutputChannel', false);
+        if (mirrorToOutput) {
+            this.stateOutput.appendLine(line);
+        }
+    }
+
+    async waitForPayload(timeoutMs = 1500): Promise<boolean> {
+        if (this._sessionDataReceived) { return true; }
+        return await new Promise<boolean>((resolve) => {
+            const resolver = (value: boolean) => resolve(value);
+            this._payloadWaiters.push(resolver);
+            const timeout = setTimeout(() => {
+                this._payloadWaiters = this._payloadWaiters.filter(r => r !== resolver);
+                resolve(this._sessionDataReceived);
+            }, timeoutMs);
+            const wrapped = (value: boolean) => {
+                clearTimeout(timeout);
+                resolver(value);
+            };
+            this._payloadWaiters[this._payloadWaiters.length - 1] = wrapped;
+        });
+    }
+
+    async waitUntilReady(timeoutMs = 400): Promise<boolean> {
+        if (this._readyForBatch) { return true; }
+        return await new Promise<boolean>((resolve) => {
+            const resolver = (value: boolean) => resolve(value);
+            this._readyWaiters.push(resolver);
+            const timeout = setTimeout(() => {
+                this._readyWaiters = this._readyWaiters.filter(r => r !== resolver);
+                resolve(this._readyForBatch);
+            }, timeoutMs);
+            const wrapped = (value: boolean) => {
+                clearTimeout(timeout);
+                resolver(value);
+            };
+            this._readyWaiters[this._readyWaiters.length - 1] = wrapped;
+        });
     }
 
     /**
@@ -73,10 +164,19 @@ export class RuntimeConsole implements vscode.Disposable {
         if (this.disposed) { return; }
         if (this._isConnected) { return; }
         if (this.socket) { return; }
-        if (this._reconnectTimer) { return; }
         this._explicitStop = false;
         this._reconnectAttempt = 0;
         this._consecutiveEmptySessions = 0;
+        this._consecutiveNoPayloadAttempts = 0;
+        this._lastUnstableWarnAt = 0;
+        if (this._reconnectTimer) {
+            if (delayMs <= 0) {
+                this.cancelReconnect();
+                this.logConsoleTraffic('---', 'RECONNECT timer canceled by explicit start()');
+                this.connectInternal();
+            }
+            return;
+        }
         if (delayMs > 0) {
             this._reconnectTimer = setTimeout(() => {
                 this._reconnectTimer = null;
@@ -94,6 +194,16 @@ export class RuntimeConsole implements vscode.Disposable {
     stop(): void {
         this._explicitStop = true;
         this.cancelReconnect();
+        this.clearReadyState(false);
+        this.resolvePayloadWaiters(false);
+        if (this._noOutputHintTimer) {
+            clearTimeout(this._noOutputHintTimer);
+            this._noOutputHintTimer = null;
+        }
+        if (this._gracefulStopTimer) {
+            clearTimeout(this._gracefulStopTimer);
+            this._gracefulStopTimer = null;
+        }
         if (this.socket) {
             const s = this.socket;
             this.socket = null;
@@ -105,11 +215,11 @@ export class RuntimeConsole implements vscode.Disposable {
             s.on('error', (err) => {
                 this.logConsoleTraffic('---', `STOP error (ignored): ${err.message}`);
             });
-            // 일정 시간 안에 안 닫히면 강제 종료
-            const forceTimer = setTimeout(() => {
-                try { s.destroy(); } catch { /* ignore */ }
+            // FIN 기반 종료를 우선한다. (RST 방지)
+            // close 이벤트가 늦어질 수 있어 로그만 남기고 강제 destroy는 하지 않는다.
+            this._gracefulStopTimer = setTimeout(() => {
+                this.logConsoleTraffic('---', `STOP wait over (${GRACEFUL_CLOSE_TIMEOUT_MS}ms), waiting close by FIN path`);
             }, GRACEFUL_CLOSE_TIMEOUT_MS);
-            s.once('close', () => clearTimeout(forceTimer));
             s.end();   // FIN 전송 (graceful close) — error 핸들러 등록 후 호출
             this.logConsoleTraffic('---', 'STOP (graceful FIN)');
         }
@@ -129,11 +239,14 @@ export class RuntimeConsole implements vscode.Disposable {
 
     /** GPL Traffic 채널에 1403 콘솔 트래픽 로깅 */
     private logConsoleTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
-        const ch = getTrafficChannel();
-        if (!ch) { return; }
         const now = new Date();
         const ts = now.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
-        ch.appendLine(`[${ts}] [1403] ${direction} ${message}`);
+        const line = `[${ts}] [1403] ${direction} ${message}`;
+        const ch = getTrafficChannel();
+        if (ch) {
+            ch.appendLine(line);
+        }
+        appendLiveLog(line);
     }
 
     private cancelReconnect(): void {
@@ -143,13 +256,144 @@ export class RuntimeConsole implements vscode.Disposable {
         }
     }
 
+    private clearReadyState(valueForWaiters: boolean): void {
+        this._readyForBatch = false;
+        if (this._readyForBatchTimer) {
+            clearTimeout(this._readyForBatchTimer);
+            this._readyForBatchTimer = null;
+        }
+        const waiters = this._readyWaiters.splice(0, this._readyWaiters.length);
+        for (const waiter of waiters) {
+            waiter(valueForWaiters);
+        }
+    }
+
+    private scheduleReadyForBatch(): void {
+        this.clearReadyState(false);
+        this._readyForBatchTimer = setTimeout(() => {
+            this._readyForBatchTimer = null;
+            if (this._isConnected && !this._explicitStop) {
+                this._readyForBatch = true;
+                const waiters = this._readyWaiters.splice(0, this._readyWaiters.length);
+                for (const waiter of waiters) {
+                    waiter(true);
+                }
+                this.logConsoleTraffic('---', 'READY for first batch');
+            }
+        }, 75);
+    }
+
+    private resolvePayloadWaiters(value: boolean): void {
+        const waiters = this._payloadWaiters.splice(0, this._payloadWaiters.length);
+        for (const waiter of waiters) {
+            waiter(value);
+        }
+    }
+
+    private getTuning(): RuntimeConsoleTuning {
+        const cfg = vscode.workspace.getConfiguration('gpl.runtimeConsole');
+        const threshold = Math.max(1, cfg.get<number>('noPayloadWarnThreshold', DEFAULT_NO_PAYLOAD_WARN_THRESHOLD));
+        const cooldown = Math.max(1_000, cfg.get<number>('unstableWarnCooldownMs', DEFAULT_UNSTABLE_WARN_COOLDOWN_MS));
+        const noticeEvery = Math.max(1, cfg.get<number>('emptyNoticeEvery', DEFAULT_EMPTY_NOTICE_EVERY));
+        const immediateBase = Math.max(250, cfg.get<number>('immediateEofReconnectBaseMs', DEFAULT_IMMEDIATE_EOF_RECONNECT_BASE_MS));
+        const immediateMax = Math.max(immediateBase, cfg.get<number>('immediateEofReconnectMaxMs', DEFAULT_IMMEDIATE_EOF_RECONNECT_MAX_MS));
+        const idleBase = Math.max(500, cfg.get<number>('idleReconnectBaseMs', DEFAULT_IDLE_RECONNECT_BASE_MS));
+        const idleMax = Math.max(idleBase, cfg.get<number>('idleReconnectMaxMs', DEFAULT_IDLE_RECONNECT_MAX_MS));
+        return {
+            noPayloadWarnThreshold: threshold,
+            unstableWarnCooldownMs: cooldown,
+            emptyNoticeEvery: noticeEvery,
+            immediateEofReconnectBaseMs: immediateBase,
+            immediateEofReconnectMaxMs: immediateMax,
+            idleReconnectBaseMs: idleBase,
+            idleReconnectMaxMs: idleMax,
+        };
+    }
+
+    private shouldEmitNoPayloadNotice(attempt: number, emptyNoticeEvery: number): boolean {
+        return attempt <= 1 || attempt % emptyNoticeEvery === 0;
+    }
+
+    private computeAdaptiveReconnectDelayMs(attempt: number, baseMs: number, maxMs: number): number {
+        const growthStep = Math.max(1, Math.floor((attempt + 1) / 2));
+        return Math.min(baseMs * growthStep, maxMs);
+    }
+
+    private handleNoPayloadAttempt(reason: string): void {
+        const tuning = this.getTuning();
+        this._consecutiveNoPayloadAttempts++;
+        if (this.shouldEmitNoPayloadNotice(this._consecutiveNoPayloadAttempts, tuning.emptyNoticeEvery)) {
+            this.logConsoleTraffic('---', `NO_PAYLOAD attempt=${this._consecutiveNoPayloadAttempts} (${reason})`);
+        }
+        if (this._consecutiveNoPayloadAttempts >= tuning.noPayloadWarnThreshold) {
+            const now = Date.now();
+            if (now - this._lastUnstableWarnAt < tuning.unstableWarnCooldownMs) {
+                return;
+            }
+            this._lastUnstableWarnAt = now;
+
+            const burstCount = this._consecutiveNoPayloadAttempts > tuning.noPayloadWarnThreshold
+                ? `${tuning.noPayloadWarnThreshold}+`
+                : `${this._consecutiveNoPayloadAttempts}`;
+            this.appendStateLine(`[Console][RC1403] STATE=UNSTABLE noPayloadStreak=${burstCount} reason=${reason}`);
+            this.appendStateLine('[Console][RC1403] ACTION=CHECK_ROBOT_LOG source=/ROMDISK/tmp/Robot.log');
+        }
+    }
+
+    private async scheduleReconnectByPolicy(dataReceived: boolean, hadError: boolean, noPayloadReason?: string): Promise<void> {
+        if (this._explicitStop || this.disposed) { return; }
+
+        const tuning = this.getTuning();
+
+        if (dataReceived && !hadError) {
+            // 이벤트 배치 정상 완료 → 즉시 재연결 (다음 배치 대기)
+            this._reconnectAttempt = 0;
+            this.logConsoleTraffic('---', 'RECONNECT (immediate, batch complete)');
+            this._reconnectTimer = setTimeout(() => {
+                this._reconnectTimer = null;
+                this.connectInternal();
+            }, RECONNECT_IMMEDIATE_MS);
+            return;
+        }
+
+        if (!hadError) {
+            // 빈 세션 (이벤트 없음) → 이유별 적응형 재연결
+            this._reconnectAttempt = 0;
+            const reason = noPayloadReason || 'No payload';
+            const isImmediateEof = reason === 'Immediate EOF';
+            const idleDelay = isImmediateEof
+                ? this.computeAdaptiveReconnectDelayMs(
+                    this._consecutiveNoPayloadAttempts,
+                    tuning.immediateEofReconnectBaseMs,
+                    tuning.immediateEofReconnectMaxMs,
+                )
+                : this.computeAdaptiveReconnectDelayMs(
+                    this._consecutiveNoPayloadAttempts,
+                    tuning.idleReconnectBaseMs,
+                    tuning.idleReconnectMaxMs,
+                );
+            if (this.shouldEmitNoPayloadNotice(this._consecutiveNoPayloadAttempts, tuning.emptyNoticeEvery)) {
+                const policy = isImmediateEof ? 'immediate-eof-adaptive' : 'idle-adaptive';
+                this.logConsoleTraffic('---', `RECONNECT (${policy}, ${idleDelay}ms, streak=${this._consecutiveNoPayloadAttempts}, reason=${reason})`);
+            }
+            this._reconnectTimer = setTimeout(() => {
+                this._reconnectTimer = null;
+                this.connectInternal();
+            }, idleDelay);
+            return;
+        }
+
+        // 에러 → 지수 백오프
+        this.scheduleReconnect();
+    }
+
     /**
      * 자동 재연결 스케줄링 (지수 백오프).
      */
     private scheduleReconnect(): void {
         if (this.disposed || this._explicitStop) { return; }
         if (this._reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) {
-            this.output.appendLine(`[Console] 재연결 ${RECONNECT_MAX_ATTEMPTS}회 실패 — 자동 재연결 중단`);
+            this.appendStateLine(`[Console][RC1403] STATE=RECONNECT_STOPPED attempts=${RECONNECT_MAX_ATTEMPTS}`);
             return;
         }
 
@@ -159,7 +403,7 @@ export class RuntimeConsole implements vscode.Disposable {
         );
         this._reconnectAttempt++;
 
-        this.output.appendLine(`[Console] ${(delay / 1000).toFixed(0)}초 후 재연결 시도 (${this._reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS})`);
+        this.appendStateLine(`[Console][RC1403] STATE=RECONNECT_SCHEDULED delayMs=${delay} attempt=${this._reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS}`);
         this._reconnectTimer = setTimeout(() => {
             this._reconnectTimer = null;
             this.connectInternal();
@@ -176,15 +420,33 @@ export class RuntimeConsole implements vscode.Disposable {
 
         this.logConsoleTraffic('>>>', `CONNECT ${cfg.ip}:${cfg.consolePort}`);
 
-        socket.connect(cfg.consolePort, cfg.ip, () => {
+        const connectOptions = cfg.preferIPv4
+            ? { host: cfg.ip, port: cfg.consolePort, family: 4 }
+            : { host: cfg.ip, port: cfg.consolePort };
+
+        socket.connect(connectOptions, () => {
             this._isConnected = true;
             this._connectedAt = Date.now();
             this.carry = '';
             this._sessionDataReceived = false;
             socket.setKeepAlive(true, 5_000);  // 5초 간격 TCP keepalive
             socket.setNoDelay(true);
+            this.scheduleReadyForBatch();
+
+            if (this._noOutputHintTimer) {
+                clearTimeout(this._noOutputHintTimer);
+                this._noOutputHintTimer = null;
+            }
+            this._noOutputHintTimer = setTimeout(() => {
+                // 연결은 정상인데 런타임 출력이 없는 경우(Idle/무출력)를 장애와 분리해서 안내
+                if (this._isConnected && !this._sessionDataReceived) {
+                    this.appendStateLine('[Console][RC1403] STATE=CONNECTED_NO_PAYLOAD');
+                    this.logConsoleTraffic('---', 'CONNECTED no payload yet (idle-or-unstable)');
+                }
+            }, NO_OUTPUT_HINT_MS);
+
             if (this._consecutiveEmptySessions === 0) {
-                this.output.appendLine(`[Console] Connected to ${cfg.ip}:${cfg.consolePort}`);
+                this.appendStateLine(`[Console][RC1403] STATE=CONNECTED endpoint=${cfg.ip}:${cfg.consolePort}`);
             }
             this.logConsoleTraffic('---', `CONNECTED (local ${socket.localAddress}:${socket.localPort}, idle=${this._consecutiveEmptySessions})`);
             this._onDidConnect.fire();
@@ -192,6 +454,12 @@ export class RuntimeConsole implements vscode.Disposable {
 
         socket.on('data', (data: Buffer) => {
             this._sessionDataReceived = true;
+            this._consecutiveNoPayloadAttempts = 0;
+            this.resolvePayloadWaiters(true);
+            if (this._noOutputHintTimer) {
+                clearTimeout(this._noOutputHintTimer);
+                this._noOutputHintTimer = null;
+            }
             const raw = data.toString('ascii');
             this.logConsoleTraffic('<<<', raw.replace(/[\r\n]+/g, '\\n'));
             const text = (this.carry + raw).replace(/\r/g, '');
@@ -223,66 +491,77 @@ export class RuntimeConsole implements vscode.Disposable {
         socket.on('error', (err: Error) => {
             this._lastError = err;
             this.logConsoleTraffic('---', `ERROR: ${err.message} (${(err as any).code ?? 'no code'})`);
-            this.output.appendLine(`[Console] Socket error: ${err.message} (${(err as any).code ?? 'no code'})`);
+            this.appendStateLine(`[Console][RC1403] EVENT=SOCKET_ERROR code=${(err as any).code ?? 'NA'} message=${err.message}`);
         });
 
         socket.on('close', (hadError: boolean) => {
             this.socket = null;
+            if (!this._sessionDataReceived) {
+                this.resolvePayloadWaiters(false);
+            }
+            if (this._gracefulStopTimer) {
+                clearTimeout(this._gracefulStopTimer);
+                this._gracefulStopTimer = null;
+            }
+            this.clearReadyState(false);
+            if (this._noOutputHintTimer) {
+                clearTimeout(this._noOutputHintTimer);
+                this._noOutputHintTimer = null;
+            }
             const dataReceived = this._sessionDataReceived;
+            let noPayloadReason: string | undefined;
             if (this._isConnected) {
                 this._isConnected = false;
                 const elapsed = Date.now() - this._connectedAt;
 
                 if (hadError) {
                     // 에러로 인한 종료
-                    this.output.appendLine(`[Console] Disconnected (${elapsed}ms): 에러 — ${this._lastError?.message ?? 'unknown'}`);
+                    this.appendStateLine(`[Console][RC1403] STATE=DISCONNECTED mode=error elapsedMs=${elapsed} message=${this._lastError?.message ?? 'unknown'}`);
+                    if (!dataReceived) {
+                        const errCode = (this._lastError as any)?.code as string | undefined;
+                        if (errCode === 'ECONNREFUSED') {
+                            this.handleNoPayloadAttempt('Connection refused');
+                        } else {
+                            this.handleNoPayloadAttempt('Socket error (no payload)');
+                        }
+                    }
                     this._consecutiveEmptySessions = 0;
                 } else if (dataReceived) {
                     // 데이터 수신 후 정상 종료 (이벤트 배치 완료)
-                    this.output.appendLine(`[Console] Disconnected (${elapsed}ms): 이벤트 배치 전달 완료`);
+                    this.appendStateLine(`[Console][RC1403] STATE=DISCONNECTED mode=batch_complete elapsedMs=${elapsed}`);
                     this._consecutiveEmptySessions = 0;
                 } else {
                     // 빈 세션 — 이벤트 없이 FIN
                     this._consecutiveEmptySessions++;
-                    if (this._consecutiveEmptySessions === 1) {
-                        this.output.appendLine(`[Console] 이벤트 대기 중...`);
+                    const reason = elapsed <= 500 ? 'Immediate EOF' : 'Empty batch';
+                    noPayloadReason = reason;
+                    this.handleNoPayloadAttempt(reason);
+                    const tuning = this.getTuning();
+                    if (this.shouldEmitNoPayloadNotice(this._consecutiveNoPayloadAttempts, tuning.emptyNoticeEvery)) {
+                        this.appendStateLine(`[Console][RC1403] STATE=DISCONNECTED mode=no_payload reason=${reason} payloadBytes=0 elapsedMs=${elapsed} streak=${this._consecutiveNoPayloadAttempts}`);
                     }
-                    // 이후 반복 로그 억제 (Traffic 채널에서만 확인 가능)
                 }
 
                 this.logConsoleTraffic('---', `CLOSE (${elapsed}ms, hadError=${hadError}, data=${dataReceived}, empty=${this._consecutiveEmptySessions})`);
                 this._onDidDisconnect.fire();
             } else {
                 // connect 콜백 전에 close 된 경우
-                this.logConsoleTraffic('---', `CLOSE (connect failed: ${this._lastError?.message ?? 'unknown'})`);
-                this.output.appendLine(`[Console] 연결 실패: ${this._lastError?.message ?? 'unknown'}`);
+                const errMsg = this._lastError?.message ?? 'unknown';
+                const errCode = (this._lastError as any)?.code as string | undefined;
+                this.logConsoleTraffic('---', `CLOSE (connect failed: ${errMsg})`);
+                if (errCode === 'ECONNREFUSED') {
+                    this.appendStateLine('[Console][RC1403] STATE=CONNECT_FAILED reason=ECONNREFUSED');
+                    this.handleNoPayloadAttempt('Connection refused');
+                } else {
+                    this.appendStateLine(`[Console][RC1403] STATE=CONNECT_FAILED reason=${errMsg}`);
+                    this.handleNoPayloadAttempt('Connect error');
+                }
                 this._consecutiveEmptySessions = 0;
             }
             this._lastError = null;
 
-            // 명시적 stop이 아닌 연결 종료 → 자동 재연결
-            if (!this._explicitStop) {
-                if (dataReceived && !hadError) {
-                    // 이벤트 배치 정상 완료 → 즉시 재연결 (다음 배치 대기)
-                    this._reconnectAttempt = 0;
-                    this.logConsoleTraffic('---', `RECONNECT (immediate, batch complete)`);
-                    this._reconnectTimer = setTimeout(() => {
-                        this._reconnectTimer = null;
-                        this.connectInternal();
-                    }, RECONNECT_IMMEDIATE_MS);
-                } else if (!hadError) {
-                    // 빈 세션 (이벤트 없음) → 고정 간격 재연결, 백오프 없음
-                    this._reconnectAttempt = 0;
-                    this.logConsoleTraffic('---', `RECONNECT (idle, ${RECONNECT_IDLE_MS}ms)`);
-                    this._reconnectTimer = setTimeout(() => {
-                        this._reconnectTimer = null;
-                        this.connectInternal();
-                    }, RECONNECT_IDLE_MS);
-                } else {
-                    // 에러 → 지수 백오프
-                    this.scheduleReconnect();
-                }
-            }
+            // 명시적 stop이 아닌 연결 종료 → 정책 기반 재연결
+            void this.scheduleReconnectByPolicy(dataReceived, hadError, noPayloadReason);
         });
     }
 }

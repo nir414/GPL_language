@@ -13,5 +13,11 @@
   },
   "githubPullRequests.ignoredPullRequestBranches": [
     "main"
-  ]
+  ],
+  "chat.tools.terminal.autoApprove": {
+    "/^npm run pre-release-check$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
 }

@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { trySendCommand, getControllerConfig } from '../controller/controllerConnection';
 import { parseThreadList, ThreadInfo, parseErrorLog, parseBreakList, BreakpointInfo } from '../controller/responseParser';
 import { FtpEntry, listRemoteDir } from '../controller/ftpClient';
+import { onDebugThreadsUpdated } from '../controller/debugBridge';
 
 // ── Node types ──────────────────────────────────────────
 
@@ -72,6 +73,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private expectedProjectName = '';
 	private expectedProjectFolderName = '';
 
+	/** 디버그 세션 중 bridge 이벤트 구독 핸들 */
+	private _debugModeSubscription: vscode.Disposable | undefined;
+
 	get isConnected(): boolean { return this._connected; }
 
 	setExpectedProjectName(name?: string): void {
@@ -131,6 +135,29 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			clearInterval(this.pollTimer);
 			this.pollTimer = null;
 		}
+	}
+
+	/**
+	 * 디버그 세션 시작 시 호출. 독립 폴링을 중단하고 debugBridge 이벤트를 구독하여
+	 * 디버그 세션의 Show Thread 결과로 쓰레드 섹션을 실시간 갱신한다.
+	 * TCP 추가 호출 없이 사이드바 쓰레드 뷰가 살아 있게 된다.
+	 */
+	enterDebugMode(): void {
+		this.stopPolling();
+		this._debugModeSubscription?.dispose();
+		this._debugModeSubscription = onDebugThreadsUpdated(threads => {
+			this.threads = threads;
+			this._onDidChangeTreeData.fire(undefined);
+		});
+	}
+
+	/**
+	 * 디버그 세션 종료 시 호출. bridge 구독을 해제하고 일반 폴링을 재개한다.
+	 */
+	exitDebugMode(): void {
+		this._debugModeSubscription?.dispose();
+		this._debugModeSubscription = undefined;
+		this.startPolling();
 	}
 
 	/**
@@ -336,6 +363,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	}
 
 	dispose(): void {
+		this._debugModeSubscription?.dispose();
+		this._debugModeSubscription = undefined;
 		this.stopPolling();
 		this._onDidChangeTreeData.dispose();
 		this._onDidLoseConnection.dispose();

@@ -305,15 +305,40 @@ npm run compile       # TypeScript → out/
 npm run watch         # 감시 모드
 npm run package       # compile + VSIX 생성 (dist/)
 npm run dev:cycle     # package alias
+npm run dev:watch     # watch alias (디버그 시작 전에 실행)
 ```
 
 ### 디버그 실행
 
-1. F5 → Extension Development Host 실행
-2. `.gpl` 파일 열어 테스트
-3. Output → "GPL Language Support" 채널에서 로그 확인
+#### 방법 1: F5 (자동 컴파일)
 
-> `"gpl.trace.server": "verbose"` 설정 시 상세 로그 출력
+1. **F5** → Debug 패널 열림 → **"Run Extension"** 선택 실행
+   - 자동으로 TypeScript 컴파일 후 Extension Development Host 실행
+   - 처음 시작이나 재시작이 필요할 때 사용
+
+#### 방법 2: 빠른 재실행 (권장)
+
+1. **터미널에서** `npm run dev:watch` 실행 (백그라운드 감시 모드)
+2. **F5** → **"Run Extension (no compile)"** 선택 실행
+   - 컴파일 생략 → 빠른 시작
+   - 파일 변경 시 watch가 자동으로 컴파일
+   - 재실행할 때마다 이전 Extension Host 종료 후 새로 시작
+
+#### 디버그 콘솔에서 확인
+
+1. `.gpl` 파일 열어 기능 테스트 (symbol completion, goto definition 등)
+2. **Output 패널** → **"GPL Language Support"** 채널에서 로그 확인
+3. **Debug Console**에서 변수 조회 및 스택 추적 가능
+
+#### 로그 출력 상세 모드
+
+```json
+{
+    "gpl.trace.server": "verbose"
+}
+```
+
+설정 시 상세 로그 출력. `.vscode/settings.json`에 추가하거나 Settings UI에서 `gpl.trace` 검색.
 
 ## 기여
 
@@ -324,8 +349,10 @@ npm run dev:cycle     # package alias
 
 ### 주요 변경 이력
 
-#### v0.5.x (현재)
+#### v0.5.70 (현재)
 
+- **디버그 중 쓰레드 뷰**: debug 세션의 Show Thread 폴링 결과를 사이드바에 실시간 반영 (TCP 추가 호출 없음)
+- **개발 디버그 개선**: Launch config 2가지 + npm:watch 태스크 + 상세 가이드
 - **디버거 (DAP)**: `brooks-gpl` Attach 모드, 브레이크포인트, 스텝 실행, 변수 조회
 - **사이드바 통합 패널**: 쓰레드·FTP·시스템 정보·에러 로그를 하나의 TreeView로 통합
 - **쓰레드 개별 제어**: 시작/정지/일시정지/재개/스텝/에러 건너뛰기

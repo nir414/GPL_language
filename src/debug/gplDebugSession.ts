@@ -41,6 +41,7 @@ import {
     StackFrameInfo,
 } from '../controller/responseParser';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
+import { fireDebugThreadsUpdated } from '../controller/debugBridge';
 
 // ─── Launch/Attach argument interfaces ───────────────────
 
@@ -1348,6 +1349,9 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._pollFailures = 0;
 
             const threads = parseThreadList(resp);
+
+            // 디버그 쓰레드 상태를 사이드바 트리에 push (추가 TCP 없이 실시간 갱신)
+            fireDebugThreadsUpdated(threads);
 
             // 진단 로그: 처음 N회는 원시 응답과 파싱 결과를 표시
             if (this._pollCount <= GPLDebugSession.DIAG_POLL_COUNT) {

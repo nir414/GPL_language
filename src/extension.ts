@@ -1812,7 +1812,7 @@ export function activate(context: vscode.ExtensionContext) {
 				} else {
 					scheduleExpectedProjectSync('debug session started');
 				}
-				controllerTree?.stopPolling();
+				controllerTree?.enterDebugMode();
 				if (autoStartConsoleOnDebug) {
 					// 디버그 attach 시 1403 런타임 콘솔 자동 시작 (start()는 idempotent).
 					try { ensureRuntimeConsole(); } catch (err: any) {
@@ -1823,7 +1823,7 @@ export function activate(context: vscode.ExtensionContext) {
 		}),
 		vscode.debug.onDidTerminateDebugSession(session => {
 			if (session.type === 'brooks-gpl') {
-				controllerTree?.startPolling();
+				controllerTree?.exitDebugMode();
 			}
 		}),
 	);

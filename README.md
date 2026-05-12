@@ -1,6 +1,6 @@
 # GPL Language Support
 
-현재 버전: **v0.5.69**
+현재 버전: **v0.5.71**
 GPL (Guidance Programming Language) 지원 VS Code 확장.
 IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·배포·디버깅**까지 통합 제공합니다.
 

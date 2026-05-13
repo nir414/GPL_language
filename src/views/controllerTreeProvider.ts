@@ -5,9 +5,43 @@
 
 import * as vscode from 'vscode';
 import { trySendCommand, getControllerConfig } from '../controller/controllerConnection';
-import { parseThreadList, ThreadInfo, parseErrorLog, parseBreakList, BreakpointInfo } from '../controller/responseParser';
+import {
+	parseThreadList,
+	ThreadInfo,
+	parseErrorLog,
+	parseBreakList,
+	BreakpointInfo,
+	classifyErrorEntry,
+	extractErrorCodeFromEntry,
+	getErrorCodeHint,
+	findKnownErrorChains,
+} from '../controller/responseParser';
 import { FtpEntry, listRemoteDir } from '../controller/ftpClient';
 import { onDebugThreadsUpdated } from '../controller/debugBridge';
+import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+
+export interface SituationDeploySnapshot {
+	mode: 'Build' | 'Deploy & Run';
+	success: boolean;
+	lastStage: 'STOP' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
+	compileErrorCodes: number[];
+	controllerSystemCodes: number[];
+	updatedAt: number;
+	summary: string;
+	comparisonNote?: string;
+	unverifiableReason?: string;
+	compileRawSummary?: string[];
+}
+
+export interface RuntimeErrorContext {
+	threadName: string;
+	threadId?: number;
+	lastCommand?: string;
+	firstSeenAt?: string;
+	statusText?: string;
+	stackFrames?: string[];
+	relatedFunctions?: string[];
+}
 
 // ── Node types ──────────────────────────────────────────
 
@@ -72,6 +106,13 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private breakpoints: BreakpointInfo[] = [];
 	private expectedProjectName = '';
 	private expectedProjectFolderName = '';
+	private runtimeConsoleStatus: RuntimeConsoleStatusSnapshot = {
+		connected: false,
+		reason: '미연결',
+		noPayloadStreak: 0,
+		lastChangedAt: Date.now(),
+	};
+	private runtimeErrorContext?: RuntimeErrorContext;
 
 	/** 디버그 세션 중 bridge 이벤트 구독 핸들 */
 	private _debugModeSubscription: vscode.Disposable | undefined;
@@ -94,6 +135,16 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 	getExpectedProjectFolderName(): string {
 		return this.expectedProjectFolderName;
+	}
+
+	setRuntimeConsoleStatus(status: RuntimeConsoleStatusSnapshot): void {
+		this.runtimeConsoleStatus = status;
+		this._onDidChangeTreeData.fire(undefined);
+	}
+
+	setRuntimeErrorContext(context?: RuntimeErrorContext): void {
+		this.runtimeErrorContext = context;
+		this._onDidChangeTreeData.fire(undefined);
 	}
 
 	/**
@@ -387,6 +438,29 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const cfg = getControllerConfig();
 		const sections: SectionNode[] = [];
 
+		if (this.runtimeErrorContext) {
+			const errCtx = this.runtimeErrorContext;
+			const threadLabel = errCtx.threadId !== undefined
+				? `${errCtx.threadName} (#${errCtx.threadId})`
+				: errCtx.threadName;
+			const runtimeErrSec = new SectionNode(
+				'runtimeErrorContext',
+				'런타임 오류 컨텍스트',
+				'error',
+				errCtx.statusText || '최근 오류',
+			);
+			runtimeErrSec.collapsed = false;
+			runtimeErrSec.children = [
+				new InfoNode(`오류 스레드: ${threadLabel}`, 'debug-stop', errCtx.statusText || undefined),
+				new InfoNode(`직전 명령: ${errCtx.lastCommand || '(없음)'}`, 'terminal', undefined),
+				new InfoNode(`최초 발생 시각: ${errCtx.firstSeenAt || '(미확인)'}`, 'history', undefined),
+				...(errCtx.stackFrames && errCtx.stackFrames.length > 0
+					? errCtx.stackFrames.map((frame, idx) => new InfoNode(`프레임 ${idx + 1}: ${frame}`, 'list-tree'))
+					: [new InfoNode('스택 프레임 정보 없음', 'info')]),
+			];
+			sections.push(runtimeErrSec);
+		}
+
 		// ── 프로젝트 컨텍스트 (불일치 가시화)
 		const runningProjects = [...new Set(
 			this.threads.map(t => (t.project || '').trim()).filter(Boolean),
@@ -415,70 +489,45 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		const ctxSec = new SectionNode(
 			'projectContext',
-			mismatch ? '프로젝트 컨텍스트 ⚠' : '프로젝트 컨텍스트',
+			mismatch ? '프로젝트 상태 ⚠' : '프로젝트 상태',
 			mismatch ? 'warning' : 'pass',
 			contextDescription,
 		);
-		ctxSec.collapsed = false;
+		ctxSec.collapsed = true;
+		const runSummary = runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)';
 		ctxSec.children = [
-			new InfoNode(
-				`기대 프로젝트: ${expected || '(미설정)'}`,
-				'target',
-				expected ? undefined : 'Project.gpr 미감지',
-			),
-			new InfoNode(
-				`기대 FTP 폴더: ${expectedFolder || '(미설정)'}`,
-				'folder-library',
-				expectedFolder ? undefined : '프로젝트 폴더 미감지',
-			),
-			new InfoNode(
-				`실행 프로젝트: ${runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)'}`,
-				'run-all',
+			new InfoNode(`기대: ${expected || '(미설정)'} / 실행: ${runSummary}`, 'target',
 				hasUnexpectedRunning
 					? `${expected} 대신 다른 프로젝트가 실행 중`
 					: buildOnlyReady
 						? 'Build Only 후 미실행 상태일 수 있음'
 						: hasExpectedRunning || !expected
 							? undefined
-							: `${expected} 미실행`,
-			),
-			new InfoNode(
-				`FTP 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}`,
-				'folder-library',
-				hasExpectedFtp || !expectedFolder ? undefined : `${expectedFolder} 폴더 없음`,
-			),
+							: `${expected} 미실행`),
+			new InfoNode(`FTP: ${expectedFolder || '(미설정)'} / 현재: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}`, 'folder-library',
+				hasExpectedFtp || !expectedFolder ? undefined : `${expectedFolder} 폴더 없음`),
 		];
 		sections.push(ctxSec);
 
-		// ── 연결 정보 (기본 펼침: 콘솔 포트 등 자주 쓰는 항목)
+		// ── 연결 정보 (간소화)
 		const conn = new SectionNode('connection', cfg.ip, 'plug', '연결됨');
 		conn.collapsed = false;
 		conn.children = [
-			new InfoNode(`명령 포트: ${cfg.port}`, 'server', undefined, {
+			new InfoNode(`1402 명령 포트: ${cfg.port}`, 'server', undefined, {
 				command: 'gpl.controller.pingPort',
 				title: '포트 통신 테스트',
 				arguments: ['command', cfg.ip, cfg.port],
 			}),
-			new InfoNode(`콘솔 포트: ${cfg.consolePort}`, 'terminal', '클릭: 런타임 콘솔 열기', {
-				command: 'gpl.controller.pingPort',
-				title: '런타임 콘솔 열기',
-				arguments: ['console', cfg.ip, cfg.consolePort],
-			}),
-			new InfoNode('실시간 로그 터미널 시작', 'terminal-powershell', '1402/1403 트래픽을 터미널로 표시', {
-				command: 'gpl.logs.liveTerminal.start',
-				title: '실시간 로그 터미널 시작',
-			}),
-			new InfoNode('런타임 로그 보기 (GPL Console)', 'output', '간단 로그 전용', {
-				command: 'gpl.console.start',
-				title: '런타임 로그 보기',
-			}),
-			new InfoNode('통신 트래픽 보기', 'radio-tower', undefined, {
-				command: 'gpl.controller.showTraffic',
-				title: '통신 트래픽 보기',
-			}),
-			new InfoNode('명령 보내기…', 'debug-console', undefined, {
-				command: 'gpl.controller.sendCommand',
-				title: '명령 보내기',
+			new InfoNode(
+				`1403 콘솔 상태: ${this.runtimeConsoleStatus.connected ? 'Connected' : 'Disconnected'}`,
+				this.runtimeConsoleStatus.connected ? 'pass' : 'warning',
+				this.runtimeConsoleStatus.connected
+					? `정상 연결`
+					: `${this.runtimeConsoleStatus.reason}${this.runtimeConsoleStatus.detail ? ` — ${this.runtimeConsoleStatus.detail}` : ''}`,
+			),
+			new InfoNode('1403 연결/재연결/로그 보기', 'refresh', '상태 확인 + 필요 시 재연결', {
+				command: 'gpl.console.ensure',
+				title: '1403 연결/재연결/로그 보기',
 			}),
 		];
 		sections.push(conn);
@@ -583,16 +632,33 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		}
 		sections.push(sysSec);
 
-		// ── 에러 로그
-		const errSec = new SectionNode('errors',
-			this.errors.length > 0 ? `에러 (${this.errors.length})` : '에러 없음',
-			this.errors.length > 0 ? 'warning' : 'pass');
-		// Error 쓰레드 우선 표시 (원인 파악 용이)
+		// ── 에러 로그: 코드 오류 / 환경 경고 분리 뷰
+		const classifiedEntries = this.errors.map(raw => {
+			const classified = classifyErrorEntry(raw);
+			const code = extractErrorCodeFromEntry(raw) ?? classified.parsedCode;
+			const hint = typeof code === 'number' ? getErrorCodeHint(code) : undefined;
+			const isEnvironment = classified.isControllerSystem || hint?.category === 'environment';
+			return { raw, classified, code, hint, isEnvironment };
+		});
+		const envErrors = classifiedEntries.filter(e => e.isEnvironment);
+		const codeErrors = classifiedEntries.filter(e => !e.isEnvironment);
 		const errorThreads = this.threads.filter(t => t.state === 'Error');
-		const errorChildren: InfoNode[] = [];
-		
+		const chainHints = findKnownErrorChains(
+			classifiedEntries
+				.map(e => e.code)
+				.filter((code): code is number => typeof code === 'number'),
+		);
+
+		const codeSec = new SectionNode(
+			'errorsCode',
+			`코드 오류 (${codeErrors.length + errorThreads.length})`,
+			codeErrors.length > 0 || errorThreads.length > 0 ? 'error' : 'pass',
+			errorThreads.length > 0 ? `Thread Error ${errorThreads.length}` : (codeErrors.length > 0 ? '확인 필요' : '정상'),
+		);
+		const codeChildren: ControllerNode[] = [];
+
 		for (const et of errorThreads) {
-			errorChildren.push(new InfoNode(
+			codeChildren.push(new InfoNode(
 				`🔴 ${et.name}`,
 				'debug-stop',
 				`${et.file}  [${et.lastStatus}]`,
@@ -601,28 +667,90 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				`${et.name}: ${et.file} - ${et.lastStatus}`,
 			));
 		}
-		
-		// ErrorLog 출력 (Error 쓰레드 이후)
-		if (this.errors.length > 0) {
-			errorChildren.push(...this.errors.map(e => new InfoNode(
-				e,
+
+		for (const e of codeErrors) {
+			const codeLabel = typeof e.code === 'number' ? `${e.code}` : 'N/A';
+			const hintDesc = e.hint
+				? `${e.hint.title} — ${e.hint.action}`
+				: (e.classified.detail ?? '클릭: 클립보드에 복사');
+			const line = typeof e.code === 'number'
+				? `[${codeLabel}] ${e.classified.summary}`
+				: e.classified.summary;
+			codeChildren.push(new InfoNode(
+				line,
 				'error',
-				'클릭: 클립보드에 복사',
-				{ command: 'gpl.controller.copyError', title: '에러 복사', arguments: [e] },
+				hintDesc,
+				{
+					command: 'gpl.controller.showErrorDetail',
+					title: '오류 상세 보기',
+					arguments: [{ raw: e.raw, code: e.code, category: 'code' }],
+				},
 				'errorItem',
-				e,
-			)));
-		} else if (errorThreads.length === 0) {
-			errorChildren.push(new InfoNode('활성 에러 없음', 'pass'));
+				e.hint
+					? `${line}\n해석: ${e.hint.meaning}\n권장 조치: ${e.hint.action}`
+					: line,
+			));
 		}
-		
-		errSec.children = errorChildren;
-		sections.push(errSec);
+
+		if (chainHints.length > 0) {
+			const chainSec = new SectionNode('errorChains', `에러 체인 (${chainHints.length})`, 'git-commit', '연쇄 오류');
+			chainSec.collapsed = true;
+			chainSec.children = chainHints.map(chain => new InfoNode(
+				`추정 체인: ${chain}`,
+				'git-commit',
+				'연속 에러 패턴 감지',
+				undefined,
+				'errorChainItem',
+				`추정 원인 체인: ${chain}`,
+			));
+			codeChildren.push(chainSec);
+		}
+
+		if (codeChildren.length === 0) {
+			codeChildren.push(new InfoNode('활성 코드 오류 없음', 'pass'));
+		}
+		codeSec.children = codeChildren;
+		sections.push(codeSec);
+
+		const envSec = new SectionNode(
+			'errorsEnv',
+			`환경 경고 (${envErrors.length})`,
+			envErrors.length > 0 ? 'warning' : 'pass',
+			envErrors.length > 0 ? '코드와 분리 진단 권장' : '정상',
+		);
+		const envChildren: InfoNode[] = [];
+		for (const e of envErrors) {
+			const prefix = typeof e.code === 'number' ? `[${e.code}] ` : '';
+			envChildren.push(new InfoNode(
+				`${prefix}${e.classified.summary}`,
+				'warning',
+				e.hint
+					? `${e.hint.title} — ${e.hint.action}`
+					: (e.classified.detail ?? '제어기 시스템/환경 경고'),
+				{
+					command: 'gpl.controller.showErrorDetail',
+					title: '오류 상세 보기',
+					arguments: [{ raw: e.raw, code: e.code, category: 'environment' }],
+				},
+				'sysErrorItem',
+				e.hint
+					? `${e.classified.summary}\n해석: ${e.hint.meaning}\n권장 조치: ${e.hint.action}`
+					: `[제어기 시스템] ${e.classified.summary}\n${e.classified.detail ?? ''}`,
+			));
+		}
+		if (envChildren.length === 0) {
+			envChildren.push(new InfoNode('활성 환경 경고 없음', 'pass'));
+		}
+		envSec.children = envChildren;
+		sections.push(envSec);
 
 		return sections;
 	}
 
-	buildSituationSnapshotMarkdown(extra?: { runtimeConsoleConnected?: boolean }): string {
+	buildSituationSnapshotMarkdown(extra?: {
+		runtimeConsoleStatus?: RuntimeConsoleStatusSnapshot;
+		deploySnapshot?: SituationDeploySnapshot;
+	}): string {
 		const cfg = getControllerConfig();
 		const running = this.threads.filter(t => t.state === 'Running').length;
 		const paused = this.threads.filter(t => t.state === 'Paused' || t.state === 'Break').length;
@@ -642,10 +770,31 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		lines.push('');
 
 		// ── 연결 상태
+		const consoleStatus = extra?.runtimeConsoleStatus ?? this.runtimeConsoleStatus;
 		lines.push('## 연결');
 		lines.push(`- 명령 포트: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
-		lines.push(`- 콘솔 포트: ${extra?.runtimeConsoleConnected ? `Connected (${cfg.ip}:${cfg.consolePort})` : 'Disconnected'}`);
+		if (consoleStatus.connected) {
+			lines.push(`- 콘솔 포트: Connected (${cfg.ip}:${cfg.consolePort})`);
+		} else {
+			lines.push(`- 콘솔 포트: Disconnected (${consoleStatus.reason}${consoleStatus.detail ? ` / ${consoleStatus.detail}` : ''})`);
+		}
 		lines.push(`- 시각: ${new Date().toLocaleString('ko-KR')}`);
+		lines.push('');
+
+		// ── 최근 배포 결과
+		lines.push('## 최근 배포 결과');
+		if (!extra?.deploySnapshot) {
+			lines.push('- 최근 배포 기록 없음');
+		} else {
+			const d = extra.deploySnapshot;
+			lines.push(`- 결과: ${d.success ? '성공' : '실패'}`);
+			lines.push(`- 모드: ${d.mode}`);
+			lines.push(`- 마지막 단계: ${d.lastStage}`);
+			lines.push(`- 컴파일 에러 코드: ${d.compileErrorCodes.length > 0 ? d.compileErrorCodes.join(', ') : '(없음)'}`);
+			lines.push(`- 제어기 시스템 코드: ${d.controllerSystemCodes.length > 0 ? d.controllerSystemCodes.join(', ') : '(없음)'}`);
+			lines.push(`- 요약: ${d.summary}`);
+			lines.push(`- 기록 시각: ${new Date(d.updatedAt).toLocaleString('ko-KR')}`);
+		}
 		lines.push('');
 
 		// ── 프로젝트 컨텍스트
@@ -728,6 +877,172 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				lines.push(`- ${e}`);
 			}
 		}
+
+		if (this.runtimeErrorContext) {
+			lines.push('');
+			lines.push('## 오류 스레드 상세');
+			const ctx = this.runtimeErrorContext;
+			lines.push(`- 스레드: ${ctx.threadId !== undefined ? `${ctx.threadName} (#${ctx.threadId})` : ctx.threadName}`);
+			lines.push(`- 상태: ${ctx.statusText || '(미상)'}`);
+			lines.push(`- 직전 실행 명령: ${ctx.lastCommand || '(미상)'}`);
+			lines.push(`- 최초 발생 시각: ${ctx.firstSeenAt || '(미상)'}`);
+			if (ctx.stackFrames && ctx.stackFrames.length > 0) {
+				lines.push('- 스택:');
+				for (const frame of ctx.stackFrames) {
+					lines.push(`  - ${frame}`);
+				}
+			}
+			if (ctx.relatedFunctions && ctx.relatedFunctions.length > 0) {
+				lines.push(`- 관련 함수: ${ctx.relatedFunctions.join(', ')}`);
+			}
+		}
+
+		return lines.join('\n');
+	}
+
+	buildDiagnosticSnapshotMarkdown(extra?: {
+		runtimeConsoleStatus?: RuntimeConsoleStatusSnapshot;
+		deploySnapshot?: SituationDeploySnapshot;
+	}): string {
+		const cfg = getControllerConfig();
+		const runtime = extra?.runtimeConsoleStatus ?? this.runtimeConsoleStatus;
+		const deploy = extra?.deploySnapshot;
+
+		const codes = this.errors
+			.map(e => extractErrorCodeFromEntry(e))
+			.filter((code): code is number => typeof code === 'number');
+		const codeCounts = new Map<number, number>();
+		for (const code of codes) {
+			codeCounts.set(code, (codeCounts.get(code) ?? 0) + 1);
+		}
+		const topCodes = [...codeCounts.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 5);
+		const chains = findKnownErrorChains(codes);
+
+		const stageMap: Record<string, 'OK' | 'FAIL' | 'SKIP' | 'N/A'> = {
+			STOPPING: 'N/A',
+			UPLOADING: 'N/A',
+			COMPILE: 'N/A',
+			RUNNING: 'N/A',
+		};
+		if (deploy) {
+			if (deploy.success) {
+				stageMap.STOPPING = 'OK';
+				stageMap.UPLOADING = 'OK';
+				stageMap.COMPILE = 'OK';
+				stageMap.RUNNING = deploy.mode === 'Build' ? 'SKIP' : 'OK';
+			} else {
+				stageMap.STOPPING = deploy.lastStage === 'STOP' ? 'FAIL' : 'OK';
+				stageMap.UPLOADING = deploy.lastStage === 'UPLOAD' ? 'FAIL' : (deploy.lastStage === 'STOP' ? 'N/A' : 'OK');
+				stageMap.COMPILE = deploy.lastStage === 'COMPILE' ? 'FAIL' : ((deploy.lastStage === 'START' || deploy.lastStage === 'ERROR_CHECK') ? 'OK' : 'N/A');
+				stageMap.RUNNING = deploy.mode === 'Build'
+					? 'SKIP'
+					: (deploy.lastStage === 'START' ? 'FAIL' : ((deploy.lastStage === 'ERROR_CHECK' || deploy.lastStage === 'SUCCESS') ? 'OK' : 'N/A'));
+			}
+		}
+
+		const envErrors = this.errors.filter(e => classifyErrorEntry(e).isControllerSystem).length;
+		const codeErrors = this.errors.length - envErrors;
+		const threadErrors = this.threads.filter(t => t.state === 'Error').length;
+		const runtimeReason = runtime.reason || '미연결';
+
+		let verdict: '정상' | '간헐' | '실패' = '정상';
+		let verdictReason = '이상 징후 없음';
+		if (!this._connected) {
+			verdict = '실패';
+			verdictReason = '1402 미연결';
+		} else if (codeErrors > 0 || threadErrors > 0) {
+			verdict = '실패';
+			verdictReason = `코드 오류 ${codeErrors}건 / Error thread ${threadErrors}건`;
+		} else if (!runtime.connected && (runtime.noPayloadStreak >= 2 || /refused|eof|timeout/i.test(runtimeReason))) {
+			verdict = '간헐';
+			verdictReason = `1403 불안정 (${runtimeReason}${runtime.detail ? `, ${runtime.detail}` : ''})`;
+		} else if (envErrors > 0) {
+			verdict = '간헐';
+			verdictReason = `환경 경고 ${envErrors}건`; 
+		}
+
+		const lines: string[] = [];
+		lines.push('# GPL 원클릭 진단 스냅샷');
+		lines.push('');
+		lines.push(`- 생성 시각: ${new Date().toLocaleString('ko-KR')}`);
+		lines.push(`- 1402 상태: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
+		lines.push(`- 1403 상태: ${runtime.connected ? 'Connected' : `Disconnected (${runtimeReason}${runtime.detail ? ` / ${runtime.detail}` : ''})`}`);
+		lines.push('');
+
+		lines.push('## Deploy 단계 판정');
+		lines.push(`- STOPPING: ${stageMap.STOPPING}`);
+		lines.push(`- UPLOADING: ${stageMap.UPLOADING}`);
+		lines.push(`- COMPILE: ${stageMap.COMPILE}`);
+		lines.push(`- RUNNING: ${stageMap.RUNNING}`);
+		if (deploy) {
+			lines.push(`- 최근 배포 요약: ${deploy.summary}`);
+			if (deploy.unverifiableReason) {
+				lines.push(`- 검증 상태: 코드 수정 효과 검증 불가 (${deploy.unverifiableReason})`);
+			}
+			if (deploy.comparisonNote) {
+				lines.push(`- 비교 판정: ${deploy.comparisonNote}`);
+			}
+		}
+		lines.push('');
+
+		if (deploy?.compileRawSummary && deploy.compileRawSummary.length > 0) {
+			lines.push('## COMPILE 원문 로그 요약');
+			for (const raw of deploy.compileRawSummary) {
+				lines.push(`- ${raw}`);
+			}
+			lines.push('');
+		}
+
+		if (this.runtimeErrorContext) {
+			const errCtx = this.runtimeErrorContext;
+			lines.push('## Error Thread 상세');
+			lines.push(`- 스레드: ${errCtx.threadId !== undefined ? `${errCtx.threadName} (#${errCtx.threadId})` : errCtx.threadName}`);
+			lines.push(`- 상태: ${errCtx.statusText || '(미상)'}`);
+			lines.push(`- 직전 실행 명령: ${errCtx.lastCommand || '(미상)'}`);
+			lines.push(`- 최초 발생 시각: ${errCtx.firstSeenAt || '(미상)'}`);
+			if (errCtx.stackFrames && errCtx.stackFrames.length > 0) {
+				for (const frame of errCtx.stackFrames) {
+					lines.push(`- 프레임: ${frame}`);
+				}
+			}
+			if (errCtx.relatedFunctions && errCtx.relatedFunctions.length > 0) {
+				lines.push(`- 관련 함수: ${errCtx.relatedFunctions.join(', ')}`);
+			}
+			lines.push('');
+		}
+
+		lines.push('## 최근 에러 코드 Top N');
+		if (topCodes.length === 0) {
+			lines.push('- 없음');
+		} else {
+			for (const [code, count] of topCodes) {
+				const hint = getErrorCodeHint(code);
+				const meaning = hint ? `${hint.title} — ${hint.meaning}` : '해석 없음';
+				lines.push(`- ${code}: ${count}회 · ${meaning}`);
+			}
+		}
+		lines.push('');
+
+		lines.push('## 원인 체인 (추정)');
+		if (chains.length === 0) {
+			lines.push('- 감지된 대표 체인 없음');
+		} else {
+			for (const chain of chains) {
+				lines.push(`- ${chain}`);
+			}
+		}
+		lines.push('');
+
+		lines.push('## 최종 판정');
+		lines.push(`- ${verdict} (${verdictReason})`);
+		const judgment = [
+			`환경 이슈: ${envErrors > 0 ? '있음' : '없음'}`,
+			`코드 이슈: ${(codeErrors > 0 || threadErrors > 0) ? '있음' : '없음'}`,
+			`표시/UI 이슈: ${(!runtime.connected && /refused|eof|timeout/i.test(runtimeReason)) ? '가능성 높음' : '낮음'}`,
+		].join(' / ');
+		lines.push(`- 판정(환경/코드/UI): ${judgment}`);
 
 		return lines.join('\n');
 	}

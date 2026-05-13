@@ -18,10 +18,21 @@ import { testConnection, getControllerConfig, sendCommand, setTrafficChannel, ge
 import { deploy, findProjectDirs } from './controller/deployService';
 import { removeRemoteDir, removeRemoteFile, downloadProject } from './controller/ftpClient';
 import { RuntimeConsole } from './controller/runtimeConsole';
-import { ControllerTreeProvider } from './views/controllerTreeProvider';
+import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
 import { ConnectionStatusBar } from './views/connectionStatusBar';
 import { activateDebug } from './debug/activateDebug';
-import { parseCompileErrors, parseStack, parseThreadDetail, parseGpr, parseStatus, parseThreadList } from './controller/responseParser';
+import {
+	parseCompileErrors,
+	parseStack,
+	parseThreadDetail,
+	parseGpr,
+	parseStatus,
+	parseThreadList,
+	classifyErrorEntry,
+	parseControllerErrorEntry,
+	extractErrorCodeFromEntry,
+	getErrorCodeHint,
+} from './controller/responseParser';
 import { startLiveLogTerminal, stopLiveLogTerminal, appendLiveLog, isLiveLogTerminalEnabled } from './log/liveLogTerminal';
 
 // Global output channel for GPL extension logging
@@ -32,6 +43,11 @@ let runtimeConsole: RuntimeConsole | undefined;
 let statusBar: ConnectionStatusBar | undefined;
 let controllerTree: ControllerTreeProvider | undefined;
 let deployDiagnostics: vscode.DiagnosticCollection;
+let runtimeConsoleHooksBound = false;
+let lastDeploySnapshot: SituationDeploySnapshot | undefined;
+const deployOutcomeHistory: Array<{ mode: 'Build' | 'Deploy & Run'; signature: string; timestamp: number; summary: string }> = [];
+const recentDebugLogLines: string[] = [];
+let lastRuntimeErrorContext: RuntimeErrorContext | undefined;
 
 /**
  * RuntimeConsole 싱글톤 확보.
@@ -44,7 +60,17 @@ function ensureRuntimeConsole(): RuntimeConsole {
 	if (!runtimeConsole) {
 		runtimeConsole = new RuntimeConsole(consoleChannel, outputChannel);
 	}
+	if (!runtimeConsoleHooksBound) {
+		runtimeConsole.onDidConnect(() => {
+			controllerTree?.setRuntimeConsoleStatus(runtimeConsole!.getStatusSnapshot());
+		});
+		runtimeConsole.onDidDisconnect(() => {
+			controllerTree?.setRuntimeConsoleStatus(runtimeConsole!.getStatusSnapshot());
+		});
+		runtimeConsoleHooksBound = true;
+	}
 	runtimeConsole.start();
+	controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
 	return runtimeConsole;
 }
 
@@ -57,76 +83,34 @@ export function activate(context: vscode.ExtensionContext) {
 	setTrafficChannel(trafficChannel);
 
 	function logOutput(msg: string): void {
+		recentDebugLogLines.push(`[main] ${msg}`);
+		if (recentDebugLogLines.length > 240) {
+			recentDebugLogLines.splice(0, recentDebugLogLines.length - 240);
+		}
 		outputChannel.appendLine(msg);
 		appendLiveLog(`[main] ${msg}`);
 	}
 
 	function logConsole(msg: string): void {
+		recentDebugLogLines.push(`[console] ${msg}`);
+		if (recentDebugLogLines.length > 240) {
+			recentDebugLogLines.splice(0, recentDebugLogLines.length - 240);
+		}
 		consoleChannel?.appendLine(msg);
 		appendLiveLog(`[console] ${msg}`);
 	}
 
 	function logTraffic(msg: string): void {
+		recentDebugLogLines.push(`[traffic] ${msg}`);
+		if (recentDebugLogLines.length > 240) {
+			recentDebugLogLines.splice(0, recentDebugLogLines.length - 240);
+		}
 		trafficChannel.appendLine(msg);
 		appendLiveLog(`[traffic] ${msg}`);
 	}
 
 	function sleep(ms: number): Promise<void> {
 		return new Promise(resolve => setTimeout(resolve, ms));
-	}
-
-	function summarizeDeployErrorLog(entry: string): string {
-		const normalized = (entry || '').replace(/\s+/g, ' ').trim();
-		if (!normalized) {
-			return 'ErrorLog 내용 없음';
-		}
-		if (normalized.length <= 140) {
-			return normalized;
-		}
-		return `${normalized.slice(0, 137)}...`;
-	}
-
-	function parseControllerErrorLogEntry(entry: string): { timestamp: string; source: string; code: number; message: string } | undefined {
-		const match = entry.match(/^(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d{3}),\s*([^,]+),\s*(-?\d+),\s*"?([^"]*)"?$/);
-		if (!match) { return undefined; }
-		return {
-			timestamp: match[1],
-			source: match[2].trim(),
-			code: Number(match[3]),
-			message: match[4].trim(),
-		};
-	}
-
-	function classifyDeployErrorLog(entry: string): { summary: string; detail?: string; isControllerError: boolean } {
-		const controllerError = parseControllerErrorLogEntry(entry);
-		if (!controllerError) {
-			return {
-				summary: summarizeDeployErrorLog(entry),
-				isControllerError: false,
-			};
-		}
-
-		if (controllerError.code === -1521) {
-			return {
-				summary: `제어기 PDB 파일 오류 (-1521): ${controllerError.message}`,
-				detail: '분류: controller /flash/config 의 *.pac 파일 형식/로드 문제(공식 문서 기준). GPL 코드 오류로 직접 분류하지 않음.',
-				isControllerError: true,
-			};
-		}
-
-		if (controllerError.code === -1520) {
-			return {
-				summary: `제어기 PDB 파일 누락 (-1520): ${controllerError.message}`,
-				detail: '분류: controller /flash/config 의 parameter DB 파일 누락/열기 실패(공식 문서 기준).',
-				isControllerError: true,
-			};
-		}
-
-		return {
-			summary: `제어기 ErrorLog ${controllerError.source} ${controllerError.code}: ${controllerError.message}`,
-			detail: '분류: controller ErrorLog 항목. 현재 실행 결과와 과거 누적 항목을 분리 확인 필요.',
-			isControllerError: true,
-		};
 	}
 
 	function isBusyStatus(code: number): boolean {
@@ -547,7 +531,22 @@ export function activate(context: vscode.ExtensionContext) {
 	statusBar = new ConnectionStatusBar();
 	context.subscriptions.push(statusBar);
 
+	let isDebugSessionActive = false;
+	function updateUiContexts(connected: boolean): void {
+		void vscode.commands.executeCommand('setContext', 'gpl.ui.connected', connected);
+		void vscode.commands.executeCommand('setContext', 'gpl.ui.debugging', isDebugSessionActive);
+	}
+	updateUiContexts(false);
+
 	controllerTree = new ControllerTreeProvider();
+	controllerTree.setRuntimeConsoleStatus(
+		runtimeConsole?.getStatusSnapshot() ?? {
+			connected: false,
+			reason: '미연결',
+			noPayloadStreak: 0,
+			lastChangedAt: Date.now(),
+		},
+	);
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider('gplThreads', controllerTree)
 	);
@@ -787,7 +786,11 @@ export function activate(context: vscode.ExtensionContext) {
 	// 연결 유실 감지 → 상태바 + 알림 갱신
 	controllerTree.onDidLoseConnection(() => {
 		runtimeConsole?.stop();
+		if (runtimeConsole) {
+			controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
+		}
 		statusBar?.setConnected(false);
+		updateUiContexts(false);
 		logOutput('[Controller] Connection lost (3 consecutive failures)');
 		vscode.window.showWarningMessage('GPL Controller 연결이 끊어졌습니다.');
 	});
@@ -848,6 +851,7 @@ export function activate(context: vscode.ExtensionContext) {
 				if (ok) {
 					vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`);
 					statusBar?.setConnected(true);
+					updateUiContexts(true);
 					controllerTree?.setConnected(true);
 					// controller 연결 성공 시 1403도 바로 유지 연결한다.
 					try { ensureRuntimeConsole(); } catch (err: any) {
@@ -856,10 +860,12 @@ export function activate(context: vscode.ExtensionContext) {
 				} else {
 					vscode.window.showErrorMessage(`GPL Controller 연결 실패: ${cfg.ip}`);
 					statusBar?.setConnected(false);
+					updateUiContexts(false);
 				}
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`연결 오류: ${err.message ?? err}`);
 				statusBar?.setConnected(false);
+				updateUiContexts(false);
 			}
 		})
 	);
@@ -947,15 +953,64 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('gpl.controller.disconnect', () => {
 			// 싱글톤 인스턴스는 보존하고 연결만 끊는다 (v0.5.48 일관성).
 			runtimeConsole?.stop();
+			if (runtimeConsole) {
+				controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
+			}
 			clearSessionControllerOverride();
 			statusBar?.setConnected(false);
+			updateUiContexts(false);
 			controllerTree?.setConnected(false);
+			lastRuntimeErrorContext = undefined;
+			controllerTree?.setRuntimeErrorContext(undefined);
 			vscode.window.showInformationMessage('GPL Controller 연결 해제');
 		})
 	);
 
 	// --- Deploy helper (공통 로직) ---
 	async function runDeploy(skipStart: boolean) {
+		const modeLabel: SituationDeploySnapshot['mode'] = skipStart ? 'Build' : 'Deploy & Run';
+		const uniqueCodes = (values: number[]): number[] => [...new Set(values)];
+		const buildOutcomeSignature = (result: Awaited<ReturnType<typeof deploy>>, controllerSystemCodes: number[]): string => {
+			const compileCodes = uniqueCodes(result.compileErrors.map(e => e.code)).sort((a, b) => a - b);
+			const systemCodes = uniqueCodes(controllerSystemCodes).sort((a, b) => a - b);
+			const status = typeof result.failedStatusCode === 'number' ? result.failedStatusCode : 'none';
+			return [
+				result.success ? 'success' : 'fail',
+				result.failedPhase ?? 'SUCCESS',
+				result.failedCommand ?? '-',
+				`status:${status}`,
+				`compile:${compileCodes.join(',') || 'none'}`,
+				`system:${systemCodes.join(',') || 'none'}`,
+			].join('|');
+		};
+		const makeRawCompileSummary = (result: Awaited<ReturnType<typeof deploy>>): string[] => {
+			return result.compileAttemptLogs.map(attempt => {
+				const firstLine = attempt.raw.replace(/\r/g, '').split('\n').map(l => l.trim()).find(Boolean) || '(empty)';
+				return `${attempt.command} / STATUS ${attempt.statusCode} / ${firstLine}`;
+			});
+		};
+		const makeDeploySnapshot = (
+			success: boolean,
+			lastStage: SituationDeploySnapshot['lastStage'],
+			summary: string,
+			compileErrorCodes: number[],
+			controllerSystemCodes: number[],
+			comparisonNote?: string,
+			unverifiableReason?: string,
+			compileRawSummary?: string[],
+		): SituationDeploySnapshot => ({
+			mode: modeLabel,
+			success,
+			lastStage,
+			compileErrorCodes: uniqueCodes(compileErrorCodes),
+			controllerSystemCodes: uniqueCodes(controllerSystemCodes),
+			updatedAt: Date.now(),
+			summary,
+			comparisonNote,
+			unverifiableReason,
+			compileRawSummary,
+		});
+
 		const cfg = getControllerConfig();
 		const projectDirs = await findProjectDirs();
 		if (projectDirs.length === 0) {
@@ -992,13 +1047,76 @@ export function activate(context: vscode.ExtensionContext) {
 
 		try {
 			const result = await deploy({ projectDir, skipStart }, outputChannel, deployDiagnostics);
+
+			// errorLog를 제어기 시스템 에러 / GPL 배포 에러로 분류해 출력 채널에 기록한다.
+			// 이 함수는 성공·실패 경로 공통으로 호출된다.
+			function logErrorLogSections(): { sysCount: number; deployErrCount: number } {
+				let sysCount = 0;
+				let deployErrCount = 0;
+				if (result.errorLog.length === 0) { return { sysCount, deployErrCount }; }
+
+				logOutput('');
+				logOutput('── [ErrorLog 분류] ──────────────────────────────────────');
+				for (const entry of result.errorLog) {
+					const c = classifyErrorEntry(entry);
+					const code = extractErrorCodeFromEntry(entry) ?? c.parsedCode;
+					const hint = typeof code === 'number' ? getErrorCodeHint(code) : undefined;
+					if (c.isControllerSystem) {
+						sysCount++;
+						logOutput(`[⚠ 환경 경고] ${typeof code === 'number' ? `[${code}] ` : ''}${c.summary}`);
+						if (c.detail) { logOutput(`          ${c.detail}`); }
+						if (hint) {
+							logOutput(`          해석: ${hint.meaning}`);
+							logOutput(`          권장: ${hint.action}`);
+						}
+					} else {
+						deployErrCount++;
+						logOutput(`[✘ 코드/배포 에러] ${typeof code === 'number' ? `[${code}] ` : ''}${c.summary}`);
+						if (hint) {
+							logOutput(`          해석: ${hint.meaning}`);
+							logOutput(`          권장: ${hint.action}`);
+						}
+					}
+				}
+				logOutput('─────────────────────────────────────────────────────────');
+				return { sysCount, deployErrCount };
+			}
+
+			function logCompileRawSection(): void {
+				if (result.compileAttemptLogs.length === 0) { return; }
+				logOutput('');
+				logOutput('── [COMPILE 원문 로그] ──────────────────────────────────');
+				for (const attempt of result.compileAttemptLogs) {
+					logOutput(`[${attempt.command}] STATUS ${attempt.statusCode}`);
+					logOutput(attempt.raw || '(empty)');
+					if (attempt.errors.length > 0) {
+						for (const ce of attempt.errors) {
+							logOutput(`  -> ${ce.file}:${ce.line} (${ce.code}) ${ce.message}`);
+						}
+					}
+				}
+				logOutput('─────────────────────────────────────────────────────────');
+			}
+
 			if (result.success) {
+				const controllerSystemCodes = result.errorLog
+					.map(e => classifyErrorEntry(e).parsedCode)
+					.filter((code): code is number => typeof code === 'number');
+				const signature = buildOutcomeSignature(result, controllerSystemCodes);
+				const samePattern = deployOutcomeHistory.filter(h => h.signature === signature);
+				const comparisonNote = samePattern.length > 0
+					? `회귀 아님: 동일 결과 패턴 ${samePattern.length + 1}회 관측`
+					: undefined;
+				deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.success ? '성공' : '실패' });
 				const deployedFolderName = path.basename(projectDir).trim();
+				const remotePathInfo = result.selectedRemoteProjectPath
+					? ` / 경로: ${result.selectedRemoteProjectPath}`
+					: '';
 				controllerTree?.setExpectedProjectContext(result.projectName, deployedFolderName);
 				await controllerTree?.refreshAll();
+
 				if (skipStart) {
 					// Build Only 성공 후에도 1403 콘솔을 즉시 유지 연결한다.
-					// 디버그 Attach/F5 직전 콘솔 준비를 보장하여 "1403 미연결" 체감 이슈를 줄인다.
 					try {
 						deployRuntimeConsole = ensureRuntimeConsole();
 						await deployRuntimeConsole.waitUntilReady(800);
@@ -1006,29 +1124,36 @@ export function activate(context: vscode.ExtensionContext) {
 					} catch (err: any) {
 						logOutput(`[Console] build-only auto-start failed: ${err?.message ?? err}`);
 					}
-					vscode.window.showInformationMessage(`빌드 완료: ${result.projectName} (FTP/컨텍스트 갱신 완료, Start 미실행)`);
-				} else {
-					const firstError = result.errorLog.length > 0
-						? classifyDeployErrorLog(result.errorLog[0])
-						: undefined;
-					if (result.errorLog.length > 0) {
-						for (const entry of result.errorLog) {
-							const classified = classifyDeployErrorLog(entry);
-							if (classified.isControllerError) {
-								logOutput(`[Deploy][ErrorLog] ${classified.summary}`);
-								if (classified.detail) {
-									logOutput(`[Deploy][ErrorLog] ${classified.detail}`);
-								}
-							}
-						}
-					}
-					if (result.errorLog.length > 0) {
+					const { sysCount } = logErrorLogSections();
+					if (sysCount > 0) {
+						// Build Only이므로 START는 미실행. 제어기 시스템 에러는 배포와 무관하므로 경고만 표시.
 						outputChannel.show(true);
-						const warningText = firstError?.isControllerError
-							? `배포 완료. controller ErrorLog ${result.errorLog.length}건 감지: ${firstError.summary}`
-							: `배포 완료. ErrorLog ${result.errorLog.length}건 감지: ${firstError?.summary ?? ''}`;
+						await vscode.window.showWarningMessage(
+							`빌드 완료: ${result.projectName}. 제어기 시스템 경고 ${sysCount}건 (배포/GPL 오류 아님) → 출력 채널 확인`,
+							'출력 보기',
+						);
+					} else {
+						vscode.window.showInformationMessage(`빌드 완료: ${result.projectName}${remotePathInfo} (FTP/컨텍스트 갱신 완료, Start 미실행)`);
+					}
+					lastDeploySnapshot = makeDeploySnapshot(
+						true,
+						'SUCCESS',
+						sysCount > 0
+							? `빌드 성공 / 제어기 시스템 경고 ${sysCount}건${remotePathInfo}`
+							: `빌드 성공${remotePathInfo}`,
+						[],
+						controllerSystemCodes,
+						comparisonNote,
+					);
+				} else {
+					const { sysCount, deployErrCount } = logErrorLogSections();
+					if (sysCount > 0 || deployErrCount > 0) {
+						outputChannel.show(true);
+						const parts: string[] = [];
+						if (deployErrCount > 0) { parts.push(`배포 에러 ${deployErrCount}건`); }
+						if (sysCount > 0) { parts.push(`제어기 시스템 경고 ${sysCount}건 (배포 원인 아님)`); }
 						const action = await vscode.window.showWarningMessage(
-							warningText,
+							`배포 완료: ${result.projectName} — ${parts.join(' / ')}`,
 							'출력 보기',
 							'콘솔 보기',
 						);
@@ -1042,21 +1167,90 @@ export function activate(context: vscode.ExtensionContext) {
 							outputChannel.show(true);
 						}
 					} else {
-						vscode.window.showInformationMessage(`배포 완료: ${result.projectName}`);
+						vscode.window.showInformationMessage(`배포 완료: ${result.projectName}${remotePathInfo}`);
 						if (!deployRuntimeConsole && autoStartConsoleOnDeploy) {
 							deployRuntimeConsole = ensureRuntimeConsole();
 							await deployRuntimeConsole.waitUntilReady(800);
 						}
 						consoleChannel.show(true);
 					}
+					lastDeploySnapshot = makeDeploySnapshot(
+						true,
+						'SUCCESS',
+						sysCount > 0 || deployErrCount > 0
+							? `배포 성공 / 배포 에러 ${deployErrCount}건 / 시스템 경고 ${sysCount}건${remotePathInfo}`
+							: `배포 성공${remotePathInfo}`,
+						[],
+						controllerSystemCodes,
+						comparisonNote,
+					);
 				}
 			} else {
-				const errMsg = result.compileErrors.length > 0
-					? `${result.compileErrors.length}개 컴파일 에러`
-					: '알 수 없는 오류';
+				logErrorLogSections();
+				logCompileRawSection();
+				outputChannel.show(true);
+				const phaseLabel = result.failedPhase ? ` (${result.failedPhase} 단계)` : '';
+				const sysErrors = result.errorLog.filter(e => classifyErrorEntry(e).isControllerSystem);
+				const sysCodes = sysErrors
+					.map(e => classifyErrorEntry(e).parsedCode)
+					.filter((code): code is number => typeof code === 'number');
+				const signature = buildOutcomeSignature(result, sysCodes);
+				const samePattern = deployOutcomeHistory.filter(h => h.signature === signature);
+				const comparisonNote = samePattern.length > 0
+					? `회귀 아님: 동일 실패 패턴 ${samePattern.length + 1}회 관측`
+					: undefined;
+				deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.failedPhase ?? 'FAIL' });
+				const sysLabel = sysErrors.length > 0
+					? ` / 제어기 시스템 경고 ${sysErrors.length}건 (배포 원인 아님)`
+					: '';
+				const envBlocking = (result.failedPhase === 'COMPILE') && sysErrors.length > 0;
+				const unverifiableReason = envBlocking ? '제어기 환경 오류가 COMPILE 단계에 존재' : undefined;
+				const commandLabel = result.failedCommand ? ` / ${result.failedCommand}` : '';
+				const statusLabel = typeof result.failedStatusCode === 'number'
+					? ` / STATUS ${result.failedStatusCode}${result.failedStatusMessage ? ` (${result.failedStatusMessage})` : ''}`
+					: '';
+
+				let errMsg: string;
+				if (envBlocking) {
+					errMsg = `코드 수정 효과 검증 불가: COMPILE 환경 블로커 감지${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
+				} else if (result.compileErrors.length > 0) {
+					errMsg = `${result.compileErrors.length}개 컴파일 에러${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
+				} else if (sysErrors.length > 0 && result.errorLog.length === sysErrors.length) {
+					// 에러 로그 전체가 제어기 시스템 에러인 경우 — GPL 코드 원인 없음을 명시
+					const firstSys = classifyErrorEntry(sysErrors[0]);
+					errMsg = `${result.failedPhase ?? '단계 미상'} 단계 실패${commandLabel}${statusLabel} — GPL 코드 오류 없음, 제어기 시스템 경고 ${sysErrors.length}건: ${firstSys.summary}`;
+				} else {
+					errMsg = `알 수 없는 오류${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
+				}
+				if (comparisonNote) {
+					errMsg = `${errMsg} / ${comparisonNote}`;
+				}
+				if (result.selectedRemoteProjectPath) {
+					errMsg = `${errMsg} / 경로: ${result.selectedRemoteProjectPath}`;
+				}
+
 				vscode.window.showErrorMessage(`배포 실패: ${errMsg}`);
+				lastDeploySnapshot = makeDeploySnapshot(
+					false,
+					(result.failedPhase ?? 'COMPILE') as SituationDeploySnapshot['lastStage'],
+					errMsg,
+					result.compileErrors.map(e => e.code),
+					sysCodes,
+					comparisonNote,
+					unverifiableReason,
+					makeRawCompileSummary(result),
+				);
 			}
 		} catch (err: any) {
+			lastDeploySnapshot = {
+				mode: modeLabel,
+				success: false,
+				lastStage: 'COMPILE',
+				compileErrorCodes: [],
+				controllerSystemCodes: [],
+				updatedAt: Date.now(),
+				summary: `배포 예외: ${err?.message ?? err}`,
+			};
 			vscode.window.showErrorMessage(`배포 오류: ${err.message ?? err}`);
 			outputChannel.appendLine(`[Deploy] Error: ${err.stack ?? err}`);
 		}
@@ -1077,6 +1271,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const console = ensureRuntimeConsole();
 			await console.waitUntilReady();
 			const hasPayload = await console.waitForPayload(1500);
+			controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
 			consoleChannel.show(true);
 			if (hasPayload) {
 				vscode.window.showInformationMessage('GPL 런타임 콘솔 시작 (payload 수신 확인)');
@@ -1089,7 +1284,23 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.console.stop', () => {
 			runtimeConsole?.stop();
+			if (runtimeConsole) {
+				controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
+			}
 			vscode.window.showInformationMessage('GPL 런타임 콘솔 중지');
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.console.ensure', async () => {
+			const console = ensureRuntimeConsole();
+			await console.waitUntilReady(1200);
+			const hasPayload = await console.waitForPayload(1500);
+			controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
+			consoleChannel.show(true);
+			if (!hasPayload) {
+				vscode.window.showWarningMessage('1403 연결됨. payload는 아직 없어 (idle/불안정 가능).');
+			}
 		})
 	);
 
@@ -1142,17 +1353,44 @@ export function activate(context: vscode.ExtensionContext) {
 				'',
 			].join('\n');
 			const body = controllerTree.buildSituationSnapshotMarkdown({
-				runtimeConsoleConnected: runtimeConsole?.isConnected ?? false,
+				runtimeConsoleStatus: runtimeConsole?.getStatusSnapshot() ?? {
+					connected: false,
+					reason: '미연결',
+					noPayloadStreak: 0,
+					lastChangedAt: Date.now(),
+				},
+				deploySnapshot: lastDeploySnapshot,
 			});
 			const text = `${header}${body}`;
 
 			await vscode.env.clipboard.writeText(text);
-			const doc = await vscode.workspace.openTextDocument({
-				content: text,
-				language: 'markdown',
+			vscode.window.showInformationMessage('AI 공유용 상태 스냅샷을 클립보드에 복사했습니다.');
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.diagnosticSnapshot', async () => {
+			if (!controllerTree) { return; }
+			await controllerTree.refreshAll();
+			const markdown = controllerTree.buildDiagnosticSnapshotMarkdown({
+				runtimeConsoleStatus: runtimeConsole?.getStatusSnapshot() ?? {
+					connected: false,
+					reason: '미연결',
+					noPayloadStreak: 0,
+					lastChangedAt: Date.now(),
+				},
+				deploySnapshot: lastDeploySnapshot,
 			});
-			await vscode.window.showTextDocument(doc, { preview: false });
-			vscode.window.showInformationMessage('AI 공유용 상태 스냅샷을 복사했고, 문서도 열었습니다.');
+
+			await vscode.env.clipboard.writeText(markdown);
+			logOutput('');
+			logOutput('── [진단 스냅샷] ───────────────────────────────────────');
+			for (const line of markdown.split(/\r?\n/)) {
+				logOutput(line);
+			}
+			logOutput('─────────────────────────────────────────────────────────');
+			outputChannel.show(true);
+			vscode.window.showInformationMessage('진단 스냅샷을 클립보드에 복사했어.');
 		})
 	);
 
@@ -1247,14 +1485,23 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	// 명령 ID 별칭: gpl.stopAll -> gpl.controller.stopAll
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.stopAll', async () => {
+			await vscode.commands.executeCommand('gpl.controller.stopAll');
+		})
+	);
+
 	// 콘솔 토글 (시작/중지)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.consoleToggle', () => {
 			if (runtimeConsole?.isConnected) {
 				runtimeConsole.stop();
+				controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
 				vscode.window.showInformationMessage('런타임 콘솔 중지');
 			} else {
-				ensureRuntimeConsole();
+				const console = ensureRuntimeConsole();
+				controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
 				consoleChannel.show(true);
 				vscode.window.showInformationMessage('런타임 콘솔 시작');
 			}
@@ -1275,11 +1522,117 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// 에러 항목 복사
+	// inline view/item/context 명령은 VS Code가 TreeItem 자체를 arg[0]으로 주입하므로
+	// 문자열 직접 전달과 TreeItem 객체 전달 두 경우 모두 처리한다.
 	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.controller.copyError', async (text: string) => {
+		vscode.commands.registerCommand('gpl.controller.copyError', async (arg: unknown) => {
+			let text: string;
+			if (typeof arg === 'string') {
+				text = arg;
+			} else if (arg && typeof (arg as { label?: unknown }).label === 'string') {
+				text = (arg as { label: string }).label;
+			} else {
+				return;
+			}
 			if (!text) { return; }
 			await vscode.env.clipboard.writeText(text);
 			vscode.window.showInformationMessage('에러 텍스트가 클립보드에 복사되었습니다.');
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.showErrorDetail', async (arg: unknown) => {
+			const payload = (arg && typeof arg === 'object')
+				? (arg as { raw?: string; code?: number; category?: string })
+				: {};
+			const raw = (payload.raw || '').trim();
+			const parsed = raw ? parseControllerErrorEntry(raw) : null;
+			const code = typeof payload.code === 'number'
+				? payload.code
+				: (parsed?.code ?? extractErrorCodeFromEntry(raw));
+			const hint = typeof code === 'number' ? getErrorCodeHint(code) : undefined;
+
+			let errorThreadName = lastRuntimeErrorContext?.threadName || '';
+			let stackLines: string[] = lastRuntimeErrorContext?.stackFrames ? [...lastRuntimeErrorContext.stackFrames] : [];
+			if (!errorThreadName) {
+				try {
+					const showThreadResp = await sendCommand('Show Thread');
+					const threads = parseThreadList(showThreadResp);
+					const thread = threads.find(t => t.state === 'Error') || threads.find(t => t.state === 'Break' || t.state === 'Paused');
+					if (thread) {
+						errorThreadName = thread.name;
+					}
+				} catch {
+					// ignore detail fetch failures
+				}
+			}
+
+			if (errorThreadName && stackLines.length === 0) {
+				try {
+					const stackResp = await sendCommand(`Show Stack ${errorThreadName}`);
+					stackLines = parseStack(stackResp)
+						.slice(0, 8)
+						.map(f => `${f.process || '(unknown)'} @ ${f.file || '?'}:${f.fileLine || 0}`);
+				} catch {
+					// ignore stack read failures
+				}
+			}
+
+			const relatedFunctions = stackLines
+				.map(line => line.split('@')[0].trim())
+				.filter(Boolean)
+				.filter((v, idx, arr) => arr.indexOf(v) === idx)
+				.slice(0, 6);
+
+			const recentLines = recentDebugLogLines.slice(-10);
+
+			const lines: string[] = [];
+			lines.push('## 오류 상세');
+			lines.push(`- 원문: ${raw || '(없음)'}`);
+			lines.push(`- 코드: ${typeof code === 'number' ? code : '(미상)'}`);
+			lines.push(`- 분류: ${payload.category || hint?.category || '(미상)'}`);
+			lines.push(`- 에러 스레드: ${errorThreadName || '(미확인)'}`);
+			lines.push(`- 직전 실행 명령: ${lastRuntimeErrorContext?.lastCommand || '(미확인)'}`);
+			lines.push(`- 첫 에러 시각: ${parsed?.timestamp || lastRuntimeErrorContext?.firstSeenAt || '(미확인)'}`);
+			if (hint) {
+				lines.push(`- 해석: ${hint.title} — ${hint.meaning}`);
+				lines.push(`- 권장: ${hint.action}`);
+			}
+			if (code === -782) {
+				lines.push('- -782 후보: 초기화 안 된 필드, 생성자 누락, getter에서 Nothing 반환 경로 점검');
+			}
+
+			lines.push('');
+			lines.push('### 호출 경로/프레임');
+			if (stackLines.length === 0) {
+				lines.push('- (스택 정보 없음)');
+			} else {
+				for (const s of stackLines) { lines.push(`- ${s}`); }
+			}
+
+			lines.push('');
+			lines.push('### 관련 함수');
+			if (relatedFunctions.length === 0) {
+				lines.push('- (식별 실패)');
+			} else {
+				for (const fn of relatedFunctions) { lines.push(`- ${fn}`); }
+			}
+
+			lines.push('');
+			lines.push('### 직전 로그 (최근 10줄)');
+			if (recentLines.length === 0) {
+				lines.push('- (로그 없음)');
+			} else {
+				for (const l of recentLines) { lines.push(`- ${l}`); }
+			}
+
+			outputChannel.show(true);
+			logOutput('');
+			logOutput('── [오류 상세 보기] ────────────────────────────────────');
+			for (const line of lines) {
+				logOutput(line);
+			}
+			logOutput('─────────────────────────────────────────────────────────');
 		})
 	);
 
@@ -1672,8 +2025,18 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(stoppedLineDecoration);
 
+	const errorLineDecoration = vscode.window.createTextEditorDecorationType({
+		isWholeLine: true,
+		backgroundColor: 'rgba(255, 40, 40, 0.22)',
+		border: '1px solid rgba(255, 80, 80, 0.9)',
+		overviewRulerColor: new vscode.ThemeColor('editorOverviewRuler.errorForeground'),
+		overviewRulerLane: vscode.OverviewRulerLane.Right,
+	});
+	context.subscriptions.push(errorLineDecoration);
+
 	// Track the current decoration so we can clear it
 	let stoppedDecorationEditor: vscode.TextEditor | undefined;
+	let errorDecorationEditor: vscode.TextEditor | undefined;
 
 	/** Clear the stopped-line highlight */
 	function clearStoppedDecoration(): void {
@@ -1683,9 +2046,19 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
+	function clearErrorDecoration(): void {
+		if (errorDecorationEditor) {
+			errorDecorationEditor.setDecorations(errorLineDecoration, []);
+			errorDecorationEditor = undefined;
+		}
+	}
+
 	// Clear highlight when user starts editing or switches away
 	context.subscriptions.push(
-		vscode.workspace.onDidChangeTextDocument(() => clearStoppedDecoration()),
+		vscode.workspace.onDidChangeTextDocument(() => {
+			clearStoppedDecoration();
+			clearErrorDecoration();
+		}),
 	);
 
 	/**
@@ -1805,6 +2178,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.debug.onDidStartDebugSession(session => {
 			if (session.type === 'brooks-gpl') {
+				isDebugSessionActive = true;
+				updateUiContexts(controllerTree?.isConnected ?? statusBar?.isConnected ?? false);
 				const projectFromDebugConfig = (session.configuration?.projectName || '').toString().trim();
 				if (projectFromDebugConfig) {
 					controllerTree?.setExpectedProjectName(projectFromDebugConfig);
@@ -1823,8 +2198,78 @@ export function activate(context: vscode.ExtensionContext) {
 		}),
 		vscode.debug.onDidTerminateDebugSession(session => {
 			if (session.type === 'brooks-gpl') {
+				isDebugSessionActive = false;
+				updateUiContexts(controllerTree?.isConnected ?? statusBar?.isConnected ?? false);
 				controllerTree?.exitDebugMode();
+				lastRuntimeErrorContext = undefined;
+				controllerTree?.setRuntimeErrorContext(undefined);
 			}
+		}),
+		vscode.debug.onDidReceiveDebugSessionCustomEvent(async event => {
+			if (event.session.type !== 'brooks-gpl') { return; }
+			if (event.event !== 'gpl.errorLocation') { return; }
+
+			const body = (event.body ?? {}) as {
+				threadId?: number;
+				threadName?: string;
+				file?: string;
+				line?: number;
+				process?: string;
+				statusText?: string;
+				lastCommand?: string;
+				firstSeenAt?: string;
+				stackFrames?: string[];
+				relatedFunctions?: string[];
+			};
+
+			const threadName = body.threadName || 'unknown-thread';
+			const statusText = body.statusText || 'Error';
+			const line = typeof body.line === 'number' ? body.line : 0;
+			const file = (body.file || '').trim();
+			lastRuntimeErrorContext = {
+				threadName,
+				threadId: body.threadId,
+				lastCommand: body.lastCommand,
+				firstSeenAt: body.firstSeenAt,
+				statusText,
+				stackFrames: body.stackFrames,
+				relatedFunctions: body.relatedFunctions,
+			};
+			controllerTree?.setRuntimeErrorContext(lastRuntimeErrorContext);
+
+			let targetPath = '';
+			if (file) {
+				if (path.isAbsolute(file) && fs.existsSync(file)) {
+					targetPath = file;
+				} else {
+					targetPath = resolveGplFilePath(path.basename(file)) || '';
+				}
+			}
+
+			if (targetPath && line > 0) {
+				try {
+					const doc = await vscode.workspace.openTextDocument(targetPath);
+					const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+					const lineIndex = Math.max(0, line - 1);
+					const targetLine = doc.lineAt(Math.min(lineIndex, Math.max(0, doc.lineCount - 1))).range;
+					clearStoppedDecoration();
+					clearErrorDecoration();
+					editor.setDecorations(errorLineDecoration, [{ range: targetLine }]);
+					errorDecorationEditor = editor;
+					editor.selection = new vscode.Selection(targetLine.start, targetLine.start);
+					editor.revealRange(targetLine, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+
+					logOutput(`[Debug Error] ${threadName} @ ${path.basename(targetPath)}:${line} (${body.process || '-'}) - ${statusText}`);
+					outputChannel.show(true);
+					void vscode.window.showWarningMessage(`디버그 에러 위치: ${path.basename(targetPath)}:${line} (${threadName})`);
+					return;
+				} catch (err: any) {
+					logOutput(`[Debug Error] 위치 표시 실패: ${err?.message ?? err}`);
+				}
+			}
+
+			logOutput(`[Debug Error] ${threadName} - ${statusText} (소스 위치 해석 실패)`);
+			outputChannel.show(true);
 		}),
 	);
 

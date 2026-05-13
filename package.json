@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.5.71",
+    "version": "0.5.82",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -38,6 +38,7 @@
         "onCommand:gpl.showXmlBestPractices",
         "onCommand:gpl.analyzeXmlEncoding",
         "onCommand:gpl.controller.connect",
+        "onCommand:gpl.stopAll",
         "onCommand:gpl.controller.disconnect",
         "onCommand:gpl.deploy",
         "onCommand:gpl.deployRun",
@@ -45,9 +46,11 @@
         "onCommand:gpl.debug.attachNow",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
+        "onCommand:gpl.console.ensure",
         "onCommand:gpl.logs.liveTerminal.start",
         "onCommand:gpl.logs.liveTerminal.stop",
         "onCommand:gpl.threads.refresh",
+        "onCommand:gpl.diagnosticSnapshot",
         "onDebugResolve:brooks-gpl"
     ],
     "contributes": {
@@ -213,8 +216,13 @@
             },
             {
                 "command": "gpl.console.stop",
-                "title": "GPL: Stop Runtime Console",
+                "title": "GPL: Stop Runtime Console (콘솔 중지)",
                 "icon": "$(stop)"
+            },
+            {
+                "command": "gpl.console.ensure",
+                "title": "GPL: Ensure Runtime Console (1403)",
+                "icon": "$(refresh)"
             },
             {
                 "command": "gpl.logs.liveTerminal.start",
@@ -223,7 +231,7 @@
             },
             {
                 "command": "gpl.logs.liveTerminal.stop",
-                "title": "GPL: Stop Live Log Terminal",
+                "title": "GPL: Stop Live Log Terminal (라이브 로그 중지)",
                 "icon": "$(debug-stop)"
             },
             {
@@ -257,13 +265,18 @@
                 "icon": "$(copy)"
             },
             {
+                "command": "gpl.diagnosticSnapshot",
+                "title": "GPL: Diagnostic Snapshot",
+                "icon": "$(notebook-render-output)"
+            },
+            {
                 "command": "gpl.controller.threadStart",
                 "title": "쓰레드 시작",
                 "icon": "$(play)"
             },
             {
                 "command": "gpl.controller.threadStop",
-                "title": "쓰레드 정지",
+                "title": "쓰레드 정지 (Stop Thread)",
                 "icon": "$(debug-stop)"
             },
             {
@@ -293,7 +306,7 @@
             },
             {
                 "command": "gpl.controller.ftpStop",
-                "title": "중지",
+                "title": "중지 (Stop)",
                 "icon": "$(debug-stop)"
             },
             {
@@ -308,7 +321,7 @@
             },
             {
                 "command": "gpl.controller.stopAll",
-                "title": "GPL: 전체 정지",
+                "title": "GPL: 모든 쓰레드 중지 (Stop -all)",
                 "icon": "$(debug-stop)"
             },
             {
@@ -353,54 +366,39 @@
         "menus": {
             "view/title": [
                 {
-                    "command": "gpl.controller.stopAll",
-                    "when": "view == gplThreads",
+                    "command": "gpl.controller.connect",
+                    "when": "view == gplThreads && !gpl.ui.connected",
                     "group": "navigation@1"
                 },
                 {
-                    "command": "gpl.deploy",
-                    "when": "view == gplThreads",
-                    "group": "navigation@2"
-                },
-                {
-                    "command": "gpl.deployRun",
-                    "when": "view == gplThreads",
-                    "group": "navigation@3"
-                },
-                {
-                    "command": "gpl.controller.consoleToggle",
-                    "when": "view == gplThreads",
-                    "group": "navigation@4"
-                },
-                {
-                    "command": "gpl.logs.liveTerminal.start",
-                    "when": "view == gplThreads",
-                    "group": "navigation@5"
-                },
-                {
-                    "command": "gpl.controller.showTraffic",
-                    "when": "view == gplThreads",
-                    "group": "navigation@6"
+                    "command": "gpl.controller.disconnect",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@1"
                 },
                 {
                     "command": "gpl.threads.refresh",
                     "when": "view == gplThreads",
-                    "group": "navigation@7"
+                    "group": "navigation@2"
                 },
                 {
-                    "command": "gpl.controller.copySituationForChat",
-                    "when": "view == gplThreads",
-                    "group": "navigation@8"
+                    "command": "gpl.controller.stopAll",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@3"
                 },
                 {
-                    "command": "gpl.debug.generateLaunch",
-                    "when": "view == gplThreads",
-                    "group": "navigation@9"
+                    "command": "gpl.deploy",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@4"
                 },
                 {
-                    "command": "gpl.debug.attachNow",
-                    "when": "view == gplThreads",
-                    "group": "navigation@10"
+                    "command": "gpl.deployRun",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@5"
+                },
+                {
+                    "command": "gpl.diagnosticSnapshot",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@6"
                 }
             ],
             "view/item/context": [
@@ -478,6 +476,26 @@
                     "command": "gpl.threads.refresh",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.stopAll",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.deploy",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "threadSection@1"
+                },
+                {
+                    "command": "gpl.deployRun",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "threadSection@2"
+                },
+                {
+                    "command": "gpl.diagnosticSnapshot",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "threadSection@3"
                 },
                 {
                     "command": "gpl.controller.refreshFtp",
@@ -580,7 +598,7 @@
                 "gpl.runtimeConsole.autoStartOnDeploy": {
                     "scope": "window",
                     "type": "boolean",
-                    "default": false,
+                    "default": true,
                     "description": "Auto-start runtime console (port 1403) after successful deploy/deployRun."
                 },
                 "gpl.runtimeConsole.autoStartOnDebug": {

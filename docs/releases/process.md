@@ -67,7 +67,7 @@
   git commit -m "chore: bump version to 0.2.13"
   ```
 
-### 3. 로컬 VSIX 빌드 및 검증 (선택사항)
+### 3. 로컬 VSIX 빌드 및 검증 (필수)
 
 - [ ] VSIX 패키징
 
@@ -81,9 +81,9 @@
   dir dist\
   ```
 
-- [ ] 로컬 설치 테스트
+- [ ] 결과 공유 시 VSIX 파일 경로만 안내
+- [ ] 로컬 설치 테스트가 필요하면 사용자 수동 설치로만 진행
   - VS Code Extensions 뷰 → `...` → Install from VSIX
-  - 설치 후 기능 재검증
 
 ### 4. GitHub에 푸시
 

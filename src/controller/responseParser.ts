@@ -212,7 +212,211 @@ export function parseErrorLog(text: string): string[] {
     return clean.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
 }
 
-// ─── Project.gpr ─────────────────────────────────────────
+// ─── Error Log Classification ──────────────────────────────
+
+export interface ControllerErrorEntry {
+    timestamp: string;
+    source: string;
+    code: number;
+    message: string;
+}
+
+/**
+ * ErrorLog 한 줄을 구조 파싱한다.
+ * 형식: `MM-DD-YYYY HH:MM:SS.mmm, Source, code, "message"`
+ */
+export function parseControllerErrorEntry(entry: string): ControllerErrorEntry | null {
+    const m = entry.match(/^(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d{3}),\s*([^,]+),\s*(-?\d+),\s*"?([^"]*)"?$/);
+    if (!m) { return null; }
+    return {
+        timestamp: m[1],
+        source: m[2].trim(),
+        code: Number(m[3]),
+        message: m[4].trim(),
+    };
+}
+
+/**
+ * 알려진 제어기 시스템 에러 코드.
+ * 이 코드들은 GPL 코드 동작과 무관하며 /flash/config 또는 하드웨어 환경 문제다.
+ * 출처: Brooks Automation GDE ErrorCode 문서.
+ */
+const CONTROLLER_SYSTEM_ERROR_CODES: Record<number, string> = {
+    [-1521]: 'controller /flash/config *.pac 파일 형식/로드 문제',
+    [-1520]: 'controller /flash/config parameter DB 파일 누락 또는 열기 실패',
+    [-1519]: 'parameter DB 초기화 실패',
+    [-1518]: 'parameter DB 버전 불일치',
+};
+
+const CONTROLLER_NON_BLOCKING_STATUS_CODES = new Set<number>([-1521, -1520, -1519, -1518]);
+
+export type ErrorCodeCategory = 'environment' | 'code' | 'unknown';
+
+export interface ErrorCodeHint {
+    code: number;
+    title: string;
+    meaning: string;
+    action: string;
+    category: ErrorCodeCategory;
+}
+
+const ERROR_CODE_HINTS: Record<number, Omit<ErrorCodeHint, 'code'>> = {
+    [-1521]: {
+        title: 'Controller 환경 이슈',
+        meaning: 'Invalid parameter DB file not loaded (/flash/config *.pac 로드/형식 문제)',
+        action: 'GPL 코드 수정보다 제어기 환경(파라미터 DB/펌웨어/파일) 진단을 먼저 수행',
+        category: 'environment',
+    },
+    [-1520]: {
+        title: 'Controller 환경 이슈',
+        meaning: 'Parameter DB 파일 누락 또는 열기 실패',
+        action: '/flash/config DB 파일 존재·권한·무결성 확인 후 재시도',
+        category: 'environment',
+    },
+    [-1519]: {
+        title: 'Controller 환경 이슈',
+        meaning: 'Parameter DB 초기화 실패',
+        action: '제어기 초기화 상태/버전 정합성/스토리지 상태를 점검',
+        category: 'environment',
+    },
+    [-1518]: {
+        title: 'Controller 환경 이슈',
+        meaning: 'Parameter DB 버전 불일치',
+        action: '컨트롤러/DB 버전 매칭 및 배포 환경 정합성 확인',
+        category: 'environment',
+    },
+    [-782]: {
+        title: 'Object value is Nothing',
+        meaning: '객체/참조값 초기화 누락 가능성이 큼',
+        action: '사용 전 객체 생성/할당 여부, null 경로, 조건 분기 초기화 점검',
+        category: 'code',
+    },
+    [-508]: {
+        title: 'File not found',
+        meaning: '파일/프로젝트 경로를 찾지 못함',
+        action: '경로, FTP 디렉터리 존재, 파일명 대소문자/오탈자, 권한을 확인',
+        category: 'code',
+    },
+    [-2]: {
+        title: 'Command/Runtime failure',
+        meaning: '선행 실패의 연쇄로 발생할 수 있는 일반 실패 코드',
+        action: '직전 에러(예: -782, -508)부터 역추적해 원인 제거',
+        category: 'code',
+    },
+};
+
+const KNOWN_ERROR_CHAINS: number[][] = [
+    [-782, -508, -2],
+    [-782, -2],
+    [-508, -2],
+];
+
+export function isControllerNonBlockingStatus(code: number): boolean {
+    return CONTROLLER_NON_BLOCKING_STATUS_CODES.has(code);
+}
+
+export function getErrorCodeHint(code: number): ErrorCodeHint | undefined {
+    const hint = ERROR_CODE_HINTS[code];
+    if (!hint) { return undefined; }
+    return { code, ...hint };
+}
+
+export function extractErrorCodeFromEntry(entry: string): number | undefined {
+    const parsed = parseControllerErrorEntry(entry);
+    if (parsed) {
+        return parsed.code;
+    }
+
+    const statusMatch = entry.match(/STATUS\s*(-?\d+)/i);
+    if (statusMatch) {
+        return Number(statusMatch[1]);
+    }
+
+    const parenMatch = entry.match(/\((-?\d+)\)/);
+    if (parenMatch) {
+        return Number(parenMatch[1]);
+    }
+
+    const rawCode = entry.match(/(^|[^\d-])(-\d{1,5})(?=[^\d]|$)/);
+    if (rawCode) {
+        return Number(rawCode[2]);
+    }
+
+    return undefined;
+}
+
+export function findKnownErrorChains(codes: number[]): string[] {
+    if (codes.length < 2) { return []; }
+
+    const found: string[] = [];
+    for (const chain of KNOWN_ERROR_CHAINS) {
+        let idx = 0;
+        for (const code of codes) {
+            if (code === chain[idx]) {
+                idx++;
+                if (idx === chain.length) {
+                    found.push(chain.join(' → '));
+                    break;
+                }
+            }
+        }
+    }
+    return found;
+}
+
+export interface ErrorEntryClassification {
+    /** true = 제어기 환경·시스템 문제 (GPL 코드와 무관) */
+    isControllerSystem: boolean;
+    summary: string;
+    detail?: string;
+    parsedCode?: number;
+}
+
+/**
+ * ErrorLog 항목을 제어기 시스템 에러 / 기타로 분류한다.
+ *
+ * - 알려진 시스템 코드(-1521 등): isControllerSystem = true, detail 포함
+ * - timestamp+source+code 형식 전반: isControllerSystem = true (제어기 누적 로그)
+ * - 구조 없는 raw 텍스트: isControllerSystem = false (코드 관련 가능성)
+ */
+export function classifyErrorEntry(entry: string): ErrorEntryClassification {
+    const parsed = parseControllerErrorEntry(entry);
+    if (!parsed) {
+        const normalized = entry.replace(/\s+/g, ' ').trim();
+        return {
+            isControllerSystem: false,
+            summary: normalized.length > 140 ? `${normalized.slice(0, 137)}...` : normalized,
+        };
+    }
+
+    const knownDetail = CONTROLLER_SYSTEM_ERROR_CODES[parsed.code];
+    if (knownDetail) {
+        return {
+            isControllerSystem: true,
+            summary: `${parsed.source} (${parsed.code}): ${parsed.message}`,
+            detail: `${knownDetail} — GPL 코드 오류로 분류하지 않음`,
+            parsedCode: parsed.code,
+        };
+    }
+
+    const hint = getErrorCodeHint(parsed.code);
+    if (hint && hint.category === 'code') {
+        return {
+            isControllerSystem: false,
+            summary: `${parsed.source} (${parsed.code}): ${parsed.message}`,
+            detail: `${hint.title} — ${hint.meaning}. 권장: ${hint.action}`,
+            parsedCode: parsed.code,
+        };
+    }
+
+    return {
+        isControllerSystem: true,
+        summary: `${parsed.source} (${parsed.code}): ${parsed.message}`,
+        detail: '제어기 ErrorLog 항목. 현재 실행 결과와 과거 누적 항목을 분리 확인 필요.',
+        parsedCode: parsed.code,
+    };
+}
+
 
 export interface GprInfo {
     projectName: string;

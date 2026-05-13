@@ -20,6 +20,18 @@ git push origin v0.2.13
 
 ✅ 완료! GitHub Actions가 자동으로 빌드, 패키징, 릴리즈 노트 생성, Release 생성을 처리합니다.
 
+## 🧪 로컬 코드 수정 후 필수 마무리
+
+코드 수정/기능 개선 작업은 릴리즈 여부와 무관하게 아래 2단계를 **항상 실행**합니다.
+
+```powershell
+npm run compile
+npm run package
+```
+
+- 결과 공유는 `dist/*.vsix` **파일 경로만 안내**합니다.
+- VSIX 설치는 사용자 수동 설치 원칙을 유지합니다.
+
 ## 📦 버전 범프 명령
 
 ```powershell

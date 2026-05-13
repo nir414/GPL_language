@@ -1,6 +1,6 @@
 # GPL Language Support
 
-현재 버전: **v0.5.71**
+현재 버전: **v0.5.82**
 GPL (Guidance Programming Language) 지원 VS Code 확장.
 IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·배포·디버깅**까지 통합 제공합니다.
 
@@ -114,6 +114,7 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
 - `projectDir`를 지정하면 다중 프로젝트 워크스페이스에서 배포 대상을 고정할 수 있습니다.
 - `stopAllBeforeAttach: true`를 사용하면 attach 직전에 `Stop -all`을 실행해 다른 프로젝트 쓰레드 간섭을 줄입니다.
 - `clearProjectBreakpointsOnAttach: true`를 사용하면 attach 직전에 대상 프로젝트의 기존 제어기 브레이크포인트를 정리합니다.
+- 런타임 Error 상태 전환 시 에러 위치 이벤트를 받아 **해당 파일/라인을 자동으로 열고 중앙으로 이동**하며, Output 채널에 같은 정보를 남깁니다.
 
 | 기능 | 지원 |
 |---|---|
@@ -148,10 +149,11 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
 | `GPL: Start Runtime Console` | 런타임 콘솔 시작 |
 | `GPL: Stop Runtime Console` | 런타임 콘솔 중지 |
 | `GPL: 전체 정지` | 모든 쓰레드 정지 |
+| `gpl.stopAll` (별칭 ID) | `gpl.controller.stopAll`과 동일 동작 (자동화/에이전트 호출 호환) |
 | `GPL: Send Command to Controller` | 명령어 직접 전송 |
 | `GPL: Show Traffic Monitor` | TCP 트래픽 모니터 |
 | `GPL: Refresh All` | 쓰레드·FTP·시스템 정보 전체 새로고침 |
-| `GPL: Copy Situation for Chat` | 현재 상태를 Markdown으로 복사하고 문서로 열기 (AI 공유용) |
+| `GPL: Copy Situation for Chat` | 현재 상태를 Markdown으로 클립보드에 복사 (AI 공유용, 최근 배포 결과/실패 단계/에러 코드 포함) |
 | `GPL: Start Live Log Terminal` | 실시간 로그 터미널 시작 + 1403 런타임 콘솔 연결 시도 |
 | `GPL: Stop Live Log Terminal` | 실시간 로그 터미널 중지 + 1403 런타임 콘솔 정리 |
 
@@ -179,7 +181,7 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
 | `gpl.controller.ftpFlashProjectsPath` | `/flash/projects` | Flash 프로젝트 FTP 경로 |
 | `gpl.controller.threadPollIntervalMs` | `5000` | 쓰레드 폴링 간격 (ms) |
 | `gpl.trace.liveTerminal.autoStart` | `false` | 확장 활성화 시 실시간 로그 터미널 자동 시작 |
-| `gpl.runtimeConsole.autoStartOnDeploy` | `false` | 배포 성공 시 1403 런타임 콘솔 자동 시작 |
+| `gpl.runtimeConsole.autoStartOnDeploy` | `true` | 배포 성공 시 1403 런타임 콘솔 자동 시작 |
 | `gpl.runtimeConsole.autoStartOnDebug` | `true` | `brooks-gpl` 디버그 세션 시작 시 1403 런타임 콘솔 자동 시작 |
 | `gpl.runtimeConsole.noPayloadWarnThreshold` | `3` | no-payload 연속 횟수 경고 임계치 |
 | `gpl.runtimeConsole.unstableWarnCooldownMs` | `60000` | no-payload 경고 재출력 쿨다운(ms) |
@@ -330,6 +332,22 @@ npm run dev:watch     # watch alias (디버그 시작 전에 실행)
 2. **Output 패널** → **"GPL Language Support"** 채널에서 로그 확인
 3. **Debug Console**에서 변수 조회 및 스택 추적 가능
 
+#### Attach 전 배포 실패 시 로그 확인 포인트 (v0.5.73+)
+
+`deployBeforeAttach: true`에서 실패하면 Debug Console에 아래 정보가 자동 출력됩니다.
+
+- 실패 단계: `STOP / UPLOAD / COMPILE / START`
+- 실패 명령: 예) `Compile GPL_Code`, `Load /GPL/GPL_Code`
+- STATUS 코드/메시지: 예) `STATUS -508`, `STATUS -745`
+- 후보 프로젝트명 시도 순서: `projectName -> Project.gpr -> folderName`
+- raw trace 자동 덤프: 명령/응답 요약 포함
+
+실제 확인 순서:
+
+1. **Debug Console**에서 `[GPL Debug] [deploy] 실패 단계` 라인 확인
+2. 같은 블록의 `[deploy] --- raw trace begin ---` ~ `end` 확인
+3. 필요 시 **Output 패널 → `GPL Deploy (Debug)`** 채널에서 동일 trace 확인
+
 #### 로그 출력 상세 모드
 
 ```json
@@ -349,7 +367,43 @@ npm run dev:watch     # watch alias (디버그 시작 전에 실행)
 
 ### 주요 변경 이력
 
-#### v0.5.71 (현재)
+#### v0.5.77 (현재)
+
+- **Copy Situation 강화(P1)**: 스냅샷에 최근 배포 결과(성공/실패, 마지막 단계, 컴파일 코드, 제어기 시스템 코드) 섹션 추가
+- **1403 상태 가시화(P1)**: 연결 섹션에 콘솔 상태/원인(연결 거부·빈 세션·즉시 EOF·소켓 에러) 표시 및 `1403 재시도 연결` 액션 추가
+- **명령 ID 호환(P2)**: `gpl.stopAll` 별칭 등록 (`gpl.controller.stopAll`과 동일)
+- **워크플로 기본값 조정(P3)**: `gpl.runtimeConsole.autoStartOnDeploy` 기본값을 `true`로 변경
+
+#### v0.5.76
+
+- **에러 분류 분리**: 제어기 시스템 에러(-1521 PDB 등)와 GPL 코드 에러를 트리뷰·출력 채널·알림 모두에서 별도 표시
+- **배포 실패 안내 개선**: 실패 단계(STOP/UPLOAD/COMPILE/START) 표시 및 시스템 에러를 실패 원인에서 분리
+- **에러 복사 버그 수정**: 트리 인라인 버튼 클릭 시 인자 변환 실패 문제 해결
+
+#### v0.5.75
+
+- **상황 복사 UX 정리**: `GPL: Copy Situation for Chat`가 클립보드 복사만 수행하고 Markdown 문서를 자동으로 열지 않음
+- **존재감 최소화**: 상태 공유용 명령 실행 후 에디터 포커스를 빼앗지 않도록 조정
+
+#### v0.5.74
+
+- **상호작용 일관성 개선**: UI 전역 컨텍스트(`gpl.ui.connected`, `gpl.ui.debugging`)를 도입해 연결/디버그 상태를 공통으로 사용
+- **상단 버튼 상태 연동**: 연결 전에는 Connect만 노출, 연결 후에는 실행 액션 노출로 오동작 유도 감소
+- **디버그 중 배포 버튼 보호**: 디버그 세션 활성 시 Deploy/Deploy & Run 타이틀 버튼 자동 숨김
+
+#### v0.5.73
+
+- **Attach 전 배포 실패 가시화 강화**: 실패 단계(STOP/UPLOAD/COMPILE/START), 실패 명령, STATUS 코드/메시지 출력
+- **원문 응답 trace 자동 첨부**: attach 실패 시 Debug Console에 배포 raw trace 자동 덤프
+- **대체 이름 시도 결과 출력**: projectName / Project.gpr / 폴더명 후보 시도 순서 로깅
+
+#### v0.5.72
+
+- **상단 버튼 UI 단순화**: `GPL Controller > Status` 타이틀 액션을 10개에서 5개로 축소
+  - 유지: 전체 정지, Deploy, Deploy & Run, Refresh All, Quick Debug Attach
+  - 이동: 콘솔 토글, 라이브 로그 시작, 트래픽 모니터, 상황 복사, launch 생성/업데이트
+
+#### v0.5.71
 
 - **TCP 응답 누적 수신**: 최소 바이트 + idle timeout으로 부분 수신 완성 판단 → "무응답" 오해 해결 (P0)
 - **명령 포맷 힌트**: [PLAIN]/[XML] 라벨 자동 표시 → 명령 형식 혼동 디버깅 용이 (P1)

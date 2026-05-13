@@ -8,8 +8,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { sendCommand, trySendCommand, getControllerConfig, ControllerConfig } from './controllerConnection';
-import { uploadProject } from './ftpClient';
-import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, CompileError } from './responseParser';
+import { uploadProject, listRemoteDir } from './ftpClient';
+import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus } from './responseParser';
 
 export interface DeployOptions {
     projectDir: string;
@@ -17,12 +17,29 @@ export interface DeployOptions {
     skipStart?: boolean;
 }
 
+export interface CompileAttemptLog {
+    command: string;
+    statusCode: number;
+    raw: string;
+    errors: CompileError[];
+}
+
 export interface DeployResult {
     success: boolean;
     projectName: string;
     compileErrors: CompileError[];
+    compileAttemptLogs: CompileAttemptLog[];
     errorLog: string[];
+    selectedRemoteBasePath?: string;
+    selectedRemoteProjectPath?: string;
+    candidateRemoteProjectPaths?: string[];
     uploadStats?: { uploaded: number; skipped: number; totalBytes: number };
+    failedPhase?: 'STOP' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK';
+    failedCommand?: string;
+    failedStatusCode?: number;
+    failedStatusMessage?: string;
+    attemptedProjectNames?: string[];
+    trace: string[];
 }
 
 /**
@@ -41,8 +58,62 @@ export async function deploy(
         success: false,
         projectName: '',
         compileErrors: [],
+        compileAttemptLogs: [],
         errorLog: [],
+        trace: [],
     };
+
+    const pushTrace = (line: string) => {
+        result.trace.push(line);
+        output.appendLine(line);
+    };
+
+    const rawPreview = (raw: string): string => {
+        const compact = raw.replace(/\r/g, '').replace(/\n+/g, ' | ').trim();
+        return compact.length > 260 ? `${compact.slice(0, 260)}…` : compact;
+    };
+
+    async function chooseRemoteProjectPath(projectFolderName: string): Promise<{
+        basePath: string;
+        projectPath: string;
+        candidates: string[];
+    }> {
+        const uniqueBasePaths = [...new Set([
+            cfg.ftpFlashProjectsPath,
+            cfg.ftpBasePath,
+        ].map(p => (p || '').trim()).filter(Boolean))];
+
+        const scored: Array<{ basePath: string; projectPath: string; exists: boolean; rank: number }> = [];
+        for (const basePath of uniqueBasePaths) {
+            const projectPath = `${basePath}/${projectFolderName}`;
+            let exists = false;
+            try {
+                const entries = await listRemoteDir(cfg.ip, basePath);
+                exists = entries.some(e => e.isDirectory && e.name.toLowerCase() === projectFolderName.toLowerCase());
+            } catch {
+                // ignore: probe failure means existence unknown
+            }
+
+            const rank = exists
+                ? (basePath === cfg.ftpFlashProjectsPath ? 300 : 200)
+                : (basePath === cfg.ftpFlashProjectsPath ? 120 : 100);
+            scored.push({ basePath, projectPath, exists, rank });
+        }
+
+        scored.sort((a, b) => b.rank - a.rank);
+        const chosen = scored[0] ?? {
+            basePath: cfg.ftpBasePath,
+            projectPath: `${cfg.ftpBasePath}/${projectFolderName}`,
+            exists: false,
+            rank: 0,
+        };
+
+        return {
+            basePath: chosen.basePath,
+            projectPath: chosen.projectPath,
+            candidates: scored.map(s => s.projectPath),
+        };
+    }
 
     output.show(true);
     diagnosticCollection.clear();
@@ -51,7 +122,10 @@ export async function deploy(
 
     const gprFiles = fs.readdirSync(options.projectDir).filter(f => f.toLowerCase().endsWith('.gpr'));
     if (gprFiles.length === 0) {
-        output.appendLine('✘ No .gpr file found in project directory');
+        pushTrace('✘ No .gpr file found in project directory');
+        result.failedPhase = 'UPLOAD';
+        result.failedCommand = 'Read .gpr';
+        result.failedStatusMessage = 'No .gpr file found in project directory';
         return result;
     }
 
@@ -61,40 +135,74 @@ export async function deploy(
     const projectName = gprInfo.projectName || folderName;
     result.projectName = projectName;
 
-    const ftpProjectDir = `${cfg.ftpBasePath}/${folderName}`;
+    const remotePath = await chooseRemoteProjectPath(folderName);
+    const ftpProjectDir = remotePath.projectPath;
     const loadPath = ftpProjectDir;
+    result.selectedRemoteBasePath = remotePath.basePath;
+    result.selectedRemoteProjectPath = remotePath.projectPath;
+    result.candidateRemoteProjectPaths = remotePath.candidates;
     const totalPhases = options.skipStart ? 4 : 5;
     let phase = 0;
 
-    output.appendLine(`╭──────────────────────────────────────────────────────╮`);
-    output.appendLine(`│  ◆ ${projectName}${options.skipStart ? ' (Build Only)' : ''}`);
-    output.appendLine(`├──────────────────────────────────────────────────────┤`);
-    output.appendLine(`│  Local:  ${options.projectDir}`);
-    output.appendLine(`│  FTP:    ${ftpProjectDir}`);
-    output.appendLine(`│  Target: ${cfg.ip}:${cfg.port}`);
-    output.appendLine(`╰──────────────────────────────────────────────────────╯`);
+    pushTrace(`╭──────────────────────────────────────────────────────╮`);
+    pushTrace(`│  ◆ ${projectName}${options.skipStart ? ' (Build Only)' : ''}`);
+    pushTrace(`├──────────────────────────────────────────────────────┤`);
+    pushTrace(`│  Local:  ${options.projectDir}`);
+    pushTrace(`│  FTP:    ${ftpProjectDir}`);
+    pushTrace(`│  Selected base path: ${remotePath.basePath}`);
+    pushTrace(`│  Path candidates: ${remotePath.candidates.join(' | ')}`);
+    pushTrace(`│  Target: ${cfg.ip}:${cfg.port}`);
+    pushTrace(`╰──────────────────────────────────────────────────────╯`);
 
     // ── Phase 1: STOP ─────────────────────────────
 
-    output.appendLine('');
+    pushTrace('');
     phase++;
-    output.appendLine(`━━ [${phase}/${totalPhases}] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    output.appendLine('│ Stop -all');
+    pushTrace(`━━ [${phase}/${totalPhases}] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    pushTrace('│ CMD Stop -all');
 
     if (token?.isCancellationRequested) { return result; }
 
     const stopResp = await trySendCommand('Stop -all', cfg);
     if (stopResp === null) {
-        output.appendLine('│ ⚠ Stop -all failed or timed out. Retrying...');
-        await trySendCommand('Stop -all', cfg);
+        pushTrace('│ ⚠ Stop -all failed or timed out. Retrying...');
+        const stopRespRetry = await trySendCommand('Stop -all', cfg);
+        if (stopRespRetry === null) {
+            pushTrace('│ ✘ Stop -all failed after retry');
+            result.failedPhase = 'STOP';
+            result.failedCommand = 'Stop -all';
+            result.failedStatusMessage = 'No response (timeout or connection failure)';
+            return result;
+        }
+        const stopStatusRetry = parseStatus(stopRespRetry);
+        pushTrace(`│ RAW ${rawPreview(stopRespRetry) || '(empty)'}`);
+        if (stopStatusRetry.code !== 0) {
+            pushTrace(`│ ✘ Stop -all failed: STATUS ${stopStatusRetry.code}: ${stopStatusRetry.message}`);
+            result.failedPhase = 'STOP';
+            result.failedCommand = 'Stop -all';
+            result.failedStatusCode = stopStatusRetry.code;
+            result.failedStatusMessage = stopStatusRetry.message;
+            return result;
+        }
+    } else {
+        const stopStatus = parseStatus(stopResp);
+        pushTrace(`│ RAW ${rawPreview(stopResp) || '(empty)'}`);
+        if (stopStatus.code !== 0) {
+            pushTrace(`│ ✘ Stop -all failed: STATUS ${stopStatus.code}: ${stopStatus.message}`);
+            result.failedPhase = 'STOP';
+            result.failedCommand = 'Stop -all';
+            result.failedStatusCode = stopStatus.code;
+            result.failedStatusMessage = stopStatus.message;
+            return result;
+        }
     }
-    output.appendLine('│ ✔ Stop complete');
+    pushTrace('│ ✔ Stop complete');
 
     // ── Phase 2: UPLOAD ───────────────────────────
 
-    output.appendLine('');
+    pushTrace('');
     phase++;
-    output.appendLine(`━━ [${phase}/${totalPhases}] UPLOAD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    pushTrace(`━━ [${phase}/${totalPhases}] UPLOAD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
     if (token?.isCancellationRequested) { return result; }
 
@@ -103,27 +211,33 @@ export async function deploy(
             skipUnchanged: options.skipUnchanged,
             onProgress: (current, total, file) => {
                 const pct = Math.floor((current / total) * 100);
-                output.appendLine(`│ [${current}/${total}] (${pct}%) ${file}`);
+                pushTrace(`│ [${current}/${total}] (${pct}%) ${file}`);
             },
         });
         result.uploadStats = stats;
-        output.appendLine(`│ ✔ Upload done: ${stats.uploaded} sent, ${stats.skipped} skipped`);
-        output.appendLine(`│   Compile below validates the uploaded controller copy at ${ftpProjectDir}`);
+        pushTrace(`│ ✔ Upload done: ${stats.uploaded} sent, ${stats.skipped} skipped`);
+        pushTrace(`│   Compile below validates the uploaded controller copy at ${ftpProjectDir}`);
     } catch (e: any) {
-        output.appendLine(`│ ✘ Upload failed: ${e.message}`);
+        pushTrace(`│ ✘ Upload failed: ${e.message}`);
+        result.failedPhase = 'UPLOAD';
+        result.failedCommand = `Upload ${ftpProjectDir}`;
+        result.failedStatusMessage = e?.message || 'Upload failed';
         return result;
     }
 
     // ── Phase 3: COMPILE ──────────────────────────
 
-    output.appendLine('');
+    pushTrace('');
     phase++;
-    output.appendLine(`━━ [${phase}/${totalPhases}] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    pushTrace(`━━ [${phase}/${totalPhases}] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
     if (token?.isCancellationRequested) { return result; }
 
     const compileCandidates = [...new Set([projectName, gprInfo.projectName, folderName].filter(Boolean))];
+    result.attemptedProjectNames = compileCandidates;
+    pushTrace(`│ Candidates: ${compileCandidates.join(' -> ')}`);
     let compiled = false;
+    let lastCompileFailure: { command: string; code: number; message: string; raw: string } | undefined;
 
     /** Compile 명령 실행 후 응답의 STATUS와 에러를 검사하는 헬퍼. */
     async function tryCompile(candidate: string): Promise<{ ok: boolean; statusCode: number; errors: CompileError[]; raw: string }> {
@@ -131,6 +245,9 @@ export async function deploy(
             const resp = await sendCommand(`Compile ${candidate}`, cfg);
             const status = parseStatus(resp);
             const errors = parseCompileErrors(resp);
+            if (isControllerNonBlockingStatus(status.code) && errors.length === 0) {
+                return { ok: true, statusCode: status.code, errors, raw: resp };
+            }
             if (status.code === 0 && errors.length === 0) {
                 return { ok: true, statusCode: status.code, errors, raw: resp };
             }
@@ -146,7 +263,7 @@ export async function deploy(
             const raw = await sendCommand(command, cfg);
             const status = parseStatus(raw);
             return {
-                ok: status.code === 0,
+                ok: status.code === 0 || isControllerNonBlockingStatus(status.code),
                 statusCode: status.code,
                 message: status.message,
                 raw,
@@ -164,43 +281,67 @@ export async function deploy(
     }
 
     async function ensureLoadedFromFtpPath(candidate: string): Promise<boolean> {
-        output.appendLine(`│ Load ${loadPath}`);
+        pushTrace(`│ CMD Load ${loadPath}`);
         const load = await runStatusCommand(`Load ${loadPath}`);
+        pushTrace(`│ RAW ${rawPreview(load.raw) || '(empty)'}`);
         if (load.ok) {
-            output.appendLine(`│ ✔ Load success: ${candidate} ← ${loadPath}`);
+            pushTrace(`│ ✔ Load success: ${candidate} ← ${loadPath}`);
             return true;
         }
         if (load.statusCode === -745) {
-            output.appendLine(`│ ✔ Load skipped: already loaded (${candidate})`);
+            pushTrace(`│ ✔ Load skipped: already loaded (${candidate})`);
             return true;
         }
-        output.appendLine(`│ ✘ Load failed: STATUS ${load.statusCode}: ${load.message || 'Unknown error'}`);
+        pushTrace(`│ ✘ Load failed: STATUS ${load.statusCode}: ${load.message || 'Unknown error'}`);
+        lastCompileFailure = {
+            command: `Load ${loadPath}`,
+            code: load.statusCode,
+            message: load.message || 'Unknown error',
+            raw: load.raw,
+        };
         return false;
     }
 
     async function tryUnload(candidate: string): Promise<boolean> {
-        output.appendLine(`│ Unload ${candidate}`);
+        pushTrace(`│ CMD Unload ${candidate}`);
         const unload = await runStatusCommand(`Unload ${candidate}`);
+        pushTrace(`│ RAW ${rawPreview(unload.raw) || '(empty)'}`);
         if (unload.ok) {
-            output.appendLine(`│ ✔ Unload success: ${candidate}`);
+            pushTrace(`│ ✔ Unload success: ${candidate}`);
             return true;
         }
         if (unload.statusCode === -508 || unload.statusCode === -743) {
-            output.appendLine(`│ ✔ Unload skipped: project not loaded (${candidate})`);
+            pushTrace(`│ ✔ Unload skipped: project not loaded (${candidate})`);
             return true;
         }
-        output.appendLine(`│ ✘ Unload failed: STATUS ${unload.statusCode}: ${unload.message || 'Unknown error'}`);
+        pushTrace(`│ ✘ Unload failed: STATUS ${unload.statusCode}: ${unload.message || 'Unknown error'}`);
+        lastCompileFailure = {
+            command: `Unload ${candidate}`,
+            code: unload.statusCode,
+            message: unload.message || 'Unknown error',
+            raw: unload.raw,
+        };
         return false;
     }
 
     for (const candidate of compileCandidates) {
-        output.appendLine(`│ Compile ${candidate}`);
+        pushTrace(`│ CMD Compile ${candidate}`);
         const cr = await tryCompile(candidate);
+        result.compileAttemptLogs.push({
+            command: `Compile ${candidate}`,
+            statusCode: cr.statusCode,
+            raw: cr.raw,
+            errors: cr.errors,
+        });
+        pushTrace(`│ RAW ${rawPreview(cr.raw) || '(empty)'}`);
 
         if (cr.ok) {
+            if (isControllerNonBlockingStatus(cr.statusCode)) {
+                pushTrace(`│ ⚠ Compile STATUS ${cr.statusCode} non-blocking (controller environment warning)`);
+            }
             result.projectName = candidate;
             compiled = true;
-            output.appendLine(`│ ✔ Compile success: ${candidate}`);
+            pushTrace(`│ ✔ Compile success: ${candidate}`);
             break;
         }
 
@@ -209,7 +350,7 @@ export async function deploy(
 
         // -745: project already loaded → Unload + Load + Compile
         if (cr.statusCode === -745 || errText.includes('-745')) {
-            output.appendLine(`│ ⚠ Already loaded. Unload → Load → Compile`);
+            pushTrace(`│ ⚠ Already loaded. Unload → Load → Compile`);
             const unloaded = await tryUnload(candidate);
             if (!unloaded) {
                 continue;
@@ -219,38 +360,68 @@ export async function deploy(
                 continue;
             }
             const cr2 = await tryCompile(candidate);
+            result.compileAttemptLogs.push({
+                command: `Compile ${candidate} (after reload)`,
+                statusCode: cr2.statusCode,
+                raw: cr2.raw,
+                errors: cr2.errors,
+            });
             if (cr2.ok) {
                 result.projectName = candidate;
                 result.compileErrors = [];
                 compiled = true;
-                output.appendLine(`│ ✔ Compile success (after reload): ${candidate}`);
+                pushTrace(`│ ✔ Compile success (after reload): ${candidate}`);
                 break;
             }
             result.compileErrors = cr2.errors;
+            lastCompileFailure = {
+                command: `Compile ${candidate}`,
+                code: cr2.statusCode,
+                message: parseStatus(cr2.raw).message || 'Compile failed after reload',
+                raw: cr2.raw,
+            };
         }
         // -508/-743: missing/invalid → Load + Compile
         else if (cr.statusCode === -508 || cr.statusCode === -743
             || errText.includes('-508') || errText.includes('-743')) {
-            output.appendLine(`│ ⚠ Not loaded. Load → Compile`);
+            pushTrace(`│ ⚠ Not loaded. Load → Compile`);
             const loaded = await ensureLoadedFromFtpPath(candidate);
             if (!loaded) {
                 continue;
             }
             const cr2 = await tryCompile(candidate);
+            result.compileAttemptLogs.push({
+                command: `Compile ${candidate} (after load)`,
+                statusCode: cr2.statusCode,
+                raw: cr2.raw,
+                errors: cr2.errors,
+            });
             if (cr2.ok) {
                 result.projectName = candidate;
                 result.compileErrors = [];
                 compiled = true;
-                output.appendLine(`│ ✔ Compile success (after load): ${candidate}`);
+                pushTrace(`│ ✔ Compile success (after load): ${candidate}`);
                 break;
             }
             result.compileErrors = cr2.errors;
+            lastCompileFailure = {
+                command: `Compile ${candidate}`,
+                code: cr2.statusCode,
+                message: parseStatus(cr2.raw).message || 'Compile failed after load',
+                raw: cr2.raw,
+            };
         }
 
-        output.appendLine(`│ ✘ Compile failed: ${candidate}`);
+        pushTrace(`│ ✘ Compile failed: ${candidate}`);
         if (cr.statusCode !== 0) {
             const status = parseStatus(cr.raw);
-            output.appendLine(`│   STATUS ${status.code}: ${status.message}`);
+            pushTrace(`│   STATUS ${status.code}: ${status.message}`);
+            lastCompileFailure = {
+                command: `Compile ${candidate}`,
+                code: status.code,
+                message: status.message,
+                raw: cr.raw,
+            };
         }
     }
 
@@ -258,60 +429,78 @@ export async function deploy(
     if (result.compileErrors.length > 0) {
         applyCompileDiagnostics(result.compileErrors, options.projectDir, diagnosticCollection);
         for (const err of result.compileErrors) {
-            output.appendLine(`│   ${err.file}:${err.line} (${err.code}): ${err.message}`);
+            pushTrace(`│   ${err.file}:${err.line} (${err.code}): ${err.message}`);
         }
     }
 
     if (!compiled) {
-        output.appendLine('│ ✘ All compile attempts failed');
+        pushTrace('│ ✘ All compile attempts failed');
+        result.failedPhase = 'COMPILE';
+        result.failedCommand = lastCompileFailure?.command || 'Compile <candidate>';
+        result.failedStatusCode = lastCompileFailure?.code;
+        result.failedStatusMessage = lastCompileFailure?.message || 'All compile attempts failed';
+        if (lastCompileFailure?.raw) {
+            pushTrace(`│ LAST RAW ${rawPreview(lastCompileFailure.raw)}`);
+        }
         return result;
     }
 
     // ── Phase 4: START ────────────────────────────
 
     if (!options.skipStart) {
-        output.appendLine('');
+        pushTrace('');
         phase++;
-        output.appendLine(`━━ [${phase}/${totalPhases}] START ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        pushTrace(`━━ [${phase}/${totalPhases}] START ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
         if (token?.isCancellationRequested) { return result; }
 
-        output.appendLine(`│ Start ${result.projectName}`);
+        pushTrace(`│ CMD Start ${result.projectName}`);
         const start = await runStatusCommand(`Start ${result.projectName}`);
+        pushTrace(`│ RAW ${rawPreview(start.raw) || '(empty)'}`);
         if (start.ok) {
-            output.appendLine(`│ ✔ Start success`);
+            if (isControllerNonBlockingStatus(start.statusCode)) {
+                pushTrace(`│ ⚠ Start STATUS ${start.statusCode} non-blocking (controller environment warning)`);
+            }
+            pushTrace(`│ ✔ Start success`);
         } else {
-            output.appendLine(`│ ✘ Start failed: STATUS ${start.statusCode}: ${start.message || 'Unknown error'}`);
+            pushTrace(`│ ✘ Start failed: STATUS ${start.statusCode}: ${start.message || 'Unknown error'}`);
+            result.failedPhase = 'START';
+            result.failedCommand = `Start ${result.projectName}`;
+            result.failedStatusCode = start.statusCode;
+            result.failedStatusMessage = start.message || 'Unknown error';
             return result;
         }
     }
 
     // ── Phase: ERROR CHECK ─────────────────
 
-    output.appendLine('');
+    pushTrace('');
     phase++;
-    output.appendLine(`━━ [${phase}/${totalPhases}] ERROR CHECK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    pushTrace(`━━ [${phase}/${totalPhases}] ERROR CHECK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
     const errorLogResp = await trySendCommand('ErrorLog', cfg);
     if (errorLogResp) {
+        pushTrace(`│ RAW ${rawPreview(errorLogResp) || '(empty)'}`);
         result.errorLog = parseErrorLog(errorLogResp);
         if (result.errorLog.length === 0) {
-            output.appendLine('│ ✔ No active errors');
+            pushTrace('│ ✔ No active errors');
         } else {
-            output.appendLine(`│ ⚠ ${result.errorLog.length} error(s):`);
+            pushTrace(`│ ⚠ ${result.errorLog.length} error(s):`);
             for (const el of result.errorLog) {
-                output.appendLine(`│   ${el}`);
+                pushTrace(`│   ${el}`);
             }
         }
+    } else {
+        pushTrace('│ ⚠ ErrorLog read failed (non-fatal)');
     }
 
     result.success = compiled;
 
     const doneLabel = options.skipStart ? 'Build' : 'Deploy';
-    output.appendLine('');
-    output.appendLine('══════════════════════════════════════════════════════');
-    output.appendLine(`✔ ${doneLabel} ${result.success ? 'complete' : 'failed'}: ${result.projectName}`);
-    output.appendLine('══════════════════════════════════════════════════════');
+    pushTrace('');
+    pushTrace('══════════════════════════════════════════════════════');
+    pushTrace(`✔ ${doneLabel} ${result.success ? 'complete' : 'failed'}: ${result.projectName}`);
+    pushTrace('══════════════════════════════════════════════════════');
 
     return result;
 }

@@ -7,6 +7,7 @@
 
 import {
     LoggingDebugSession,
+    Event,
     InitializedEvent,
     TerminatedEvent,
     StoppedEvent,
@@ -138,6 +139,8 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Debug pre-deploy diagnostics/output
     private _deployDiagnostics: vscode.DiagnosticCollection | undefined;
     private _deployOutput: vscode.OutputChannel | undefined;
+    private _lastControllerCommand = '';
+    private _firstErrorSeenAtByThread = new Map<string, string>();
 
     constructor() {
         super('gpl-debug.txt');
@@ -1248,6 +1251,7 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     private async _sendCmd(command: string): Promise<string | null> {
         if (!this._config || !this._isConnected) { return null; }
+        this._lastControllerCommand = command;
         return this._enqueueCommand(async () => {
             if (!this._config || !this._isConnected) { return null; }
             try {
@@ -1270,6 +1274,48 @@ export class GPLDebugSession extends LoggingDebugSession {
      */
     private _log(message: string): void {
         this.sendEvent(new OutputEvent(`[GPL Debug] ${message}\n`, 'console'));
+    }
+
+    private async _emitErrorLocationEvent(threadId: number, threadName: string, statusText: string): Promise<void> {
+        const frames = await this._getThreadFrames(threadName);
+        const top = frames[0];
+        if (!this._firstErrorSeenAtByThread.has(threadName)) {
+            this._firstErrorSeenAtByThread.set(threadName, new Date().toISOString());
+        }
+        const firstSeenAt = this._firstErrorSeenAtByThread.get(threadName);
+        const stackFrames = frames
+            .slice(0, 6)
+            .map(f => `${f.process || '(unknown)'} @ ${f.file || '?'}:${f.fileLine || 0}`);
+        const relatedFunctions = frames
+            .map(f => (f.process || '').trim())
+            .filter(Boolean)
+            .filter((v, idx, arr) => arr.indexOf(v) === idx)
+            .slice(0, 6);
+        if (!top?.file || top.fileLine <= 0) {
+            this.sendEvent(new Event('gpl.errorLocation', {
+                threadId,
+                threadName,
+                statusText,
+                firstSeenAt,
+                lastCommand: this._lastControllerCommand,
+                stackFrames,
+                relatedFunctions,
+            }));
+            return;
+        }
+
+        this.sendEvent(new Event('gpl.errorLocation', {
+            threadId,
+            threadName,
+            file: top.file,
+            line: top.fileLine,
+            process: top.process,
+            statusText,
+            firstSeenAt,
+            lastCommand: this._lastControllerCommand,
+            stackFrames,
+            relatedFunctions,
+        }));
     }
 
     // ─── State Polling ────────────────────────────────────
@@ -1482,6 +1528,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                     this._pendingThreadId = undefined;
                     this._pendingContinuePausedSeen = 0;
 
+                    await this._emitErrorLocationEvent(id, t.name, t.lastStatus || 'Error');
+
                     if (this._breakOnErrors) {
                         if (!this._configurationDone) {
                             this._queuedStoppedEvents.push({ reason: 'exception', threadId: id });
@@ -1534,6 +1582,27 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         if (!result.success) {
             this._log(`[deploy] 실패: ${result.compileErrors.length}개 컴파일 에러`);
+            if (result.failedPhase) {
+                this._log(`[deploy] 실패 단계: ${result.failedPhase}`);
+            }
+            if (result.failedCommand) {
+                this._log(`[deploy] 실패 명령: ${result.failedCommand}`);
+            }
+            if (typeof result.failedStatusCode === 'number') {
+                this._log(`[deploy] STATUS: ${result.failedStatusCode} (${result.failedStatusMessage || 'Unknown'})`);
+            } else if (result.failedStatusMessage) {
+                this._log(`[deploy] 사유: ${result.failedStatusMessage}`);
+            }
+            if (result.attemptedProjectNames && result.attemptedProjectNames.length > 0) {
+                this._log(`[deploy] 후보 이름 시도 순서: ${result.attemptedProjectNames.join(' -> ')}`);
+            }
+            if (result.trace.length > 0) {
+                this._log('[deploy] --- raw trace begin ---');
+                for (const line of result.trace) {
+                    this._log(`[deploy] ${line}`);
+                }
+                this._log('[deploy] --- raw trace end ---');
+            }
             for (const err of result.compileErrors) {
                 this._log(`[deploy]   ${err.file}:${err.line} (${err.code}): ${err.message}`);
             }

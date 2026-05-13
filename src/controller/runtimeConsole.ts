@@ -53,6 +53,14 @@ interface RuntimeConsoleTuning {
     idleReconnectMaxMs: number;
 }
 
+export interface RuntimeConsoleStatusSnapshot {
+    connected: boolean;
+    reason: string;
+    detail?: string;
+    noPayloadStreak: number;
+    lastChangedAt: number;
+}
+
 export class RuntimeConsole implements vscode.Disposable {
     private socket: net.Socket | null = null;
     private output: vscode.OutputChannel;
@@ -65,6 +73,9 @@ export class RuntimeConsole implements vscode.Disposable {
     private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private _reconnectAttempt = 0;
     private _lastError: Error | null = null;
+    private _lastReason = '초기화 전';
+    private _lastDetail = '';
+    private _lastChangedAt = Date.now();
     /** 연결 성립 시각 — 로깅용 */
     private _connectedAt = 0;
     /** 현재 세션에서 데이터(바이트)를 수신했는지 여부 */
@@ -94,6 +105,16 @@ export class RuntimeConsole implements vscode.Disposable {
     readonly onDidReceiveLine = this._onDidReceiveLine.event;
 
     get isConnected(): boolean { return this._isConnected; }
+
+    getStatusSnapshot(): RuntimeConsoleStatusSnapshot {
+        return {
+            connected: this._isConnected,
+            reason: this._isConnected ? 'Connected' : this._lastReason,
+            detail: this._lastDetail || undefined,
+            noPayloadStreak: this._consecutiveNoPayloadAttempts,
+            lastChangedAt: this._lastChangedAt,
+        };
+    }
 
     constructor(output: vscode.OutputChannel, stateOutput?: vscode.OutputChannel) {
         this.output = output;
@@ -193,6 +214,9 @@ export class RuntimeConsole implements vscode.Disposable {
      */
     stop(): void {
         this._explicitStop = true;
+        this._lastReason = '사용자 중지';
+        this._lastDetail = '수동으로 런타임 콘솔 중지';
+        this._lastChangedAt = Date.now();
         this.cancelReconnect();
         this.clearReadyState(false);
         this.resolvePayloadWaiters(false);
@@ -426,6 +450,9 @@ export class RuntimeConsole implements vscode.Disposable {
 
         socket.connect(connectOptions, () => {
             this._isConnected = true;
+            this._lastReason = 'Connected';
+            this._lastDetail = '';
+            this._lastChangedAt = Date.now();
             this._connectedAt = Date.now();
             this.carry = '';
             this._sessionDataReceived = false;
@@ -516,9 +543,17 @@ export class RuntimeConsole implements vscode.Disposable {
 
                 if (hadError) {
                     // 에러로 인한 종료
+                    const errCode = (this._lastError as any)?.code as string | undefined;
+                    if (errCode === 'ECONNREFUSED') {
+                        this._lastReason = '연결 거부';
+                        this._lastDetail = '1403 포트가 연결을 거부했습니다 (ECONNREFUSED)';
+                    } else {
+                        this._lastReason = '소켓 에러';
+                        this._lastDetail = this._lastError?.message ?? '알 수 없는 소켓 에러';
+                    }
+                    this._lastChangedAt = Date.now();
                     this.appendStateLine(`[Console][RC1403] STATE=DISCONNECTED mode=error elapsedMs=${elapsed} message=${this._lastError?.message ?? 'unknown'}`);
                     if (!dataReceived) {
-                        const errCode = (this._lastError as any)?.code as string | undefined;
                         if (errCode === 'ECONNREFUSED') {
                             this.handleNoPayloadAttempt('Connection refused');
                         } else {
@@ -528,6 +563,9 @@ export class RuntimeConsole implements vscode.Disposable {
                     this._consecutiveEmptySessions = 0;
                 } else if (dataReceived) {
                     // 데이터 수신 후 정상 종료 (이벤트 배치 완료)
+                    this._lastReason = '배치 완료 후 재연결';
+                    this._lastDetail = '이벤트 배치 수신 후 서버가 FIN으로 세션 종료';
+                    this._lastChangedAt = Date.now();
                     this.appendStateLine(`[Console][RC1403] STATE=DISCONNECTED mode=batch_complete elapsedMs=${elapsed}`);
                     this._consecutiveEmptySessions = 0;
                 } else {
@@ -535,6 +573,11 @@ export class RuntimeConsole implements vscode.Disposable {
                     this._consecutiveEmptySessions++;
                     const reason = elapsed <= 500 ? 'Immediate EOF' : 'Empty batch';
                     noPayloadReason = reason;
+                    this._lastReason = reason === 'Immediate EOF' ? '즉시 EOF' : '빈 세션';
+                    this._lastDetail = reason === 'Immediate EOF'
+                        ? '연결 직후 서버가 payload 없이 즉시 세션을 종료했습니다'
+                        : '연결은 되었지만 payload 없이 세션이 종료되었습니다';
+                    this._lastChangedAt = Date.now();
                     this.handleNoPayloadAttempt(reason);
                     const tuning = this.getTuning();
                     if (this.shouldEmitNoPayloadNotice(this._consecutiveNoPayloadAttempts, tuning.emptyNoticeEvery)) {
@@ -550,12 +593,17 @@ export class RuntimeConsole implements vscode.Disposable {
                 const errCode = (this._lastError as any)?.code as string | undefined;
                 this.logConsoleTraffic('---', `CLOSE (connect failed: ${errMsg})`);
                 if (errCode === 'ECONNREFUSED') {
+                    this._lastReason = '연결 거부';
+                    this._lastDetail = '1403 포트가 연결을 거부했습니다 (ECONNREFUSED)';
                     this.appendStateLine('[Console][RC1403] STATE=CONNECT_FAILED reason=ECONNREFUSED');
                     this.handleNoPayloadAttempt('Connection refused');
                 } else {
+                    this._lastReason = '연결 실패';
+                    this._lastDetail = errMsg;
                     this.appendStateLine(`[Console][RC1403] STATE=CONNECT_FAILED reason=${errMsg}`);
                     this.handleNoPayloadAttempt('Connect error');
                 }
+                this._lastChangedAt = Date.now();
                 this._consecutiveEmptySessions = 0;
             }
             this._lastError = null;

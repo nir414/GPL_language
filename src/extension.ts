@@ -17,7 +17,7 @@ import { getTraceServerLevel, isTraceOn, isGplDocument } from './config';
 import { testConnection, getControllerConfig, sendCommand, setTrafficChannel, getTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
 import { deploy, findProjectDirs } from './controller/deployService';
 import { removeRemoteDir, removeRemoteFile, downloadProject } from './controller/ftpClient';
-import { RuntimeConsole } from './controller/runtimeConsole';
+import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from './controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
 import { ConnectionStatusBar } from './views/connectionStatusBar';
 import { activateDebug } from './debug/activateDebug';
@@ -67,11 +67,89 @@ function ensureRuntimeConsole(): RuntimeConsole {
 		runtimeConsole.onDidDisconnect(() => {
 			controllerTree?.setRuntimeConsoleStatus(runtimeConsole!.getStatusSnapshot());
 		});
+		runtimeConsole.onDidStatusChanged((status) => {
+			controllerTree?.setRuntimeConsoleStatus(status);
+		});
 		runtimeConsoleHooksBound = true;
 	}
 	runtimeConsole.start();
 	controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
 	return runtimeConsole;
+}
+
+function formatRuntimeConsoleStateLabel(status: RuntimeConsoleStatusSnapshot): string {
+	switch (status.state) {
+		case 'connected':
+			return 'Connected';
+		case 'connected-no-payload':
+			return 'Connected (No payload)';
+		case 'connecting':
+			return 'Connecting';
+		case 'reconnecting':
+			if (status.immediateEofStreak > 0) {
+				return 'Polling';
+			}
+			return 'Reconnecting';
+		case 'connect-failed':
+			return 'Connect failed';
+		case 'no-payload':
+			return 'No payload';
+		case 'polling':
+			return 'Polling';
+		case 'stopped':
+			return 'Stopped';
+		case 'batch-complete':
+			return 'Batch complete';
+		case 'socket-error':
+			return 'Socket error';
+		default:
+			return status.connected ? 'Connected' : 'Disconnected';
+	}
+}
+
+function buildRuntimeConsoleUserMessage(
+	status: RuntimeConsoleStatusSnapshot,
+	hasPayload: boolean,
+	label: string,
+): { level: 'info' | 'warning' | 'error'; message: string } {
+	const reason = status.reason || formatRuntimeConsoleStateLabel(status);
+	const detail = status.detail ? ` — ${status.detail}` : '';
+	if (hasPayload) {
+		return { level: 'info', message: `${label} — payload 수신 확인` };
+	}
+	if (status.connected) {
+		return { level: 'warning', message: `${label} — 소켓 연결됨, payload는 아직 없음${detail}` };
+	}
+	if (status.state === 'reconnecting') {
+		const level = status.immediateEofStreak > 0 ? 'info' : 'warning';
+		return { level, message: `${label} — ${reason}${detail}. 자동 재연결 대기 중` };
+	}
+	if (status.state === 'polling') {
+		return { level: 'info', message: `${label} — 이벤트 큐 비어 있음, 자동 폴링 중${detail}` };
+	}
+	if (status.state === 'connect-failed' || status.state === 'socket-error') {
+		return { level: 'error', message: `${label} — ${reason}${detail}` };
+	}
+	return { level: 'warning', message: `${label} — ${reason}${detail}` };
+}
+
+function showRuntimeConsoleUserMessage(
+	status: RuntimeConsoleStatusSnapshot,
+	hasPayload: boolean,
+	label: string,
+): void {
+	const result = buildRuntimeConsoleUserMessage(status, hasPayload, label);
+	switch (result.level) {
+		case 'info':
+			vscode.window.showInformationMessage(result.message);
+			break;
+		case 'error':
+			vscode.window.showErrorMessage(result.message);
+			break;
+		default:
+			vscode.window.showWarningMessage(result.message);
+			break;
+	}
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -541,9 +619,11 @@ export function activate(context: vscode.ExtensionContext) {
 	controllerTree = new ControllerTreeProvider();
 	controllerTree.setRuntimeConsoleStatus(
 		runtimeConsole?.getStatusSnapshot() ?? {
+			state: 'idle',
 			connected: false,
 			reason: '미연결',
 			noPayloadStreak: 0,
+			immediateEofStreak: 0,
 			lastChangedAt: Date.now(),
 		},
 	);
@@ -986,7 +1066,11 @@ export function activate(context: vscode.ExtensionContext) {
 		const makeRawCompileSummary = (result: Awaited<ReturnType<typeof deploy>>): string[] => {
 			return result.compileAttemptLogs.map(attempt => {
 				const firstLine = attempt.raw.replace(/\r/g, '').split('\n').map(l => l.trim()).find(Boolean) || '(empty)';
-				return `${attempt.command} / STATUS ${attempt.statusCode} / ${firstLine}`;
+				const incompleteMeta = attempt.responseMeta && !attempt.responseMeta.responseComplete
+					? ` / responseComplete=false bytes=${attempt.responseMeta.bytesReceived} idle=${attempt.responseMeta.idleTimeoutMs}ms`
+					: '';
+				const note = attempt.note ? ` / note=${attempt.note}` : '';
+				return `${attempt.command} / STATUS ${attempt.statusCode}${incompleteMeta}${note} / ${firstLine}`;
 			});
 		};
 		const makeDeploySnapshot = (
@@ -1088,11 +1172,26 @@ export function activate(context: vscode.ExtensionContext) {
 				logOutput('── [COMPILE 원문 로그] ──────────────────────────────────');
 				for (const attempt of result.compileAttemptLogs) {
 					logOutput(`[${attempt.command}] STATUS ${attempt.statusCode}`);
+					if (attempt.note) {
+						logOutput(`  note: ${attempt.note}`);
+					}
+					if (attempt.responseMeta && (!attempt.responseMeta.responseComplete || !attempt.responseMeta.statusTagReceived || !attempt.responseMeta.dataTagClosed)) {
+						logOutput(`  responseComplete=${attempt.responseMeta.responseComplete}`);
+						logOutput(`  bytesReceived=${attempt.responseMeta.bytesReceived}`);
+						logOutput(`  lastChunkAt=${attempt.responseMeta.lastChunkAt}`);
+						logOutput(`  idleTimeoutMs=${attempt.responseMeta.idleTimeoutMs}`);
+					}
 					logOutput(attempt.raw || '(empty)');
 					if (attempt.errors.length > 0) {
 						for (const ce of attempt.errors) {
 							logOutput(`  -> ${ce.file}:${ce.line} (${ce.code}) ${ce.message}`);
 						}
+					}
+				}
+				if (result.precheckWarnings.length > 0) {
+					logOutput('  precheckWarnings:');
+					for (const w of result.precheckWarnings) {
+						logOutput(`  - ${w}`);
 					}
 				}
 				logOutput('─────────────────────────────────────────────────────────');
@@ -1271,13 +1370,10 @@ export function activate(context: vscode.ExtensionContext) {
 			const console = ensureRuntimeConsole();
 			await console.waitUntilReady();
 			const hasPayload = await console.waitForPayload(1500);
-			controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
+			const snapshot = console.getStatusSnapshot();
+			controllerTree?.setRuntimeConsoleStatus(snapshot);
 			consoleChannel.show(true);
-			if (hasPayload) {
-				vscode.window.showInformationMessage('GPL 런타임 콘솔 시작 (payload 수신 확인)');
-			} else {
-				vscode.window.showWarningMessage('GPL 런타임 콘솔 소켓은 연결됐지만 payload는 아직 없어. Idle 또는 1403 불안정 가능');
-			}
+			showRuntimeConsoleUserMessage(snapshot, hasPayload, 'GPL 런타임 콘솔 시작');
 		})
 	);
 
@@ -1296,11 +1392,10 @@ export function activate(context: vscode.ExtensionContext) {
 			const console = ensureRuntimeConsole();
 			await console.waitUntilReady(1200);
 			const hasPayload = await console.waitForPayload(1500);
-			controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
+			const snapshot = console.getStatusSnapshot();
+			controllerTree?.setRuntimeConsoleStatus(snapshot);
 			consoleChannel.show(true);
-			if (!hasPayload) {
-				vscode.window.showWarningMessage('1403 연결됨. payload는 아직 없어 (idle/불안정 가능).');
-			}
+			showRuntimeConsoleUserMessage(snapshot, hasPayload, '1403 콘솔 확인');
 		})
 	);
 
@@ -1311,9 +1406,9 @@ export function activate(context: vscode.ExtensionContext) {
 				const console = ensureRuntimeConsole();
 				await console.waitUntilReady();
 				const hasPayload = await console.waitForPayload(1500);
-				if (!hasPayload) {
-					logOutput('[Console] live log start: socket connected but no payload yet');
-				}
+				const snapshot = console.getStatusSnapshot();
+				controllerTree?.setRuntimeConsoleStatus(snapshot);
+				logOutput(`[Console] ${buildRuntimeConsoleUserMessage(snapshot, hasPayload, 'live log start').message}`);
 			} catch (err: any) {
 				logOutput(`[Console] live log start -> runtime console start failed: ${err?.message ?? err}`);
 			}
@@ -1354,9 +1449,11 @@ export function activate(context: vscode.ExtensionContext) {
 			].join('\n');
 			const body = controllerTree.buildSituationSnapshotMarkdown({
 				runtimeConsoleStatus: runtimeConsole?.getStatusSnapshot() ?? {
+					state: 'idle',
 					connected: false,
 					reason: '미연결',
 					noPayloadStreak: 0,
+					immediateEofStreak: 0,
 					lastChangedAt: Date.now(),
 				},
 				deploySnapshot: lastDeploySnapshot,
@@ -1374,9 +1471,11 @@ export function activate(context: vscode.ExtensionContext) {
 			await controllerTree.refreshAll();
 			const markdown = controllerTree.buildDiagnosticSnapshotMarkdown({
 				runtimeConsoleStatus: runtimeConsole?.getStatusSnapshot() ?? {
+					state: 'idle',
 					connected: false,
 					reason: '미연결',
 					noPayloadStreak: 0,
+					immediateEofStreak: 0,
 					lastChangedAt: Date.now(),
 				},
 				deploySnapshot: lastDeploySnapshot,
@@ -1420,14 +1519,10 @@ export function activate(context: vscode.ExtensionContext) {
 				const console = ensureRuntimeConsole();
 				await console.waitUntilReady(800);
 				const hasPayload = await console.waitForPayload(1500);
+				const snapshot = console.getStatusSnapshot();
+				controllerTree?.setRuntimeConsoleStatus(snapshot);
 				consoleChannel.show(true);
-				if (runtimeConsole?.isConnected && hasPayload) {
-					vscode.window.showInformationMessage(`${label} (${ip}:${port}) — payload 수신 확인 (GPL Console 확인)`);
-				} else if (runtimeConsole?.isConnected) {
-					vscode.window.showWarningMessage(`${label} (${ip}:${port}) — 소켓은 연결됐지만 payload는 아직 없어. Idle 또는 1403 불안정 가능`);
-				} else {
-					vscode.window.showInformationMessage(`${label} (${ip}:${port}) — 런타임 콘솔 연결 시도 중...`);
-				}
+				showRuntimeConsoleUserMessage(snapshot, hasPayload, `${label} (${ip}:${port})`);
 			}
 		})
 	);

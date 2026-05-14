@@ -2,6 +2,44 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.5.87] - 2026-05-14
+
+- `Show Thread` 폴링을 고정 주기 `setInterval`에서 적응형 `setTimeout` 재귀 방식으로 교체
+- 실행 중인 쓰레드가 없을 때(idle) 폴링 간격을 기본값의 3배로 자동 지연해 제어기 1402 포트 부하 감소
+- 쓰레드가 감지되면 즉시 `threadPollIntervalMs` 설정 주기로 복귀
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [0.5.86] - 2026-05-14
+
+- 1403 콘솔 트리 항목을 `상태 + 최근 payload/재연결 요약` 중심으로 재구성해 한 줄에서 현재 상황을 더 바로 읽을 수 있게 개선
+- 1403 항목 툴팁에 마지막 연결 시도, payload, 오류 코드, 재연결 대기 정보를 묶어 표시
+- 상태 뷰 상단과 1403 항목 hover 액션에 `GPL Traffic` 버튼을 추가해 트래픽 채널을 바로 열 수 있게 개선
+
+## [0.5.85] - 2026-05-14
+
+- 사이드바 연결 섹션에서 `1403 콘솔 상태`와 `1403 연결/재연결/로그 보기`를 하나의 클릭 가능한 항목으로 병합
+- 병합된 1403 항목에 현재 상태, 상세 사유, 포트 정보, 클릭 동작 안내를 함께 표시해 UI를 더 간결하게 정리
+
+## [0.5.84] - 2026-05-14
+
+- 1403 런타임 콘솔 상태를 `connecting / connected-no-payload / reconnecting / connect-failed` 등으로 세분화하고, 마지막 연결 시도/마지막 payload/최근 오류 코드 같은 증거를 스냅샷에 포함
+- `GPL: Start Runtime Console`, `1403 연결/재연결/로그 보기`, 포트 핑 UX를 개선해 `연결됨이지만 payload 없음`과 `연결 거부/재연결 대기`를 구분해 안내
+- 진단 스냅샷과 사이드바 연결 섹션에 1403 관찰 증거와 가설(예: ECONNREFUSED, 빈 세션)을 함께 표시해 제어기 문제와 UI/표시 문제를 분리 진단하기 쉽게 개선
+
+## [0.5.83] - 2026-05-13
+
+- COMPILE 응답에 `<STATUS>`가 누락되어도 `Compile successful` 문자열이 있으면 성공으로 판정하도록 개선
+- COMPILE 응답이 pass 로그 중심(DATA-only)이고 STATUS 미검출인 경우 즉시 `-9999` 실패 처리하지 않고, 짧은 보강 수신 window 후 `Show Thread` 1회 보강 판정을 수행하도록 개선
+- `Compile by name -> -508` 이후 `Load <absolute FTP path>` + COMPILE 성공 시 `-508`을 최종 실패 원인에서 제외하고 전처리 경고로만 기록
+- COMPILE 원문 로그에 미완 응답 진단 메타(`responseComplete`, `bytesReceived`, `lastChunkAt`, `idleTimeoutMs`) 출력 추가
+
 ## [0.5.82] - 2026-05-12
 
 - 배포 경로 자동 판별 추가: `/flash/projects`와 `/GPL`를 프로빙해 프로젝트 폴더 존재 기준으로 우선 경로를 선택하고 배포에 사용

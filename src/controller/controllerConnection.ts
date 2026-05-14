@@ -12,6 +12,29 @@ export interface ControllerConfig {
 	preferIPv4: boolean;
 }
 
+export interface CommandResponseMeta {
+	responseComplete: boolean;
+	bytesReceived: number;
+	lastChunkAt: string;
+	idleTimeoutMs: number;
+	statusTagReceived: boolean;
+	dataTagClosed: boolean;
+	extraIdleApplied: boolean;
+	durationMs: number;
+}
+
+export interface CommandResponse {
+	raw: string;
+	meta: CommandResponseMeta;
+}
+
+export interface SendCommandOptions {
+	timeoutMs?: number;
+	idleMs?: number;
+	minResponseBytes?: number;
+	extraIdleMsOnIncomplete?: number;
+}
+
 // Brooks 제어기 고정 포트 (하드웨어 결정, 변경 불가)
 const DEFAULT_PORT = 1402;
 const DEFAULT_CONSOLE_PORT = 1403;
@@ -98,21 +121,63 @@ export function sendCommand(
 	config?: Partial<ControllerConfig>,
 	timeoutMs?: number
 ): Promise<string> {
+	return sendCommandDetailed(command, config, { timeoutMs }).then(r => r.raw);
+}
+
+let controllerCommandQueue: Promise<void> = Promise.resolve();
+
+function enqueueControllerCommand<T>(task: () => Promise<T>): Promise<T> {
+	const run = controllerCommandQueue.then(task, task);
+	controllerCommandQueue = run.then(() => undefined, () => undefined);
+	return run;
+}
+
+export function sendCommandDetailed(
+	command: string,
+	config?: Partial<ControllerConfig>,
+	options?: SendCommandOptions,
+): Promise<CommandResponse> {
+	return enqueueControllerCommand(() => sendCommandDetailedInternal(command, config, options));
+}
+
+function sendCommandDetailedInternal(
+	command: string,
+	config?: Partial<ControllerConfig>,
+	options?: SendCommandOptions,
+): Promise<CommandResponse> {
 	const cfg = { ...getControllerConfig(), ...config };
-	const timeout = timeoutMs ?? cfg.timeoutMs;
+	const timeout = options?.timeoutMs ?? cfg.timeoutMs;
+	const minResponseBytes = Math.max(1, options?.minResponseBytes ?? 10);
+	const idleMs = Math.max(50, options?.idleMs ?? 300);
+	const extraIdleMsOnIncomplete = Math.max(0, options?.extraIdleMsOnIncomplete ?? 0);
 
 	// 응답 누적 수신: <STATUS> 찾을 때까지 기다리되,
 	// 최소 바이트 수 && idle 조건으로도 완성 응답으로 판단
-	const MIN_RESPONSE_BYTES = 10;
-	const IDLE_MS = 300;
-
-	return new Promise<string>((resolve, reject) => {
+	return new Promise<CommandResponse>((resolve, reject) => {
 		const socket = new net.Socket();
 		let responseBuffer = '';
 		let settled = false;
 		let gracefulCloseTimer: ReturnType<typeof setTimeout> | null = null;
 		let idleTimer: ReturnType<typeof setTimeout> | null = null;
 		const startMs = Date.now();
+		let lastChunkAtMs = startMs;
+		let extraIdleApplied = false;
+
+		const buildMeta = (): CommandResponseMeta => {
+			const raw = responseBuffer || '';
+			const statusTagReceived = raw.includes('</STATUS>');
+			const dataTagClosed = raw.includes('</DATA>');
+			return {
+				responseComplete: statusTagReceived || dataTagClosed,
+				bytesReceived: Buffer.byteLength(raw, 'utf8'),
+				lastChunkAt: new Date(lastChunkAtMs).toISOString(),
+				idleTimeoutMs: idleMs,
+				statusTagReceived,
+				dataTagClosed,
+				extraIdleApplied,
+				durationMs: Date.now() - startMs,
+			};
+		};
 
 		logTraffic('>>>', `${cfg.ip}:${cfg.port}  ${command}`);
 
@@ -141,7 +206,7 @@ export function sendCommand(
 				logTraffic('---', `FIN wait over (${cfg.ip}:${cfg.port}) after STATUS for ${command}`);
 			}, 1000);
 			socket.end();
-			resolve(responseBuffer.trim());
+			resolve({ raw: responseBuffer.trim(), meta: buildMeta() });
 		};
 
 		const connectOptions = cfg.preferIPv4
@@ -154,6 +219,7 @@ export function sendCommand(
 		});
 
 		socket.on('data', (data: Buffer) => {
+			lastChunkAtMs = Date.now();
 			responseBuffer += data.toString('ascii').replace(/\0/g, '');
 
 			// 이전 idle timer 취소
@@ -170,12 +236,21 @@ export function sendCommand(
 
 			// 완성 응답 조건 2: 최소 바이트 수 && idle 대기
 			// (부분 수신으로 인한 "무응답" 오해 방지)
-			if (responseBuffer.length >= MIN_RESPONSE_BYTES) {
+			if (responseBuffer.length >= minResponseBytes) {
 				idleTimer = setTimeout(() => {
+					if (!responseBuffer.includes('</STATUS>') && extraIdleMsOnIncomplete > 0 && !extraIdleApplied) {
+						extraIdleApplied = true;
+						idleTimer = setTimeout(() => {
+							if (!settled) {
+								completeResponse();
+							}
+						}, extraIdleMsOnIncomplete);
+						return;
+					}
 					if (!settled) {
 						completeResponse();
 					}
-				}, IDLE_MS);
+				}, idleMs);
 			}
 		});
 
@@ -205,7 +280,7 @@ export function sendCommand(
 				if (responseBuffer.length > 0) {
 					const elapsed = Date.now() - startMs;
 					logTraffic('<<<', `(closed) ${responseBuffer.length} bytes  ${elapsed}ms`);
-					resolve(responseBuffer.trim());
+					resolve({ raw: responseBuffer.trim(), meta: buildMeta() });
 				} else {
 					logTraffic('---', `CLOSED without response: ${command}`);
 					reject(new Error(`Connection closed without response: ${command}`));

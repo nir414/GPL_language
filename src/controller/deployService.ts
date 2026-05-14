@@ -7,7 +7,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { sendCommand, trySendCommand, getControllerConfig, ControllerConfig } from './controllerConnection';
+import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
 import { uploadProject, listRemoteDir } from './ftpClient';
 import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus } from './responseParser';
 
@@ -22,6 +22,8 @@ export interface CompileAttemptLog {
     statusCode: number;
     raw: string;
     errors: CompileError[];
+    responseMeta?: CommandResponseMeta;
+    note?: string;
 }
 
 export interface DeployResult {
@@ -29,6 +31,7 @@ export interface DeployResult {
     projectName: string;
     compileErrors: CompileError[];
     compileAttemptLogs: CompileAttemptLog[];
+    precheckWarnings: string[];
     errorLog: string[];
     selectedRemoteBasePath?: string;
     selectedRemoteProjectPath?: string;
@@ -59,6 +62,7 @@ export async function deploy(
         projectName: '',
         compileErrors: [],
         compileAttemptLogs: [],
+        precheckWarnings: [],
         errorLog: [],
         trace: [],
     };
@@ -240,21 +244,94 @@ export async function deploy(
     let lastCompileFailure: { command: string; code: number; message: string; raw: string } | undefined;
 
     /** Compile 명령 실행 후 응답의 STATUS와 에러를 검사하는 헬퍼. */
-    async function tryCompile(candidate: string): Promise<{ ok: boolean; statusCode: number; errors: CompileError[]; raw: string }> {
+    async function tryCompile(candidate: string): Promise<{
+        ok: boolean;
+        statusCode: number;
+        errors: CompileError[];
+        raw: string;
+        responseMeta?: CommandResponseMeta;
+        note?: string;
+        needsFollowUp: boolean;
+    }> {
         try {
-            const resp = await sendCommand(`Compile ${candidate}`, cfg);
+            const detailed = await sendCommandDetailed(`Compile ${candidate}`, cfg, {
+                idleMs: 300,
+                minResponseBytes: 10,
+                // STATUS 누락/분할 수신 완화용 보강 수신 window
+                extraIdleMsOnIncomplete: 250,
+            });
+            const resp = detailed.raw;
             const status = parseStatus(resp);
             const errors = parseCompileErrors(resp);
+            const statusMissing = status.code === -9999;
+            const hasCompileSuccessful = /\bcompile\s+successful\b/i.test(resp);
+            const hasCompilePassLog = /\bpass\s*1\b|\bpass\s*2\b|\bpass\s*3\b/i.test(resp);
+
             if (isControllerNonBlockingStatus(status.code) && errors.length === 0) {
-                return { ok: true, statusCode: status.code, errors, raw: resp };
+                return {
+                    ok: true,
+                    statusCode: status.code,
+                    errors,
+                    raw: resp,
+                    responseMeta: detailed.meta,
+                    needsFollowUp: false,
+                };
             }
             if (status.code === 0 && errors.length === 0) {
-                return { ok: true, statusCode: status.code, errors, raw: resp };
+                return {
+                    ok: true,
+                    statusCode: status.code,
+                    errors,
+                    raw: resp,
+                    responseMeta: detailed.meta,
+                    needsFollowUp: false,
+                };
             }
-            return { ok: false, statusCode: status.code, errors, raw: resp };
+
+            // P0: STATUS 누락 내성
+            if (statusMissing && errors.length === 0) {
+                if (hasCompileSuccessful) {
+                    return {
+                        ok: true,
+                        statusCode: 0,
+                        errors,
+                        raw: resp,
+                        responseMeta: detailed.meta,
+                        note: 'STATUS missing tolerated by compile-success marker',
+                        needsFollowUp: false,
+                    };
+                }
+
+                if (hasCompilePassLog) {
+                    return {
+                        ok: false,
+                        statusCode: status.code,
+                        errors,
+                        raw: resp,
+                        responseMeta: detailed.meta,
+                        note: 'STATUS missing with compile-pass logs; follow-up required',
+                        needsFollowUp: true,
+                    };
+                }
+            }
+
+            return {
+                ok: false,
+                statusCode: status.code,
+                errors,
+                raw: resp,
+                responseMeta: detailed.meta,
+                needsFollowUp: false,
+            };
         } catch (e: any) {
             const errText = e.message || '';
-            return { ok: false, statusCode: -9999, errors: parseCompileErrors(errText), raw: errText };
+            return {
+                ok: false,
+                statusCode: -9999,
+                errors: parseCompileErrors(errText),
+                raw: errText,
+                needsFollowUp: false,
+            };
         }
     }
 
@@ -332,8 +409,17 @@ export async function deploy(
             statusCode: cr.statusCode,
             raw: cr.raw,
             errors: cr.errors,
+            responseMeta: cr.responseMeta,
+            note: cr.note,
         });
         pushTrace(`│ RAW ${rawPreview(cr.raw) || '(empty)'}`);
+        if (cr.note) {
+            pushTrace(`│ NOTE ${cr.note}`);
+        }
+
+        if (cr.responseMeta && !cr.responseMeta.responseComplete) {
+            pushTrace(`│ META responseComplete=false bytesReceived=${cr.responseMeta.bytesReceived} lastChunkAt=${cr.responseMeta.lastChunkAt} idleTimeoutMs=${cr.responseMeta.idleTimeoutMs}`);
+        }
 
         if (cr.ok) {
             if (isControllerNonBlockingStatus(cr.statusCode)) {
@@ -343,6 +429,24 @@ export async function deploy(
             compiled = true;
             pushTrace(`│ ✔ Compile success: ${candidate}`);
             break;
+        }
+
+        // STATUS 누락 + pass 로그 케이스는 즉시 실패하지 않고 보강 판정 1회 수행
+        if (cr.needsFollowUp) {
+            pushTrace('│ ⚠ Compile STATUS 누락 감지: 보강 판정(Show Thread 1회)');
+            const follow = await runStatusCommand('Show Thread');
+            pushTrace(`│ RAW ${rawPreview(follow.raw) || '(empty)'}`);
+            if (follow.ok) {
+                const warning = `Compile ${candidate}: STATUS 누락 응답을 보강 판정(Show Thread)으로 성공 처리`;
+                result.precheckWarnings.push(warning);
+                result.projectName = candidate;
+                result.compileErrors = [];
+                compiled = true;
+                pushTrace(`│ ✔ Compile success (STATUS missing tolerated): ${candidate}`);
+                pushTrace(`│ ⚠ ${warning}`);
+                break;
+            }
+            pushTrace(`│ ⚠ Follow-up failed: STATUS ${follow.statusCode}: ${follow.message || 'Unknown error'}`);
         }
 
         result.compileErrors = cr.errors;
@@ -365,6 +469,8 @@ export async function deploy(
                 statusCode: cr2.statusCode,
                 raw: cr2.raw,
                 errors: cr2.errors,
+                responseMeta: cr2.responseMeta,
+                note: cr2.note,
             });
             if (cr2.ok) {
                 result.projectName = candidate;
@@ -395,8 +501,13 @@ export async function deploy(
                 statusCode: cr2.statusCode,
                 raw: cr2.raw,
                 errors: cr2.errors,
+                responseMeta: cr2.responseMeta,
+                note: cr2.note,
             });
             if (cr2.ok) {
+                const warning = `Pre-check warning: Compile by name returned ${cr.statusCode}, but Load ${loadPath} + Compile succeeded`;
+                result.precheckWarnings.push(warning);
+                pushTrace(`│ ⚠ ${warning}`);
                 result.projectName = candidate;
                 result.compileErrors = [];
                 compiled = true;

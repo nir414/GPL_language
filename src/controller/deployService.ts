@@ -72,6 +72,8 @@ export async function deploy(
         output.appendLine(line);
     };
 
+    const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
     const rawPreview = (raw: string): string => {
         const compact = raw.replace(/\r/g, '').replace(/\n+/g, ' | ').trim();
         return compact.length > 260 ? `${compact.slice(0, 260)}…` : compact;
@@ -238,6 +240,8 @@ export async function deploy(
     if (token?.isCancellationRequested) { return result; }
 
     const compileCandidates = [...new Set([projectName, gprInfo.projectName, folderName].filter(Boolean))];
+    const transientCompileStatusCodes = new Set([-742, -746, -752]);
+    const transientCompileRetryDelayMs = Math.max(250, Math.floor(cfg.timeoutMs / 20));
     result.attemptedProjectNames = compileCandidates;
     pushTrace(`│ Candidates: ${compileCandidates.join(' -> ')}`);
     let compiled = false;
@@ -401,9 +405,30 @@ export async function deploy(
         return false;
     }
 
+    // 업로드된 /flash 프로젝트 복사본을 실제 컴파일 대상으로 강제 동기화한다.
+    // 이유: 이미 로드된 /GPL 프로젝트가 남아 있으면, Compile <name>이 로컬 최신 업로드가 아닌
+    //      이전 로드본을 대상으로 실행될 수 있어 오판정(예: 과거 컴파일 에러 재발견)이 발생한다.
+    const reloadTargets = [...new Set(compileCandidates)];
+    pushTrace(`│ Sync loaded project with uploaded copy`);
+    for (const target of reloadTargets) {
+        const unloaded = await tryUnload(target);
+        if (!unloaded) {
+            pushTrace(`│ ⚠ Unload failed but continue: ${target}`);
+        }
+    }
+    const synced = await ensureLoadedFromFtpPath(reloadTargets[0] || projectName);
+    if (!synced) {
+        pushTrace('│ ✘ Failed to load uploaded project copy before compile');
+        result.failedPhase = 'COMPILE';
+        result.failedCommand = `Load ${loadPath}`;
+        result.failedStatusCode = lastCompileFailure?.code;
+        result.failedStatusMessage = lastCompileFailure?.message || 'Failed to sync uploaded copy before compile';
+        return result;
+    }
+
     for (const candidate of compileCandidates) {
         pushTrace(`│ CMD Compile ${candidate}`);
-        const cr = await tryCompile(candidate);
+        let cr = await tryCompile(candidate);
         result.compileAttemptLogs.push({
             command: `Compile ${candidate}`,
             statusCode: cr.statusCode,
@@ -419,6 +444,27 @@ export async function deploy(
 
         if (cr.responseMeta && !cr.responseMeta.responseComplete) {
             pushTrace(`│ META responseComplete=false bytesReceived=${cr.responseMeta.bytesReceived} lastChunkAt=${cr.responseMeta.lastChunkAt} idleTimeoutMs=${cr.responseMeta.idleTimeoutMs}`);
+        }
+
+        // STATUS -742/-746/-752이면서 컴파일 에러가 파싱되지 않은 경우는
+        // 일시적 컨트롤러 상태일 수 있어 1회 재시도한다.
+        if (!cr.ok && transientCompileStatusCodes.has(cr.statusCode) && cr.errors.length === 0) {
+            pushTrace(`│ ⚠ Transient STATUS ${cr.statusCode}. retry in ${transientCompileRetryDelayMs}ms`);
+            await sleep(transientCompileRetryDelayMs);
+            const retry = await tryCompile(candidate);
+            result.compileAttemptLogs.push({
+                command: `Compile ${candidate} (retry transient)` ,
+                statusCode: retry.statusCode,
+                raw: retry.raw,
+                errors: retry.errors,
+                responseMeta: retry.responseMeta,
+                note: retry.note,
+            });
+            pushTrace(`│ RAW ${rawPreview(retry.raw) || '(empty)'}`);
+            if (retry.note) {
+                pushTrace(`│ NOTE ${retry.note}`);
+            }
+            cr = retry;
         }
 
         if (cr.ok) {

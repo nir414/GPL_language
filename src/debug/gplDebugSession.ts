@@ -19,6 +19,7 @@ import {
     Source,
     Handles,
     Breakpoint,
+    InvalidatedEvent,
 } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import * as path from 'path';
@@ -38,11 +39,12 @@ import {
     parseVariable,
     parseBreakList,
     parseGpr,
+    parseErrorLog,
     isSuccess,
     StackFrameInfo,
 } from '../controller/responseParser';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
-import { fireDebugThreadsUpdated } from '../controller/debugBridge';
+import { fireDebugThreadsUpdated, onDebugPollTrigger } from '../controller/debugBridge';
 
 // ─── Launch/Attach argument interfaces ───────────────────
 
@@ -78,6 +80,8 @@ type PendingAction = 'step' | 'pause' | 'entry' | 'continue' | null;
 // ─── Session ─────────────────────────────────────────────
 
 export class GPLDebugSession extends LoggingDebugSession {
+    private static readonly MIN_DEBUG_POLL_INTERVAL_MS = 1000;
+    private static readonly MAX_DEBUG_POLL_INTERVAL_MS = 5000;
 
     // Thread name ↔ integer ID (DAP requires integer thread IDs)
     private _threadNameToId = new Map<string, number>();
@@ -115,8 +119,21 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Pending action — determines StoppedEvent reason
     private _pendingAction: PendingAction = null;
     private _pendingThreadId: number | undefined;
-    // continue 직후 paused 상태 재관측 횟수(빠른 상태 전이 누락 보정)
-    private _pendingContinuePausedSeen = 0;
+    // Continue 후 Running 상태를 실제로 관측했는지 여부.
+    // paused→paused 휴리스틱 대신 "Continue 후 한 번이라도 Running이 보였고, 다시 Paused가 됨"을
+    // 확인해야 신뢰 가능한 stop 이벤트로 인정한다.
+    private _pendingContinueSawRunning = false;
+
+    // 사용자 액션(step/continue/pause/disconnect) 처리 중 플래그.
+    // 이 플래그가 켜져 있으면 Show Thread 폴링을 보류해서 1402 큐에
+    // 사용자 명령이 폴 뒤에 끼는 지연을 방지한다.
+    private _userActionInFlight = false;
+
+    // Stack frame cache — pending step/continue 동안 UI에 반환할 직전 프레임 캐시
+    private _cachedFrames = new Map<string, StackFrameInfo[]>();
+
+    // Session-level disposables — disconnectRequest에서 정리
+    private _disposables: vscode.Disposable[] = [];
 
     // Breakpoint tracking — file basename → set of line numbers
     private _breakpoints = new Map<string, Set<number>>();
@@ -237,16 +254,25 @@ export class GPLDebugSession extends LoggingDebugSession {
             port: args.controllerPort ?? baseCfg.port,
         };
 
-        // 디버그 세션은 빠른 응답이 필요하므로 폴링 간격을 짧게 설정
-        // (사이드바 트리는 5000ms라도 디버거는 500ms가 적절)
+        // 디버그 세션 폴링 간격은 사용자 설정을 우선하되,
+        // 과도한 트래픽을 막기 위해 안전 범위(1s~5s)로 제한한다.
+        // 즉시 반응이 필요한 step/continue는 _fastPoll()과 1403 트리거가 담당한다.
         const cfgSection = vscode.workspace.getConfiguration('gpl.controller');
         const userInterval = cfgSection.get<number>('threadPollIntervalMs') ?? 5000;
-        this._pollIntervalMs = Math.min(userInterval, 500);
+        this._pollIntervalMs = Math.min(
+            GPLDebugSession.MAX_DEBUG_POLL_INTERVAL_MS,
+            Math.max(GPLDebugSession.MIN_DEBUG_POLL_INTERVAL_MS, userInterval),
+        );
+        this._log(
+            `폴링 간격 적용: user=${userInterval}ms, effective=${this._pollIntervalMs}ms ` +
+            `(fast poll: 500ms x 2, 1403 trigger: on data)`
+        );
 
         // Verify controller is reachable
         this._log(`제어기 연결 중: ${this._config.ip}:${this._config.port}`);
         try {
-            const resp = await sendCommand('ErrorLog', this._config, 5000);
+            const preflightTimeoutMs = Math.max(5000, this._config.timeoutMs);
+            const resp = await sendCommand('ErrorLog', this._config, preflightTimeoutMs);
             if (!resp.includes('<STATUS>')) {
                 this.sendErrorResponse(response, {
                     id: 1001,
@@ -314,6 +340,17 @@ export class GPLDebugSession extends LoggingDebugSession {
         // Start fast polling to quickly detect entry break, then switch to normal
         this._fastPoll();
 
+        // 1403 데이터 도착 시 즉시 Show Thread 폴을 트리거.
+        // step/continue 완료 신호(<E>N,N</E>)가 오면 폴링 타이머 대기 없이 바로 상태를 확인한다.
+        this._disposables.push(
+            onDebugPollTrigger(() => {
+                if (this._isConnected && (this._pendingAction === 'step' || this._pendingAction === 'continue' || this._pendingAction === 'entry')) {
+                    this._log('[1403] 데이터 감지 → 즉시 폴 트리거');
+                    void this._pollThreadStates();
+                }
+            }),
+        );
+
         this.sendResponse(response);
 
         // InitializedEvent를 여기서 전송 — VS Code는 이 이벤트 수신 후
@@ -323,11 +360,13 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     protected async disconnectRequest(
         response: DebugProtocol.DisconnectResponse,
-        args: DebugProtocol.DisconnectArguments,
+        _args: DebugProtocol.DisconnectArguments,
     ): Promise<void> {
         this._stopPolling();
+        this._userActionInFlight = true;
 
-        // Clear all breakpoints on the controller
+        // Clear all breakpoints on the controller — 디버거 종료 후에 옛 BP가 잔존하면
+        // 다음 세션에서 중복 등록될 수 있으므로 깔끔하게 정리한다.
         if (this._isConnected && this._projectName) {
             for (const [file, lines] of this._breakpoints) {
                 for (const line of lines) {
@@ -336,15 +375,9 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
             this._log('모든 브레이크포인트 해제 완료');
 
-            // attach 세션에서는 disconnect 시 기본적으로 프로젝트를 정지한다.
-            // Paused 상태로 남겨두면 제어기에 좀비 쓰레드가 남기 때문.
-            // terminateDebuggee가 명시적 false일 때만 Stop을 건너뛴다.
-            if (args.terminateDebuggee !== false) {
-                await this._sendCmd(`Stop ${this._projectName}`);
-                this._log(`프로젝트 정지: ${this._projectName}`);
-            } else {
-                this._log('프로젝트 유지 (terminateDebuggee=false)');
-            }
+            // Disconnect는 "VS Code 디버그 세션 종료"일 뿐 제어기 측 프로젝트 실행은 그대로 둔다.
+            // 사용자가 명시적으로 중지를 원하면 GPL: 모든 쓰레드 중지 / 쓰레드 정지 명령을 사용한다.
+            this._log('프로젝트 실행 유지 (디버거만 분리)');
         }
 
         this._breakpoints.clear();
@@ -353,9 +386,12 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._configurationDone = false;
         this._queuedStoppedEvents = [];
         this._pendingAction = null;
-        this._pendingContinuePausedSeen = 0;
+        this._pendingContinueSawRunning = false;
         this._clearStaleState();
         this._deployDiagnostics?.clear();
+        // 세션 이벤트 구독 해제 (1403 폴 트리거 등)
+        this._disposables.forEach(d => d.dispose());
+        this._disposables = [];
         this._log('디버거 연결 해제');
         this.sendResponse(response);
     }
@@ -472,7 +508,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         const dapThreads: Thread[] = [];
         for (const t of threads) {
             const id = this._getOrCreateThreadId(t.name);
-            dapThreads.push(new Thread(id, t.name));
+            dapThreads.push(new Thread(id, this._formatThreadLabel(t.name, t.state)));
         }
 
         response.body = { threads: dapThreads };
@@ -494,7 +530,16 @@ export class GPLDebugSession extends LoggingDebugSession {
             return;
         }
 
-        const frames = await this._getThreadFrames(threadName);
+        // step/continue 실행 중에는 TCP 명령을 보내지 않고 캐시된 프레임을 반환.
+        // 이로써 직렬 큐에 Show Stack이 쌓이지 않아 폴링 지연이 없어진다.
+        let frames: StackFrameInfo[];
+        if (this._pendingAction === 'step' || this._pendingAction === 'continue') {
+            frames = this._cachedFrames.get(threadName) ?? [];
+            this._log(`stackTraceRequest: pendingAction=${this._pendingAction}, 캐시 프레임 반환 (${frames.length}개)`);
+        } else {
+            frames = await this._getThreadFrames(threadName);
+        }
+
         const startFrame = args.startFrame ?? 0;
         const levels = args.levels ?? frames.length;
         const endFrame = Math.min(startFrame + levels, frames.length);
@@ -559,6 +604,14 @@ export class GPLDebugSession extends LoggingDebugSession {
         const variables: DebugProtocol.Variable[] = [];
 
         if (!scopeInfo) {
+            response.body = { variables };
+            this.sendResponse(response);
+            return;
+        }
+
+        // step/continue 실행 중에는 TCP 명령 없이 빈 목록을 즉시 반환.
+        // Watch 패널이 실행 중에도 계속 폴링하는데 이게 직렬 큐를 막는 주요 원인.
+        if (this._pendingAction === 'step' || this._pendingAction === 'continue') {
             response.body = { variables };
             this.sendResponse(response);
             return;
@@ -655,16 +708,21 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._clearStaleState();
             this._pendingAction = 'continue';
             this._pendingThreadId = args.threadId;
-            this._pendingContinuePausedSeen = 0;
+            this._pendingContinueSawRunning = false;
 
-            // If thread is in Error state, use -noerror to skip the failed step
-            const state = this._previousThreadStates.get(threadName);
-            if (state === 'Error') {
-                await this._sendCmd(`Continue ${threadName} -noerror`);
-                this._log(`Continue ${threadName} -noerror (다음 중단점 또는 종료까지)`);
-            } else {
-                await this._sendCmd(`Continue ${threadName}`);
-                this._log(`Continue ${threadName} (다음 중단점 또는 종료까지)`);
+            this._userActionInFlight = true;
+            try {
+                // If thread is in Error state, use -noerror to skip the failed step
+                const state = this._previousThreadStates.get(threadName);
+                if (state === 'Error') {
+                    await this._sendCmd(`Continue ${threadName} -noerror`);
+                    this._log(`Continue ${threadName} -noerror (다음 중단점 또는 종료까지)`);
+                } else {
+                    await this._sendCmd(`Continue ${threadName}`);
+                    this._log(`Continue ${threadName} (다음 중단점 또는 종료까지)`);
+                }
+            } finally {
+                this._userActionInFlight = false;
             }
 
             // Continue 직후 빠른 재정지를 놓치지 않도록 fast poll 사용
@@ -683,9 +741,13 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._clearStaleState();
             this._pendingAction = 'step';
             this._pendingThreadId = args.threadId;
-            await this._sendCmd(`Step ${threadName} -over`);
-            this._log(`Step ${threadName} -over`);
-            // Trigger fast polling to detect step completion quickly
+            this._userActionInFlight = true;
+            try {
+                await this._sendCmd(`Step ${threadName} -over`);
+                this._log(`Step ${threadName} -over`);
+            } finally {
+                this._userActionInFlight = false;
+            }
             this._fastPoll();
         }
         this.sendResponse(response);
@@ -700,8 +762,13 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._clearStaleState();
             this._pendingAction = 'step';
             this._pendingThreadId = args.threadId;
-            await this._sendCmd(`Step ${threadName} -into`);
-            this._log(`Step ${threadName} -into`);
+            this._userActionInFlight = true;
+            try {
+                await this._sendCmd(`Step ${threadName} -into`);
+                this._log(`Step ${threadName} -into`);
+            } finally {
+                this._userActionInFlight = false;
+            }
             this._fastPoll();
         }
         this.sendResponse(response);
@@ -716,8 +783,13 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._clearStaleState();
             this._pendingAction = 'step';
             this._pendingThreadId = args.threadId;
-            await this._sendCmd(`Step ${threadName} -out`);
-            this._log(`Step ${threadName} -out`);
+            this._userActionInFlight = true;
+            try {
+                await this._sendCmd(`Step ${threadName} -out`);
+                this._log(`Step ${threadName} -out`);
+            } finally {
+                this._userActionInFlight = false;
+            }
             this._fastPoll();
         }
         this.sendResponse(response);
@@ -731,8 +803,13 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (threadName) {
             this._pendingAction = 'pause';
             this._pendingThreadId = args.threadId;
-            await this._sendCmd(`Break ${threadName}`);
-            this._log(`Break ${threadName} (pause)`);
+            this._userActionInFlight = true;
+            try {
+                await this._sendCmd(`Break ${threadName}`);
+                this._log(`Break ${threadName} (pause)`);
+            } finally {
+                this._userActionInFlight = false;
+            }
             this._fastPoll();
         }
         this.sendResponse(response);
@@ -749,6 +826,14 @@ export class GPLDebugSession extends LoggingDebugSession {
         const expression = args.expression.trim();
         if (!expression) {
             response.body = { result: '', variablesReference: 0 };
+            this.sendResponse(response);
+            return;
+        }
+
+        // step/continue 실행 중에는 Watch/hover 평가 없이 즉시 반환.
+        // 이로써 Show Variable 명령이 직렬 큐에 쌓이지 않는다.
+        if (this._pendingAction === 'step' || this._pendingAction === 'continue') {
+            response.body = { result: '(실행 중)', variablesReference: 0 };
             this.sendResponse(response);
             return;
         }
@@ -827,6 +912,21 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Internal helpers
     // ═══════════════════════════════════════════════════════
 
+    /** Format thread label shown in VS Code CALL STACK panel: "ThreadName  [▶ Running]" */
+    private _formatThreadLabel(name: string, state: string): string {
+        const icons: Record<string, string> = {
+            Running:  '▶',
+            Idle:     '○',
+            Break:    '⏸',
+            Paused:   '⏸',
+            Error:    '⚠',
+            Stopping: '■',
+            Stopped:  '■',
+        };
+        const icon = icons[state] ?? '?';
+        return `${name}  [${icon} ${state}]`;
+    }
+
     private _getOrCreateThreadId(name: string): number {
         let id = this._threadNameToId.get(name);
         if (id === undefined) {
@@ -863,6 +963,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._variableHandles.reset();
         this._frameIdToInfo.clear();
         this._frameIdCounter = 0;
+        this._cachedFrames.clear();
     }
 
     /**
@@ -1018,6 +1119,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         const resp = await this._sendCmd(`Show Stack ${threadName}`);
         const frames = resp ? parseStack(resp) : [];
         if (frames.length > 0) {
+            this._cachedFrames.set(threadName, frames);
             return frames;
         }
 
@@ -1025,7 +1127,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         const detail = detailResp ? parseThreadDetail(detailResp) : null;
         if (detail?.file && detail.fileLine > 0) {
             this._log(`Show Stack ${threadName} → 0 frames, Show Thread fallback 사용 (${detail.file}:${detail.fileLine})`);
-            return [{
+            const fallback: StackFrameInfo[] = [{
                 frameIndex: 0,
                 project: detail.project,
                 process: detail.process || threadName,
@@ -1034,6 +1136,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                 fileLine: detail.fileLine,
                 size: 0,
             }];
+            this._cachedFrames.set(threadName, fallback);
+            return fallback;
         }
 
         return [];
@@ -1279,6 +1383,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     private async _emitErrorLocationEvent(threadId: number, threadName: string, statusText: string): Promise<void> {
         const frames = await this._getThreadFrames(threadName);
         const top = frames[0];
+        const errorDetail = await this._getThreadErrorDetail(threadName, statusText);
         if (!this._firstErrorSeenAtByThread.has(threadName)) {
             this._firstErrorSeenAtByThread.set(threadName, new Date().toISOString());
         }
@@ -1296,6 +1401,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                 threadId,
                 threadName,
                 statusText,
+                errorCode: errorDetail.code,
+                errorMessage: errorDetail.message,
+                errorLogLines: errorDetail.errorLogLines,
                 firstSeenAt,
                 lastCommand: this._lastControllerCommand,
                 stackFrames,
@@ -1311,11 +1419,51 @@ export class GPLDebugSession extends LoggingDebugSession {
             line: top.fileLine,
             process: top.process,
             statusText,
+            errorCode: errorDetail.code,
+            errorMessage: errorDetail.message,
+            errorLogLines: errorDetail.errorLogLines,
             firstSeenAt,
             lastCommand: this._lastControllerCommand,
             stackFrames,
             relatedFunctions,
         }));
+    }
+
+    private async _getThreadErrorDetail(
+        threadName: string,
+        fallbackStatus: string,
+    ): Promise<{ code?: number; message: string; errorLogLines: string[] }> {
+        let code: number | undefined;
+        let message = fallbackStatus && fallbackStatus !== 'Error' ? fallbackStatus : '';
+
+        const detailResp = await this._sendCmd(`Show Thread ${threadName}`);
+        const detail = detailResp ? parseThreadDetail(detailResp) : null;
+        if (detail) {
+            if (detail.statusCode !== 0) {
+                code = detail.statusCode;
+            }
+            if (detail.statusMessage) {
+                message = detail.statusMessage;
+            }
+        }
+
+        let errorLogLines: string[] = [];
+        const errorLogResp = await this._sendCmd('ErrorLog');
+        if (errorLogResp) {
+            errorLogLines = parseErrorLog(errorLogResp).slice(0, 5);
+        }
+
+        if (!message && errorLogLines.length > 0) {
+            message = errorLogLines[0];
+        }
+        if (!message && typeof code === 'number') {
+            message = `STATUS ${code}`;
+        }
+        if (!message) {
+            message = fallbackStatus || 'Error';
+        }
+
+        return { code, message, errorLogLines };
     }
 
     // ─── State Polling ────────────────────────────────────
@@ -1341,7 +1489,8 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     /**
      * Trigger an immediate poll after step/pause commands.
-     * Schedules 3 rapid polls (100ms apart) then returns to normal interval.
+     * 1403 즉시 폴 트리거와 함께 사용하므로 2회×500ms로 줄임.
+     * step 완료 신호는 1403 이벤트가 담당하고, 이 fast poll은 백업 역할만 한다.
      */
     private _fastPoll(): void {
         this._stopPolling();
@@ -1356,7 +1505,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             void (async () => {
                 await this._pollThreadStates();
                 count++;
-                if (count >= 5) {
+                if (count >= 2) {
                     if (this._fastPollTimer) {
                         clearInterval(this._fastPollTimer);
                         this._fastPollTimer = undefined;
@@ -1365,7 +1514,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     this._startPolling();
                 }
             })();
-        }, 300);
+        }, 500);
     }
 
     // 첫 N회 폴링에서 raw 응답을 로깅하여 진단 지원
@@ -1374,6 +1523,9 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     private async _pollThreadStates(): Promise<void> {
         if (!this._isConnected || this._pollInFlight) { return; }
+        // 사용자 액션(step/continue/pause/disconnect)이 진행 중이면 폴링을 보류.
+        // 폴 명령이 1402 큐에서 사용자 명령보다 먼저 자리를 차지하지 않도록 한다.
+        if (this._userActionInFlight) { return; }
         this._pollInFlight = true;
         try {
             this._pollCount++;
@@ -1432,7 +1584,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         && this._pendingThreadId === id) {
                         this._pendingAction = null;
                         this._pendingThreadId = undefined;
-                        this._pendingContinuePausedSeen = 0;
+                        this._pendingContinueSawRunning = false;
                         this._log(`쓰레드 ${name} 종료 (Continue 후 중단점 미도달/프로그램 종료)`);
                     }
 
@@ -1444,35 +1596,36 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
 
             // ── 상태 전이 감지 ──
+            let threadStateChanged = false;
             for (const t of threads) {
                 const prevState = this._previousThreadStates.get(t.name);
                 const id = this._getOrCreateThreadId(t.name);
                 const isPausedState = t.state === 'Break' || t.state === 'Paused';
 
                 if (this._pendingAction === 'continue' && this._pendingThreadId === id) {
-                    // Continue 후 상태 전이를 놓치면 paused->paused로만 보일 수 있다.
-                    // 동일 paused 상태가 2회 연속 관측되면 다음 중단점 정지로 간주한다.
-                    if (isPausedState) {
-                        this._pendingContinuePausedSeen++;
-                        if (this._pendingContinuePausedSeen >= 2) {
-                            this._pendingAction = null;
-                            this._pendingThreadId = undefined;
-                            this._pendingContinuePausedSeen = 0;
+                    // Continue 정지 감지: Running을 한 번이라도 관측한 뒤 다시 Paused/Break가 보이면
+                    // 진짜 새 정지(다음 BP / 프로그램 휴지)로 간주. paused→paused 휴리스틱이
+                    // "Continue가 아직 반영 안 된 직전 정지"를 오인하는 문제를 피한다.
+                    if (t.state === 'Running') {
+                        this._pendingContinueSawRunning = true;
+                    } else if (isPausedState && this._pendingContinueSawRunning) {
+                        this._pendingAction = null;
+                        this._pendingThreadId = undefined;
+                        this._pendingContinueSawRunning = false;
 
-                            if (!this._configurationDone) {
-                                this._queuedStoppedEvents.push({ reason: 'breakpoint', threadId: id });
-                                this._log(`쓰레드 ${t.name} Continue 후 정지 감지 → configurationDone 대기 중`);
-                            } else {
-                                this.sendEvent(new StoppedEvent('breakpoint', id));
-                                this._log(`쓰레드 ${t.name} 정지 (breakpoint)`);
-                            }
-
-                            this._previousThreadStates.set(t.name, t.state);
-                            continue;
+                        if (!this._configurationDone) {
+                            this._queuedStoppedEvents.push({ reason: 'breakpoint', threadId: id });
+                            this._log(`쓰레드 ${t.name} Continue 후 정지 감지 → configurationDone 대기 중`);
+                        } else {
+                            this.sendEvent(new StoppedEvent('breakpoint', id));
+                            this._log(`쓰레드 ${t.name} 정지 (breakpoint)`);
                         }
-                    } else {
-                        this._pendingContinuePausedSeen = 0;
+
+                        this._previousThreadStates.set(t.name, t.state);
+                        if (t.state !== prevState) { threadStateChanged = true; }
+                        continue;
                     }
+                    // sawRunning=false 상태의 paused 관측은 Continue 적용 전 잔재로 보고 대기.
                 }
 
                 // Step 명령은 폴링 사이에 Running 상태를 놓칠 수 있으므로,
@@ -1480,7 +1633,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 if (this._pendingAction === 'step' && this._pendingThreadId === id && isPausedState) {
                     this._pendingAction = null;
                     this._pendingThreadId = undefined;
-                    this._pendingContinuePausedSeen = 0;
+                    this._pendingContinueSawRunning = false;
 
                     if (!this._configurationDone) {
                         this._queuedStoppedEvents.push({ reason: 'step', threadId: id });
@@ -1491,6 +1644,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     }
 
                     this._previousThreadStates.set(t.name, t.state);
+                    if (t.state !== prevState) { threadStateChanged = true; }
                     continue;
                 }
 
@@ -1510,7 +1664,7 @@ export class GPLDebugSession extends LoggingDebugSession {
 
                     this._pendingAction = null;
                     this._pendingThreadId = undefined;
-                    this._pendingContinuePausedSeen = 0;
+                    this._pendingContinueSawRunning = false;
 
                     // configurationDone 전이면 큐에 보관 (DAP 프로토콜 준수)
                     if (!this._configurationDone) {
@@ -1526,7 +1680,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 if (t.state === 'Error' && prevState !== 'Error') {
                     this._pendingAction = null;
                     this._pendingThreadId = undefined;
-                    this._pendingContinuePausedSeen = 0;
+                    this._pendingContinueSawRunning = false;
 
                     await this._emitErrorLocationEvent(id, t.name, t.lastStatus || 'Error');
 
@@ -1544,6 +1698,10 @@ export class GPLDebugSession extends LoggingDebugSession {
                 }
 
                 this._previousThreadStates.set(t.name, t.state);
+                if (t.state !== prevState) { threadStateChanged = true; }
+            }
+            if (threadStateChanged) {
+                this.sendEvent(new InvalidatedEvent(['threads']));
             }
         } finally {
             this._pollInFlight = false;

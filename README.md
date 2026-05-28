@@ -1,6 +1,6 @@
 # GPL Language Support
 
-현재 버전: **v0.5.87**
+현재 버전: **v0.5.101**
 GPL (Guidance Programming Language) 지원 VS Code 확장.
 IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·배포·디버깅**까지 통합 제공합니다.
 
@@ -187,7 +187,7 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
 | `gpl.runtimeConsole.unstableWarnCooldownMs` | `60000` | no-payload 경고 재출력 쿨다운(ms) |
 | `gpl.runtimeConsole.emptyNoticeEvery` | `5` | 반복 no-payload 상세 로그를 N회마다 출력 |
 | `gpl.runtimeConsole.immediateEofReconnectBaseMs` | `1000` | `Immediate EOF` no-payload 세션의 재연결 base 지연(ms) |
-| `gpl.runtimeConsole.immediateEofReconnectMaxMs` | `5000` | 반복 `Immediate EOF` 세션의 재연결 최대 지연(ms) |
+| `gpl.runtimeConsole.immediateEofReconnectMaxMs` | `15000` | 반복 `Immediate EOF` 세션의 재연결 최대 지연(ms) |
 | `gpl.runtimeConsole.idleReconnectBaseMs` | `5000` | 빈 세션 재연결 적응형 base 지연(ms) |
 | `gpl.runtimeConsole.idleReconnectMaxMs` | `30000` | 빈 세션 재연결 적응형 최대 지연(ms) |
 
@@ -219,7 +219,7 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
   - `Disconnected ... Empty batch (payload 0)` : 빈 배치 세션
   - `Disconnected ... Immediate EOF (payload 0)` : 즉시 EOF 종료
   - `연결 실패: Connection refused` : 1403 서비스가 연결을 거절
-  - `⚠ 1403 비정상 징후: no payload N회 연속` : 반복 무페이로드 경고 (Robot.log 교차 검증 권장)
+  - `⚠ 1403 비정상 징후: no payload N회 연속` : 반복 무페이로드 경고 (1403 서비스 상태/런타임 출력 경로 점검 권장)
 - no-payload 반복 구간에서는 콘솔 출력이 과도해지지 않도록 상세 로그를 샘플링(`emptyNoticeEvery`)하며,
   `Immediate EOF`와 일반 idle 세션을 분리해서 적응형 재연결을 적용합니다.
 - `Immediate EOF`는 짧은 블라인드 구간이 치명적일 수 있어 빠른 재접속(`immediateEofReconnectBaseMs`~`immediateEofReconnectMaxMs`)을 사용하고,
@@ -367,7 +367,55 @@ npm run dev:watch     # watch alias (디버그 시작 전에 실행)
 
 ### 주요 변경 이력
 
-#### v0.5.77 (현재)
+#### v0.5.101 (현재)
+
+- **구문 강조 호환성 개선**: GPL 선언부/타입명에 표준 TextMate 스코프를 적용해 다양한 테마에서 색 구분이 더 잘 보이도록 개선
+  - `Class`, `Module`, `Sub`, `Function`, `Property`, `Const` 선언 이름 강조
+  - `As Type`, `New TypeName`의 타입명 강조
+
+#### v0.5.98
+
+- **배포 COMPILE 대상 정합성 보강**: 업로드 직후 `Unload -> Load(/flash/projects/<project>)` 동기화를 선행하여, 이미 로드된 `/GPL/<project>` 구버전 복사본을 컴파일하는 오판정을 완화
+- 결과적으로 `Deploy (Build Only)`/`Deploy & Run`이 "방금 업로드한 복사본" 기준으로 컴파일 검증되도록 일관성 개선
+
+#### v0.5.95
+
+- **배포 COMPILE 안정성 개선**: `Compile`에서 `STATUS -742/-746/-752`가 발생하고 컴파일 에러가 파싱되지 않으면 일시 상태로 간주해 자동 1회 재시도
+  - 짧은 컨트롤러 상태 변동으로 인한 간헐적 배포 실패를 완화
+  - 실제 컴파일 에러가 있는 경우는 기존처럼 즉시 실패 처리 유지
+
+#### v0.5.94
+
+- **1403 idle 판정 정교화**: payload 없이 종료된 세션 중 장시간 유지(기본 1500ms 이상)는 `Idle timeout` 정상 폴링으로 분류
+  - 기존처럼 모두 `Empty batch`로 누적하지 않아 `UNSTABLE noPayloadStreak` 과다 경보를 줄임
+  - `Idle timeout` 경로는 재연결 지연을 기본 idle 값으로 유지해(과도한 30초 확장 방지) 폴링 리듬 안정화
+
+#### v0.5.93
+
+- **1403 무출력 가시성 개선**: payload가 없어도 `GPL Console`에 상태 힌트를 출력
+  - `연결됨, payload 대기 중`, `Immediate EOF 폴링`, `no-payload streak` 등을 `[RT] [1403] ...` 형태로 표시
+  - 이제 콘솔이 완전히 비어 보이지 않아, "정상 idle인지 / 비정상 무출력인지"를 즉시 구분 가능
+
+#### v0.5.92
+
+- **Build Only 완료 UX 개선**: `GPL: Deploy (Build Only)`가 오류/시스템 경고 없이 정상 완료되면 1403 런타임 콘솔(`GPL Console`)을 자동으로 표시
+  - 업로드/컴파일 성공 직후 콘솔 출력 확인 흐름으로 바로 이어져 현장 확인 속도 개선
+
+#### v0.5.91
+
+- **1403 재연결 루프 완화(2차)**: 자동 `ensure/start` 호출은 더 이상 대기 중 재연결 타이머를 취소하지 않도록 조정
+  - `RECONNECT timer canceled by explicit start()` 패턴으로 인한 connect-close 가속 루프 억제
+  - `No payload/Immediate EOF` 누적 streak가 자동 호출에 의해 불필요하게 리셋되지 않도록 보존
+- **명시 사용자 액션 분리**: 사용자가 직접 실행하는 `GPL: Start Runtime Console`, `GPL: Ensure Runtime Console (1403)`만 강제 즉시 재연결 경로 사용
+  - 수동 조작의 반응성은 유지하면서, 내부/자동 경로는 비침습적으로 동작
+
+#### v0.5.90
+
+- **디버그 폴링 부하 최적화**: 디버그 세션 `Show Thread` 폴링 간격을 사용자 설정 우선(안전 범위 1000~5000ms)으로 조정해 과도한 1402 트래픽을 완화
+- **1403 무페이로드 재접속 완화**: `Immediate EOF` 반복 시 재연결 최대 지연 기본값을 `15000ms`로 상향해 장시간 빈 세션에서 연결 폭주를 억제
+- **진단 로그 강화**: attach 시 적용된 디버그 폴링 간격(`user/effective`)을 Debug Console에 명시 출력
+
+#### v0.5.77
 
 - **Copy Situation 강화(P1)**: 스냅샷에 최근 배포 결과(성공/실패, 마지막 단계, 컴파일 코드, 제어기 시스템 코드) 섹션 추가
 - **1403 상태 가시화(P1)**: 연결 섹션에 콘솔 상태/원인(연결 거부·빈 세션·즉시 EOF·소켓 에러) 표시 및 `1403 재시도 연결` 액션 추가

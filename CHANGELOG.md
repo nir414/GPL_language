@@ -2,6 +2,151 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.5.102] - 2026-05-28
+
+### Fixed
+
+- **디버거 안정성 — 제어기 단일 명령 스트림 가정 강화**: 폴링이 사용자 명령보다 1402 큐를 점유해 Step/Continue 반응이 지연되던 문제 수정
+  - 사용자 액션(step/continue/pause/disconnect) 진행 중에는 `Show Thread` 폴링을 보류 (`_userActionInFlight` 가드)
+  - 명령 간 최소 idle gap(정상 15ms / 실패 후 100ms) 도입으로 매 명령 connect/close 부담을 분산 → ECONNRESET/idle EOF 빈도 감소
+- **Continue 후 오정지 해소**: paused→paused 2회 휴리스틱 대신 "Running 한 번이라도 관측 + 다시 Paused" 명시적 상태 전이로 정지 이벤트 발사
+  - Continue 직후 폴 누락으로 인해 직전 정지 상태를 새 BP 도달로 오인하던 케이스 제거
+
+### Changed
+
+- **Disconnect 시 자동 `Stop <project>` 호출 제거**: 디버거 분리는 "VS Code 측 세션 종료"만 의미하며 제어기 측 프로젝트 실행은 보존
+  - 좀비 쓰레드 정리는 사용자가 명시적으로 `GPL: 모든 쓰레드 중지` / 개별 쓰레드 중지 명령을 사용해야 함
+  - 브레이크포인트 정리는 그대로 수행
+
+## [0.5.101] - 2026-05-20
+
+### Changed
+
+- GPL 문법 하이라이팅 확장: 표준 TextMate 스코프 기반으로 선언부/타입명 색상을 강화
+  - `Class`, `Module`, `Sub`, `Function`, `Property`, `Const` 선언 이름에 의미 스코프 부여
+  - `As Type`, `New TypeName` 위치의 타입명도 별도 스코프로 표시
+  - 커스텀 전용 스코프보다 테마 호환성이 좋은 표준 계열(`entity.name.*`, `storage.type.*`, `storage.modifier.*`) 우선 사용
+
+## [0.5.100] - 2026-05-20
+
+### Fixed
+
+- `Go to Definition`이 `Public Shared steps() As StepBatch` 같이 `Dim` 없는 `Shared` 배열 선언을 심볼 캐시에 인덱싱하지 못하던 문제 수정
+  - 파서에 `Public/Private Shared name() As Type` 패턴 분기가 없어 해당 선언이 파싱에서 누락되었음
+
+## [0.5.99] - 2026-05-20
+
+### Fixed
+
+- `Find All References`가 `steps(i).RunZeroStep(...)` 같은 배열/인덱서 기반 클래스 멤버 호출을 놓치던 문제 수정
+  - 기존 참조 검색 패턴이 `obj.Member` 형태만 주로 인식해 `arr(index).Member`, `arr(0)(1).Member`, `foo.bar(i).Member` 호출이 누락될 수 있었음
+  - 멤버 접근 정규식을 확장해 인덱서/체이닝이 포함된 qualifier도 검색 대상으로 포함
+
+## [0.5.95] - 2026-05-18
+
+### Changed
+
+- 배포 COMPILE 단계에서 `STATUS -742/-746/-752`가 발생하고 컴파일 에러가 파싱되지 않은 경우 자동 1회 재시도
+  - 일시적인 컨트롤러 상태 변동으로 인한 간헐 실패를 완화
+  - 실제 컴파일 에러가 있는 경우는 즉시 실패 처리 유지
+
+## [0.5.98] - 2026-05-20
+
+### Fixed
+
+- GPL 문법: `Public Class ClassName` 형태에서 클래스 이름이 무색이던 문제 수정
+  - 원인: 내장 VB.NET 문법의 `storage.type.asp` 패턴이 `\\s*` 접두로 `Class` 이전 공백부터 매칭 선점
+  - 수정: 클래스 선언 패턴에 `\\s*` 추가로 동일 위치 경쟁 시 GPL 패턴 우선 적용
+
+## [0.5.97] - 2026-05-20
+
+### Changed
+
+- GPL 문법 하이라이팅: `Class` / `Module` 선언 이름에 `entity.name.type` 스코프 부여
+  - `Class StepData` → `StepData`가 타입 이름 색상으로 표시됨
+  - `Module AutoAging` → `AutoAging`이 모듈 이름 색상으로 표시됨
+
+## [0.5.96] - 2026-05-18
+
+### Fixed
+
+- `Deploy (Build Only)` / `Deploy & Run`의 COMPILE 대상 동기화 강화
+  - 업로드 후 COMPILE 전에 대상 프로젝트를 `Unload -> Load(/flash/projects/<project>)`로 강제 동기화
+  - 이미 로드된 `/GPL/<project>`의 구버전 복사본을 컴파일해 과거 오류가 재발견되는 오판정 가능성을 완화
+
+## [0.5.94] - 2026-05-18
+
+### Changed
+
+- 1403 무출력 종료를 `Immediate EOF / Idle timeout / Empty batch`로 분리 판정
+  - `Idle timeout`(기본 1500ms 이상 유지 후 payload 없이 종료)은 정상 이벤트 대기 폴링으로 처리
+  - 정상 idle 세션이 `noPayloadStreak`에 누적되어 `UNSTABLE`로 과대 경보되는 문제를 완화
+- `Idle timeout` 경로 재연결은 고정 idle 지연(기본 5000ms)으로 유지
+  - 빈 세션 누적만으로 재연결 지연이 30000ms까지 커지는 현상을 줄여 가시성과 반응성 균형 개선
+
+## [0.5.93] - 2026-05-18
+
+### Changed
+
+- 1403 세션에서 payload가 없어도 `GPL Console` 채널에 상태 힌트를 출력하도록 개선
+  - `CONNECTED_NO_PAYLOAD`, `Immediate EOF` 폴링, `no-payload streak` 상황을 `[RT] [1403] ...` 라인으로 표시
+  - 런타임 이벤트가 없는 구간에서도 콘솔이 완전히 비어 보이지 않아 운영자가 상태를 즉시 판단 가능
+
+## [0.5.92] - 2026-05-18
+
+### Changed
+
+- `GPL: Deploy (Build Only)`가 오류/시스템 경고 없이 정상 완료되면 `GPL Console` 채널을 자동으로 표시
+  - 1403 런타임 콘솔 연결 직후 출력 확인 동선 단축
+
+## [0.5.91] - 2026-05-18
+
+### Performance
+
+- **1403 재연결 루프 완화(2차)**: `RuntimeConsole.start()` 기본 경로가 대기 중 재연결 타이머를 취소하지 않도록 조정
+  - 자동 `ensure/start` 호출로 `RECONNECT timer canceled by explicit start()`가 반복되며 connect/close가 가속되는 패턴을 억제
+  - no-payload/immediate-EOF 누적 streak 카운터가 자동 호출마다 리셋되지 않도록 보존해 적응형 지연 정책이 안정적으로 작동
+
+### Changed
+
+- 사용자 명령(`gpl.console.start`, `gpl.console.ensure`)만 강제 즉시 재연결 옵션을 사용하도록 분리
+  - 수동 액션 반응성은 유지
+  - 내부 자동 경로는 비침습(idempotent) 유지
+
+## [0.5.90] - 2026-05-18
+
+### Performance
+
+- **디버그 폴링 부하 완화**: 디버그 세션의 `Show Thread` 폴링 간격을 사용자 설정(`gpl.controller.threadPollIntervalMs`) 기반으로 적용하고, 안전 범위(1000~5000ms)로 제한
+  - 기존처럼 500ms로 강제되지 않아 1402 트래픽 스팸을 크게 줄임
+  - `Step/Continue` 즉시성은 기존 `_fastPoll` 및 1403 데이터 트리거 경로로 유지
+- **1403 장기 no-payload 루프 완화**: `Immediate EOF` 재연결 최대 지연 기본값을 `5000ms -> 15000ms`로 상향
+  - 장시간 이벤트 부재 구간에서 불필요한 connect/close 반복 빈도를 낮춤
+
+### Added
+
+- attach 시 적용된 디버그 폴링 간격(`user/effective`)을 Debug Console에 기록해 현장 진단 가시성 강화
+
+## [0.5.89] - 2026-05-15
+
+### Performance
+
+- **디버그 응답성 대폭 개선**: `Step -over` 실행 중 직렬 큐 혼잡 문제 해결
+  - `pendingAction`이 `step`/`continue`인 동안 `stackTraceRequest`, `variablesRequest`, `evaluateRequest`에서 TCP 명령을 전송하지 않고 즉시 반환 (캐시 프레임 또는 빈 결과)
+  - 이로써 Watch 패널/변수 패널의 자동 폴링이 직렬 큐를 막지 않아 `Show Thread` 폴링 지연 해소
+  - 예상 step latency: 5~8초 → 1~2초
+- **1403 이벤트 즉시 폴 트리거**: `RuntimeConsole.onDidReceiveData` 이벤트 추가
+  - 1403에서 raw 데이터(step 완료 `<E>N,N</E>` 포함) 수신 시 `fireDebugPollTrigger()` 호출
+  - 디버그 세션이 즉시 `_pollThreadStates()` 실행 → 폴링 타이머 대기 없이 StoppedEvent 발송
+- **`_cachedFrames`**: `_getThreadFrames()` 결과를 쓰레드별로 캐싱, step 실행 중 직전 위치 정보 제공
+- **`_fastPoll` 경량화**: 5회×300ms → 2회×500ms (1403 즉시 트리거가 백업을 담당)
+
+## [0.5.88] - 2026-05-14
+
+- 디버그 CALL STACK 패널의 쓰레드 항목에 실시간 상태 표시 추가
+  - 형식: `ThreadName  [▶ Running]`, `ThreadName  [⏸ Break]`, `ThreadName  [⚠ Error]` 등
+  - 상태 변경 시 `InvalidatedEvent(['threads'])` 전송 → VS Code가 자동으로 쓰레드 목록 갱신
+
 ## [0.5.87] - 2026-05-14
 
 - `Show Thread` 폴링을 고정 주기 `setInterval`에서 적응형 `setTimeout` 재귀 방식으로 교체

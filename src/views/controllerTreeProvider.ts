@@ -1005,7 +1005,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			lines.push(`- 마지막 소켓 오류 코드: ${runtime.lastErrorCode}`);
 		}
 		if (runtime.reconnectDelayMs) {
-			lines.push(`- 재연결 대기: ${runtime.reconnectDelayMs}ms${runtime.reconnectAttempt ? ` (attempt ${runtime.reconnectAttempt})` : ''}`);
+			lines.push(`- ${runtime.immediateEofStreak > 0 ? '폴링 대기' : '재연결 대기'}: ${runtime.reconnectDelayMs}ms${runtime.reconnectAttempt ? ` (attempt ${runtime.reconnectAttempt})` : ''}`);
 		}
 		const runtimeHypothesis = getRuntimeConsoleHypothesis(runtime);
 		if (runtimeHypothesis) {
@@ -1333,7 +1333,7 @@ function buildRuntimeConsoleTreeTooltip(
 		lines.push(`마지막 오류 코드: ${status.lastErrorCode}`);
 	}
 	if (status.reconnectDelayMs) {
-		lines.push(`재연결 대기: ${status.reconnectDelayMs}ms${status.reconnectAttempt ? ` (attempt ${status.reconnectAttempt})` : ''}`);
+		lines.push(`${status.immediateEofStreak > 0 ? '폴링 대기' : '재연결 대기'}: ${status.reconnectDelayMs}ms${status.reconnectAttempt ? ` (attempt ${status.reconnectAttempt})` : ''}`);
 	}
 	lines.push('클릭: 연결/재연결 후 로그 보기');
 	lines.push('버튼: 트래픽 보기');

@@ -2,6 +2,75 @@
 	"name": "GPL",
 	"scopeName": "source.gpl",
 	"patterns": [
+		{
+			"comment": "Class declaration — highlight modifiers, keyword, and class name",
+			"match": "(?i)\\s*((?:(?:Public|Private)\\s+)*)((Class))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "storage.modifier.gpl" },
+				"2": { "name": "storage.type.class.gpl" },
+				"3": { "name": "entity.name.type.class.gpl" }
+			}
+		},
+		{
+			"comment": "Module declaration — highlight module name",
+			"match": "(?i)\\s*((Module))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "storage.type.namespace.gpl" },
+				"2": { "name": "entity.name.namespace.gpl" }
+			}
+		},
+		{
+			"comment": "Sub declaration — highlight modifiers, keyword, and sub name",
+			"match": "(?i)\\s*((?:(?:Public|Private|Shared)\\s+)*)((Sub))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "storage.modifier.gpl" },
+				"2": { "name": "storage.type.function.gpl" },
+				"3": { "name": "entity.name.function.gpl" }
+			}
+		},
+		{
+			"comment": "Function declaration — highlight modifiers, keyword, and function name",
+			"match": "(?i)\\s*((?:(?:Public|Private|Shared)\\s+)*)((Function))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "storage.modifier.gpl" },
+				"2": { "name": "storage.type.function.gpl" },
+				"3": { "name": "entity.name.function.gpl" }
+			}
+		},
+		{
+			"comment": "Property declaration — highlight modifiers, keyword, and property name",
+			"match": "(?i)\\s*((?:(?:Public|Private|Shared|ReadOnly|WriteOnly)\\s+)*)((Property))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "storage.modifier.gpl" },
+				"2": { "name": "storage.type.function.gpl" },
+				"3": { "name": "entity.name.function.gpl" }
+			}
+		},
+		{
+			"comment": "Const declaration — highlight constant names",
+			"match": "(?i)\\s*((?:(?:Public|Private|Shared|Static)\\s+)*)((Const))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "storage.modifier.gpl" },
+				"2": { "name": "storage.type.constant.gpl" },
+				"3": { "name": "variable.other.constant.gpl" }
+			}
+		},
+		{
+			"comment": "Type annotation — highlight type names after As",
+			"match": "(?i)\\b(As)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "keyword.operator.type.gpl" },
+				"2": { "name": "storage.type.gpl" }
+			}
+		},
+		{
+			"comment": "Constructor type usage — highlight type names after New",
+			"match": "(?i)\\b(New)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "keyword.operator.new.gpl" },
+				"2": { "name": "entity.name.type.gpl" }
+			}
+		},
 		{ "include": "source.asp.vb.net" }
 	]
 }

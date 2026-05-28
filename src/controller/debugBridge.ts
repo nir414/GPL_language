@@ -15,3 +15,18 @@ export const onDebugThreadsUpdated: vscode.Event<ThreadInfo[]> = _onDebugThreads
 export function fireDebugThreadsUpdated(threads: ThreadInfo[]): void {
     _onDebugThreadsUpdated.fire(threads);
 }
+
+// ─── 1403 이벤트 → 즉시 폴 트리거 ───────────────────────
+
+const _onDebugPollTrigger = new vscode.EventEmitter<void>();
+
+/**
+ * 1403 런타임 콘솔이 데이터를 수신했을 때 구독. 제어기 상태 변경(스텝 완료, 중단점 도달 등)
+ * 신호로 활용해 폴링 타이머 대기 없이 즉시 Show Thread를 트리거한다.
+ */
+export const onDebugPollTrigger: vscode.Event<void> = _onDebugPollTrigger.event;
+
+/** extension.ts가 1403 데이터 수신 시 호출. 활성 디버그 세션에 즉시 폴을 요청한다. */
+export function fireDebugPollTrigger(): void {
+    _onDebugPollTrigger.fire();
+}

@@ -394,7 +394,7 @@ export class GPLParser {
                 });
                 continue;
             }
-            const sharedNewVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+Dim\s+(\w+)\s+As\s+New\s+(\w+)/i);
+            const sharedNewVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+(?:Dim\s+)?(\w+)\s+As\s+New\s+(\w+)/i);
             if (sharedNewVariableMatch) {
                 symbols.push({
                     name: sharedNewVariableMatch[2],
@@ -411,8 +411,8 @@ export class GPLParser {
                 continue;
             }
 
-            // Parse shared variable/constant (e.g., "Public Shared Dim echoMode As Boolean")
-            const sharedVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+Dim\s+(Const\s+)?(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
+            // Parse shared variable/constant (e.g., "Public Shared Dim echoMode As Boolean", "Public Shared x As Integer")
+            const sharedVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+(?:Dim\s+)?(Const\s+)?(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
             if (sharedVariableMatch) {
                 const isConstant = !!sharedVariableMatch[2];
                 const sharedConstValue = isConstant ? sharedVariableMatch[5]?.trim() : undefined;
@@ -428,6 +428,24 @@ export class GPLParser {
                     isShared: true,
                     returnType: sharedVariableMatch[4],
                     value: sharedConstValue || undefined
+                });
+                continue;
+            }
+
+            // Parse shared array variable without Dim (e.g., "Public Shared steps() As StepBatch")
+            const sharedArrayNoDimMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
+            if (sharedArrayNoDimMatch) {
+                symbols.push({
+                    name: sharedArrayNoDimMatch[2],
+                    kind: GPLSymbolKind.Variable,
+                    range: { start: 0, end: line.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    accessModifier: sharedArrayNoDimMatch[1].toLowerCase() as 'public' | 'private',
+                    isShared: true,
+                    returnType: sharedArrayNoDimMatch[3] + '[]'
                 });
                 continue;
             }

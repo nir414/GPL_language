@@ -126,9 +126,18 @@ export function sendCommand(
 
 let controllerCommandQueue: Promise<void> = Promise.resolve();
 
+// 명령 간 최소 idle gap. 제어기는 단일 클라이언트/단일 명령 스트림을 가정하므로
+// 매 명령 connect→write→close 사이에 짧은 휴식 시간을 두어 ECONNRESET/idle EOF를 줄인다.
+// 정상 완료 후: 15ms / 실패 후: 100ms (재시도 시 부담 완화).
+const INTER_COMMAND_GAP_MS = 15;
+const INTER_COMMAND_GAP_AFTER_FAIL_MS = 100;
+
 function enqueueControllerCommand<T>(task: () => Promise<T>): Promise<T> {
 	const run = controllerCommandQueue.then(task, task);
-	controllerCommandQueue = run.then(() => undefined, () => undefined);
+	controllerCommandQueue = run.then(
+		() => new Promise<void>(r => setTimeout(r, INTER_COMMAND_GAP_MS)),
+		() => new Promise<void>(r => setTimeout(r, INTER_COMMAND_GAP_AFTER_FAIL_MS)),
+	);
 	return run;
 }
 
@@ -311,7 +320,9 @@ export async function trySendCommand(
  */
 export async function testConnection(config?: Partial<ControllerConfig>): Promise<boolean> {
 	try {
-		const resp = await sendCommand('ErrorLog', config, 5000);
+		const merged = { ...getControllerConfig(), ...(config ?? {}) };
+		const probeTimeoutMs = Math.max(5000, merged.timeoutMs);
+		const resp = await sendCommand('ErrorLog', merged, probeTimeoutMs);
 		return resp.includes('<STATUS>');
 	} catch {
 		return false;

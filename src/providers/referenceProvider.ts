@@ -24,6 +24,21 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
+    private buildQualifiedMemberPattern(escapedQualifier: string, escapedWord: string): string {
+        return `\\b${escapedQualifier}\\s*\\.\\s*${escapedWord}\\b`;
+    }
+
+    private buildAnyQualifierPattern(escapedWord: string): string {
+        // Match member access ending in ".Member" while allowing GPL array/index suffixes
+        // in qualifier segments, e.g.:
+        // - obj.Member
+        // - steps(i).RunZeroStep
+        // - arr(0)(1).Member
+        // - foo.bar(i).Member
+        const qualifierSegment = `\\b\\w+(?:\\s*\\([^\\r\\n()]*\\))*`;
+        return `${qualifierSegment}(?:\\s*\\.\\s*${qualifierSegment})*\\s*\\.\\s*${escapedWord}\\b`;
+    }
+
     private tryGetDefinitionSymbolAtPosition(
         document: vscode.TextDocument,
         position: vscode.Position,
@@ -299,9 +314,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const escapedModule = targetModule ? this.escapeRegExp(targetModule) : undefined;
         const escapedClass = targetClass ? this.escapeRegExp(targetClass) : undefined;
 
-        const qualifiedRegex = (q: string) => new RegExp(`\\b${q}\\s*\\.\\s*${escapedWord}\\b`, 'gi');
-        const qualifiedPattern = (q: string) => `\\b${q}\\s*\\.\\s*${escapedWord}\\b`;
-        const anyQualifierPattern = `\\b\\w+\\s*\\.\\s*${escapedWord}\\b`;
+        const qualifiedRegex = (q: string) => new RegExp(this.buildQualifiedMemberPattern(q, escapedWord), 'gi');
+        const qualifiedPattern = (q: string) => this.buildQualifiedMemberPattern(q, escapedWord);
+        const anyQualifierPattern = this.buildAnyQualifierPattern(escapedWord);
         const unqualifiedRegex = new RegExp(`\\b${escapedWord}\\b`, 'gi');
         const unqualifiedPattern = `\\b${escapedWord}\\b`;
 

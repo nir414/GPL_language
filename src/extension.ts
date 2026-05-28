@@ -11,7 +11,7 @@ import { GPLCodeActionProvider } from './providers/codeActionProvider';
 import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
 import { GPLHoverProvider } from './providers/hoverProvider';
 import { SymbolCache } from './symbolCache';
-import { getTraceServerLevel, isTraceOn, isGplDocument } from './config';
+import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile } from './config';
 
 // Controller integration
 import { testConnection, getControllerConfig, sendCommand, setTrafficChannel, getTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
@@ -34,6 +34,7 @@ import {
 	getErrorCodeHint,
 } from './controller/responseParser';
 import { startLiveLogTerminal, stopLiveLogTerminal, appendLiveLog, isLiveLogTerminalEnabled } from './log/liveLogTerminal';
+import { fireDebugPollTrigger } from './controller/debugBridge';
 
 // Global output channel for GPL extension logging
 let outputChannel: vscode.OutputChannel;
@@ -45,6 +46,7 @@ let controllerTree: ControllerTreeProvider | undefined;
 let deployDiagnostics: vscode.DiagnosticCollection;
 let runtimeConsoleHooksBound = false;
 let lastDeploySnapshot: SituationDeploySnapshot | undefined;
+let isDebugSessionActive = false;
 const deployOutcomeHistory: Array<{ mode: 'Build' | 'Deploy & Run'; signature: string; timestamp: number; summary: string }> = [];
 const recentDebugLogLines: string[] = [];
 let lastRuntimeErrorContext: RuntimeErrorContext | undefined;
@@ -69,6 +71,11 @@ function ensureRuntimeConsole(): RuntimeConsole {
 		});
 		runtimeConsole.onDidStatusChanged((status) => {
 			controllerTree?.setRuntimeConsoleStatus(status);
+		});
+		runtimeConsole.onDidReceiveData(() => {
+			if (isDebugSessionActive) {
+				fireDebugPollTrigger();
+			}
 		});
 		runtimeConsoleHooksBound = true;
 	}
@@ -327,6 +334,35 @@ export function activate(context: vscode.ExtensionContext) {
 		outputChannel.show(true);
 	}
 
+	async function normalizeGplDocumentLanguage(document: vscode.TextDocument, reason: string): Promise<vscode.TextDocument> {
+		if (!isGplFile(document) || document.languageId === 'gpl') {
+			return document;
+		}
+
+		try {
+			const normalized = await vscode.languages.setTextDocumentLanguage(document, 'gpl');
+			if (isTraceVerbose(vscode.workspace)) {
+				logOutput(`[Language] Normalized ${path.basename(document.uri.fsPath)}: ${document.languageId} -> gpl (${reason})`);
+			}
+			return normalized;
+		} catch (err: any) {
+			logOutput(`[Language] Failed to normalize ${path.basename(document.uri.fsPath)} (${reason}): ${err?.message ?? err}`);
+			return document;
+		}
+	}
+
+	async function normalizeOpenGplDocuments(reason: string): Promise<void> {
+		for (const document of vscode.workspace.textDocuments) {
+			if (!isGplFile(document) || document.languageId === 'gpl') {
+				continue;
+			}
+
+			await normalizeGplDocumentLanguage(document, reason);
+		}
+	}
+
+	void normalizeOpenGplDocuments('activation');
+
 	function hasOpenGplContext(): boolean {
 		return vscode.workspace.textDocuments.some(doc => isGplDocument(doc));
 	}
@@ -578,6 +614,10 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.workspace.onDidOpenTextDocument((document) => {
 			if (isGplDocument(document)) {
+				if (document.languageId !== 'gpl') {
+					void normalizeGplDocumentLanguage(document, 'document opened');
+					return;
+				}
 				void ensureSymbolCacheInitialized('GPL document opened');
 				// Skip during refresh — indexWorkspace already calls updateDocument
 				if (!symbolCache.isRefreshing) {
@@ -609,7 +649,7 @@ export function activate(context: vscode.ExtensionContext) {
 	statusBar = new ConnectionStatusBar();
 	context.subscriptions.push(statusBar);
 
-	let isDebugSessionActive = false;
+	isDebugSessionActive = false; // reset on activate (declared at module level)
 	function updateUiContexts(connected: boolean): void {
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.connected', connected);
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.debugging', isDebugSessionActive);
@@ -676,6 +716,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	let expectedProjectSyncTimer: ReturnType<typeof setTimeout> | undefined;
 	function scheduleExpectedProjectSync(reason: string): void {
+		if (isDebugSessionActive) {
+			return;
+		}
 		if (expectedProjectSyncTimer) {
 			clearTimeout(expectedProjectSyncTimer);
 		}
@@ -1233,6 +1276,7 @@ export function activate(context: vscode.ExtensionContext) {
 						);
 					} else {
 						vscode.window.showInformationMessage(`빌드 완료: ${result.projectName}${remotePathInfo} (FTP/컨텍스트 갱신 완료, Start 미실행)`);
+						consoleChannel.show(true);
 					}
 					lastDeploySnapshot = makeDeploySnapshot(
 						true,
@@ -1368,6 +1412,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.console.start', async () => {
 			const console = ensureRuntimeConsole();
+			console.start(0, { forceImmediateReconnect: true });
 			await console.waitUntilReady();
 			const hasPayload = await console.waitForPayload(1500);
 			const snapshot = console.getStatusSnapshot();
@@ -1390,6 +1435,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.console.ensure', async () => {
 			const console = ensureRuntimeConsole();
+			console.start(0, { forceImmediateReconnect: true });
 			await console.waitUntilReady(1200);
 			const hasPayload = await console.waitForPayload(1500);
 			const snapshot = console.getStatusSnapshot();
@@ -2311,6 +2357,9 @@ export function activate(context: vscode.ExtensionContext) {
 				line?: number;
 				process?: string;
 				statusText?: string;
+				errorCode?: number;
+				errorMessage?: string;
+				errorLogLines?: string[];
 				lastCommand?: string;
 				firstSeenAt?: string;
 				stackFrames?: string[];
@@ -2319,6 +2368,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const threadName = body.threadName || 'unknown-thread';
 			const statusText = body.statusText || 'Error';
+			const errorSummary = formatDebugErrorSummary(body.errorMessage, body.errorCode, statusText);
 			const line = typeof body.line === 'number' ? body.line : 0;
 			const file = (body.file || '').trim();
 			lastRuntimeErrorContext = {
@@ -2326,7 +2376,7 @@ export function activate(context: vscode.ExtensionContext) {
 				threadId: body.threadId,
 				lastCommand: body.lastCommand,
 				firstSeenAt: body.firstSeenAt,
-				statusText,
+				statusText: errorSummary,
 				stackFrames: body.stackFrames,
 				relatedFunctions: body.relatedFunctions,
 			};
@@ -2354,16 +2404,28 @@ export function activate(context: vscode.ExtensionContext) {
 					editor.selection = new vscode.Selection(targetLine.start, targetLine.start);
 					editor.revealRange(targetLine, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 
-					logOutput(`[Debug Error] ${threadName} @ ${path.basename(targetPath)}:${line} (${body.process || '-'}) - ${statusText}`);
+					logOutput(`[Debug Error] ${threadName} @ ${path.basename(targetPath)}:${line} (${body.process || '-'}) - ${errorSummary}`);
+					if (Array.isArray(body.errorLogLines) && body.errorLogLines.length > 0) {
+						for (const errorLine of body.errorLogLines.slice(0, 3)) {
+							logOutput(`[Debug ErrorLog] ${errorLine}`);
+						}
+					}
 					outputChannel.show(true);
-					void vscode.window.showWarningMessage(`디버그 에러 위치: ${path.basename(targetPath)}:${line} (${threadName})`);
+					void vscode.window.showWarningMessage(
+						`디버그 에러: ${errorSummary} @ ${path.basename(targetPath)}:${line} (${threadName})`,
+					);
 					return;
 				} catch (err: any) {
 					logOutput(`[Debug Error] 위치 표시 실패: ${err?.message ?? err}`);
 				}
 			}
 
-			logOutput(`[Debug Error] ${threadName} - ${statusText} (소스 위치 해석 실패)`);
+			logOutput(`[Debug Error] ${threadName} - ${errorSummary} (소스 위치 해석 실패)`);
+			if (Array.isArray(body.errorLogLines) && body.errorLogLines.length > 0) {
+				for (const errorLine of body.errorLogLines.slice(0, 3)) {
+					logOutput(`[Debug ErrorLog] ${errorLine}`);
+				}
+			}
 			outputChannel.show(true);
 		}),
 	);
@@ -2441,4 +2503,19 @@ function getXmlBestPracticesFallbackHtml(): string {
 	<p>가이드 파일을 로드하지 못했습니다. 확장 로그(Output: "GPL Language Support")를 확인하세요.</p>
 </body>
 </html>`;
+}
+
+function formatDebugErrorSummary(errorMessage: unknown, errorCode: unknown, fallback: string): string {
+	const message = typeof errorMessage === 'string' ? errorMessage.trim() : '';
+	const code = typeof errorCode === 'number' && Number.isFinite(errorCode) ? errorCode : undefined;
+	if (message && code !== undefined && !message.includes(String(code))) {
+		return `${message} (STATUS ${code})`;
+	}
+	if (message) {
+		return message;
+	}
+	if (code !== undefined) {
+		return `STATUS ${code}`;
+	}
+	return fallback || 'Error';
 }

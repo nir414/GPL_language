@@ -107,6 +107,15 @@ export class RuntimeConsole implements vscode.Disposable {
     /** 마지막 payload 수신 시각/크기 */
     private _lastPayloadAt = 0;
     private _lastPayloadBytes = 0;
+    /** 현재 세션 누적 수신 바이트(원본 ASCII 길이) */
+    private _sessionRxBytes = 0;
+    /** 현재 세션에서 emit한 E-블록 프레임 수(heartbeat 포함) */
+    private _sessionFrames = 0;
+    /** 현재 세션에서 normalize 후 비어 있어 swallow된 프레임 수(heartbeat 등) */
+    private _sessionFramesSwallowed = 0;
+    /** 누적 세션 통계 — 연결 시점이 아닌 전체 런타임 기준 */
+    private _lifetimeRxBytes = 0;
+    private _lifetimeFrames = 0;
     /** 데이터가 전혀 없을 때 UX 힌트 타이머 */
     private _noOutputHintTimer: ReturnType<typeof setTimeout> | null = null;
     /** stop() 호출 후 graceful close 로그 타이머 */
@@ -464,10 +473,14 @@ export class RuntimeConsole implements vscode.Disposable {
     }
 
     private emitConsoleLine(line: string): void {
+        this._sessionFrames++;
+        this._lifetimeFrames++;
         const normalized = normalizeConsoleLine(line);
         if (normalized) {
             this.output.appendLine(`[RT] ${normalized}`);
             this._onDidReceiveLine.fire(normalized);
+        } else {
+            this._sessionFramesSwallowed++;
         }
     }
 
@@ -644,6 +657,9 @@ export class RuntimeConsole implements vscode.Disposable {
             this._connectedAt = Date.now();
             this.carry = '';
             this._sessionDataReceived = false;
+            this._sessionRxBytes = 0;
+            this._sessionFrames = 0;
+            this._sessionFramesSwallowed = 0;
             socket.setKeepAlive(true, 5_000);  // 5초 간격 TCP keepalive
             socket.setNoDelay(true);
             this.scheduleReadyForBatch();
@@ -687,6 +703,8 @@ export class RuntimeConsole implements vscode.Disposable {
                 this._noOutputHintTimer = null;
             }
             const raw = data.toString('ascii');
+            this._sessionRxBytes += data.length;
+            this._lifetimeRxBytes += data.length;
             this.logConsoleTraffic('<<<', raw.replace(/[\r\n]+/g, '\\n'));
             if (wasWaitingPayload) {
                 this.updateStatus('connected', 'Connected', `payload ${data.length} bytes 수신`);
@@ -789,7 +807,13 @@ export class RuntimeConsole implements vscode.Disposable {
                     }
                 }
 
-                this.logConsoleTraffic('---', `CLOSE (${elapsed}ms, hadError=${hadError}, data=${dataReceived}, empty=${this._consecutiveEmptySessions})`);
+                this.logConsoleTraffic(
+                    '---',
+                    `CLOSE (${elapsed}ms, hadError=${hadError}, data=${dataReceived}, empty=${this._consecutiveEmptySessions}, `
+                    + `rxBytes=${this._sessionRxBytes}, frames=${this._sessionFrames}, `
+                    + `swallowed=${this._sessionFramesSwallowed}, `
+                    + `lifetimeBytes=${this._lifetimeRxBytes}, lifetimeFrames=${this._lifetimeFrames})`,
+                );
                 this._onDidDisconnect.fire();
             } else {
                 // connect 콜백 전에 close 된 경우

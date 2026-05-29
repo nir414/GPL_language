@@ -38,6 +38,7 @@ GPL 프로젝트 개발 및 운영을 위한 실무 가이드입니다.
 
 - **[project-structure.md](development/project-structure.md)** - 프로젝트 구조 및 아키텍처
 - **[automation.md](development/automation.md)** - 컨트롤러 업로드 자동화
+- **[ai-controller-debugging-runbook.md](development/ai-controller-debugging-runbook.md)** - AI 에이전트용 제어기 디버깅 절차와 command ID
 - **[handover.md](development/handover.md)** - 개발자 인수인계 가이드
 - **[version-management.md](development/version-management.md)** - 버전 관리 전략
 - **[workflow-improvements.md](development/workflow-improvements.md)** - AI 에이전트 워크플로우 개선 사항
@@ -67,13 +68,8 @@ VS Code 확장 릴리즈 관련 가이드입니다.
 
 프로젝트 히스토리, 세션 요약, 인시던트 기록입니다.
 
+- **[archive/README.md](archive/README.md)** - 아카이브 인덱스(인시던트/세션/리뷰)
 - **[incidents.md](archive/incidents.md)** - 발생한 이슈 및 해결 방법
-- **[sessions/](archive/sessions/)** - 개발 세션 요약 및 기술 노트
-  - [2025-12-09.md](archive/sessions/2025-12-09.md)
-  - [2026-01-02.md](archive/sessions/2026-01-02.md)
-  - [streamwriter-notes.md](archive/sessions/streamwriter-notes.md)
-- **[reviews/](archive/reviews/)** - 프로젝트 리뷰 기록
-  - [2025-12-08.md](archive/reviews/2025-12-08.md)
 
 ---
 
@@ -114,4 +110,4 @@ VS Code 확장 릴리즈 관련 가이드입니다.
 
 ---
 
-**마지막 업데이트**: 2026년 2월 6일
+**마지막 업데이트**: 2026년 5월 29일

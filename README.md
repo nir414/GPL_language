@@ -1,6 +1,6 @@
 # GPL Language Support
 
-현재 버전: **v0.5.101**
+현재 버전: **v0.5.105**
 GPL (Guidance Programming Language) 지원 VS Code 확장.
 IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·배포·디버깅**까지 통합 제공합니다.
 
@@ -157,6 +157,34 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
 | `GPL: Start Live Log Terminal` | 실시간 로그 터미널 시작 + 1403 런타임 콘솔 연결 시도 |
 | `GPL: Stop Live Log Terminal` | 실시간 로그 터미널 중지 + 1403 런타임 콘솔 정리 |
 
+### AI/Agent 디버깅 진입점
+
+AI 에이전트가 제어기 디버깅을 보조할 때는 확장 명령과 DAP 세션을 우선 사용합니다. 직접 FTP 업로드나 별도 TCP 자동화로 확장 경로를 우회하지 않습니다.
+
+| 목적 | Command Palette | Command ID |
+|---|---|---|
+| 현재 상태 공유 | `GPL: Copy Situation for Chat` | `gpl.controller.copySituationForChat` |
+| 진단 스냅샷 | `GPL: Diagnostic Snapshot` | `gpl.diagnosticSnapshot` |
+| 트래픽 확인 | `GPL: Show Traffic Monitor` | `gpl.controller.showTraffic` |
+| 연결 | `GPL: Connect to Controller` | `gpl.controller.connect` |
+| Build Only 검증 | `GPL: Deploy (Build Only)` | `gpl.deploy` |
+| Attach 구성 생성 | `GPL: Create/Update Debug launch.json` | `gpl.debug.generateLaunch` |
+| 빠른 Attach | `GPL: Quick Debug Attach (No launch.json)` | `gpl.debug.attachNow` |
+| 런타임 콘솔 | `GPL: Start Runtime Console` | `gpl.console.start` |
+| 라이브 로그 | `GPL: Start Live Log Terminal` | `gpl.logs.liveTerminal.start` |
+| 직접 명령 | `GPL: Send Command to Controller` | `gpl.controller.sendCommand` |
+| 전체 정지 | `GPL: 모든 쓰레드 중지` | `gpl.controller.stopAll` / `gpl.stopAll` |
+
+권장 순서:
+
+1. `GPL: Copy Situation for Chat`로 현재 증거를 확보합니다.
+2. `GPL: Deploy (Build Only)`로 최신 로컬 코드의 업로드/컴파일 경로를 먼저 검증합니다.
+3. 성공 후 `GPL: Start Runtime Console` 또는 `GPL: Start Live Log Terminal`로 1403 출력을 봅니다.
+4. `.gpl` 파일에 breakpoint를 설정하고 `brooks-gpl` Attach 디버깅을 시작합니다.
+5. 실패 시 Debug Console의 `[GPL Debug] [deploy]` 블록, `GPL Deploy (Debug)` Output, `GPL Console`을 함께 확인합니다.
+
+자세한 절차는 [`docs/development/ai-controller-debugging-runbook.md`](docs/development/ai-controller-debugging-runbook.md)를 참고하세요.
+
 ### FTP 패널의 `업로드된 복사본 컴파일 & 실행`에 대한 주의
 
 - 이 명령은 **제어기 FTP 경로(`/GPL/...`)에 이미 업로드된 프로젝트 복사본만** 대상으로 `Load → Compile → Start`를 수행합니다.
@@ -207,12 +235,13 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
 4. 중지할 때는 **`GPL: Stop Live Log Terminal`** 실행 (1403 소비자도 함께 정리)
 
 ```text
-[1402] >>> <COMMAND><NAME>GetProjectList</NAME></COMMAND>
-[1402] <<< <STATUS><CODE>0</CODE>...</STATUS>
+[1402] >>> [PLAIN] 192.168.0.2:1402  Show Thread
+[1402] <<< STATUS 0  3 lines  8ms
 [1403] <E>3,GPL_Code<L>52</L>Hello from robot</E>
 ```
 
 - `[1402]` — TCP 명령 포트 트래픽 (송신 `>>>` / 수신 `<<<`)
+- 1402 wire format은 plain text command + CRLF이며, XML wrapper를 사용하지 않습니다.
 - `[1403]` — 런타임 콘솔 이벤트 (쓰레드 상태 변경, `Print` 출력 등)
 - 1403 상태 메시지는 아래처럼 구분됩니다:
   - `Connected, but no payload yet ...` : 연결은 되었지만 아직 payload가 없음 (Idle 또는 불안정 가능)
@@ -367,7 +396,12 @@ npm run dev:watch     # watch alias (디버그 시작 전에 실행)
 
 ### 주요 변경 이력
 
-#### v0.5.101 (현재)
+#### v0.5.105 (현재)
+
+- **직접 명령 UX 보강**: `GPL: Send Command to Controller` 입력에서 XML 형식, `Show Project`, `Directory` 단독 호출을 감지해 올바른 plain command와 `Directory <path>` 사용을 안내
+- **제어기 디버깅 문서 보강**: raw TCP fallback wire format, `Directory /flash/projects`, STATUS `-505/-714` 해석을 문서화
+
+#### v0.5.101
 
 - **구문 강조 호환성 개선**: GPL 선언부/타입명에 표준 TextMate 스코프를 적용해 다양한 테마에서 색 구분이 더 잘 보이도록 개선
   - `Class`, `Module`, `Sub`, `Function`, `Property`, `Const` 선언 이름 강조

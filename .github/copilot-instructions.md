@@ -32,6 +32,9 @@
 - `gpl-controller.instructions.md`
   - `src/controller/**/*.ts`, `src/debug/**/*.ts`, `src/views/**/*.ts` 수정 시 자동 적용
   - 1402/1403 포트, `sendCommand()`, 응답 파싱, 직렬화, 1403 재연결 규칙
+- `gpl-ai-controller-debugging.instructions.md`
+  - AI 에이전트가 GPL Language Support 확장으로 제어기 디버깅을 보조할 때 적용
+  - 안전한 명령 순서, VS Code command ID, DAP attach 흐름, 증거 수집 규칙
 - `gpl-release.instructions.md`
   - 버전 변경, 릴리즈 검증, VSIX 패키징 시 적용
   - 버전 동기화, `pre-release-check`, `compile`, `dev:cycle`, 설치 금지 규칙

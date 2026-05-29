@@ -2,6 +2,13 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.5.105] - 2026-05-29
+
+### Changed
+
+- `GPL: Send Command to Controller` 입력 가드를 추가해 XML 형식, `Show Project`, `Directory` 단독 호출을 감지하고 올바른 plain command 사용을 안내합니다.
+- README와 console command reference에 1402 wire format(plain text + CRLF), `Directory <path>`, `STATUS -505/-714` 해석을 보강했습니다.
+
 ## [0.5.102] - 2026-05-28
 
 ### Fixed

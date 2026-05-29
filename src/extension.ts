@@ -159,6 +159,59 @@ function showRuntimeConsoleUserMessage(
 	}
 }
 
+async function normalizeControllerCommandInput(rawCommand: string): Promise<string | undefined> {
+	const command = rawCommand.trim();
+	if (!command) {
+		return undefined;
+	}
+
+	if (command.startsWith('<')) {
+		await vscode.window.showWarningMessage(
+			'컨트롤러 명령은 XML이 아니라 plain text + CRLF 형식으로 전송됩니다. 예: Show Thread',
+			'확인',
+		);
+		return undefined;
+	}
+
+	if (/^show\s+project\b/i.test(command)) {
+		const projectDir = getControllerConfig().ftpFlashProjectsPath;
+		const suggested = `Directory ${projectDir}`;
+		const action = await vscode.window.showWarningMessage(
+			'Show Project는 컨트롤러 명령이 아닙니다. 프로젝트 목록은 FTP 프로젝트 경로를 Directory로 확인합니다.',
+			suggested,
+			'그대로 실행',
+			'취소',
+		);
+		if (action === suggested) {
+			return suggested;
+		}
+		if (action === '그대로 실행') {
+			return command;
+		}
+		return undefined;
+	}
+
+	if (/^directory\s*$/i.test(command)) {
+		const projectDir = getControllerConfig().ftpFlashProjectsPath;
+		const suggested = `Directory ${projectDir}`;
+		const action = await vscode.window.showWarningMessage(
+			'Directory는 path 인자가 필요합니다. 프로젝트 목록 확인에는 설정된 flash projects 경로를 사용합니다.',
+			suggested,
+			'그대로 실행',
+			'취소',
+		);
+		if (action === suggested) {
+			return suggested;
+		}
+		if (action === '그대로 실행') {
+			return command;
+		}
+		return undefined;
+	}
+
+	return command;
+}
+
 export function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('GPL Language Support');
 	context.subscriptions.push(outputChannel);
@@ -1585,12 +1638,14 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('gpl.controller.sendCommand', async () => {
 			const cmd = await vscode.window.showInputBox({
 				prompt: '제어기에 보낼 명령을 입력하세요',
-				placeHolder: 'Show Thread, ErrorLog, Stop -all, …',
+				placeHolder: 'Show Thread, ErrorLog, Directory /flash/projects, …',
 			});
 			if (!cmd) { return; }
+			const normalizedCommand = await normalizeControllerCommandInput(cmd);
+			if (!normalizedCommand) { return; }
 			try {
-				const resp = await sendCommand(cmd);
-				outputChannel.appendLine(`[Command] >>> ${cmd}`);
+				const resp = await sendCommand(normalizedCommand);
+				outputChannel.appendLine(`[Command] >>> ${normalizedCommand}`);
 				outputChannel.appendLine(resp);
 				outputChannel.show(true);
 			} catch (err: any) {

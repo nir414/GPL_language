@@ -15,6 +15,7 @@ export interface DeployOptions {
     projectDir: string;
     skipUnchanged?: boolean;
     skipStart?: boolean;
+    beforeStart?: () => Promise<void> | void;
 }
 
 export interface CompileAttemptLog {
@@ -610,6 +611,16 @@ export async function deploy(
         pushTrace(`━━ [${phase}/${totalPhases}] START ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
         if (token?.isCancellationRequested) { return result; }
+
+        if (options.beforeStart) {
+            pushTrace('│ Preparing runtime console before Start');
+            try {
+                await options.beforeStart();
+                pushTrace('│ ✔ Runtime console ready for Start');
+            } catch (err: any) {
+                pushTrace(`│ ⚠ Runtime console pre-start failed: ${err?.message ?? err}`);
+            }
+        }
 
         pushTrace(`│ CMD Start ${result.projectName}`);
         const start = await runStatusCommand(`Start ${result.projectName}`);

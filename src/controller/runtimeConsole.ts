@@ -59,6 +59,11 @@ interface RuntimeConsoleStartOptions {
     forceImmediateReconnect?: boolean;
 }
 
+interface RuntimeConsolePrimeOptions {
+    windowMs?: number;
+    reconnectDelayMs?: number;
+}
+
 export interface RuntimeConsoleStatusSnapshot {
     state: 'idle' | 'connecting' | 'connected' | 'connected-no-payload' | 'reconnecting' | 'connect-failed' | 'no-payload' | 'polling' | 'stopped' | 'batch-complete' | 'socket-error';
     connected: boolean;
@@ -117,6 +122,9 @@ export class RuntimeConsole implements vscode.Disposable {
     private _consecutiveImmediateEofSessions = 0;
     /** 마지막 무페이로드 경고 시각 */
     private _lastUnstableWarnAt = 0;
+    /** Start 직전 짧은 실행 로그 손실을 줄이기 위한 빠른 폴링 유지 기한 */
+    private _startupPrimeUntil = 0;
+    private _startupPrimeReconnectDelayMs = 100;
     private _readyWaiters: Array<(value: boolean) => void> = [];
     private _payloadWaiters: Array<(value: boolean) => void> = [];
 
@@ -263,6 +271,19 @@ export class RuntimeConsole implements vscode.Disposable {
         } else {
             this.connectInternal();
         }
+    }
+
+    /**
+     * Start 직전/직후의 짧은 로그 burst를 놓치지 않도록 일시적으로 빠른 폴링을 켠다.
+     * 평상시 idle 백오프 정책은 유지하고, 지정된 window 안에서만 no-payload 재연결을 당긴다.
+     */
+    primeForRuntimeStart(options?: RuntimeConsolePrimeOptions): void {
+        const windowMs = Math.max(1_000, options?.windowMs ?? 15_000);
+        const reconnectDelayMs = Math.max(50, options?.reconnectDelayMs ?? 100);
+        this._startupPrimeUntil = Date.now() + windowMs;
+        this._startupPrimeReconnectDelayMs = reconnectDelayMs;
+        this.logConsoleTraffic('---', `STARTUP_PRIME windowMs=${windowMs} reconnectDelayMs=${reconnectDelayMs}`);
+        this.start(0, { forceImmediateReconnect: true });
     }
 
     /**
@@ -442,6 +463,67 @@ export class RuntimeConsole implements vscode.Disposable {
         }
     }
 
+    private emitConsoleLine(line: string): void {
+        const normalized = normalizeConsoleLine(line);
+        if (normalized) {
+            this.output.appendLine(`[RT] ${normalized}`);
+            this._onDidReceiveLine.fire(normalized);
+        }
+    }
+
+    private processConsoleText(raw: string, flush = false): void {
+        this.carry += raw.replace(/\r/g, '');
+
+        let searchFrom = 0;
+        while (true) {
+            const start = this.carry.indexOf('<E>', searchFrom);
+            if (start < 0) { break; }
+
+            if (start > 0) {
+                const prefix = this.carry.slice(0, start);
+                const rest = this.carry.slice(start);
+                this.emitCompletePlainLines(prefix, true);
+                this.carry = rest;
+                searchFrom = 0;
+            }
+
+            const end = this.carry.indexOf('</E>', 3);
+            if (end < 0) { break; }
+
+            const frameEnd = end + 4;
+            const frame = this.carry.slice(0, frameEnd);
+            this.emitConsoleLine(frame);
+            this.carry = this.carry.slice(frameEnd);
+            searchFrom = 0;
+        }
+
+        this.emitCompletePlainLines(this.carry, flush);
+    }
+
+    private emitCompletePlainLines(text: string, flush: boolean): void {
+        if (!text) {
+            this.carry = '';
+            return;
+        }
+
+        const normalizedText = text.replace(/\r/g, '');
+        const lines = normalizedText.split('\n');
+        const hasTrailingNewline = normalizedText.endsWith('\n');
+        const completeCount = hasTrailingNewline ? lines.length : lines.length - 1;
+
+        for (let i = 0; i < completeCount; i++) {
+            this.emitConsoleLine(lines[i]);
+        }
+
+        const tail = hasTrailingNewline ? '' : lines[lines.length - 1];
+        if (flush && tail.trim()) {
+            this.emitConsoleLine(tail);
+            this.carry = '';
+        } else {
+            this.carry = tail;
+        }
+    }
+
     private async scheduleReconnectByPolicy(dataReceived: boolean, hadError: boolean, noPayloadReason?: string): Promise<void> {
         if (this._explicitStop || this.disposed) { return; }
 
@@ -469,7 +551,10 @@ export class RuntimeConsole implements vscode.Disposable {
             const reconnectStreak = isImmediateEof
                 ? this._consecutiveImmediateEofSessions
                 : this._consecutiveNoPayloadAttempts;
-            const idleDelay = isIdleTimeout
+            const startupPrimeActive = Date.now() < this._startupPrimeUntil;
+            const idleDelay = startupPrimeActive
+                ? this._startupPrimeReconnectDelayMs
+                : isIdleTimeout
                 ? tuning.idleReconnectBaseMs
                 : isImmediateEof
                 ? this.computeAdaptiveReconnectDelayMs(
@@ -491,7 +576,9 @@ export class RuntimeConsole implements vscode.Disposable {
                 : `${reason} 후 ${idleDelay}ms 뒤 재연결`;
             this.updateStatus('reconnecting', statusReason, statusDetail);
             if (isIdleTimeout || this.shouldEmitNoPayloadNotice(reconnectStreak, tuning.emptyNoticeEvery)) {
-                const policy = isImmediateEof
+                const policy = startupPrimeActive
+                    ? 'startup-prime'
+                    : isImmediateEof
                     ? 'immediate-eof-adaptive'
                     : (isIdleTimeout ? 'idle-timeout-fixed' : 'idle-adaptive');
                 this.logConsoleTraffic('---', `RECONNECT (${policy}, ${idleDelay}ms, streak=${reconnectStreak}, reason=${reason})`);
@@ -604,28 +691,12 @@ export class RuntimeConsole implements vscode.Disposable {
             if (wasWaitingPayload) {
                 this.updateStatus('connected', 'Connected', `payload ${data.length} bytes 수신`);
             }
-            const text = (this.carry + raw).replace(/\r/g, '');
-            const lines = text.split('\n');
-
-            // 마지막 줄이 불완전할 수 있으므로 carry로 보존
-            if (!text.endsWith('\n')) {
-                this.carry = lines[lines.length - 1];
-                lines.length = lines.length - 1;
-            } else {
-                this.carry = '';
-            }
-
-            for (const line of lines) {
-                const normalized = normalizeConsoleLine(line);
-                if (normalized) {
-                    this.output.appendLine(`[RT] ${normalized}`);
-                    this._onDidReceiveLine.fire(normalized);
-                }
-            }
+            this.processConsoleText(raw);
         });
 
         socket.on('end', () => {
             // 서버가 FIN(쓰기 종료)을 보냄 — close 전에 발생
+            this.processConsoleText('', true);
             const elapsed = this._connectedAt > 0 ? Date.now() - this._connectedAt : 0;
             this.logConsoleTraffic('---', `END (server sent FIN, connected ${elapsed}ms)`);
         });

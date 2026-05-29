@@ -2,6 +2,45 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.6.0] - 2026-05-29
+
+### Changed
+
+- 패키징 버전을 `0.6.0`으로 재정렬했습니다.
+- npm/VS Code SemVer 호환성을 유지하기 위해 실제 버전 문자열에는 16진수 리터럴 표기 대신 `major.minor.patch` 형식을 유지합니다.
+
+## [0.5.109] - 2026-05-29
+
+### Changed
+
+- FTP Run은 기본적으로 Compile 전에 `Load <resolvedPath>`를 선행하지 않도록 변경했습니다.
+- 필요한 환경에서만 `gpl.controller.ftpRunLoadBeforeCompile=true`로 Load 선행 동작을 켤 수 있도록 설정을 추가했습니다.
+
+## [0.5.108] - 2026-05-29
+
+### Fixed
+
+- FTP Run이 `/GPL/<project>`와 `/flash/projects/<project>` 사이에서 오래된 `/GPL` 복사본을 선택할 수 있던 경로 정합성 문제를 완화했습니다.
+  - 설정된 `gpl.controller.ftpFlashProjectsPath`에 같은 프로젝트가 있으면 Flash Projects 경로를 우선 사용합니다.
+  - Compile 전에 `Load <resolvedPath>`를 명시적으로 수행해 컴파일 대상 복사본을 확정합니다.
+
+## [0.5.107] - 2026-05-29
+
+### Fixed
+
+- FTP Run의 `Compile <project>` 경로에도 STATUS 누락 보강 판정을 적용했습니다.
+  - `Compile successful` 마커가 있으면 성공으로 처리합니다.
+  - pass 로그만 있고 STATUS가 없으면 `Show Thread` 후속 정상 응답으로 성공 여부를 보강 판정합니다.
+- FTP Run Compile 응답의 RAW preview와 불완전 수신 메타 로그를 출력해 `STATUS -9999 No STATUS found` 분석성을 개선했습니다.
+
+## [0.5.106] - 2026-05-29
+
+### Changed
+
+- 디버깅 중 `F9`로 Continue를 실행할 수 있도록 기본 키바인딩을 추가했습니다.
+- hover/watch 변수 평가에 짧은 TTL 캐시를 추가해 같은 변수의 반복 조회 응답성을 개선했습니다.
+- GPL Controller 뷰의 연결 상태 상단 액션에서 Disconnect 위치를 `Stop -all`로 교체했습니다.
+
 ## [0.5.105] - 2026-05-29
 
 ### Changed

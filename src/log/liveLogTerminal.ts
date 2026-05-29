@@ -3,6 +3,15 @@ import * as vscode from 'vscode';
 let terminal: vscode.Terminal | undefined;
 let writeEmitter: vscode.EventEmitter<string> | undefined;
 let closeEmitter: vscode.EventEmitter<number | void> | undefined;
+const MAX_BUFFERED_LINES = 500;
+const liveLogBuffer: string[] = [];
+
+function bufferLine(line: string): void {
+    liveLogBuffer.push(line);
+    if (liveLogBuffer.length > MAX_BUFFERED_LINES) {
+        liveLogBuffer.splice(0, liveLogBuffer.length - MAX_BUFFERED_LINES);
+    }
+}
 
 function writeLine(line: string): void {
     if (!writeEmitter) { return; }
@@ -23,6 +32,12 @@ export function startLiveLogTerminal(): void {
         onDidClose: closeEmitter.event,
         open: () => {
             writeLine('[GPL Live Logs] started');
+            if (liveLogBuffer.length > 0) {
+                writeLine(`[GPL Live Logs] replaying last ${liveLogBuffer.length} buffered lines`);
+                for (const line of liveLogBuffer) {
+                    writeLine(line);
+                }
+            }
         },
         close: () => {
             // VS Code terminal UI close
@@ -45,6 +60,7 @@ export function stopLiveLogTerminal(): void {
 }
 
 export function appendLiveLog(line: string): void {
+    bufferLine(line);
     if (!terminal || !writeEmitter) { return; }
     writeLine(line);
 }

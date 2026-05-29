@@ -14,9 +14,9 @@ import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile } from './config';
 
 // Controller integration
-import { testConnection, getControllerConfig, sendCommand, setTrafficChannel, getTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
+import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, getTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
 import { deploy, findProjectDirs } from './controller/deployService';
-import { removeRemoteDir, removeRemoteFile, downloadProject } from './controller/ftpClient';
+import { listRemoteDir, removeRemoteDir, removeRemoteFile, downloadProject } from './controller/ftpClient';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from './controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
 import { ConnectionStatusBar } from './views/connectionStatusBar';
@@ -32,6 +32,7 @@ import {
 	parseControllerErrorEntry,
 	extractErrorCodeFromEntry,
 	getErrorCodeHint,
+	isControllerNonBlockingStatus,
 } from './controller/responseParser';
 import { startLiveLogTerminal, stopLiveLogTerminal, appendLiveLog, isLiveLogTerminalEnabled } from './log/liveLogTerminal';
 import { fireDebugPollTrigger } from './controller/debugBridge';
@@ -1226,7 +1227,16 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 
 		try {
-			const result = await deploy({ projectDir, skipStart }, outputChannel, deployDiagnostics);
+			const result = await deploy({
+				projectDir,
+				skipStart,
+				beforeStart: skipStart ? undefined : async () => {
+					const console = ensureRuntimeConsole();
+					console.primeForRuntimeStart();
+					await console.waitUntilReady(1200);
+					controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
+				},
+			}, outputChannel, deployDiagnostics);
 
 			// errorLog를 제어기 시스템 에러 / GPL 배포 에러로 분류해 출력 채널에 기록한다.
 			// 이 함수는 성공·실패 경로 공통으로 호출된다.
@@ -2027,24 +2037,186 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!name || !loadPath) { return; }
 
 			const cfg = getControllerConfig();
+			const loadBeforeCompile = vscode.workspace
+				.getConfiguration('gpl.controller')
+				.get<boolean>('ftpRunLoadBeforeCompile', false);
 
 			outputChannel.show(true);
+
+			const resolveFtpRunPath = async (): Promise<{
+				loadPath: string;
+				basePath: string;
+				candidates: string[];
+				switched: boolean;
+			}> => {
+				const configuredBases = [
+					cfg.ftpFlashProjectsPath,
+					cfg.ftpBasePath,
+					path.posix.dirname(loadPath),
+				];
+				const uniqueBases = [...new Set(configuredBases
+					.map(p => (p || '').replace(/\/+$/, ''))
+					.filter(Boolean))];
+
+				const scored: Array<{ basePath: string; projectPath: string; exists: boolean; rank: number }> = [];
+				for (const basePath of uniqueBases) {
+					const projectPath = `${basePath}/${name}`;
+					let exists = false;
+					try {
+						const entries = await listRemoteDir(cfg.ip, basePath);
+						exists = entries.some(e => e.isDirectory && e.name.toLowerCase() === name.toLowerCase());
+					} catch {
+						// Probe failure leaves the path as a candidate, but not a confirmed one.
+					}
+
+					const isSelected = projectPath.toLowerCase() === loadPath.toLowerCase();
+					const isFlash = basePath.toLowerCase() === cfg.ftpFlashProjectsPath.toLowerCase();
+					const rank = (exists ? 200 : 0) + (isFlash ? 80 : 0) + (isSelected ? 20 : 0);
+					scored.push({ basePath, projectPath, exists, rank });
+				}
+
+				scored.sort((a, b) => b.rank - a.rank);
+				const chosen = scored[0] ?? {
+					basePath: path.posix.dirname(loadPath),
+					projectPath: loadPath,
+					exists: false,
+					rank: 0,
+				};
+				return {
+					loadPath: chosen.projectPath,
+					basePath: chosen.basePath,
+					candidates: scored.map(s => `${s.projectPath}${s.exists ? ' (exists)' : ''}`),
+					switched: chosen.projectPath.toLowerCase() !== loadPath.toLowerCase(),
+				};
+			};
+
+			const resolvedPath = await resolveFtpRunPath();
+			const effectiveLoadPath = resolvedPath.loadPath;
+
 			logOutput('');
 			logOutput(`━━ [FTP Run v${extVersion}] ${name} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-			logOutput(`│ Note: FTP Run uses the uploaded controller copy at ${loadPath}`);
+			logOutput(`│ Note: FTP Run uses the uploaded controller copy at ${effectiveLoadPath}`);
 			logOutput(`│       Local edits are NOT uploaded here. Use GPL: Deploy (Build Only) to verify latest local code.`);
+			logOutput(`│ Path candidates: ${resolvedPath.candidates.join(' | ') || effectiveLoadPath}`);
+			if (resolvedPath.switched) {
+				logOutput(`│ Path selected: ${loadPath} → ${effectiveLoadPath}`);
+			}
+			logOutput(`│ Load before Compile: ${loadBeforeCompile ? 'enabled' : 'skipped'}`);
+
+			type FtpCompileAttempt = {
+				raw: string;
+				status: ReturnType<typeof parseStatus>;
+				errors: ReturnType<typeof parseCompileErrors>;
+				ok: boolean;
+				note?: string;
+				needsFollowUp: boolean;
+				responseMeta?: {
+					responseComplete: boolean;
+					bytesReceived: number;
+					lastChunkAt: string;
+					idleTimeoutMs: number;
+				};
+			};
+
+			const rawPreview = (raw: string): string => {
+				const compact = raw.replace(/\r/g, '').replace(/\n+/g, ' | ').trim();
+				return compact.length > 260 ? `${compact.slice(0, 260)}...` : compact;
+			};
 
 			const runStatusCommand = async (command: string) => {
 				const raw = await sendCommand(command);
 				const status = parseStatus(raw);
-				return { raw, status };
+				return {
+					raw,
+					status,
+					ok: status.code === 0 || isControllerNonBlockingStatus(status.code),
+				};
 			};
 
-			const tryCompile = async () => {
-				const raw = await sendCommand(`Compile ${name}`);
+			const logCompileAttempt = (compile: FtpCompileAttempt): void => {
+				logOutput(`│ RAW ${rawPreview(compile.raw) || '(empty)'}`);
+				if (compile.note) {
+					logOutput(`│ NOTE ${compile.note}`);
+				}
+				if (compile.responseMeta && !compile.responseMeta.responseComplete) {
+					logOutput(`│ META responseComplete=false bytesReceived=${compile.responseMeta.bytesReceived} lastChunkAt=${compile.responseMeta.lastChunkAt} idleTimeoutMs=${compile.responseMeta.idleTimeoutMs}`);
+				}
+			};
+
+			const tryCompile = async (): Promise<FtpCompileAttempt> => {
+				const detailed = await sendCommandDetailed(`Compile ${name}`, cfg, {
+					idleMs: 300,
+					minResponseBytes: 10,
+					extraIdleMsOnIncomplete: 250,
+				});
+				const raw = detailed.raw;
 				const status = parseStatus(raw);
 				const errors = parseCompileErrors(raw);
-				return { raw, status, errors, ok: status.code === 0 && errors.length === 0 };
+				const statusMissing = status.code === -9999;
+				const hasCompileSuccessful = /\bcompile\s+successful\b/i.test(raw);
+				const hasCompilePassLog = /\bpass\s*1\b|\bpass\s*2\b|\bpass\s*3\b/i.test(raw);
+
+				if ((status.code === 0 || isControllerNonBlockingStatus(status.code)) && errors.length === 0) {
+					return {
+						raw,
+						status,
+						errors,
+						ok: true,
+						needsFollowUp: false,
+						responseMeta: detailed.meta,
+					};
+				}
+
+				if (statusMissing && errors.length === 0) {
+					if (hasCompileSuccessful) {
+						return {
+							raw,
+							status: { ...status, code: 0, message: 'STATUS missing tolerated by compile-success marker' },
+							errors,
+							ok: true,
+							note: 'STATUS missing tolerated by compile-success marker',
+							needsFollowUp: false,
+							responseMeta: detailed.meta,
+						};
+					}
+
+					if (hasCompilePassLog) {
+						return {
+							raw,
+							status,
+							errors,
+							ok: false,
+							note: 'STATUS missing with compile-pass logs; follow-up required',
+							needsFollowUp: true,
+							responseMeta: detailed.meta,
+						};
+					}
+				}
+
+				return {
+					raw,
+					status,
+					errors,
+					ok: false,
+					needsFollowUp: false,
+					responseMeta: detailed.meta,
+				};
+			};
+
+			const acceptStatusMissingCompile = async (compile: FtpCompileAttempt): Promise<boolean> => {
+				if (!compile.needsFollowUp) { return false; }
+
+				logOutput('│ ⚠ Compile STATUS 누락 감지: 보강 판정(Show Thread 1회)');
+				const follow = await runStatusCommand('Show Thread');
+				logOutput(`│ RAW ${rawPreview(follow.raw) || '(empty)'}`);
+				if (follow.ok) {
+					logOutput('│ ✔ Compile success (STATUS missing tolerated)');
+					logOutput('│ ⚠ Compile STATUS 누락 응답을 Show Thread 정상 응답으로 보강 판정');
+					return true;
+				}
+
+				logOutput(`│ ⚠ Follow-up failed: STATUS ${follow.status.code} ${follow.status.message || ''}`.trimEnd());
+				return false;
 			};
 
 			const ensureStoppedBeforeCompile = async (): Promise<boolean> => {
@@ -2067,8 +2239,8 @@ export function activate(context: vscode.ExtensionContext) {
 			};
 
 			const ensureLoadedFromFtp = async (): Promise<boolean> => {
-				logOutput(`│ Load ${loadPath}`);
-				const { status } = await runStatusCommand(`Load ${loadPath}`);
+				logOutput(`│ Load ${effectiveLoadPath}`);
+				const { status } = await runStatusCommand(`Load ${effectiveLoadPath}`);
 				if (status.code === 0) {
 					logOutput(`│ ✔ Load success`);
 					return true;
@@ -2083,11 +2255,25 @@ export function activate(context: vscode.ExtensionContext) {
 
 			try {
 				await ensureStoppedBeforeCompile();
+				if (loadBeforeCompile) {
+					const loadedBeforeCompile = await ensureLoadedFromFtp();
+					if (!loadedBeforeCompile) {
+						throw new Error(`Load failed: ${effectiveLoadPath}`);
+					}
+				}
 
 				// 1) Compile 시도
 				logOutput('│ Phase: Compile uploaded controller copy');
 				logOutput(`│ Compile ${name}`);
 				let compile = await tryCompile();
+				logCompileAttempt(compile);
+				if (!compile.ok && await acceptStatusMissingCompile(compile)) {
+					compile = {
+						...compile,
+						status: { ...compile.status, code: 0, message: 'STATUS missing tolerated by Show Thread follow-up' },
+						ok: true,
+					};
+				}
 				if (!compile.ok) {
 					const statusCode = compile.status.code;
 					if (statusCode === -746) {
@@ -2096,6 +2282,14 @@ export function activate(context: vscode.ExtensionContext) {
 						await ensureStoppedBeforeCompile();
 						await sleep(500);
 						compile = await tryCompile();
+						logCompileAttempt(compile);
+						if (!compile.ok && await acceptStatusMissingCompile(compile)) {
+							compile = {
+								...compile,
+								status: { ...compile.status, code: 0, message: 'STATUS missing tolerated by Show Thread follow-up' },
+								ok: true,
+							};
+						}
 						if (!compile.ok) {
 							throw new Error(`Compile failed after retry: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
 						}
@@ -2112,9 +2306,17 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 						const loaded = await ensureLoadedFromFtp();
 						if (!loaded) {
-							throw new Error(`Load failed: ${loadPath}`);
+							throw new Error(`Load failed: ${effectiveLoadPath}`);
 						}
 						compile = await tryCompile();
+						logCompileAttempt(compile);
+						if (!compile.ok && await acceptStatusMissingCompile(compile)) {
+							compile = {
+								...compile,
+								status: { ...compile.status, code: 0, message: 'STATUS missing tolerated by Show Thread follow-up' },
+								ok: true,
+							};
+						}
 						if (!compile.ok) {
 							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
 						}
@@ -2123,9 +2325,17 @@ export function activate(context: vscode.ExtensionContext) {
 						logOutput(`│ ⚠ Not loaded → Load → Compile`);
 						const loaded = await ensureLoadedFromFtp();
 						if (!loaded) {
-							throw new Error(`Load failed: ${loadPath}`);
+							throw new Error(`Load failed: ${effectiveLoadPath}`);
 						}
 						compile = await tryCompile();
+						logCompileAttempt(compile);
+						if (!compile.ok && await acceptStatusMissingCompile(compile)) {
+							compile = {
+								...compile,
+								status: { ...compile.status, code: 0, message: 'STATUS missing tolerated by Show Thread follow-up' },
+								ok: true,
+							};
+						}
 						if (!compile.ok) {
 							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
 						}
@@ -2141,8 +2351,10 @@ export function activate(context: vscode.ExtensionContext) {
 					logOutput(`│ ✔ Compile success`);
 				}
 
-				// 2) 콘솔 자동 시작 (아직 꺼져 있으면)
-				ensureRuntimeConsole();
+				// 2) 콘솔 자동 시작/재연결 (Start 직전 블라인드 구간 완화)
+				const console = ensureRuntimeConsole();
+				console.primeForRuntimeStart();
+				await console.waitUntilReady(1200);
 				consoleChannel.show(true);
 
 				// 3) Start

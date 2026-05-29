@@ -141,6 +141,10 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Stack frame cache — pending step/continue 동안 UI에 반환할 직전 프레임 캐시
     private _cachedFrames = new Map<string, StackFrameInfo[]>();
 
+    // Short-lived evaluate cache — hover/watch 반복 조회가 1402 명령 큐를 막지 않게 한다.
+    private static readonly EVALUATE_CACHE_TTL_MS = 750;
+    private _evaluateCache = new Map<string, { value: string; timestamp: number }>();
+
     // Session-level disposables — disconnectRequest에서 정리
     private _disposables: vscode.Disposable[] = [];
 
@@ -700,6 +704,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             ? `Execute ${setExpr}, ${proj}`
             : `Execute ${setExpr}`;
         const resp = await this._sendCmd(cmd);
+        this._clearEvaluateCache();
 
         response.body = { value: args.value };
         this.sendResponse(response);
@@ -906,24 +911,41 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
             if (!result) { result = '(평가 불가)'; }
         } else if (args.context === 'hover' || args.context === 'watch') {
-            // Show Variable -eval thread frame variable → "name, type, value" 형식
-            const resp = await this._sendCmd(
-                `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
-            );
-            if (resp) {
-                const parsed = this._parseShowVariableEval(resp);
-                result = parsed.value || '';
-            }
-            if (!result) {
-                // Fallback: might be a global variable
-                const gResp = await this._sendCmd(
-                    `Show Global ${expression}, ${this._projectName}`,
+            const cacheKey = [
+                args.context,
+                threadName,
+                frameIndex,
+                this._projectName,
+                expression,
+            ].join('\u001f');
+            const cached = this._getCachedEvaluate(cacheKey);
+            if (cached !== undefined) {
+                result = cached;
+            } else {
+                // Show Variable -eval thread frame variable → "name, type, value" 형식
+                const resp = await this._sendCmd(
+                    `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
                 );
-                if (gResp) {
-                    const cleaned = gResp.replace(/<[^>]+>/g, '').trim();
-                    const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
-                    result = lines.length > 0 ? lines.join('\n') : '';
+                if (resp) {
+                    const parsed = this._parseShowVariableEval(resp);
+                    if (parsed.value) {
+                        result = parsed.type
+                            ? `${parsed.value}  (${parsed.type})`
+                            : parsed.value;
+                    }
                 }
+                if (!result) {
+                    // Fallback: might be a global variable
+                    const gResp = await this._sendCmd(
+                        `Show Global ${expression}, ${this._projectName}`,
+                    );
+                    if (gResp) {
+                        const cleaned = gResp.replace(/<[^>]+>/g, '').trim();
+                        const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
+                        result = lines.length > 0 ? lines.join('\n') : '';
+                    }
+                }
+                this._setCachedEvaluate(cacheKey, result || `(${expression} 평가 불가)`);
             }
         } else {
             result = expression;
@@ -989,6 +1011,31 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._frameIdToInfo.clear();
         this._frameIdCounter = 0;
         this._cachedFrames.clear();
+        this._clearEvaluateCache();
+    }
+
+    private _getCachedEvaluate(key: string): string | undefined {
+        const entry = this._evaluateCache.get(key);
+        if (!entry) { return undefined; }
+        if (Date.now() - entry.timestamp > GPLDebugSession.EVALUATE_CACHE_TTL_MS) {
+            this._evaluateCache.delete(key);
+            return undefined;
+        }
+        return entry.value;
+    }
+
+    private _setCachedEvaluate(key: string, value: string): void {
+        this._evaluateCache.set(key, { value, timestamp: Date.now() });
+        if (this._evaluateCache.size > 200) {
+            const oldestKey = this._evaluateCache.keys().next().value;
+            if (oldestKey !== undefined) {
+                this._evaluateCache.delete(oldestKey);
+            }
+        }
+    }
+
+    private _clearEvaluateCache(): void {
+        this._evaluateCache.clear();
     }
 
     /**

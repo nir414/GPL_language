@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.5.106",
+    "version": "0.6.3",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -345,6 +345,13 @@
                 "icon": "$(close)"
             }
         ],
+        "keybindings": [
+            {
+                "command": "workbench.action.debug.continue",
+                "key": "f9",
+                "when": "inDebugMode"
+            }
+        ],
         "viewsContainers": {
             "activitybar": [
                 {
@@ -371,7 +378,7 @@
                     "group": "navigation@1"
                 },
                 {
-                    "command": "gpl.controller.disconnect",
+                    "command": "gpl.controller.stopAll",
                     "when": "view == gplThreads && gpl.ui.connected",
                     "group": "navigation@1"
                 },
@@ -379,11 +386,6 @@
                     "command": "gpl.threads.refresh",
                     "when": "view == gplThreads",
                     "group": "navigation@2"
-                },
-                {
-                    "command": "gpl.controller.stopAll",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@3"
                 },
                 {
                     "command": "gpl.deploy",
@@ -686,7 +688,7 @@
                     "scope": "window",
                     "type": "number",
                     "default": 1403,
-                    "description": "Controller runtime console port (live output stream)."
+                    "description": "Controller GDE output/event stream port used by this extension (observed runtime console behavior)."
                 },
                 "gpl.controller.preferIPv4": {
                     "scope": "window",
@@ -711,6 +713,12 @@
                     "type": "string",
                     "default": "/flash/projects",
                     "description": "FTP path for controller projects stored under flash/projects."
+                },
+                "gpl.controller.ftpRunLoadBeforeCompile": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Run Load <resolved FTP project path> before FTP Run compile. Disabled by default to avoid unnecessary controller path/load side effects."
                 },
                 "gpl.controller.threadPollIntervalMs": {
                     "scope": "window",

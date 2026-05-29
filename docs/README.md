@@ -49,6 +49,7 @@ GPL 프로젝트 개발 및 운영을 위한 실무 가이드입니다.
 GPL 공식 레퍼런스 및 참고 문서입니다.
 
 - **[dictionary.md](reference/dictionary.md)** - GPL Dictionary 인덱스 및 Statements 요약
+- **[console-commands.md](reference/console-commands.md)** - 컨트롤러 Console Command 목록 및 디버깅 흐름 요약
 - **[robot-homing-methods.md](reference/robot-homing-methods.md)** - 로봇 Homing Methods(인덱스 사용/미사용, 방법군 개요)
 
 ---

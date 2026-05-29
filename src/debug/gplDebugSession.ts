@@ -120,9 +120,18 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _pendingAction: PendingAction = null;
     private _pendingThreadId: number | undefined;
     // Continue 후 Running 상태를 실제로 관측했는지 여부.
-    // paused→paused 휴리스틱 대신 "Continue 후 한 번이라도 Running이 보였고, 다시 Paused가 됨"을
-    // 확인해야 신뢰 가능한 stop 이벤트로 인정한다.
+    // 폴 간격이 1초 이상이라 Running이 짧으면 못 보는 경우가 있으므로,
+    // sawRunning을 1차 신호로 쓰되 실패 시 위치 비교(_continueOrigin)와
+    // 연속 paused 관측(_pendingContinuePausedSeen)으로 백업 판정한다.
     private _pendingContinueSawRunning = false;
+
+    // Continue 직전 정지 위치(file, line) — sawRunning을 놓쳤을 때 위치 변경으로 새 정지 확인.
+    private _continueOrigin = new Map<string, { file: string; line: number }>();
+
+    // Continue 후 sawRunning=false 상태에서 paused로 관측된 연속 횟수.
+    // 같은 위치에서 N회 연속 paused면 잔재 상태가 너무 오래 지속되었거나
+    // 동일 BP 재히트로 보고 정지로 인정 (마지막 안전망).
+    private _pendingContinuePausedSeen = 0;
 
     // 사용자 액션(step/continue/pause/disconnect) 처리 중 플래그.
     // 이 플래그가 켜져 있으면 Show Thread 폴링을 보류해서 1402 큐에
@@ -387,6 +396,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._queuedStoppedEvents = [];
         this._pendingAction = null;
         this._pendingContinueSawRunning = false;
+        this._pendingContinuePausedSeen = 0;
+        this._continueOrigin.clear();
         this._clearStaleState();
         this._deployDiagnostics?.clear();
         // 세션 이벤트 구독 해제 (1403 폴 트리거 등)
@@ -704,11 +715,25 @@ export class GPLDebugSession extends LoggingDebugSession {
     ): Promise<void> {
         const threadName = this._threadIdToName.get(args.threadId);
         if (threadName) {
+            // Continue 직전 위치를 origin으로 저장 — 폴이 Running 순간을 놓쳐도
+            // 위치 변경으로 새 정지(BP 적중)를 확실히 감지하기 위한 기준점.
+            const prevFrames = this._cachedFrames.get(threadName);
+            const topFrame = prevFrames?.[0];
+            if (topFrame?.file && topFrame.fileLine > 0) {
+                this._continueOrigin.set(threadName, {
+                    file: topFrame.file,
+                    line: topFrame.fileLine,
+                });
+            } else {
+                this._continueOrigin.delete(threadName);
+            }
+
             // Clear stale handles from previous stop
             this._clearStaleState();
             this._pendingAction = 'continue';
             this._pendingThreadId = args.threadId;
             this._pendingContinueSawRunning = false;
+            this._pendingContinuePausedSeen = 0;
 
             this._userActionInFlight = true;
             try {
@@ -1603,29 +1628,72 @@ export class GPLDebugSession extends LoggingDebugSession {
                 const isPausedState = t.state === 'Break' || t.state === 'Paused';
 
                 if (this._pendingAction === 'continue' && this._pendingThreadId === id) {
-                    // Continue 정지 감지: Running을 한 번이라도 관측한 뒤 다시 Paused/Break가 보이면
-                    // 진짜 새 정지(다음 BP / 프로그램 휴지)로 간주. paused→paused 휴리스틱이
-                    // "Continue가 아직 반영 안 된 직전 정지"를 오인하는 문제를 피한다.
+                    // Continue 정지 감지: 1차 신호는 Running 관측, 2차 신호는 위치 변경.
+                    // 폴 간격이 길어서 짧은 Running을 못 본 경우에도 file/line이 바뀌었으면
+                    // 새 정지(BP 적중)로 인정한다. 마지막 안전망으로 같은 위치에서 N회 연속
+                    // paused면 잔재 상태가 너무 길거나 동일 BP 재히트로 보고 정지로 처리.
                     if (t.state === 'Running') {
                         this._pendingContinueSawRunning = true;
-                    } else if (isPausedState && this._pendingContinueSawRunning) {
-                        this._pendingAction = null;
-                        this._pendingThreadId = undefined;
-                        this._pendingContinueSawRunning = false;
+                        this._pendingContinuePausedSeen = 0;
+                    } else if (isPausedState) {
+                        let isRealStop = this._pendingContinueSawRunning;
 
-                        if (!this._configurationDone) {
-                            this._queuedStoppedEvents.push({ reason: 'breakpoint', threadId: id });
-                            this._log(`쓰레드 ${t.name} Continue 후 정지 감지 → configurationDone 대기 중`);
-                        } else {
-                            this.sendEvent(new StoppedEvent('breakpoint', id));
-                            this._log(`쓰레드 ${t.name} 정지 (breakpoint)`);
+                        if (!isRealStop) {
+                            // 위치 비교 백업: Show Thread <name>으로 현재 file/line 조회.
+                            // 추가 TCP 1회는 의심 구간에서만 발생하므로 평시 부하 증가는 없다.
+                            const detailResp = await this._sendCmd(`Show Thread ${t.name}`);
+                            const detail = detailResp ? parseThreadDetail(detailResp) : null;
+                            const origin = this._continueOrigin.get(t.name);
+
+                            if (detail?.file && detail.fileLine > 0) {
+                                if (!origin) {
+                                    // origin 미기록 — 비교 불가, 단일 paused 관측만으로는 보류하고
+                                    // 카운터로 누적 판정.
+                                    this._pendingContinuePausedSeen++;
+                                    if (this._pendingContinuePausedSeen >= 3) {
+                                        isRealStop = true;
+                                        this._log(`Continue 후 ${t.name} origin 없이 ${this._pendingContinuePausedSeen}회 paused 관측 → 정지 처리`);
+                                    }
+                                } else if (detail.file !== origin.file || detail.fileLine !== origin.line) {
+                                    isRealStop = true;
+                                    this._log(`Continue 후 위치 변경 감지: ${origin.file}:${origin.line} → ${detail.file}:${detail.fileLine}`);
+                                } else {
+                                    this._pendingContinuePausedSeen++;
+                                    if (this._pendingContinuePausedSeen >= 3) {
+                                        isRealStop = true;
+                                        this._log(`Continue 후 ${t.name} 같은 위치(${detail.file}:${detail.fileLine})에서 ${this._pendingContinuePausedSeen}회 paused → 정지 처리 (루프 재히트 또는 잔재 지속)`);
+                                    }
+                                }
+                            } else {
+                                // 위치 조회 실패 — 카운터 누적
+                                this._pendingContinuePausedSeen++;
+                                if (this._pendingContinuePausedSeen >= 3) {
+                                    isRealStop = true;
+                                    this._log(`Continue 후 ${t.name} 위치 조회 불가 + ${this._pendingContinuePausedSeen}회 paused → 정지 처리`);
+                                }
+                            }
                         }
 
-                        this._previousThreadStates.set(t.name, t.state);
-                        if (t.state !== prevState) { threadStateChanged = true; }
-                        continue;
+                        if (isRealStop) {
+                            this._pendingAction = null;
+                            this._pendingThreadId = undefined;
+                            this._pendingContinueSawRunning = false;
+                            this._pendingContinuePausedSeen = 0;
+                            this._continueOrigin.delete(t.name);
+
+                            if (!this._configurationDone) {
+                                this._queuedStoppedEvents.push({ reason: 'breakpoint', threadId: id });
+                                this._log(`쓰레드 ${t.name} Continue 후 정지 감지 → configurationDone 대기 중`);
+                            } else {
+                                this.sendEvent(new StoppedEvent('breakpoint', id));
+                                this._log(`쓰레드 ${t.name} 정지 (breakpoint)`);
+                            }
+
+                            this._previousThreadStates.set(t.name, t.state);
+                            if (t.state !== prevState) { threadStateChanged = true; }
+                            continue;
+                        }
                     }
-                    // sawRunning=false 상태의 paused 관측은 Continue 적용 전 잔재로 보고 대기.
                 }
 
                 // Step 명령은 폴링 사이에 Running 상태를 놓칠 수 있으므로,

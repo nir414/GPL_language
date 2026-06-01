@@ -35,7 +35,7 @@ const IDLE_TIMEOUT_SESSION_MS = 1_500;
 /** no-payload 경고 스로틀 기본값 (로그 스팸 방지) */
 const DEFAULT_UNSTABLE_WARN_COOLDOWN_MS = 60_000;
 /** no-payload 누적 경고 임계치 기본값 */
-const DEFAULT_NO_PAYLOAD_WARN_THRESHOLD = 3;
+const DEFAULT_NO_PAYLOAD_WARN_THRESHOLD = 10;
 /** empty/immediate 로그 출력 주기 기본값 */
 const DEFAULT_EMPTY_NOTICE_EVERY = 5;
 /** Immediate EOF 재연결 base/max 기본값 (짧은 블라인드 구간 완화) */
@@ -113,6 +113,10 @@ export class RuntimeConsole implements vscode.Disposable {
     private _sessionFrames = 0;
     /** 현재 세션에서 normalize 후 비어 있어 swallow된 프레임 수(heartbeat 등) */
     private _sessionFramesSwallowed = 0;
+    /** 현재 세션에서 GPL Console에 실제 표시한 라인 수 */
+    private _sessionLinesEmitted = 0;
+    /** TEST ITERATION gap 진단용 현재 세션 관측값 */
+    private _sessionIterationValues: number[] = [];
     /** 누적 세션 통계 — 연결 시점이 아닌 전체 런타임 기준 */
     private _lifetimeRxBytes = 0;
     private _lifetimeFrames = 0;
@@ -472,14 +476,27 @@ export class RuntimeConsole implements vscode.Disposable {
         }
     }
 
-    private emitConsoleLine(line: string): void {
-        this._sessionFrames++;
-        this._lifetimeFrames++;
+    private handleEmptyBatchPolling(elapsedMs: number): void {
+        const tuning = this.getTuning();
+        this._consecutiveImmediateEofSessions = 0;
+        if (this.shouldEmitNoPayloadNotice(this._consecutiveEmptySessions, tuning.emptyNoticeEvery)) {
+            this.logConsoleTraffic('---', `POLL_EMPTY_BATCH emptySessions=${this._consecutiveEmptySessions} elapsedMs=${elapsedMs}`);
+            this.appendRuntimeHint(`이벤트 대기 폴링(Empty batch, elapsed=${elapsedMs}ms)`);
+        }
+    }
+
+    private emitConsoleLine(line: string, isFrame = false): void {
+        if (isFrame) {
+            this._sessionFrames++;
+            this._lifetimeFrames++;
+        }
         const normalized = normalizeConsoleLine(line);
         if (normalized) {
+            this._sessionLinesEmitted++;
+            this.recordIterationValue(normalized);
             this.output.appendLine(`[RT] ${normalized}`);
             this._onDidReceiveLine.fire(normalized);
-        } else {
+        } else if (isFrame) {
             this._sessionFramesSwallowed++;
         }
     }
@@ -505,7 +522,7 @@ export class RuntimeConsole implements vscode.Disposable {
 
             const frameEnd = end + 4;
             const frame = this.carry.slice(0, frameEnd);
-            this.emitConsoleLine(frame);
+            this.emitConsoleLine(frame, true);
             this.carry = this.carry.slice(frameEnd);
             searchFrom = 0;
         }
@@ -537,6 +554,73 @@ export class RuntimeConsole implements vscode.Disposable {
         }
     }
 
+    private recordIterationValue(line: string): void {
+        const match = line.match(/\bTEST ITERATION\s+(\d+)\b/i);
+        if (!match) { return; }
+        const value = Number.parseInt(match[1], 10);
+        if (!Number.isFinite(value)) { return; }
+        this._sessionIterationValues.push(value);
+        if (this._sessionIterationValues.length > 2_000) {
+            this._sessionIterationValues.splice(0, this._sessionIterationValues.length - 2_000);
+        }
+    }
+
+    private computeGcd(a: number, b: number): number {
+        let x = Math.abs(a);
+        let y = Math.abs(b);
+        while (y !== 0) {
+            const t = y;
+            y = x % y;
+            x = t;
+        }
+        return x;
+    }
+
+    private buildIterationGapSummary(): string {
+        const values = this._sessionIterationValues;
+        if (values.length < 2) { return ''; }
+
+        const diffs: number[] = [];
+        for (let i = 1; i < values.length; i++) {
+            const diff = values[i] - values[i - 1];
+            if (diff > 0) {
+                diffs.push(diff);
+            }
+        }
+        if (diffs.length === 0) { return ''; }
+
+        let expectedStep = diffs[0];
+        for (let i = 1; i < diffs.length; i++) {
+            expectedStep = this.computeGcd(expectedStep, diffs[i]);
+        }
+        if (expectedStep <= 0) { return ''; }
+
+        const gaps: string[] = [];
+        let missingTotal = 0;
+        for (let i = 1; i < values.length; i++) {
+            const prev = values[i - 1];
+            const current = values[i];
+            const diff = current - prev;
+            if (diff <= expectedStep) { continue; }
+
+            const missing: number[] = [];
+            for (let n = prev + expectedStep; n < current; n += expectedStep) {
+                missing.push(n);
+            }
+            if (missing.length === 0) { continue; }
+
+            missingTotal += missing.length;
+            const preview = missing.length > 8
+                ? `${missing.slice(0, 8).join(',')}...`
+                : missing.join(',');
+            gaps.push(`${prev}->${current} missing=${preview}`);
+            if (gaps.length >= 6) { break; }
+        }
+
+        if (missingTotal === 0) { return ''; }
+        return `ITERATION_GAP expectedStep=${expectedStep} observed=${values.length} missingTotal=${missingTotal} gaps=${gaps.join(' | ')}`;
+    }
+
     private async scheduleReconnectByPolicy(dataReceived: boolean, hadError: boolean, noPayloadReason?: string): Promise<void> {
         if (this._explicitStop || this.disposed) { return; }
 
@@ -561,13 +645,16 @@ export class RuntimeConsole implements vscode.Disposable {
             const reason = noPayloadReason || 'No payload';
             const isImmediateEof = reason === 'Immediate EOF';
             const isIdleTimeout = reason === 'Idle timeout';
+            const isEmptyPoll = reason === 'Empty batch';
             const reconnectStreak = isImmediateEof
                 ? this._consecutiveImmediateEofSessions
+                : isEmptyPoll || isIdleTimeout
+                ? this._consecutiveEmptySessions
                 : this._consecutiveNoPayloadAttempts;
             const startupPrimeActive = Date.now() < this._startupPrimeUntil;
             const idleDelay = startupPrimeActive
                 ? this._startupPrimeReconnectDelayMs
-                : isIdleTimeout
+                : isIdleTimeout || isEmptyPoll
                 ? tuning.idleReconnectBaseMs
                 : isImmediateEof
                 ? this.computeAdaptiveReconnectDelayMs(
@@ -581,19 +668,21 @@ export class RuntimeConsole implements vscode.Disposable {
                     tuning.idleReconnectMaxMs,
                 );
             this._lastReconnectDelayMs = idleDelay;
-            const statusReason = (isImmediateEof || isIdleTimeout) ? '이벤트 대기 폴링' : '재연결 대기';
+            const statusReason = (isImmediateEof || isIdleTimeout || isEmptyPoll) ? '이벤트 대기 폴링' : '재연결 대기';
             const statusDetail = isImmediateEof
                 ? `이벤트 큐 비어 있음, ${idleDelay}ms 뒤 폴링`
                 : isIdleTimeout
                 ? `Idle timeout, ${idleDelay}ms 뒤 폴링`
+                : isEmptyPoll
+                ? `빈 이벤트 배치, ${idleDelay}ms 뒤 폴링`
                 : `${reason} 후 ${idleDelay}ms 뒤 재연결`;
             this.updateStatus('reconnecting', statusReason, statusDetail);
-            if (isIdleTimeout || this.shouldEmitNoPayloadNotice(reconnectStreak, tuning.emptyNoticeEvery)) {
+            if (isIdleTimeout || isEmptyPoll || this.shouldEmitNoPayloadNotice(reconnectStreak, tuning.emptyNoticeEvery)) {
                 const policy = startupPrimeActive
                     ? 'startup-prime'
                     : isImmediateEof
                     ? 'immediate-eof-adaptive'
-                    : (isIdleTimeout ? 'idle-timeout-fixed' : 'idle-adaptive');
+                    : (isIdleTimeout ? 'idle-timeout-fixed' : (isEmptyPoll ? 'empty-batch-fixed' : 'idle-adaptive'));
                 this.logConsoleTraffic('---', `RECONNECT (${policy}, ${idleDelay}ms, streak=${reconnectStreak}, reason=${reason})`);
             }
             this._reconnectTimer = setTimeout(() => {
@@ -660,6 +749,8 @@ export class RuntimeConsole implements vscode.Disposable {
             this._sessionRxBytes = 0;
             this._sessionFrames = 0;
             this._sessionFramesSwallowed = 0;
+            this._sessionLinesEmitted = 0;
+            this._sessionIterationValues = [];
             socket.setKeepAlive(true, 5_000);  // 5초 간격 TCP keepalive
             socket.setNoDelay(true);
             this.scheduleReadyForBatch();
@@ -779,38 +870,49 @@ export class RuntimeConsole implements vscode.Disposable {
                     noPayloadReason = reason;
                     const isImmediateEof = reason === 'Immediate EOF';
                     const isIdleTimeout = reason === 'Idle timeout';
+                    const isEmptyPoll = reason === 'Empty batch';
                     if (isImmediateEof) {
                         this.handleImmediateEofPolling();
                     } else if (isIdleTimeout) {
                         this.handleIdleTimeoutPolling(elapsed);
+                    } else if (isEmptyPoll) {
+                        this.handleEmptyBatchPolling(elapsed);
                     } else {
                         this.handleNoPayloadAttempt(reason);
                     }
                     this.updateStatus(
-                        (isImmediateEof || isIdleTimeout) ? 'polling' : 'no-payload',
-                        (isImmediateEof || isIdleTimeout) ? '이벤트 대기 폴링' : '빈 세션',
+                        (isImmediateEof || isIdleTimeout || isEmptyPoll) ? 'polling' : 'no-payload',
+                        (isImmediateEof || isIdleTimeout || isEmptyPoll) ? '이벤트 대기 폴링' : '빈 세션',
                         isImmediateEof
                         ? '이벤트 큐가 비어 있어 payload 없이 세션이 종료되었습니다'
                         : isIdleTimeout
                         ? 'idle timeout으로 payload 없이 세션이 종료되었습니다 (정상 폴링 가능)'
+                        : isEmptyPoll
+                        ? '빈 이벤트 배치로 payload 없이 세션이 종료되었습니다 (정상 폴링 가능)'
                         : '연결은 되었지만 payload 없이 세션이 종료되었습니다',
                     );
                     const tuning = this.getTuning();
                     const streak = isImmediateEof
                         ? this._consecutiveImmediateEofSessions
-                        : (isIdleTimeout ? this._consecutiveEmptySessions : this._consecutiveNoPayloadAttempts);
+                        : ((isIdleTimeout || isEmptyPoll) ? this._consecutiveEmptySessions : this._consecutiveNoPayloadAttempts);
                     if (this.shouldEmitNoPayloadNotice(streak, tuning.emptyNoticeEvery)) {
                         const mode = isImmediateEof
                             ? 'poll_empty'
-                            : (isIdleTimeout ? 'poll_idle' : 'no_payload');
+                            : (isIdleTimeout ? 'poll_idle' : (isEmptyPoll ? 'poll_empty_batch' : 'no_payload'));
                         this.appendStateLine(`[Console][RC1403] STATE=DISCONNECTED mode=${mode} reason=${reason} payloadBytes=0 elapsedMs=${elapsed} streak=${streak}`);
                     }
+                }
+
+                const iterationGapSummary = this.buildIterationGapSummary();
+                if (iterationGapSummary) {
+                    this.logConsoleTraffic('---', iterationGapSummary);
+                    this.appendStateLine(`[Console][RC1403] ${iterationGapSummary}`);
                 }
 
                 this.logConsoleTraffic(
                     '---',
                     `CLOSE (${elapsed}ms, hadError=${hadError}, data=${dataReceived}, empty=${this._consecutiveEmptySessions}, `
-                    + `rxBytes=${this._sessionRxBytes}, frames=${this._sessionFrames}, `
+                    + `rxBytes=${this._sessionRxBytes}, rawFrames=${this._sessionFrames}, emittedLines=${this._sessionLinesEmitted}, `
                     + `swallowed=${this._sessionFramesSwallowed}, `
                     + `lifetimeBytes=${this._lifetimeRxBytes}, lifetimeFrames=${this._lifetimeFrames})`,
                 );

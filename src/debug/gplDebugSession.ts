@@ -349,6 +349,12 @@ export class GPLDebugSession extends LoggingDebugSession {
             (this._projectName ? ` (프로젝트: ${this._projectName})` : '') +
             ` [폴링: ${this._pollIntervalMs}ms]`,
         );
+        this.sendEvent(new Event('gpl.controllerConnectionChanged', {
+            connected: true,
+            ip: this._config.ip,
+            port: this._config.port,
+            projectName: this._projectName,
+        }));
 
         // Start fast polling to quickly detect entry break, then switch to normal
         this._fastPoll();
@@ -1215,6 +1221,22 @@ export class GPLDebugSession extends LoggingDebugSession {
         return [];
     }
 
+    private async _resolveStopReasonForThread(threadName: string, fallback: string): Promise<string> {
+        const frames = await this._getThreadFrames(threadName);
+        const top = frames[0];
+        if (!top?.file || top.fileLine <= 0) {
+            return fallback;
+        }
+
+        const breakpointLines = this._breakpoints.get(path.basename(top.file));
+        if (breakpointLines?.has(top.fileLine)) {
+            this._log(`현재 위치가 브레이크포인트와 일치: ${top.file}:${top.fileLine}`);
+            return 'breakpoint';
+        }
+
+        return fallback;
+    }
+
     /**
      * Build a map of basename(lowercase) → full path for all .gpl/.gpo files in workspace.
      */
@@ -1746,16 +1768,17 @@ export class GPLDebugSession extends LoggingDebugSession {
                 // Step 명령은 폴링 사이에 Running 상태를 놓칠 수 있으므로,
                 // pending step 상태에서 다시 paused/break가 보이면 step 완료로 처리한다.
                 if (this._pendingAction === 'step' && this._pendingThreadId === id && isPausedState) {
+                    const reason = await this._resolveStopReasonForThread(t.name, 'step');
                     this._pendingAction = null;
                     this._pendingThreadId = undefined;
                     this._pendingContinueSawRunning = false;
 
                     if (!this._configurationDone) {
-                        this._queuedStoppedEvents.push({ reason: 'step', threadId: id });
-                        this._log(`쓰레드 ${t.name} 스텝 완료 감지 → configurationDone 대기 중`);
+                        this._queuedStoppedEvents.push({ reason, threadId: id });
+                        this._log(`쓰레드 ${t.name} 스텝 완료 감지 (${reason}) → configurationDone 대기 중`);
                     } else {
-                        this.sendEvent(new StoppedEvent('step', id));
-                        this._log(`쓰레드 ${t.name} 정지 (step)`);
+                        this.sendEvent(new StoppedEvent(reason, id));
+                        this._log(`쓰레드 ${t.name} 정지 (${reason})`);
                     }
 
                     this._previousThreadStates.set(t.name, t.state);
@@ -1770,7 +1793,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     // Determine stop reason based on pending action
                     let reason = 'breakpoint';
                     if (this._pendingAction === 'step' && this._pendingThreadId === id) {
-                        reason = 'step';
+                        reason = await this._resolveStopReasonForThread(t.name, 'step');
                     } else if (this._pendingAction === 'pause' && this._pendingThreadId === id) {
                         reason = 'pause';
                     } else if (this._pendingAction === 'entry') {

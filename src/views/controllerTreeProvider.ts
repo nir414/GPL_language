@@ -152,15 +152,18 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	/**
 	 * 연결 상태 변경 — 연결 시 즉시 폴링 시작, 해제 시 정리.
 	 */
-	setConnected(connected: boolean): void {
+	setConnected(connected: boolean, options?: { refresh?: boolean }): void {
 		this._connected = connected;
 		this.consecutiveFailures = 0;
 		this.lastDetailPollAt = 0;
 		if (connected) {
-			this.refresh();
-			this.refreshFtp();
-			this.refreshSystemInfo();
-			this.startPolling();
+			this._onDidChangeTreeData.fire(undefined);
+			if (options?.refresh !== false) {
+				this.refresh();
+				this.refreshFtp();
+				this.refreshSystemInfo();
+				this.startPolling();
+			}
 		} else {
 			this.stopPolling();
 			this.threads = [];
@@ -1207,7 +1210,7 @@ function formatRuntimeConsoleStatusLabel(status: RuntimeConsoleStatusSnapshot): 
 		case 'connected':
 			return 'Connected';
 		case 'connected-no-payload':
-			return 'Connected (No payload)';
+			return 'Connected (Waiting)';
 		case 'connecting':
 			return 'Connecting';
 		case 'reconnecting':
@@ -1220,11 +1223,11 @@ function formatRuntimeConsoleStatusLabel(status: RuntimeConsoleStatusSnapshot): 
 		case 'no-payload':
 			return 'No payload';
 		case 'polling':
-			return 'Polling';
+			return 'Connected (Polling)';
 		case 'stopped':
 			return 'Stopped';
 		case 'batch-complete':
-			return 'Batch complete';
+			return 'Connected (Batch complete)';
 		case 'socket-error':
 			return 'Socket error';
 		default:
@@ -1260,11 +1263,11 @@ function formatRuntimeConsoleTreeState(status: RuntimeConsoleStatusSnapshot): st
 		case 'connected':
 			return '연결됨';
 		case 'connected-no-payload':
-			return '연결됨 · payload 없음';
+			return '연결됨 · payload 대기';
 		case 'connecting':
 			return '연결 중';
 		case 'reconnecting':
-			if (status.immediateEofStreak > 0) {
+			if (isRuntimeConsolePollingState(status)) {
 				return '이벤트 대기 폴링';
 			}
 			return '재연결 대기';
@@ -1273,11 +1276,11 @@ function formatRuntimeConsoleTreeState(status: RuntimeConsoleStatusSnapshot): st
 		case 'no-payload':
 			return 'payload 없음';
 		case 'polling':
-			return '이벤트 대기 폴링';
+			return '연결 유지 · 이벤트 대기';
 		case 'stopped':
 			return '중지됨';
 		case 'batch-complete':
-			return '배치 완료';
+			return '연결 유지 · 배치 완료';
 		case 'socket-error':
 			return '소켓 오류';
 		default:
@@ -1288,7 +1291,7 @@ function formatRuntimeConsoleTreeState(status: RuntimeConsoleStatusSnapshot): st
 function buildRuntimeConsoleTreeDescription(status: RuntimeConsoleStatusSnapshot): string {
 	const parts: string[] = [formatRuntimeConsoleTreeState(status)];
 	if (status.reconnectDelayMs) {
-		parts.push(status.immediateEofStreak > 0
+		parts.push(isRuntimeConsolePollingState(status)
 			? `${status.reconnectDelayMs}ms 뒤 폴링`
 			: `${status.reconnectDelayMs}ms 뒤 재연결`);
 	} else if (status.lastPayloadAt) {
@@ -1305,10 +1308,13 @@ function buildRuntimeConsoleTreeDescription(status: RuntimeConsoleStatusSnapshot
 }
 
 function getRuntimeConsoleTreeIcon(status: RuntimeConsoleStatusSnapshot): string {
-	if (status.connected && status.state === 'connected') {
+	if (status.connected
+		|| status.state === 'connected-no-payload'
+		|| status.state === 'batch-complete'
+		|| status.state === 'polling') {
 		return 'pass';
 	}
-	if (status.state === 'connecting' || status.state === 'reconnecting' || status.state === 'polling') {
+	if (status.state === 'connecting' || status.state === 'reconnecting') {
 		return 'refresh';
 	}
 	return 'warning';
@@ -1333,7 +1339,7 @@ function buildRuntimeConsoleTreeTooltip(
 		lines.push(`마지막 오류 코드: ${status.lastErrorCode}`);
 	}
 	if (status.reconnectDelayMs) {
-		lines.push(`${status.immediateEofStreak > 0 ? '폴링 대기' : '재연결 대기'}: ${status.reconnectDelayMs}ms${status.reconnectAttempt ? ` (attempt ${status.reconnectAttempt})` : ''}`);
+		lines.push(`${isRuntimeConsolePollingState(status) ? '폴링 대기' : '재연결 대기'}: ${status.reconnectDelayMs}ms${status.reconnectAttempt ? ` (attempt ${status.reconnectAttempt})` : ''}`);
 	}
 	lines.push('클릭: 연결/재연결 후 로그 보기');
 	lines.push('버튼: 트래픽 보기');
@@ -1342,10 +1348,17 @@ function buildRuntimeConsoleTreeTooltip(
 
 function isRuntimeConsoleUnstable(status: RuntimeConsoleStatusSnapshot): boolean {
 	if (status.connected) { return false; }
-	if (status.state === 'stopped' || status.state === 'idle' || status.state === 'polling') { return false; }
+	if (status.state === 'stopped'
+		|| status.state === 'idle'
+		|| status.state === 'polling'
+		|| status.state === 'batch-complete'
+		|| status.state === 'connected-no-payload'
+		|| isRuntimeConsolePollingState(status)) {
+		return false;
+	}
 	if (status.immediateEofStreak > 0 && status.noPayloadStreak === 0 && status.lastErrorCode === undefined) { return false; }
-	if (status.noPayloadStreak >= 2) { return true; }
-	return /refused|timeout/i.test(`${status.reason} ${status.detail ?? ''}`);
+	if (status.noPayloadStreak >= 5) { return true; }
+	return /refused|socket error|connect failed|ECONN/i.test(`${status.reason} ${status.detail ?? ''}`);
 }
 
 function getRuntimeConsoleHypothesis(status: RuntimeConsoleStatusSnapshot): string | undefined {
@@ -1359,4 +1372,11 @@ function getRuntimeConsoleHypothesis(status: RuntimeConsoleStatusSnapshot): stri
 		return '실제 런타임이 Idle 상태이거나, 1403이 빈 배치 세션만 반환하는 상태일 수 있습니다.';
 	}
 	return undefined;
+}
+
+function isRuntimeConsolePollingState(status: RuntimeConsoleStatusSnapshot): boolean {
+	const text = `${status.reason} ${status.detail ?? ''}`;
+	return status.state === 'polling'
+		|| status.immediateEofStreak > 0
+		|| /이벤트 대기 폴링|이벤트 큐|빈 이벤트|Idle timeout|Empty batch/i.test(text);
 }

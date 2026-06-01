@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.6.4",
+    "version": "0.6.5",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -633,7 +633,7 @@
                 "gpl.runtimeConsole.noPayloadWarnThreshold": {
                     "scope": "window",
                     "type": "number",
-                    "default": 3,
+                    "default": 10,
                     "description": "Consecutive anomalous no-payload attempts before 1403 unstable warning is shown. Immediate EOF polling is treated separately."
                 },
                 "gpl.runtimeConsole.unstableWarnCooldownMs": {

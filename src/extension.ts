@@ -126,14 +126,20 @@ function buildRuntimeConsoleUserMessage(
 		return { level: 'info', message: `${label} — payload 수신 확인` };
 	}
 	if (status.connected) {
-		return { level: 'warning', message: `${label} — 소켓 연결됨, payload는 아직 없음${detail}` };
+		return { level: 'info', message: `${label} — 소켓 연결됨, payload 대기 중${detail}` };
 	}
 	if (status.state === 'reconnecting') {
-		const level = status.immediateEofStreak > 0 ? 'info' : 'warning';
-		return { level, message: `${label} — ${reason}${detail}. 자동 재연결 대기 중` };
+		const isRuntimePolling = status.reason === '이벤트 대기 폴링'
+			|| /이벤트|빈 이벤트|Idle timeout/i.test(`${status.reason} ${status.detail ?? ''}`);
+		const level = isRuntimePolling ? 'info' : 'warning';
+		const suffix = isRuntimePolling ? '자동 폴링 유지 중' : '자동 재연결 대기 중';
+		return { level, message: `${label} — ${reason}${detail}. ${suffix}` };
 	}
 	if (status.state === 'polling') {
 		return { level: 'info', message: `${label} — 이벤트 큐 비어 있음, 자동 폴링 중${detail}` };
+	}
+	if (status.state === 'batch-complete' || status.state === 'connected-no-payload') {
+		return { level: 'info', message: `${label} — ${reason}${detail}` };
 	}
 	if (status.state === 'connect-failed' || status.state === 'socket-error') {
 		return { level: 'error', message: `${label} — ${reason}${detail}` };
@@ -708,6 +714,13 @@ export function activate(context: vscode.ExtensionContext) {
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.connected', connected);
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.debugging', isDebugSessionActive);
 	}
+
+	function setControllerConnected(connected: boolean, options?: { refreshTree?: boolean }): void {
+		statusBar?.setConnected(connected);
+		updateUiContexts(connected);
+		controllerTree?.setConnected(connected, { refresh: options?.refreshTree });
+	}
+
 	updateUiContexts(false);
 
 	controllerTree = new ControllerTreeProvider();
@@ -966,8 +979,7 @@ export function activate(context: vscode.ExtensionContext) {
 		if (runtimeConsole) {
 			controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
 		}
-		statusBar?.setConnected(false);
-		updateUiContexts(false);
+		setControllerConnected(false);
 		logOutput('[Controller] Connection lost (3 consecutive failures)');
 		vscode.window.showWarningMessage('GPL Controller 연결이 끊어졌습니다.');
 	});
@@ -1027,22 +1039,18 @@ export function activate(context: vscode.ExtensionContext) {
 				const ok = await testConnection(cfg);
 				if (ok) {
 					vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`);
-					statusBar?.setConnected(true);
-					updateUiContexts(true);
-					controllerTree?.setConnected(true);
+					setControllerConnected(true);
 					// controller 연결 성공 시 1403도 바로 유지 연결한다.
 					try { ensureRuntimeConsole(); } catch (err: any) {
 						logOutput(`[Console] auto-start on connect failed: ${err?.message ?? err}`);
 					}
 				} else {
 					vscode.window.showErrorMessage(`GPL Controller 연결 실패: ${cfg.ip}`);
-					statusBar?.setConnected(false);
-					updateUiContexts(false);
+					setControllerConnected(false);
 				}
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`연결 오류: ${err.message ?? err}`);
-				statusBar?.setConnected(false);
-				updateUiContexts(false);
+				setControllerConnected(false);
 			}
 		})
 	);
@@ -1134,9 +1142,7 @@ export function activate(context: vscode.ExtensionContext) {
 				controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
 			}
 			clearSessionControllerOverride();
-			statusBar?.setConnected(false);
-			updateUiContexts(false);
-			controllerTree?.setConnected(false);
+			setControllerConnected(false);
 			lastRuntimeErrorContext = undefined;
 			controllerTree?.setRuntimeErrorContext(undefined);
 			vscode.window.showInformationMessage('GPL Controller 연결 해제');
@@ -2615,6 +2621,33 @@ export function activate(context: vscode.ExtensionContext) {
 		}),
 		vscode.debug.onDidReceiveDebugSessionCustomEvent(async event => {
 			if (event.session.type !== 'brooks-gpl') { return; }
+			if (event.event === 'gpl.controllerConnectionChanged') {
+				const body = (event.body ?? {}) as {
+					connected?: boolean;
+					ip?: string;
+					port?: number;
+					projectName?: string;
+				};
+
+				if (body.connected) {
+					const ip = (body.ip || '').trim();
+					if (ip) {
+						setSessionControllerOverride(ip, body.port);
+					}
+					const projectName = (body.projectName || '').trim();
+					if (projectName) {
+						controllerTree?.setExpectedProjectName(projectName);
+					}
+					setControllerConnected(true, { refreshTree: !isDebugSessionActive });
+					if (isDebugSessionActive) {
+						controllerTree?.enterDebugMode();
+					}
+					logOutput(`[Controller] Connected via debug adapter${ip ? `: ${ip}${body.port ? `:${body.port}` : ''}` : ''}`);
+				} else {
+					setControllerConnected(false);
+				}
+				return;
+			}
 			if (event.event !== 'gpl.errorLocation') { return; }
 
 			const body = (event.body ?? {}) as {

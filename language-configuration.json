@@ -20,13 +20,13 @@
         ["\"", "\""]
     ],
     "indentationRules": {
-        "increaseIndentPattern": "^\\s*(If|For|While|Sub|Function|Class|Module|Try|Catch|Type|Select|With|Do)\\b.*$",
+        "increaseIndentPattern": "^\\s*(?:(?:If\\b.*\\bThen\\s*(?:'.*)?$)|(?:For|While|Sub|Function|Class|Module|Try|Catch|Type|Select|With|Do)\\b.*)$",
         "decreaseIndentPattern": "^\\s*(End\\s+(If|For|While|Sub|Function|Class|Module|Try|Type|Select|With)|Next|Catch|Finally|Loop|Case)\\b.*$"
     },
     "folding": {
         "markers": {
-            "start": "^\\s*(Sub|Function|Class|Module|If|For|While|Try|Type|Select|With|Do)\\b",
-            "end": "^\\s*(End\\s+(Sub|Function|Class|Module|If|For|While|Try|Type|Select|With)|Next|Catch|Finally|Loop|Case)\\b"
+            "start": "^\\s*'\\s*#region\\b",
+            "end": "^\\s*'\\s*#endregion\\b"
         }
     },
     "wordPattern": "[A-Za-z_][A-Za-z0-9_]*"

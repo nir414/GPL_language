@@ -1,15 +1,19 @@
 # Node / TypeScript
 node_modules/
 out/
+dist/
 *.tsbuildinfo
+.eslintcache
+
+# Test / coverage output
+coverage/
+.nyc_output/
 
 # VS Code extension packaging
 *.vsix
 *.zip
+*.tgz
 .vscode-test/
-
-# Package outputs
-dist/
 
 # Logs
 npm-debug.log*
@@ -17,6 +21,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 *.log
+
+# Environment / secrets (controller IPs, credentials, tokens)
+.env
+.env.*
+!.env.example
 
 # OS Files
 .DS_Store
@@ -48,6 +57,11 @@ pkg/
 # GPL specific
 *.gpo.cache
 .gpl-cache/
+
+# Network / packet captures (local controller diagnostics)
+captures/
+*.pcap
+*.pcapng
 
 # Documentation local history
 docs/.history/

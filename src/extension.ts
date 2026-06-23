@@ -28,6 +28,7 @@ import {
 	parseGpr,
 	parseStatus,
 	parseThreadList,
+	SHOW_THREAD_LIST_CMD,
 	classifyErrorEntry,
 	parseControllerErrorEntry,
 	extractErrorCodeFromEntry,
@@ -36,6 +37,8 @@ import {
 } from './controller/responseParser';
 import { startLiveLogTerminal, stopLiveLogTerminal, appendLiveLog, isLiveLogTerminalEnabled } from './log/liveLogTerminal';
 import { fireDebugPollTrigger } from './controller/debugBridge';
+import { formatRuntimeConsoleStateLabel } from './controller/runtimeConsolePresentation';
+import { isBusyStatus } from './controller/controllerStatusCodes';
 
 // Global output channel for GPL extension logging
 let outputChannel: vscode.OutputChannel;
@@ -83,36 +86,6 @@ function ensureRuntimeConsole(): RuntimeConsole {
 	runtimeConsole.start();
 	controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
 	return runtimeConsole;
-}
-
-function formatRuntimeConsoleStateLabel(status: RuntimeConsoleStatusSnapshot): string {
-	switch (status.state) {
-		case 'connected':
-			return 'Connected';
-		case 'connected-no-payload':
-			return 'Connected (No payload)';
-		case 'connecting':
-			return 'Connecting';
-		case 'reconnecting':
-			if (status.immediateEofStreak > 0) {
-				return 'Polling';
-			}
-			return 'Reconnecting';
-		case 'connect-failed':
-			return 'Connect failed';
-		case 'no-payload':
-			return 'No payload';
-		case 'polling':
-			return 'Polling';
-		case 'stopped':
-			return 'Stopped';
-		case 'batch-complete':
-			return 'Batch complete';
-		case 'socket-error':
-			return 'Socket error';
-		default:
-			return status.connected ? 'Connected' : 'Disconnected';
-	}
 }
 
 function buildRuntimeConsoleUserMessage(
@@ -258,11 +231,6 @@ export function activate(context: vscode.ExtensionContext) {
 		return new Promise(resolve => setTimeout(resolve, ms));
 	}
 
-	function isBusyStatus(code: number): boolean {
-		// -752: controller busy / temporarily unavailable
-		return code === -752;
-	}
-
 	async function sendCommandWithBusyRetry(
 		command: string,
 		config?: Parameters<typeof sendCommand>[1],
@@ -304,7 +272,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const target = threadName.toLowerCase();
 		for (let i = 1; i <= maxAttempts; i++) {
 			try {
-				const resp = await sendCommandWithBusyRetry('Show Thread', undefined, { maxAttempts: 2, baseDelayMs: 250 });
+				const resp = await sendCommandWithBusyRetry(SHOW_THREAD_LIST_CMD, undefined, { maxAttempts: 2, baseDelayMs: 250 });
 				const threads = parseThreadList(resp);
 				const found = threads.find(t => t.name.toLowerCase() === target);
 				if (!found) {
@@ -329,7 +297,7 @@ export function activate(context: vscode.ExtensionContext) {
 	async function verifyAllStopped(maxAttempts = 6): Promise<boolean> {
 		for (let i = 1; i <= maxAttempts; i++) {
 			try {
-				const resp = await sendCommandWithBusyRetry('Show Thread', undefined, { maxAttempts: 2, baseDelayMs: 250 });
+				const resp = await sendCommandWithBusyRetry(SHOW_THREAD_LIST_CMD, undefined, { maxAttempts: 2, baseDelayMs: 250 });
 				const threads = parseThreadList(resp);
 				if (threads.length === 0) {
 					return true;
@@ -1768,7 +1736,7 @@ export function activate(context: vscode.ExtensionContext) {
 			let stackLines: string[] = lastRuntimeErrorContext?.stackFrames ? [...lastRuntimeErrorContext.stackFrames] : [];
 			if (!errorThreadName) {
 				try {
-					const showThreadResp = await sendCommand('Show Thread');
+					const showThreadResp = await sendCommand(SHOW_THREAD_LIST_CMD);
 					const threads = parseThreadList(showThreadResp);
 					const thread = threads.find(t => t.state === 'Error') || threads.find(t => t.state === 'Break' || t.state === 'Paused');
 					if (thread) {

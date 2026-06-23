@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.6.5",
+    "version": "0.6.9",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -733,6 +733,7 @@
         "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
+        "test": "npm run compile && node ./out/test/index.js",
         "pre-release-check": "node scripts/pre-release-check.js",
         "package": "node scripts/auto-bump-package-version.js patch && npm run compile && node scripts/package.js",
         "package:no-bump": "npm run compile && node scripts/package.js",

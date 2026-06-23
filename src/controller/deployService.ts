@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
 import { uploadProject, listRemoteDir } from './ftpClient';
 import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus } from './responseParser';
+import { isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 
 export interface DeployOptions {
     projectDir: string;
@@ -241,7 +242,6 @@ export async function deploy(
     if (token?.isCancellationRequested) { return result; }
 
     const compileCandidates = [...new Set([projectName, gprInfo.projectName, folderName].filter(Boolean))];
-    const transientCompileStatusCodes = new Set([-742, -746, -752]);
     const transientCompileRetryDelayMs = Math.max(250, Math.floor(cfg.timeoutMs / 20));
     result.attemptedProjectNames = compileCandidates;
     pushTrace(`│ Candidates: ${compileCandidates.join(' -> ')}`);
@@ -370,7 +370,7 @@ export async function deploy(
             pushTrace(`│ ✔ Load success: ${candidate} ← ${loadPath}`);
             return true;
         }
-        if (load.statusCode === -745) {
+        if (isProjectAlreadyLoaded(load.statusCode)) {
             pushTrace(`│ ✔ Load skipped: already loaded (${candidate})`);
             return true;
         }
@@ -392,7 +392,7 @@ export async function deploy(
             pushTrace(`│ ✔ Unload success: ${candidate}`);
             return true;
         }
-        if (unload.statusCode === -508 || unload.statusCode === -743) {
+        if (isProjectNotLoaded(unload.statusCode)) {
             pushTrace(`│ ✔ Unload skipped: project not loaded (${candidate})`);
             return true;
         }
@@ -449,7 +449,7 @@ export async function deploy(
 
         // STATUS -742/-746/-752이면서 컴파일 에러가 파싱되지 않은 경우는
         // 일시적 컨트롤러 상태일 수 있어 1회 재시도한다.
-        if (!cr.ok && transientCompileStatusCodes.has(cr.statusCode) && cr.errors.length === 0) {
+        if (!cr.ok && isTransientCompileStatus(cr.statusCode) && cr.errors.length === 0) {
             pushTrace(`│ ⚠ Transient STATUS ${cr.statusCode}. retry in ${transientCompileRetryDelayMs}ms`);
             await sleep(transientCompileRetryDelayMs);
             const retry = await tryCompile(candidate);
@@ -500,7 +500,7 @@ export async function deploy(
         const errText = cr.raw;
 
         // -745: project already loaded → Unload + Load + Compile
-        if (cr.statusCode === -745 || errText.includes('-745')) {
+        if (isProjectAlreadyLoaded(cr.statusCode) || errText.includes('-745')) {
             pushTrace(`│ ⚠ Already loaded. Unload → Load → Compile`);
             const unloaded = await tryUnload(candidate);
             if (!unloaded) {
@@ -535,7 +535,7 @@ export async function deploy(
             };
         }
         // -508/-743: missing/invalid → Load + Compile
-        else if (cr.statusCode === -508 || cr.statusCode === -743
+        else if (isProjectNotLoaded(cr.statusCode)
             || errText.includes('-508') || errText.includes('-743')) {
             pushTrace(`│ ⚠ Not loaded. Load → Compile`);
             const loaded = await ensureLoadedFromFtpPath(candidate);

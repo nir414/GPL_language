@@ -209,6 +209,35 @@ SoftEStop
 
 사용자가 명시적으로 요청하지 않으면 실행하지 않는다.
 
+## 패킷 캡처로 확인할 때
+
+기본 조사 순서는 확장 로그(`GPL Traffic`, `GPL Console`, `GPL Deploy (Debug)`)를 우선한다. 그래도 GDE/PEdit와 실제 제어기 wire 동작을 대조해야 하면 Windows 기본 `pktmon` 캡처를 사용할 수 있다. `Npcap` 설치가 어려운 환경에서도 유효하다.
+
+관찰 기준:
+
+| 트래픽 | 의미 |
+| --- | --- |
+| `1402/tcp` | Console Command. 예: `PD`, `Show Thread`, `COMPILE`, `Start`, `Stop` |
+| `1403/tcp` | Runtime event/output. `<E>...</E>` frame |
+| `21/tcp` | FTP control. `USER`, `PASV`, `LIST`, `RETR`, `STOR` |
+| passive data port | FTP file/list payload |
+
+다음 증거가 필요할 때만 캡처 범위를 넓힌다.
+
+| 알고 싶은 것 | 필요한 캡처 |
+| --- | --- |
+| 콘솔 명령/STATUS | 제어기 IP + `1402/tcp` |
+| runtime output/event 누락 여부 | 제어기 IP + `1403/tcp`, 그리고 `GPL Traffic` raw frame |
+| FTP 파일 목록/다운로드/업로드 | 제어기 IP 전체 TCP. `PASV` data port까지 포함 |
+| GDE/PEdit와 확장 동작 비교 | 같은 사용자 동작을 GDE와 확장에서 각각 수행한 캡처 |
+
+캡처 해석 시 주의:
+
+- `RETR`는 제어기에서 PC로 다운로드, `STOR`는 PC에서 제어기로 업로드다.
+- `Stop` 단독 명령은 컨트롤러 펌웨어에서 인자 누락으로 실패할 수 있다. 전체 중지는 `Stop -a`/`Stop -all` 계열을 확인한다.
+- `PC(...)`는 parameter database write이므로 read-only 진단과 분리해서 보고한다.
+- `Format`, `Shutdown`, `SoftEStop`은 캡처 재현을 위해 임의 실행하지 않는다.
+
 ## STATUS 코드 판단표
 
 | 코드 | 1차 해석 | 다음 확인 |

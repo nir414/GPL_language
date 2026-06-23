@@ -1,3 +1,5 @@
+import { escapeRegExp } from './language/cursorExpression';
+
 export interface GPLSymbol {
     name: string;
     kind: GPLSymbolKind;
@@ -184,7 +186,7 @@ export class GPLParser {
                         const { name: pName, type: pType } = extractParamName(p);
                         if (!pName) continue;
 
-                        const re = new RegExp(`\\b${pName.replace(/[.*+?^${}()|[\[\]\\]/g, '\\$&')}\\b`, 'i');
+                        const re = new RegExp(`\\b${escapeRegExp(pName)}\\b`, 'i');
                         const m = re.exec(line);
                         const pStart = m ? m.index : line.indexOf(pName);
                         symbols.push({
@@ -239,7 +241,7 @@ export class GPLParser {
                         const { name: pName, type: pType } = extractParamName(p);
                         if (!pName) continue;
 
-                        const re = new RegExp(`\\b${pName.replace(/[.*+?^${}()|[\[\]\\]/g, '\\$&')}\\b`, 'i');
+                        const re = new RegExp(`\\b${escapeRegExp(pName)}\\b`, 'i');
                         const m = re.exec(line);
                         const pStart = m ? m.index : line.indexOf(pName);
                         symbols.push({

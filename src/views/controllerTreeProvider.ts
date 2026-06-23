@@ -5,8 +5,10 @@
 
 import * as vscode from 'vscode';
 import { trySendCommand, getControllerConfig } from '../controller/controllerConnection';
+import { formatRuntimeConsoleStateLabel } from '../controller/runtimeConsolePresentation';
 import {
 	parseThreadList,
+	SHOW_THREAD_LIST_CMD,
 	ThreadInfo,
 	parseErrorLog,
 	parseBreakList,
@@ -256,7 +258,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		try {
 
 		// 경량 주기 폴링: 기본은 Show Thread만, 상세(Error/Break)는 적응형으로 조회
-		const threadResp = await trySendCommand('Show Thread');
+		const threadResp = await trySendCommand(SHOW_THREAD_LIST_CMD);
 
 		// 연결 유실 감지: 핵심 상태(Show Thread) 3회 연속 실패 시 자동 해제
 		if (threadResp === null) {
@@ -792,7 +794,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const consoleStatus = extra?.runtimeConsoleStatus ?? this.runtimeConsoleStatus;
 		lines.push('## 연결');
 		lines.push(`- 명령 포트: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
-		lines.push(`- 콘솔 포트: ${formatRuntimeConsoleStatusLabel(consoleStatus)} (${cfg.ip}:${cfg.consolePort})`);
+		lines.push(`- 콘솔 포트: ${formatRuntimeConsoleStateLabel(consoleStatus)} (${cfg.ip}:${cfg.consolePort})`);
 		lines.push(`- 콘솔 상세: ${formatRuntimeConsoleStatusDetail(consoleStatus)}`);
 		if (consoleStatus.lastPayloadAt) {
 			lines.push(`- 마지막 payload: ${formatDateTimeFromTs(consoleStatus.lastPayloadAt)} (${consoleStatus.lastPayloadBytes ?? 0} bytes)`);
@@ -988,7 +990,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		lines.push('');
 		lines.push(`- 생성 시각: ${new Date().toLocaleString('ko-KR')}`);
 		lines.push(`- 1402 상태: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
-		lines.push(`- 1403 상태: ${formatRuntimeConsoleStatusLabel(runtime)} (${cfg.ip}:${cfg.consolePort})`);
+		lines.push(`- 1403 상태: ${formatRuntimeConsoleStateLabel(runtime)} (${cfg.ip}:${cfg.consolePort})`);
 		lines.push(`- 1403 상세: ${formatRuntimeConsoleStatusDetail(runtime)}`);
 		lines.push('');
 
@@ -1203,36 +1205,6 @@ function formatDate(date: Date): string {
 function formatDateTimeFromTs(timestamp?: number): string {
 	if (!timestamp) { return '(없음)'; }
 	return new Date(timestamp).toLocaleString('ko-KR');
-}
-
-function formatRuntimeConsoleStatusLabel(status: RuntimeConsoleStatusSnapshot): string {
-	switch (status.state) {
-		case 'connected':
-			return 'Connected';
-		case 'connected-no-payload':
-			return 'Connected (Waiting)';
-		case 'connecting':
-			return 'Connecting';
-		case 'reconnecting':
-			if (status.immediateEofStreak > 0) {
-				return 'Polling';
-			}
-			return 'Reconnecting';
-		case 'connect-failed':
-			return 'Connect failed';
-		case 'no-payload':
-			return 'No payload';
-		case 'polling':
-			return 'Connected (Polling)';
-		case 'stopped':
-			return 'Stopped';
-		case 'batch-complete':
-			return 'Connected (Batch complete)';
-		case 'socket-error':
-			return 'Socket error';
-		default:
-			return status.connected ? 'Connected' : 'Disconnected';
-	}
 }
 
 function formatRuntimeConsoleStatusDetail(status: RuntimeConsoleStatusSnapshot): string {

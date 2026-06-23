@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition } from '../config';
+import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
@@ -190,7 +191,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             this.log(`[Local Text Fallback] procedure range not found. Expanding scan to file top.`);
         }
 
-        const escaped = symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escaped = escapeRegExp(symbolName);
         const declPatterns = [
             new RegExp(`^\\s*Const\\s+(${escaped})\\b`, 'i'),
             new RegExp(`^\\s*(?:Dim|Static)\\s+(?:Const\\s+)?(${escaped})\\b`, 'i'),
@@ -227,48 +228,6 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;
         const paramCount = symbol.parameters ? symbol.parameters.length : 0;
         return `${symbol.name} [${symbol.kind}] params=${paramCount} file=${fileName} line=${symbol.line + 1} class=${symbol.className || 'N/A'} module=${symbol.module || 'N/A'}`;
-    }
-
-    private extractBaseObjectName(expression: string): string | undefined {
-        // Extract the base object name closest to the dot (from end of expression).
-        // The old approach used ^([a-zA-Z_]\w*) which grabbed the FIRST identifier,
-        // failing on lines like "returnError = armList(0).member" where
-        // it would return "returnError" instead of "armList".
-        // Examples:
-        //   "returnError = armList(0)" → "armList"
-        //   "myRobot(index)"          → "myRobot"
-        //   "obj"                     → "obj"
-        //   "arr(0)(1)"               → "arr"
-        let pos = expression.length - 1;
-
-        // Skip trailing whitespace
-        while (pos >= 0 && /\s/.test(expression[pos])) {
-            pos--;
-        }
-
-        // Skip balanced parentheses groups from right to left
-        while (pos >= 0 && expression[pos] === ')') {
-            let depth = 0;
-            while (pos >= 0) {
-                if (expression[pos] === ')') { depth++; }
-                else if (expression[pos] === '(') { depth--; }
-                if (depth === 0) { pos--; break; }
-                pos--;
-            }
-            // Skip whitespace between consecutive parenthesized groups
-            while (pos >= 0 && /\s/.test(expression[pos])) {
-                pos--;
-            }
-        }
-
-        // Extract the identifier ending at current position
-        const endPos = pos + 1;
-        while (pos >= 0 && /[a-zA-Z0-9_]/.test(expression[pos])) {
-            pos--;
-        }
-
-        const name = expression.substring(pos + 1, endPos);
-        return name.length > 0 && /^[a-zA-Z_]/.test(name) ? name : undefined;
     }
 
     private buildLocation(symbol: GPLSymbol): vscode.Location {
@@ -325,7 +284,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             }
         } else {
             // Cursor on a word — check if preceded by "New"
-            const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const escapedWord = escapeRegExp(word);
             const ctorRegex = new RegExp(`\\b(?:As\\s+)?New\\s+${escapedWord}\\s*\\(`, 'i');
             if (ctorRegex.test(line)) {
                 constructorClassName = word;
@@ -399,7 +358,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         if (lastDotIndex !== -1) {
             // Extract everything before the last dot
             const objectExpression = beforeWord.substring(0, lastDotIndex).trim();
-            const baseObjectName = this.extractBaseObjectName(objectExpression);
+            const baseObjectName = extractBaseObjectName(objectExpression);
             const memberName = word;
 
             this.log(`[Member Access] Expression: "${objectExpression}" | Base: "${baseObjectName}" | Member: "${memberName}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);

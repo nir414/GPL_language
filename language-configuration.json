@@ -20,8 +20,8 @@
         ["\"", "\""]
     ],
     "indentationRules": {
-        "increaseIndentPattern": "^\\s*(?:(?:If\\b.*\\bThen\\s*(?:'.*)?$)|(?:For|While|Sub|Function|Class|Module|Try|Catch|Type|Select|With|Do)\\b.*)$",
-        "decreaseIndentPattern": "^\\s*(End\\s+(If|For|While|Sub|Function|Class|Module|Try|Type|Select|With)|Next|Catch|Finally|Loop|Case)\\b.*$"
+        "increaseIndentPattern": "^\\s*(?:(?:(?:Else\\s*)?If\\b.*\\bThen\\s*(?:'.*)?$)|(?:Else\\s*(?:'.*)?$)|(?:(?:For|While|Sub|Function|Class|Module|Try|Catch|Finally|Type|Enum|Select|With|Do|Case)\\b.*))$",
+        "decreaseIndentPattern": "^\\s*(?:End\\s+(?:If|For|While|Sub|Function|Class|Module|Try|Type|Select|With|Enum)|Next|Loop|Wend|Catch|Finally|Case|ElseIf|Else)\\b.*$"
     },
     "folding": {
         "markers": {

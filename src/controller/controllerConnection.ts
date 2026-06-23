@@ -1,6 +1,7 @@
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { appendLiveLog } from '../log/liveLogTerminal';
+import { formatConsoleCommandClassification } from './consoleCommandClassifier';
 
 export interface ControllerConfig {
 	ip: string;
@@ -66,7 +67,9 @@ function logTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
 		// 포맷 판단: XML은 < 시작, 나머지는 plain text
 		const isXml = message.includes('<') || message.includes('/>');
 		const format = isXml ? '[XML]' : '[PLAIN]';
-		labeledMsg = `${format} ${message}`;
+		const commandText = message.replace(/^\S+:\d+\s+/, '');
+		const commandClass = isXml ? '' : `[${formatConsoleCommandClassification(commandText)}]`;
+		labeledMsg = `${format}${commandClass} ${message}`;
 	}
 	
 	const line = `[${ts}] ${direction} ${labeledMsg}`;

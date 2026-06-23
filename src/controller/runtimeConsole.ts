@@ -209,9 +209,9 @@ export class RuntimeConsole implements vscode.Disposable {
         }
     }
 
-    /** GPL Console 채널에 상태 힌트를 남겨 no-payload 상황을 가시화한다. */
+    /** 상태 힌트는 GPL Console(payload 채널)을 더럽히지 않도록 상태/트래픽 로그로만 남긴다. */
     private appendRuntimeHint(message: string): void {
-        this.output.appendLine(`[RT] [1403] ${message}`);
+        this.appendStateLine(`[Console][RC1403] HINT=${message}`);
     }
 
     async waitForPayload(timeoutMs = 1500): Promise<boolean> {
@@ -646,12 +646,12 @@ export class RuntimeConsole implements vscode.Disposable {
             const isImmediateEof = reason === 'Immediate EOF';
             const isIdleTimeout = reason === 'Idle timeout';
             const isEmptyPoll = reason === 'Empty batch';
+            const startupPrimeActive = Date.now() < this._startupPrimeUntil;
             const reconnectStreak = isImmediateEof
                 ? this._consecutiveImmediateEofSessions
                 : isEmptyPoll || isIdleTimeout
                 ? this._consecutiveEmptySessions
                 : this._consecutiveNoPayloadAttempts;
-            const startupPrimeActive = Date.now() < this._startupPrimeUntil;
             const idleDelay = startupPrimeActive
                 ? this._startupPrimeReconnectDelayMs
                 : isIdleTimeout || isEmptyPoll

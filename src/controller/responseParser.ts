@@ -57,6 +57,18 @@ export function parseCompileErrors(text: string): CompileError[] {
 
 // ─── Threads ──────────────────────────────────────────────
 
+/**
+ * 스레드 "목록" 열거용 콘솔 명령.
+ *
+ * GDE/PEdit 패킷 캡처(1402) 기준으로, 인자 없는 `Show Thread`는 스레드가
+ * 실행 중이어도 `<DATA></DATA>` 빈 응답을 돌려준다. 전체 스레드를 열거하려면
+ * GDE처럼 `-web` 플래그를 써야 하며, 응답은 파이프(`|`) 구분 9컬럼 형식이다.
+ *
+ * 두 칸 공백은 의도된 것: `Show Thread [name] [-web]` 문법에서 name 슬롯을 비우고
+ * `-web` 플래그만 전달하는, GDE가 실제로 전송한 형태를 그대로 따른다.
+ */
+export const SHOW_THREAD_LIST_CMD = 'Show Thread  -web';
+
 export type ThreadState = 'Running' | 'Idle' | 'Error' | 'Stopping' | 'Stopped' | 'Break' | 'Paused' | string;
 
 export interface ThreadInfo {
@@ -65,6 +77,11 @@ export interface ThreadInfo {
     lastStatus: string;
     project: string;
     file: string;
+    // `Show Thread -web`(파이프 형식)에서만 채워지는 정밀 위치 정보.
+    // 공백/콤마 형식에서는 undefined.
+    func?: string;
+    procLine?: number;
+    fileLine?: number;
 }
 
 export interface ThreadDetailInfo {
@@ -83,6 +100,9 @@ export interface ThreadDetailInfo {
  * `Show Thread` 응답 파싱.
  * 펌웨어마다 컬럼 구분자/갯수가 다를 수 있으므로 유연하게 처리한다.
  * 지원 형식:
+ *   - 파이프 구분(`Show Thread -web`, GDE 폴링 형식, 9컬럼):
+ *       `name| state| code| "msg"| project| func| procLine| file| fileLine`
+ *       예) `Test_robot| Paused| 0| ""| Test_robot| MAIN| 2| Entry_Main.gpl| 22`
  *   - 탭/2+공백 구분: `ThreadName    Running    0    proj    file`
  *   - 쉼표 구분:      `ThreadName, Running`
  */
@@ -97,6 +117,25 @@ export function parseThreadList(text: string): ThreadInfo[] {
             || /^[-=]+$/.test(trimmed)
             || /Thread\s*Name/i.test(trimmed)
             || /^-?\d+\s*,\s*"[^"]*"\s*$/.test(trimmed)) {
+            continue;
+        }
+        // 0차: 파이프(`|`) 구분 — `Show Thread -web` 형식. 컬럼 매핑이 다르므로 우선 처리.
+        if (trimmed.includes('|')) {
+            const p = trimmed.split('|').map(s => s.trim());
+            if (p.length >= 2) {
+                const procLine = Number.parseInt(p[6] ?? '', 10);
+                const fileLine = Number.parseInt(p[8] ?? '', 10);
+                threads.push({
+                    name: p[0],
+                    state: normalizeThreadState(p[1] || ''),
+                    lastStatus: p[2] || '',
+                    project: p[4] || '',
+                    file: p[7] || '',
+                    func: p[5] || undefined,
+                    procLine: Number.isNaN(procLine) ? undefined : procLine,
+                    fileLine: Number.isNaN(fileLine) ? undefined : fileLine,
+                });
+            }
             continue;
         }
         // 1차: 2 이상 공백 또는 탭으로 구분 (테이블 형식)

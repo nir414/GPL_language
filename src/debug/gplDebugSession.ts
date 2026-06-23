@@ -35,6 +35,7 @@ import { deploy, findProjectDirs } from '../controller/deployService';
 import {
     parseThreadList,
     parseThreadDetail,
+    SHOW_THREAD_LIST_CMD,
     parseStack,
     parseVariable,
     parseBreakList,
@@ -45,6 +46,15 @@ import {
 } from '../controller/responseParser';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
 import { fireDebugThreadsUpdated, onDebugPollTrigger } from '../controller/debugBridge';
+
+let sharedDeployOutput: vscode.OutputChannel | undefined;
+
+function getDeployOutputChannel(): vscode.OutputChannel {
+    if (!sharedDeployOutput) {
+        sharedDeployOutput = vscode.window.createOutputChannel('GPL Deploy (Debug)');
+    }
+    return sharedDeployOutput;
+}
 
 // ─── Launch/Attach argument interfaces ───────────────────
 
@@ -168,7 +178,6 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     // Debug pre-deploy diagnostics/output
     private _deployDiagnostics: vscode.DiagnosticCollection | undefined;
-    private _deployOutput: vscode.OutputChannel | undefined;
     private _lastControllerCommand = '';
     private _firstErrorSeenAtByThread = new Map<string, string>();
 
@@ -459,23 +468,23 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
         }
         for (const line of existingLines) {
-            await this._sendCmd(`Set Nobreak ${proj} "${baseName}" ${line}`);
+            await this._sendCmd(`Set Nobreak ${proj} "${baseName}"${line}`);
         }
 
-        // Set new breakpoints using correct Brooks syntax:
-        // Set Break project_name "file_name" line_number
+        // Set new breakpoints using correct Brooks syntax (GDE 캡처 기준):
+        // Set Break project_name "file_name"line_number  (따옴표와 줄번호 사이 공백 없음)
         const actualBreakpoints: DebugProtocol.Breakpoint[] = [];
         const newLines = new Set<number>();
 
         for (const line of clientLines) {
-            const cmd = `Set Break ${proj} "${baseName}" ${line}`;
+            const cmd = `Set Break ${proj} "${baseName}"${line}`;
             const resp = await this._sendCmd(cmd);
             // "Duplicate breakpoint" 응답은 컨트롤러에 이미 동일 BP가 있다는 뜻이다.
             // Nobreak 정리가 실패했을 수 있으므로 한 번 더 정리 후 재설정하여 단일 BP 보장.
             let finalResp = resp;
             if (resp !== null && /Duplicate breakpoint/i.test(resp)) {
                 this._log(`⚠ Duplicate BP 감지, 재설정: ${cmd}`);
-                await this._sendCmd(`Set Nobreak ${proj} "${baseName}" ${line}`);
+                await this._sendCmd(`Set Nobreak ${proj} "${baseName}"${line}`);
                 finalResp = await this._sendCmd(cmd);
             }
             const verified = finalResp !== null && isSuccess(finalResp);
@@ -518,7 +527,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     protected async threadsRequest(
         response: DebugProtocol.ThreadsResponse,
     ): Promise<void> {
-        const resp = await this._sendCmd('Show Thread');
+        const resp = await this._sendCmd(SHOW_THREAD_LIST_CMD);
         if (!resp) {
             response.body = { threads: [] };
             this.sendResponse(response);
@@ -779,8 +788,9 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._pendingThreadId = args.threadId;
             this._userActionInFlight = true;
             try {
-                await this._sendCmd(`Step ${threadName} -over`);
-                this._log(`Step ${threadName} -over`);
+                // GDE 캡처: step over = `Step <proj> -over -noerror`
+                await this._sendCmd(`Step ${threadName} -over -noerror`);
+                this._log(`Step ${threadName} -over -noerror`);
             } finally {
                 this._userActionInFlight = false;
             }
@@ -800,8 +810,9 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._pendingThreadId = args.threadId;
             this._userActionInFlight = true;
             try {
-                await this._sendCmd(`Step ${threadName} -into`);
-                this._log(`Step ${threadName} -into`);
+                // GDE 캡처: step into = `Step <proj> -noerror` (-into 플래그 없음)
+                await this._sendCmd(`Step ${threadName} -noerror`);
+                this._log(`Step ${threadName} -noerror (into)`);
             } finally {
                 this._userActionInFlight = false;
             }
@@ -821,8 +832,9 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._pendingThreadId = args.threadId;
             this._userActionInFlight = true;
             try {
-                await this._sendCmd(`Step ${threadName} -out`);
-                this._log(`Step ${threadName} -out`);
+                // step out은 캡처에 없어 기존 -out 유지 + GDE 공통 -noerror 부여
+                await this._sendCmd(`Step ${threadName} -out -noerror`);
+                this._log(`Step ${threadName} -out -noerror`);
             } finally {
                 this._userActionInFlight = false;
             }
@@ -1146,7 +1158,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         // 3) Fallback: detect from Show Thread (running thread's project)
-        const resp = await this._sendCmd('Show Thread');
+        const resp = await this._sendCmd(SHOW_THREAD_LIST_CMD);
         if (resp) {
             const threads = parseThreadList(resp);
             for (const t of threads) {
@@ -1624,7 +1636,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         try {
             this._pollCount++;
 
-            const resp = await this._sendCmd('Show Thread');
+            const resp = await this._sendCmd(SHOW_THREAD_LIST_CMD);
             if (!resp) {
                 this._pollFailures++;
                 if (this._pollCount <= GPLDebugSession.DIAG_POLL_COUNT) {
@@ -1859,9 +1871,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (!this._deployDiagnostics) {
             this._deployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-debug-deploy');
         }
-        if (!this._deployOutput) {
-            this._deployOutput = vscode.window.createOutputChannel('GPL Deploy (Debug)');
-        }
+        const deployOutput = getDeployOutputChannel();
 
         this._log(`[deploy] Attach 전 배포 시작: ${projectDir}`);
         const result = await deploy(
@@ -1870,7 +1880,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 skipStart: true,
                 skipUnchanged: args.skipUnchangedOnDeploy,
             },
-            this._deployOutput,
+            deployOutput,
             this._deployDiagnostics,
             undefined,
             this._config,
@@ -1907,7 +1917,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     this._log(`[deploy]   ${el}`);
                 }
             }
-            this._deployOutput.show(true);
+            deployOutput.show(true);
             return false;
         }
 

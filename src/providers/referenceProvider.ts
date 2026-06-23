@@ -3,6 +3,7 @@ import * as path from 'path';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose, ciEq, getQualifiedWordAtPosition } from '../config';
+import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
     constructor(
@@ -17,11 +18,6 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         if (this.outputChannel) {
             this.outputChannel.appendLine(message);
         }
-    }
-
-    private escapeRegExp(text: string): string {
-        // Escape characters that have special meaning in RegExp.
-        return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
     private buildQualifiedMemberPattern(escapedQualifier: string, escapedWord: string): string {
@@ -114,46 +110,6 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         return false;
     }
 
-    private extractBaseObjectName(expression: string): string | undefined {
-        // Extract the base object name closest to the dot (from end of expression).
-        // Must scan from the END to handle lines like "returnError = armList(0).member"
-        // where the first identifier (returnError) is NOT the base object (armList).
-        // Examples:
-        //   "returnError = armList(0)" → "armList"
-        //   "myRobot(index)"          → "myRobot"
-        //   "obj"                     → "obj"
-        //   "arr(0)(1)"               → "arr"
-        let pos = expression.length - 1;
-
-        // Skip trailing whitespace
-        while (pos >= 0 && /\s/.test(expression[pos])) {
-            pos--;
-        }
-
-        // Skip balanced parentheses groups from right to left
-        while (pos >= 0 && expression[pos] === ')') {
-            let depth = 0;
-            while (pos >= 0) {
-                if (expression[pos] === ')') { depth++; }
-                else if (expression[pos] === '(') { depth--; }
-                if (depth === 0) { pos--; break; }
-                pos--;
-            }
-            while (pos >= 0 && /\s/.test(expression[pos])) {
-                pos--;
-            }
-        }
-
-        // Extract the identifier ending at current position
-        const endPos = pos + 1;
-        while (pos >= 0 && /[a-zA-Z0-9_]/.test(expression[pos])) {
-            pos--;
-        }
-
-        const name = expression.substring(pos + 1, endPos);
-        return name.length > 0 && /^[a-zA-Z_]/.test(name) ? name : undefined;
-    }
-
     private getQualifierBefore(text: string, identifierIndex: number): string | undefined {
         const before = text.substring(0, identifierIndex);
         const lastDotIndex = before.lastIndexOf('.');
@@ -166,7 +122,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const objectExpression = before.substring(0, lastDotIndex).trim();
 
         // Get the base object name from the expression (handles array indexing, etc.)
-        return this.extractBaseObjectName(objectExpression);
+        return extractBaseObjectName(objectExpression);
     }
 
     private shouldAcceptByMemberScope(
@@ -276,7 +232,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const beforeWord = lineText.substring(0, wordRange.start.character).trimEnd();
         const lastDotIndex = beforeWord.lastIndexOf('.');
         const qualifier = lastDotIndex !== -1
-            ? this.extractBaseObjectName(beforeWord.substring(0, lastDotIndex).trim())
+            ? extractBaseObjectName(beforeWord.substring(0, lastDotIndex).trim())
             : undefined;
 
         // If the cursor is on a qualified member access like obj.Member, the "obj" part is usually
@@ -309,10 +265,10 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         //   - qualified "Module.X" across the workspace for external callers
         // - Otherwise (ambiguous), fall back to name-only search.
 
-        const escapedWord = this.escapeRegExp(word);
-        const escapedQualifier = qualifier ? this.escapeRegExp(qualifier) : undefined;
-        const escapedModule = targetModule ? this.escapeRegExp(targetModule) : undefined;
-        const escapedClass = targetClass ? this.escapeRegExp(targetClass) : undefined;
+        const escapedWord = escapeRegExp(word);
+        const escapedQualifier = qualifier ? escapeRegExp(qualifier) : undefined;
+        const escapedModule = targetModule ? escapeRegExp(targetModule) : undefined;
+        const escapedClass = targetClass ? escapeRegExp(targetClass) : undefined;
 
         const qualifiedRegex = (q: string) => new RegExp(this.buildQualifiedMemberPattern(q, escapedWord), 'gi');
         const qualifiedPattern = (q: string) => this.buildQualifiedMemberPattern(q, escapedWord);

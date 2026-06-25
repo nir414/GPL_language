@@ -587,7 +587,11 @@ export async function deploy(
     if (result.compileErrors.length > 0) {
         applyCompileDiagnostics(result.compileErrors, options.projectDir, diagnosticCollection);
         for (const err of result.compileErrors) {
-            pushTrace(`│   ${err.file}:${err.line} (${err.code}): ${err.message}`);
+            // 절대경로 `파일:줄:열` 형식으로 출력하면 출력 패널에서 클릭 시 해당 위치로 이동된다.
+            const abs = path.isAbsolute(err.file)
+                ? err.file
+                : path.join(options.projectDir, err.file);
+            pushTrace(`│   ${abs}:${err.line}:1 (${err.code}) ${err.message}`);
         }
     }
 
@@ -681,29 +685,63 @@ function applyCompileDiagnostics(
     projectDir: string,
     collection: vscode.DiagnosticCollection
 ): void {
-    const byFile = new Map<string, vscode.Diagnostic[]>();
+    // fsPath 문자열을 키로 사용해 동일 파일의 진단을 묶는다.
+    // (Uri.toString() ↔ Uri.parse() 왕복 인코딩으로 인한 경로 불일치를 피하기 위해 Uri를 직접 보관한다.)
+    const byFile = new Map<string, { uri: vscode.Uri; diags: vscode.Diagnostic[] }>();
 
     for (const err of errors) {
-        const filePath = path.isAbsolute(err.file)
-            ? err.file
-            : path.join(projectDir, err.file);
-
-        const uri = vscode.Uri.file(filePath).toString();
-        if (!byFile.has(uri)) {
-            byFile.set(uri, []);
+        const filePath = resolveErrorFilePath(err.file, projectDir);
+        const uri = vscode.Uri.file(filePath);
+        const key = uri.fsPath;
+        if (!byFile.has(key)) {
+            byFile.set(key, { uri, diags: [] });
         }
 
         const line = Math.max(0, err.line - 1);
-        const range = new vscode.Range(line, 0, line, 1000);
+        const range = new vscode.Range(line, 0, line, Number.MAX_SAFE_INTEGER);
         const diag = new vscode.Diagnostic(range, err.message, vscode.DiagnosticSeverity.Error);
         diag.source = 'GPL Compiler';
         diag.code = err.code;
-        byFile.get(uri)!.push(diag);
+        byFile.get(key)!.diags.push(diag);
     }
 
-    for (const [uriStr, diags] of byFile) {
-        collection.set(vscode.Uri.parse(uriStr), diags);
+    for (const { uri, diags } of byFile.values()) {
+        collection.set(uri, diags);
     }
+}
+
+/**
+ * 컴파일러가 보고한 파일명을 로컬 절대경로로 해석한다.
+ * 1) 절대경로면 그대로, 2) projectDir 바로 아래에 있으면 그 경로,
+ * 3) 못 찾으면 projectDir 하위에서 동일 파일명을 한 번 탐색(최선 노력),
+ * 4) 그래도 없으면 projectDir 기준 경로를 반환(진단은 Problems 패널에 표시됨).
+ */
+export function resolveErrorFilePath(file: string, projectDir: string): string {
+    if (path.isAbsolute(file)) {
+        return file;
+    }
+    const direct = path.join(projectDir, file);
+    if (fs.existsSync(direct)) {
+        return direct;
+    }
+    try {
+        const base = path.basename(file);
+        const stack = [projectDir];
+        while (stack.length > 0) {
+            const dir = stack.pop()!;
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (entry.isDirectory()) {
+                    if (entry.name === 'node_modules' || entry.name === '.git') { continue; }
+                    stack.push(path.join(dir, entry.name));
+                } else if (entry.name.toLowerCase() === base.toLowerCase()) {
+                    return path.join(dir, entry.name);
+                }
+            }
+        }
+    } catch {
+        // 탐색 실패는 무시하고 기본 경로 사용
+    }
+    return direct;
 }
 
 /**

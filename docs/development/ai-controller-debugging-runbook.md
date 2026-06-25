@@ -231,6 +231,27 @@ SoftEStop
 | FTP 파일 목록/다운로드/업로드 | 제어기 IP 전체 TCP. `PASV` data port까지 포함 |
 | GDE/PEdit와 확장 동작 비교 | 같은 사용자 동작을 GDE와 확장에서 각각 수행한 캡처 |
 
+### GDE 1402 실측 명령 포맷 (2026-06-23 pktmon 캡처)
+
+실기(192.168.0.1) GDE/PEdit 디버그 세션 캡처에서 확인한 wire 사실. 확장은 이 포맷을 기준으로 맞춘다.
+
+- **응답 프레이밍**: 모든 1402 응답은 `<DATA>...</DATA>\r\n<STATUS>code,"message"</STATUS>\r\n`. 에러도 DATA+STATUS로 옴(예: `-508`은 `<DATA>(-508): *File not found* <path>/Project.gpr</DATA>`). 명령 송신은 plain text + `\r\n`(CRLF).
+- **스레드 목록**: 인자 없는 `Show Thread`는 스레드가 실행 중이어도 `<DATA></DATA>` 빈 응답. 전체 열거는 GDE처럼 **`Show Thread  -web`**(파이프 9컬럼: `name| state| code| "msg"| project| func| procLine| file| fileLine`). 특정 스레드 상세는 `Show Thread <name>`(콤마 형식).
+- **브레이크포인트**: `Set Break <project> "<file>"<line>` — **따옴표와 줄번호 사이 공백 없음**. 목록은 `Show Break`, 해제는 `Set Nobreak <project> "<file>"<line>`.
+- **스텝**: step over = `Step <project> -over -noerror`, step into = `Step <project> -noerror`(`-into` 플래그 없음). 모든 step에 `-noerror`.
+- **실행/중지**: `Start <project> -event`(이벤트 모드), `Continue <project>`, `Stop` 단독은 `-205 Missing argument` → 전체 중지는 `Stop -a`.
+- **플래시/메모리 조회**: 용량은 `dir -f /flash`(→ `used/total`), 메모리는 `memory`. (`Directory <path>`와는 별개 명령.)
+- **Load 경로 규칙**: `Load <dir>`는 `<dir>/Project.gpr`를 찾는다. `-508`이면 STOR 경로와 `Load` 경로 기준(`/GPL` vs `/flash/projects`)을 대조한다.
+
+### GDE 1403 실측 런타임 이벤트 (2026-06-23 pktmon 캡처)
+
+- **단방향 push 스트림**: 클라이언트는 연결 후 사실상 송신이 없다(구독 명령 없음, 1바이트 수준). 컨트롤러가 이벤트를 일방적으로 내려보낸다.
+- **프레임 형식**: `<E>type,payload</E>` 이고 프레임 구분자는 `</E>` + `\n` + **NUL(`\x00`)**.
+  - `<E>1,N</E>` — 숫자 상태 이벤트(예: `1,0`/`1,1`/`1,4`). 로그 아님 → 표시 억제.
+  - `<E>3,<project><L>len</L><message>` — 콘솔 출력. `<L>N</L>`의 N은 **로그 레벨이 아니라 메시지 청크 바이트 길이**.
+- **128바이트 청크 분할**: 한 줄이 길면 128바이트마다 여러 `<E>3,...` 프레임으로 쪼개지고, **마지막 청크만 `\n`으로 끝난다**. 한 줄로 보려면 `\n`으로 끝나는 청크까지 이어붙여 재조립해야 한다(확장 `RuntimeConsole.emitConsoleFrame`이 처리).
+- 분석 시 한 프레임=한 줄로 단정하지 말 것. 긴 WARN/에러 줄이 둘로 갈려 보이면 청크 분할이다.
+
 캡처 해석 시 주의:
 
 - `RETR`는 제어기에서 PC로 다운로드, `STOR`는 PC에서 제어기로 업로드다.

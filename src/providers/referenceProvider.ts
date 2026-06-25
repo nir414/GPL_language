@@ -66,6 +66,41 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         }
     }
 
+    /**
+     * 식별자가 "문장 맨 앞의 좌변 대입"인지 판별한다.
+     * 즉 같은 줄에서 식별자 앞에는 공백뿐이고, 식별자 뒤에는 (공백 후) 단일 `=`가 오는 형태.
+     *
+     * GPL/VB에서 함수 본문의 `FunctionName = value`는 반환값 대입문이며,
+     * 이는 함수 호출/사용 참조가 아니라 반환값 설정이므로 참조 결과에서 제외한다.
+     * `result = FunctionName(...)`처럼 우변 호출은 식별자 앞에 다른 토큰이 있으므로 제외되지 않는다.
+     * `If FunctionName = 0 Then`처럼 비교문도 앞에 `If`가 있어 제외되지 않는다.
+     */
+    private isStatementLeadingAssignmentLHS(text: string, identifierStart: number, identifierLen: number): boolean {
+        // 식별자 앞이 줄 시작까지 공백뿐인지 확인.
+        let i = identifierStart - 1;
+        while (i >= 0 && text[i] !== '\n') {
+            const ch = text[i];
+            if (ch !== ' ' && ch !== '\t' && ch !== '\r') {
+                return false;
+            }
+            i--;
+        }
+
+        // 식별자 뒤: 공백을 건너뛴 다음 문자가 단일 `=`여야 한다.
+        let j = identifierStart + identifierLen;
+        while (j < text.length && (text[j] === ' ' || text[j] === '\t')) {
+            j++;
+        }
+        if (text[j] !== '=') {
+            return false;
+        }
+        // `==`, `=<` 등 합성 연산자는 제외(VB는 단일 `=`만 쓰지만 방어적으로 처리).
+        if (text[j + 1] === '=') {
+            return false;
+        }
+        return true;
+    }
+
     private isQualifiedAt(text: string, matchIndex: number): boolean {
         // True if the identifier at matchIndex is preceded (ignoring whitespace) by a dot.
         for (let i = matchIndex - 1; i >= 0; i--) {
@@ -339,6 +374,15 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     continue;
                 }
 
+                // 함수 본문의 반환값 대입문(FunctionName = ...)은 참조에서 제외.
+                if (
+                    defSymbol?.kind === 'function' &&
+                    doc.uri.fsPath === defSymbol.filePath &&
+                    this.isStatementLeadingAssignmentLHS(text, startIndex, word.length)
+                ) {
+                    continue;
+                }
+
                 if (shouldSkipAsDeclaration(doc.uri, range, doc)) {
                     continue;
                 }
@@ -455,6 +499,15 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
 
                 const lineText = doc.lineAt(normalizedRange.start.line).text;
                 if (this.isCommentPosition(lineText, normalizedRange.start.character)) {
+                    return;
+                }
+
+                // 함수 본문의 반환값 대입문(FunctionName = ...)은 참조에서 제외.
+                if (
+                    defSymbol?.kind === 'function' &&
+                    uri.fsPath === defSymbol.filePath &&
+                    this.isStatementLeadingAssignmentLHS(text, memberStartOffset, word.length)
+                ) {
                     return;
                 }
 

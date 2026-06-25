@@ -43,6 +43,11 @@ export class GPLParser {
     static parseDocument(content: string, filePath: string, options?: GPLParseOptions): GPLSymbol[] {
         const symbols: GPLSymbol[] = [];
         const lines = content.split('\n');
+        // Merge VB line-continuation (`_`) sequences into single logical lines so that
+        // multi-line Sub/Function/Property/declaration signatures are parsed correctly.
+        // Each logical line keeps the physical line index of its first line so symbol
+        // positions stay anchored to where the name actually appears.
+        const logicalLines = GPLParser.buildLogicalLines(lines);
         let currentModule: string | undefined;
         let currentClass: string | undefined;
         // Track whether we're inside a procedure block (Sub/Function/Property body).
@@ -77,8 +82,9 @@ export class GPLParser {
             return { name: name || undefined, type };
         };
 
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
+        for (let li = 0; li < logicalLines.length; li++) {
+            const i = logicalLines[li].line;
+            const line = logicalLines[li].text;
             const trimmedLine = line.trim();
             
             // Skip comments and empty lines
@@ -151,7 +157,7 @@ export class GPLParser {
             // Parse Function: token-based parsing to support any keyword order
             // Use (.*) instead of ([^)]*) to handle array params like "armList() As RobotArm"
             const functionMatch = trimmedLine.match(/\bFunction\s+(\w+)(?:\s*\((.*)\))?(?:\s+As\s+(\w+))?/i);
-            if (functionMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Friend|Shared)\s+)*Function\b/i)) {
+            if (functionMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial)\b\s+)*Function\b/i)) {
                 const name = functionMatch[1];
                 const params = functionMatch[2] ? functionMatch[2].split(',').map(p => p.trim()) : [];
                 const returnType = functionMatch[3];
@@ -212,7 +218,7 @@ export class GPLParser {
             // Parse Sub: token-based parsing to support any keyword order
             // Use (.*) instead of ([^)]*) to handle array params like "armList() As RobotArm"
             const subMatch = trimmedLine.match(/\bSub\s+(\w+)(?:\s*\((.*)\))?/i);
-            if (subMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Shared)\b\s+)*Sub\b/i)) {
+            if (subMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial)\b\s+)*Sub\b/i)) {
                 const name = subMatch[1];
                 const params = subMatch[2] ? subMatch[2].split(',').map(p => p.trim()) : [];
                 const startIndex = line.indexOf(name);
@@ -265,7 +271,7 @@ export class GPLParser {
             }
 
             // Parse Property
-            const propertyMatch = trimmedLine.match(/^(Public|Private)?\s*(Shared\s+)?Property\s+(\w+)\s+As\s+(\w+)/i);
+            const propertyMatch = trimmedLine.match(/^(Public|Private|Protected|Friend)?\s*(Shared\s+)?Property\s+(\w+)\s+As\s+(\w+)/i);
             if (propertyMatch) {
                 symbols.push({
                     name: propertyMatch[3],
@@ -606,6 +612,52 @@ export class GPLParser {
             }
         }
         return result;
+    }
+
+    /**
+     * VB/GPL 줄 연속 문자(`_`)로 이어진 물리 줄들을 하나의 논리 줄로 병합한다.
+     * 반환 항목은 병합된 텍스트와, 그 논리 줄이 시작된 물리 줄 인덱스(line)를 가진다.
+     * 심볼 위치(line/column)는 이름이 실제로 등장하는 첫 물리 줄에 고정된다.
+     */
+    static buildLogicalLines(lines: string[]): { text: string; line: number }[] {
+        const result: { text: string; line: number }[] = [];
+        let i = 0;
+        while (i < lines.length) {
+            const startLine = i;
+            let merged = lines[i];
+            // 코드 영역이 ` _`(공백+밑줄)로 끝나는 동안 다음 줄을 이어 붙인다.
+            while (GPLParser.endsWithLineContinuation(merged) && i + 1 < lines.length) {
+                merged = GPLParser.stripTrailingContinuation(merged) + ' ' + lines[i + 1];
+                i++;
+            }
+            result.push({ text: merged, line: startLine });
+            i++;
+        }
+        return result;
+    }
+
+    /**
+     * 해당 줄이 VB 줄 연속(`_`)으로 끝나는지 판별.
+     * 규칙: 문자열/주석을 제외한 코드의 마지막 비공백 문자가 `_`이고,
+     * 그 앞이 공백이어야 한다(식별자 끝의 `foo_`를 연속으로 오인하지 않도록).
+     */
+    static endsWithLineContinuation(rawLine: string): boolean {
+        const code = GPLParser.stripToCode(rawLine).replace(/\s+$/, '');
+        if (!code.endsWith('_')) {
+            return false;
+        }
+        if (code.length === 1) {
+            return true;
+        }
+        const prev = code[code.length - 2];
+        return prev === ' ' || prev === '\t';
+    }
+
+    /**
+     * 줄 끝의 연속 문자(`_`)와 주변 공백/CR을 제거해 병합 준비를 한다.
+     */
+    static stripTrailingContinuation(rawLine: string): string {
+        return rawLine.replace(/\s+$/, '').replace(/_$/, '').replace(/\s+$/, '');
     }
 
     /**

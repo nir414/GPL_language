@@ -1,4 +1,5 @@
 import { ciEq } from './config';
+import { GPL_DICTIONARY_ENTRIES } from './gplDictionaryData';
 
 export type GPLBuiltinKind = 'function' | 'method' | 'property';
 
@@ -14,7 +15,7 @@ export interface GPLBuiltinEntry {
 
 export const GPL_DICTIONARY_ROOT_URL = 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/';
 
-const GPL_BUILTINS: GPLBuiltinEntry[] = [
+const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
     // Functions
     {
         name: 'CBool',
@@ -425,6 +426,13 @@ const GPL_BUILTINS: GPLBuiltinEntry[] = [
     }
 ];
 
+/**
+ * hover/completion에서 사용하는 전체 내장 심볼 목록.
+ * 핵심 변환/문자열/Math/Thread 등(GPL_CORE_BUILTINS)과
+ * GPL Dictionary 모션/로봇/위치 클래스 데이터(GPL_DICTIONARY_ENTRIES)를 합친다.
+ */
+const GPL_BUILTINS: GPLBuiltinEntry[] = [...GPL_CORE_BUILTINS, ...GPL_DICTIONARY_ENTRIES];
+
 function normalize(value: string): string {
     return value.trim().toLowerCase();
 }
@@ -453,7 +461,14 @@ export function findGplBuiltin(name: string): GPLBuiltinEntry | undefined {
         return exact;
     }
 
+    // Tail 매칭은 접두사 없이 bare로 호출되는 최상위 함수(예: Mid, Trim, CInt)에만 적용한다.
+    // 클래스 멤버(Math.Cos, Move.Loc, Robot.Home 등)는 GPL에서 항상 'Class.' 접두사가
+    // 필요하므로 bare 단어와 매칭하면 동명의 사용자 식별자를 오인식한다. 정규형은 위의
+    // exact 매칭으로 이미 처리된다.
     const tailMatches = GPL_BUILTINS.filter(b => {
+        if (b.kind !== 'function') {
+            return false;
+        }
         const tail = b.name.includes('.') ? b.name.split('.').pop()! : b.name;
         return normalize(tail) === target;
     });

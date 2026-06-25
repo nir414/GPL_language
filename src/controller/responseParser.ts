@@ -42,14 +42,24 @@ export interface CompileError {
  */
 export function parseCompileErrors(text: string): CompileError[] {
     const errors: CompileError[] = [];
-    const regex = /(?:\[CONSOLE\] )?([^\s:]+\.(?:gpl|gpr)):(\d+):\((-?\d+)\):\s*(.+)/gi;
+    // 제어기 응답은 줄바꿈(`\n`) 또는 ` | ` 로 항목이 구분될 수 있으므로,
+    // 메시지는 다음 구분자(파이프/줄바꿈/문자열 끝) 직전까지만 비탐욕적으로 캡처한다.
+    // (이전 정규식의 탐욕적 `(.+)`는 한 줄로 합쳐진 응답에서 첫 에러가 나머지를 모두 삼켰다.)
+    const regex = /(?:\[CONSOLE\]\s*)?([^\s:|]+\.(?:gpl|gpr|gpo)):(\d+):\((-?\d+)\):\s*(.+?)(?=\s*\||[\r\n]|$)/gi;
     let m: RegExpExecArray | null;
     while ((m = regex.exec(text)) !== null) {
+        const code = parseInt(m[3], 10);
+        const message = m[4].trim();
+        // 컴파일러가 마지막에 남기는 집계 줄(`*Compilation errors*: N`)은
+        // 실제 에러 위치가 아니라 총계이므로 진단에서 제외한다.
+        if (code === -742 && /Compilation errors/i.test(message)) {
+            continue;
+        }
         errors.push({
             file: m[1],
             line: parseInt(m[2], 10),
-            code: parseInt(m[3], 10),
-            message: m[4].trim(),
+            code,
+            message,
         });
     }
     return errors;
@@ -687,7 +697,14 @@ export function parseVariable(text: string): VariableInfo[] {
 
 /**
  * 포트 1403에서 수신되는 런타임 콘솔 라인 정규화.
- * `<E>ts,source<L>level</L>message</E>` → `[source] message`
+ * `<E>type,source<L>len</L>message</E>` → `[source] message`
+ *
+ * 실측(1403 캡처) 메모:
+ *  - 프레임 구분자는 `</E>` + `\n` + NUL(`\x00`).
+ *  - `<L>N</L>`의 N은 로그 레벨이 아니라 **메시지 청크의 바이트 길이**다.
+ *  - 긴 줄은 128바이트 단위로 여러 프레임에 쪼개져 오며, 마지막 청크만 `\n`으로 끝난다.
+ *    (청크 재조립은 RuntimeConsole.emitConsoleFrame에서 수행하고, 여기서는 단일 프레임만 정규화한다.)
+ *  - `<E>1,N</E>`(숫자 상태 이벤트)는 로그가 아니므로 빈 문자열로 억제한다.
  */
 export function normalizeConsoleLine(line: string): string {
     const s = line.replace(/\0/g, '').replace(/\r/g, '').trim();

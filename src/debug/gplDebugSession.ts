@@ -2031,7 +2031,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             const file = bp.file || '';
             const line = bp.fileLine || 0;
             if (!file || line <= 0) { continue; }
-            const resp = await this._sendCmd(`Set Nobreak ${projectName} "${file}" ${line}`);
+            const resp = await this._sendCmd(`Set Nobreak ${projectName} "${file}"${line}`);
             if (resp) { cleared++; }
         }
 

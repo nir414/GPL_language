@@ -15,7 +15,7 @@ import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFil
 
 // Controller integration
 import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, getTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
-import { deploy, findProjectDirs } from './controller/deployService';
+import { deploy, findProjectDirs, resolveErrorFilePath } from './controller/deployService';
 import { listRemoteDir, removeRemoteDir, removeRemoteFile, downloadProject } from './controller/ftpClient';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from './controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
@@ -1395,6 +1395,26 @@ export function activate(context: vscode.ExtensionContext) {
 					errMsg = `코드 수정 효과 검증 불가: COMPILE 환경 블로커 감지${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
 				} else if (result.compileErrors.length > 0) {
 					errMsg = `${result.compileErrors.length}개 컴파일 에러${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
+					// 첫 번째 컴파일 에러 위치로 자동 점프 + Problems 패널 표시 (설정으로 토글)
+					const jumpEnabled = vscode.workspace
+						.getConfiguration('gpl')
+						.get<boolean>('deploy.jumpToFirstError', true);
+					if (jumpEnabled) {
+						const first = result.compileErrors[0];
+						try {
+							const filePath = resolveErrorFilePath(first.file, projectDir);
+							const doc = await vscode.workspace.openTextDocument(filePath);
+							const editor = await vscode.window.showTextDocument(doc, { preview: false });
+							const targetLine = Math.max(0, first.line - 1);
+							const range = doc.lineAt(Math.min(targetLine, doc.lineCount - 1)).range;
+							editor.selection = new vscode.Selection(range.start, range.start);
+							editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+						} catch (jumpErr: any) {
+							outputChannel.appendLine(`[Deploy] 첫 에러 파일 열기 실패: ${jumpErr?.message ?? jumpErr}`);
+						}
+						// Problems 패널을 띄워 전체 진단을 한눈에 볼 수 있게 한다.
+						await vscode.commands.executeCommand('workbench.actions.view.problems');
+					}
 				} else if (sysErrors.length > 0 && result.errorLog.length === sysErrors.length) {
 					// 에러 로그 전체가 제어기 시스템 에러인 경우 — GPL 코드 원인 없음을 명시
 					const firstSys = classifyErrorEntry(sysErrors[0]);

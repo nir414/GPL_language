@@ -86,6 +86,10 @@ export class RuntimeConsole implements vscode.Disposable {
     private stateOutput: vscode.OutputChannel;
     private _isConnected = false;
     private carry = '';
+    // 1403 type-3 콘솔 라인은 128바이트 청크로 쪼개져 오므로(개행으로 끝나는 청크까지가 한 줄),
+    // 개행이 올 때까지 메시지를 이어붙이기 위한 버퍼.
+    private _frameMsgBuf = '';
+    private _frameMsgProject = '';
     private disposed = false;
     /** 사용자가 명시적으로 stop()을 호출했을 때 true → 자동 재연결 금지 */
     private _explicitStop = false;
@@ -492,13 +496,64 @@ export class RuntimeConsole implements vscode.Disposable {
         }
         const normalized = normalizeConsoleLine(line);
         if (normalized) {
-            this._sessionLinesEmitted++;
-            this.recordIterationValue(normalized);
-            this.output.appendLine(`[RT] ${normalized}`);
-            this._onDidReceiveLine.fire(normalized);
+            this.outputLine(normalized);
         } else if (isFrame) {
             this._sessionFramesSwallowed++;
         }
+    }
+
+    /** 정규화가 끝난 한 줄을 출력 채널/리스너로 내보낸다. */
+    private outputLine(normalized: string): void {
+        if (!normalized) { return; }
+        this._sessionLinesEmitted++;
+        this.recordIterationValue(normalized);
+        this.output.appendLine(`[RT] ${normalized}`);
+        this._onDidReceiveLine.fire(normalized);
+    }
+
+    /**
+     * 단일 `<E>...</E>` 프레임 처리.
+     * type-3(콘솔 출력) 프레임은 128바이트 청크로 쪼개질 수 있으므로, 메시지가 개행으로
+     * 끝나는 청크가 도착할 때까지 이어붙여 한 줄로 완성한다. 그 외 프레임(상태 `<E>1,N</E>` 등)은
+     * 기존 경로로 그대로 넘긴다.
+     */
+    private emitConsoleFrame(frame: string): void {
+        const clean = frame.replace(/\0/g, '').replace(/\r/g, '');
+        const m = clean.match(/^<E>(\d+),([^<]*)<L>(\d+)<\/L>([\s\S]*)<\/E>$/);
+        if (m && m[1] === '3') {
+            this._sessionFrames++;
+            this._lifetimeFrames++;
+            const project = m[2].trim();
+            const chunk = m[4];
+            // 프로젝트가 바뀌면(이론상) 진행 중 버퍼를 먼저 비운다.
+            if (this._frameMsgBuf && project && this._frameMsgProject && this._frameMsgProject !== project) {
+                this.flushConsoleFrameBuffer();
+            }
+            if (project) { this._frameMsgProject = project; }
+            this._frameMsgBuf += chunk;
+            // 개행으로 끝나는 청크 = 한 줄 완성.
+            if (chunk.endsWith('\n')) {
+                this.flushConsoleFrameBuffer();
+            }
+            return;
+        }
+        // type-3가 아닌 프레임: 진행 중인 줄을 먼저 비우고 기존 경로로 처리.
+        this.flushConsoleFrameBuffer();
+        this.emitConsoleLine(frame, true);
+    }
+
+    /** 재조립 중이던 type-3 메시지를 한 줄로 내보낸다. */
+    private flushConsoleFrameBuffer(): void {
+        if (!this._frameMsgBuf) { return; }
+        const msg = this._frameMsgBuf.replace(/\n+$/, '').trim();
+        const project = this._frameMsgProject;
+        this._frameMsgBuf = '';
+        this._frameMsgProject = '';
+        if (!msg) {
+            this._sessionFramesSwallowed++;
+            return;
+        }
+        this.outputLine(project ? `[${project}] ${msg}` : msg);
     }
 
     private processConsoleText(raw: string, flush = false): void {
@@ -522,12 +577,24 @@ export class RuntimeConsole implements vscode.Disposable {
 
             const frameEnd = end + 4;
             const frame = this.carry.slice(0, frameEnd);
-            this.emitConsoleLine(frame, true);
+            this.emitConsoleFrame(frame);
             this.carry = this.carry.slice(frameEnd);
             searchFrom = 0;
         }
 
-        this.emitCompletePlainLines(this.carry, flush);
+        // carry가 미완성 프레임(`<E>`로 시작하지만 아직 `</E>` 없음)으로 끝나면,
+        // 평문으로 흘리지 않고 그대로 보존한다. (메시지 끝 `\n`이 먼저 도착하고 `</E>`가
+        // 다음 세그먼트로 넘어오는 경우, 평문 처리하면 프레임이 깨져서 깨진 줄이 출력된다.)
+        const looksLikeOpenFrame =
+            this.carry.startsWith('<E>') && this.carry.indexOf('</E>', 3) < 0;
+        if (!looksLikeOpenFrame) {
+            this.emitCompletePlainLines(this.carry, flush);
+        }
+
+        // 세션 종료/플러시 시 재조립 중이던 마지막 줄을 비운다.
+        if (flush) {
+            this.flushConsoleFrameBuffer();
+        }
     }
 
     private emitCompletePlainLines(text: string, flush: boolean): void {
@@ -745,6 +812,8 @@ export class RuntimeConsole implements vscode.Disposable {
             this._isConnected = true;
             this._connectedAt = Date.now();
             this.carry = '';
+            this._frameMsgBuf = '';
+            this._frameMsgProject = '';
             this._sessionDataReceived = false;
             this._sessionRxBytes = 0;
             this._sessionFrames = 0;

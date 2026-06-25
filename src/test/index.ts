@@ -7,6 +7,7 @@
 import './cursorExpression.test';
 import './responseParser.test';
 import './controllerStatusCodes.test';
+import './gplDictionaryData.test';
 import './consoleCommandClassifier.test';
 import './indentationRules.test';
 import { run } from './harness';

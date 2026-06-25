@@ -215,7 +215,9 @@ function sendCommandDetailedInternal(
 			const lines = responseBuffer.split(/\r?\n/).filter(l => l.trim() && !l.includes('<STATUS>') && !l.includes('</STATUS>') && !l.includes('<DATA>') && !l.includes('</DATA>')).length;
 			logTraffic('<<<', `${statusStr}  ${lines} lines  ${elapsed}ms`);
 			gracefulCloseTimer = setTimeout(() => {
-				logTraffic('---', `FIN wait over (${cfg.ip}:${cfg.port}) after STATUS for ${command}`);
+				// 제어기가 FIN을 안 보내 half-open으로 남는 경우 강제 정리 (소켓 누수/잔류 연결 방지).
+				logTraffic('---', `FIN wait over (${cfg.ip}:${cfg.port}) after STATUS for ${command} — force close`);
+				if (!socket.destroyed) { socket.destroy(); }
 			}, 1000);
 			socket.end();
 			resolve({ raw: responseBuffer.trim(), meta: buildMeta() });
@@ -226,6 +228,9 @@ function sendCommandDetailedInternal(
 			: { host: cfg.ip, port: cfg.port };
 
 		socket.connect(connectOptions, () => {
+			// 요청-응답형 짧은 명령이므로 Nagle을 꺼서 command 전송 지연(및 delayed-ACK 상호작용)을 줄인다.
+			// 1403 스트림 소켓과 동일한 정책.
+			socket.setNoDelay(true);
 			const payload = Buffer.from(command + '\r\n', 'ascii');
 			socket.write(payload);
 		});

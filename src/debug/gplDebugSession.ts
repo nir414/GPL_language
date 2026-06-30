@@ -31,7 +31,19 @@ import {
     getControllerConfig,
     ControllerConfig,
 } from '../controller/controllerConnection';
-import { deploy, findProjectDirs } from '../controller/deployService';
+import { deploy, findProjectDirs, resolveErrorFilePath } from '../controller/deployService';
+
+// 디버그 경로(Attach 전 배포)의 컴파일 진단은 세션 인스턴스가 아니라 모듈 공용 컬렉션에 둔다.
+// 이유: 세션마다 새 컬렉션을 만들면 (a) 종료 시 지워져 Problems에서 사라지고,
+//       (b) 재시도 시 옛 컬렉션이 남아 중복 진단이 생긴다. 공용 1개로 두면 deploy() 시작 시
+//       clear로 갱신되고, 세션이 끝나도 Problems에 유지되어 코드로 점프할 수 있다.
+let _debugDeployDiagnostics: vscode.DiagnosticCollection | undefined;
+function getDebugDeployDiagnostics(): vscode.DiagnosticCollection {
+    if (!_debugDeployDiagnostics) {
+        _debugDeployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-debug-deploy');
+    }
+    return _debugDeployDiagnostics;
+}
 import {
     parseThreadList,
     parseThreadDetail,
@@ -176,8 +188,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _queuedStoppedEvents: { reason: string; threadId: number }[] = [];
     private _stopOnEntry = false;
 
-    // Debug pre-deploy diagnostics/output
-    private _deployDiagnostics: vscode.DiagnosticCollection | undefined;
+    // Debug pre-deploy 진단은 모듈 공용 컬렉션(getDebugDeployDiagnostics)을 사용한다.
     private _lastControllerCommand = '';
     private _firstErrorSeenAtByThread = new Map<string, string>();
 
@@ -418,7 +429,9 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._pendingContinuePausedSeen = 0;
         this._continueOrigin.clear();
         this._clearStaleState();
-        this._deployDiagnostics?.clear();
+        // NOTE: 컴파일 진단(_debugDeployDiagnostics)은 여기서 지우지 않는다.
+        // 세션 종료 시 지우면 F5 배포 실패의 컴파일 에러가 Problems에서 즉시 사라져
+        // 코드로 점프할 수 없게 된다. 진단은 다음 배포 시작 시 deploy()가 clear로 갱신한다.
         // 세션 이벤트 구독 해제 (1403 폴 트리거 등)
         this._disposables.forEach(d => d.dispose());
         this._disposables = [];
@@ -898,33 +911,54 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
         threadName = threadName || this._findBreakThread();
 
-        if (!threadName) {
-            response.body = { result: '(일시정지된 쓰레드 없음)', variablesReference: 0 };
+        // REPL은 멈춘 쓰레드가 없어도 임의 제어기 명령을 보낼 수 있도록 허용한다.
+        // hover/watch는 변수 평가 전용이므로 멈춘 쓰레드가 없으면 기존처럼 안내만 한다.
+        if (!threadName && args.context !== 'repl') {
+            response.body = { result: '(일시정지된 쓰레드 없음 — 임의 명령은 디버그 콘솔에 직접 입력하거나 "GPL: Send Command to Controller" 사용)', variablesReference: 0 };
             this.sendResponse(response);
             return;
         }
 
         if (args.context === 'repl') {
-            // REPL: 식 평가를 우선 시도, 실패 시 전역 → 직접 실행 순서로 폴백
-            const varResp = await this._sendCmd(
-                `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
-            );
-            if (varResp) {
-                const parsed = this._parseShowVariableEval(varResp);
-                if (parsed.value) {
-                    result = parsed.type
-                        ? `${parsed.value}  (${parsed.type})`
-                        : parsed.value;
+            // REPL 처리 순서:
+            //  1) '>' 접두사면 무조건 제어기 명령으로 전송 (강제 패스스루)
+            //  2) 멈춘 쓰레드가 있으면 변수/식 평가(Show Variable -eval) → 전역(Show Global) 시도
+            //  3) 위에서 결과가 없으면 입력 전체를 제어기 명령으로 전송
+            const forceRaw = expression.startsWith('>');
+            const rawCommand = forceRaw ? expression.slice(1).trim() : expression;
+
+            if (!forceRaw && threadName) {
+                const varResp = await this._sendCmd(
+                    `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
+                );
+                if (varResp) {
+                    const parsed = this._parseShowVariableEval(varResp);
+                    if (parsed.value) {
+                        result = parsed.type
+                            ? `${parsed.value}  (${parsed.type})`
+                            : parsed.value;
+                    }
+                }
+                if (!result && this._projectName) {
+                    const gResp = await this._sendCmd(
+                        `Show Global ${expression}, ${this._projectName}`,
+                    );
+                    if (gResp) {
+                        const cleaned = gResp.replace(/<[^>]+>/g, '').trim();
+                        const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
+                        if (lines.length > 0) { result = lines.join('\n'); }
+                    }
                 }
             }
-            if (!result && this._projectName) {
-                const gResp = await this._sendCmd(
-                    `Show Global ${expression}, ${this._projectName}`,
-                );
-                if (gResp) {
-                    const cleaned = gResp.replace(/<[^>]+>/g, '').trim();
-                    const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
-                    if (lines.length > 0) { result = lines.join('\n'); }
+
+            // 변수 평가가 불가하거나 멈춘 쓰레드가 없으면 → 임의 제어기 명령으로 전송
+            if (!result && rawCommand) {
+                const raw = await this._sendCmd(rawCommand);
+                if (raw === null) {
+                    result = '(제어기 미연결 — 디버그 세션/연결 상태를 확인하세요)';
+                } else {
+                    const cleaned = raw.replace(/<[^>]+>/g, '').trim();
+                    result = cleaned.length > 0 ? cleaned : '(ok)';
                 }
             }
             if (!result) { result = '(평가 불가)'; }
@@ -1868,9 +1902,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             return false;
         }
 
-        if (!this._deployDiagnostics) {
-            this._deployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-debug-deploy');
-        }
+        const deployDiagnostics = getDebugDeployDiagnostics();
         const deployOutput = getDeployOutputChannel();
 
         this._log(`[deploy] Attach 전 배포 시작: ${projectDir}`);
@@ -1881,7 +1913,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 skipUnchanged: args.skipUnchangedOnDeploy,
             },
             deployOutput,
-            this._deployDiagnostics,
+            deployDiagnostics,
             undefined,
             this._config,
         );
@@ -1917,6 +1949,30 @@ export class GPLDebugSession extends LoggingDebugSession {
                     this._log(`[deploy]   ${el}`);
                 }
             }
+
+            // 컴파일 에러가 있으면 첫 에러 위치로 점프하고 Problems 패널을 띄운다.
+            // (수동 Deploy 경로와 동일한 UX. 설정 gpl.deploy.jumpToFirstError로 토글.)
+            if (result.compileErrors.length > 0) {
+                const jumpEnabled = vscode.workspace
+                    .getConfiguration('gpl')
+                    .get<boolean>('deploy.jumpToFirstError', true);
+                if (jumpEnabled) {
+                    const first = result.compileErrors[0];
+                    try {
+                        const filePath = resolveErrorFilePath(first.file, projectDir);
+                        const doc = await vscode.workspace.openTextDocument(filePath);
+                        const editor = await vscode.window.showTextDocument(doc, { preview: false });
+                        const targetLine = Math.max(0, first.line - 1);
+                        const range = doc.lineAt(Math.min(targetLine, doc.lineCount - 1)).range;
+                        editor.selection = new vscode.Selection(range.start, range.start);
+                        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+                    } catch (jumpErr: any) {
+                        this._log(`[deploy] 첫 에러 파일 열기 실패: ${jumpErr?.message ?? jumpErr}`);
+                    }
+                    await vscode.commands.executeCommand('workbench.actions.view.problems');
+                }
+            }
+
             deployOutput.show(true);
             return false;
         }

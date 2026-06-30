@@ -19,13 +19,17 @@ export class GPLDocumentSymbolProvider implements vscode.DocumentSymbolProvider 
 
         for (const symbol of symbols) {
             // 더 정확한 range 계산 - 전체 라인을 포함하고 끝까지 확장
-            const line = document.lineAt(symbol.line);
-            const range = new vscode.Range(
-                symbol.line, 
-                0, 
-                this.findSymbolEndLine(symbols, symbol, document), 
-                0
-            );
+            const declLine = document.lineAt(symbol.line);
+            // 블록 구문(Module/Class/Function/Sub)만 여러 줄 범위를 갖고,
+            // 변수/상수/속성 등 한 줄 선언은 해당 줄로 범위를 한정한다.
+            const isBlockSymbol =
+                symbol.kind === GPLSymbolKind.Module ||
+                symbol.kind === GPLSymbolKind.Class ||
+                symbol.kind === GPLSymbolKind.Function ||
+                symbol.kind === GPLSymbolKind.Sub;
+            const range = isBlockSymbol
+                ? new vscode.Range(symbol.line, 0, this.findSymbolEndLine(symbols, symbol, document), 0)
+                : new vscode.Range(symbol.line, 0, symbol.line, declLine.text.length);
             const selectionRange = new vscode.Range(
                 symbol.line, 
                 symbol.range.start, 

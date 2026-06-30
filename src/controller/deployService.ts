@@ -16,6 +16,13 @@ export interface DeployOptions {
     projectDir: string;
     skipUnchanged?: boolean;
     skipStart?: boolean;
+    skipStop?: boolean;
+    /**
+     * 지정 시 이 파일들(로컬 절대경로)만 업로드한다. 저장 파일만 올리는 빠른 컴파일 경로에서 사용.
+     * projectDir 하위 파일만 대상이 되며, 변경을 확신하는 것으로 보고 크기 비교 없이 업로드한다.
+     * 업로드 후 Compile은 평소대로 프로젝트 전체를 대상으로 수행된다.
+     */
+    changedFiles?: string[];
     beforeStart?: () => Promise<void> | void;
 }
 
@@ -149,11 +156,11 @@ export async function deploy(
     result.selectedRemoteBasePath = remotePath.basePath;
     result.selectedRemoteProjectPath = remotePath.projectPath;
     result.candidateRemoteProjectPaths = remotePath.candidates;
-    const totalPhases = options.skipStart ? 4 : 5;
+    const totalPhases = 2 + (options.skipStop ? 0 : 1) + (options.skipStart ? 0 : 1);
     let phase = 0;
 
     pushTrace(`╭──────────────────────────────────────────────────────╮`);
-    pushTrace(`│  ◆ ${projectName}${options.skipStart ? ' (Build Only)' : ''}`);
+    pushTrace(`│  ◆ ${projectName}${options.skipStop ? ' (Quick Compile)' : options.skipStart ? ' (Build Only)' : ''}`);
     pushTrace(`├──────────────────────────────────────────────────────┤`);
     pushTrace(`│  Local:  ${options.projectDir}`);
     pushTrace(`│  FTP:    ${ftpProjectDir}`);
@@ -164,47 +171,53 @@ export async function deploy(
 
     // ── Phase 1: STOP ─────────────────────────────
 
-    pushTrace('');
-    phase++;
-    pushTrace(`━━ [${phase}/${totalPhases}] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    pushTrace('│ CMD Stop -all');
+    if (!options.skipStop) {
+        pushTrace('');
+        phase++;
+        pushTrace(`━━ [${phase}/${totalPhases}] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        pushTrace('│ CMD Stop -all');
 
-    if (token?.isCancellationRequested) { return result; }
+        if (token?.isCancellationRequested) { return result; }
 
-    const stopResp = await trySendCommand('Stop -all', cfg);
-    if (stopResp === null) {
-        pushTrace('│ ⚠ Stop -all failed or timed out. Retrying...');
-        const stopRespRetry = await trySendCommand('Stop -all', cfg);
-        if (stopRespRetry === null) {
-            pushTrace('│ ✘ Stop -all failed after retry');
-            result.failedPhase = 'STOP';
-            result.failedCommand = 'Stop -all';
-            result.failedStatusMessage = 'No response (timeout or connection failure)';
-            return result;
+        const stopResp = await trySendCommand('Stop -all', cfg);
+        if (stopResp === null) {
+            pushTrace('│ ⚠ Stop -all failed or timed out. Retrying...');
+            const stopRespRetry = await trySendCommand('Stop -all', cfg);
+            if (stopRespRetry === null) {
+                pushTrace('│ ✘ Stop -all failed after retry');
+                result.failedPhase = 'STOP';
+                result.failedCommand = 'Stop -all';
+                result.failedStatusMessage = 'No response (timeout or connection failure)';
+                return result;
+            }
+            const stopStatusRetry = parseStatus(stopRespRetry);
+            pushTrace(`│ RAW ${rawPreview(stopRespRetry) || '(empty)'}`);
+            if (stopStatusRetry.code !== 0) {
+                pushTrace(`│ ✘ Stop -all failed: STATUS ${stopStatusRetry.code}: ${stopStatusRetry.message}`);
+                result.failedPhase = 'STOP';
+                result.failedCommand = 'Stop -all';
+                result.failedStatusCode = stopStatusRetry.code;
+                result.failedStatusMessage = stopStatusRetry.message;
+                return result;
+            }
+        } else {
+            const stopStatus = parseStatus(stopResp);
+            pushTrace(`│ RAW ${rawPreview(stopResp) || '(empty)'}`);
+            if (stopStatus.code !== 0) {
+                pushTrace(`│ ✘ Stop -all failed: STATUS ${stopStatus.code}: ${stopStatus.message}`);
+                result.failedPhase = 'STOP';
+                result.failedCommand = 'Stop -all';
+                result.failedStatusCode = stopStatus.code;
+                result.failedStatusMessage = stopStatus.message;
+                return result;
+            }
         }
-        const stopStatusRetry = parseStatus(stopRespRetry);
-        pushTrace(`│ RAW ${rawPreview(stopRespRetry) || '(empty)'}`);
-        if (stopStatusRetry.code !== 0) {
-            pushTrace(`│ ✘ Stop -all failed: STATUS ${stopStatusRetry.code}: ${stopStatusRetry.message}`);
-            result.failedPhase = 'STOP';
-            result.failedCommand = 'Stop -all';
-            result.failedStatusCode = stopStatusRetry.code;
-            result.failedStatusMessage = stopStatusRetry.message;
-            return result;
-        }
+        pushTrace('│ ✔ Stop complete');
     } else {
-        const stopStatus = parseStatus(stopResp);
-        pushTrace(`│ RAW ${rawPreview(stopResp) || '(empty)'}`);
-        if (stopStatus.code !== 0) {
-            pushTrace(`│ ✘ Stop -all failed: STATUS ${stopStatus.code}: ${stopStatus.message}`);
-            result.failedPhase = 'STOP';
-            result.failedCommand = 'Stop -all';
-            result.failedStatusCode = stopStatus.code;
-            result.failedStatusMessage = stopStatus.message;
-            return result;
-        }
+        // STOP 단계 생략(빠른 컴파일). phase는 올리지 않아 UPLOAD가 [1/N]이 되도록 한다.
+        pushTrace('');
+        pushTrace('━━ [SKIP] STOP 생략 (빠른 컴파일) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     }
-    pushTrace('│ ✔ Stop complete');
 
     // ── Phase 2: UPLOAD ───────────────────────────
 
@@ -214,9 +227,16 @@ export async function deploy(
 
     if (token?.isCancellationRequested) { return result; }
 
+    const changedFiles = (options.changedFiles ?? []).filter(Boolean);
+    const useChangedOnly = changedFiles.length > 0;
+    if (useChangedOnly) {
+        pushTrace(`│ 변경 파일만 업로드(${changedFiles.length}개): ${changedFiles.map(f => path.basename(f)).join(', ')}`);
+    }
+
     try {
         const stats = await uploadProject(cfg.ip, options.projectDir, ftpProjectDir, {
             skipUnchanged: options.skipUnchanged,
+            onlyFiles: useChangedOnly ? changedFiles : undefined,
             onProgress: (current, total, file) => {
                 const pct = Math.floor((current / total) * 100);
                 pushTrace(`│ [${current}/${total}] (${pct}%) ${file}`);
@@ -260,10 +280,11 @@ export async function deploy(
     }> {
         try {
             const detailed = await sendCommandDetailed(`Compile ${candidate}`, cfg, {
-                idleMs: 300,
-                minResponseBytes: 10,
-                // STATUS 누락/분할 수신 완화용 보강 수신 window
-                extraIdleMsOnIncomplete: 250,
+                // 컴파일은 pass 사이에 수 초간 침묵할 수 있다. idle로 조기 완료하면 응답이
+                // 잘려 STATUS/에러 라인을 놓치고 거짓 성공이 난다(GDE는 종결자까지 받음).
+                // 따라서 반드시 종결자 </STATUS>까지 수신하고, 대형 프로젝트 대비 충분한 상한을 둔다.
+                waitForStatusClose: true,
+                timeoutMs: Math.max(cfg.timeoutMs, 60000),
             });
             const resp = detailed.raw;
             const status = parseStatus(resp);
@@ -293,32 +314,13 @@ export async function deploy(
                 };
             }
 
-            // P0: STATUS 누락 내성
-            if (statusMissing && errors.length === 0) {
-                if (hasCompileSuccessful) {
-                    return {
-                        ok: true,
-                        statusCode: 0,
-                        errors,
-                        raw: resp,
-                        responseMeta: detailed.meta,
-                        note: 'STATUS missing tolerated by compile-success marker',
-                        needsFollowUp: false,
-                    };
-                }
-
-                if (hasCompilePassLog) {
-                    return {
-                        ok: false,
-                        statusCode: status.code,
-                        errors,
-                        raw: resp,
-                        responseMeta: detailed.meta,
-                        note: 'STATUS missing with compile-pass logs; follow-up required',
-                        needsFollowUp: true,
-                    };
-                }
-            }
+            // STATUS 종결자까지 대기했는데도 STATUS가 없으면(연결 끊김/타임아웃 등)
+            // 컴파일 결과를 확인하지 못한 것이다. 과거에는 'compile successful' 텍스트나
+            // pass 로그 + Show Thread 응답으로 성공 처리했으나, 이는 실제 컴파일 에러를
+            // 가리는 오판의 직접 원인이었다(예: -742를 성공으로 보고). 따라서 절대 성공으로
+            // 간주하지 않고, 결과 미확인으로서 실패 처리한다.
+            void hasCompileSuccessful;
+            void hasCompilePassLog;
 
             return {
                 ok: false,
@@ -326,6 +328,11 @@ export async function deploy(
                 errors,
                 raw: resp,
                 responseMeta: detailed.meta,
+                note: statusMissing
+                    ? (errors.length > 0
+                        ? 'STATUS 미수신이나 에러 라인 검출 → 실패'
+                        : 'STATUS 미수신: 컴파일 결과 확인 실패(성공 간주 안 함)')
+                    : undefined,
                 needsFollowUp: false,
             };
         } catch (e: any) {
@@ -478,23 +485,10 @@ export async function deploy(
             break;
         }
 
-        // STATUS 누락 + pass 로그 케이스는 즉시 실패하지 않고 보강 판정 1회 수행
-        if (cr.needsFollowUp) {
-            pushTrace('│ ⚠ Compile STATUS 누락 감지: 보강 판정(Show Thread 1회)');
-            const follow = await runStatusCommand('Show Thread');
-            pushTrace(`│ RAW ${rawPreview(follow.raw) || '(empty)'}`);
-            if (follow.ok) {
-                const warning = `Compile ${candidate}: STATUS 누락 응답을 보강 판정(Show Thread)으로 성공 처리`;
-                result.precheckWarnings.push(warning);
-                result.projectName = candidate;
-                result.compileErrors = [];
-                compiled = true;
-                pushTrace(`│ ✔ Compile success (STATUS missing tolerated): ${candidate}`);
-                pushTrace(`│ ⚠ ${warning}`);
-                break;
-            }
-            pushTrace(`│ ⚠ Follow-up failed: STATUS ${follow.statusCode}: ${follow.message || 'Unknown error'}`);
-        }
+        // NOTE: 과거 여기서 STATUS 누락 시 `Show Thread` 응답을 성공으로 간주했으나,
+        // 그것은 "제어기가 다시 응답하는가"만 확인할 뿐 컴파일 성공과 무관하여
+        // 실제 컴파일 에러(-742 등)를 가렸다. 이제 컴파일 응답은 waitForStatusClose로
+        // 종결자 </STATUS>까지 수신하므로, 성공/실패는 오직 STATUS와 파싱된 에러로 판정한다.
 
         result.compileErrors = cr.errors;
         const errText = cr.raw;

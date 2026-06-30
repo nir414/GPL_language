@@ -15,6 +15,26 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 - 확장으로 얻은 증거를 우선한다: Debug Console, GPL Language Support Output, GPL Deploy (Debug), GPL Console, GPL Live Logs, Copy Situation for Chat.
 - Brooks 공식 문서, `docs/reference/console-commands.md`, 로컬 코드/로그 순으로 근거 우선순위를 둔다.
 
+## 반복 실수 방지 (하드 규칙)
+
+과거 세션에서 반복된 오판이므로 반드시 지킨다.
+
+1. 로그 파일을 실시간 통신/상태 채널로 쓰지 않는다.
+   - `Compile.log`, `Robot.log` 등은 **사후 기록용 로그 파일**이다. 현재 컴파일/실행/연결 상태를 이걸로 추정하지 않는다.
+   - 실시간 판단의 근거는 오직 1402 명령에 대한 **live 응답**(`<STATUS>`, 에러 라인)과 1403 스트림뿐이다.
+2. 작업 성공/실패는 그 명령 자신의 권위 있는 `<STATUS>`로만 판정한다.
+   - 응답을 **종결자 `</STATUS>`까지** 끝까지 읽고 STATUS를 본다(컴파일처럼 pass 사이 침묵이 길면 idle 조기완료 금지).
+   - `Show Thread`가 응답한다거나, `pass 1/2/3` 로그가 보인다거나, 특정 로그 줄이 있다는 식의 **간접 신호로 성공을 추정하지 않는다.** 그건 "제어기가 살아있다"는 뜻일 뿐 컴파일 성공과 무관하다.
+3. live 데이터/소스를 확인하기 전에 단정하지 않는다.
+   - 예: "Build Only인지 F5인지"는 추측하지 말고 실제 채널/세션(접두어 `[GPL Debug]` 유무, 디버그 툴바)으로 구분한다.
+   - attach 시작/실행 조건 같은 동작은 추측 전에 해당 소스 코드를 읽어 확인한다.
+4. 메모하며 작업한다 — 핸드오프 문서(`docs/ai-handoff.md`)를 작업의 일부로 유지한다.
+   - 작업 시작 시 `docs/ai-handoff.md`를 **먼저 읽고** 직전까지의 결정·미해결·다음 할 일을 파악한다.
+   - 작업 중 변경/결정/발견/미해결이 생기면 **그때그때** 핸드오프에 반영한다(마지막에 몰아서 X).
+   - 결정에는 근거를, 미해결에는 리스크와 다음 액션을 함께 남긴다. 코드 식별자·경로·STATUS·로그 원문은 변형 없이 보존한다.
+   - 세션 종료 전 핸드오프가 현재 상태와 일치하는지 확인하고, 완료/미완료를 정확히 표시한다.
+5. 환경 주의: 이 작업 환경에서 방금 수정한 파일이 잘려 읽혀 `tsc`가 가짜 문법 오류를 낼 수 있다. 코드 오류로 단정하지 말고, 검증은 사용자 로컬 `npm run compile`로 확인한다.
+
 ## 먼저 수집할 증거
 
 1. `GPL: Copy Situation for Chat` (`gpl.controller.copySituationForChat`)
@@ -116,7 +136,8 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 
 - `STATUS -508`: 파일/경로 없음. FTP 경로, `/GPL` vs `/flash/projects`, 프로젝트명 대소문자 확인.
 - `STATUS -745`: 이미 로드된 프로젝트일 수 있다. 문맥 없이 치명 실패로 단정하지 않는다.
-- `STATUS -742/-746/-752`: 컴파일/로드 일시 상태 가능. raw trace와 재시도 로그를 확인한다.
+- `STATUS -742`: `*Compilation errors*` — **명확한 컴파일 실패다.** 일시 상태로 간주하지 말고, 응답을 `</STATUS>`까지 받아 에러 라인(`file:line:(code): *msg*`)을 표시한다. `Start`가 -742를 내면 그 프로젝트는 컴파일 에러로 실행 불가다.
+- `STATUS -746/-752`: 컴파일/로드 일시 상태 가능. raw trace와 재시도 로그를 확인한다.
 - 1403 `Immediate EOF`: 이벤트 큐가 비어 있을 수 있다. 반복 횟수와 active thread를 같이 본다.
 - 1403 `Connection refused`: 런타임 콘솔 서비스/포트 상태를 우선 확인한다.
 - ErrorLog의 제어기 시스템 코드와 GPL 코드 예외를 분리한다.

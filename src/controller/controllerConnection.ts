@@ -34,6 +34,12 @@ export interface SendCommandOptions {
 	idleMs?: number;
 	minResponseBytes?: number;
 	extraIdleMsOnIncomplete?: number;
+	/**
+	 * true면 idle 기반 조기 완료를 비활성화하고, 종결자 `</STATUS>` 수신(또는 소켓 종료/하드
+	 * 타임아웃)까지 응답을 기다린다. 컴파일처럼 pass 사이에 수 초간 침묵하는 명령에서
+	 * 응답이 잘려 STATUS/에러 라인을 놓치는 것을 막는다. 이때 timeoutMs를 충분히 크게 줄 것.
+	 */
+	waitForStatusClose?: boolean;
 }
 
 // Brooks 제어기 고정 포트 (하드웨어 결정, 변경 불가)
@@ -162,6 +168,7 @@ function sendCommandDetailedInternal(
 	const minResponseBytes = Math.max(1, options?.minResponseBytes ?? 10);
 	const idleMs = Math.max(50, options?.idleMs ?? 300);
 	const extraIdleMsOnIncomplete = Math.max(0, options?.extraIdleMsOnIncomplete ?? 0);
+	const waitForStatusClose = options?.waitForStatusClose === true;
 
 	// 응답 누적 수신: <STATUS> 찾을 때까지 기다리되,
 	// 최소 바이트 수 && idle 조건으로도 완성 응답으로 판단
@@ -253,7 +260,8 @@ function sendCommandDetailedInternal(
 
 			// 완성 응답 조건 2: 최소 바이트 수 && idle 대기
 			// (부분 수신으로 인한 "무응답" 오해 방지)
-			if (responseBuffer.length >= minResponseBytes) {
+			// waitForStatusClose면 idle 조기 완료를 끄고 오직 </STATUS>/소켓 종료/하드 타임아웃으로만 완료한다.
+			if (!waitForStatusClose && responseBuffer.length >= minResponseBytes) {
 				idleTimer = setTimeout(() => {
 					if (!responseBuffer.includes('</STATUS>') && extraIdleMsOnIncomplete > 0 && !extraIdleApplied) {
 						extraIdleApplied = true;

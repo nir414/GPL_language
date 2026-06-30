@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.6.13",
+    "version": "0.6.20",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -37,11 +37,13 @@
         "onCommand:gpl.debugSymbolCache",
         "onCommand:gpl.showXmlBestPractices",
         "onCommand:gpl.analyzeXmlEncoding",
+        "onCommand:gpl.controller.showDashboard",
         "onCommand:gpl.controller.connect",
         "onCommand:gpl.stopAll",
         "onCommand:gpl.controller.disconnect",
         "onCommand:gpl.deploy",
         "onCommand:gpl.deployRun",
+        "onCommand:gpl.quickCompile",
         "onCommand:gpl.debug.generateLaunch",
         "onCommand:gpl.debug.attachNow",
         "onCommand:gpl.console.start",
@@ -180,6 +182,11 @@
                 "title": "GPL: Analyze XML Encoding"
             },
             {
+                "command": "gpl.controller.showDashboard",
+                "title": "GPL: 제어기 대시보드 열기",
+                "icon": "$(dashboard)"
+            },
+            {
                 "command": "gpl.controller.connect",
                 "title": "GPL: Connect to Controller",
                 "icon": "$(plug)"
@@ -198,6 +205,11 @@
                 "command": "gpl.deployRun",
                 "title": "GPL: Deploy & Run",
                 "icon": "$(rocket)"
+            },
+            {
+                "command": "gpl.quickCompile",
+                "title": "GPL: 빠른 컴파일 (변경분만, STOP/START 생략)",
+                "icon": "$(zap)"
             },
             {
                 "command": "gpl.debug.generateLaunch",
@@ -248,6 +260,21 @@
                 "command": "gpl.controller.sendCommand",
                 "title": "GPL: Send Command to Controller",
                 "icon": "$(debug-console)"
+            },
+            {
+                "command": "gpl.controller.showGlobal",
+                "title": "GPL: 전역변수 보기/편집 (Show/Set Global)",
+                "icon": "$(symbol-variable)"
+            },
+            {
+                "command": "gpl.controller.showDio",
+                "title": "GPL: DIO 조회 (Show DIO)",
+                "icon": "$(symbol-boolean)"
+            },
+            {
+                "command": "gpl.controller.setDio",
+                "title": "GPL: DIO 출력 설정 (Set DIO)",
+                "icon": "$(circuit-board)"
             },
             {
                 "command": "gpl.controller.refreshFtp",
@@ -398,6 +425,11 @@
                     "group": "navigation@5"
                 },
                 {
+                    "command": "gpl.quickCompile",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@5"
+                },
+                {
                     "command": "gpl.diagnosticSnapshot",
                     "when": "view == gplThreads && gpl.ui.connected",
                     "group": "navigation@6"
@@ -406,6 +438,11 @@
                     "command": "gpl.controller.showTraffic",
                     "when": "view == gplThreads && gpl.ui.connected",
                     "group": "navigation@7"
+                },
+                {
+                    "command": "gpl.controller.sendCommand",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@3"
                 }
             ],
             "view/item/context": [
@@ -731,6 +768,19 @@
                     "type": "number",
                     "default": 5000,
                     "description": "Thread status polling interval in milliseconds."
+                },
+                "gpl.controller.dashboardPollIntervalMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 1500,
+                    "minimum": 500,
+                    "description": "제어기 대시보드 실시간 상태 폴링 주기(ms). 최소 500."
+                },
+                "gpl.quickCompile.autoOnSave": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": ".gpl 파일을 저장할 때마다 빠른 컴파일(변경분 업로드 + Compile, STOP/START 생략)을 자동 실행합니다. 제어기에 연결되어 있을 때만 동작하며 600ms 디바운스가 적용됩니다."
                 }
             }
         }

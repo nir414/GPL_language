@@ -20,6 +20,7 @@ import { listRemoteDir, removeRemoteDir, removeRemoteFile, downloadProject } fro
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from './controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
 import { ConnectionStatusBar } from './views/connectionStatusBar';
+import { ControllerDashboardPanel } from './views/controllerDashboardPanel';
 import { activateDebug } from './debug/activateDebug';
 import {
 	parseCompileErrors,
@@ -557,6 +558,13 @@ export function activate(context: vscode.ExtensionContext) {
 			
 			outputChannel.show();
 			vscode.window.showInformationMessage('Symbol cache debug info written to output channel');
+		})
+	);
+
+	// 제어기 실시간 상태 대시보드 (Webview Panel)
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.showDashboard', () => {
+			ControllerDashboardPanel.show(context, outputChannel);
 		})
 	);
 
@@ -1118,7 +1126,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// --- Deploy helper (공통 로직) ---
-	async function runDeploy(skipStart: boolean) {
+	async function runDeploy(skipStart: boolean, quickOpts?: { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string }) {
 		const modeLabel: SituationDeploySnapshot['mode'] = skipStart ? 'Build' : 'Deploy & Run';
 		const uniqueCodes = (values: number[]): number[] => [...new Set(values)];
 		const buildOutcomeSignature = (result: Awaited<ReturnType<typeof deploy>>, controllerSystemCodes: number[]): string => {
@@ -1167,25 +1175,31 @@ export function activate(context: vscode.ExtensionContext) {
 		});
 
 		const cfg = getControllerConfig();
-		const projectDirs = await findProjectDirs();
-		if (projectDirs.length === 0) {
-			vscode.window.showWarningMessage('워크스페이스에서 .gpr 프로젝트 파일을 찾을 수 없습니다.');
-			return;
-		}
 
 		let projectDir: string;
-		if (projectDirs.length === 1) {
-			projectDir = projectDirs[0];
+		if (quickOpts?.overrideProjectDir) {
+			// 저장 파일이 속한 프로젝트가 이미 결정된 경우(autoOnSave 등) QuickPick 없이 그대로 사용.
+			projectDir = quickOpts.overrideProjectDir;
 		} else {
-			const pick = await vscode.window.showQuickPick(
-				projectDirs.map(d => ({ label: d })),
-				{ placeHolder: '배포할 프로젝트를 선택하세요' }
-			);
-			if (!pick) { return; }
-			projectDir = pick.label;
+			const projectDirs = await findProjectDirs();
+			if (projectDirs.length === 0) {
+				vscode.window.showWarningMessage('워크스페이스에서 .gpr 프로젝트 파일을 찾을 수 없습니다.');
+				return;
+			}
+
+			if (projectDirs.length === 1) {
+				projectDir = projectDirs[0];
+			} else {
+				const pick = await vscode.window.showQuickPick(
+					projectDirs.map(d => ({ label: d })),
+					{ placeHolder: '배포할 프로젝트를 선택하세요' }
+				);
+				if (!pick) { return; }
+				projectDir = pick.label;
+			}
 		}
 
-		const mode = skipStart ? 'Build' : 'Deploy & Run';
+		const mode = quickOpts?.quick ? 'Quick Compile' : skipStart ? 'Build' : 'Deploy & Run';
 		logOutput(`[Deploy] Starting ${mode}: ${projectDir} → ${cfg.ip}`);
 		outputChannel.show(true);
 
@@ -1204,6 +1218,9 @@ export function activate(context: vscode.ExtensionContext) {
 			const result = await deploy({
 				projectDir,
 				skipStart,
+				skipStop: quickOpts?.skipStop,
+				skipUnchanged: quickOpts?.skipUnchanged,
+				changedFiles: quickOpts?.changedFiles,
 				beforeStart: skipStart ? undefined : async () => {
 					const console = ensureRuntimeConsole();
 					console.primeForRuntimeStart();
@@ -1464,6 +1481,64 @@ export function activate(context: vscode.ExtensionContext) {
 	// gpl.deployRun — Stop + Upload + Compile + Start (기존 원클릭 실행)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.deployRun', () => runDeploy(false))
+	);
+
+	// gpl.quickCompile — 변경분만 업로드 + Compile (STOP/START 생략), 빠른 에러 확인
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.quickCompile', () => runDeploy(true, { skipStop: true, skipUnchanged: true, quick: true }))
+	);
+
+	// .gpl 저장 시 자동 빠른 컴파일 (설정 gpl.quickCompile.autoOnSave, 기본 off). 600ms 디바운스 + 동시실행 방지.
+	// 저장된 파일만 업로드 후 Compile하여, 매 저장마다 프로젝트 전체를 스캔/조회하는 비효율을 제거한다.
+	let quickCompileTimer: ReturnType<typeof setTimeout> | undefined;
+	let quickCompileInFlight = false;
+	const quickCompilePendingFiles = new Set<string>();
+
+	/** 저장된 파일이 속한 프로젝트 폴더(.gpr 보유)를 찾는다. 여러 후보 중 가장 깊은(구체적인) 경로를 선택. */
+	async function resolveProjectDirForFile(fsPath: string): Promise<string | undefined> {
+		const projectDirs = await findProjectDirs();
+		const normalized = path.resolve(fsPath);
+		const matches = projectDirs.filter(dir => {
+			const rel = path.relative(path.resolve(dir), normalized);
+			return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+		});
+		if (matches.length === 0) { return undefined; }
+		// 가장 깊은(경로가 긴) 프로젝트 폴더를 우선.
+		return matches.sort((a, b) => b.length - a.length)[0];
+	}
+
+	context.subscriptions.push(
+		vscode.workspace.onDidSaveTextDocument((doc) => {
+			if (doc.languageId !== 'gpl') { return; }
+			const auto = vscode.workspace.getConfiguration('gpl').get<boolean>('quickCompile.autoOnSave', false);
+			if (!auto) { return; }
+			if (!controllerTree?.isConnected) { return; }
+			quickCompilePendingFiles.add(doc.uri.fsPath);
+			if (quickCompileTimer) { clearTimeout(quickCompileTimer); }
+			quickCompileTimer = setTimeout(async () => {
+				quickCompileTimer = undefined;
+				if (quickCompileInFlight) { return; }
+				quickCompileInFlight = true;
+				// 디바운스 윈도 동안 모인 저장 파일을 한 번에 처리.
+				const changedFiles = [...quickCompilePendingFiles];
+				quickCompilePendingFiles.clear();
+				try {
+					// 저장 파일이 속한 프로젝트 폴더를 해석. 단일 프로젝트면 그 폴더로 묶인다.
+					const projectDir = changedFiles.length > 0
+						? await resolveProjectDirForFile(changedFiles[0])
+						: undefined;
+					await runDeploy(true, {
+						skipStop: true,
+						skipUnchanged: true,
+						quick: true,
+						changedFiles: projectDir ? changedFiles : undefined,
+						overrideProjectDir: projectDir,
+					});
+				} finally {
+					quickCompileInFlight = false;
+				}
+			}, 600);
+		})
 	);
 
 	context.subscriptions.push(
@@ -2200,16 +2275,36 @@ export function activate(context: vscode.ExtensionContext) {
 			const acceptStatusMissingCompile = async (compile: FtpCompileAttempt): Promise<boolean> => {
 				if (!compile.needsFollowUp) { return false; }
 
-				logOutput('│ ⚠ Compile STATUS 누락 감지: 보강 판정(Show Thread 1회)');
-				const follow = await runStatusCommand('Show Thread');
-				logOutput(`│ RAW ${rawPreview(follow.raw) || '(empty)'}`);
-				if (follow.ok) {
-					logOutput('│ ✔ Compile success (STATUS missing tolerated)');
-					logOutput('│ ⚠ Compile STATUS 누락 응답을 Show Thread 정상 응답으로 보강 판정');
-					return true;
+				const followUpConnIssue = (msg: string): boolean =>
+					/ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|EPIPE|Connection error|connect\s+ECONN|socket hang up|timed?\s*out/i.test(msg || '');
+				const maxFollowUpAttempts = 5;
+				const followUpBaseDelayMs = Math.max(500, Math.floor((cfg.timeoutMs || 10000) / 20));
+				// 대형 프로젝트는 컴파일이 백그라운드에서 도는 동안 1402가 새 연결을 거부(ECONNREFUSED)할 수 있어
+				// 보강 판정 Show Thread를 백오프로 재시도한다. 컴파일이 끝나 포트가 열리면 정상 응답을 받는다.
+				for (let attempt = 1; attempt <= maxFollowUpAttempts; attempt++) {
+					logOutput(`│ ⚠ Compile STATUS 누락 감지: 보강 판정(Show Thread ${attempt}/${maxFollowUpAttempts})`);
+					try {
+						const follow = await runStatusCommand('Show Thread');
+						logOutput(`│ RAW ${rawPreview(follow.raw) || '(empty)'}`);
+						if (follow.ok) {
+							logOutput('│ ✔ Compile success (STATUS missing tolerated)');
+							logOutput(`│ ⚠ Compile STATUS 누락 응답을 Show Thread 정상 응답으로 보강 판정 (${attempt}회 시도)`);
+							return true;
+						}
+						logOutput(`│ ⚠ Follow-up failed: STATUS ${follow.status.code} ${follow.status.message || ''}`.trimEnd());
+						return false;
+					} catch (err: any) {
+						const msg = err?.message ?? String(err);
+						if (attempt < maxFollowUpAttempts && followUpConnIssue(msg)) {
+							const delay = Math.min(followUpBaseDelayMs * Math.pow(2, attempt - 1), 8000);
+							logOutput(`│ ⚠ 보강 판정 일시적 연결 실패(컴파일 진행 중 추정): ${msg}. ${delay}ms 후 재시도`);
+							await sleep(delay);
+							continue;
+						}
+						logOutput(`│ ⚠ Follow-up error: ${msg}`);
+						return false;
+					}
 				}
-
-				logOutput(`│ ⚠ Follow-up failed: STATUS ${follow.status.code} ${follow.status.message || ''}`.trimEnd());
 				return false;
 			};
 
@@ -2567,6 +2662,187 @@ export function activate(context: vscode.ExtensionContext) {
 				);
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`스택 조회 실패: ${err.message ?? err}`);
+			}
+		})
+	);
+
+	// 쓰레드 클릭 → 액션 QuickPick (상세/스택/위치/제어/복사)
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.threadActions', async (node: any) => {
+			const t = node?.thread;
+			if (!t?.name) { return; }
+			const name: string = t.name;
+			const state: string = t.state;
+			type ActItem = vscode.QuickPickItem & { action: string };
+			const items: ActItem[] = [];
+			// 현재 실행/정지 위치는 모든 상태에서 조회 가능 (Running은 스냅샷)
+			items.push({ label: '$(go-to-file) 현재 실행 위치 보기', action: 'location' });
+			items.push({ label: '$(list-tree) 스택 보기 (Show Stack)', action: 'stack' });
+			items.push({ label: '$(info) 상세 보기 (Show Thread)', action: 'detail' });
+			if (state === 'Running') {
+				items.push({ label: '$(debug-pause) 일시정지 (Break)', action: 'break' });
+				items.push({ label: '$(debug-stop) 정지 (Stop)', action: 'stop' });
+			} else if (state === 'Paused' || state === 'Break') {
+				items.push({ label: '$(debug-continue) 재개 (Continue)', action: 'continue' });
+				items.push({ label: '$(debug-step-over) 스텝 (Step)', action: 'step' });
+				items.push({ label: '$(debug-stop) 정지 (Stop)', action: 'stop' });
+			} else if (state === 'Error') {
+				items.push({ label: '$(debug-continue) 에러 건너뛰고 재개', action: 'continueNoError' });
+				items.push({ label: '$(debug-stop) 정지 (Stop)', action: 'stop' });
+			} else {
+				items.push({ label: '$(play) 시작 (Start)', action: 'start' });
+			}
+			items.push({ label: '$(copy) 정보 복사', action: 'copy' });
+			const pick = await vscode.window.showQuickPick(items, { placeHolder: `${name} [${state}] — 동작 선택` });
+			if (!pick) { return; }
+			switch (pick.action) {
+				case 'location': await vscode.commands.executeCommand('gpl.controller.threadShowLocation', node); break;
+				case 'stack': await vscode.commands.executeCommand('gpl.controller.threadShowStack', node); break;
+				case 'detail': {
+					const resp = await sendCommand(`Show Thread ${name}`);
+					outputChannel.appendLine(`[Thread] >>> Show Thread ${name}`);
+					outputChannel.appendLine(resp || '(empty)');
+					outputChannel.show(true);
+					break;
+				}
+				case 'break': await vscode.commands.executeCommand('gpl.controller.threadBreak', node); break;
+				case 'continue': await vscode.commands.executeCommand('gpl.controller.threadContinue', node); break;
+				case 'continueNoError': await vscode.commands.executeCommand('gpl.controller.threadContinueNoError', node); break;
+				case 'step': await vscode.commands.executeCommand('gpl.controller.threadStep', node); break;
+				case 'stop': await vscode.commands.executeCommand('gpl.controller.threadStop', node); break;
+				case 'start': await vscode.commands.executeCommand('gpl.controller.threadStart', node); break;
+				case 'copy': {
+					const info = [`Thread: ${name}`, `State: ${state}`, t.project ? `Project: ${t.project}` : '', t.file ? `File: ${t.file}${t.fileLine ? ':' + t.fileLine : ''}` : '', t.lastStatus ? `Status: ${t.lastStatus}` : ''].filter(Boolean).join('\n');
+					await vscode.env.clipboard.writeText(info);
+					vscode.window.showInformationMessage(`${name} 정보 복사됨`);
+					break;
+				}
+			}
+		})
+	);
+
+	// 쓰레드 스택 인스펙터 — Show Stack → 프레임 QuickPick → 소스 위치 이동
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.threadShowStack', async (node: any) => {
+			const name: string | undefined = node?.thread?.name;
+			if (!name) { return; }
+			try {
+				const resp = await sendCommand(`Show Stack ${name}`);
+				const frames = resp ? parseStack(resp) : [];
+				outputChannel.appendLine(`[Thread] >>> Show Stack ${name}`);
+				outputChannel.appendLine(resp || '(empty)');
+				if (frames.length === 0) {
+					vscode.window.showWarningMessage(`${name}: 스택 프레임이 없습니다.`);
+					outputChannel.show(true);
+					return;
+				}
+				const items = frames.map((f, i) => ({
+					label: `$(list-tree) #${i} ${f.process || '(unknown)'}`,
+					description: f.file ? `${f.file}:${f.fileLine}` : '(위치 없음)',
+					frame: f,
+				}));
+				const pick = await vscode.window.showQuickPick(items, { placeHolder: `${name} 스택 — 프레임 선택 시 소스로 이동` });
+				if (!pick) { return; }
+				const f = pick.frame;
+				if (!f.file || f.fileLine <= 0) { vscode.window.showWarningMessage('해당 프레임에 파일/줄 정보가 없습니다.'); return; }
+				const filePath = resolveGplFilePath(f.file);
+				if (!filePath) { vscode.window.showWarningMessage(`파일 "${f.file}"을 워크스페이스에서 찾을 수 없습니다.`); return; }
+				const doc = await vscode.workspace.openTextDocument(filePath);
+				const editor = await vscode.window.showTextDocument(doc, { preview: false });
+				const line = Math.max(0, f.fileLine - 1);
+				const range = new vscode.Range(line, 0, line, 0);
+				editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+				editor.selection = new vscode.Selection(line, 0, line, 0);
+			} catch (err: any) {
+				vscode.window.showErrorMessage(`스택 조회 실패: ${err.message ?? err}`);
+			}
+		})
+	);
+
+	// 전역변수 보기/편집 — Show Global → (편집) Execute name = value, project
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.showGlobal', async () => {
+			const varName = await vscode.window.showInputBox({ prompt: '조회할 전역변수 이름', placeHolder: '예: GPL.i1, Robot.Speed' });
+			if (!varName) { return; }
+			const proj = controllerTree?.getExpectedProjectName?.() || '';
+			try {
+				const cmd = proj ? `Show Global ${varName}, ${proj}` : `Show Global ${varName}`;
+				const resp = await sendCommand(cmd);
+				outputChannel.appendLine(`[Global] >>> ${cmd}`);
+				outputChannel.appendLine(resp || '(empty)');
+				outputChannel.show(true);
+				const cleaned = (resp || '').replace(/<[^>]+>/g, '').trim();
+				const action = await vscode.window.showInformationMessage(`${varName} = ${cleaned || '(빈 응답)'}`, '값 편집', '닫기');
+				if (action === '값 편집') {
+					const newVal = await vscode.window.showInputBox({ prompt: `${varName}에 설정할 값`, placeHolder: '예: 123, "text", 12.5' });
+					if (newVal === undefined) { return; }
+					const setExpr = `${varName} = ${newVal}`;
+					const setCmd = proj ? `Execute ${setExpr}, ${proj}` : `Execute ${setExpr}`;
+					const setResp = await sendCommand(setCmd);
+					outputChannel.appendLine(`[Global] >>> ${setCmd}`);
+					outputChannel.appendLine(setResp || '(empty)');
+					const st = parseStatus(setResp);
+					if (st.code === 0) { vscode.window.showInformationMessage(`${varName} 설정 완료`); controllerTree?.refresh?.(); }
+					else { vscode.window.showWarningMessage(`설정 결과 STATUS ${st.code}: ${st.message}`); }
+				}
+			} catch (err: any) {
+				vscode.window.showErrorMessage(`전역변수 조회 실패: ${err.message ?? err}`);
+			}
+		})
+	);
+
+	// DIO 조회 — Show DIO [signals]
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.showDio', async () => {
+			const input = await vscode.window.showInputBox({ prompt: 'Show DIO — 조회할 신호 번호(쉼표 구분, 비우면 전체)', placeHolder: '예: 13, 14, 10001 (비우면 전체)' });
+			if (input === undefined) { return; }
+			const arg = input.trim() ? ` ${input.trim()}` : '';
+			try {
+				const resp = await sendCommand(`Show DIO${arg}`);
+				outputChannel.appendLine(`[DIO] >>> Show DIO${arg}`);
+				outputChannel.appendLine(resp || '(empty)');
+				outputChannel.show(true);
+			} catch (err: any) {
+				vscode.window.showErrorMessage(`DIO 조회 실패: ${err.message ?? err}`);
+			}
+		})
+	);
+
+	// Set DIO — 출력 강제 (안전 확인 모달)
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.setDio', async (presetSignal?: number) => {
+			const signalStr = typeof presetSignal === 'number'
+				? String(presetSignal)
+				: await vscode.window.showInputBox({ prompt: 'Set DIO — 신호 번호', placeHolder: '예: 13' });
+			if (!signalStr) { return; }
+			const signal = parseInt(String(signalStr), 10);
+			if (Number.isNaN(signal)) { vscode.window.showWarningMessage('유효한 신호 번호가 아닙니다.'); return; }
+			const pick = await vscode.window.showQuickPick(
+				[
+					{ label: '$(circle-filled) 강제 ON (force on)', value: '1' },
+					{ label: '$(circle-outline) 강제 OFF (force off)', value: '-1' },
+					{ label: '$(clear-all) 강제 해제 (clear force)', value: '0' },
+				],
+				{ placeHolder: `신호 ${signal} — Set DIO 동작 선택 (장비 출력에 영향)` }
+			);
+			if (!pick) { return; }
+			const confirm = await vscode.window.showWarningMessage(
+				`Set DIO ${signal} ${pick.value} 실행 — 디지털 신호가 강제되어 장비가 동작할 수 있습니다. 계속할까요?`,
+				{ modal: true },
+				'실행',
+			);
+			if (confirm !== '실행') { return; }
+			try {
+				const cmd = `Set DIO ${signal} ${pick.value}`;
+				const resp = await sendCommand(cmd);
+				outputChannel.appendLine(`[DIO] >>> ${cmd}`);
+				outputChannel.appendLine(resp || '(empty)');
+				outputChannel.show(true);
+				const st = parseStatus(resp);
+				if (st.code === 0) { vscode.window.showInformationMessage(`Set DIO ${signal} 적용됨`); }
+				else { vscode.window.showWarningMessage(`Set DIO 결과 STATUS ${st.code}: ${st.message}`); }
+			} catch (err: any) {
+				vscode.window.showErrorMessage(`Set DIO 실패: ${err.message ?? err}`);
 			}
 		})
 	);

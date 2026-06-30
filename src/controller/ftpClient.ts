@@ -1,6 +1,7 @@
 /**
  * FTP 클라이언트 — basic-ftp 패키지 기반.
  * Brooks 제어기 FTP 서버는 anonymous 접속만 지원한다.
+ * (지정 파일만 업로드: uploadProject options.onlyFiles 참고)
  */
 
 import * as fs from 'fs';
@@ -82,12 +83,32 @@ export async function uploadProject(
 	host: string,
 	localDir: string,
 	remoteDir: string,
-	options?: { skipUnchanged?: boolean; onProgress?: (current: number, total: number, file: string) => void },
+	options?: {
+		skipUnchanged?: boolean;
+		/**
+		 * 지정 시 이 파일들만 업로드한다(로컬 절대경로). localDir 하위 + 실제 존재하는 파일만 대상.
+		 * onlyFiles에 포함된 파일은 호출자가 변경을 확신하는 것으로 보고 크기 비교(skipUnchanged) 없이
+		 * 항상 업로드한다. → 저장 파일만 올리는 빠른 컴파일 경로에서 사용.
+		 */
+		onlyFiles?: string[];
+		onProgress?: (current: number, total: number, file: string) => void;
+	},
 ): Promise<{ uploaded: number; skipped: number; totalBytes: number }> {
 	const client = await createClient(host);
 
 	try {
-		const files = getAllFiles(localDir);
+		// onlyFiles가 주어지면 그 목록만(localDir 하위 + 존재하는 파일) 업로드 대상으로 한다.
+		const onlySet = options?.onlyFiles && options.onlyFiles.length > 0
+			? new Set(options.onlyFiles.map(f => path.resolve(f)))
+			: undefined;
+		const restrictToOnly = onlySet !== undefined;
+		const files = (restrictToOnly
+			? [...onlySet!].filter(f => {
+				const rel = path.relative(localDir, f);
+				const insideLocalDir = !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+				return insideLocalDir && fs.existsSync(f) && fs.statSync(f).isFile();
+			})
+			: getAllFiles(localDir));
 		let uploaded = 0;
 		let skipped = 0;
 		let totalBytes = 0;
@@ -100,7 +121,8 @@ export async function uploadProject(
 			totalBytes += stat.size;
 
 			let skip = false;
-			if (options?.skipUnchanged) {
+			// onlyFiles 경로에서는 변경을 확신하므로 크기 비교를 건너뛰고 항상 업로드한다.
+			if (!restrictToOnly && options?.skipUnchanged) {
 				try {
 					const remoteSize = await client.size(remotePath);
 					if (remoteSize === stat.size) { skip = true; }

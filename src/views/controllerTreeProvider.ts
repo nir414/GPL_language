@@ -550,6 +550,17 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				'runtimeConsoleItem',
 				buildRuntimeConsoleTreeTooltip(this.runtimeConsoleStatus, cfg.ip, cfg.consolePort),
 			),
+			new InfoNode(
+				'명령 보내기',
+				'debug-console',
+				'제어기에 명령 입력',
+				{
+					command: 'gpl.controller.sendCommand',
+					title: 'Send Command to Controller',
+				},
+				'sendCommandItem',
+				'클릭하여 임의 제어기 명령(Show Thread, ErrorLog, date 등)을 입력하고 응답을 출력 패널에서 확인합니다.',
+			),
 		];
 		sections.push(conn);
 
@@ -652,6 +663,16 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				new InfoNode(s.label, s.iconId || 'info', s.value, undefined, undefined, s.tooltip));
 		}
 		sections.push(sysSec);
+
+		// ── I/O · 전역변수 (상호작용 진입점)
+		const ioSec = new SectionNode('io', 'I/O · 전역변수', 'symbol-interface', '클릭하여 조회/설정');
+		ioSec.collapsed = true;
+		ioSec.children = [
+			new InfoNode('DIO 조회 (Show DIO)', 'symbol-boolean', '입출력 상태 보기', { command: 'gpl.controller.showDio', title: 'Show DIO' }, 'ioAction', '디지털 입출력 신호 상태를 조회합니다.'),
+			new InfoNode('DIO 출력 설정 (Set DIO)', 'circuit-board', '출력 강제 (안전 확인)', { command: 'gpl.controller.setDio', title: 'Set DIO' }, 'ioAction', '디지털 출력을 강제(force)합니다. 장비 동작에 영향을 줄 수 있어 확인 후 실행됩니다.'),
+			new InfoNode('전역변수 보기/편집', 'symbol-variable', 'Show/Set Global', { command: 'gpl.controller.showGlobal', title: 'Show Global' }, 'ioAction', '전역변수 값을 조회하고 필요 시 수정합니다.'),
+		];
+		sections.push(ioSec);
 
 		// ── 에러 로그: 코드 오류 / 환경 경고 분리 뷰
 		const classifiedEntries = this.errors.map(raw => {
@@ -1113,7 +1134,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		// description: 상태 + 파일 + 상태 메시지
 		const descParts: string[] = [t.state];
-		if (t.file) { descParts.push(t.file); }
+		if (t.file) { descParts.push(t.fileLine ? `${t.file}:${t.fileLine}` : t.file); }
 		if (t.lastStatus && t.lastStatus !== '0') { descParts.push(t.lastStatus); }
 		item.description = descParts.join(' · ');
 
@@ -1122,7 +1143,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			`State: ${t.state}`,
 			t.lastStatus ? `Status: ${t.lastStatus}` : '',
 			t.project ? `Project: ${t.project}` : '',
-			t.file ? `File: ${t.file}` : '',
+			t.file ? (t.fileLine ? `File: ${t.file}:${t.fileLine}` : `File: ${t.file}`) : '',
 		].filter(Boolean).join('\n');
 		item.iconPath = this.threadIcon(t.state);
 		// Granular contextValue for different thread states
@@ -1153,6 +1174,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				item.contextValue = 'gplThread-stopped';
 				break;
 		}
+		// 클릭 시 액션 QuickPick (모든 상태). 위치 이동도 메뉴에 포함된다.
+		item.command = { command: 'gpl.controller.threadActions', title: '쓰레드 동작', arguments: [node] };
 		return item;
 	}
 

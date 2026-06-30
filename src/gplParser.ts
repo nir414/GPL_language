@@ -270,20 +270,26 @@ export class GPLParser {
                 continue;
             }
 
-            // Parse Property
-            const propertyMatch = trimmedLine.match(/^(Public|Private|Protected|Friend)?\s*(Shared\s+)?Property\s+(\w+)\s+As\s+(\w+)/i);
+            // Parse Property — Sub/Function과 동일하게 수식어 순서를 가리지 않고 매칭한다.
+            // (ReadOnly/WriteOnly/Default/Shared/Overrides 등이 Public/Private 뒤, Property 앞에 올 수 있다.
+            //  이전 정규식은 ReadOnly/WriteOnly를 빠뜨려 `Public ReadOnly Property ...`를 놓쳤다.)
+            const propertyMatch = trimmedLine.match(/^((?:(?:Public|Private|Protected|Friend|Shared|ReadOnly|WriteOnly|Default|Overrides|Overridable|NotOverridable|MustOverride|Shadows|Overloads)\b\s+)*)Property\s+(\w+)(?:\s*\([^)]*\))?(?:\s+As\s+(\w+))?/i);
             if (propertyMatch) {
+                const propMods = propertyMatch[1] || '';
+                const propAccess = /\bPublic\b/i.test(propMods)
+                    ? 'public'
+                    : (/\bPrivate\b/i.test(propMods) ? 'private' : undefined);
                 symbols.push({
-                    name: propertyMatch[3],
+                    name: propertyMatch[2],
                     kind: GPLSymbolKind.Property,
                     range: { start: 0, end: line.length },
                     line: i,
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    accessModifier: propertyMatch[1] ? (propertyMatch[1].toLowerCase() as 'public' | 'private') : undefined,
-                    isShared: !!propertyMatch[2],
-                    returnType: propertyMatch[4]
+                    accessModifier: propAccess as 'public' | 'private' | undefined,
+                    isShared: /\bShared\b/i.test(propMods),
+                    returnType: propertyMatch[3]
                 });
 
                 // Enter property block (if it has Get/Set); End Property will decrement.

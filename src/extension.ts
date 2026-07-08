@@ -465,7 +465,10 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.languages.registerCompletionItemProvider(
 			gplSelectors,
 			new GPLCompletionProvider(symbolCache),
-			'.', ' ', '&'
+			// 멤버 접근('.')과 XML 엔티티('&')에서만 자동완성을 트리거한다.
+			// 공백(' ') 트리거는 일반 입력마다 팝업을 띄워 소음/지연을 유발하므로 제외.
+			// (식별자 입력 시의 기본 IntelliSense는 그대로 동작한다.)
+			'.', '&'
 		)
 	);
 
@@ -607,13 +610,25 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// Auto-refresh symbols and diagnostics when GPL files change
+	// 심볼 재파싱은 키 입력마다가 아니라 타이핑이 멈춘 뒤 1회만 수행한다 (400ms 디바운스).
+	// (기존: 매 키 입력마다 전체 재파싱 + "[SymbolCache] Updated" 로그 폭주)
+	const symbolUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeTextDocument((event) => {
 			if (isGplDocument(event.document)) {
-				symbolCache.updateDocument(event.document);
+				const key = event.document.uri.fsPath;
+				const prev = symbolUpdateTimers.get(key);
+				if (prev) { clearTimeout(prev); }
+				symbolUpdateTimers.set(key, setTimeout(() => {
+					symbolUpdateTimers.delete(key);
+					if (!event.document.isClosed) {
+						symbolCache.updateDocument(event.document);
+					}
+				}, 400));
 				diagnosticProvider.scheduleDiagnostics(event.document, 500);
 			}
-		})
+		}),
+		{ dispose: () => { for (const t of symbolUpdateTimers.values()) { clearTimeout(t); } symbolUpdateTimers.clear(); } }
 	);
 
 	// Keep caches clean on delete/rename to avoid stale symbols/diagnostics.
@@ -673,6 +688,27 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	// 파일시스템 워처: 에디터 밖에서 바뀐 .gpl/.gpo(예: git pull, 외부 도구, 빌드 산출물)도
+	// 심볼 캐시에 반영해 "정의를 찾을 수 없음"이 수동 새로고침 전까지 발생하지 않도록 한다.
+	const gplFileWatcher = vscode.workspace.createFileSystemWatcher('**/*.{gpl,gpo}');
+	const reindexFromWatcher = async (uri: vscode.Uri) => {
+		try {
+			const document = await vscode.workspace.openTextDocument(uri);
+			if (isGplDocument(document) && !symbolCache.isRefreshing) {
+				symbolCache.updateDocument(document);
+			}
+		} catch (e) {
+			outputChannel.appendLine(`[Watcher] Failed to index ${uri.fsPath}: ${e}`);
+		}
+	};
+	gplFileWatcher.onDidCreate(reindexFromWatcher);
+	gplFileWatcher.onDidChange(reindexFromWatcher);
+	gplFileWatcher.onDidDelete((uri) => {
+		symbolCache.removeFile(uri.fsPath);
+		diagnosticProvider.clearDiagnostics(uri);
+	});
+	context.subscriptions.push(gplFileWatcher);
+
 	// ════════════════════════════════════════════════════════════
 	// Controller integration – initialization
 	// ════════════════════════════════════════════════════════════
@@ -713,6 +749,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider('gplThreads', controllerTree)
 	);
+	// 트리 등록뿐 아니라 provider 인스턴스 자체도 정리 대상에 등록한다.
+	// (pollTimer / EventEmitter / _debugModeSubscription 등이 deactivate 시 해제되도록)
+	context.subscriptions.push(controllerTree);
 
 	async function detectWorkspaceProjectContext(): Promise<{ projectName: string; folderName: string }> {
 		const dirs = await findProjectDirs();
@@ -1126,7 +1165,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// --- Deploy helper (공통 로직) ---
-	async function runDeploy(skipStart: boolean, quickOpts?: { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string }) {
+	async function runDeploy(skipStart: boolean, quickOpts?: { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string; noStopPrompt?: boolean }) {
 		const modeLabel: SituationDeploySnapshot['mode'] = skipStart ? 'Build' : 'Deploy & Run';
 		const uniqueCodes = (values: number[]): number[] => [...new Set(values)];
 		const buildOutcomeSignature = (result: Awaited<ReturnType<typeof deploy>>, controllerSystemCodes: number[]): string => {
@@ -1221,6 +1260,20 @@ export function activate(context: vscode.ExtensionContext) {
 				skipStop: quickOpts?.skipStop,
 				skipUnchanged: quickOpts?.skipUnchanged,
 				changedFiles: quickOpts?.changedFiles,
+				// Quick Compile은 /GPL 직접 업로드 모드 사용 (원격에 /GPL/<name> 없으면 자동 폴백)
+				directGpl: quickOpts?.quick,
+				// 활성 쓰레드 감지 시 사용자에게 Stop -all 여부를 모달로 확인.
+				// autoOnSave 경로(noStopPrompt)는 저장마다 팝업이 뜨면 방해되므로 조용히 중단 유지.
+				confirmStopOnActive: quickOpts?.quick && !quickOpts?.noStopPrompt
+					? async (activeDesc: string) => {
+						const pick = await vscode.window.showWarningMessage(
+							'실행 중인 쓰레드가 있습니다. Stop -all로 정지한 후 Quick Compile을 계속할까요?',
+							{ modal: true, detail: `활성 쓰레드: ${activeDesc}` },
+							'Stop 후 계속'
+						);
+						return pick === 'Stop 후 계속';
+					}
+					: undefined,
 				beforeStart: skipStart ? undefined : async () => {
 					const console = ensureRuntimeConsole();
 					console.primeForRuntimeStart();
@@ -1533,6 +1586,8 @@ export function activate(context: vscode.ExtensionContext) {
 						quick: true,
 						changedFiles: projectDir ? changedFiles : undefined,
 						overrideProjectDir: projectDir,
+						// 저장마다 모달이 뜨면 방해되므로 autoOnSave는 활성 쓰레드 시 조용히 중단.
+						noStopPrompt: true,
 					});
 				} finally {
 					quickCompileInFlight = false;
@@ -2563,7 +2618,8 @@ export function activate(context: vscode.ExtensionContext) {
 	 * Scans all workspace folders for .gpl/.gpo files.
 	 */
 	function resolveGplFilePath(filename: string): string | undefined {
-		const target = filename.toLowerCase();
+		// 제어기가 전체 경로를 줄 수 있으므로 베이스네임만 비교 대상으로 삼는다.
+		const target = filename.replace(/^.*[\\/]/, '').toLowerCase();
 		const folders = vscode.workspace.workspaceFolders;
 		if (!folders) { return undefined; }
 
@@ -2851,6 +2907,28 @@ export function activate(context: vscode.ExtensionContext) {
 	// Debug Adapter Protocol (DAP) — brooks-gpl debugger
 	// ════════════════════════════════════════════════════════════
 	activateDebug(context);
+
+	// ── 디버그 중 클릭 즉시 변수 값 표시 ──────────────────────────
+	// 호버는 editor.hover.delay + 마우스 정지 대기 때문에 체감이 느리다.
+	// 마우스 클릭으로 커서를 식별자 위에 놓으면 내장 debug hover를 즉시 띄운다.
+	// 키보드 커서 이동은 제외(kind !== Mouse). gpl.debug.showValueOnCursorClick로 끌 수 있음.
+	context.subscriptions.push(
+		vscode.window.onDidChangeTextEditorSelection(e => {
+			if (!isDebugSessionActive) { return; }
+			if (e.kind !== vscode.TextEditorSelectionChangeKind.Mouse) { return; }
+			const editor = e.textEditor;
+			if (editor.document.languageId !== 'gpl') { return; }
+			const sel = e.selections[0];
+			if (!sel || !sel.isSingleLine) { return; }
+			// 클릭(빈 선택)·더블클릭(단어 선택)만 처리 — 긴 드래그 선택은 제외
+			if (!sel.isEmpty && editor.document.getText(sel).length > 64) { return; }
+			// 식별자 위가 아니면 무시 (빈 공간 클릭 시 불필요한 hover 방지)
+			if (!editor.document.getWordRangeAtPosition(sel.active)) { return; }
+			const cfg = vscode.workspace.getConfiguration('gpl.debug');
+			if (!cfg.get<boolean>('showValueOnCursorClick', true)) { return; }
+			void vscode.commands.executeCommand('editor.debug.action.showDebugHover');
+		})
+	);
 
 	// 디버그 세션 중 사이드바 폴링 일시 중지 (TCP 충돌 방지)
 	context.subscriptions.push(

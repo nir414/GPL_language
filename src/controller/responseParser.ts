@@ -3,6 +3,8 @@
  * 모든 파싱 로직을 중앙 관리하여 펌웨어 변동에 단일 지점에서 대응한다.
  */
 
+import * as path from 'path';
+
 // ─── STATUS ───────────────────────────────────────────────
 
 export interface StatusResult {
@@ -74,10 +76,20 @@ export function parseCompileErrors(text: string): CompileError[] {
  * 실행 중이어도 `<DATA></DATA>` 빈 응답을 돌려준다. 전체 스레드를 열거하려면
  * GDE처럼 `-web` 플래그를 써야 하며, 응답은 파이프(`|`) 구분 9컬럼 형식이다.
  *
- * 두 칸 공백은 의도된 것: `Show Thread [name] [-web]` 문법에서 name 슬롯을 비우고
- * `-web` 플래그만 전달하는, GDE가 실제로 전송한 형태를 그대로 따른다.
+ * 두 칸 공백은 의도된 것: `Show Thread [name] [-stack] [-web]` 문법에서 name 슬롯을
+ * 비우고 플래그만 전달하는, GDE가 실제로 전송한 형태를 그대로 따른다.
+ *
+ * 고빈도 폴(디버그 세션·상태 프로브)은 이 경량형을 쓴다. timing이 필요한 저빈도/
+ * 상세 경로는 아래 SHOW_THREAD_LIST_STACK_CMD를 사용한다(폴 페이로드 경량 유지).
  */
 export const SHOW_THREAD_LIST_CMD = 'Show Thread  -web';
+
+/**
+ * 상세형: `Show Thread` 목록 + thread별 trailing 수치(`-stack`, index 9+).
+ * parseThreadList가 stackTiming으로 보존한다. 페이로드가 커지므로 고빈도 폴에는 쓰지
+ * 말고, 사이드바 수동 새로고침 등 on-demand 상세 조회에만 사용한다. read-only 진단.
+ */
+export const SHOW_THREAD_LIST_STACK_CMD = 'Show Thread  -stack -web';
 
 export type ThreadState = 'Running' | 'Idle' | 'Error' | 'Stopping' | 'Stopped' | 'Break' | 'Paused' | string;
 
@@ -92,6 +104,9 @@ export interface ThreadInfo {
     func?: string;
     procLine?: number;
     fileLine?: number;
+    // `-stack`을 동반한 `-web` 응답에서만 채워지는 trailing 수치 컬럼(index 9+).
+    // 컬럼 의미는 Brooks 도움말에서 확인되지 않아 단정하지 않고 raw 숫자로 보존한다.
+    stackTiming?: number[];
 }
 
 export interface ThreadDetailInfo {
@@ -116,6 +131,31 @@ export interface ThreadDetailInfo {
  *   - 탭/2+공백 구분: `ThreadName    Running    0    proj    file`
  *   - 쉼표 구분:      `ThreadName, Running`
  */
+/**
+ * 파이프 행 끝의 trailing 수치 컬럼(`-stack` 동반 시 index 9+)을 raw 숫자로 수집.
+ * 숫자가 아니면 무시하고, 하나도 없으면 undefined.
+ */
+function parseTrailingNumbers(parts: string[], from: number): number[] | undefined {
+    const out: number[] = [];
+    for (let i = from; i < parts.length; i++) {
+        const cell = (parts[i] ?? '').trim();
+        const n = Number.parseFloat(cell);
+        if (!Number.isNaN(n) && /^-?\d*\.?\d+$/.test(cell)) {
+            out.push(n);
+        }
+    }
+    return out.length ? out : undefined;
+}
+
+/**
+ * 모든 셀이 순수 숫자인 행 판별. `Show Thread -stack`(비-web)의 timing 줄
+ * (예: `0.172, 4.000, 0.172`)이 스레드로 오인식되어 phantom 항목을 만드는 것을 막는다.
+ */
+function isPureNumericRow(line: string): boolean {
+    const cells = line.split(/[,|]|\s{2,}|\t+/).map(s => s.trim()).filter(Boolean);
+    return cells.length >= 2 && cells.every(c => /^-?\d*\.?\d+$/.test(c));
+}
+
 export function parseThreadList(text: string): ThreadInfo[] {
     const threads: ThreadInfo[] = [];
     // XML 태그를 먼저 제거하여 <DATA>content</DATA> 같은 인라인 형식도 처리
@@ -144,8 +184,14 @@ export function parseThreadList(text: string): ThreadInfo[] {
                     func: p[5] || undefined,
                     procLine: Number.isNaN(procLine) ? undefined : procLine,
                     fileLine: Number.isNaN(fileLine) ? undefined : fileLine,
+                    stackTiming: parseTrailingNumbers(p, 9),
                 });
             }
+            continue;
+        }
+        // (-stack 비-web 응답의) 순수 수치 타이밍 행은 스레드가 아니므로 스킵.
+        // 예: `0.172, 4.000, 0.172` → name="0.172" 오인식 방지.
+        if (isPureNumericRow(trimmed)) {
             continue;
         }
         // 1차: 2 이상 공백 또는 탭으로 구분 (테이블 형식)
@@ -496,6 +542,142 @@ export function parseGpr(text: string): GprInfo {
     return { projectName, projectStart, sources };
 }
 
+// ─── Project 선택 (디버그 대상 projectName 결정) ─────────────
+
+/** 워크스페이스에서 수집한 Project.gpr 후보 하나. */
+export interface ProjectCandidate {
+    /** .gpr의 ProjectName */
+    projectName: string;
+    /** Project.gpr 절대 경로 */
+    gprPath: string;
+    /** ProjectSource 파일들의 소문자 basename 집합 */
+    sourceNames: Set<string>;
+}
+
+/** selectProjectFromCandidates 결과. */
+export interface ProjectSelection {
+    projectName: string;
+    /** 로그용 선택 근거 */
+    reason: string;
+    /**
+     * true면 결정적이지만 임의적인 tie-break로 골랐다는 뜻(활성 파일 신호 없음 등).
+     * 이 경우 launch.json에 projectName을 명시하도록 사용자에게 안내한다.
+     */
+    ambiguous: boolean;
+}
+
+/** filePath가 dirPath 하위(또는 동일)인지 판정. 순수 path 연산. */
+function isPathUnder(filePath: string, dirPath: string): boolean {
+    try {
+        const rel = path.relative(path.resolve(dirPath), path.resolve(filePath));
+        return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * 여러 Project.gpr 후보 중 디버그 대상 프로젝트를 결정한다(순수 함수, 단위 테스트 대상).
+ *
+ * 배경: 기존 로직은 활성 파일의 **basename이 어느 프로젝트의 소스 목록에 있는지**(약한 신호)를
+ * **파일이 실제로 어느 프로젝트 폴더 안에 있는지**(강한 신호)보다 우선했다. 서로 다른 프로젝트가
+ * `Main.gpl` 같은 흔한 파일명을 공유하면, 실제로 열려 있는 프로젝트가 아니라 이름만 겹치는
+ * 다른 프로젝트가 선택되어 `<projectName>`이 오인식되었다. 여기서는 우선순위를 다음으로 바로잡는다.
+ *
+ *   1) 활성 파일이 어떤 프로젝트 폴더 하위이면서 그 프로젝트 소스이기도 함 (가장 강함)
+ *   2) 활성 파일이 물리적으로 포함된 프로젝트 폴더 (가장 깊은/구체적인 것 우선)
+ *   3) 폴더 밖에서 연 파일이 정확히 한 프로젝트의 소스명과만 일치
+ *   4) 위로 판별 불가 → 결정적 fallback(경로 정렬 첫 후보)이되 ambiguous=true로 표시
+ *
+ * 또한 stale 사본/중첩 루트로 인한 중복 .gpr는 경로 기준으로 제거하고, 남은 후보가 모두 같은
+ * projectName이면 다중이 아니라 단일로 취급한다.
+ */
+export function selectProjectFromCandidates(
+    candidates: ProjectCandidate[],
+    activePath: string,
+): ProjectSelection | undefined {
+    // 동일 .gpr 경로 중복 제거(대소문자 무시). stale 사본·중첩 워크스페이스 대응.
+    const seen = new Set<string>();
+    const unique: ProjectCandidate[] = [];
+    for (const c of candidates) {
+        if (!c.projectName) { continue; }
+        const key = path.resolve(c.gprPath).toLowerCase();
+        if (seen.has(key)) { continue; }
+        seen.add(key);
+        unique.push(c);
+    }
+
+    if (unique.length === 0) { return undefined; }
+
+    // 남은 후보가 모두 같은 프로젝트명이면 .gpr가 여러 개라도 단일 프로젝트로 확정.
+    const distinctNames = new Set(unique.map(c => c.projectName.toLowerCase()));
+    if (distinctNames.size === 1) {
+        return {
+            projectName: unique[0].projectName,
+            reason: unique.length === 1
+                ? `단일 프로젝트 (${unique[0].gprPath})`
+                : `단일 프로젝트명 (.gpr ${unique.length}개, 동일 이름)`,
+            ambiguous: false,
+        };
+    }
+
+    // 서로 다른 다중 프로젝트 — 활성 편집 파일로 판별.
+    const activeBase = activePath ? path.basename(activePath).toLowerCase() : '';
+
+    const dirMatches = activePath
+        ? unique
+            .filter(c => isPathUnder(activePath, path.dirname(c.gprPath)))
+            .sort((a, b) => path.dirname(b.gprPath).length - path.dirname(a.gprPath).length)
+        : [];
+    const sourceMatches = activeBase
+        ? unique.filter(c => c.sourceNames.has(activeBase))
+        : [];
+
+    // 1) 가장 강함: 활성 파일이 프로젝트 폴더 하위이면서 그 프로젝트의 소스이기도 함.
+    const bothMatch = dirMatches.find(d => sourceMatches.some(s => s.gprPath === d.gprPath));
+    if (bothMatch) {
+        return {
+            projectName: bothMatch.projectName,
+            reason: `활성 파일 위치+소스 일치 (${activeBase})`,
+            ambiguous: false,
+        };
+    }
+
+    // 2) 파일이 물리적으로 들어 있는 폴더가 진실. 중첩 시 가장 깊은(구체적인) 것 우선.
+    if (dirMatches.length > 0) {
+        return {
+            projectName: dirMatches[0].projectName,
+            reason: `활성 파일 디렉터리 포함 (${path.basename(path.dirname(dirMatches[0].gprPath))})`,
+            ambiguous: false,
+        };
+    }
+
+    // 3) 어느 프로젝트 폴더 밖에서 연 파일 → 소스명이 정확히 하나와만 일치하면 그것.
+    if (sourceMatches.length === 1) {
+        return {
+            projectName: sourceMatches[0].projectName,
+            reason: `활성 파일명 소스 매칭 (${activeBase})`,
+            ambiguous: false,
+        };
+    }
+    if (sourceMatches.length > 1) {
+        const pick = [...sourceMatches].sort((a, b) => a.gprPath.localeCompare(b.gprPath))[0];
+        return {
+            projectName: pick.projectName,
+            reason: `활성 파일명이 ${sourceMatches.length}개 프로젝트에 존재 — 모호, 기본값 ${pick.projectName}`,
+            ambiguous: true,
+        };
+    }
+
+    // 4) 판별 신호 없음: 결정적 fallback(경로 정렬 첫 후보), ambiguous 표시.
+    const pick = [...unique].sort((a, b) => a.gprPath.localeCompare(b.gprPath))[0];
+    return {
+        projectName: pick.projectName,
+        reason: `다중 프로젝트(${unique.length}개), 활성 파일 신호 없음 — 기본값 ${pick.projectName}`,
+        ambiguous: true,
+    };
+}
+
 // ─── Stack ────────────────────────────────────────────────
 
 export interface StackFrameInfo {
@@ -564,12 +746,17 @@ export function parseStack(text: string): StackFrameInfo[] {
             const frameIndex = parseInt(parts[0], 10);
             if (isNaN(frameIndex)) { continue; }
 
+            // File 컬럼이 전체 경로로 올 수 있으므로 베이스네임으로 정규화한다.
+            // (텍스트 형식 분기와 동일하게 처리하여 소스 위치 해석 실패를 방지)
+            const rawFile = parts[4]?.trim() || '';
+            const fileName = rawFile ? rawFile.replace(/^.*[\\/]/, '') : '';
+
             frames.push({
                 frameIndex,
                 project: parts[1]?.trim() || '',
                 process: parts[2]?.trim() || '',
                 procLine: parseInt(parts[3], 10) || 0,
-                file: parts[4]?.trim() || '',
+                file: fileName,
                 fileLine: parseInt(parts[5], 10) || 0,
                 size: parseInt(parts[6], 10) || 0,
             });

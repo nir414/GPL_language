@@ -122,3 +122,38 @@ export function getQualifiedWordAtPosition(
 
     return { range: segRange, word: chosen.text, qualifier };
 }
+
+/**
+ * position(라인 내 문자 위치)이 GPL 주석(`'` 이후) 또는 문자열 리터럴("...") 내부인지 판별.
+ * 정의/호버/참조 Provider가 주석·문자열 속 단어를 심볼로 오해석하지 않도록 조기 차단용.
+ * VB식 이스케이프("")는 토글 2회로 자연 처리된다.
+ */
+export function isInCommentOrString(lineText: string, character: number): boolean {
+    let inString = false;
+    const end = Math.min(character, lineText.length);
+    for (let i = 0; i < end; i++) {
+        const ch = lineText[i];
+        if (ch === '"') {
+            inString = !inString;
+        } else if (ch === "'" && !inString) {
+            return true; // 이후 전부 주석
+        }
+    }
+    return inString;
+}
+
+/**
+ * 심볼이 될 수 없는 GPL(VB계열) 제어 키워드.
+ * 정의 요청에서 조기 반환해 멤버 해석/캐시 미스/텍스트 스캔 낭비를 없앤다.
+ * 주의: `New`(생성자 점프), `Me`/`MyBase`, 타입명(String 등)은 의도적으로 제외.
+ */
+export const GPL_CONTROL_KEYWORDS: ReadonlySet<string> = new Set([
+    'if', 'then', 'else', 'elseif', 'end', 'endif',
+    'for', 'next', 'to', 'step', 'each', 'in',
+    'while', 'wend', 'do', 'loop', 'until',
+    'select', 'case', 'return', 'exit', 'continue', 'goto',
+    'dim', 'as', 'byref', 'byval', 'redim',
+    'and', 'or', 'not', 'xor', 'mod',
+    'true', 'false', 'nothing',
+    'try', 'catch', 'finally', 'throw', 'with',
+]);

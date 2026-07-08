@@ -2,6 +2,48 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [Unreleased]
+
+## [0.7.0] - 2026-07-08
+
+### Added
+
+- 디버그 중 마우스 클릭으로 커서를 변수 위에 놓으면 값을 즉시 표시합니다(호버 대기 불필요). `gpl.debug.showValueOnCursorClick`(기본 true)로 끌 수 있으며, `Ctrl+Alt+I`로 키보드에서도 즉시 표시할 수 있습니다.
+
+### Changed
+
+- 디버그(F5) 시작 전 업로드가 flash 서버를 거치지 않고 제어기 `/GPL/<projectName>`에 직접 **미러 동기화**됩니다. 크기가 다르거나 새로 생긴 파일만 올리고, 로컬에서 지운/이름 바꾼 파일은 원격에서도 삭제하며, `Unload`/`Load` 왕복을 생략해 디버그 배포가 빨라집니다. `/GPL`에 프로젝트 폴더가 아직 없으면(최초 배포) 기존 flash 경로로 자동 폴백하고, 배포 전 STOP은 그대로 선행하므로 안전합니다.
+- 저장 시 자동 빠른 컴파일(`gpl.quickCompile.autoOnSave`)이 제어기 `Show Thread`로 확인해 **활성 쓰레드가 없을 때만** `/GPL/<projectName>`에 저장 파일을 업로드합니다. 실행 중에는 저장마다 방해하지 않도록 조용히 건너뜁니다.
+- 디버그 hover/watch 평가 캐시를 3초로 늘리고 REPL 명령 후 캐시를 무효화해, 같은 변수 재확인이 즉시 응답합니다.
+- 디버그 스텝/컨티뉴의 체감 지연을 줄였습니다. 정지 감지 fast poll을 500ms×2에서 30ms 시작 점감 백오프로 바꾸고, 1403 즉시 트리거의 디바운스 유실을 재폴 예약으로 보완했으며, 정지 직후 중복되던 `Show Thread` 왕복을 캐시로 제거했습니다. (예상 체감: 스텝당 ~600ms → ~100-250ms)
+
+### Fixed
+
+- 디버깅 시 대상 프로젝트(`projectName`)가 다른 프로젝트로 오인식되던 문제를 수정했습니다. 여러 프로젝트가 `Main.gpl`처럼 같은 파일명을 쓸 때, 활성 파일의 이름이 우연히 다른 프로젝트의 소스 목록에 있으면 그 프로젝트가 잘못 선택됐습니다. 이제 **활성 파일이 실제로 들어 있는 프로젝트 폴더**를 최우선으로 판별합니다. 또한 `.history`(로컬 히스토리)·`dist`·`out`에 남은 과거 `Project.gpr` 사본이 후보로 섞이지 않도록 탐색 범위를 정리하고, 자동 판별이 모호할 때는 `launch.json`의 `projectName` 명시를 권고하는 안내를 디버그 콘솔에 표시합니다.
+- 정의 이동/호버가 주석(`'`)과 문자열 내부에서도 동작해 엉뚱한 심볼로 점프하던 문제를 수정했습니다. `If`/`Then` 같은 제어 키워드도 더 이상 심볼로 해석하지 않습니다.
+- 클래스 필드·상수가 멤버 조회(`obj.field` 정의 이동)에서 누락되던 문제를 수정했습니다.
+- 키 입력마다 심볼 캐시를 전체 재파싱하던 것을 400ms 디바운스로 바꿔 로그 폭주와 CPU 낭비를 없앴습니다.
+- Quick Compile: 쓰레드 실행 중(-750)에는 Load를 강행하지 않고 명확한 안내와 함께 중단합니다. Load 응답이 HTTP면(제어기 이상 징후) 재시도 없이 즉시 중단합니다.
+
+## [0.6.25] - 2026-07-03
+
+### Added
+
+- 디버그 launch 옵션 `stopAllOnDisconnect`(기본 false): 디버그 세션 종료 시 제어기 프로그램을 `Stop -all`로 정지합니다. "GPL Debug: Fast (Stop→Start→Attach, no upload, stop on exit)" 구성 스니펫도 추가되었습니다.
+
+## [0.6.24] - 2026-07-03
+
+> 참고: 0.6.1~0.6.23은 CHANGELOG 없이 진행된 개발 반복 빌드입니다(자동 patch bump). 0.6.23은 패키징 실패로 VSIX가 존재하지 않습니다.
+
+### Fixed
+
+- `npm run package`가 `EACCES: permission denied, scandir '...\controller-mcp\node_modules\.bin\node-which'`로 실패하던 문제를 해결했습니다. 원인은 리눅스 환경에서 실행된 `npm install`이 남긴 유닉스 심볼릭 링크였으며, 링크 제거 후 `scripts/package.js`에 preflight 검사를 추가해 재발 시 명확한 안내와 함께 조기 중단되도록 했습니다.
+
+### Changed
+
+- `.vscodeignore`에 `controller-mcp/**`, `captures/**`, `dist/**`, `test_*.js`, `.claude`를 추가해 개발 전용 파일이 VSIX에 포함되지 않도록 했습니다.
+- `scripts/package.js`가 버전 bump(`--bump patch`)를 직접 처리하고, 패키징 실패 시 버전을 롤백해 버전 번호 낭비를 막습니다. vsce를 Node로 직접 실행해 이중 컴파일과 DEP0190 경고도 제거했습니다.
+
 ## [0.6.0] - 2026-05-29
 
 ### Changed

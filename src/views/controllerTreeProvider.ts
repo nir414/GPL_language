@@ -9,6 +9,7 @@ import { formatRuntimeConsoleStateLabel } from '../controller/runtimeConsolePres
 import {
 	parseThreadList,
 	SHOW_THREAD_LIST_CMD,
+	SHOW_THREAD_LIST_STACK_CMD,
 	ThreadInfo,
 	parseErrorLog,
 	parseBreakList,
@@ -25,7 +26,7 @@ import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
 export interface SituationDeploySnapshot {
 	mode: 'Build' | 'Deploy & Run';
 	success: boolean;
-	lastStage: 'STOP' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
+	lastStage: 'STOP' | 'THREAD_CHECK' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
 	compileErrorCodes: number[];
 	controllerSystemCodes: number[];
 	updatedAt: number;
@@ -257,8 +258,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this._refreshInFlight = true;
 		try {
 
-		// 경량 주기 폴링: 기본은 Show Thread만, 상세(Error/Break)는 적응형으로 조회
-		const threadResp = await trySendCommand(SHOW_THREAD_LIST_CMD);
+		// 경량 주기 폴링: 기본은 경량 Show Thread, 수동 전체 새로고침(forceDetails)일 때만
+		// -stack 상세형으로 thread별 timing까지 받는다(고빈도 폴 페이로드 경량 유지).
+		const threadResp = await trySendCommand(forceDetails ? SHOW_THREAD_LIST_STACK_CMD : SHOW_THREAD_LIST_CMD);
 
 		// 연결 유실 감지: 핵심 상태(Show Thread) 3회 연속 실패 시 자동 해제
 		if (threadResp === null) {
@@ -585,8 +587,12 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const threadSec = new SectionNode('threads',
 			`쓰레드 (${this.threads.length})`, 'symbol-event', threadDesc);
 		threadSec.collapsed = true;
-		threadSec.children = this.threads.length > 0
-			? this.threads.map(t => new ThreadNode(t))
+		// 정지/에러 쓰레드를 맨 위로 끌어올려 한눈에 띄게 한다(원본 배열은 보존).
+		const sortedThreads = [...this.threads].sort(
+			(a, b) => this.threadStateRank(a.state) - this.threadStateRank(b.state),
+		);
+		threadSec.children = sortedThreads.length > 0
+			? sortedThreads.map(t => new ThreadNode(t))
 			: [new InfoNode('쓰레드 없음', 'info')];
 		sections.push(threadSec);
 
@@ -975,8 +981,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				stageMap.COMPILE = 'OK';
 				stageMap.RUNNING = deploy.mode === 'Build' ? 'SKIP' : 'OK';
 			} else {
-				stageMap.STOPPING = deploy.lastStage === 'STOP' ? 'FAIL' : 'OK';
-				stageMap.UPLOADING = deploy.lastStage === 'UPLOAD' ? 'FAIL' : (deploy.lastStage === 'STOP' ? 'N/A' : 'OK');
+				// THREAD_CHECK(빠른 컴파일의 사전 쓰레드 게이트) 실패는 STOP 단계 실패와 동급으로 취급.
+				const stoppedStageFailed = deploy.lastStage === 'STOP' || deploy.lastStage === 'THREAD_CHECK';
+				stageMap.STOPPING = stoppedStageFailed ? 'FAIL' : 'OK';
+				stageMap.UPLOADING = deploy.lastStage === 'UPLOAD' ? 'FAIL' : (stoppedStageFailed ? 'N/A' : 'OK');
 				stageMap.COMPILE = deploy.lastStage === 'COMPILE' ? 'FAIL' : ((deploy.lastStage === 'START' || deploy.lastStage === 'ERROR_CHECK') ? 'OK' : 'N/A');
 				stageMap.RUNNING = deploy.mode === 'Build'
 					? 'SKIP'
@@ -1136,6 +1144,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const descParts: string[] = [t.state];
 		if (t.file) { descParts.push(t.fileLine ? `${t.file}:${t.fileLine}` : t.file); }
 		if (t.lastStatus && t.lastStatus !== '0') { descParts.push(t.lastStatus); }
+		if (t.stackTiming && t.stackTiming.length) { descParts.push(t.stackTiming.join('/')); }
 		item.description = descParts.join(' · ');
 
 		item.tooltip = [
@@ -1144,6 +1153,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			t.lastStatus ? `Status: ${t.lastStatus}` : '',
 			t.project ? `Project: ${t.project}` : '',
 			t.file ? (t.fileLine ? `File: ${t.file}:${t.fileLine}` : `File: ${t.file}`) : '',
+			// `Show Thread -stack` trailing 수치. 컬럼 의미는 도움말 미확인(raw 표기).
+			t.stackTiming && t.stackTiming.length ? `Timing(-stack): ${t.stackTiming.join(' / ')}` : '',
 		].filter(Boolean).join('\n');
 		item.iconPath = this.threadIcon(t.state);
 		// Granular contextValue for different thread states
@@ -1174,8 +1185,12 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				item.contextValue = 'gplThread-stopped';
 				break;
 		}
-		// 클릭 시 액션 QuickPick (모든 상태). 위치 이동도 메뉴에 포함된다.
-		item.command = { command: 'gpl.controller.threadActions', title: '쓰레드 동작', arguments: [node] };
+		// 정지/에러 쓰레드는 위 switch에서 클릭 시 바로 정지/에러 위치로 이동하도록 설정된다
+		// (디버거 호출 스택처럼). Continue/Step 등 제어 동작은 컨텍스트 메뉴와 인라인 버튼으로 제공한다.
+		// 그 외 상태(실행/정지됨 등)는 클릭 시 액션 QuickPick을 띄운다.
+		if (t.state !== 'Paused' && t.state !== 'Break' && t.state !== 'Error') {
+			item.command = { command: 'gpl.controller.threadActions', title: '쓰레드 동작', arguments: [node] };
+		}
 		return item;
 	}
 
@@ -1195,6 +1210,23 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		(item as any).remotePath = node.remotePath;
 		(item as any).projectName = node.projectName;
 		return item;
+	}
+
+	/**
+	 * 쓰레드 목록 정렬용 상태 우선순위(작을수록 위).
+	 * Error → Paused/Break → Stopping/Stopped → Running → Idle → 기타.
+	 */
+	private threadStateRank(state: string): number {
+		switch (state) {
+			case 'Error': return 0;
+			case 'Paused':
+			case 'Break': return 1;
+			case 'Stopping':
+			case 'Stopped': return 2;
+			case 'Running': return 3;
+			case 'Idle': return 4;
+			default: return 5;
+		}
 	}
 
 	private threadIcon(state: string): vscode.ThemeIcon {

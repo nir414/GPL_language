@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.6.20",
+    "version": "0.7.0",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -136,6 +136,11 @@
                                 "type": "boolean",
                                 "description": "Clear existing controller breakpoints for the target project before attaching. Prevents breakpoint duplication across restarts.",
                                 "default": true
+                            },
+                            "stopAllOnDisconnect": {
+                                "type": "boolean",
+                                "description": "Stop the controller program (Stop -all) when the debug session ends/detaches. Default false leaves the program running.",
+                                "default": false
                             }
                         }
                     }
@@ -159,6 +164,21 @@
                             "stopAllBeforeAttach": false,
                             "clearProjectBreakpointsOnAttach": true,
                             "projectName": ""
+                        }
+                    },
+                    {
+                        "label": "GPL Debug: Fast (Stop→Start→Attach, no upload, stop on exit)",
+                        "description": "autoOnSave가 업로드를 처리하는 경우용. 업로드 없이 Stop-all→Start→Attach로 빠르게 붙고, 세션 종료 시 프로그램을 정지한다.",
+                        "body": {
+                            "type": "brooks-gpl",
+                            "request": "attach",
+                            "name": "Fast Debug (no upload)",
+                            "projectName": "MergeCode",
+                            "deployBeforeAttach": false,
+                            "stopAllBeforeAttach": true,
+                            "stopAllOnDisconnect": true,
+                            "clearProjectBreakpointsOnAttach": true,
+                            "stopOnEntry": false
                         }
                     }
                 ]
@@ -208,7 +228,7 @@
             },
             {
                 "command": "gpl.quickCompile",
-                "title": "GPL: 빠른 컴파일 (변경분만, STOP/START 생략)",
+                "title": "GPL: 빠른 컴파일 (변경분만 /GPL 직접 업로드, STOP/START 생략)",
                 "icon": "$(zap)"
             },
             {
@@ -377,6 +397,11 @@
                 "command": "workbench.action.debug.continue",
                 "key": "f9",
                 "when": "inDebugMode"
+            },
+            {
+                "command": "editor.debug.action.showDebugHover",
+                "key": "ctrl+alt+i",
+                "when": "inDebugMode && editorTextFocus && editorLangId == 'gpl'"
             }
         ],
         "viewsContainers": {
@@ -769,6 +794,12 @@
                     "default": 5000,
                     "description": "Thread status polling interval in milliseconds."
                 },
+                "gpl.debug.showValueOnCursorClick": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "디버그 중 마우스 클릭으로 커서를 변수 위에 놓으면 디버그 호버(변수 값)를 즉시 표시합니다. 호버 대기시간 없이 바로 값을 확인할 수 있습니다."
+                },
                 "gpl.controller.dashboardPollIntervalMs": {
                     "scope": "window",
                     "type": "number",
@@ -791,8 +822,8 @@
         "watch": "tsc -watch -p ./",
         "test": "npm run compile && node ./out/test/index.js",
         "pre-release-check": "node scripts/pre-release-check.js",
-        "package": "node scripts/auto-bump-package-version.js patch && npm run compile && node scripts/package.js",
-        "package:no-bump": "npm run compile && node scripts/package.js",
+        "package": "node scripts/package.js --bump patch",
+        "package:no-bump": "node scripts/package.js",
         "dev:cycle": "npm run package",
         "dev:install": "node -e \"console.error('dev:install is disabled to prevent opening new VS Code windows. Build VSIX with npm run dev:cycle, then install manually from Extensions > Install from VSIX.'); process.exit(1);\"",
         "dev:cycle:open": "node -e \"console.error('dev:cycle:open is disabled to prevent opening new VS Code windows. Use npm run dev:install only when explicit reinstall is needed.'); process.exit(1);\"",

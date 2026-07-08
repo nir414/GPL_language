@@ -982,5 +982,90 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         category: 'Signal Class',
         insertSnippet: 'Signal.AIO(${1:channel})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Signal/Aio.htm'
+    },
+
+    // ── String Class (인스턴스 멤버/공유 메서드, 문서 표기 기준) ───────────────
+    // 공식 "Strings and String Expressions Overview" Table 19-8 기준. 인스턴스 멤버는
+    // 실제로 string 변수에 대해 호출되지만(예: name.Substring(0, 3)), 문서 표기를 따라
+    // String.Member 형식으로 등록한다. (String.Compare만 공유(shared) 메서드)
+    {
+        name: 'String.Compare',
+        kind: 'method',
+        signature: 'String.Compare(string_a, string_b, ignore_case)',
+        summary: '두 문자열을 대소문자 구분 또는 무시하여 비교하고 결과를 정수로 반환합니다. (shared 메서드)',
+        category: 'String Class',
+        insertSnippet: 'String.Compare(${1:string_a}, ${2:string_b}, ${3:ignore_case})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/compare.htm'
+    },
+    {
+        name: 'String.IndexOf',
+        kind: 'method',
+        signature: 'string.IndexOf(string_s, start)',
+        summary: '문자열 인스턴스에서 부분 문자열을 검색해 일치하면 시작 위치(0~n)를 반환합니다.',
+        category: 'String Class',
+        insertSnippet: 'IndexOf(${1:string_s}, ${2:start})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/indexof.htm'
+    },
+    {
+        name: 'String.Length',
+        kind: 'property',
+        signature: 'string.Length',
+        summary: '문자열의 문자 개수를 반환합니다.',
+        category: 'String Class',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/length.htm'
+    },
+    {
+        name: 'String.Split',
+        kind: 'method',
+        signature: 'string.Split(separator_string)',
+        summary: '지정한 구분 문자를 기준으로 문자열을 나눠 부분 문자열 배열로 반환합니다.',
+        category: 'String Class',
+        insertSnippet: 'Split(${1:separator_string})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/split.htm'
+    },
+    {
+        name: 'String.Substring',
+        kind: 'method',
+        signature: 'string.Substring(first_pos, length)',
+        summary: '지정한 시작 위치(first_pos)부터 length 개수만큼의 부분 문자열을 반환합니다.',
+        category: 'String Class',
+        insertSnippet: 'Substring(${1:first_pos}, ${2:length})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/substring.htm'
+    },
+    {
+        name: 'String.ToLower',
+        kind: 'method',
+        signature: 'string.ToLower',
+        summary: '모든 문자를 소문자로 바꾼 복사본을 반환합니다.',
+        category: 'String Class',
+        insertSnippet: 'ToLower',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/tolower.htm'
+    },
+    {
+        name: 'String.ToUpper',
+        kind: 'method',
+        signature: 'string.ToUpper',
+        summary: '모든 문자를 대문자로 바꾼 복사본을 반환합니다.',
+        category: 'String Class',
+        insertSnippet: 'ToUpper',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/toupper.htm'
+    },
+    {
+        name: 'String.TrimEnd',
+        kind: 'method',
+        signature: 'string.TrimEnd',
+        summary: '문자열 끝쪽의 공백(또는 지정 문자)을 제거한 새 문자열을 반환합니다.',
+        category: 'String Class',
+        insertSnippet: 'TrimEnd',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/trimend.htm'
+    },
+    {
+        name: 'String.TrimStart',
+        kind: 'method',
+        signature: 'string.TrimStart',
+        summary: '문자열 앞쪽의 공백(또는 지정 문자)을 제거한 새 문자열을 반환합니다.',
+        category: 'String Class',
+        insertSnippet: 'TrimStart',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/trimstart.htm'
     }
 ];

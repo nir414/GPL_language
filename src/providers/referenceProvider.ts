@@ -346,48 +346,70 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             return true;
         };
 
+        // 멤버 접근/식별자 패턴은 모두 단일 라인 기준이므로(파라미터 안에서도 \r\n 제외),
+        // 정규식을 문서 전체가 아니라 "라인별"로 실행한다. 이렇게 하면 정규식 입력 길이가
+        // 한 줄로 제한되어, anyQualifierPattern의 중첩 수량자로 인한 catastrophic
+        // backtracking(ReDoS) 위험이 구조적으로 사라진다. 헬퍼들이 기대하는 절대 오프셋은
+        // doc.offsetAt(...)으로 그대로 복원한다.
+        const MAX_SCAN_LINE_LENGTH = 5000; // 비정상적으로 긴(생성·압축) 라인은 스캔에서 제외
         const scanDocumentText = (doc: vscode.TextDocument, re: RegExp, opts: { unqualifiedOnly?: boolean }): number => {
             const text = doc.getText();
             let added = 0;
-            re.lastIndex = 0;
-            let match: RegExpExecArray | null;
-            while ((match = re.exec(text)) !== null) {
+            const lineCount = doc.lineCount;
+            for (let lineIdx = 0; lineIdx < lineCount; lineIdx++) {
                 if (token.isCancellationRequested) {
                     break;
                 }
-                if (opts.unqualifiedOnly && this.isQualifiedAt(text, match.index)) {
-                    continue;
-                }
-                const full = match[0];
-                const memberOffset = full.toLowerCase().lastIndexOf(word.toLowerCase());
-                const startIndex = match.index + (memberOffset >= 0 ? memberOffset : 0);
-                const endIndex = startIndex + word.length;
-
-                if (!this.shouldAcceptByMemberScope(doc, text, startIndex, targetClass)) {
+                const lineText = doc.lineAt(lineIdx).text;
+                if (lineText.length === 0 || lineText.length > MAX_SCAN_LINE_LENGTH) {
                     continue;
                 }
 
-                const range = new vscode.Range(doc.positionAt(startIndex), doc.positionAt(endIndex));
+                re.lastIndex = 0;
+                let match: RegExpExecArray | null;
+                while ((match = re.exec(lineText)) !== null) {
+                    // zero-width 매치 방어(이론상 발생하지 않지만 무한 루프 방지)
+                    if (match[0].length === 0) {
+                        re.lastIndex++;
+                        continue;
+                    }
 
-                const lineText = doc.lineAt(range.start.line).text;
-                if (this.isCommentPosition(lineText, range.start.character)) {
-                    continue;
-                }
+                    const full = match[0];
+                    const memberOffset = full.toLowerCase().lastIndexOf(word.toLowerCase());
+                    const colInLine = match.index + (memberOffset >= 0 ? memberOffset : 0);
+                    const startPos = new vscode.Position(lineIdx, colInLine);
+                    const startIndex = doc.offsetAt(startPos);
+                    const endIndex = startIndex + word.length;
 
-                // 함수 본문의 반환값 대입문(FunctionName = ...)은 참조에서 제외.
-                if (
-                    defSymbol?.kind === 'function' &&
-                    doc.uri.fsPath === defSymbol.filePath &&
-                    this.isStatementLeadingAssignmentLHS(text, startIndex, word.length)
-                ) {
-                    continue;
-                }
+                    if (opts.unqualifiedOnly && this.isQualifiedAt(text, startIndex)) {
+                        continue;
+                    }
 
-                if (shouldSkipAsDeclaration(doc.uri, range, doc)) {
-                    continue;
-                }
-                if (addLocation(doc.uri, range)) {
-                    added += 1;
+                    if (!this.shouldAcceptByMemberScope(doc, text, startIndex, targetClass)) {
+                        continue;
+                    }
+
+                    const range = new vscode.Range(startPos, doc.positionAt(endIndex));
+
+                    if (this.isCommentPosition(lineText, range.start.character)) {
+                        continue;
+                    }
+
+                    // 함수 본문의 반환값 대입문(FunctionName = ...)은 참조에서 제외.
+                    if (
+                        defSymbol?.kind === 'function' &&
+                        doc.uri.fsPath === defSymbol.filePath &&
+                        this.isStatementLeadingAssignmentLHS(text, startIndex, word.length)
+                    ) {
+                        continue;
+                    }
+
+                    if (shouldSkipAsDeclaration(doc.uri, range, doc)) {
+                        continue;
+                    }
+                    if (addLocation(doc.uri, range)) {
+                        added += 1;
+                    }
                 }
             }
             return added;

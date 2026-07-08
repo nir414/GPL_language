@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbolKind } from '../gplParser';
-import { isTraceVerbose, EXTENSION_VERSION, ciEq } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION, ciEq, isInCommentOrString } from '../config';
 import { findGplBuiltin, getGplBuiltinReferenceUrl } from '../gplBuiltins';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
@@ -80,6 +80,10 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         position: vscode.Position,
         token: vscode.CancellationToken
     ): Promise<vscode.Hover | undefined> {
+        if (token.isCancellationRequested) {
+            return undefined;
+        }
+
         const ident = this.getIdentifierAtPosition(document, position);
         if (!ident) {
             return undefined;
@@ -89,6 +93,12 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         const wordRange = ident.range;
 
         const line = document.lineAt(position.line).text;
+
+        // 주석(')·문자열("...") 내부에서는 호버를 띄우지 않는다 (2026-07-03).
+        if (isInCommentOrString(line, wordRange.start.character)) {
+            return undefined;
+        }
+
         this.log(`\n[Hover Request] v${EXTENSION_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
 
         // 1) Built-in hover (문서 기반)
@@ -110,7 +120,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         let sym = this.symbolCache.findDefinition(lookupName, document.uri.fsPath);
 
         // Fallback: parse current document (works even outside workspace indexing)
-        if (!sym) {
+        if (!sym && !token.isCancellationRequested) {
             try {
                 const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
                 sym = localSymbols.find(s => ciEq(s.name, lookupName));

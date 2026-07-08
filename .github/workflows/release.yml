@@ -28,7 +28,7 @@ jobs:
         run: npm run compile
 
       - name: Package VSIX
-        run: npm run package
+        run: npm run package:no-bump
 
       - name: Extract version from tag
         id: version

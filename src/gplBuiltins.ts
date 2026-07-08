@@ -110,10 +110,10 @@ const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
     {
         name: 'Rnd',
         kind: 'function',
-        signature: 'Rnd()',
-        summary: '0.0 이상 1.0 미만 난수를 반환합니다.',
+        signature: 'Rnd(seed)',
+        summary: '0.0 이상 1.0 미만의 의사난수를 반환합니다. seed는 생략 가능하며, 음수면 그 값을 시작점으로 시퀀스를 재시작(항상 같은 값), 0이면 직전 반환값을 다시 돌려줍니다.',
         category: 'Functions',
-        insertSnippet: 'Rnd()',
+        insertSnippet: 'Rnd(${1:seed})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Function_Dictionary/rnd.htm'
     },
 
@@ -146,22 +146,63 @@ const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/len.htm'
     },
     {
-        name: 'Trim',
-        kind: 'function',
-        signature: 'Trim(string)',
-        summary: '문자열 양끝 공백을 제거합니다.',
+        // 문서 기준 Trim은 전역 함수가 아니라 String 클래스 인스턴스 메서드(string.Trim)다.
+        // (공식 "Strings and String Expressions Overview" Table 19-8 / String/trim.htm)
+        name: 'String.Trim',
+        kind: 'method',
+        signature: 'string.Trim',
+        summary: '문자열 인스턴스의 앞뒤 공백(또는 지정 문자)을 제거한 새 문자열을 반환합니다. (string 인스턴스에 대해 호출)',
         category: 'String',
-        insertSnippet: 'Trim(${1:string})',
+        insertSnippet: 'Trim',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/trim.htm'
     },
+    // 주의: 'Replace'는 GPL Dictionary(번들·공식 모두)에서 확인되지 않아 제거함.
+    // 공식 String 멤버 표(Table 19-8)/함수 표(Table 19-9) 어디에도 없고 String/replace.htm은 빈 페이지.
+    // 컨트롤러/GDE에서 string.Replace(...) 동작이 실측 확인되면, 정확한 시그니처와 sourceUrl을 채워 재등록할 것.
     {
-        name: 'Replace',
+        name: 'Asc',
         kind: 'function',
-        signature: 'Replace(string, find, replacement)',
-        summary: '문자열의 일부를 다른 문자열로 치환합니다.',
+        signature: 'Asc(string)',
+        summary: '문자열의 첫 문자를 동등한 ASCII 정수 코드로 변환해 반환합니다.',
         category: 'String',
-        insertSnippet: 'Replace(${1:string}, ${2:find}, ${3:replacement})',
-
+        insertSnippet: 'Asc(${1:string})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/asc.htm'
+    },
+    {
+        name: 'Chr',
+        kind: 'function',
+        signature: 'Chr(expression)',
+        summary: 'ASCII 코드 값에 해당하는 문자 하나로 이루어진 문자열을 반환합니다.',
+        category: 'String',
+        insertSnippet: 'Chr(${1:expression})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/chr.htm'
+    },
+    {
+        name: 'Format',
+        kind: 'function',
+        signature: 'Format(expression, format_s)',
+        summary: '숫자 값을 지정한 출력 형식 사양에 따라 문자열로 변환합니다.',
+        category: 'String',
+        insertSnippet: 'Format(${1:expression}, ${2:format_s})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/format.htm'
+    },
+    {
+        name: 'LCase',
+        kind: 'function',
+        signature: 'LCase(string)',
+        summary: '문자열을 소문자로 변환한 값을 반환합니다.',
+        category: 'String',
+        insertSnippet: 'LCase(${1:string})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/lcase.htm'
+    },
+    {
+        name: 'UCase',
+        kind: 'function',
+        signature: 'UCase(string)',
+        summary: '문자열을 대문자로 변환한 값을 반환합니다.',
+        category: 'String',
+        insertSnippet: 'UCase(${1:string})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/ucase.htm'
     },
 
     // Math Class
@@ -241,7 +282,7 @@ const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
         name: 'Math.E',
         kind: 'property',
         signature: 'Math.E',
-        summary: '자연상수 $e$ 값을 반환합니다.',
+        summary: '자연상수 e(약 2.71828)의 값을 반환합니다.',
         category: 'Math Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/e.htm'
     },
@@ -303,7 +344,7 @@ const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
         name: 'Math.PI',
         kind: 'property',
         signature: 'Math.PI',
-        summary: '원주율 $\pi$ 값을 반환합니다.',
+        summary: '원주율 π(약 3.14159)의 값을 반환합니다.',
         category: 'Math Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/pi.htm'
     },

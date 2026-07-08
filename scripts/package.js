@@ -1,16 +1,31 @@
 // Package the VS Code extension into dist/ with a stable, versioned filename.
-// This avoids shell-specific env var expansion differences across Windows/macOS/Linux.
+//
+// Responsibilities:
+//   1. Preflight: detect broken/Unix-style symlinks before vsce scans files.
+//      (A Linux-side `npm install` can leave Unix symlinks, e.g. in
+//      controller-mcp/node_modules/.bin, which fail on Windows with
+//      "EACCES: permission denied, scandir ...".)
+//   2. Optional version bump (--bump major|minor|patch). If packaging fails,
+//      package.json / package-lock.json are restored so a failed run does not
+//      waste a version number.
+//   3. Run vsce via Node directly (node node_modules/@vscode/vsce/vsce),
+//      which behaves identically on Windows/macOS/Linux and avoids the
+//      shell:true DEP0190 deprecation warning.
+//
+// Note: `vsce package` triggers "vscode:prepublish" -> "npm run compile",
+// so this script must NOT compile beforehand (it would compile twice).
 
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
+const repoRoot = path.resolve(__dirname, '..');
+
 function run(cmd, args, opts = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn(cmd, args, {
             stdio: 'inherit',
-            // On Windows, spawning .cmd (vsce.cmd, npx.cmd) requires shell.
-            shell: process.platform === 'win32',
+            cwd: repoRoot,
             ...opts
         });
 
@@ -34,42 +49,122 @@ function exists(p) {
     }
 }
 
-async function main() {
-    const repoRoot = path.resolve(__dirname, '..');
-    const pkgPath = path.join(repoRoot, 'package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+// --- 1. Preflight -----------------------------------------------------------
 
-    const distDir = path.join(repoRoot, 'dist');
-    fs.mkdirSync(distDir, { recursive: true });
+// Top-level directories that never need scanning (root node_modules is
+// managed by npm on this machine; .git/.history are ignored by vsce anyway).
+const PREFLIGHT_SKIP_AT_ROOT = new Set(['.git', '.history', 'node_modules', 'out', 'dist']);
 
-    const outFile = path.join(distDir, `gpl-language-support-${pkg.version}.vsix`);
+function preflight() {
+    const problems = [];
+    const stack = [repoRoot];
 
-    // Prefer the locally installed vsce binary from node_modules/.bin to avoid shell/OS differences.
-    const vsceBin = path.join(
-        repoRoot,
-        'node_modules',
-        '.bin',
-        process.platform === 'win32' ? 'vsce.cmd' : 'vsce'
-    );
+    while (stack.length > 0) {
+        const dir = stack.pop();
 
-    if (exists(vsceBin)) {
-        await run(vsceBin, ['package', '-o', outFile], { cwd: repoRoot });
-    } else {
-        // Fallback to npx if for some reason the local bin does not exist.
-        // Use shell:true here to let Windows resolve npx.cmd reliably.
-        const npx = process.platform === 'win32' ? 'npx' : 'npx';
-        await new Promise((resolve, reject) => {
-            const child = spawn(npx, ['vsce', 'package', '-o', outFile], {
-                cwd: repoRoot,
-                stdio: 'inherit',
-                shell: true
-            });
-            child.on('error', reject);
-            child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`npx vsce package exited with code ${code}`))));
-        });
+        let entries;
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch (err) {
+            problems.push(`${path.relative(repoRoot, dir)}  (unreadable directory: ${err.code})`);
+            continue;
+        }
+
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            if (dir === repoRoot && PREFLIGHT_SKIP_AT_ROOT.has(entry.name)) {
+                continue;
+            }
+
+            try {
+                if (entry.isSymbolicLink()) {
+                    // vsce follows symlinks; a broken or Unix-created link
+                    // breaks the scan on Windows (EACCES on scandir).
+                    fs.realpathSync(full);
+                    fs.statSync(full);
+                } else if (entry.isDirectory()) {
+                    stack.push(full);
+                }
+            } catch (err) {
+                problems.push(`${path.relative(repoRoot, full)}  (broken/unreadable symlink: ${err.code})`);
+            }
+        }
     }
 
-    console.log(`\nDONE: ${outFile}`);
+    if (problems.length > 0) {
+        console.error('\nERROR: preflight found entries that will break "vsce package":\n');
+        for (const p of problems) {
+            console.error(`  - ${p}`);
+        }
+        console.error(
+            '\nThese are usually left behind by running "npm install" from a Linux/WSL environment.\n' +
+            'Fix: delete the listed entries (or their containing node_modules) and, if that\n' +
+            'sub-project is needed, re-run "npm install" there from Windows.\n'
+        );
+        process.exit(1);
+    }
+}
+
+// --- 2. Optional version bump with rollback ---------------------------------
+
+function snapshotVersionFiles() {
+    const files = ['package.json', 'package-lock.json']
+        .map((name) => path.join(repoRoot, name))
+        .filter(exists);
+    return files.map((file) => ({ file, content: fs.readFileSync(file, 'utf8') }));
+}
+
+function restoreVersionFiles(snapshots) {
+    for (const { file, content } of snapshots) {
+        fs.writeFileSync(file, content);
+    }
+}
+
+// --- 3. Package -------------------------------------------------------------
+
+async function runVsce(outFile) {
+    // Prefer vsce's JS entry point run through the current Node executable.
+    // This avoids .cmd wrappers and shell:true entirely.
+    const vsceMain = path.join(repoRoot, 'node_modules', '@vscode', 'vsce', 'vsce');
+
+    if (exists(vsceMain)) {
+        await run(process.execPath, [vsceMain, 'package', '-o', outFile]);
+    } else {
+        // Fallback to npx if the local install is missing.
+        await run('npx', ['vsce', 'package', '-o', outFile], { shell: true });
+    }
+}
+
+async function main() {
+    const args = process.argv.slice(2);
+    const bumpIndex = args.indexOf('--bump');
+    const bumpType = bumpIndex !== -1 ? (args[bumpIndex + 1] || 'patch') : null;
+
+    preflight();
+
+    const snapshots = snapshotVersionFiles();
+
+    if (bumpType) {
+        await run(process.execPath, [path.join(__dirname, 'auto-bump-package-version.js'), bumpType]);
+    }
+
+    try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+
+        const distDir = path.join(repoRoot, 'dist');
+        fs.mkdirSync(distDir, { recursive: true });
+
+        const outFile = path.join(distDir, `gpl-language-support-${pkg.version}.vsix`);
+        await runVsce(outFile);
+
+        console.log(`\nDONE: ${outFile}`);
+    } catch (err) {
+        if (bumpType) {
+            restoreVersionFiles(snapshots);
+            console.error('\nPackaging failed — version bump was reverted.');
+        }
+        throw err;
+    }
 }
 
 main().catch((err) => {

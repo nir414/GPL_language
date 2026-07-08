@@ -3,6 +3,7 @@
 .github
 .history
 .vscode
+.claude
 src/
 scripts/
 docs/
@@ -11,3 +12,9 @@ out/test/**
 *.vsix
 tsconfig.json
 package-lock.json
+
+# Development-only content that must never ship inside the VSIX
+controller-mcp/**
+captures/**
+dist/**
+test_*.js

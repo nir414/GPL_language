@@ -6,12 +6,22 @@ import { getAllGplBuiltins, getGplBuiltinReferenceUrl, GPLBuiltinEntry } from '.
 export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     constructor(private symbolCache: SymbolCache) {}
 
+    // 정적(런타임 불변) 내장/딕셔너리 완성 항목은 한 번만 만들어 재사용한다.
+    // getAllGplBuiltins() 등은 상수 데이터이므로 키 입력마다 CompletionItem을
+    // 새로 생성할 필요가 없다. (공백 트리거 시의 전량 재생성 비용 제거)
+    private static _builtinCompletionsCache: vscode.CompletionItem[] | undefined;
+    private static _dictionaryCompletionsCache: vscode.CompletionItem[] | undefined;
+
     provideCompletionItems(
         document: vscode.TextDocument,
         position: vscode.Position,
         token: vscode.CancellationToken,
         context: vscode.CompletionContext
     ): vscode.ProviderResult<vscode.CompletionItem[]> {
+        if (token.isCancellationRequested) {
+            return undefined;
+        }
+
         const completionItems: vscode.CompletionItem[] = [];
         
         // Get current context (module/class)
@@ -261,6 +271,10 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
      * GPL 내장 함수 완성 항목 제공
      */
     private getGPLBuiltinCompletions(): vscode.CompletionItem[] {
+        if (GPLCompletionProvider._builtinCompletionsCache) {
+            return GPLCompletionProvider._builtinCompletionsCache;
+        }
+
         const items: vscode.CompletionItem[] = [];
 
         for (const builtin of getAllGplBuiltins()) {
@@ -280,7 +294,8 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
 
             items.push(item);
         }
-        
+
+        GPLCompletionProvider._builtinCompletionsCache = items;
         return items;
     }
 
@@ -317,6 +332,10 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
      * GPL 내장/유틸 퀵 레퍼런스 자동완성
      */
     private getGPLDictionaryCompletions(): vscode.CompletionItem[] {
+        if (GPLCompletionProvider._dictionaryCompletionsCache) {
+            return GPLCompletionProvider._dictionaryCompletionsCache;
+        }
+
         const items: vscode.CompletionItem[] = [];
 
         const quickRefs = [
@@ -361,6 +380,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
             items.push(item);
         }
 
+        GPLCompletionProvider._dictionaryCompletionsCache = items;
         return items;
     }
 }

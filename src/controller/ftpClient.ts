@@ -150,6 +150,85 @@ export async function uploadProject(
 	}
 }
 
+/**
+ * 로컬 프로젝트 폴더를 원격 폴더와 미러 동기화한다 (direct /GPL 경로용).
+ * - 로컬에 없거나 크기가 다른 파일만 업로드하고, 같은 크기는 스킵한다.
+ * - 원격에만 있는 파일은 삭제한다 — 로컬에서 지운/이름 바꾼 파일이 원격에 남아
+ *   Compile 대상이 되는 것(낡은 소스 오컴파일)을 막기 위한 정확성 조치이기도 하다.
+ * - Unload/Load 없이 로드본(/GPL/<name>)을 로컬과 일치시키는 것이 목적.
+ * 한계: 크기 비교라서 내용이 달라도 크기가 같으면 놓친다(skipUnchanged와 동일).
+ */
+export async function mirrorProject(
+	host: string,
+	localDir: string,
+	remoteDir: string,
+	options?: {
+		onProgress?: (current: number, total: number, file: string) => void;
+		onDelete?: (file: string) => void;
+	},
+): Promise<{ uploaded: number; skipped: number; deleted: number; totalBytes: number }> {
+	const client = await createClient(host);
+	try {
+		// 1) 원격 파일 목록(재귀). 원격 폴더가 없거나 조회 실패면 빈 목록으로 취급 → 전체 업로드.
+		const remoteFiles: { remotePath: string; relativePath: string; size: number }[] = [];
+		try {
+			await collectRemoteFiles(client, remoteDir, '', remoteFiles);
+		} catch {
+			// ignore: 원격 폴더 없음 등 — 아래에서 전부 업로드된다.
+		}
+		// 로컬(Windows)은 대소문자 무시 파일시스템이므로 소문자 키로 매칭한다.
+		const remoteByRel = new Map<string, { remotePath: string; size: number }>();
+		for (const rf of remoteFiles) {
+			remoteByRel.set(rf.relativePath.toLowerCase(), { remotePath: rf.remotePath, size: rf.size });
+		}
+
+		const localFiles = getAllFiles(localDir);
+		const localRelSet = new Set<string>();
+		let uploaded = 0;
+		let skipped = 0;
+		let deleted = 0;
+		let totalBytes = 0;
+
+		// 2) 로컬 기준 업로드/스킵
+		for (let i = 0; i < localFiles.length; i++) {
+			const file = localFiles[i];
+			const relative = path.relative(localDir, file).replace(/\\/g, '/');
+			localRelSet.add(relative.toLowerCase());
+			const stat = fs.statSync(file);
+			totalBytes += stat.size;
+
+			const remote = remoteByRel.get(relative.toLowerCase());
+			if (remote && remote.size === stat.size) {
+				skipped++;
+			} else {
+				const remotePath = `${remoteDir}/${relative}`;
+				const dir = path.posix.dirname(remotePath);
+				await client.ensureDir(dir);
+				await client.cd('/');
+				await client.uploadFrom(file, remotePath);
+				uploaded++;
+			}
+			options?.onProgress?.(i + 1, localFiles.length, relative);
+		}
+
+		// 3) 원격에만 있는 파일 삭제 (낡은 소스 제거)
+		for (const rf of remoteFiles) {
+			if (localRelSet.has(rf.relativePath.toLowerCase())) { continue; }
+			try {
+				await client.remove(rf.remotePath);
+				deleted++;
+				options?.onDelete?.(rf.relativePath);
+			} catch {
+				// 삭제 실패는 non-fatal — 남은 파일은 Compile 결과로 드러난다.
+			}
+		}
+
+		return { uploaded, skipped, deleted, totalBytes };
+	} finally {
+		client.close();
+	}
+}
+
 function getAllFiles(dir: string): string[] {
 	const results: string[] = [];
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

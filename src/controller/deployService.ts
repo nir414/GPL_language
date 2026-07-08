@@ -8,8 +8,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
-import { uploadProject, listRemoteDir } from './ftpClient';
-import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus } from './responseParser';
+import { uploadProject, mirrorProject, listRemoteDir } from './ftpClient';
+import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus } from './responseParser';
 import { isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 
 export interface DeployOptions {
@@ -23,6 +23,21 @@ export interface DeployOptions {
      * 업로드 후 Compile은 평소대로 프로젝트 전체를 대상으로 수행된다.
      */
     changedFiles?: string[];
+    /**
+     * Quick Compile용 직접 /GPL 업로드 모드.
+     * Load 문서 Remarks("an external file-copy utility such as FTP can be used to create
+     * the folder and copy the files")에 따라 /GPL/<projectName>에 FTP로 직접 파일을 써서
+     * Unload(-750 쓰레드 락)와 Load("대상 폴더가 이미 존재하면 안 됨") 제약을 모두 우회한다.
+     * /GPL/<projectName> 폴더가 원격에 없으면 자동으로 기존(flash 업로드 + Unload/Load) 경로로 폴백.
+     */
+    directGpl?: boolean;
+    /**
+     * 빠른 컴파일(skipStop)에서 활성 쓰레드 감지 시 호출된다.
+     * true를 반환하면 Stop -all + 정지 완료 확인을 거쳐 계속 진행하고,
+     * false 반환 또는 미지정이면 THREAD_CHECK로 중단한다.
+     * (autoOnSave처럼 사용자 개입이 부적절한 경로에서는 지정하지 않는다.)
+     */
+    confirmStopOnActive?: (activeThreadsDesc: string) => Promise<boolean> | boolean;
     beforeStart?: () => Promise<void> | void;
 }
 
@@ -45,8 +60,8 @@ export interface DeployResult {
     selectedRemoteBasePath?: string;
     selectedRemoteProjectPath?: string;
     candidateRemoteProjectPaths?: string[];
-    uploadStats?: { uploaded: number; skipped: number; totalBytes: number };
-    failedPhase?: 'STOP' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK';
+    uploadStats?: { uploaded: number; skipped: number; totalBytes: number; deleted?: number };
+    failedPhase?: 'STOP' | 'THREAD_CHECK' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK';
     failedCommand?: string;
     failedStatusCode?: number;
     failedStatusMessage?: string;
@@ -150,12 +165,44 @@ export async function deploy(
     const projectName = gprInfo.projectName || folderName;
     result.projectName = projectName;
 
-    const remotePath = await chooseRemoteProjectPath(folderName);
-    const ftpProjectDir = remotePath.projectPath;
-    const loadPath = ftpProjectDir;
-    result.selectedRemoteBasePath = remotePath.basePath;
-    result.selectedRemoteProjectPath = remotePath.projectPath;
-    result.candidateRemoteProjectPaths = remotePath.candidates;
+    // ── Direct /GPL 모드 프로브 ────────────────────
+    // Load 문서 Remarks: "an external file-copy utility such as FTP can be used to
+    // create the folder and copy the files" — /GPL 직접 쓰기는 공식 허용 경로.
+    // /GPL/<projectName>이 이미 존재할 때만 활성화하고, 없으면 클래식 경로로 폴백한다.
+    // (폴더명은 Project.gpr의 프로젝트명으로 결정되며 대소문자를 구분하므로,
+    //  원격 목록에서 실제 폴더명을 찾아 그대로 사용한다.)
+    let directGplDir: string | undefined;
+    let directGplName: string | undefined;
+    let directProbeError: string | undefined;
+    if (options.directGpl) {
+        try {
+            const gplEntries = await listRemoteDir(cfg.ip, '/GPL');
+            const hit = gplEntries.find(e => e.isDirectory && e.name.toLowerCase() === projectName.toLowerCase());
+            if (hit) {
+                directGplName = hit.name;
+                directGplDir = `/GPL/${hit.name}`;
+            }
+        } catch (e: any) {
+            directProbeError = e?.message || String(e);
+        }
+    }
+    const directActive = !!directGplDir;
+
+    let ftpProjectDir: string;
+    let loadPath = '';
+    if (directActive) {
+        ftpProjectDir = directGplDir!;
+        result.selectedRemoteBasePath = '/GPL';
+        result.selectedRemoteProjectPath = directGplDir;
+        result.candidateRemoteProjectPaths = [directGplDir!];
+    } else {
+        const remotePath = await chooseRemoteProjectPath(folderName);
+        ftpProjectDir = remotePath.projectPath;
+        loadPath = ftpProjectDir;
+        result.selectedRemoteBasePath = remotePath.basePath;
+        result.selectedRemoteProjectPath = remotePath.projectPath;
+        result.candidateRemoteProjectPaths = remotePath.candidates;
+    }
     const totalPhases = 2 + (options.skipStop ? 0 : 1) + (options.skipStart ? 0 : 1);
     let phase = 0;
 
@@ -164,10 +211,97 @@ export async function deploy(
     pushTrace(`├──────────────────────────────────────────────────────┤`);
     pushTrace(`│  Local:  ${options.projectDir}`);
     pushTrace(`│  FTP:    ${ftpProjectDir}`);
-    pushTrace(`│  Selected base path: ${remotePath.basePath}`);
-    pushTrace(`│  Path candidates: ${remotePath.candidates.join(' | ')}`);
+    if (directActive) {
+        pushTrace(`│  Mode:   direct /GPL upload — Unload/Load 생략`);
+    } else if (options.directGpl) {
+        pushTrace(`│  Mode:   classic (direct /GPL 폴백${directProbeError ? `: probe 실패 ${directProbeError}` : ': /GPL에 프로젝트 폴더 없음 — 최초 1회는 전체 배포 필요'})`);
+    }
+    pushTrace(`│  Selected base path: ${result.selectedRemoteBasePath}`);
+    pushTrace(`│  Path candidates: ${(result.candidateRemoteProjectPaths ?? []).join(' | ')}`);
     pushTrace(`│  Target: ${cfg.ip}:${cfg.port}`);
     pushTrace(`╰──────────────────────────────────────────────────────╯`);
+
+    // ── 쓰레드 상태 프로브 (read-only) ─────────────
+    // Stop -all의 STATUS 0은 "정지 요청 접수"이지 완전 정지 보장이 아니다.
+    // 정지 완료 전에 Compile/Start를 보내면 제어기 이상 현상(메모리 누수 의심,
+    // 2026-07-08 사용자 관찰)이 발생할 수 있어, Show Thread로 실제 상태를 확인한다.
+    const threadSettled = (state: string): boolean => /^(idle|stopped|error)$/i.test((state || '').trim());
+    async function probeActiveThreads(): Promise<{ active: ThreadInfo[]; total: number } | null> {
+        const resp = await trySendCommand('Show Thread', cfg);
+        if (resp === null) { return null; }
+        const threads = parseThreadList(resp);
+        return { active: threads.filter(t => !threadSettled(t.state)), total: threads.length };
+    }
+
+    /** Stop -all 전송(무응답 시 1회 재시도). 성공이면 null, 실패면 실패 정보를 반환. */
+    async function sendStopAll(): Promise<{ command: string; code?: number; message: string } | null> {
+        pushTrace('│ CMD Stop -all');
+        let resp = await trySendCommand('Stop -all', cfg);
+        if (resp === null) {
+            pushTrace('│ ⚠ Stop -all failed or timed out. Retrying...');
+            resp = await trySendCommand('Stop -all', cfg);
+            if (resp === null) {
+                pushTrace('│ ✘ Stop -all failed after retry');
+                return { command: 'Stop -all', message: 'No response (timeout or connection failure)' };
+            }
+        }
+        const status = parseStatus(resp);
+        pushTrace(`│ RAW ${rawPreview(resp) || '(empty)'}`);
+        if (status.code !== 0) {
+            pushTrace(`│ ✘ Stop -all failed: STATUS ${status.code}: ${status.message}`);
+            return { command: 'Stop -all', code: status.code, message: status.message };
+        }
+        pushTrace('│ ✔ Stop complete (요청 접수)');
+        return null;
+    }
+
+    /**
+     * Stop 완료 게이트: 모든 쓰레드가 Idle/Stopped/Error가 될 때까지 폴링 대기.
+     * Show Thread 무응답 시에는 확인 불가로 보고 경고 후 통과시킨다(기존 동작 수준 유지).
+     */
+    async function waitThreadsSettle(timeoutMs = 8000): Promise<{ ok: boolean; cancelled?: boolean; activeDesc?: string }> {
+        const deadline = Date.now() + timeoutMs;
+        let lastActiveDesc = '';
+        while (Date.now() < deadline) {
+            if (token?.isCancellationRequested) { return { ok: false, cancelled: true }; }
+            const probe = await probeActiveThreads();
+            if (probe === null) {
+                pushTrace('│ ⚠ Show Thread 무응답 — 정지 완료 확인 불가(계속 진행)');
+                return { ok: true };
+            }
+            if (probe.active.length === 0) {
+                pushTrace(`│ ✔ 모든 쓰레드 정지 확인 (${probe.total}개)`);
+                return { ok: true };
+            }
+            lastActiveDesc = probe.active.map(t => `${t.name}(${t.state})`).join(', ');
+            pushTrace(`│ … 정지 대기: ${lastActiveDesc}`);
+            await sleep(500);
+        }
+        return { ok: false, activeDesc: lastActiveDesc };
+    }
+
+    /** Stop -all → 정지 완료 게이트를 수행하고, 실패 시 result에 기록한다. true면 계속 진행 가능. */
+    async function stopAllAndSettle(): Promise<boolean> {
+        const stopFail = await sendStopAll();
+        if (stopFail) {
+            result.failedPhase = 'STOP';
+            result.failedCommand = stopFail.command;
+            result.failedStatusCode = stopFail.code;
+            result.failedStatusMessage = stopFail.message;
+            return false;
+        }
+        const settle = await waitThreadsSettle();
+        if (settle.cancelled) { return false; }
+        if (!settle.ok) {
+            pushTrace(`│ ✘ Stop -all 후에도 쓰레드가 정지되지 않음: ${settle.activeDesc}`);
+            pushTrace('│   → 정지 미완료 상태에서 Compile/Start를 보내지 않고 중단합니다.');
+            result.failedPhase = 'STOP';
+            result.failedCommand = 'Show Thread (stop settle gate)';
+            result.failedStatusMessage = `Stop -all 후에도 활성 쓰레드 존재: ${settle.activeDesc}`;
+            return false;
+        }
+        return true;
+    }
 
     // ── Phase 1: STOP ─────────────────────────────
 
@@ -175,48 +309,51 @@ export async function deploy(
         pushTrace('');
         phase++;
         pushTrace(`━━ [${phase}/${totalPhases}] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        pushTrace('│ CMD Stop -all');
 
         if (token?.isCancellationRequested) { return result; }
 
-        const stopResp = await trySendCommand('Stop -all', cfg);
-        if (stopResp === null) {
-            pushTrace('│ ⚠ Stop -all failed or timed out. Retrying...');
-            const stopRespRetry = await trySendCommand('Stop -all', cfg);
-            if (stopRespRetry === null) {
-                pushTrace('│ ✘ Stop -all failed after retry');
-                result.failedPhase = 'STOP';
-                result.failedCommand = 'Stop -all';
-                result.failedStatusMessage = 'No response (timeout or connection failure)';
+        if (!(await stopAllAndSettle())) {
+            return result;
+        }
+    } else {
+        // STOP 단계 생략(빠른 컴파일). phase는 올리지 않아 UPLOAD가 [1/N]이 되도록 한다.
+        // 대신 활성 쓰레드가 있으면 업로드/Compile 전에 사용자에게 Stop 여부를 확인한다
+        // (정지 미완료 상태의 Compile/Start는 제어기 이상을 유발할 수 있음, §0.6).
+        pushTrace('');
+        pushTrace('━━ [SKIP] STOP 생략 (빠른 컴파일) — 쓰레드 상태 확인 ━━━━━━━━━━━━');
+        const probe = await probeActiveThreads();
+        if (probe === null) {
+            pushTrace('│ ⚠ Show Thread 무응답 — 쓰레드 상태 확인 불가(계속 진행)');
+        } else if (probe.active.length > 0) {
+            const desc = probe.active.map(t => `${t.name}(${t.state})`).join(', ');
+            pushTrace(`│ ⚠ 활성 쓰레드 존재: ${desc}`);
+
+            let stopApproved = false;
+            if (options.confirmStopOnActive) {
+                pushTrace('│ … 사용자에게 Stop -all 실행 여부 확인 중');
+                try {
+                    stopApproved = await options.confirmStopOnActive(desc);
+                } catch {
+                    stopApproved = false;
+                }
+            }
+
+            if (!stopApproved) {
+                pushTrace('│ ✘ 중단: 활성 쓰레드 존재 (사용자 미승인 또는 확인 경로 없음)');
+                pushTrace('│   → 프로그램 STOP 후 재시도하거나, STOP이 포함된 전체 배포를 사용하세요.');
+                result.failedPhase = 'THREAD_CHECK';
+                result.failedCommand = 'Show Thread';
+                result.failedStatusMessage = `활성 쓰레드 존재: ${desc} — STOP 후 재시도하세요.`;
                 return result;
             }
-            const stopStatusRetry = parseStatus(stopRespRetry);
-            pushTrace(`│ RAW ${rawPreview(stopRespRetry) || '(empty)'}`);
-            if (stopStatusRetry.code !== 0) {
-                pushTrace(`│ ✘ Stop -all failed: STATUS ${stopStatusRetry.code}: ${stopStatusRetry.message}`);
-                result.failedPhase = 'STOP';
-                result.failedCommand = 'Stop -all';
-                result.failedStatusCode = stopStatusRetry.code;
-                result.failedStatusMessage = stopStatusRetry.message;
+
+            pushTrace('│ ✔ 사용자 승인 — Stop -all 실행 후 정지 확인');
+            if (!(await stopAllAndSettle())) {
                 return result;
             }
         } else {
-            const stopStatus = parseStatus(stopResp);
-            pushTrace(`│ RAW ${rawPreview(stopResp) || '(empty)'}`);
-            if (stopStatus.code !== 0) {
-                pushTrace(`│ ✘ Stop -all failed: STATUS ${stopStatus.code}: ${stopStatus.message}`);
-                result.failedPhase = 'STOP';
-                result.failedCommand = 'Stop -all';
-                result.failedStatusCode = stopStatus.code;
-                result.failedStatusMessage = stopStatus.message;
-                return result;
-            }
+            pushTrace(`│ ✔ 활성 쓰레드 없음 (총 ${probe.total}개 모두 정지 상태)`);
         }
-        pushTrace('│ ✔ Stop complete');
-    } else {
-        // STOP 단계 생략(빠른 컴파일). phase는 올리지 않아 UPLOAD가 [1/N]이 되도록 한다.
-        pushTrace('');
-        pushTrace('━━ [SKIP] STOP 생략 (빠른 컴파일) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     }
 
     // ── Phase 2: UPLOAD ───────────────────────────
@@ -233,18 +370,46 @@ export async function deploy(
         pushTrace(`│ 변경 파일만 업로드(${changedFiles.length}개): ${changedFiles.map(f => path.basename(f)).join(', ')}`);
     }
 
+    // Direct /GPL 모드에서 changedFiles 제약이 없는 경우(수동 Quick Compile, 디버그 F5)는
+    // 미러 동기화한다: 크기가 다르거나 새로 생긴 파일만 올리고, 로컬에 없는 원격 파일은 삭제한다.
+    // Unload로 /GPL 폴더를 통째로 비우는 대신 파일 단위로 맞춰 왕복을 줄이고(속도),
+    // 로컬에서 지운/이름 바꾼 파일이 원격에 남아 오컴파일되는 것도 막는다(정확성).
+    // autoOnSave(useChangedOnly)는 저장 파일만 올리는 초경량 경로라 전체 목록 조회/삭제가 있는 미러를 쓰지 않는다.
+    const useMirror = directActive && !useChangedOnly;
+
     try {
-        const stats = await uploadProject(cfg.ip, options.projectDir, ftpProjectDir, {
-            skipUnchanged: options.skipUnchanged,
-            onlyFiles: useChangedOnly ? changedFiles : undefined,
-            onProgress: (current, total, file) => {
-                const pct = Math.floor((current / total) * 100);
-                pushTrace(`│ [${current}/${total}] (${pct}%) ${file}`);
-            },
-        });
-        result.uploadStats = stats;
-        pushTrace(`│ ✔ Upload done: ${stats.uploaded} sent, ${stats.skipped} skipped`);
-        pushTrace(`│   Compile below validates the uploaded controller copy at ${ftpProjectDir}`);
+        if (useMirror) {
+            pushTrace('│ Mode: mirror sync (변경분만 업로드 + 원격 전용 파일 삭제, Unload 생략)');
+            const stats = await mirrorProject(cfg.ip, options.projectDir, ftpProjectDir, {
+                onProgress: (current, total, file) => {
+                    const pct = Math.floor((current / total) * 100);
+                    pushTrace(`│ [${current}/${total}] (${pct}%) ${file}`);
+                },
+                onDelete: (file) => {
+                    pushTrace(`│ ✘ del ${file} (원격 전용 — 로컬에 없어 삭제)`);
+                },
+            });
+            result.uploadStats = {
+                uploaded: stats.uploaded,
+                skipped: stats.skipped,
+                totalBytes: stats.totalBytes,
+                deleted: stats.deleted,
+            };
+            pushTrace(`│ ✔ Mirror done: ${stats.uploaded} sent, ${stats.skipped} skipped, ${stats.deleted} deleted`);
+            pushTrace(`│   Compile below validates the mirrored controller copy at ${ftpProjectDir}`);
+        } else {
+            const stats = await uploadProject(cfg.ip, options.projectDir, ftpProjectDir, {
+                skipUnchanged: options.skipUnchanged,
+                onlyFiles: useChangedOnly ? changedFiles : undefined,
+                onProgress: (current, total, file) => {
+                    const pct = Math.floor((current / total) * 100);
+                    pushTrace(`│ [${current}/${total}] (${pct}%) ${file}`);
+                },
+            });
+            result.uploadStats = stats;
+            pushTrace(`│ ✔ Upload done: ${stats.uploaded} sent, ${stats.skipped} skipped`);
+            pushTrace(`│   Compile below validates the uploaded controller copy at ${ftpProjectDir}`);
+        }
     } catch (e: any) {
         pushTrace(`│ ✘ Upload failed: ${e.message}`);
         result.failedPhase = 'UPLOAD';
@@ -261,7 +426,10 @@ export async function deploy(
 
     if (token?.isCancellationRequested) { return result; }
 
-    const compileCandidates = [...new Set([projectName, gprInfo.projectName, folderName].filter(Boolean))];
+    // Direct 모드에서는 /GPL의 실제 폴더명(=로드된 프로젝트명)을 최우선 후보로 사용한다.
+    const compileCandidates = directActive
+        ? [...new Set([directGplName!, projectName].filter(Boolean))]
+        : [...new Set([projectName, gprInfo.projectName, folderName].filter(Boolean))];
     const transientCompileRetryDelayMs = Math.max(250, Math.floor(cfg.timeoutMs / 20));
     result.attemptedProjectNames = compileCandidates;
     pushTrace(`│ Candidates: ${compileCandidates.join(' -> ')}`);
@@ -373,6 +541,20 @@ export async function deploy(
         pushTrace(`│ CMD Load ${loadPath}`);
         const load = await runStatusCommand(`Load ${loadPath}`);
         pushTrace(`│ RAW ${rawPreview(load.raw) || '(empty)'}`);
+        // 응답이 HTTP면 명령이 콘솔이 아니라 제어기 웹서버(GoAhead)에 닿은 것 —
+        // 제어기 이상 징후일 수 있다(2026-07-03 무응답 사례, docs/ai-handoff.md §1-F).
+        // 재시도로 상태를 더 자극하지 않고 즉시 중단한다.
+        if ((load.raw || '').trimStart().startsWith('HTTP/')) {
+            pushTrace('│ ✘ HTTP 응답 감지 — 콘솔이 아닌 웹서버가 응답함. 제어기 상태 이상 가능성, 즉시 중단.');
+            pushTrace('│   → 제어기 웹 UI/GDE 접속 가능 여부를 확인하고, 필요 시 재부팅 후 다시 시도하세요.');
+            lastCompileFailure = {
+                command: `Load ${loadPath}`,
+                code: load.statusCode,
+                message: 'HTTP response detected on 1402 (controller may be unhealthy)',
+                raw: load.raw,
+            };
+            return false;
+        }
         if (load.ok) {
             pushTrace(`│ ✔ Load success: ${candidate} ← ${loadPath}`);
             return true;
@@ -413,25 +595,48 @@ export async function deploy(
         return false;
     }
 
-    // 업로드된 /flash 프로젝트 복사본을 실제 컴파일 대상으로 강제 동기화한다.
-    // 이유: 이미 로드된 /GPL 프로젝트가 남아 있으면, Compile <name>이 로컬 최신 업로드가 아닌
-    //      이전 로드본을 대상으로 실행될 수 있어 오판정(예: 과거 컴파일 에러 재발견)이 발생한다.
-    const reloadTargets = [...new Set(compileCandidates)];
-    pushTrace(`│ Sync loaded project with uploaded copy`);
-    for (const target of reloadTargets) {
-        const unloaded = await tryUnload(target);
-        if (!unloaded) {
-            pushTrace(`│ ⚠ Unload failed but continue: ${target}`);
+    if (directActive) {
+        // Direct /GPL 모드: 컴파일 대상(/GPL 로드본)에 이미 직접 업로드했으므로
+        // Unload/Load 동기화가 불필요하다. (Unload -750 락, Load "폴더 존재 불가" 제약 회피)
+        pushTrace(`│ Direct /GPL 모드: Unload/Load 생략 — ${ftpProjectDir}의 소스를 그대로 컴파일`);
+    } else {
+        // 업로드된 /flash 프로젝트 복사본을 실제 컴파일 대상으로 강제 동기화한다.
+        // 이유: 이미 로드된 /GPL 프로젝트가 남아 있으면, Compile <name>이 로컬 최신 업로드가 아닌
+        //      이전 로드본을 대상으로 실행될 수 있어 오판정(예: 과거 컴파일 에러 재발견)이 발생한다.
+        const reloadTargets = [...new Set(compileCandidates)];
+        pushTrace(`│ Sync loaded project with uploaded copy`);
+        let unloadBlockedByActiveThread = false;
+        for (const target of reloadTargets) {
+            const unloaded = await tryUnload(target);
+            if (!unloaded) {
+                // -750(*Invalid when thread active*): 쓰레드 실행 중에는 Unload/Load 동기화가
+                // 원천적으로 불가하다. 이 상태로 Load를 강행하면 이전 로드본을 컴파일하거나
+                // (2026-07-03 §1-F) 제어기 이상 상황을 더 자극할 수 있어 여기서 명확히 중단한다.
+                if (lastCompileFailure?.code === -750) {
+                    unloadBlockedByActiveThread = true;
+                    break;
+                }
+                pushTrace(`│ ⚠ Unload failed but continue: ${target}`);
+            }
         }
-    }
-    const synced = await ensureLoadedFromFtpPath(reloadTargets[0] || projectName);
-    if (!synced) {
-        pushTrace('│ ✘ Failed to load uploaded project copy before compile');
-        result.failedPhase = 'COMPILE';
-        result.failedCommand = `Load ${loadPath}`;
-        result.failedStatusCode = lastCompileFailure?.code;
-        result.failedStatusMessage = lastCompileFailure?.message || 'Failed to sync uploaded copy before compile';
-        return result;
+        if (unloadBlockedByActiveThread) {
+            pushTrace('│ ✘ 쓰레드 실행 중(-750) — Unload/Load 동기화 불가. Load를 생략하고 중단합니다.');
+            pushTrace('│   → 프로그램 STOP 후 다시 시도하거나, STOP이 포함된 전체 배포를 사용하세요.');
+            result.failedPhase = 'COMPILE';
+            result.failedCommand = 'Unload (threads active)';
+            result.failedStatusCode = -750;
+            result.failedStatusMessage = '*Invalid when thread active* — 실행 중에는 Quick Compile 동기화가 불가합니다. STOP 후 재시도하세요.';
+            return result;
+        }
+        const synced = await ensureLoadedFromFtpPath(reloadTargets[0] || projectName);
+        if (!synced) {
+            pushTrace('│ ✘ Failed to load uploaded project copy before compile');
+            result.failedPhase = 'COMPILE';
+            result.failedCommand = `Load ${loadPath}`;
+            result.failedStatusCode = lastCompileFailure?.code;
+            result.failedStatusMessage = lastCompileFailure?.message || 'Failed to sync uploaded copy before compile';
+            return result;
+        }
     }
 
     for (const candidate of compileCandidates) {
@@ -493,8 +698,21 @@ export async function deploy(
         result.compileErrors = cr.errors;
         const errText = cr.raw;
 
+        // Direct 모드: 복구용 Unload/Load는 목적(락 회피)에 반하므로 시도하지 않는다.
+        // -508/-743(not loaded)이 나온다면 /GPL 폴더는 있으나 로드본이 인식되지 않는 상태 —
+        // 전체 배포로 초기화가 필요하다.
+        if (directActive && (isProjectAlreadyLoaded(cr.statusCode) || isProjectNotLoaded(cr.statusCode)
+            || errText.includes('-745') || errText.includes('-508') || errText.includes('-743'))) {
+            pushTrace('│ ✘ Direct /GPL 모드에서 로드 상태 이상 — 전체 배포(Deploy)로 다시 시도하세요.');
+            lastCompileFailure = {
+                command: `Compile ${candidate}`,
+                code: cr.statusCode,
+                message: `${parseStatus(cr.raw).message || 'Load-state error in direct /GPL mode'} — 전체 배포로 재시도 필요`,
+                raw: cr.raw,
+            };
+        }
         // -745: project already loaded → Unload + Load + Compile
-        if (isProjectAlreadyLoaded(cr.statusCode) || errText.includes('-745')) {
+        else if (!directActive && (isProjectAlreadyLoaded(cr.statusCode) || errText.includes('-745'))) {
             pushTrace(`│ ⚠ Already loaded. Unload → Load → Compile`);
             const unloaded = await tryUnload(candidate);
             if (!unloaded) {
@@ -529,8 +747,8 @@ export async function deploy(
             };
         }
         // -508/-743: missing/invalid → Load + Compile
-        else if (isProjectNotLoaded(cr.statusCode)
-            || errText.includes('-508') || errText.includes('-743')) {
+        else if (!directActive && (isProjectNotLoaded(cr.statusCode)
+            || errText.includes('-508') || errText.includes('-743'))) {
             pushTrace(`│ ⚠ Not loaded. Load → Compile`);
             const loaded = await ensureLoadedFromFtpPath(candidate);
             if (!loaded) {
@@ -745,7 +963,9 @@ export function resolveErrorFilePath(file: string, projectDir: string): string {
 export async function findProjectDirs(): Promise<string[]> {
     const gprFiles = await vscode.workspace.findFiles(
         '**/*.gpr',
-        '{**/node_modules/**,**/bin/**,**/.git/**}'
+        // .history(Local History 확장)에는 과거 이름의 stale .gpr 사본이 쌓여 프로젝트
+        // 오인식을 유발하므로 dist/out과 함께 제외한다.
+        '{**/node_modules/**,**/bin/**,**/.git/**,**/.history/**,**/dist/**,**/out/**}'
     );
 
     // 동일 폴더 내 여러 .gpr가 있어도 폴더는 중복 없이 반환

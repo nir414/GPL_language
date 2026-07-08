@@ -40,7 +40,41 @@ export enum GPLSymbolKind {
 }
 
 export class GPLParser {
+    // ── 파싱 결과 메모이즈 캐시 ──────────────────────────────────────────────
+    // parseDocument는 (content, filePath, options)에 대한 순수 함수이므로,
+    // 같은 내용/옵션이면 재파싱하지 않고 캐시 결과를 돌려준다.
+    // hover/definition 등 핫패스에서 한 요청당 동일 문서를 여러 번 파싱하던
+    // 비용(라인별 정규식 전체 재실행)을 제거한다.
+    private static readonly _parseCacheMax = 32;
+    private static readonly _parseCache = new Map<string, { content: string; symbols: GPLSymbol[] }>();
+
     static parseDocument(content: string, filePath: string, options?: GPLParseOptions): GPLSymbol[] {
+        const includeLocals = !!options?.includeLocals;
+        const includeParameters = options?.includeParameters ?? includeLocals;
+        const key = `${filePath}::${includeLocals ? 1 : 0}${includeParameters ? 1 : 0}`;
+
+        const cached = GPLParser._parseCache.get(key);
+        if (cached && cached.content === content) {
+            // 캐시된 표준 배열은 보존하고, 호출부 변형으로부터 안전하도록 얕은 복사본을 돌려준다.
+            return cached.symbols.slice();
+        }
+
+        const symbols = GPLParser.parseDocumentUncached(content, filePath, options);
+
+        // 단순 FIFO 방식으로 캐시 크기를 제한한다.
+        if (GPLParser._parseCache.has(key)) {
+            GPLParser._parseCache.delete(key);
+        } else if (GPLParser._parseCache.size >= GPLParser._parseCacheMax) {
+            const oldest = GPLParser._parseCache.keys().next().value;
+            if (oldest !== undefined) {
+                GPLParser._parseCache.delete(oldest);
+            }
+        }
+        GPLParser._parseCache.set(key, { content, symbols });
+        return symbols.slice();
+    }
+
+    private static parseDocumentUncached(content: string, filePath: string, options?: GPLParseOptions): GPLSymbol[] {
         const symbols: GPLSymbol[] = [];
         const lines = content.split('\n');
         // Merge VB line-continuation (`_`) sequences into single logical lines so that

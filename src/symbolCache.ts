@@ -118,7 +118,10 @@ export class SymbolCache {
                 if (
                     ciEq(s.name, memberName) &&
                     s.className !== undefined && ciEq(s.className, className) &&
-                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property')
+                    // 필드(variable)·상수(constant) 포함 — findMemberCandidatesInClass와 동일 수정.
+                    // 호출 문맥(argCount 지정)의 비호출형 제외는 pickBestCallableCandidate가 담당.
+                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property'
+                        || s.kind === 'variable' || s.kind === 'constant')
                 ) {
                     exactCandidates.push(s);
                 }
@@ -224,7 +227,11 @@ export class SymbolCache {
                 if (
                     ciEq(s.name, memberName) &&
                     s.className !== undefined && ciEq(s.className, className) &&
-                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property')
+                    // 필드(variable)·상수(constant)도 클래스 멤버다 — 누락 시 `obj.field` 정의 이동이
+                    // fallback 텍스트 검색으로만 동작하던 버그 수정 (2026-07-03).
+                    // 호출 문맥(Foo(...))의 비호출형 제외는 pickBestCallableCandidate가 담당한다.
+                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property'
+                        || s.kind === 'variable' || s.kind === 'constant')
                 ) {
                     candidates.push(s);
                 }

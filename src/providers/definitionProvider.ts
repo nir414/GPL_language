@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
-import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
@@ -252,6 +252,10 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         position: vscode.Position,
         token: vscode.CancellationToken
     ): Promise<vscode.Definition | undefined> {
+        if (token.isCancellationRequested) {
+            return undefined;
+        }
+
         const ident = getQualifiedWordAtPosition(document, position);
         if (!ident) {
             return undefined;
@@ -260,9 +264,19 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         const word = ident.word;
         const wordRange = ident.range;
         const line = document.lineAt(position.line).text;
+
+        // 주석(')·문자열("...") 내부는 정의 대상이 아니다 — 오검색/엉뚱한 점프 방지 (2026-07-03).
+        if (isInCommentOrString(line, wordRange.start.character)) {
+            return undefined;
+        }
+        // 제어 키워드(If/Then/Dim...)는 심볼이 될 수 없다 — 멤버 해석/캐시 미스 낭비 제거.
+        if (GPL_CONTROL_KEYWORDS.has(word.toLowerCase())) {
+            return undefined;
+        }
+
         const afterWord = line.substring(wordRange.end.character);
         const callArgCount = this.countCallArgumentsFromSuffix(afterWord);
-        
+
         this.log(`\n[Definition Request] v${EXTENSION_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
         this.log(`[Call Context] afterWord="${afterWord.trim()}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
 
@@ -452,6 +466,10 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                     this.log(`[Object NOT Found] "${baseObjectName}" not found in cache or local scope`);
                 }
             }
+        }
+
+        if (token.isCancellationRequested) {
+            return undefined;
         }
 
         // Fallback to regular definition search (when member access path didn't find anything)

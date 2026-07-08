@@ -1,0 +1,20 @@
+{
+  "name": "gpl-controller-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that drives a Brooks/Precise Automation PA controller (GPL) over the 1402 ASCII console — compile, run, and debug from Claude.",
+  "type": "module",
+  "bin": {
+    "gpl-controller-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

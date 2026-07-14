@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
-import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
+import { extractBaseObjectName, escapeRegExp, matchProcedureHeaderKind, extractCallArgumentsFromSuffix } from '../language/cursorExpression';
+import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
@@ -20,61 +21,78 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         }
     }
 
-    private countCallArgumentsFromSuffix(afterWord: string): number | undefined {
-        // afterWord begins right after the identifier under cursor.
-        // We only handle the common pattern: Identifier( ... )
-        const s = afterWord.trimStart();
-        if (!s.startsWith('(')) {
+    /**
+     * 호출부 인자 표현식들로 CallContext를 만든다.
+     *
+     * 인자 타입 추론은 lazy — 오버로드 후보가 arity로 걸러도 2개 이상 동점일 때만
+     * (rankOverloadMatches 내부에서) 실행되고, 결과는 요청 내에서 캐시된다.
+     */
+    private buildCallContext(
+        document: vscode.TextDocument,
+        atLine: number,
+        callArgs: string[] | undefined
+    ): CallContext | undefined {
+        if (!callArgs) {
             return undefined;
         }
-
-        let depth = 0;
-        let inString = false;
-        let args = 0;
-        let sawAnyToken = false;
-
-        for (let i = 0; i < s.length; i++) {
-            const ch = s[i];
-
-            if (ch === '"') {
-                // Toggle string mode. GPL/VB style string escaping isn't handled here;
-                // this is good enough for typical single-line constructor calls.
-                inString = !inString;
-                sawAnyToken = true;
-                continue;
-            }
-
-            if (inString) {
-                continue;
-            }
-
-            if (ch === '(') {
-                depth++;
-                continue;
-            }
-            if (ch === ')') {
-                depth--;
-                if (depth === 0) {
-                    break;
-                }
-                continue;
-            }
-
-            if (depth === 1) {
-                if (ch === ',') {
-                    args++;
-                    continue;
-                }
-                if (!/\s/.test(ch)) {
-                    sawAnyToken = true;
-                }
-            }
+        if (callArgs.length === 0) {
+            return { argCount: 0 };
         }
+        let cached: ReadonlyArray<string | undefined> | undefined;
+        return {
+            argCount: callArgs.length,
+            getArgTypes: () => (cached ??= this.inferCallArgTypes(document, atLine, callArgs))
+        };
+    }
 
-        if (!sawAnyToken) {
-            return 0;
-        }
-        return args + 1;
+    /**
+     * 인자 표현식별 타입 추론(가벼운 경로만).
+     *   - 리터럴: "..." → String, True/False → Boolean, 숫자/&H/&O → NUMERIC_LITERAL_TYPE
+     *   - `New Foo(...)` → Foo
+     *   - 단순 식별자 → 로컬/파라미터/캐시 심볼의 returnType (배열은 `Type[]`)
+     *   - `ident(...)` → 배열 변수면 요소 타입, 함수면 반환 타입
+     *   - 그 외(멤버 접근 등 복합식)는 undefined(중립) — 오판 대신 판단 보류.
+     */
+    private inferCallArgTypes(
+        document: vscode.TextDocument,
+        atLine: number,
+        callArgs: string[]
+    ): Array<string | undefined> {
+        return callArgs.map(raw => {
+            const expr = raw.trim();
+
+            const literal = inferLiteralArgType(expr);
+            if (literal) {
+                return literal;
+            }
+
+            const ctorMatch = expr.match(/^New\s+(\w+)/i);
+            if (ctorMatch) {
+                return ctorMatch[1];
+            }
+
+            const idMatch = expr.match(/^([A-Za-z_]\w*)\s*(\(.*\))?$/s);
+            if (!idMatch) {
+                return undefined;
+            }
+            const name = idMatch[1];
+            const hasCallOrIndex = !!idMatch[2];
+
+            const sym = this.findLocalSymbol(document, name, atLine)
+                ?? this.symbolCache.findDefinition(name, document.uri.fsPath);
+            const type = sym?.returnType;
+            if (!type) {
+                return undefined;
+            }
+            if (!hasCallOrIndex) {
+                return type;
+            }
+            // `name(...)`: 배열 변수 인덱싱이면 요소 타입, 함수 호출이면 반환 타입.
+            if (type.endsWith('[]') && sym!.kind !== 'function') {
+                return type.slice(0, -2);
+            }
+            return type;
+        });
     }
 
     private getEnclosingProcedureRange(
@@ -94,10 +112,12 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                 continue;
             }
 
-            const m = trimmed.match(/^\s*(Public|Private|Shared|\s)*\b(Sub|Function|Property)\b/i);
-            if (m) {
+            // 파서와 동일한 수식어 집합으로 헤더를 인식한다.
+            // (`Public Overrides Sub`, `Friend Shared Function` 등 수식어가 여러 개여도 놓치지 않음)
+            const kind = matchProcedureHeaderKind(trimmed);
+            if (kind) {
                 headerLine = i;
-                headerKind = (m[2] as any) as 'Sub' | 'Function' | 'Property';
+                headerKind = kind;
                 break;
             }
 
@@ -230,11 +250,44 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         return `${symbol.name} [${symbol.kind}] params=${paramCount} file=${fileName} line=${symbol.line + 1} class=${symbol.className || 'N/A'} module=${symbol.module || 'N/A'}`;
     }
 
+    /**
+     * 같은 이름의 후보 여러 개 중 호출 문맥(인자 개수·타입)에 맞는 것을 고른다.
+     * 온디맨드 파싱(캐시 미스) 경로용 — symbolCache와 동일한 rankOverloadMatches
+     * (공용 정본)를 사용해 두 경로의 선택 규칙이 갈라지지 않게 한다.
+     * 호출 문맥이 없거나 호출 가능한(Sub/Function) 후보가 없으면 [첫 후보].
+     */
+    private pickLocalMatches(candidates: GPLSymbol[], ctx?: CallContext): GPLSymbol[] {
+        if (candidates.length === 1 || !ctx || typeof ctx.argCount !== 'number') {
+            return [candidates[0]];
+        }
+        const callable = candidates.filter(s => s.kind === 'function' || s.kind === 'sub');
+        if (callable.length === 0) {
+            return [candidates[0]];
+        }
+        return rankOverloadMatches(callable, ctx);
+    }
+
     private buildLocation(symbol: GPLSymbol): vscode.Location {
         const uri = vscode.Uri.file(symbol.filePath);
         const definitionPosition = new vscode.Position(symbol.line, 0);
         const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
         return new vscode.Location(uri, definitionRange);
+    }
+
+    /**
+     * 랭킹 결과를 vscode.Definition으로 변환한다.
+     * 동점 오버로드가 여럿이면 전부 돌려줘 VS Code가 peek 목록을 띄우게 한다
+     * (틀린 곳으로 조용히 점프하는 대신 사용자가 고르게 하는 안전망).
+     */
+    private buildDefinitionResult(symbols: GPLSymbol[]): vscode.Definition {
+        if (symbols.length > 1) {
+            this.log(`[Ambiguous Overload] ${symbols.length} equally-ranked candidates → returning all as peek list`);
+            for (const s of symbols) {
+                this.log(`  = ${this.formatCandidate(s)}`);
+            }
+            return symbols.map(s => this.buildLocation(s));
+        }
+        return this.buildLocation(symbols[0]);
     }
 
     private logMemberCandidates(context: string, candidates: GPLSymbol[], argCount?: number): void {
@@ -275,7 +328,9 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         }
 
         const afterWord = line.substring(wordRange.end.character);
-        const callArgCount = this.countCallArgumentsFromSuffix(afterWord);
+        const callArgs = extractCallArgumentsFromSuffix(afterWord);
+        const callArgCount = callArgs ? callArgs.length : undefined;
+        const callCtx = this.buildCallContext(document, position.line, callArgs);
 
         this.log(`\n[Definition Request] v${EXTENSION_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
         this.log(`[Call Context] afterWord="${afterWord.trim()}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
@@ -294,7 +349,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             const m = afterWord.match(/^\s+(\w+)\s*(\(.*)/s);
             if (m) {
                 constructorClassName = m[1];
-                constructorArgCount = this.countCallArgumentsFromSuffix(m[2]);
+                constructorArgCount = extractCallArgumentsFromSuffix(m[2])?.length;
             }
         } else {
             // Cursor on a word — check if preceded by "New"
@@ -302,7 +357,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             const ctorRegex = new RegExp(`\\b(?:As\\s+)?New\\s+${escapedWord}\\s*\\(`, 'i');
             if (ctorRegex.test(line)) {
                 constructorClassName = word;
-                constructorArgCount = this.countCallArgumentsFromSuffix(afterWord);
+                constructorArgCount = callArgCount;
             }
         }
 
@@ -408,14 +463,15 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                         const moduleCandidates = this.symbolCache.findMemberCandidatesInModule(memberName, objectSymbol.name);
                         this.logMemberCandidates(`Module:${objectSymbol.name}.${memberName}`, moduleCandidates, callArgCount);
 
-                        const memberSymbol = this.symbolCache.findMemberInModule(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
+                        const memberMatches = this.symbolCache.findMemberInModuleMatches(memberName, objectSymbol.name, document.uri.fsPath, callCtx);
 
-                        if (memberSymbol) {
+                        if (memberMatches.length > 0) {
+                            const memberSymbol = memberMatches[0];
                             const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
                             this.log(`[Member Found] ${memberName} in module ${objectSymbol.name}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1}`);
-                            return this.buildLocation(memberSymbol);
+                            return this.buildDefinitionResult(memberMatches);
                         } else {
                             this.log(`[Member NOT Found] "${memberName}" in module "${objectSymbol.name}"`);
                         }
@@ -426,13 +482,14 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                         const classCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, objectSymbol.name);
                         this.logMemberCandidates(`ClassStatic:${objectSymbol.name}.${memberName}`, classCandidates, callArgCount);
 
-                        const memberSymbol = this.symbolCache.findMemberInClass(memberName, objectSymbol.name, document.uri.fsPath, callArgCount);
-                        if (memberSymbol) {
+                        const memberMatches = this.symbolCache.findMemberInClassMatches(memberName, objectSymbol.name, document.uri.fsPath, callCtx);
+                        if (memberMatches.length > 0) {
+                            const memberSymbol = memberMatches[0];
                             const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
                             this.log(`[Member Found] ${memberName} in class ${objectSymbol.name}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
-                            return this.buildLocation(memberSymbol);
+                            return this.buildDefinitionResult(memberMatches);
                         } else {
                             this.log(`[Member NOT Found] "${memberName}" in class "${objectSymbol.name}"`);
                         }
@@ -448,14 +505,15 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                         const instanceCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, resolvedType);
                         this.logMemberCandidates(`ClassInstance:${resolvedType}.${memberName}`, instanceCandidates, callArgCount);
 
-                        const memberSymbol = this.symbolCache.findMemberInClass(memberName, resolvedType, document.uri.fsPath, callArgCount);
+                        const memberMatches = this.symbolCache.findMemberInClassMatches(memberName, resolvedType, document.uri.fsPath, callCtx);
 
-                        if (memberSymbol) {
+                        if (memberMatches.length > 0) {
+                            const memberSymbol = memberMatches[0];
                             const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
                             this.log(`[Member Found] ${memberName} in class ${resolvedType}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
-                            return this.buildLocation(memberSymbol);
+                            return this.buildDefinitionResult(memberMatches);
                         } else {
                             this.log(`[Member NOT Found] "${memberName}" in class "${resolvedType}"`);
                         }
@@ -473,8 +531,11 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         }
 
         // Fallback to regular definition search (when member access path didn't find anything)
-        this.log(`[Fallback Search] Member access resolution did not return. Looking for simple definition of "${word}"`);
-        const symbol = this.symbolCache.findDefinition(word, document.uri.fsPath);
+        // 호출부 인자 개수(callArgCount)를 함께 넘겨, 한정자 없는 호출 `getWafer(a, b, c)`도
+        // 이름만이 아니라 인자 개수(Optional/ParamArray 포함)에 맞는 오버로드로 이동하게 한다.
+        this.log(`[Fallback Search] Member access resolution did not return. Looking for simple definition of "${word}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
+        const matches = this.symbolCache.findDefinitionMatches(word, document.uri.fsPath, callCtx);
+        const symbol: GPLSymbol | undefined = matches[0];
 
         if (!symbol) {
             // As a safety net, parse the current document on-demand.
@@ -493,14 +554,17 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                 // Try a non-local parse (still useful for stale cache and top-level consts/classes)
                 try {
                     const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                    const any = localSymbols.find(s => ciEq(s.name, word));
-                    if (!any) {
+                    const nameMatches = localSymbols.filter(s => ciEq(s.name, word));
+                    if (nameMatches.length === 0) {
                         this.log(`[Not Found] Symbol "${word}" not found (cache + scoped local parse)`);
                         return undefined;
                     }
 
+                    // 캐시 미스 상태에서도 오버로드를 인자 개수·타입에 맞춰 선택한다.
+                    const picked = this.pickLocalMatches(nameMatches, callCtx);
+                    const any = picked[0];
                     this.log(`[Local Symbol Found - NonLocalParse] ${any.name} | Line: ${any.line + 1} | Kind: ${any.kind} | ClassName: ${any.className || 'N/A'}`);
-                    return this.buildLocation(any);
+                    return this.buildDefinitionResult(picked);
                 } catch (error) {
                     this.log(`[Local Parse Error] ${error}`);
                     return undefined;
@@ -513,6 +577,6 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
         const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;
         this.log(`[Symbol Found] ${symbol.name} | File: ${fileName} | Line: ${symbol.line + 1} | ClassName: ${symbol.className || 'N/A'}`);
-        return this.buildLocation(symbol);
+        return this.buildDefinitionResult(matches);
     }
 }

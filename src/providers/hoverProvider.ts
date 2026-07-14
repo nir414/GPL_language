@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbolKind } from '../gplParser';
-import { isTraceVerbose, EXTENSION_VERSION, ciEq, isInCommentOrString } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION, ciEq, isInCommentOrString, getHoverConfig, HoverConfig } from '../config';
 import { findGplBuiltin, getGplBuiltinReferenceUrl } from '../gplBuiltins';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
@@ -21,6 +21,50 @@ export class GPLHoverProvider implements vscode.HoverProvider {
     private stripComment(line: string): string {
         const idx = line.indexOf("'");
         return idx >= 0 ? line.slice(0, idx) : line;
+    }
+
+    /**
+     * Render a captured `'` doc-comment block as markdown, preserving line breaks.
+     * 표시량은 gpl.hover.docComment(summary|full|off) + docCommentMaxLines로 조절한다:
+     *  - summary(기본): 첫 문단(빈 줄 전까지)만, maxLines 초과분은 잘라내고 '…' 표시.
+     *  - full: 전체를 표시하되 maxLines(0=무제한)까지만.
+     *  - off: 호출부에서 표시 자체를 생략.
+     */
+    private formatDocComment(doc: string, config: HoverConfig): string | undefined {
+        if (config.docComment === 'off') {
+            return undefined;
+        }
+
+        let lines = doc.split('\n').map(l => l.trimEnd());
+
+        if (config.docComment === 'summary') {
+            const blank = lines.findIndex(l => l.trim() === '');
+            if (blank > 0) {
+                lines = lines.slice(0, blank);
+            }
+        }
+
+        let truncated = false;
+        const max = config.docCommentMaxLines;
+        if (max > 0 && lines.length > max) {
+            lines = lines.slice(0, max);
+            truncated = true;
+        }
+
+        if (lines.length === 0) {
+            return undefined;
+        }
+
+        let text = lines.join('  \n');
+        if (truncated || (config.docComment === 'summary' && doc.split('\n').length > lines.length)) {
+            text += '  \n… *(전체 주석: 정의로 이동 F12)*';
+        }
+        return text;
+    }
+
+    /** brooks-gpl 디버그 세션이 활성인지 (duringDebug 모드 적용 대상 판별). */
+    private isGplDebugActive(): boolean {
+        return vscode.debug.activeDebugSession?.type === 'brooks-gpl';
     }
 
     private getSymbolKindTitle(kind: GPLSymbolKind): string {
@@ -84,6 +128,18 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             return undefined;
         }
 
+        // 표시량 설정 (gpl.hover.*) — 스팸성 대형 팝업 방지 (2026-07-14).
+        const config = getHoverConfig(vscode.workspace);
+        if (!config.enabled) {
+            return undefined;
+        }
+        // 디버깅 중에는 변수 값 호버가 주인공이므로 언어 호버를 간소화/억제한다.
+        const debugActive = this.isGplDebugActive();
+        if (debugActive && config.duringDebug === 'off') {
+            return undefined;
+        }
+        const compact = debugActive && config.duringDebug === 'compact';
+
         const ident = this.getIdentifierAtPosition(document, position);
         if (!ident) {
             return undefined;
@@ -105,12 +161,17 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         const builtin = findGplBuiltin(word);
         if (builtin) {
             const md = new vscode.MarkdownString();
-            md.appendMarkdown(`**GPL Built-in** · ${builtin.category}\n\n`);
-            md.appendCodeblock(builtin.signature, 'gpl');
-            md.appendMarkdown(`\n${builtin.summary}`);
-            const refUrl = getGplBuiltinReferenceUrl(builtin);
-            const refLabel = builtin.sourceUrl ? 'Reference' : 'GPL Dictionary';
-            md.appendMarkdown(`\n\n[${refLabel}](${refUrl})`);
+            if (compact) {
+                // 디버깅 중: 시그니처 한 줄만.
+                md.appendCodeblock(builtin.signature, 'gpl');
+            } else {
+                md.appendMarkdown(`**GPL Built-in** · ${builtin.category}\n\n`);
+                md.appendCodeblock(builtin.signature, 'gpl');
+                md.appendMarkdown(`\n${builtin.summary}`);
+                const refUrl = getGplBuiltinReferenceUrl(builtin);
+                const refLabel = builtin.sourceUrl ? 'Reference' : 'GPL Dictionary';
+                md.appendMarkdown(`\n\n[${refLabel}](${refUrl})`);
+            }
             md.isTrusted = false;
             return new vscode.Hover(md, wordRange);
         }
@@ -135,9 +196,23 @@ export class GPLHoverProvider implements vscode.HoverProvider {
 
         const kindTitle = this.getSymbolKindTitle(sym.kind);
         const md = new vscode.MarkdownString();
+
+        const isCallable = sym.kind === GPLSymbolKind.Function || sym.kind === GPLSymbolKind.Sub;
+
+        if (compact && isCallable) {
+            // 디버깅 중: 시그니처 한 줄만 (변수 값 호버를 가리지 않게).
+            const params = sym.parameters?.join(', ') ?? '';
+            const signature = sym.kind === GPLSymbolKind.Function
+                ? `Function ${sym.name}(${params})${sym.returnType ? ` As ${sym.returnType}` : ''}`
+                : `Sub ${sym.name}(${params})`;
+            md.appendCodeblock(signature, 'gpl');
+            md.isTrusted = false;
+            return new vscode.Hover(md, wordRange);
+        }
+
         md.appendMarkdown(`**${kindTitle}** \`${sym.name}\``);
 
-        if (sym.kind === GPLSymbolKind.Function || sym.kind === GPLSymbolKind.Sub) {
+        if (isCallable) {
             const params = sym.parameters?.join(', ') ?? '';
             const signature = sym.kind === GPLSymbolKind.Function
                 ? `Function ${sym.name}(${params})${sym.returnType ? ` As ${sym.returnType}` : ''}`
@@ -154,7 +229,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             md.appendMarkdown(`\n\n값: \`${valueText}\``);
         }
 
-        if (sym.module || sym.className) {
+        if (!compact && (sym.module || sym.className)) {
             const scopes: string[] = [];
             if (sym.module) {
                 scopes.push(`Module: \`${sym.module}\``);
@@ -163,6 +238,13 @@ export class GPLHoverProvider implements vscode.HoverProvider {
                 scopes.push(`Class: \`${sym.className}\``);
             }
             md.appendMarkdown(`\n\n${scopes.join(' · ')}`);
+        }
+
+        if (!compact && sym.docComment) {
+            const docMd = this.formatDocComment(sym.docComment, config);
+            if (docMd) {
+                md.appendMarkdown(`\n\n---\n\n${docMd}`);
+            }
         }
 
         md.isTrusted = false;

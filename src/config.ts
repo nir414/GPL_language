@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { extractBaseObjectName } from './language/cursorExpression';
 
 /** package.json의 version을 단일 소스로 사용 */
 export const EXTENSION_VERSION: string = require('../package.json').version;
@@ -42,6 +43,43 @@ export function isTraceOn(workspace: WorkspaceConfigHost): boolean {
 
 export function isTraceVerbose(workspace: WorkspaceConfigHost): boolean {
     return getTraceServerLevel(workspace) === 'verbose';
+}
+
+export type HoverDocCommentMode = 'summary' | 'full' | 'off';
+export type HoverDuringDebugMode = 'compact' | 'off' | 'normal';
+
+export interface HoverConfig {
+    enabled: boolean;
+    docComment: HoverDocCommentMode;
+    /** 0 = 제한 없음 */
+    docCommentMaxLines: number;
+    duringDebug: HoverDuringDebugMode;
+}
+
+/**
+ * 호버 표시량 설정 (package.json: gpl.hover.*).
+ * 잘못된 값은 기본값으로 정규화해 provider 쪽에서 방어 코드가 필요 없게 한다.
+ */
+export function getHoverConfig(workspace: WorkspaceConfigHost): HoverConfig {
+    const cfg = workspace.getConfiguration('gpl');
+
+    const enabled = cfg.get<boolean>('hover.enabled', true) !== false;
+
+    const docRaw = cfg.get<string>('hover.docComment', 'summary');
+    const docComment: HoverDocCommentMode =
+        docRaw === 'full' || docRaw === 'off' ? docRaw : 'summary';
+
+    const maxRaw = cfg.get<number>('hover.docCommentMaxLines', 6);
+    const docCommentMaxLines =
+        typeof maxRaw === 'number' && Number.isFinite(maxRaw) && maxRaw >= 0
+            ? Math.floor(maxRaw)
+            : 6;
+
+    const dbgRaw = cfg.get<string>('hover.duringDebug', 'compact');
+    const duringDebug: HoverDuringDebugMode =
+        dbgRaw === 'off' || dbgRaw === 'normal' ? dbgRaw : 'compact';
+
+    return { enabled, docComment, docCommentMaxLines, duringDebug };
 }
 
 /**
@@ -111,13 +149,14 @@ export function getQualifiedWordAtPosition(
     const line = position.line;
     const segRange = new vscode.Range(line, startCol + chosen.idx, line, startCol + chosen.idx + chosen.len);
 
-    // qualifier: chosen segment 앞에 `.`이 있으면 그 앞쪽 base 표현식 추출
+    // qualifier: chosen segment 앞에 `.`이 있으면 그 앞쪽 base 객체 이름을 추출.
+    // 인덱서/체이닝(`steps(i).X`, `arr(0)(1).X`)에서도 인덱스 변수가 아니라 기준 객체(`steps`, `arr`)를
+    // 얻도록 extractBaseObjectName을 사용한다(정의/참조 Provider의 base 추출과 동일 정본).
     const before = fullText.substring(0, chosen.idx).trimEnd();
     let qualifier: string | undefined;
     if (before.endsWith('.')) {
         const beforeDot = before.slice(0, -1).trim();
-        const m = beforeDot.match(/[A-Za-z_][A-Za-z0-9_]*$/);
-        if (m) qualifier = m[0];
+        qualifier = extractBaseObjectName(beforeDot);
     }
 
     return { range: segRange, word: chosen.text, qualifier };

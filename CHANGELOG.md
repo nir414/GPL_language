@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- **매개변수 힌트(Signature Help)** 를 새로 추가했습니다. `foo(`, `Move.Approach(`, `obj.Method(` 처럼 호출을 입력하는 동안 매개변수 목록을 표시하고 현재 입력 중인 인자를 강조합니다. GPL 내장 함수와 사용자 정의 Sub/Function을 모두 지원하며, 여는 괄호 `(` 와 쉼표 `,` 에서 자동으로 나타납니다.
+- 사용자 정의 Sub/Function/Property 선언 **바로 위의 `'` 주석 블록** 을 인식하여 호버·자동완성·매개변수 힌트의 설명으로 함께 보여줍니다.
+- Brooks GPL Dictionary 대조로 내장 심볼의 정의 정보를 대폭 확장했습니다(약 155개 추가): Controller·Thread·Latch·Exception·File·StreamReader/Writer·Array·Console·Vision·XmlDoc·XmlNode·Modbus·Socket·TcpClient/Listener·UdpClient·IPEndPoint 등. 각 항목에 시그니처·요약·공식 문서 링크가 포함됩니다.
+
+### Changed
+
+- **호버 팝업이 간결해졌습니다.** 함수 설명 주석은 기본적으로 첫 문단(최대 6줄)만 요약 표시하고, 잘린 경우 `…`와 함께 정의 이동(F12)을 안내합니다. 디버깅 중에는 변수 값 호버를 가리지 않도록 시그니처 한 줄만 표시합니다. `gpl.hover.enabled` / `gpl.hover.docComment`(summary·full·off) / `gpl.hover.docCommentMaxLines` / `gpl.hover.duringDebug`(compact·off·normal) 설정으로 조절할 수 있습니다.
+- **디버깅 중 브레이크포인트 도달 감지와 정지 쓰레드 전환이 빨라졌습니다.** 자유 실행 중 BP 히트를 1403 상태 이벤트로 즉시 감지하고(기존: 최대 5초 인터벌 폴 대기), Running 쓰레드가 있는 동안 백업 폴을 1초 간격으로 촘촘하게 유지합니다(정지 중 트래픽은 기존과 동일). 정지 감지 직후 스택 프레임을 선조회해 소스 위치 표시(전환) 체감도 왕복 1회분 줄었습니다.
+- 디버깅 중 변수 값 클릭 표시(`showValueOnCursorClick`)가 **키보드 포커스를 hover 위젯에 빼앗기지 않습니다.** 기존에는 클릭 직후 `editorTextFocus` 조건 키바인딩(F9/F8 toggleBreakpoint 등)이 동작하지 않는 부작용이 있었습니다.
+- 디버그 변수 편집(Set Variable)이 제어기 STATUS를 확인해 실패 시 실제로 실패로 표시합니다(기존: 항상 성공 표시).
+- 호버와 자동완성의 설명을 개선했습니다. 사용자 정의 심볼은 시그니처 코드블록과 주석 설명을 함께 표시합니다.
+- **정의 찾기(F12)가 메서드 오버로딩을 인자 타입까지 반영해 선택합니다.** 인자 개수가 같은 오버로드(예: `getWafer(stage, slot, arm As RobotArm)` vs `getWafer(stage, slot, armlist() As RobotArm)`)에서 호출부 인자의 타입(리터럴, 로컬/파라미터 변수, 배열 여부)을 추론해 맞는 선언으로 이동합니다. 타입으로도 구분할 수 없는 동점 후보가 남으면 틀린 곳으로 점프하는 대신 **후보 목록(peek)** 을 띄워 직접 고를 수 있습니다.
+
+### Fixed
+
+- 배열 파라미터(`armList() As RobotArm`, `x As Integer()`)의 타입이 로컬 배열 선언과 동일하게 `RobotArm[]` 형식으로 인식됩니다(정의 찾기·참조 검색의 배열/스칼라 구분 일관화).
+
 ## [0.7.0] - 2026-07-08
 
 ### Added
@@ -240,14 +259,6 @@
 - `Show Thread` 폴링을 고정 주기 `setInterval`에서 적응형 `setTimeout` 재귀 방식으로 교체
 - 실행 중인 쓰레드가 없을 때(idle) 폴링 간격을 기본값의 3배로 자동 지연해 제어기 1402 포트 부하 감소
 - 쓰레드가 감지되면 즉시 `threadPollIntervalMs` 설정 주기로 복귀
-
-### Added
-
-### Changed
-
-### Fixed
-
-### Removed
 
 ## [0.5.86] - 2026-05-14
 

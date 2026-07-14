@@ -10,6 +10,7 @@ import { GPLDiagnosticProvider } from './providers/diagnosticProvider';
 import { GPLCodeActionProvider } from './providers/codeActionProvider';
 import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
 import { GPLHoverProvider } from './providers/hoverProvider';
+import { GPLSignatureHelpProvider } from './providers/signatureHelpProvider';
 import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile } from './config';
 
@@ -500,6 +501,16 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.languages.registerHoverProvider(
 			gplSelectors,
 			new GPLHoverProvider(symbolCache, outputChannel)
+		)
+	);
+
+	// Signature Help provider (parameter hints for built-ins + user Sub/Function)
+	// Triggered on '(' and ',' so the active-parameter highlight advances as the user types.
+	context.subscriptions.push(
+		vscode.languages.registerSignatureHelpProvider(
+			gplSelectors,
+			new GPLSignatureHelpProvider(symbolCache),
+			{ triggerCharacters: ['(', ','], retriggerCharacters: [','] }
 		)
 	);
 
@@ -2926,7 +2937,15 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!editor.document.getWordRangeAtPosition(sel.active)) { return; }
 			const cfg = vscode.workspace.getConfiguration('gpl.debug');
 			if (!cfg.get<boolean>('showValueOnCursorClick', true)) { return; }
-			void vscode.commands.executeCommand('editor.debug.action.showDebugHover');
+			// showDebugHover는 focus=true가 하드코딩되어(VS Code debugEditorActions.ts)
+			// 키보드 포커스가 hover 위젯으로 이동 → editorTextFocus가 꺼져서
+			// editorTextFocus 조건의 키바인딩(F9/F8 toggleBreakpoint 등)이 클릭 직후
+			// 동작하지 않는 부작용이 있었다. debug hover는 포커스를 잃어도 닫히지 않으므로
+			// (에디터 keydown/스크롤/클릭 시 닫힘) 표시 직후 포커스를 에디터로 되돌려
+			// 값 표시와 키바인딩을 모두 살린다.
+			void vscode.commands.executeCommand('editor.debug.action.showDebugHover')
+				.then(() => vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup'))
+				.then(undefined, () => undefined);
 		})
 	);
 

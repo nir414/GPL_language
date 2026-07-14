@@ -101,6 +101,60 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         return true;
     }
 
+    /**
+     * 커서가 정의 라인이 아닌 "호출부"에 있을 때, 캐시에서 정의의 스코프를 복원한다.
+     *
+     * 보수적으로 동작한다(참조 누락 방지 우선):
+     *   - 모듈 레벨 프로시저(Sub/Function, className 없음)만 복원 대상으로 한다.
+     *     클래스 멤버는 `With` 블록의 `.member` 같은 비한정 접근을 놓칠 위험이 있어 기존 광역 검색을 유지한다.
+     *   - 같은 이름의 프로시저 후보가 여러 모듈/파일에 흩어져 스코프가 모호하면 복원하지 않는다.
+     *   - 한정자(qualifier)가 있으면 그 모듈 스코프의 후보를 우선 사용한다.
+     *
+     * 복원 결과는 public 모듈 멤버에서는 (광역 검색을 유지하므로) 사실상 추가 정보로만 쓰이고,
+     * private 모듈 멤버에서는 정의 파일로 검색을 좁혀 오탐(다른 파일의 동명 심볼)을 줄인다.
+     */
+    private recoverDefinitionScope(
+        word: string,
+        qualifier: string | undefined,
+        document: vscode.TextDocument
+    ): GPLSymbol | undefined {
+        const byName = this.symbolCache.findAllByName(word)
+            .filter(s => s.kind === 'sub' || s.kind === 'function');
+
+        if (byName.length === 0) {
+            return undefined;
+        }
+
+        // 클래스 멤버가 하나라도 섞여 있으면 복원하지 않는다(광역 검색 유지).
+        if (byName.some(s => !!s.className)) {
+            return undefined;
+        }
+
+        // 한정자가 모듈이면 해당 모듈 후보로 좁힌다.
+        let pool = byName;
+        if (qualifier) {
+            const qSym = this.symbolCache.findDefinition(qualifier, document.uri.fsPath);
+            if (qSym?.kind === 'module') {
+                const inModule = byName.filter(s => s.module && ciEq(s.module, qSym.name));
+                if (inModule.length > 0) {
+                    pool = inModule;
+                }
+            }
+        }
+
+        // 스코프 합의: 남은 후보가 모두 같은 모듈이어야 한다(모호하면 포기).
+        const firstModule = pool[0].module || '';
+        const sameModule = pool.every(s => (s.module || '') === firstModule);
+        if (!sameModule) {
+            return undefined;
+        }
+
+        // 접근제한자 합의: 하나라도 private면 private로 본다(정의 파일로 좁히는 쪽이 안전).
+        const anyPrivate = pool.some(s => s.accessModifier === 'private');
+        const chosen = anyPrivate ? (pool.find(s => s.accessModifier === 'private') || pool[0]) : pool[0];
+        return chosen;
+    }
+
     private isQualifiedAt(text: string, matchIndex: number): boolean {
         // True if the identifier at matchIndex is preceded (ignoring whitespace) by a dot.
         for (let i = matchIndex - 1; i >= 0; i--) {
@@ -194,8 +248,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         }
 
         // Instance usage: keep only matching returnType.
+        // 배열 타입(`Foo[]`)은 요소 타입으로 비교한다 — 파라미터/Dim 배열 표기 일관화(2026-07-13).
         if (qSym.returnType) {
-            return ciEq(qSym.returnType, targetClass);
+            return ciEq(qSym.returnType.replace(/\[\]$/, ''), targetClass);
         }
 
         return true;
@@ -280,7 +335,15 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const isAuthoritativeQualifier = qualifierSymbol?.kind === 'module' || qualifierSymbol?.kind === 'class';
 
         // If cursor is on a procedure definition, capture its module/class scope.
-        const defSymbol = this.tryGetDefinitionSymbolAtPosition(document, position, word, wordRange);
+        let defSymbol = this.tryGetDefinitionSymbolAtPosition(document, position, word, wordRange);
+
+        // 커서가 정의 라인이 아니라 "호출부"에 있는 경우에도 정의의 스코프(module/class/access)를
+        // 캐시에서 복원한다. 이렇게 하면 정의에서 실행하든 호출부에서 실행하든 "참조 찾기" 결과가 일관된다.
+        // 단, 같은 이름이 서로 다른 스코프에 흩어져 모호하면(예: 다른 클래스의 동명 멤버) 복원을 포기하고
+        // 기존의 이름 기반 광역 검색으로 남겨, 참조가 누락되지 않도록 한다(false negative 방지 우선).
+        if (!defSymbol) {
+            defSymbol = this.recoverDefinitionScope(word, qualifier, document);
+        }
 
         const targetFilePath = defSymbol?.filePath;
         const targetModule = defSymbol?.module;

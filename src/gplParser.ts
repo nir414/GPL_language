@@ -1,4 +1,4 @@
-import { escapeRegExp } from './language/cursorExpression';
+import { escapeRegExp, splitParameters } from './language/cursorExpression';
 
 export interface GPLSymbol {
     name: string;
@@ -15,6 +15,13 @@ export interface GPLSymbol {
     /** True when this symbol represents a procedure parameter. */
     isParameter?: boolean;
     parameters?: string[];
+    /**
+     * Leading `'` doc-comment block that appears immediately above the declaration
+     * (no blank line in between). Lines are joined with '\n' with the leading quote
+     * and one space stripped. Consumed by hover / completion / signature help to
+     * describe user-defined Subs, Functions and Properties.
+     */
+    docComment?: string;
     /** Initializer value for constants (e.g. "123" from "Const X As Integer = 123"). */
     value?: string;
     returnType?: string;
@@ -84,6 +91,8 @@ export class GPLParser {
         const logicalLines = GPLParser.buildLogicalLines(lines);
         let currentModule: string | undefined;
         let currentClass: string | undefined;
+        // Accumulates the contiguous leading `'` comment block for the *next* declaration.
+        let pendingDoc: string[] = [];
         // Track whether we're inside a procedure block (Sub/Function/Property body).
         // We intentionally do NOT index local Dim variables as workspace symbols.
         let blockDepth = 0;
@@ -101,17 +110,24 @@ export class GPLParser {
                 .replace(/\b(ByVal|ByRef|Optional|ParamArray)\b/gi, '')
                 .trim();
 
-            const asMatch = cleaned.match(/\bAs\s+(\w+)/i);
-            const type = asMatch ? asMatch[1] : undefined;
+            const asMatch = cleaned.match(/\bAs\s+(\w+)\s*(\(\s*,*\s*\))?/i);
+            let type = asMatch ? asMatch[1] : undefined;
+            const typeIsArray = !!(asMatch && asMatch[2]);
 
             const beforeAs = cleaned.split(/\bAs\b/i)[0].trim();
             if (!beforeAs) {
+                if (type && typeIsArray) { type += '[]'; }
                 return { type };
             }
 
             // The identifier is typically the last token before "As".
             const tokens = beforeAs.split(/\s+/).filter(Boolean);
             const last = tokens[tokens.length - 1] || '';
+            // 배열 파라미터(`armList() As RobotArm` / `x As Integer()`)는 로컬 배열 Dim과
+            // 동일하게 `Type[]`로 기록한다 — 호출부 인자 타입 추론(오버로드 해석)과
+            // 멤버 접근의 배열 인식이 일관되도록. (소비처는 [] 접미사를 벗겨 요소 타입을 쓴다.)
+            const nameIsArray = /\(.*\)$/.test(last);
+            if (type && (typeIsArray || nameIsArray)) { type += '[]'; }
             const name = last.replace(/\(.*\)$/, '').replace(/[^A-Za-z0-9_]/g, '');
             return { name: name || undefined, type };
         };
@@ -121,10 +137,22 @@ export class GPLParser {
             const line = logicalLines[li].text;
             const trimmedLine = line.trim();
             
-            // Skip comments and empty lines
-            if (trimmedLine.startsWith("'") || trimmedLine === '') {
+            // Capture the leading `'` doc-comment block; skip blank lines.
+            // A contiguous run of comment lines directly above a declaration becomes
+            // that symbol's docComment. A blank line breaks the run.
+            if (trimmedLine.startsWith("'")) {
+                pendingDoc.push(trimmedLine.replace(/^'+[ \t]?/, ''));
                 continue;
             }
+            if (trimmedLine === '') {
+                pendingDoc = [];
+                continue;
+            }
+
+            // Code line: consume any accumulated doc comment. Resetting here means a
+            // comment block only attaches to the declaration that immediately follows it.
+            const docComment = pendingDoc.length ? pendingDoc.join('\n') : undefined;
+            pendingDoc = [];
 
             // Parse Module
             const moduleMatch = trimmedLine.match(/^Module\s+(\w+)/i);
@@ -193,7 +221,8 @@ export class GPLParser {
             const functionMatch = trimmedLine.match(/\bFunction\s+(\w+)(?:\s*\((.*)\))?(?:\s+As\s+(\w+))?/i);
             if (functionMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial)\b\s+)*Function\b/i)) {
                 const name = functionMatch[1];
-                const params = functionMatch[2] ? functionMatch[2].split(',').map(p => p.trim()) : [];
+                // 최상위 콤마 기준 분리 — 공백뿐인 `( )`는 0개, 기본값 속 콤마는 분리하지 않는다.
+                const params = splitParameters(functionMatch[2]);
                 const returnType = functionMatch[3];
                 const isXmlRelated = this.isXmlRelatedIdentifier(name);
                 const xmlIssues = this.detectXmlFunctionIssues(line, name, i, lines);
@@ -218,7 +247,8 @@ export class GPLParser {
                     parameters: params,
                     returnType: returnType,
                     isXmlRelated: isXmlRelated,
-                    hasXmlIssues: xmlIssues.length > 0 ? xmlIssues : undefined
+                    hasXmlIssues: xmlIssues.length > 0 ? xmlIssues : undefined,
+                    docComment
                 });
 
                 if (includeParameters && params.length > 0) {
@@ -254,7 +284,8 @@ export class GPLParser {
             const subMatch = trimmedLine.match(/\bSub\s+(\w+)(?:\s*\((.*)\))?/i);
             if (subMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial)\b\s+)*Sub\b/i)) {
                 const name = subMatch[1];
-                const params = subMatch[2] ? subMatch[2].split(',').map(p => p.trim()) : [];
+                // 최상위 콤마 기준 분리 — 공백뿐인 `( )`는 0개, 기본값 속 콤마는 분리하지 않는다.
+                const params = splitParameters(subMatch[2]);
                 const startIndex = line.indexOf(name);
                 
                 // Token-based keyword extraction (order-independent)
@@ -273,7 +304,8 @@ export class GPLParser {
                     className: currentClass,
                     accessModifier: accessModifier,
                     isShared: isShared,
-                    parameters: params
+                    parameters: params,
+                    docComment
                 });
 
                 if (includeParameters && params.length > 0) {
@@ -323,7 +355,8 @@ export class GPLParser {
                     className: currentClass,
                     accessModifier: propAccess as 'public' | 'private' | undefined,
                     isShared: /\bShared\b/i.test(propMods),
-                    returnType: propertyMatch[3]
+                    returnType: propertyMatch[3],
+                    docComment
                 });
 
                 // Enter property block (if it has Get/Set); End Property will decrement.

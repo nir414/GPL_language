@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { GPLParser, GPLSymbol } from './gplParser';
 import { isTraceOn, ciEq } from './config';
+import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
 
 export class SymbolCache {
     private symbols: Map<string, GPLSymbol[]> = new Map();
@@ -81,18 +82,30 @@ export class SymbolCache {
         return false;
     }
 
-    public findDefinition(symbolName: string, currentFilePath?: string): GPLSymbol | undefined {
-        // First, search in the current file
-        if (currentFilePath && this.symbols.has(currentFilePath)) {
-            const fileSymbols = this.symbols.get(currentFilePath)!;
-            const localSymbol = fileSymbols.find(s => ciEq(s.name, symbolName));
-            if (localSymbol) {
-                return localSymbol;
-            }
-        }
+    /**
+     * 이름으로 정의를 찾는다.
+     *
+     * `argCount`가 주어지고 이름이 겹치는 호출 가능한 심볼(Sub/Function)이 여러 개면,
+     * 인자 개수(Optional/ParamArray 포함한 arity 범위)에 맞는 오버로드를 우선 선택한다.
+     * 예) `getWafer(a, b, c)`(인자 3개)는 3-인자 오버로드로 이동한다.
+     *
+     * `argCount`가 없으면(기존 호출부 그대로) 이름 기준으로 현재 파일을 우선하는
+     * 종전 동작을 유지한다 — hover/참조의 한정자 조회 등은 영향받지 않는다.
+     */
+    public findDefinition(symbolName: string, currentFilePath?: string, call?: number | CallContext): GPLSymbol | undefined {
+        return this.findDefinitionMatches(symbolName, currentFilePath, call)[0];
+    }
 
-        // Then search in all files, preferring files closer to the current file path
-        // (This avoids jumping between duplicate project copies like workspace root vs Test_robot/)
+    /**
+     * findDefinition의 다중 후보 버전.
+     *
+     * 호출 문맥(call: 인자 개수 또는 CallContext)이 있으면 arity·인자 타입 적합도까지
+     * 반영해 오버로드를 랭킹하고, 그래도 구분 불가능한 "선두 동점 그룹"을 모두
+     * 돌려준다(정의찾기 peek 목록용). 항상 최선 후보가 [0]이므로 단일 결과가
+     * 필요하면 findDefinition을 쓰면 된다.
+     */
+    public findDefinitionMatches(symbolName: string, currentFilePath?: string, call?: number | CallContext): GPLSymbol[] {
+        // 이름이 일치하는 전체 후보를 먼저 모은다.
         const candidates: GPLSymbol[] = [];
         for (const [, fileSymbols] of this.symbols) {
             for (const sym of fileSymbols) {
@@ -103,13 +116,45 @@ export class SymbolCache {
         }
 
         if (candidates.length === 0) {
-            return undefined;
+            return [];
         }
 
-        return this.pickBestCandidate(candidates, currentFilePath);
+        // 호출 문맥(Foo(...))이고 호출 가능한 후보가 있으면 arity/타입 기반 오버로드 해석을 시도한다.
+        // 이 경로는 파일 우선순위(scoreFilePath)도 함께 고려하므로 현재 파일 내 오버로드가 자연스레 우선된다.
+        const ctx = toCallContext(call);
+        if (ctx && typeof ctx.argCount === 'number') {
+            const callable = candidates.filter(s => s.kind === 'function' || s.kind === 'sub');
+            if (callable.length > 0) {
+                const matches = rankOverloadMatches(
+                    callable,
+                    ctx,
+                    currentFilePath ? c => this.scoreFilePath(c.filePath, currentFilePath) : undefined
+                );
+                if (matches.length > 0) {
+                    return matches;
+                }
+            }
+        }
+
+        // 기존 동작: 현재 파일에서 먼저 찾고, 없으면 경로 근접도로 최적 후보 선택.
+        // (workspace 루트와 Test_robot/ 같은 중복 사본 사이에서 튀는 것을 방지)
+        if (currentFilePath) {
+            const inFile = candidates.filter(s => s.filePath === currentFilePath);
+            if (inFile.length > 0) {
+                return [inFile[0]];
+            }
+        }
+
+        const best = this.pickBestCandidate(candidates, currentFilePath);
+        return best ? [best] : [];
     }
 
-    public findMemberInClass(memberName: string, className: string, preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
+    public findMemberInClass(memberName: string, className: string, preferredFilePath?: string, call?: number | CallContext): GPLSymbol | undefined {
+        return this.findMemberInClassMatches(memberName, className, preferredFilePath, call)[0];
+    }
+
+    /** findMemberInClass의 다중 후보 버전 — 구분 불가능한 오버로드 동점 그룹을 돌려준다. [0]이 최선. */
+    public findMemberInClassMatches(memberName: string, className: string, preferredFilePath?: string, call?: number | CallContext): GPLSymbol[] {
         // Search for the member in the specified class
         // First, try to find exact match with className
         const exactCandidates: GPLSymbol[] = [];
@@ -128,9 +173,9 @@ export class SymbolCache {
             }
         }
 
-        const exactPick = this.pickBestCallableCandidate(exactCandidates, preferredFilePath, argCount);
-        if (exactPick) {
-            return exactPick;
+        const exactPicks = this.pickCallableMatches(exactCandidates, preferredFilePath, call);
+        if (exactPicks.length > 0) {
+            return exactPicks;
         }
 
         // If not found, also search in files that contain the class definition
@@ -153,15 +198,15 @@ export class SymbolCache {
             }
         }
 
-        const fallbackPick = this.pickBestCallableCandidate(fallbackCandidates, preferredFilePath, argCount);
-        if (fallbackPick) {
-            return fallbackPick;
-        }
-
-        return undefined;
+        return this.pickCallableMatches(fallbackCandidates, preferredFilePath, call);
     }
 
-    public findMemberInModule(memberName: string, moduleName: string, preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
+    public findMemberInModule(memberName: string, moduleName: string, preferredFilePath?: string, call?: number | CallContext): GPLSymbol | undefined {
+        return this.findMemberInModuleMatches(memberName, moduleName, preferredFilePath, call)[0];
+    }
+
+    /** findMemberInModule의 다중 후보 버전 — 구분 불가능한 오버로드 동점 그룹을 돌려준다. [0]이 최선. */
+    public findMemberInModuleMatches(memberName: string, moduleName: string, preferredFilePath?: string, call?: number | CallContext): GPLSymbol[] {
         // Search for the member in the specified module
         const candidates: GPLSymbol[] = [];
         for (const [, fileSymbols] of this.symbols) {
@@ -177,12 +222,7 @@ export class SymbolCache {
             }
         }
 
-        const pick = this.pickBestCallableCandidate(candidates, preferredFilePath, argCount);
-        if (pick) {
-            return pick;
-        }
-
-        return undefined;
+        return this.pickCallableMatches(candidates, preferredFilePath, call);
     }
 
     public findConstructorInClass(className: string, argCount?: number, preferredFilePath?: string): GPLSymbol | undefined {
@@ -257,29 +297,36 @@ export class SymbolCache {
         return candidates;
     }
 
-    private pickBestCallableCandidate(candidates: GPLSymbol[], preferredFilePath?: string, argCount?: number): GPLSymbol | undefined {
+    /**
+     * 후보들 중에서 호출 문맥에 맞는 결과를 고른다(다중 동점 허용).
+     *
+     * 호출 문맥이 없으면 종전대로 경로 근접도 기반 단일 선택.
+     * 호출 문맥이면 비호출형(const/variable/property)은 제외하고, arity·인자 타입
+     * 적합도·경로 근접도로 랭킹한 "선두 동점 그룹"을 돌려준다.
+     * (선택 규칙 상세는 rankOverloadMatches — symbolCache/definitionProvider 공용 정본 — 참조.)
+     */
+    private pickCallableMatches(candidates: GPLSymbol[], preferredFilePath: string | undefined, call?: number | CallContext): GPLSymbol[] {
         if (candidates.length === 0) {
-            return undefined;
+            return [];
         }
 
-        if (typeof argCount !== 'number') {
-            return this.pickBestCandidate(candidates, preferredFilePath);
+        const ctx = toCallContext(call);
+        if (!ctx || typeof ctx.argCount !== 'number') {
+            const best = this.pickBestCandidate(candidates, preferredFilePath);
+            return best ? [best] : [];
         }
 
         const callable = candidates.filter(s => s.kind === 'function' || s.kind === 'sub');
         if (callable.length === 0) {
             // In a call context (Foo(...)), non-callable symbols (const/variable/property) should not be selected.
-            return undefined;
+            return [];
         }
 
-        const exactArgCandidates = callable.filter(s => (s.parameters?.length ?? 0) === argCount);
-
-        if (exactArgCandidates.length > 0) {
-            return this.pickBestCandidate(exactArgCandidates, preferredFilePath);
-        }
-
-        // Keep call-context strictness: if exact arg match is absent, pick best callable candidate only.
-        return this.pickBestCandidate(callable, preferredFilePath);
+        return rankOverloadMatches(
+            callable,
+            ctx,
+            preferredFilePath ? c => this.scoreFilePath(c.filePath, preferredFilePath) : undefined
+        );
     }
 
     private pickBestCandidate(candidates: GPLSymbol[], preferredFilePath?: string): GPLSymbol | undefined {
@@ -348,6 +395,22 @@ export class SymbolCache {
         return references;
     }
 
+    /**
+     * 이름이 일치하는 모든 심볼을 돌려준다(대소문자 무시).
+     * 참조 검색이 호출부에서 시작될 때 정의의 스코프(module/class/access)를 복원하는 데 쓴다.
+     */
+    public findAllByName(symbolName: string): GPLSymbol[] {
+        const out: GPLSymbol[] = [];
+        for (const [, fileSymbols] of this.symbols) {
+            for (const s of fileSymbols) {
+                if (ciEq(s.name, symbolName)) {
+                    out.push(s);
+                }
+            }
+        }
+        return out;
+    }
+
     public getAllSymbols(): GPLSymbol[] {
         const allSymbols: GPLSymbol[] = [];
         for (const fileSymbols of this.symbols.values()) {
@@ -380,13 +443,8 @@ export class SymbolCache {
             }
             item.detail = detail;
 
-            // Add documentation
-            if (symbol.parameters && symbol.parameters.length > 0) {
-                item.documentation = `Parameters: ${symbol.parameters.join(', ')}`;
-            }
-            if (symbol.returnType) {
-                item.documentation = (item.documentation || '') + `\nReturns: ${symbol.returnType}`;
-            }
+            // Add documentation (signature codeblock + doc-comment when available)
+            item.documentation = this.buildSymbolDocumentation(symbol);
 
             // Add snippet for functions/subs
             if ((symbol.kind === 'function' || symbol.kind === 'sub') && symbol.parameters) {
@@ -398,6 +456,28 @@ export class SymbolCache {
         }
 
         return items;
+    }
+
+    /**
+     * Build rich completion documentation: a GPL signature codeblock for callables
+     * (or `name : type` for fields/consts), followed by the symbol's `'` doc-comment.
+     */
+    private buildSymbolDocumentation(symbol: GPLSymbol): vscode.MarkdownString {
+        const md = new vscode.MarkdownString();
+        if (symbol.kind === 'function' || symbol.kind === 'sub') {
+            const params = symbol.parameters?.join(', ') ?? '';
+            const sig = symbol.kind === 'function'
+                ? `Function ${symbol.name}(${params})${symbol.returnType ? ` As ${symbol.returnType}` : ''}`
+                : `Sub ${symbol.name}(${params})`;
+            md.appendCodeblock(sig, 'gpl');
+        } else if (symbol.returnType) {
+            md.appendMarkdown(`\`${symbol.name}\` : \`${symbol.returnType}\``);
+        }
+        if (symbol.docComment) {
+            md.appendMarkdown(`\n\n${symbol.docComment.split('\n').map(l => l.trimEnd()).join('  \n')}`);
+        }
+        md.isTrusted = false;
+        return md;
     }
 
     private getCompletionItemKind(symbolKind: string): vscode.CompletionItemKind {

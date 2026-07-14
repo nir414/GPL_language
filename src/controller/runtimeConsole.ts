@@ -149,14 +149,16 @@ export class RuntimeConsole implements vscode.Disposable {
     private readonly _onDidDisconnect = new vscode.EventEmitter<void>();
     private readonly _onDidReceiveLine = new vscode.EventEmitter<string>();
     private readonly _onDidStatusChanged = new vscode.EventEmitter<RuntimeConsoleStatusSnapshot>();
-    /** 세션에서 최초 데이터가 도착했을 때 발생 (normalizeConsoleLine 결과와 무관하게 raw 데이터 기준) */
+    /** 세션 최초 데이터 도착 시 + 숫자 상태 이벤트 프레임(<E>N,N</E>) 수신 시 발생.
+     *  (기존: 세션당 첫 청크만 → 연결 유지 중 도착한 브레이크/정지 신호를 놓쳐
+     *  디버그 감지가 인터벌 폴(최대 수 초)로 밀렸다.) */
     private readonly _onDidReceiveData = new vscode.EventEmitter<void>();
 
     readonly onDidConnect = this._onDidConnect.event;
     readonly onDidDisconnect = this._onDidDisconnect.event;
     readonly onDidReceiveLine = this._onDidReceiveLine.event;
     readonly onDidStatusChanged = this._onDidStatusChanged.event;
-    /** 1403 세션에서 raw 데이터가 처음 도착할 때 발생. 디버그 즉시 폴 트리거 용도. */
+    /** 1403 세션 첫 데이터 + 상태 이벤트 프레임 도착 시 발생. 디버그 즉시 폴 트리거 용도. */
     readonly onDidReceiveData = this._onDidReceiveData.event;
 
     get isConnected(): boolean { return this._isConnected; }
@@ -539,6 +541,12 @@ export class RuntimeConsole implements vscode.Disposable {
         }
         // type-3가 아닌 프레임: 진행 중인 줄을 먼저 비우고 기존 경로로 처리.
         this.flushConsoleFrameBuffer();
+        // 숫자 상태 이벤트(<E>N,N</E>: 브레이크 도달/스텝 완료 등 상태 변화 신호)는
+        // 세션 최초 데이터가 아니어도 즉시 폴 트리거를 발사한다. 콘솔 텍스트(type-3)는
+        // 여기로 오지 않으므로 출력 폭주가 트리거 폭주로 이어지지 않는다.
+        if (/^<E>\d+,\d+<\/E>$/.test(clean.trim())) {
+            this._onDidReceiveData.fire();
+        }
         this.emitConsoleLine(frame, true);
     }
 

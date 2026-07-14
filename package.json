@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.7.0",
+    "version": "0.7.5",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -733,6 +733,50 @@
                     "type": "number",
                     "default": 30000,
                     "description": "Maximum reconnect delay for idle/no-payload 1403 sessions (adaptive)."
+                },
+                "gpl.hover.enabled": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable GPL language hover (symbol info popup). Built-in editor.hover.* settings still apply."
+                },
+                "gpl.hover.docComment": {
+                    "scope": "window",
+                    "type": "string",
+                    "enum": [
+                        "summary",
+                        "full",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "First paragraph only, capped by gpl.hover.docCommentMaxLines (like TypeScript/Pylance).",
+                        "Entire doc-comment block (still capped by gpl.hover.docCommentMaxLines unless 0).",
+                        "Hide doc comments in hover."
+                    ],
+                    "default": "summary",
+                    "description": "How much of a symbol's leading ' doc-comment block to show in hover."
+                },
+                "gpl.hover.docCommentMaxLines": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 6,
+                    "description": "Max doc-comment lines shown in hover (0 = unlimited). Truncation is marked with '…'."
+                },
+                "gpl.hover.duringDebug": {
+                    "scope": "window",
+                    "type": "string",
+                    "enum": [
+                        "compact",
+                        "off",
+                        "normal"
+                    ],
+                    "enumDescriptions": [
+                        "Signature-only one-liner while a brooks-gpl debug session is active (keeps variable-value hover uncluttered).",
+                        "Suppress language hover entirely while debugging.",
+                        "Same hover as when editing."
+                    ],
+                    "default": "compact",
+                    "description": "Language hover behavior while a brooks-gpl debug session is active."
                 },
                 "gpl.deploy.jumpToFirstError": {
                     "scope": "window",

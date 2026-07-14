@@ -55,6 +55,7 @@ import {
     selectProjectFromCandidates,
     parseErrorLog,
     isSuccess,
+    parseStatus,
     StackFrameInfo,
 } from '../controller/responseParser';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
@@ -107,6 +108,10 @@ type PendingAction = 'step' | 'pause' | 'entry' | 'continue' | null;
 export class GPLDebugSession extends LoggingDebugSession {
     private static readonly MIN_DEBUG_POLL_INTERVAL_MS = 1000;
     private static readonly MAX_DEBUG_POLL_INTERVAL_MS = 5000;
+    // ⑦ 백업 인터벌 폴 간격(Running 쓰레드 존재 시). 실행 중 BP 히트는 1403 상태
+    //    이벤트 트리거가 주 신호이고, 이 값은 1403 유실/미연결 시의 안전망이다.
+    //    (기존: 항상 사용자 간격(기본 5000ms) → 자유 실행 중 BP 히트 감지가 최대 5초 지연)
+    private static readonly RUNNING_BACKUP_POLL_MS = 1000;
 
     // Thread name ↔ integer ID (DAP requires integer thread IDs)
     private _threadNameToId = new Map<string, number>();
@@ -130,7 +135,9 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _sourceFileMap = new Map<string, string>();
 
     // State polling
-    private _pollTimer: ReturnType<typeof setInterval> | undefined;
+    private _pollTimer: ReturnType<typeof setTimeout> | undefined;
+    // 인터벌 폴 체인 세대 토큰 — _stopPolling/_startPolling 시 이전 체인 무효화.
+    private _pollTimerGen = 0;
     private _fastPollTimer: ReturnType<typeof setTimeout> | undefined;
     private _previousThreadStates = new Map<string, string>();
     private _isConnected = false;
@@ -143,6 +150,9 @@ export class GPLDebugSession extends LoggingDebugSession {
     // ④ 1403 트리거 유실 방지: 폴이 가드(_pollInFlight/_userActionInFlight)에 막혀
     //    스킵됐을 때 pending 액션이 있으면 표시해 두고, 폴 완료 직후 1회 재폴한다.
     private _pollRetryRequested = false;
+    // ⑦ 1403 트리거(비-pending) 코얼레싱: 디바운스 창 안에 도착한 트리거를 버리지 않고
+    //    창 만료 직후 1회 폴로 합쳐 예약한다 (자유 실행 BP 히트 감지 유실 방지).
+    private _triggerPollPending = false;
     // ⑤ Show Thread 목록 캐시: 정지 감지 폴이 방금 가져온 목록을 StoppedEvent 직후
     //    VS Code가 부르는 threadsRequest에서 재사용 — TCP 왕복 1회 제거.
     private _lastThreadList: ReturnType<typeof parseThreadList> | null = null;
@@ -185,6 +195,9 @@ export class GPLDebugSession extends LoggingDebugSession {
     // ③ Show Stack 캐시 신선도: 정지 위치별 마지막 조회 시각 + 짧은 TTL.
     //    같은 정지 동안 stackTrace/scopes/variables 연속 요청을 1회 조회로 합친다.
     private _frameCacheAt = new Map<string, number>();
+    // ⑧ 프레임 캐시 세대 — _clearStaleState/_fastPoll에서 bump. 진행 중이던 Show Stack
+    //    조회가 무효화 이후 완료되면 결과를 캐시에 기록하지 않는다(stale 재주입 방지).
+    private _frameCacheGen = 0;
     // 정지 중 프레임은 변하지 않고 새 step/continue 시 _fastPoll()이 무효화하므로,
     // TTL을 넉넉히 둬서 정지 직후 stackTrace의 Show Stack 재조회 왕복을 줄인다 (400→1500ms).
     private static readonly FRAME_CACHE_TTL_MS = 1500;
@@ -290,6 +303,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (!this._stopOnEntry && this._projectName && this._isConnected) {
             this._log(`Start ${this._projectName} (auto-start after configurationDone)`);
             await this._sendCmd(`Start ${this._projectName}`);
+            // Start 직후 곧바로 히트하는 BP(진입 부근 정지)를 빠르게 감지한다 (읽기 전용 폴).
+            this._fastPoll();
         }
 
         // configurationDone 이전에 큐에 쌓인 StoppedEvent 발사
@@ -355,11 +370,13 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         // Optional: deploy(build-only) before attaching so F5 can do Upload + Debug.
         if (args.deployBeforeAttach) {
-            const deployOk = await this._runDeployBeforeAttach(args);
-            if (!deployOk) {
+            const deployResult = await this._runDeployBeforeAttach(args);
+            if (!deployResult.ok) {
                 this.sendErrorResponse(response, {
                     id: 1003,
-                    format: 'Attach 전 배포(Upload/Compile)에 실패했습니다. Debug Console 로그를 확인하세요.',
+                    format: deployResult.cancelled
+                        ? '실행 중인 쓰레드를 정지하지 않아 디버깅을 시작하지 않았습니다. 프로그램을 STOP한 뒤 다시 F5로 시작하세요.'
+                        : 'Attach 전 배포(Upload/Compile)에 실패했습니다. Debug Console 로그를 확인하세요.',
                 });
                 return;
             }
@@ -415,11 +432,19 @@ export class GPLDebugSession extends LoggingDebugSession {
         // step/continue 완료 신호(<E>N,N</E>)가 오면 폴링 타이머 대기 없이 바로 상태를 확인한다.
         this._disposables.push(
             onDebugPollTrigger(() => {
-                if (this._isConnected && (this._pendingAction === 'step' || this._pendingAction === 'continue' || this._pendingAction === 'entry')) {
+                if (!this._isConnected) { return; }
+                if (this._pendingAction) {
+                    // step/continue/entry/pause 대기 중 — force=true로 250ms 디바운스를
+                    // 우회해 트리거가 유실되지 않도록 한다. (가드에 막히면
+                    // _pollRetryRequested가 표시되어 직후 재폴된다)
                     this._log('[1403] 데이터 감지 → 즉시 폴 트리거');
-                    // force=true: 250ms 디바운스에 걸려 트리거가 유실되지 않도록 한다.
-                    // (가드에 막히면 _pollRetryRequested가 표시되어 직후 재폴된다)
                     void this._pollThreadStates(true);
+                } else {
+                    // ⑦ pending 액션이 없어도 폴 — 자유 실행 중 BP 히트/다른 쓰레드 정지도
+                    // 1403 상태 이벤트로 먼저 신호가 온다. 코얼레싱 예약이라 이벤트가
+                    // 폭주해도 폴은 POLL_MIN_GAP_MS당 1회로 합쳐지고, 디바운스/가드에
+                    // 걸린 트리거도 유실되지 않는다.
+                    this._requestTriggerPoll();
                 }
             }),
         );
@@ -788,6 +813,20 @@ export class GPLDebugSession extends LoggingDebugSession {
         const resp = await this._sendCmd(cmd);
         this._clearEvaluateCache();
 
+        // 하드 규칙 2: 성공/실패는 해당 명령의 STATUS로 판정한다.
+        // STATUS가 명시적으로 0이 아니면 실패로 보고(값이 안 바뀌었는데 성공 표시 방지).
+        // 응답 유실/무-STATUS(-9999)는 기존 동작(성공 가정) 유지 — 과잉 실패 보고 방지.
+        if (resp) {
+            const st = parseStatus(resp);
+            if (st.code !== 0 && st.code !== -9999) {
+                this.sendErrorResponse(response, {
+                    id: 2002,
+                    format: `변수 설정 실패 (STATUS ${st.code}${st.message ? `: ${st.message}` : ''})`,
+                });
+                return;
+            }
+        }
+
         response.body = { value: args.value };
         this.sendResponse(response);
     }
@@ -1142,6 +1181,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._frameIdToInfo.clear();
         this._frameIdCounter = 0;
         this._cachedFrames.clear();
+        this._frameCacheGen++; // ⑧ 진행 중이던 프레임 조회의 캐시 기록도 무효화
         this._clearEvaluateCache();
     }
 
@@ -1309,6 +1349,17 @@ export class GPLDebugSession extends LoggingDebugSession {
         return { name: '', type: '', value: line };
     }
 
+    // ⑧ 동일 쓰레드 프레임 조회의 중복 방지 — 정지 감지 직후 프리페치와 VS Code의
+    //    stackTraceRequest가 겹칠 때 같은 Show Stack을 두 번 보내지 않고 합류시킨다.
+    private _framesInFlight = new Map<string, Promise<StackFrameInfo[]>>();
+
+    /** ⑧ 정지 감지 직후 스택 프레임 선조회로 캐시를 데워 둔다(읽기 전용 Show Stack).
+     *  StoppedEvent 직후 오는 stackTraceRequest가 진행 중 조회에 합류해
+     *  왕복 1회분의 전환 체감 지연을 줄인다. */
+    private _prefetchFramesAfterStop(threadName: string): void {
+        void this._getThreadFrames(threadName).catch(() => undefined);
+    }
+
     private async _getThreadFrames(threadName: string): Promise<StackFrameInfo[]> {
         // ③ Show Stack 캐시: 같은 정지 동안 stackTrace/scopes/variables가 연달아
         //    요청해도 짧은 TTL 내에는 1회 조회 결과를 재사용한다(_fastPoll에서 무효화).
@@ -1319,11 +1370,29 @@ export class GPLDebugSession extends LoggingDebugSession {
             return cachedFresh;
         }
 
+        const inFlight = this._framesInFlight.get(threadName);
+        if (inFlight) { return inFlight; }
+        const fetch = this._fetchThreadFramesUncached(threadName);
+        this._framesInFlight.set(threadName, fetch);
+        try {
+            return await fetch;
+        } finally {
+            this._framesInFlight.delete(threadName);
+        }
+    }
+
+    private async _fetchThreadFramesUncached(threadName: string): Promise<StackFrameInfo[]> {
+        // ⑧ 조회 시작 시점의 캐시 세대 캡처 — 조회 중 새 step/continue로 무효화되면
+        //    (특히 Show Stack 0프레임 → Show Thread fallback이 Step 뒤에 큐잉되는 경우)
+        //    과도기 위치를 fresh로 재주입하지 않도록 캐시 기록만 건너뛴다.
+        const gen = this._frameCacheGen;
         const resp = await this._sendCmd(`Show Stack ${threadName}`);
         const frames = resp ? parseStack(resp) : [];
         if (frames.length > 0) {
-            this._cachedFrames.set(threadName, frames);
-            this._frameCacheAt.set(threadName, Date.now());
+            if (gen === this._frameCacheGen) {
+                this._cachedFrames.set(threadName, frames);
+                this._frameCacheAt.set(threadName, Date.now());
+            }
             return frames;
         }
 
@@ -1340,8 +1409,10 @@ export class GPLDebugSession extends LoggingDebugSession {
                 fileLine: detail.fileLine,
                 size: 0,
             }];
-            this._cachedFrames.set(threadName, fallback);
-            this._frameCacheAt.set(threadName, Date.now());
+            if (gen === this._frameCacheGen) {
+                this._cachedFrames.set(threadName, fallback);
+                this._frameCacheAt.set(threadName, Date.now());
+            }
             return fallback;
         }
 
@@ -1698,17 +1769,58 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     // ─── State Polling ────────────────────────────────────
 
+    /**
+     * ⑦ 비-pending 1403 트리거용 코얼레싱 폴 예약. 디바운스 창(POLL_MIN_GAP_MS)이
+     * 지나는 시점에 force 폴 1회를 보장한다 — 창 안에 도착한 트리거를 그냥 버리면
+     * 자유 실행 BP 히트 감지가 인터벌 백업(≥1s)까지 밀리는 구멍이 생긴다.
+     */
+    private _requestTriggerPoll(): void {
+        if (this._triggerPollPending) { return; }
+        this._triggerPollPending = true;
+        const since = Date.now() - this._lastPollCompletedAt;
+        const delay = Math.max(0, GPLDebugSession.POLL_MIN_GAP_MS - since) + 5;
+        setTimeout(() => {
+            this._triggerPollPending = false;
+            if (!this._isConnected) { return; }
+            // force=true: 만료 시점 폴이 다시 디바운스에 걸리지 않도록. 폴 진행 중이면
+            // _pollRetryRequested(force 경로)로 재폴이 예약된다.
+            void this._pollThreadStates(true);
+        }, delay);
+    }
+
     private _startPolling(): void {
         this._stopPolling();
-        this._pollTimer = setInterval(() => {
-            if (this._pollInFlight) { return; }
-            void this._pollThreadStates();
-        }, this._pollIntervalMs);
+        this._scheduleNextIntervalPoll(++this._pollTimerGen);
+    }
+
+    /**
+     * ⑦ 적응형 백업 폴: Running 쓰레드가 있으면 짧은 간격(RUNNING_BACKUP_POLL_MS)으로,
+     * 모두 정지/Idle이면 사용자 간격(_pollIntervalMs)으로 재관측한다.
+     * 정지 중 상태 변화는 사용자 액션이 시작점이라 _fastPoll이 즉시 커버하므로,
+     * 정지 중 트래픽은 기존과 동일하고 실행 중에만 감지 안전망이 촘촘해진다.
+     */
+    private _scheduleNextIntervalPoll(gen: number): void {
+        if (gen !== this._pollTimerGen || !this._isConnected) { return; }
+        const anyRunning = (this._lastThreadList ?? []).some(t => t.state === 'Running');
+        const delay = anyRunning
+            ? Math.min(GPLDebugSession.RUNNING_BACKUP_POLL_MS, this._pollIntervalMs)
+            : this._pollIntervalMs;
+        this._pollTimer = setTimeout(() => {
+            this._pollTimer = undefined;
+            void (async () => {
+                if (gen !== this._pollTimerGen || !this._isConnected) { return; }
+                if (!this._pollInFlight) {
+                    await this._pollThreadStates();
+                }
+                this._scheduleNextIntervalPoll(gen);
+            })();
+        }, delay);
     }
 
     private _stopPolling(): void {
+        this._pollTimerGen++;
         if (this._pollTimer) {
-            clearInterval(this._pollTimer);
+            clearTimeout(this._pollTimer);
             this._pollTimer = undefined;
         }
         // 진행 중인 fast poll 체인 무효화 — 지연 콜백이 뒤늦게 재폴/재스케줄하지 않도록.
@@ -1730,6 +1842,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._stopPolling();
         // ③ 곧 위치가 바뀌므로 stack 프레임 캐시 신선도를 무효화(다음 정지 후 1회 재조회).
         this._frameCacheAt.clear();
+        this._frameCacheGen++; // ⑧ 진행 중이던 프레임 조회의 캐시 기록도 무효화
         const gen = ++this._fastPollGen;
         const delays = GPLDebugSession.FAST_POLL_DELAYS_MS;
         const schedule = (idx: number): void => {
@@ -1766,14 +1879,14 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (!this._isConnected) { return; }
         if (this._pollInFlight) {
             // ④ 진행 중인 폴이 이번 상태 변화를 이미 지나쳤을 수 있으므로,
-            //    pending 액션이 있으면 폴 완료 직후 1회 재폴하도록 표시한다 (트리거 유실 방지).
-            if (this._pendingAction) { this._pollRetryRequested = true; }
+            //    트리거(force)이거나 pending 액션이 있으면 폴 완료 직후 1회 재폴 (유실 방지).
+            if (force || this._pendingAction) { this._pollRetryRequested = true; }
             return;
         }
         // 사용자 액션(step/continue/pause/disconnect)이 진행 중이면 폴링을 보류.
         // 폴 명령이 1402 큐에서 사용자 명령보다 먼저 자리를 차지하지 않도록 한다.
         if (this._userActionInFlight) {
-            if (this._pendingAction) { this._pollRetryRequested = true; }
+            if (force || this._pendingAction) { this._pollRetryRequested = true; }
             return;
         }
         // ② 디바운스: fast poll/1403 트리거(force=true)가 아닌 interval 폴이 직전 완료 후
@@ -1834,6 +1947,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     const id = this._threadNameToId.get(name);
                     this._knownThreadNames.delete(name);
                     this._previousThreadStates.delete(name);
+                    this._continueOrigin.delete(name); // 누적 방지
 
                     if (id !== undefined
                         && this._pendingAction === 'continue'
@@ -1919,6 +2033,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                                 this.sendEvent(new StoppedEvent('breakpoint', id));
                                 this._log(`쓰레드 ${t.name} 정지 (breakpoint)`);
                             }
+                            // ⑧ 곧 도착할 stackTraceRequest를 위해 프레임 선조회(캐시 워밍)
+                            this._prefetchFramesAfterStop(t.name);
 
                             this._previousThreadStates.set(t.name, t.state);
                             if (t.state !== prevState) { threadStateChanged = true; }
@@ -1974,6 +2090,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                         this.sendEvent(new StoppedEvent(reason, id));
                         this._log(`쓰레드 ${t.name} 정지 (${reason})`);
                     }
+                    // ⑧ 곧 도착할 stackTraceRequest를 위해 프레임 선조회(캐시 워밍)
+                    this._prefetchFramesAfterStop(t.name);
                 }
 
                 // Detect transition to Error state → break on errors가 활성일 때만
@@ -2009,7 +2127,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             // ④ 이번 폴 진행 중 유실된 트리거가 있으면 즉시 1회 재폴 (30ms 뒤, force)
             if (this._pollRetryRequested) {
                 this._pollRetryRequested = false;
-                if (this._isConnected && this._pendingAction) {
+                if (this._isConnected) {
                     setTimeout(() => { void this._pollThreadStates(true); }, 30);
                 }
             }
@@ -2019,11 +2137,11 @@ export class GPLDebugSession extends LoggingDebugSession {
     /**
      * Run build-only deploy before attach.
      */
-    private async _runDeployBeforeAttach(args: IAttachRequestArguments): Promise<boolean> {
+    private async _runDeployBeforeAttach(args: IAttachRequestArguments): Promise<{ ok: boolean; cancelled?: boolean }> {
         const projectDir = await this._resolveDeployProjectDir(args);
         if (!projectDir) {
             this._log('[deploy] 배포할 Project.gpr 폴더를 찾지 못했습니다.');
-            return false;
+            return { ok: false };
         }
 
         const deployDiagnostics = getDebugDeployDiagnostics();
@@ -2036,9 +2154,26 @@ export class GPLDebugSession extends LoggingDebugSession {
                 skipStart: true,
                 skipUnchanged: args.skipUnchangedOnDeploy,
                 // flash 경유 없이 /GPL/<name>에 직접 미러 동기화한다(변경분만 업로드 + 원격 전용 파일 삭제).
-                // Attach 전 STOP은 그대로 수행되므로 쓰레드 락(-750) 없이 안전하며,
                 // /GPL/<name>이 아직 없으면(최초 배포) deploy()가 classic(flash + Load) 경로로 자동 폴백한다.
                 directGpl: true,
+                // 무조건 Stop -all 하지 않는다: 먼저 Show Thread로 확인하고, 활성 쓰레드가 있을 때만
+                // 사용자에게 정지 여부를 모달로 묻는다(Quick Compile과 동일한 게이트, §0.6).
+                // 실행 중 업로드는 파일 충돌·메모리 누수 위험이 있으므로, 미승인 시 THREAD_CHECK로 중단한다.
+                skipStop: true,
+                confirmStopOnActive: async (activeDesc: string) => {
+                    const pick = await vscode.window.showWarningMessage(
+                        '실행 중인 쓰레드가 있습니다. Stop -all로 정지한 후 디버깅을 시작할까요?',
+                        {
+                            modal: true,
+                            detail:
+                                `활성 쓰레드: ${activeDesc}\n\n` +
+                                '정지하지 않으면 디버깅을 시작하지 않습니다. ' +
+                                '(실행 중 업로드는 파일 충돌·메모리 누수를 유발할 수 있습니다.)',
+                        },
+                        'Stop 후 디버그 시작',
+                    );
+                    return pick === 'Stop 후 디버그 시작';
+                },
             },
             deployOutput,
             deployDiagnostics,
@@ -2047,6 +2182,15 @@ export class GPLDebugSession extends LoggingDebugSession {
         );
 
         if (!result.success) {
+            // 사용자가 쓰레드 정지 확인을 취소한 경우(THREAD_CHECK)는 실패가 아니라 취소로 다룬다.
+            // 컴파일 에러 UI(첫 에러 점프 / Problems 패널)를 띄우지 않고 조용히 중단한다.
+            if (result.failedPhase === 'THREAD_CHECK') {
+                this._log('[deploy] 사용자가 쓰레드 정지를 취소하여 디버깅을 시작하지 않습니다.');
+                if (result.failedStatusMessage) {
+                    this._log(`[deploy] ${result.failedStatusMessage}`);
+                }
+                return { ok: false, cancelled: true };
+            }
             this._log(`[deploy] 실패: ${result.compileErrors.length}개 컴파일 에러`);
             if (result.failedPhase) {
                 this._log(`[deploy] 실패 단계: ${result.failedPhase}`);
@@ -2102,7 +2246,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
 
             deployOutput.show(true);
-            return false;
+            return { ok: false };
         }
 
         if (!this._projectName && result.projectName) {
@@ -2111,7 +2255,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         this._log(`[deploy] 성공: ${result.projectName}`);
-        return true;
+        return { ok: true };
     }
 
     /**

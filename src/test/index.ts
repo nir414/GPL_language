@@ -8,9 +8,11 @@ import './cursorExpression.test';
 import './responseParser.test';
 import './controllerStatusCodes.test';
 import './gplDictionaryData.test';
+import './gplParserDocComment.test';
 import './consoleCommandClassifier.test';
 import './indentationRules.test';
 import './projectSelection.test';
+import './overloadResolution.test';
 import { run } from './harness';
 
 void run();

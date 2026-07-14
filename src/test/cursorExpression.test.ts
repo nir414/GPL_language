@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
+import { extractBaseObjectName, escapeRegExp, splitParameters, getParameterArity, argCountMatchesArity, matchProcedureHeaderKind } from '../language/cursorExpression';
 
 test('extractBaseObjectName: 대입 + 배열 인덱싱에서 기준 객체', () => {
     assert.strictEqual(extractBaseObjectName('returnError = armList(0)'), 'armList');
@@ -38,4 +38,50 @@ test('escapeRegExp: 정규식 메타문자 이스케이프', () => {
 
 test('escapeRegExp: 일반 식별자는 그대로', () => {
     assert.strictEqual(escapeRegExp('myRobot'), 'myRobot');
+});
+
+test('splitParameters: 공백뿐인 괄호는 0개', () => {
+    assert.deepStrictEqual(splitParameters('   '), []);
+    assert.deepStrictEqual(splitParameters(''), []);
+});
+
+test('splitParameters: 기본값 속 콤마는 분리하지 않음', () => {
+    assert.deepStrictEqual(
+        splitParameters('a As Integer, Optional p As Foo = Bar(1, 2)'),
+        ['a As Integer', 'Optional p As Foo = Bar(1, 2)']
+    );
+});
+
+test('getParameterArity: Optional은 required에서 제외', () => {
+    assert.deepStrictEqual(
+        getParameterArity(['stage As Integer', 'slot As Integer', 'Optional flip As Boolean = False']),
+        { required: 2, max: 3 }
+    );
+});
+
+test('getParameterArity: ParamArray는 max 무제한(undefined)', () => {
+    assert.deepStrictEqual(
+        getParameterArity(['prefix As String', 'ParamArray items() As String']),
+        { required: 1, max: undefined }
+    );
+});
+
+test('argCountMatchesArity: Optional/ParamArray 호출 매칭', () => {
+    assert.strictEqual(argCountMatchesArity(2, { required: 2, max: 3 }), true);
+    assert.strictEqual(argCountMatchesArity(3, { required: 2, max: 3 }), true);
+    assert.strictEqual(argCountMatchesArity(1, { required: 2, max: 3 }), false);
+    assert.strictEqual(argCountMatchesArity(4, { required: 2, max: 3 }), false);
+    assert.strictEqual(argCountMatchesArity(9, { required: 1, max: undefined }), true);
+    assert.strictEqual(argCountMatchesArity(undefined, { required: 3, max: 3 }), true);
+});
+
+test('matchProcedureHeaderKind: 수식어 다중이어도 인식', () => {
+    assert.strictEqual(matchProcedureHeaderKind('Public Overrides Sub Bar()'), 'Sub');
+    assert.strictEqual(matchProcedureHeaderKind('Friend Shared Function Baz() As Integer'), 'Function');
+    assert.strictEqual(matchProcedureHeaderKind('Public ReadOnly Property P() As Integer'), 'Property');
+    assert.strictEqual(matchProcedureHeaderKind('Dim x As Integer'), undefined);
+});
+
+test('extractBaseObjectName: 인덱서 qualifier는 인덱스가 아니라 기준 객체', () => {
+    assert.strictEqual(extractBaseObjectName('steps(i)'), 'steps');
 });

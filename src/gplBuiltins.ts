@@ -204,6 +204,24 @@ const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
         insertSnippet: 'UCase(${1:string})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/ucase.htm'
     },
+    {
+        name: 'FromBitString',
+        kind: 'function',
+        signature: 'FromBitString(string, type, big_endian)',
+        summary: '문자열 안에 내부 비트 형식으로 패킹된 숫자를 추출하여 그 값을 반환합니다.',
+        category: 'String',
+        insertSnippet: 'FromBitString(${1:string}, ${2:type}, ${3:big_endian})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/frombitstring.htm'
+    },
+    {
+        name: 'ToBitString',
+        kind: 'function',
+        signature: 'ToBitString(expression, type, big_endian)',
+        summary: '식의 값을 특정 숫자 형식으로 변환하고, 그 내부 비트 표현을 문자열로 패킹하여 반환합니다.',
+        category: 'String',
+        insertSnippet: 'ToBitString(${1:expression}, ${2:type}, ${3:big_endian})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/tobitstring.htm'
+    },
 
     // Math Class
     {

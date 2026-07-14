@@ -10,12 +10,12 @@ npm run bump:patch
 
 # 2. CHANGELOG.md 편집 후 커밋 & 푸시
 git add package.json CHANGELOG.md
-git commit -m "chore: bump version to 0.2.13"
+git commit -m "chore: bump version to 0.7.1"
 git push origin main
 
 # 3. 태그 생성 & 푸시 (자동 릴리즈 트리거)
-git tag v0.2.13
-git push origin v0.2.13
+git tag v0.7.1
+git push origin v0.7.1
 ```
 
 ✅ 완료! GitHub Actions가 자동으로 빌드, 패키징, 릴리즈 노트 생성, Release 생성을 처리합니다.
@@ -71,10 +71,10 @@ git push origin v0.3.0-beta.1
 
 ```powershell
 # 로컬 태그 삭제
-git tag -d v0.2.13
+git tag -d v0.7.1
 
 # 원격 태그 삭제
-git push origin :refs/tags/v0.2.13
+git push origin :refs/tags/v0.7.1
 
 # GitHub에서 Release도 수동 삭제 (필요시)
 # https://github.com/nir414/GPL_language/releases

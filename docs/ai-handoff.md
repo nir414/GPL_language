@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-07-14 (§1-N: 디버그(F5) 배포에 "업로드 전 쓰레드 확인 + 정지 확인 모달" 게이트 적용; 이전 이력 §1-M 이하)
+- 최종 갱신: 2026-07-14 (§1-O: 반복되는 `.git/index.lock` "File exists" 원인 진단(stale 락) + `scripts/git-unlock.js` / `npm run git:unlock` 추가; 이전 이력 §1-N 이하)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 현재 package 버전: **0.7.0** (§1-I까지 포함, 미커밋 — `v0.7.0` 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile` 최종 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -613,6 +613,39 @@ F5 경로만 빠져 있었다.
 
 ### 변경 파일
 - `src/debug/gplDebugSession.ts` — `_runDeployBeforeAttach`(skipStop+confirmStopOnActive, 반환형 변경), `attachRequest` 취소 분기.
+
+## 1-O. 2026-07-14 세션 — 반복되는 `.git/index.lock` "File exists" 에러 진단 + 해제 스크립트 추가
+
+### 증상
+`git add`/`commit` 시 `fatal: Unable to create '.../.git/index.lock': File exists.
+Another git process seems to be running ...`가 **매번** 발생.
+
+### 원인 (핵심: stale 락, "another git process"는 거짓 경고)
+- 문제의 `.git/index.lock`은 **0바이트, 4일 전(2026-07-10 11:37) 생성**본이었고, 확인 시점에
+  **실행 중인 git.exe가 하나도 없었다**(Win32_Process 조회 결과 없음). 즉 살아있는 git이 아니라
+  이전에 중단된 프로세스가 남긴 **stale 락**이 방치돼 있었던 것. 아무도 안 지우니 이후 모든 인덱스
+  쓰기가 같은 락에 걸려 "매번" 실패한 것처럼 보임(새 에러가 아니라 동일 락 하나가 계속 차단).
+- 락 leak 유발 조건이 이 환경에 다 있음: **AI 에이전트 2개 동시 실행**(`codex` 프로세스 + Claude Code)이
+  같은 리포에서 git을 돌림 + **VS Code 내장 Git**의 자동 status/fetch/refresh + Windows Defender/인덱싱의
+  순간 파일 핸들 점유. 이 중 하나가 락을 쥔 채 강제 종료되면 락이 남는다.
+
+### 조치
+- 즉시: stale 락 제거(실행 중 git 없음 확인 후) → git 정상 복구.
+- **`scripts/git-unlock.js` 추가** + `package.json`에 `npm run git:unlock` 등록.
+  - 기본(안전) 모드: **실행 중 git 프로세스가 없을 때만** 락 제거. git이 돌고 있으면 살아있는 작업일
+    수 있으므로 제거하지 않고 경고(레이스 방지). 추가로 락이 `MIN_AGE_SECONDS`(5s) 이내 생성이면
+    진행 중일 수 있어 건너뜀.
+  - `--check`: 상태만 출력(제거 안 함). `--force`: git 프로세스/age 확인 건너뛰고 강제 제거.
+  - `index.lock`/`HEAD.lock`/`config.lock`/`shallow.lock` 대응, worktree(`.git` 파일 형태)도 해석.
+- 재발 방지 권고(스크립트 외): ① 같은 리포에서 codex + Claude Code를 동시에 git 작업시키지 않기,
+  ② Windows Defender 실시간 검사에 리포/`.git` 제외 추가, ③ git 명령을 강제 중단(Ctrl+C/터미널 닫기)하지 않기.
+
+### 검증
+- `node scripts/git-unlock.js` 5개 경로 수동 테스트 통과: (1) 락 없음=정상, (2) `--check`=상태만,
+  (3) fresh 락=age 가드로 건너뜀, (4) 60s 락=제거, (5) `--force`=즉시 제거. 이후 `git status` 정상.
+
+### 변경 파일
+- `scripts/git-unlock.js` (신규), `package.json` (`git:unlock` 스크립트 추가).
 
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 

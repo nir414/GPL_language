@@ -866,6 +866,7 @@
         "watch": "tsc -watch -p ./",
         "test": "npm run compile && node ./out/test/index.js",
         "pre-release-check": "node scripts/pre-release-check.js",
+    "git:unlock": "node scripts/git-unlock.js",
         "package": "node scripts/package.js --bump patch",
         "package:no-bump": "node scripts/package.js",
         "dev:cycle": "npm run package",

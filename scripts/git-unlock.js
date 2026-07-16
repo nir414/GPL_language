@@ -121,7 +121,14 @@ function main() {
       console.error(`  ! ${path.basename(l)} 는 ${age.toFixed(1)}s 전에 생성됨 — 진행 중일 수 있어 건너뜀 (--force 로 강제).`);
       continue;
     }
-    fs.unlinkSync(l);
+    try {
+      fs.unlinkSync(l);
+    } catch (err) {
+      // AV/인덱서가 파일을 잡고 있으면 EPERM/EBUSY 가 날 수 있다 — 크래시하지 말고
+      // 실패를 보고한 뒤 나머지 락 파일 처리를 계속한다.
+      console.error(`  ✗ 제거 실패: ${path.basename(l)} (${err.code || err.message}) — 잠시 후 다시 시도하거나 --force 를 사용하세요.`);
+      continue;
+    }
     console.log(`  ✓ 제거: ${path.basename(l)}`);
     removed++;
   }

@@ -36,6 +36,7 @@ const STATE_CHANGING_COMMANDS = new Map<string, ConsoleCommandCategory>([
     ['continue', 'debug'],
     ['copy', 'file'],
     ['create', 'file'],
+    ['execute', 'runtime'],
     ['load', 'project'],
     ['pc', 'parameter'],
     ['set', 'debug'],
@@ -81,6 +82,16 @@ export function classifyConsoleCommand(command: string): ConsoleCommandClassific
         };
     }
 
+    // ErrorLog는 기본적으로 조회지만 `-clear` 플래그는 로그를 지우는 상태 변경 동작이다.
+    if (commandName === 'errorlog' && /(^|\s)-clear\b/i.test(normalized)) {
+        return {
+            commandName,
+            category: 'event-log',
+            impact: 'state-changing',
+            detail: 'error log clear',
+        };
+    }
+
     if (DESTRUCTIVE_COMMANDS.has(commandName)) {
         return {
             commandName,
@@ -119,6 +130,14 @@ export function classifyConsoleCommand(command: string): ConsoleCommandClassific
 export function formatConsoleCommandClassification(command: string): string {
     const c = classifyConsoleCommand(command);
     return `${c.impact}/${c.category}/${c.commandName}`;
+}
+
+/**
+ * 디버그 REPL 등에서 쓰는 단순 판정 — 읽기 전용으로 확인된 명령만 true.
+ * 미분류(unknown) 명령은 안전을 위해 읽기 전용으로 취급하지 않는다.
+ */
+export function isReadOnlyConsoleCommand(command: string): boolean {
+    return classifyConsoleCommand(command).impact === 'read-only';
 }
 
 function detailFor(commandName: string, normalized: string): string {

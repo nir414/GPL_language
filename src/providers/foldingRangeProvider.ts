@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { GPLParser } from '../gplParser';
 
 /**
  * Folding provider for GPL files.
@@ -122,9 +123,11 @@ export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
 
             // Handle VB/GPL line continuation: " _" at end of line joins with next line.
             // e.g. "If condition1 And _\n     condition2 Then" → single logical line.
-            while (line + 1 < lineCount && /\s_\s*$/.test(text)) {
+            // 주석/문자열을 제외한 코드가 ` _`로 끝날 때만 병합한다 — `_`로 끝나는 주석에
+            // 다음 줄이 잘못 이어 붙던 오탐 제거 (파서의 endsWithLineContinuation 재사용).
+            while (line + 1 < lineCount && GPLParser.endsWithLineContinuation(text)) {
                 line++;
-                text = text.replace(/\s_\s*$/, ' ') + document.lineAt(line).text.trimStart();
+                text = GPLParser.stripTrailingContinuation(text) + ' ' + document.lineAt(line).text.trimStart();
             }
 
             // Region folding

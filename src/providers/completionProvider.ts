@@ -2,6 +2,18 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { XmlUtils } from '../xmlUtils';
 import { getAllGplBuiltins, getGplBuiltinReferenceUrl, GPLBuiltinEntry } from '../gplBuiltins';
+import { GPLParser } from '../gplParser';
+import { extractQualifierChainBefore, findEnclosingProcedureRange } from '../language/cursorExpression';
+
+/** 한정자(`obj.`) 타입 해석 결과. */
+type QualifierTarget =
+    | { kind: 'builtinClass'; name: string }   // GPL Dictionary 내장 클래스 (Move, XmlDoc, String, …)
+    | { kind: 'userClass'; name: string }      // 워크스페이스에 정의된 클래스
+    | { kind: 'module'; name: string }         // 워크스페이스 모듈 (Module.Member 접근)
+    | { kind: 'none' };                        // 타입은 알지만 멤버가 없음(원시 타입) → 빈 목록으로 소음 억제
+
+/** 멤버가 없는 원시 타입 — 이 타입의 변수 뒤 '.'에서는 완성 목록을 비운다. */
+const PRIMITIVE_TYPES = new Set(['integer', 'double', 'single', 'boolean', 'byte', 'short', 'long', 'object']);
 
 export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     constructor(private symbolCache: SymbolCache) {}
@@ -11,6 +23,8 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     // 새로 생성할 필요가 없다. (공백 트리거 시의 전량 재생성 비용 제거)
     private static _builtinCompletionsCache: vscode.CompletionItem[] | undefined;
     private static _dictionaryCompletionsCache: vscode.CompletionItem[] | undefined;
+    /** 내장(사전) 클래스 이름 소문자 집합 — "Move", "XmlDoc", "String" 등 dotted 이름의 접두부. */
+    private static _builtinClassNames: Set<string> | undefined;
 
     provideCompletionItems(
         document: vscode.TextDocument,
@@ -22,24 +36,38 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
             return undefined;
         }
 
-        const completionItems: vscode.CompletionItem[] = [];
-        
-        // Get current context (module/class)
-        const text = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
-        const moduleMatch = text.match(/Module\s+(\w+)/);
-        const classMatch = text.match(/.*Class\s+(\w+)/);
-        
-        const currentModule = moduleMatch ? moduleMatch[1] : undefined;
-        const currentClass = classMatch ? classMatch[1] : undefined;
-
-        // 기본 심볼 완성
-        const symbolCompletions = this.symbolCache.getCompletionItems(currentModule, currentClass);
-        completionItems.push(...symbolCompletions);
-
-        // 현재 줄의 텍스트 분석
         const currentLine = document.lineAt(position).text;
         const beforeCursor = currentLine.substring(0, position.character);
-        
+
+        // 주석/문자열 안에서는 언어 완성을 띄우지 않는다 ('.' 트리거 소음 방지).
+        // 단 문자열 안에서는 XML 엔티티 완성('&' 트리거의 존재 이유)만 유지한다.
+        const posKind = this.classifyPosition(currentLine, position.character);
+        if (posKind === 'comment') {
+            return [];
+        }
+        if (posKind === 'string') {
+            return this.isXmlContext(beforeCursor, currentLine) ? this.getXmlCompletions() : [];
+        }
+
+        // ── 멤버 접근 컨텍스트: `obj.` / `Move.` 뒤에서는 해당 한정자의 멤버만 제공 ──
+        // (전역 목록 전체가 뜨던 노이즈 제거 + dotted 내장의 접두부 중복 삽입 방지)
+        const chainInfo = extractQualifierChainBefore(beforeCursor);
+        if (chainInfo) {
+            const memberItems = this.getMemberCompletions(document, position, chainInfo.chain);
+            if (memberItems) {
+                return memberItems;
+            }
+            // 한정자 타입을 해석하지 못하면 기존 전역 목록으로 폴백한다.
+        }
+
+        const completionItems: vscode.CompletionItem[] = [];
+
+        // 현재 프로시저의 로컬 변수/파라미터 — 가장 관련성이 높으므로 최상단 정렬
+        completionItems.push(...this.getLocalCompletions(document, position));
+
+        // 워크스페이스 심볼 완성
+        completionItems.push(...this.symbolCache.getCompletionItems());
+
         // XML 관련 컨텍스트 감지 및 특화 완성 제공
         if (this.isXmlContext(beforeCursor, currentLine)) {
             completionItems.push(...this.getXmlCompletions());
@@ -57,7 +85,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
 
         // VB.NET 호환성 관련 완성
         completionItems.push(...this.getVBCompatibilityCompletions(beforeCursor));
-        
+
         // GPL 기본 함수 완성
         completionItems.push(...this.getGPLBuiltinCompletions());
 
@@ -65,6 +93,278 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
         completionItems.push(...this.getGPLDictionaryCompletions());
 
         return completionItems;
+    }
+
+    // ─── 위치 분류 (주석/문자열 억제) ─────────────────────────────
+
+    /** 커서 위치가 코드/문자열/주석 중 어디인지 판별한다. GPL 문자열 이스케이프("")를 인식. */
+    private classifyPosition(lineText: string, character: number): 'code' | 'string' | 'comment' {
+        let inString = false;
+        const end = Math.min(character, lineText.length);
+        for (let i = 0; i < end; i++) {
+            const ch = lineText[i];
+            if (inString) {
+                if (ch === '"') {
+                    if (i + 1 < end && lineText[i + 1] === '"') {
+                        i++; // "" 이스케이프
+                    } else {
+                        inString = false;
+                    }
+                }
+            } else if (ch === '"') {
+                inString = true;
+            } else if (ch === "'") {
+                return 'comment';
+            }
+        }
+        return inString ? 'string' : 'code';
+    }
+
+    // ─── 멤버 완성 (`obj.` / `Move.`) ─────────────────────────────
+
+    /** 한정자 체인의 멤버 완성 목록. 타입 해석 실패 시 undefined(전역 목록 폴백). */
+    private getMemberCompletions(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        chain: string[]
+    ): vscode.CompletionItem[] | undefined {
+        const target = this.resolveQualifierType(document, position, chain);
+        if (!target) {
+            return undefined;
+        }
+        switch (target.kind) {
+            case 'none':
+                return []; // 원시 타입: 멤버 없음 — 전역 목록 노이즈 대신 빈 목록
+            case 'builtinClass':
+                return this.getBuiltinClassMemberCompletions(target.name);
+            case 'userClass':
+                return this.getUserSymbolMemberCompletions(this.symbolCache.getClassMembers(target.name));
+            case 'module':
+                return this.getUserSymbolMemberCompletions(this.symbolCache.getModuleMembers(target.name));
+        }
+    }
+
+    /** 한정자 체인의 최종 타입을 해석한다. 1세그먼트: 내장 클래스 → 로컬/파라미터 → 워크스페이스 심볼 순. */
+    private resolveQualifierType(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        chain: string[]
+    ): QualifierTarget | undefined {
+        const first = chain[0];
+        const firstName = first.replace(/\(.*\)$/, '');
+        const firstHasCall = firstName !== first;
+        let current: QualifierTarget | undefined;
+
+        // 1) 내장(사전) 클래스 정적 접근: Move. / XmlDoc. / String. …
+        if (!firstHasCall && this.getBuiltinClassNames().has(firstName.toLowerCase())) {
+            current = { kind: 'builtinClass', name: firstName };
+        }
+
+        // 2) 현재 프로시저의 로컬/파라미터 타입
+        if (!current) {
+            const localType = this.resolveLocalType(document, position, firstName);
+            if (localType) {
+                current = this.typeNameToTarget(localType, firstHasCall);
+            }
+        }
+
+        // 3) 워크스페이스 심볼: 클래스/모듈(정적 접근) → 타입 있는 심볼(returnType)
+        if (!current) {
+            const candidates = this.symbolCache.findAllByName(firstName);
+            const cls = candidates.find(s => s.kind === 'class');
+            const mod = candidates.find(s => s.kind === 'module');
+            if (cls && !firstHasCall) {
+                current = { kind: 'userClass', name: cls.name };
+            } else if (mod && !firstHasCall) {
+                current = { kind: 'module', name: mod.name };
+            } else {
+                const typed = candidates.find(s => s.returnType);
+                if (typed?.returnType) {
+                    current = this.typeNameToTarget(typed.returnType, firstHasCall);
+                }
+            }
+        }
+        if (!current) {
+            return undefined;
+        }
+
+        // 4) 나머지 세그먼트는 사용자 심볼의 returnType으로 체이닝 (내장 반환 타입 체이닝은 미지원)
+        for (let k = 1; k < chain.length; k++) {
+            if (current.kind !== 'userClass' && current.kind !== 'module') {
+                return undefined;
+            }
+            const segRaw = chain[k];
+            const segName = segRaw.replace(/\(.*\)$/, '');
+            const segHasCall = segName !== segRaw;
+            const holder: QualifierTarget = current;
+            const member = holder.kind === 'userClass'
+                ? this.symbolCache.findMemberInClass(segName, holder.name)
+                : this.symbolCache.findAllByName(segName).find(
+                    s => !s.className && s.module?.toLowerCase() === holder.name.toLowerCase());
+            if (!member?.returnType) {
+                return undefined;
+            }
+            current = this.typeNameToTarget(member.returnType, segHasCall);
+            if (!current) {
+                return undefined;
+            }
+        }
+        return current;
+    }
+
+    /** 타입 이름 문자열을 완성 대상으로 변환. 배열은 인덱싱 여부에 따라 요소 타입/Array 클래스로. */
+    private typeNameToTarget(typeName: string, hasCallOrIndex: boolean): QualifierTarget | undefined {
+        let t = typeName.trim();
+        if (t.endsWith('[]')) {
+            if (hasCallOrIndex) {
+                t = t.slice(0, -2); // arr(0). → 요소 타입의 멤버
+            } else {
+                t = 'Array';        // arr. → 내장 Array 클래스의 멤버
+            }
+        }
+        const lower = t.toLowerCase();
+        if (PRIMITIVE_TYPES.has(lower)) {
+            return { kind: 'none' };
+        }
+        if (this.getBuiltinClassNames().has(lower)) {
+            return { kind: 'builtinClass', name: t };
+        }
+        const candidates = this.symbolCache.findAllByName(t);
+        if (candidates.some(s => s.kind === 'class')) {
+            return { kind: 'userClass', name: t };
+        }
+        if (candidates.some(s => s.kind === 'module')) {
+            return { kind: 'module', name: t };
+        }
+        return undefined;
+    }
+
+    /** 현재 프로시저 스코프에서 이름이 일치하는 로컬/파라미터의 타입을 찾는다. */
+    private resolveLocalType(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        name: string
+    ): string | undefined {
+        try {
+            const range = findEnclosingProcedureRange(
+                line => document.lineAt(line).text, document.lineCount, position.line);
+            if (!range) {
+                return undefined;
+            }
+            const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
+                includeLocals: true,
+                includeParameters: true,
+            });
+            const lower = name.toLowerCase();
+            const match = symbols.find(s => (s.isLocal || s.isParameter)
+                && s.line >= range.startLine && s.line <= range.endLine
+                && s.name.toLowerCase() === lower);
+            return match?.returnType;
+        } catch {
+            return undefined;
+        }
+    }
+
+    /** 내장 클래스 이름 집합(소문자). dotted 내장 이름의 접두부에서 1회 구축. */
+    private getBuiltinClassNames(): Set<string> {
+        if (!GPLCompletionProvider._builtinClassNames) {
+            const names = new Set<string>();
+            for (const b of getAllGplBuiltins()) {
+                const dot = b.name.indexOf('.');
+                if (dot > 0) {
+                    names.add(b.name.slice(0, dot).toLowerCase());
+                }
+            }
+            GPLCompletionProvider._builtinClassNames = names;
+        }
+        return GPLCompletionProvider._builtinClassNames;
+    }
+
+    /** 내장 클래스의 멤버 완성 — tail만 삽입해 `Move.Move.Approach` 중복을 방지한다. */
+    private getBuiltinClassMemberCompletions(className: string): vscode.CompletionItem[] {
+        const prefixLen = className.length + 1;
+        const prefixLower = className.toLowerCase() + '.';
+        const items: vscode.CompletionItem[] = [];
+        for (const builtin of getAllGplBuiltins()) {
+            if (!builtin.name.toLowerCase().startsWith(prefixLower)) {
+                continue;
+            }
+            const tail = builtin.name.slice(prefixLen);
+            const item = new vscode.CompletionItem(tail, this.mapBuiltinKindToCompletionKind(builtin));
+            item.detail = `GPL Built-in · ${builtin.category}`;
+            item.documentation = this.buildBuiltinDocumentation(builtin);
+            let insert = builtin.insertSnippet ?? builtin.name;
+            if (insert.toLowerCase().startsWith(prefixLower)) {
+                insert = insert.slice(prefixLen);
+            } else if (!builtin.insertSnippet) {
+                insert = tail;
+            }
+            item.insertText = new vscode.SnippetString(insert);
+            item.sortText = `0_member_${tail}`;
+            items.push(item);
+        }
+        return items;
+    }
+
+    /** 사용자 클래스/모듈 멤버 완성 항목 구성. */
+    private getUserSymbolMemberCompletions(members: readonly import('../gplParser').GPLSymbol[]): vscode.CompletionItem[] {
+        const items: vscode.CompletionItem[] = [];
+        for (const symbol of members) {
+            const item = new vscode.CompletionItem(
+                symbol.name, this.symbolCache.getCompletionItemKind(symbol.kind));
+            let detail: string = symbol.kind;
+            if (symbol.module) {
+                detail += ` (${symbol.module}${symbol.className ? `.${symbol.className}` : ''})`;
+            }
+            item.detail = detail;
+            item.documentation = this.symbolCache.buildSymbolDocumentation(symbol);
+            if ((symbol.kind === 'function' || symbol.kind === 'sub') && symbol.parameters) {
+                const params = symbol.parameters.map((param, index) => `\${${index + 1}:${param}}`).join(', ');
+                item.insertText = new vscode.SnippetString(`${symbol.name}(${params})`);
+            }
+            item.sortText = `0_member_${symbol.name}`;
+            items.push(item);
+        }
+        return items;
+    }
+
+    // ─── 로컬 변수/파라미터 완성 ──────────────────────────────────
+
+    /** 현재 프로시저의 로컬/파라미터 완성 항목 (메모이즈 파서 재사용 — 입력당 비용 낮음). */
+    private getLocalCompletions(document: vscode.TextDocument, position: vscode.Position): vscode.CompletionItem[] {
+        try {
+            const range = findEnclosingProcedureRange(
+                line => document.lineAt(line).text, document.lineCount, position.line);
+            if (!range) {
+                return [];
+            }
+            const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
+                includeLocals: true,
+                includeParameters: true,
+            });
+            const seen = new Set<string>();
+            const items: vscode.CompletionItem[] = [];
+            for (const s of symbols) {
+                if (!s.isLocal && !s.isParameter) {
+                    continue;
+                }
+                if (s.line < range.startLine || s.line > range.endLine) {
+                    continue;
+                }
+                const key = s.name.toLowerCase();
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                const item = new vscode.CompletionItem(s.name, vscode.CompletionItemKind.Variable);
+                item.detail = `${s.isParameter ? 'parameter' : 'local'}${s.returnType ? ` : ${s.returnType}` : ''}`;
+                item.sortText = `00_local_${s.name}`;
+                items.push(item);
+            }
+            return items;
+        } catch {
+            return [];
+        }
     }
 
     /**
@@ -364,7 +664,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
                 snippet: 'Utils.CRLF'
             },
             {
-                label: 'Chr(9)  ' + '\t',
+                label: 'Chr(9)',
                 detail: '탭 문자',
                 documentation: 'vbTab 대신 Chr(9) 사용',
                 snippet: 'Chr(9)'

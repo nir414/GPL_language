@@ -131,7 +131,10 @@ async function runVsce(outFile) {
         await run(process.execPath, [vsceMain, 'package', '-o', outFile]);
     } else {
         // Fallback to npx if the local install is missing.
-        await run('npx', ['vsce', 'package', '-o', outFile], { shell: true });
+        // NOTE: args 배열 + shell:true 조합은 DEP0190이고 공백 포함 경로가 깨진다 —
+        // 출력 경로를 인용한 단일 명령 문자열로 실행한다 (Windows에서 npx는 셸 필요).
+        const quotedOut = `"${String(outFile).replace(/"/g, '\\"')}"`;
+        await run(`npx vsce package -o ${quotedOut}`, [], { shell: true });
     }
 }
 
@@ -144,11 +147,13 @@ async function main() {
 
     const snapshots = snapshotVersionFiles();
 
-    if (bumpType) {
-        await run(process.execPath, [path.join(__dirname, 'auto-bump-package-version.js'), bumpType]);
-    }
-
     try {
+        // bump 도중 실패해도 package.json/package-lock.json 스냅샷이 복원되도록
+        // bump 실행 자체도 try 안에서 수행한다.
+        if (bumpType) {
+            await run(process.execPath, [path.join(__dirname, 'auto-bump-package-version.js'), bumpType]);
+        }
+
         const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
 
         const distDir = path.join(repoRoot, 'dist');

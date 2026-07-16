@@ -92,3 +92,22 @@ test('parseThreadList: timing 없는 순수 -web(9컬럼)은 회귀 없이 stack
     assert.strictEqual(r[0].fileLine, 22);
     assert.strictEqual(r[0].stackTiming, undefined);
 });
+
+// ─── 2026-07-16 자체 검토 세션 수정분 회귀 (parseStatus 마지막 블록 / 스레드 상태 정규화) ───
+
+test('parseStatus: DATA 본문에 STATUS 텍스트가 있어도 마지막(종결) 블록을 채택', () => {
+    const dump = '<DATA>log says <STATUS>-999,"fake"</STATUS> inside body</DATA>\r\n<STATUS>0,"Success"</STATUS>';
+    const r = parseStatus(dump);
+    assert.strictEqual(r.code, 0);
+    assert.strictEqual(r.message, 'Success');
+});
+
+test('normalizeThreadState: Stopped가 Stopping으로 오정규화되지 않는다', () => {
+    // 파이프 형식(Show Thread  -web) 응답으로 간접 검증
+    const resp = '<DATA>T1| Stopped| 0| ""| Proj| Main| 1| Main.gpl| 1\nT2| Stopping| 0| ""| Proj| Main| 1| Main.gpl| 1\nT3| Stop requested| 0| ""| Proj| Main| 1| Main.gpl| 1</DATA><STATUS>0,"Success"</STATUS>';
+    const threads = parseThreadList(resp);
+    assert.strictEqual(threads.length, 3);
+    assert.strictEqual(threads[0].state, 'Stopped');
+    assert.strictEqual(threads[1].state, 'Stopping');
+    assert.strictEqual(threads[2].state, 'Stopped');
+});

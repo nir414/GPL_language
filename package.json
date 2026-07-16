@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.7.5",
+    "version": "0.7.7",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -396,7 +396,7 @@
             {
                 "command": "workbench.action.debug.continue",
                 "key": "f9",
-                "when": "inDebugMode"
+                "when": "inDebugMode && debugType == 'brooks-gpl'"
             },
             {
                 "command": "editor.debug.action.showDebugHover",
@@ -593,7 +593,7 @@
                 },
                 {
                     "command": "gpl.controller.clearErrors",
-                    "when": "view == gplThreads && viewItem == section-errors",
+                    "when": "view == gplThreads && (viewItem == section-errorsCode || viewItem == section-errorsEnv)",
                     "group": "inline"
                 },
                 {
@@ -814,6 +814,12 @@
                     "default": 10000,
                     "description": "Command timeout in milliseconds."
                 },
+                "gpl.controller.requireStartConfirmation": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Start 명령(프로그램 실행 — 로봇 모션 가능) 전에 확인 모달을 표시합니다. Deploy & Run의 START 단계와 디버그 attach 후 자동 Start에 적용됩니다."
+                },
                 "gpl.controller.ftpBasePath": {
                     "scope": "window",
                     "type": "string",
@@ -837,6 +843,18 @@
                     "type": "number",
                     "default": 5000,
                     "description": "Thread status polling interval in milliseconds."
+                },
+                "gpl.debug.confirmDestructiveRepl": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "디버그 콘솔에서 '>' 접두사로 보내는 명령이 제어기 상태를 바꿀 수 있으면(Start/Stop/Execute/Set 등) 전송 전 확인을 요구합니다."
+                },
+                "gpl.diagnostics.experimental": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "실험적 GPL 정적 진단(XML/성능/호환성 검출)을 활성화합니다. 기본 비활성."
                 },
                 "gpl.debug.showValueOnCursorClick": {
                     "scope": "window",
@@ -866,7 +884,7 @@
         "watch": "tsc -watch -p ./",
         "test": "npm run compile && node ./out/test/index.js",
         "pre-release-check": "node scripts/pre-release-check.js",
-    "git:unlock": "node scripts/git-unlock.js",
+        "git:unlock": "node scripts/git-unlock.js",
         "package": "node scripts/package.js --bump patch",
         "package:no-bump": "node scripts/package.js",
         "dev:cycle": "npm run package",

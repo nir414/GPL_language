@@ -62,13 +62,17 @@ export class GPLParser {
 
         const cached = GPLParser._parseCache.get(key);
         if (cached && cached.content === content) {
+            // LRU 갱신: 히트한 키를 delete+set으로 맨 뒤(최신)로 옮겨 recency를 유지한다.
+            GPLParser._parseCache.delete(key);
+            GPLParser._parseCache.set(key, cached);
             // 캐시된 표준 배열은 보존하고, 호출부 변형으로부터 안전하도록 얕은 복사본을 돌려준다.
+            // 주의: 얕은 복사라 심볼 "객체"들은 호출부끼리 공유된다 — 반드시 불변으로 취급할 것.
             return cached.symbols.slice();
         }
 
         const symbols = GPLParser.parseDocumentUncached(content, filePath, options);
 
-        // 단순 FIFO 방식으로 캐시 크기를 제한한다.
+        // LRU 방식으로 캐시 크기를 제한한다(가장 오래 사용되지 않은 키부터 제거).
         if (GPLParser._parseCache.has(key)) {
             GPLParser._parseCache.delete(key);
         } else if (GPLParser._parseCache.size >= GPLParser._parseCacheMax) {
@@ -160,7 +164,7 @@ export class GPLParser {
                 currentModule = moduleMatch[1];
                 currentClass = undefined;
                 blockDepth = 0;
-                const startIndex = line.indexOf(moduleMatch[1]);
+                const startIndex = GPLParser.findNameColumn(line, moduleMatch[1]);
                 symbols.push({
                     name: moduleMatch[1],
                     kind: GPLSymbolKind.Module,
@@ -178,7 +182,7 @@ export class GPLParser {
                 currentClass = classMatch[2];
                 blockDepth = 0;
                 const isXmlRelated = this.isXmlRelatedIdentifier(classMatch[2]);
-                const startIndex = line.indexOf(classMatch[2]);
+                const startIndex = GPLParser.findNameColumn(line, classMatch[2]);
                 symbols.push({
                     name: classMatch[2],
                     kind: GPLSymbolKind.Class,
@@ -217,16 +221,21 @@ export class GPLParser {
             }
 
             // Parse Function: token-based parsing to support any keyword order
-            // Use (.*) instead of ([^)]*) to handle array params like "armList() As RobotArm"
-            const functionMatch = trimmedLine.match(/\bFunction\s+(\w+)(?:\s*\((.*)\))?(?:\s+As\s+(\w+))?/i);
+            const functionMatch = trimmedLine.match(/\bFunction\s+(\w+)/i);
             if (functionMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial)\b\s+)*Function\b/i)) {
                 const name = functionMatch[1];
+                // 주석/문자열을 무력화한 코드로 괄호 구간을 정해, 파라미터 텍스트는 원본에서
+                // 잘라낸다(문자열 기본값 원문 보존). 종전 `(.*)` 캡처는 괄호/콤마가 든
+                // 후행 `' 주석`까지 삼키는 문제가 있었다.
+                const header = GPLParser.extractHeaderParts(trimmedLine, (functionMatch.index ?? 0) + functionMatch[0].length);
                 // 최상위 콤마 기준 분리 — 공백뿐인 `( )`는 0개, 기본값 속 콤마는 분리하지 않는다.
-                const params = splitParameters(functionMatch[2]);
-                const returnType = functionMatch[3];
+                const params = splitParameters(header.paramText);
+                // 반환 타입의 배열 접미사(`As Integer()`)는 파서의 배열 표기 규칙대로 `Integer[]`로 기록.
+                const returnMatch = header.afterParams.match(/^\s*As\s+(\w+)\s*(\(\s*\))?/i);
+                const returnType = returnMatch ? returnMatch[1] + (returnMatch[2] ? '[]' : '') : undefined;
                 const isXmlRelated = this.isXmlRelatedIdentifier(name);
                 const xmlIssues = this.detectXmlFunctionIssues(line, name, i, lines);
-                const startIndex = line.indexOf(name);
+                const startIndex = GPLParser.findNameColumn(line, name);
                 
                 // Token-based keyword extraction (order-independent)
                 const upperLine = trimmedLine.toUpperCase();
@@ -252,13 +261,14 @@ export class GPLParser {
                 });
 
                 if (includeParameters && params.length > 0) {
+                    // 파라미터는 여는 괄호 뒤에서 찾는다 — 프로시저 이름과 같은 이름(대소문자
+                    // 무시)의 파라미터가 프로시저 이름 위치로 잡히지 않도록 (findNameColumn 참조).
+                    const paramSearchFrom = line.indexOf('(', startIndex + name.length) + 1;
                     for (const p of params) {
                         const { name: pName, type: pType } = extractParamName(p);
                         if (!pName) continue;
 
-                        const re = new RegExp(`\\b${escapeRegExp(pName)}\\b`, 'i');
-                        const m = re.exec(line);
-                        const pStart = m ? m.index : line.indexOf(pName);
+                        const pStart = GPLParser.findNameColumn(line, pName, paramSearchFrom);
                         symbols.push({
                             name: pName,
                             kind: GPLSymbolKind.Variable,
@@ -280,13 +290,14 @@ export class GPLParser {
             }
 
             // Parse Sub: token-based parsing to support any keyword order
-            // Use (.*) instead of ([^)]*) to handle array params like "armList() As RobotArm"
-            const subMatch = trimmedLine.match(/\bSub\s+(\w+)(?:\s*\((.*)\))?/i);
+            const subMatch = trimmedLine.match(/\bSub\s+(\w+)/i);
             if (subMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial)\b\s+)*Sub\b/i)) {
                 const name = subMatch[1];
+                // 주석 안전 괄호 구간에서 파라미터 추출(Function과 동일 — extractHeaderParts 참조).
+                const subHeader = GPLParser.extractHeaderParts(trimmedLine, (subMatch.index ?? 0) + subMatch[0].length);
                 // 최상위 콤마 기준 분리 — 공백뿐인 `( )`는 0개, 기본값 속 콤마는 분리하지 않는다.
-                const params = splitParameters(subMatch[2]);
-                const startIndex = line.indexOf(name);
+                const params = splitParameters(subHeader.paramText);
+                const startIndex = GPLParser.findNameColumn(line, name);
                 
                 // Token-based keyword extraction (order-independent)
                 const upperLine = trimmedLine.toUpperCase();
@@ -309,13 +320,14 @@ export class GPLParser {
                 });
 
                 if (includeParameters && params.length > 0) {
+                    // 파라미터는 여는 괄호 뒤에서 찾는다 — 프로시저 이름과 같은 이름(대소문자
+                    // 무시)의 파라미터가 프로시저 이름 위치로 잡히지 않도록 (findNameColumn 참조).
+                    const paramSearchFrom = line.indexOf('(', startIndex + name.length) + 1;
                     for (const p of params) {
                         const { name: pName, type: pType } = extractParamName(p);
                         if (!pName) continue;
 
-                        const re = new RegExp(`\\b${escapeRegExp(pName)}\\b`, 'i');
-                        const m = re.exec(line);
-                        const pStart = m ? m.index : line.indexOf(pName);
+                        const pStart = GPLParser.findNameColumn(line, pName, paramSearchFrom);
                         symbols.push({
                             name: pName,
                             kind: GPLSymbolKind.Variable,
@@ -339,7 +351,7 @@ export class GPLParser {
             // Parse Property — Sub/Function과 동일하게 수식어 순서를 가리지 않고 매칭한다.
             // (ReadOnly/WriteOnly/Default/Shared/Overrides 등이 Public/Private 뒤, Property 앞에 올 수 있다.
             //  이전 정규식은 ReadOnly/WriteOnly를 빠뜨려 `Public ReadOnly Property ...`를 놓쳤다.)
-            const propertyMatch = trimmedLine.match(/^((?:(?:Public|Private|Protected|Friend|Shared|ReadOnly|WriteOnly|Default|Overrides|Overridable|NotOverridable|MustOverride|Shadows|Overloads)\b\s+)*)Property\s+(\w+)(?:\s*\([^)]*\))?(?:\s+As\s+(\w+))?/i);
+            const propertyMatch = trimmedLine.match(/^((?:(?:Public|Private|Protected|Friend|Shared|ReadOnly|WriteOnly|Default|Overrides|Overridable|NotOverridable|MustOverride|Shadows|Overloads)\b\s+)*)Property\s+(\w+)(?:\s*\([^)]*\))?(?:\s+As\s+(\w+)\s*(\(\s*\))?)?/i);
             if (propertyMatch) {
                 const propMods = propertyMatch[1] || '';
                 const propAccess = /\bPublic\b/i.test(propMods)
@@ -355,7 +367,8 @@ export class GPLParser {
                     className: currentClass,
                     accessModifier: propAccess as 'public' | 'private' | undefined,
                     isShared: /\bShared\b/i.test(propMods),
-                    returnType: propertyMatch[3],
+                    // 배열 반환(`As Integer()`)은 `Integer[]`로 기록 — Function과 동일 규칙.
+                    returnType: propertyMatch[3] ? propertyMatch[3] + (propertyMatch[4] ? '[]' : '') : undefined,
                     docComment
                 });
 
@@ -370,7 +383,7 @@ export class GPLParser {
                 const localConstMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
                 if (localConstMatch) {
                     const name = localConstMatch[1];
-                    const startIndex = line.indexOf(name);
+                    const startIndex = GPLParser.findNameColumn(line, name);
                     const localConstValue = localConstMatch[3]?.trim();
                     symbols.push({
                         name,
@@ -391,7 +404,7 @@ export class GPLParser {
                 const localNewVariableMatch = trimmedLine.match(/^(Dim|Static)\s+(\w+)\s+As\s+New\s+(\w+)/i);
                 if (localNewVariableMatch) {
                     const name = localNewVariableMatch[2];
-                    const startIndex = line.indexOf(name);
+                    const startIndex = GPLParser.findNameColumn(line, name);
                     symbols.push({
                         name,
                         kind: GPLSymbolKind.Variable,
@@ -411,7 +424,7 @@ export class GPLParser {
                 if (localVariableMatch) {
                     const isConstant = !!localVariableMatch[2];
                     const name = localVariableMatch[3];
-                    const startIndex = line.indexOf(name);
+                    const startIndex = GPLParser.findNameColumn(line, name);
                     const isArray = !!localVariableMatch[4];
                     const type = localVariableMatch[5] + (isArray ? '[]' : '');
                     const dimConstValue = isConstant ? localVariableMatch[6]?.trim() : undefined;
@@ -434,7 +447,7 @@ export class GPLParser {
                 const localArrayMatch = trimmedLine.match(/^(Dim|Static)\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
                 if (localArrayMatch) {
                     const name = localArrayMatch[2];
-                    const startIndex = line.indexOf(name);
+                    const startIndex = GPLParser.findNameColumn(line, name);
                     symbols.push({
                         name,
                         kind: GPLSymbolKind.Variable,
@@ -460,7 +473,7 @@ export class GPLParser {
             const constMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
             if (constMatch) {
                 const name = constMatch[1];
-                const startIndex = line.indexOf(name);
+                const startIndex = GPLParser.findNameColumn(line, name);
                 const rawValue = constMatch[3]?.trim();
                 symbols.push({
                     name,
@@ -611,6 +624,63 @@ export class GPLParser {
         }
 
         return symbols;
+    }
+
+    /**
+     * 라인에서 심볼 이름의 컬럼을 대소문자 무시 + 단어 경계로 찾는다.
+     * 종전 `line.indexOf(name)`은 부분 문자열에 걸렸다(예: `Function Fun()`에서
+     * `Fun`이 `Function` 안에서 먼저 매칭, `Static tic`의 `tic`이 `Static` 안에서 매칭).
+     * fromIndex를 주면 그 위치부터 찾는다 — 파라미터는 여는 괄호 뒤부터 찾아
+     * 프로시저와 같은 이름(대소문자 무시)이어도 프로시저 이름 위치에 걸리지 않는다.
+     */
+    private static findNameColumn(line: string, name: string, fromIndex = 0): number {
+        const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi');
+        re.lastIndex = Math.max(0, fromIndex);
+        const m = re.exec(line);
+        return m ? m.index : line.indexOf(name);
+    }
+
+    /**
+     * 프로시저 헤더에서 파라미터 목록 `(...)` 구간과 그 뒤의 코드(반환 타입 절)를 찾는다.
+     *
+     * 주석/문자열을 무력화한 코드(stripToCode — 위치 보존)로 괄호 균형을 계산해 구간을
+     * 정하고, 파라미터 텍스트는 "원본"에서 잘라낸다(문자열 기본값 `= "a,b"` 등 원문 보존).
+     * afterParams는 주석이 제거된 코드이므로 반환 타입 매칭이 후행 주석에 속지 않는다.
+     */
+    private static extractHeaderParts(line: string, nameEndIndex: number): { paramText?: string; afterParams: string } {
+        const code = GPLParser.stripToCode(line);
+
+        // 이름 뒤 첫 비공백 문자가 '('일 때만 파라미터 목록으로 본다.
+        let i = nameEndIndex;
+        while (i < code.length && (code[i] === ' ' || code[i] === '\t')) {
+            i++;
+        }
+        if (i >= code.length || code[i] !== '(') {
+            return { afterParams: code.slice(nameEndIndex) };
+        }
+
+        const open = i;
+        let depth = 0;
+        let close = -1;
+        for (let j = open; j < code.length; j++) {
+            const ch = code[j];
+            if (ch === '(') {
+                depth++;
+            } else if (ch === ')') {
+                depth--;
+                if (depth === 0) {
+                    close = j;
+                    break;
+                }
+            }
+        }
+
+        if (close < 0) {
+            // 닫는 괄호가 없는 비정상 라인 — 주석 시작 전(code 길이)까지를 파라미터로 취급.
+            return { paramText: line.slice(open + 1, code.length), afterParams: '' };
+        }
+
+        return { paramText: line.slice(open + 1, close), afterParams: code.slice(close + 1) };
     }
 
     static findSymbolUsages(content: string, symbolName: string): { line: number; character: number }[] {

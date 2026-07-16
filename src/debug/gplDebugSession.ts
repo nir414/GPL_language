@@ -20,6 +20,7 @@ import {
     Handles,
     Breakpoint,
     InvalidatedEvent,
+    ContinuedEvent,
 } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import * as path from 'path';
@@ -59,6 +60,7 @@ import {
     StackFrameInfo,
 } from '../controller/responseParser';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
+import { isReadOnlyConsoleCommand } from '../controller/consoleCommandClassifier';
 import { fireDebugThreadsUpdated, onDebugPollTrigger } from '../controller/debugBridge';
 
 let sharedDeployOutput: vscode.OutputChannel | undefined;
@@ -88,10 +90,39 @@ interface IAttachRequestArguments extends DebugProtocol.AttachRequestArguments {
 
 // ─── Scope handle payload ────────────────────────────────
 
-interface ScopeRef {
-    type: 'locals' | 'globals';
-    threadName: string;
-    frameIndex: number;
+/**
+ * Variables 패널 핸들 페이로드.
+ * - locals/globals: 최상위 스코프
+ * - members: 객체 조회 응답에 이미 포함된 멤버 줄들(공식 Show Variable 문서: 객체는
+ *   `variable, Object` + 멤버별 `variable.field, type, value` 줄로 응답) — 재조회 없이 표시
+ * - expand: 배열 또는 중첩 객체 노드 — 펼칠 때 Show Variable -eval로 지연 조회
+ */
+type ScopeRef =
+    | { type: 'locals'; threadName: string; frameIndex: number }
+    | { type: 'globals'; threadName: string; frameIndex: number }
+    | {
+        type: 'members';
+        threadName: string;
+        frameIndex: number;
+        /** 멤버 경로 조합용 부모 식 (setVariable/Watch 추가에 사용) */
+        parentExpression: string;
+        entries: ParsedVarEntry[];
+    }
+    | {
+        type: 'expand';
+        threadName: string;
+        frameIndex: number;
+        /** 제어기에 보낼 전체 식 (예: `loc.Pos`, `myArr`) */
+        expression: string;
+        /** Show Variable이 보고한 타입 문자열 (예: `Object`, `Double(,)`) */
+        varType: string;
+    };
+
+/** `Show Variable` 응답 한 줄의 파싱 결과 (`name, type, value`) */
+interface ParsedVarEntry {
+    name: string;
+    type: string;
+    value: string;
 }
 
 interface GlobalVariableDescriptor {
@@ -206,7 +237,9 @@ export class GPLDebugSession extends LoggingDebugSession {
     // 정지 중 값은 불변에 가깝고(step/continue 시 _clearStaleState, setVariable/REPL 명령 시
     // _clearEvaluateCache가 무효화) TTL을 늘려 같은 변수 재호버를 즉시 응답한다 (750→3000ms).
     private static readonly EVALUATE_CACHE_TTL_MS = 3000;
-    private _evaluateCache = new Map<string, { value: string; timestamp: number }>();
+    // ref: 배열/객체 결과의 variablesReference — 핸들은 _clearStaleState에서 캐시와 함께
+    // 리셋되므로 수명이 일치한다(캐시가 무효 핸들을 돌려줄 일 없음).
+    private _evaluateCache = new Map<string, { value: string; ref: number; timestamp: number }>();
 
     // Session-level disposables — disconnectRequest에서 정리
     private _disposables: vscode.Disposable[] = [];
@@ -301,10 +334,32 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         // stopOnEntry=false 이면 프로젝트를 시작해야 쓰레드가 생긴다
         if (!this._stopOnEntry && this._projectName && this._isConnected) {
-            this._log(`Start ${this._projectName} (auto-start after configurationDone)`);
-            await this._sendCmd(`Start ${this._projectName}`);
-            // Start 직후 곧바로 히트하는 BP(진입 부근 정지)를 빠르게 감지한다 (읽기 전용 폴).
-            this._fastPoll();
+            // 자동 Start는 로봇 모션을 즉시 유발할 수 있으므로 기본값으로 모달 확인을 거친다
+            // (설정 gpl.controller.requireStartConfirmation, 기본 true).
+            const requireConfirm = vscode.workspace
+                .getConfiguration('gpl')
+                .get<boolean>('controller.requireStartConfirmation', true);
+            let startApproved = true;
+            if (requireConfirm) {
+                const pick = await vscode.window.showWarningMessage(
+                    `'${this._projectName}' 프로그램을 시작합니다. 로봇이 움직일 수 있습니다.`,
+                    { modal: true },
+                    'Start',
+                );
+                startApproved = pick === 'Start';
+            }
+            if (startApproved) {
+                this._log(`Start ${this._projectName} (auto-start after configurationDone)`);
+                await this._sendCmd(`Start ${this._projectName}`);
+                // Start 직후 곧바로 히트하는 BP(진입 부근 정지)를 빠르게 감지한다 (읽기 전용 폴).
+                this._fastPoll();
+            } else {
+                // 세션은 attach 상태 그대로 유지 — 사용자가 원할 때 수동으로 시작한다.
+                this._log(
+                    `Start가 취소되었습니다. 프로그램을 시작하려면 디버그 콘솔에서 >Start ${this._projectName} 를 사용하거나 `
+                    + `설정 gpl.controller.requireStartConfirmation을 끄세요.`,
+                );
+            }
         }
 
         // configurationDone 이전에 큐에 쌓인 StoppedEvent 발사
@@ -383,7 +438,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         // Detect project name: explicit arg → Project.gpr → Show Thread
-        this._projectName = args.projectName || '';
+        // (deployBeforeAttach가 배포 결과에서 이미 설정한 프로젝트명은 덮어쓰지 않는다)
+        this._projectName = args.projectName || this._projectName || '';
         if (!this._projectName) {
             this._projectName = await this._detectProjectName();
         }
@@ -405,11 +461,24 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._stopOnEntry = !!args.stopOnEntry;
         if (this._stopOnEntry && this._projectName) {
             this._pendingAction = 'entry';
+            // -break 진입 시작은 첫 줄에서 즉시 정지하므로(모션은 사용자가 continue해야 시작)
+            // 자동 Start 확인 게이트(gpl.controller.requireStartConfirmation) 대상이 아니다.
             const startResp = await this._sendCmd(`Start ${this._projectName} -break -bex`);
             this._log(`Start ${this._projectName} -break -bex (stopOnEntry)`);
             if (startResp) {
                 const cleaned = startResp.replace(/<[^>]+>/g, '').trim();
                 if (cleaned) { this._log(`  Start 응답: ${cleaned.split(/\r?\n/)[0]}`); }
+                // Start 실패 시 pending 'entry'를 즉시 해제 — 남겨두면 이후 무관한 정지가
+                // 'entry'로 잘못 보고된다. (STATUS 없는 응답 -9999는 기존처럼 성공 취급)
+                const st = parseStatus(startResp);
+                if (st.code !== 0 && st.code !== -9999) {
+                    this._pendingAction = null;
+                    this._log(`⚠ Start 실패 (STATUS ${st.code}${st.message ? `: ${st.message}` : ''}) — entry 대기를 해제합니다.`);
+                }
+            } else {
+                // 응답 유실(미연결/타임아웃) — entry 대기를 해제해 오분류를 막는다.
+                this._pendingAction = null;
+                this._log('⚠ Start 응답 없음 — entry 대기를 해제합니다.');
             }
         }
 
@@ -468,7 +537,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (this._isConnected && this._projectName) {
             for (const [file, lines] of this._breakpoints) {
                 for (const line of lines) {
-                    await this._sendCmd(`Set Nobreak ${this._projectName} "${file}" ${line}`);
+                    await this._sendCmd(this._bpCommand('Nobreak', this._projectName, file, line));
                 }
             }
             this._log('모든 브레이크포인트 해제 완료');
@@ -548,7 +617,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
         }
         for (const line of existingLines) {
-            await this._sendCmd(`Set Nobreak ${proj} "${baseName}"${line}`);
+            await this._sendCmd(this._bpCommand('Nobreak', proj, baseName, line));
         }
 
         // Set new breakpoints using correct Brooks syntax (GDE 캡처 기준):
@@ -557,14 +626,14 @@ export class GPLDebugSession extends LoggingDebugSession {
         const newLines = new Set<number>();
 
         for (const line of clientLines) {
-            const cmd = `Set Break ${proj} "${baseName}"${line}`;
+            const cmd = this._bpCommand('Break', proj, baseName, line);
             const resp = await this._sendCmd(cmd);
             // "Duplicate breakpoint" 응답은 컨트롤러에 이미 동일 BP가 있다는 뜻이다.
             // Nobreak 정리가 실패했을 수 있으므로 한 번 더 정리 후 재설정하여 단일 BP 보장.
             let finalResp = resp;
             if (resp !== null && /Duplicate breakpoint/i.test(resp)) {
                 this._log(`⚠ Duplicate BP 감지, 재설정: ${cmd}`);
-                await this._sendCmd(`Set Nobreak ${proj} "${baseName}"${line}`);
+                await this._sendCmd(this._bpCommand('Nobreak', proj, baseName, line));
                 finalResp = await this._sendCmd(cmd);
             }
             const verified = finalResp !== null && isSuccess(finalResp);
@@ -626,10 +695,14 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
         // 정지/에러 쓰레드를 맨 위로 끌어올려 평평한 목록에서 바로 눈에 띄게 한다.
         // (안정 정렬이므로 동일 상태 내에서는 제어기가 반환한 원래 순서를 유지)
-        threads.sort((a, b) => this._threadStateRank(a.state) - this._threadStateRank(b.state));
+        // 캐시 배열(_lastThreadList)을 제자리 정렬로 오염시키지 않도록 사본을 정렬한다.
+        const sorted = [...threads].sort((a, b) => this._threadStateRank(a.state) - this._threadStateRank(b.state));
         const dapThreads: Thread[] = [];
-        for (const t of threads) {
+        for (const t of sorted) {
             const id = this._getOrCreateThreadId(t.name);
+            // 여기서 VS Code에 이미 알려진 쓰레드는 known 집합에 등록해 다음 폴이
+            // 중복 ThreadEvent('started')를 내지 않게 한다.
+            this._knownThreadNames.add(t.name);
             dapThreads.push(new Thread(id, this._formatThreadLabel(t.name, t.state)));
         }
 
@@ -750,40 +823,109 @@ export class GPLDebugSession extends LoggingDebugSession {
                 : [];
 
             if (varNames.length > 0) {
-                // 3) 각 변수를 개별 Show Variable로 조회
+                // 3) 각 변수를 개별 Show Variable로 조회 — 배열/객체는 트리로 확장 가능
                 for (const varName of varNames) {
-                    const resp = await this._sendCmd(
-                        `Show Variable -eval ${scopeInfo.threadName} ${scopeInfo.frameIndex} ${varName}`,
+                    const structured = await this._queryVariableStructured(
+                        scopeInfo.threadName, scopeInfo.frameIndex, varName,
                     );
-                    if (resp) {
-                        const parsed = this._parseShowVariableEval(resp);
-                        const display = parsed.type
-                            ? `${parsed.value}  (${parsed.type})`
-                            : parsed.value;
-                        variables.push({ name: varName, value: display, variablesReference: 0 });
+                    if (structured) {
+                        variables.push(this._makeVariable(
+                            varName,
+                            structured.entry,
+                            scopeInfo.threadName,
+                            scopeInfo.frameIndex,
+                            varName,
+                            structured.members,
+                        ));
                     }
                 }
             } else if (frame?.file) {
                 this._log(`로컬 변수 후보를 찾지 못함: ${frame.file}:${frame.fileLine} (${frame.process})`);
             }
         } else if (scopeInfo.type === 'globals') {
-            // 소스 파일에서 모듈 레벨 전역 변수를 열거하고 개별 Show Global로 조회
+            // 소스 파일에서 모듈 레벨 전역 변수를 열거하고 개별 조회.
+            // Show Variable -eval을 먼저 시도하는 이유: Show Global은 숫자/문자열 식만
+            // 지원해(공식 문서) 배열/객체 전역이 아예 표시되지 않았고, 타입 정보도 없다.
+            // 전역은 어느 프레임에서든 접근 가능하므로 정지 쓰레드 컨텍스트로 조회한다.
             const globals = this._getGlobalVariableDescriptors();
 
             if (globals.length > 0) {
                 for (const g of globals) {
-                    const value = await this._readGlobalValue(g.lookupNames);
-                    if (value) {
-                        variables.push({
-                            name: g.displayName,
-                            value,
-                            variablesReference: 0,
-                        });
+                    let pushed = false;
+                    if (scopeInfo.threadName) {
+                        const structured = await this._queryVariableStructured(
+                            scopeInfo.threadName, scopeInfo.frameIndex, g.lookupNames[0],
+                        );
+                        const entry = structured?.entry;
+                        if (entry && (this._classifyVarEntry(entry) !== 'simple'
+                            || (entry.value && entry.value !== '(undefined)'))) {
+                            variables.push(this._makeVariable(
+                                g.displayName,
+                                entry,
+                                scopeInfo.threadName,
+                                scopeInfo.frameIndex,
+                                g.lookupNames[0],
+                                structured!.members,
+                            ));
+                            pushed = true;
+                        }
+                    }
+                    if (!pushed) {
+                        // 폴백: 기존 Show Global 경로 (정지 쓰레드가 없거나 조회 실패 시)
+                        const value = await this._readGlobalValue(g.lookupNames);
+                        if (value) {
+                            variables.push({
+                                name: g.displayName,
+                                value,
+                                variablesReference: 0,
+                            });
+                        }
                     }
                 }
             }
 
             variables.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'accent' }));
+        } else if (scopeInfo.type === 'members') {
+            // 객체 조회 응답에 동봉돼 있던 멤버 줄들 — 추가 명령 없이 즉시 표시
+            for (const m of scopeInfo.entries) {
+                const bare = this._memberBareName(m.name, scopeInfo.parentExpression);
+                variables.push(this._makeVariable(
+                    bare,
+                    m,
+                    scopeInfo.threadName,
+                    scopeInfo.frameIndex,
+                    `${scopeInfo.parentExpression}.${bare}`,
+                ));
+            }
+        } else if (scopeInfo.type === 'expand') {
+            if (this._classifyVarEntry({ name: '', type: scopeInfo.varType, value: '' }) === 'array') {
+                variables.push(...await this._expandArrayElements(scopeInfo));
+            } else {
+                // 중첩 객체(`Loc.Pos` 등)는 지연 재조회 — 공식 문서: 참조된 객체의 값은
+                // 상위 응답에 포함되지 않고 별도 Show Variable로 조회해야 한다.
+                const structured = await this._queryVariableStructured(
+                    scopeInfo.threadName, scopeInfo.frameIndex, scopeInfo.expression,
+                );
+                if (structured) {
+                    for (const m of structured.members) {
+                        const bare = this._memberBareName(m.name, scopeInfo.expression);
+                        variables.push(this._makeVariable(
+                            bare,
+                            m,
+                            scopeInfo.threadName,
+                            scopeInfo.frameIndex,
+                            `${scopeInfo.expression}.${bare}`,
+                        ));
+                    }
+                    if (structured.members.length === 0 && structured.entry.value) {
+                        variables.push({
+                            name: '(값)',
+                            value: structured.entry.value,
+                            variablesReference: 0,
+                        });
+                    }
+                }
+            }
         }
 
         response.body = { variables };
@@ -804,9 +946,30 @@ export class GPLDebugSession extends LoggingDebugSession {
             return;
         }
 
+        // 값은 콘솔 명령 문자열에 그대로 삽입된다 — 개행(CR/LF)이 섞이면 별도 명령
+        // 주입처럼 동작할 수 있으므로 명확한 오류로 거부한다.
+        if (/[\r\n]/.test(args.value)) {
+            this.sendErrorResponse(response, {
+                id: 2003,
+                format: '값에 줄바꿈 문자(CR/LF)를 포함할 수 없습니다.',
+            });
+            return;
+        }
+
+        // 멤버/배열 요소 노드에서는 표시 이름이 부분 경로이므로 전체 식으로 조합한다.
+        // (객체 멤버: `parent.field`, 배열 요소: 이름이 `(i)` 형태 → `parent(i)`)
+        let targetName = args.name;
+        if (scopeInfo.type === 'members') {
+            targetName = `${scopeInfo.parentExpression}.${args.name}`;
+        } else if (scopeInfo.type === 'expand') {
+            targetName = args.name.startsWith('(')
+                ? `${scopeInfo.expression}${args.name}`
+                : `${scopeInfo.expression}.${args.name}`;
+        }
+
         // Use Execute to set variable: Execute <expression>, <project>
         const proj = this._projectName;
-        const setExpr = `${args.name} = ${args.value}`;
+        const setExpr = `${targetName} = ${args.value}`;
         const cmd = proj
             ? `Execute ${setExpr}, ${proj}`
             : `Execute ${setExpr}`;
@@ -993,6 +1156,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         let result = '';
+        let evalRef = 0; // 배열/객체 결과의 variablesReference (0 = 확장 불가)
 
         // Determine thread context from frame or find first break thread
         let threadName: string | undefined;
@@ -1021,15 +1185,23 @@ export class GPLDebugSession extends LoggingDebugSession {
             const rawCommand = forceRaw ? expression.slice(1).trim() : expression;
 
             if (!forceRaw && threadName) {
-                const varResp = await this._sendCmd(
-                    `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
+                const structured = await this._queryVariableStructured(
+                    threadName, frameIndex, expression,
                 );
-                if (varResp) {
-                    const parsed = this._parseShowVariableEval(varResp);
-                    if (parsed.value) {
-                        result = parsed.type
-                            ? `${parsed.value}  (${parsed.type})`
-                            : parsed.value;
+                if (structured) {
+                    const kind = this._classifyVarEntry(structured.entry);
+                    if (kind === 'object' && structured.members.length > 0) {
+                        // 객체는 응답의 멤버 줄 전체를 보여준다 (기존: 첫 줄만 파싱해 "Object"만 표시)
+                        result = [
+                            `${structured.entry.name || expression}, Object`,
+                            ...structured.members.map(m => `  ${m.name}, ${m.type}${m.value ? `, ${m.value}` : ''}`),
+                        ].join('\n');
+                    } else if (kind === 'array') {
+                        result = `${structured.entry.type} 배열 — 요소는 ${expression}(i) 형식으로 조회`;
+                    } else if (structured.entry.value && structured.entry.value !== '(undefined)') {
+                        result = structured.entry.type
+                            ? `${structured.entry.value}  (${structured.entry.type})`
+                            : structured.entry.value;
                     }
                 }
                 if (!result && this._projectName) {
@@ -1037,7 +1209,11 @@ export class GPLDebugSession extends LoggingDebugSession {
                         `Show Global ${expression}, ${this._projectName}`,
                     );
                     if (gResp) {
-                        const cleaned = gResp.replace(/<[^>]+>/g, '').trim();
+                        // STATUS 블록을 먼저 통째로 제거 — 태그만 벗기면 `0, "Success"`가 값처럼 남는다
+                        const cleaned = gResp
+                            .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
+                            .replace(/<[^>]+>/g, '')
+                            .trim();
                         const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
                         if (lines.length > 0) { result = lines.join('\n'); }
                     }
@@ -1046,15 +1222,40 @@ export class GPLDebugSession extends LoggingDebugSession {
 
             // 변수 평가가 불가하거나 멈춘 쓰레드가 없으면 → 임의 제어기 명령으로 전송
             if (!result && rawCommand) {
-                const raw = await this._sendCmd(rawCommand);
-                if (raw === null) {
-                    result = '(제어기 미연결 — 디버그 세션/연결 상태를 확인하세요)';
+                const readOnly = isReadOnlyConsoleCommand(rawCommand);
+                if (!forceRaw && !readOnly) {
+                    // 비접두사 입력의 폴백 전송은 읽기 전용 명령만 허용 — 오타/변수명이
+                    // 상태 변경 명령으로 흘러가는 사고를 막는다. 의도적 전송은 '>' 접두사로.
+                    result = `변수 평가 실패. 제어기 명령으로 보내려면 '>' 접두사를 사용하세요.`;
                 } else {
-                    const cleaned = raw.replace(/<[^>]+>/g, '').trim();
-                    result = cleaned.length > 0 ? cleaned : '(ok)';
+                    let approved = true;
+                    if (!readOnly && vscode.workspace.getConfiguration('gpl')
+                        .get<boolean>('debug.confirmDestructiveRepl', true)) {
+                        // 상태 변경(또는 미분류) 명령은 기본값으로 모달 확인을 거친다.
+                        const pick = await vscode.window.showWarningMessage(
+                            `제어기 상태를 바꾸는 명령입니다: ${rawCommand}`,
+                            { modal: true },
+                            '전송',
+                        );
+                        approved = pick === '전송';
+                    }
+                    if (!approved) {
+                        result = '(취소됨)';
+                    } else {
+                        const raw = await this._sendCmd(rawCommand);
+                        if (raw === null) {
+                            result = '(제어기 미연결 — 디버그 세션/연결 상태를 확인하세요)';
+                        } else {
+                            const cleaned = raw.replace(/<[^>]+>/g, '').trim();
+                            result = cleaned.length > 0 ? cleaned : '(ok)';
+                        }
+                        // 임의 명령은 제어기 상태를 바꿀 수 있으므로 hover/watch 캐시와
+                        // 프레임 캐시 신선도를 함께 무효화한다 (예: >Step 뒤 옛 스택 방지).
+                        this._clearEvaluateCache();
+                        this._frameCacheAt.clear();
+                        this._frameCacheGen++;
+                    }
                 }
-                // 임의 명령은 제어기 상태를 바꿀 수 있으므로 hover/watch 캐시를 무효화
-                this._clearEvaluateCache();
             }
             if (!result) { result = '(평가 불가)'; }
         } else if (args.context === 'hover' || args.context === 'watch') {
@@ -1067,38 +1268,55 @@ export class GPLDebugSession extends LoggingDebugSession {
             ].join('\u001f');
             const cached = this._getCachedEvaluate(cacheKey);
             if (cached !== undefined) {
-                result = cached;
+                result = cached.value;
+                evalRef = cached.ref;
             } else {
-                // Show Variable -eval thread frame variable → "name, type, value" 형식
-                const resp = await this._sendCmd(
-                    `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
-                );
-                if (resp) {
-                    const parsed = this._parseShowVariableEval(resp);
-                    if (parsed.value) {
-                        result = parsed.type
-                            ? `${parsed.value}  (${parsed.type})`
-                            : parsed.value;
+                // Show Variable -eval thread frame variable → 배열/객체는 트리로 확장 가능
+                const structured = threadName
+                    ? await this._queryVariableStructured(threadName, frameIndex, expression)
+                    : null;
+                if (structured) {
+                    const kind = this._classifyVarEntry(structured.entry);
+                    if (kind !== 'simple') {
+                        const v = this._makeVariable(
+                            expression,
+                            structured.entry,
+                            threadName!,
+                            frameIndex,
+                            expression,
+                            structured.members,
+                        );
+                        result = v.value;
+                        evalRef = v.variablesReference;
+                    } else if (structured.entry.value && structured.entry.value !== '(undefined)') {
+                        result = structured.entry.type
+                            ? `${structured.entry.value}  (${structured.entry.type})`
+                            : structured.entry.value;
                     }
                 }
-                if (!result) {
-                    // Fallback: might be a global variable
+                if (!result && this._projectName) {
+                    // Fallback: might be a global variable — Show Global은 프로젝트명이
+                    // 필요하므로 비어 있으면 스킵한다 (REPL 경로와 동일한 가드).
                     const gResp = await this._sendCmd(
                         `Show Global ${expression}, ${this._projectName}`,
                     );
                     if (gResp) {
-                        const cleaned = gResp.replace(/<[^>]+>/g, '').trim();
+                        // STATUS 블록을 먼저 통째로 제거 — 태그만 벗기면 `0, "Success"`가 값처럼 남는다
+                        const cleaned = gResp
+                            .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
+                            .replace(/<[^>]+>/g, '')
+                            .trim();
                         const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
                         result = lines.length > 0 ? lines.join('\n') : '';
                     }
                 }
-                this._setCachedEvaluate(cacheKey, result || `(${expression} 평가 불가)`);
+                this._setCachedEvaluate(cacheKey, result || `(${expression} 평가 불가)`, evalRef);
             }
         } else {
             result = expression;
         }
 
-        response.body = { result: result || `(${expression} 평가 불가)`, variablesReference: 0 };
+        response.body = { result: result || `(${expression} 평가 불가)`, variablesReference: evalRef };
         this.sendResponse(response);
     }
 
@@ -1185,18 +1403,18 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._clearEvaluateCache();
     }
 
-    private _getCachedEvaluate(key: string): string | undefined {
+    private _getCachedEvaluate(key: string): { value: string; ref: number } | undefined {
         const entry = this._evaluateCache.get(key);
         if (!entry) { return undefined; }
         if (Date.now() - entry.timestamp > GPLDebugSession.EVALUATE_CACHE_TTL_MS) {
             this._evaluateCache.delete(key);
             return undefined;
         }
-        return entry.value;
+        return { value: entry.value, ref: entry.ref };
     }
 
-    private _setCachedEvaluate(key: string, value: string): void {
-        this._evaluateCache.set(key, { value, timestamp: Date.now() });
+    private _setCachedEvaluate(key: string, value: string, ref = 0): void {
+        this._evaluateCache.set(key, { value, ref, timestamp: Date.now() });
         if (this._evaluateCache.size > 200) {
             const oldestKey = this._evaluateCache.keys().next().value;
             if (oldestKey !== undefined) {
@@ -1207,6 +1425,15 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     private _clearEvaluateCache(): void {
         this._evaluateCache.clear();
+    }
+
+    /**
+     * 브레이크포인트 명령 문자열 생성 — 모든 전송 지점이 이 헬퍼를 사용한다.
+     * GDE 패킷 캡처 실측(runbook) 형식: `Set Break <proj> "<file>"<line>` —
+     * 닫는 따옴표와 줄번호 사이에 공백이 없다.
+     */
+    private _bpCommand(kind: 'Break' | 'Nobreak', project: string, file: string, line: number): string {
+        return `Set ${kind} ${project} "${file}"${line}`;
     }
 
     /**
@@ -1326,27 +1553,246 @@ export class GPLDebugSession extends LoggingDebugSession {
      * → STATUS 블록은 먼저 통째로 제거해야 한다.
      */
     private _parseShowVariableEval(raw: string): { name: string; type: string; value: string } {
-        const withoutStatus = raw.replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '');
-        const cleaned = withoutStatus.replace(/<[^>]+>/g, '').trim();
-        const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
-        if (lines.length === 0) {
+        const entries = this._parseShowVariableMulti(raw);
+        if (entries.length === 0) {
             return { name: '', type: '', value: '(undefined)' };
         }
-        // 첫 번째 유효 줄에서 파싱
-        const line = lines[0].trim();
-        const parts = line.split(',').map(s => s.trim());
-        if (parts.length >= 3) {
+        return entries[0];
+    }
+
+    /**
+     * `Show Variable` 응답의 모든 유효 줄을 파싱한다.
+     * 공식 문서(Show Variable Command) 기준 응답 형식:
+     *  - 단순 값:  `name, type, value`
+     *  - 배열:     `name, Type(…)` — 전체 값은 표시되지 않음(요소 단위로만 조회 가능)
+     *  - 객체:     `name, Object` + 멤버별 `name.field, type, value` 줄 (여러 줄)
+     */
+    private _parseShowVariableMulti(raw: string): ParsedVarEntry[] {
+        const withoutStatus = raw.replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '');
+        // 알려진 프레임 태그(DATA/STATUS)만 제거 — `<[^>]+>` 전체 제거는 문자열 값에
+        // 포함된 리터럴 `<...>`까지 삼켜 값이 잘리는 문제가 있었다.
+        const cleaned = withoutStatus.replace(/<\/?(?:DATA|STATUS)[^>]*>/gi, '').trim();
+        const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
+
+        const entries: ParsedVarEntry[] = [];
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            const parts = this._splitVarLine(line, 3);
+            if (parts.length >= 3) {
+                entries.push({ name: parts[0], type: parts[1], value: parts[2] });
+            } else if (parts.length === 2) {
+                // 배열 헤더(`name, Double(,)`)처럼 값 필드가 없는 줄
+                entries.push({ name: parts[0], type: parts[1], value: '' });
+            } else {
+                // 쉼표 없는 단순 값 (예: Show Global 응답)
+                entries.push({ name: '', type: '', value: line });
+            }
+        }
+        return entries;
+    }
+
+    /**
+     * 쉼표 분할 시 괄호 안의 쉼표는 무시한다.
+     * 이유: 배열 타입은 `Double(,)`, 요소 이름은 `arr(0,1)`처럼 괄호 안에 쉼표를 포함해
+     * 단순 split(',')로는 필드가 깨진다(기존 버그 — 배열 값이 `)` 로 표시되던 원인).
+     * maxParts 도달 시 나머지는 마지막 필드로 합쳐 문자열 값 속 쉼표를 보존한다.
+     */
+    private _splitVarLine(line: string, maxParts: number): string[] {
+        const parts: string[] = [];
+        let depth = 0;
+        let current = '';
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '(') { depth++; }
+            else if (ch === ')') { depth = Math.max(0, depth - 1); }
+            if (ch === ',' && depth === 0 && parts.length < maxParts - 1) {
+                parts.push(current.trim());
+                current = '';
+            } else {
+                current += ch;
+            }
+        }
+        if (current.trim().length > 0 || parts.length > 0) {
+            parts.push(current.trim());
+        }
+        return parts;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // 구조적 변수 표시 (배열/객체 트리 확장)
+    // ═══════════════════════════════════════════════════════
+
+    /** 배열 확장 시 순차 조회 상한 — 선언 크기를 알 수 없어(공식 문서: 배열 전체 값은
+     *  표시되지 않음) 인덱스 0부터 실패할 때까지 조회하며, 직렬 명령 큐 보호를 위해 제한한다. */
+    private static readonly ARRAY_EXPAND_MAX = 30;
+
+    private _classifyVarEntry(e: ParsedVarEntry): 'object' | 'array' | 'simple' {
+        if (/^object$/i.test(e.type.trim())) { return 'object'; }
+        // 값 없이 타입에 괄호가 붙으면 배열 헤더 (`Double()`, `Integer(,)` 등).
+        // 요소 응답(`arr(0,0), Double(,), 30.5`)은 값이 있으므로 simple로 분류된다.
+        if (!e.value && /\([^)]*\)\s*$/.test(e.type)) { return 'array'; }
+        return 'simple';
+    }
+
+    /** 배열 타입 문자열에서 차원 수 추출: `Double()`→1, `Double(,)`→2 … */
+    private _arrayRank(type: string): number {
+        const m = type.match(/\(([^)]*)\)\s*$/);
+        if (!m) { return 1; }
+        return (m[1].match(/,/g)?.length ?? 0) + 1;
+    }
+
+    /**
+     * 파싱된 항목을 DAP Variable로 변환한다. 배열/객체는 variablesReference를 부여해
+     * Variables/Watch 패널에서 트리로 펼칠 수 있게 한다.
+     * @param memberEntries 객체 조회 응답에 동봉된 멤버 줄들(있으면 재조회 없이 사용)
+     */
+    private _makeVariable(
+        displayName: string,
+        entry: ParsedVarEntry,
+        threadName: string,
+        frameIndex: number,
+        expression: string,
+        memberEntries?: ParsedVarEntry[],
+    ): DebugProtocol.Variable {
+        const kind = this._classifyVarEntry(entry);
+        if (kind === 'object') {
+            const ref = memberEntries && memberEntries.length > 0
+                ? this._variableHandles.create({
+                    type: 'members',
+                    threadName,
+                    frameIndex,
+                    parentExpression: expression,
+                    entries: memberEntries,
+                })
+                : this._variableHandles.create({
+                    type: 'expand', threadName, frameIndex, expression, varType: entry.type,
+                });
             return {
-                name: parts[0],
-                type: parts[1],
-                value: parts.slice(2).join(', '),
+                name: displayName,
+                value: 'Object',
+                type: entry.type,
+                evaluateName: expression,
+                variablesReference: ref,
             };
         }
-        if (parts.length === 2) {
-            return { name: parts[0], type: '', value: parts[1] };
+        if (kind === 'array') {
+            const ref = this._variableHandles.create({
+                type: 'expand', threadName, frameIndex, expression, varType: entry.type,
+            });
+            return {
+                name: displayName,
+                value: `${entry.type} 배열`,
+                type: entry.type,
+                evaluateName: expression,
+                variablesReference: ref,
+            };
         }
-        // 쉼표 없는 단순 값
-        return { name: '', type: '', value: line };
+        return {
+            name: displayName,
+            value: entry.type ? `${entry.value}  (${entry.type})` : entry.value,
+            type: entry.type || undefined,
+            evaluateName: expression,
+            variablesReference: 0,
+        };
+    }
+
+    /**
+     * Show Variable -eval 1회로 변수/식을 구조적으로 조회한다.
+     * @returns null = 응답 없음(미연결 등). 파싱 실패 시 value '(undefined)'인 단순 항목.
+     */
+    private async _queryVariableStructured(
+        threadName: string,
+        frameIndex: number,
+        expression: string,
+    ): Promise<{ entry: ParsedVarEntry; members: ParsedVarEntry[] } | null> {
+        const resp = await this._sendCmd(
+            `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
+        );
+        if (!resp) { return null; }
+        const entries = this._parseShowVariableMulti(resp);
+        if (entries.length === 0) {
+            return { entry: { name: expression, type: '', value: '(undefined)' }, members: [] };
+        }
+        return { entry: entries[0], members: entries.slice(1) };
+    }
+
+    /** 멤버 전체 경로(`Loc.Pos.X`)에서 부모 식을 제외한 표시용 이름을 얻는다. */
+    private _memberBareName(fullName: string, parentExpression: string): string {
+        const prefix = `${parentExpression}.`;
+        if (fullName.toLowerCase().startsWith(prefix.toLowerCase())) {
+            return fullName.slice(prefix.length);
+        }
+        const lastDot = fullName.lastIndexOf('.');
+        return lastDot >= 0 ? fullName.slice(lastDot + 1) : fullName;
+    }
+
+    /**
+     * 배열 노드 확장: 선언 크기를 조회할 방법이 없으므로(공식 문서 — 전체 배열 값은
+     * 표시되지 않고 요소 단위 조회만 가능) 인덱스 0부터 순차 조회하고 범위 밖(STATUS
+     * 오류)에서 멈춘다. 다차원 배열은 첫 인덱스만 순회하고 나머지는 0으로 고정한다.
+     */
+    private async _expandArrayElements(
+        scope: { threadName: string; frameIndex: number; expression: string; varType: string },
+    ): Promise<DebugProtocol.Variable[]> {
+        const out: DebugProtocol.Variable[] = [];
+        const rank = this._arrayRank(scope.varType);
+        const suffix = rank > 1 ? ',0'.repeat(rank - 1) : '';
+
+        const gen = this._frameCacheGen;
+        let i = 0;
+        for (; i < GPLDebugSession.ARRAY_EXPAND_MAX; i++) {
+            // 확장 도중 새 step/continue가 시작되면(pending 액션/캐시 세대 변경) 즉시
+            // 중단해 직렬 명령 큐를 사용자 액션에 양보한다.
+            if (this._pendingAction || gen !== this._frameCacheGen) {
+                out.push({ name: '…', value: '(실행 재개로 조회 중단)', variablesReference: 0 });
+                break;
+            }
+            const elemExpr = `${scope.expression}(${i}${suffix})`;
+            const resp = await this._sendCmd(
+                `Show Variable -eval ${scope.threadName} ${scope.frameIndex} ${elemExpr}`,
+            );
+            if (!resp) {
+                // 응답 없음(타임아웃/연결 끊김)은 배열 끝이 아니다 — 실패 표식 후 중단.
+                out.push({ name: `(${i}${suffix})`, value: '(조회 실패)', variablesReference: 0 });
+                break;
+            }
+            if (!isSuccess(resp)) { break; } // 범위 밖(STATUS 오류) = 배열 끝
+            const entries = this._parseShowVariableMulti(resp);
+            const first = entries[0];
+            if (!first) { break; }
+            // STATUS 성공이면 값이 빈 문자열이어도 유효한 요소다(빈 String 등) — 계속 진행.
+            out.push(this._makeVariable(
+                `(${i}${suffix})`,
+                first,
+                scope.threadName,
+                scope.frameIndex,
+                elemExpr,
+                entries.slice(1),
+            ));
+        }
+
+        if (i >= GPLDebugSession.ARRAY_EXPAND_MAX) {
+            out.push({
+                name: '…',
+                value: `(${GPLDebugSession.ARRAY_EXPAND_MAX}개까지만 표시 — 이후 요소는 Watch에 ${scope.expression}(${GPLDebugSession.ARRAY_EXPAND_MAX}${suffix}) 형식으로 입력)`,
+                variablesReference: 0,
+            });
+        }
+        if (rank > 1) {
+            out.push({
+                name: 'ℹ',
+                value: `${rank}차원 배열 — 첫 인덱스만 순회(나머지 0 고정). 개별 요소는 Watch에 ${scope.expression}(i${',j'.repeat(rank - 1)}) 형식으로 입력`,
+                variablesReference: 0,
+            });
+        }
+        if (out.length === 0) {
+            out.push({
+                name: '(요소 없음)',
+                value: `요소 조회 실패 — Watch에 ${scope.expression}(0${suffix}) 형식으로 확인 가능`,
+                variablesReference: 0,
+            });
+        }
+        return out;
     }
 
     // ⑧ 동일 쓰레드 프레임 조회의 중복 방지 — 정지 감지 직후 프리페치와 VS Code의
@@ -1788,6 +2234,16 @@ export class GPLDebugSession extends LoggingDebugSession {
         }, delay);
     }
 
+    // 폴 체인 예외는 첫 1회만 Debug Console에 알리고(스팸 방지) 이후는 조용히 재스케줄한다.
+    private _pollChainErrorLogged = false;
+
+    private _logPollChainError(chain: string, err: unknown): void {
+        if (this._pollChainErrorLogged) { return; }
+        this._pollChainErrorLogged = true;
+        const msg = err instanceof Error ? err.message : String(err);
+        this._log(`⚠ ${chain} 폴 체인 예외 (체인은 유지됨): ${msg}`);
+    }
+
     private _startPolling(): void {
         this._stopPolling();
         this._scheduleNextIntervalPoll(++this._pollTimerGen);
@@ -1809,10 +2265,16 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._pollTimer = undefined;
             void (async () => {
                 if (gen !== this._pollTimerGen || !this._isConnected) { return; }
-                if (!this._pollInFlight) {
-                    await this._pollThreadStates();
+                try {
+                    if (!this._pollInFlight) {
+                        await this._pollThreadStates();
+                    }
+                } catch (err) {
+                    // 폴 1회 예외로 인터벌 체인이 조용히 끊기지 않게 한다 (재스케줄 보장).
+                    this._logPollChainError('interval', err);
+                } finally {
+                    this._scheduleNextIntervalPoll(gen);
                 }
-                this._scheduleNextIntervalPoll(gen);
             })();
         }, delay);
     }
@@ -1855,8 +2317,13 @@ export class GPLDebugSession extends LoggingDebugSession {
                 this._fastPollTimer = undefined;
                 if (gen !== this._fastPollGen || !this._isConnected) { return; }
                 void (async () => {
-                    if (!this._pollInFlight) {
-                        await this._pollThreadStates(true);
+                    try {
+                        if (!this._pollInFlight) {
+                            await this._pollThreadStates(true);
+                        }
+                    } catch (err) {
+                        // 폴 1회 예외로 fast poll 체인이 끊기지 않게 한다 (다음 스케줄 유지).
+                        this._logPollChainError('fast', err);
                     }
                     if (gen !== this._fastPollGen || !this._isConnected) { return; }
                     // 정지를 이미 감지했으면(pending 해소) fast poll 조기 종료 → 일반 폴링 복귀
@@ -2068,6 +2535,15 @@ export class GPLDebugSession extends LoggingDebugSession {
                 if (isPausedState &&
                     prevState !== 'Break' && prevState !== 'Paused') {
 
+                    // 사용자 액션 없이 폴이 감지한 정지(자유 실행 BP 히트/외부 정지)는
+                    // 직전 정지의 값이 캐시에 남아 있을 수 있으므로 평가/프레임 캐시를 무효화한다.
+                    if (!this._pendingAction) {
+                        this._clearEvaluateCache();
+                        this._cachedFrames.delete(t.name);
+                        this._frameCacheAt.delete(t.name);
+                        this._frameCacheGen++;
+                    }
+
                     // Determine stop reason based on pending action
                     let reason = 'breakpoint';
                     if (this._pendingAction === 'step' && this._pendingThreadId === id) {
@@ -2113,6 +2589,16 @@ export class GPLDebugSession extends LoggingDebugSession {
                     } else {
                         this._log(`쓰레드 ${t.name} 에러 발생 (break on errors 비활성 — 무시)`);
                     }
+                }
+
+                // 외부 재개 감지: pending 액션 없이 Paused/Break/Error → Running 전이가 보이면
+                // (GDE, REPL >Continue 등) ContinuedEvent로 VS Code의 일시정지 UI를 해제한다.
+                if (t.state === 'Running'
+                    && (prevState === 'Break' || prevState === 'Paused' || prevState === 'Error')
+                    && !this._pendingAction
+                    && this._configurationDone) {
+                    this.sendEvent(new ContinuedEvent(id));
+                    this._log(`쓰레드 ${t.name} 외부 재개 감지 (continued)`);
                 }
 
                 this._previousThreadStates.set(t.name, t.state);
@@ -2359,7 +2845,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             const file = bp.file || '';
             const line = bp.fileLine || 0;
             if (!file || line <= 0) { continue; }
-            const resp = await this._sendCmd(`Set Nobreak ${projectName} "${file}"${line}`);
+            const resp = await this._sendCmd(this._bpCommand('Nobreak', projectName, file, line));
             if (resp) { cleared++; }
         }
 

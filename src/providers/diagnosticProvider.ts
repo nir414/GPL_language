@@ -6,9 +6,13 @@ export class GPLDiagnosticProvider {
     private diagnosticCollection: vscode.DiagnosticCollection;
     private pendingTimers: Map<string, NodeJS.Timeout> = new Map();
 
-    // [DISABLED] 진단 기능 비활성화 — 개발 중 미검증 상태이므로 일시 중단.
-    // 검증 완료 후 false로 변경하여 활성화.
-    private static readonly DIAGNOSTICS_DISABLED = true;
+    /**
+     * 진단은 실험 기능 — gpl.diagnostics.experimental 설정(기본 false = 꺼짐)이 켜진
+     * 경우에만 동작한다. 호출 시마다 읽으므로 설정 변경이 재시작 없이 반영된다.
+     */
+    private static isDiagnosticsEnabled(): boolean {
+        return vscode.workspace.getConfiguration('gpl').get<boolean>('diagnostics.experimental', false) === true;
+    }
 
     constructor() {
         this.diagnosticCollection = vscode.languages.createDiagnosticCollection('gpl');
@@ -22,8 +26,8 @@ export class GPLDiagnosticProvider {
             return;
         }
 
-        // [DISABLED] 진단 기능 비활성화 중 — DIAGNOSTICS_DISABLED 플래그 참고
-        if (GPLDiagnosticProvider.DIAGNOSTICS_DISABLED) {
+        // 실험 설정(gpl.diagnostics.experimental)이 꺼져 있으면 기존 진단을 지우고 종료.
+        if (!GPLDiagnosticProvider.isDiagnosticsEnabled()) {
             this.diagnosticCollection.delete(document.uri);
             return;
         }
@@ -76,7 +80,7 @@ export class GPLDiagnosticProvider {
      * Debounced diagnostics scheduling to avoid frequent recomputation
      */
     public scheduleDiagnostics(document: vscode.TextDocument, delayMs: number = 500): void {
-        if (!isGplFile(document) || GPLDiagnosticProvider.DIAGNOSTICS_DISABLED) {
+        if (!isGplFile(document) || !GPLDiagnosticProvider.isDiagnosticsEnabled()) {
             return;
         }
 
@@ -119,12 +123,15 @@ export class GPLDiagnosticProvider {
 
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            const trimmedLine = line.trim();
+            // 주석 부분만 잘라내고 검사한다(위치 보존). 이 검사들은 문자열 리터럴 "안"의
+            // 엔티티가 검사 대상이므로 stripCommentsAndStrings(문자열까지 공백화)를 쓰면
+            // 검출 자체가 사라진다 — 주석 오탐만 제거하는 최소 적용.
+            const codeLine = this.stripInlineComment(line);
 
             // 수동 XML 이스케이프 패턴 감지
             const manualEscapePattern = /outStr\s*=\s*outStr\s*&\s*"&(amp|lt|gt|quot|apos);"/gi;
             let match;
-            while ((match = manualEscapePattern.exec(line)) !== null) {
+            while ((match = manualEscapePattern.exec(codeLine)) !== null) {
                 const diagnostic = new vscode.Diagnostic(
                     new vscode.Range(i, match.index, i, match.index + match[0].length),
                     '수동 XML 이스케이프 감지: 내장 XmlDoc.EncodeEntities 사용을 권장합니다',
@@ -136,7 +143,7 @@ export class GPLDiagnosticProvider {
             }
 
             // 잘못된 엔티티 순서 검사
-            if (this.hasWrongEntityOrder(line)) {
+            if (this.hasWrongEntityOrder(codeLine)) {
                 const diagnostic = new vscode.Diagnostic(
                     new vscode.Range(i, 0, i, line.length),
                     '엔티티 치환 순서 오류: & 문자를 다른 엔티티보다 먼저 처리해야 합니다',
@@ -148,7 +155,7 @@ export class GPLDiagnosticProvider {
             }
 
             // 재인코딩 위험 패턴
-            if (this.hasReencodingRisk(line)) {
+            if (this.hasReencodingRisk(codeLine)) {
                 const diagnostic = new vscode.Diagnostic(
                     new vscode.Range(i, 0, i, line.length),
                     '재인코딩 위험: 이미 인코딩된 텍스트가 다시 인코딩될 수 있습니다',
@@ -173,11 +180,13 @@ export class GPLDiagnosticProvider {
 
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            
+            // 주석·문자열을 공백화한 코드로만 검사 — 주석/문자열 속 예시 코드 오탐 제거.
+            const codeLine = this.stripCommentsAndStrings(line);
+
             // O(n²) 문자열 연결 패턴
             const stringConcatPattern = /(\w+)\s*=\s*\1\s*&/gi;
             let match;
-            while ((match = stringConcatPattern.exec(line)) !== null) {
+            while ((match = stringConcatPattern.exec(codeLine)) !== null) {
                 // XML 관련 변수명인지 확인
                 if (/xml|escape|encode|out/i.test(match[1])) {
                     const diagnostic = new vscode.Diagnostic(
@@ -192,7 +201,7 @@ export class GPLDiagnosticProvider {
             }
 
             // 불필요한 문자별 처리 감지
-            if (/For\s+i\s+=.*Len\(.*\).*Mid\(/i.test(line) && /xml|escape/i.test(content)) {
+            if (/For\s+i\s+=.*Len\(.*\).*Mid\(/i.test(codeLine) && /xml|escape/i.test(content)) {
                 const diagnostic = new vscode.Diagnostic(
                     new vscode.Range(i, 0, i, line.length),
                     '성능 최적화 기회: 빠른 탈출 로직과 청크 기반 처리를 고려하세요',
@@ -296,6 +305,27 @@ export class GPLDiagnosticProvider {
     }
 
     /**
+     * 문자열 리터럴은 보존하고 인라인 주석(문자열 밖 `'` 이후)만 잘라낸다.
+     * XML 엔티티 검사류는 문자열 내용이 검사 대상이라 stripCommentsAndStrings를 쓸 수 없다.
+     */
+    private stripInlineComment(line: string): string {
+        let inString = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') {
+                if (inString && i + 1 < line.length && line[i + 1] === '"') {
+                    i++; // 이스케이프된 "" 건너뛰기
+                    continue;
+                }
+                inString = !inString;
+            } else if (ch === "'" && !inString) {
+                return line.slice(0, i);
+            }
+        }
+        return line;
+    }
+
+    /**
      * 인라인 주석과 문자열 리터럴을 제거하여 실제 코드 부분만 반환
      */
     private stripCommentsAndStrings(line: string): string {
@@ -336,9 +366,6 @@ export class GPLDiagnosticProvider {
         const diagnostics: vscode.Diagnostic[] = [];
         const lines = document.getText().split('\n');
         
-        // Optional 매개변수 패턴
-        const optionalPattern = /\bOptional\b/i;
-        
         // On Error GoTo 패턴
         const onErrorPattern = /\bOn\s+Error\s+(GoTo|Resume)\b/i;
         
@@ -354,18 +381,8 @@ export class GPLDiagnosticProvider {
             // 인라인 주석·문자열 리터럴을 제거한 코드만 검사
             const codePart = this.stripCommentsAndStrings(line);
             
-            // Optional 매개변수 검사
-            if (optionalPattern.test(codePart)) {
-                const diagnostic = new vscode.Diagnostic(
-                    new vscode.Range(i, 0, i, line.length),
-                    'GPL에서는 Optional 매개변수를 지원하지 않습니다. 함수 오버로드로 구현해주세요.',
-                    vscode.DiagnosticSeverity.Error
-                );
-                diagnostic.source = 'GPL VB Compatibility';
-                diagnostic.code = 'optional-parameter';
-                diagnostics.push(diagnostic);
-            }
-            
+            // Optional 파라미터 진단(optional-parameter)은 삭제 — 오버로드 해석 모듈이 Optional/ParamArray를 지원 사양으로 다루므로 "GPL 미지원" 오류 표시는 모순이었다.
+
             // On Error GoTo 검사
             if (onErrorPattern.test(codePart)) {
                 const diagnostic = new vscode.Diagnostic(
@@ -456,10 +473,4 @@ export class GPLDiagnosticProvider {
         this.diagnosticCollection.dispose();
     }
 
-    /**
-     * 코드 액션 제공자와 연동을 위한 진단 정보 가져오기
-     */
-    public getDiagnostics(uri: vscode.Uri): readonly vscode.Diagnostic[] {
-        return this.diagnosticCollection.get(uri) || [];
-    }
 }

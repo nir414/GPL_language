@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
 import { uploadProject, mirrorProject, listRemoteDir } from './ftpClient';
-import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus } from './responseParser';
+import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus, SHOW_THREAD_LIST_CMD } from './responseParser';
 import { isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 
 export interface DeployOptions {
@@ -203,7 +203,8 @@ export async function deploy(
         result.selectedRemoteProjectPath = remotePath.projectPath;
         result.candidateRemoteProjectPaths = remotePath.candidates;
     }
-    const totalPhases = 2 + (options.skipStop ? 0 : 1) + (options.skipStart ? 0 : 1);
+    // UPLOAD + COMPILE + ERROR CHECK(항상 수행) = 3, STOP/START는 옵션.
+    const totalPhases = 3 + (options.skipStop ? 0 : 1) + (options.skipStart ? 0 : 1);
     let phase = 0;
 
     pushTrace(`╭──────────────────────────────────────────────────────╮`);
@@ -227,10 +228,18 @@ export async function deploy(
     // 2026-07-08 사용자 관찰)이 발생할 수 있어, Show Thread로 실제 상태를 확인한다.
     const threadSettled = (state: string): boolean => /^(idle|stopped|error)$/i.test((state || '').trim());
     async function probeActiveThreads(): Promise<{ active: ThreadInfo[]; total: number } | null> {
-        const resp = await trySendCommand('Show Thread', cfg);
-        if (resp === null) { return null; }
-        const threads = parseThreadList(resp);
-        return { active: threads.filter(t => !threadSettled(t.state)), total: threads.length };
+        // GDE 캡처 실측(runbook): 인자 없는 `Show Thread`는 스레드가 실행 중이어도
+        // <DATA></DATA> 빈 응답을 줄 수 있다 → 게이트가 항상 통과하는 false-pass.
+        // 전체 열거는 반드시 `Show Thread  -web`(SHOW_THREAD_LIST_CMD)로 한다.
+        try {
+            const resp = await sendCommandDetailed(SHOW_THREAD_LIST_CMD, cfg);
+            // idle/close로 잘린(STATUS 미수신) 응답은 "확인 불가"로 처리한다(하드 규칙 2).
+            if (!resp.meta.statusTagReceived) { return null; }
+            const threads = parseThreadList(resp.raw);
+            return { active: threads.filter(t => !threadSettled(t.state)), total: threads.length };
+        } catch {
+            return null;
+        }
     }
 
     /** Stop -all 전송(무응답 시 1회 재시도). 성공이면 null, 실패면 실패 정보를 반환. */
@@ -639,7 +648,11 @@ export async function deploy(
         }
     }
 
+    // raw 텍스트에서 상태 코드 존재를 확인할 때 부분 문자열 오탐(-745가 -7450에 걸림 등)을 막는다.
+    const hasCode = (text: string, code: number): boolean => new RegExp(`(^|\\D)${code}\\b`).test(text);
+
     for (const candidate of compileCandidates) {
+        let recoveryFailureRecorded = false; // 복구 분기(cr2)가 실패를 기록했는지 (§1-L cr 덮어쓰기 방지)
         pushTrace(`│ CMD Compile ${candidate}`);
         let cr = await tryCompile(candidate);
         result.compileAttemptLogs.push({
@@ -685,6 +698,7 @@ export async function deploy(
                 pushTrace(`│ ⚠ Compile STATUS ${cr.statusCode} non-blocking (controller environment warning)`);
             }
             result.projectName = candidate;
+            result.compileErrors = []; // 이전 후보의 컴파일 에러가 성공 결과에 남지 않도록 초기화
             compiled = true;
             pushTrace(`│ ✔ Compile success: ${candidate}`);
             break;
@@ -702,7 +716,7 @@ export async function deploy(
         // -508/-743(not loaded)이 나온다면 /GPL 폴더는 있으나 로드본이 인식되지 않는 상태 —
         // 전체 배포로 초기화가 필요하다.
         if (directActive && (isProjectAlreadyLoaded(cr.statusCode) || isProjectNotLoaded(cr.statusCode)
-            || errText.includes('-745') || errText.includes('-508') || errText.includes('-743'))) {
+            || hasCode(errText, -745) || hasCode(errText, -508) || hasCode(errText, -743))) {
             pushTrace('│ ✘ Direct /GPL 모드에서 로드 상태 이상 — 전체 배포(Deploy)로 다시 시도하세요.');
             lastCompileFailure = {
                 command: `Compile ${candidate}`,
@@ -710,9 +724,10 @@ export async function deploy(
                 message: `${parseStatus(cr.raw).message || 'Load-state error in direct /GPL mode'} — 전체 배포로 재시도 필요`,
                 raw: cr.raw,
             };
+            recoveryFailureRecorded = true;
         }
         // -745: project already loaded → Unload + Load + Compile
-        else if (!directActive && (isProjectAlreadyLoaded(cr.statusCode) || errText.includes('-745'))) {
+        else if (!directActive && (isProjectAlreadyLoaded(cr.statusCode) || hasCode(errText, -745))) {
             pushTrace(`│ ⚠ Already loaded. Unload → Load → Compile`);
             const unloaded = await tryUnload(candidate);
             if (!unloaded) {
@@ -745,10 +760,11 @@ export async function deploy(
                 message: parseStatus(cr2.raw).message || 'Compile failed after reload',
                 raw: cr2.raw,
             };
+            recoveryFailureRecorded = true;
         }
         // -508/-743: missing/invalid → Load + Compile
         else if (!directActive && (isProjectNotLoaded(cr.statusCode)
-            || errText.includes('-508') || errText.includes('-743'))) {
+            || hasCode(errText, -508) || hasCode(errText, -743))) {
             pushTrace(`│ ⚠ Not loaded. Load → Compile`);
             const loaded = await ensureLoadedFromFtpPath(candidate);
             if (!loaded) {
@@ -780,10 +796,12 @@ export async function deploy(
                 message: parseStatus(cr2.raw).message || 'Compile failed after load',
                 raw: cr2.raw,
             };
+            recoveryFailureRecorded = true;
         }
 
         pushTrace(`│ ✘ Compile failed: ${candidate}`);
-        if (cr.statusCode !== 0) {
+        // 복구 분기(-745/-508 등)가 이미 cr2 기준 실패를 기록했다면 원본 cr로 덮어쓰지 않는다(§1-L 해소).
+        if (!recoveryFailureRecorded && cr.statusCode !== 0) {
             const status = parseStatus(cr.raw);
             pushTrace(`│   STATUS ${status.code}: ${status.message}`);
             lastCompileFailure = {
@@ -838,6 +856,23 @@ export async function deploy(
             }
         }
 
+        // B2(§3-B): 자동 Start 확인 게이트 — Start는 로봇 모션을 유발할 수 있다(§0.6).
+        const requireStartConfirm = vscode.workspace.getConfiguration('gpl')
+            .get<boolean>('controller.requireStartConfirmation', true);
+        if (requireStartConfirm) {
+            const pick = await vscode.window.showWarningMessage(
+                `'${result.projectName}' 프로그램을 시작합니다. 로봇이 움직일 수 있습니다.`,
+                { modal: true },
+                'Start'
+            );
+            if (pick !== 'Start') {
+                pushTrace('│ ✘ 사용자가 Start를 취소했습니다 (gpl.controller.requireStartConfirmation)');
+                result.failedPhase = 'START';
+                result.failedCommand = `Start ${result.projectName}`;
+                result.failedStatusMessage = '사용자가 Start 실행을 취소했습니다';
+                return result;
+            }
+        }
         pushTrace(`│ CMD Start ${result.projectName}`);
         const start = await runStatusCommand(`Start ${result.projectName}`);
         pushTrace(`│ RAW ${rawPreview(start.raw) || '(empty)'}`);

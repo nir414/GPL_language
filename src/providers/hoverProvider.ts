@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, isInCommentOrString, getHoverConfig, HoverConfig } from '../config';
+import { findEnclosingProcedureRange } from '../language/cursorExpression';
 import { findGplBuiltin, getGplBuiltinReferenceUrl } from '../gplBuiltins';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
@@ -84,6 +85,49 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             case GPLSymbolKind.Variable:
             default:
                 return 'Variable';
+        }
+    }
+
+    /**
+     * 커서를 감싸는 프로시저 스코프의 로컬 변수/파라미터를 찾는다.
+     *
+     * 캐시(모듈 레벨 심볼)를 먼저 조회하면 동명의 로컬/파라미터가 모듈 레벨 심볼에
+     * 가려지므로, definitionProvider와 동일하게 로컬을 먼저 해석한다
+     * (같은 스코프 안에서는 사용 위치보다 위의 가장 가까운 선언 우선).
+     */
+    private findEnclosingLocalSymbol(
+        document: vscode.TextDocument,
+        name: string,
+        atLine: number
+    ): GPLSymbol | undefined {
+        try {
+            const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
+                includeLocals: true,
+                includeParameters: true
+            });
+            const locals = localSymbols.filter(s => ciEq(s.name, name) && s.isLocal);
+            if (locals.length === 0) {
+                return undefined;
+            }
+
+            const proc = findEnclosingProcedureRange(
+                i => document.lineAt(i).text,
+                document.lineCount,
+                atLine
+            );
+            if (!proc) {
+                return undefined;
+            }
+
+            const inScope = locals.filter(s => s.line >= proc.startLine && s.line <= proc.endLine);
+            if (inScope.length === 0) {
+                return undefined;
+            }
+
+            const above = inScope.filter(s => s.line <= atLine).sort((a, b) => b.line - a.line);
+            return above[0] ?? inScope.sort((a, b) => a.line - b.line)[0];
+        } catch {
+            return undefined;
         }
     }
 
@@ -176,9 +220,19 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             return new vscode.Hover(md, wordRange);
         }
 
-        // Prefer cache definition
         const lookupName = word.includes('.') ? word.split('.').pop()! : word;
-        let sym = this.symbolCache.findDefinition(lookupName, document.uri.fsPath);
+
+        // 로컬 변수/파라미터가 동명의 모듈 레벨 캐시 심볼에 가려지지 않도록, 감싸는
+        // 프로시저 스코프의 로컬을 먼저 해석한다(definitionProvider와 동일 규칙).
+        // 멤버 접근(`obj.Member`)은 로컬 스코프 대상이 아니므로 제외.
+        let sym = !word.includes('.')
+            ? this.findEnclosingLocalSymbol(document, lookupName, position.line)
+            : undefined;
+
+        // Prefer cache definition
+        if (!sym) {
+            sym = this.symbolCache.findDefinition(lookupName, document.uri.fsPath);
+        }
 
         // Fallback: parse current document (works even outside workspace indexing)
         if (!sym && !token.isCancellationRequested) {

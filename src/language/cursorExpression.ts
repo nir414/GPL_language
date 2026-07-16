@@ -90,6 +90,69 @@ export function matchProcedureHeaderKind(trimmedLine: string): 'Sub' | 'Function
 }
 
 /**
+ * atLine을 감싸는 Sub/Function/Property 프로시저의 [헤더..End] 라인 범위를 찾는다.
+ *
+ * 위로 스캔하다 헤더보다 먼저 `End Sub/Function/Property`(atLine 자신은 제외)를 만나면
+ * atLine은 프로시저 "사이"(모듈 레벨)이므로 undefined를 돌려준다 — 프로시저 밖 위치가
+ * 직전 프로시저에 잘못 귀속되던 버그 방지. Module/Class 경계에서도 스캔을 멈춘다.
+ * definitionProvider / hoverProvider가 공유하는 단일 정본이다.
+ */
+export function findEnclosingProcedureRange(
+    getLine: (line: number) => string,
+    lineCount: number,
+    atLine: number
+): { startLine: number; endLine: number } | undefined {
+    let headerLine = -1;
+    let headerKind: 'Sub' | 'Function' | 'Property' | undefined;
+
+    for (let i = atLine; i >= 0; i--) {
+        const trimmed = getLine(i).trim();
+        if (trimmed.startsWith("'")) {
+            continue;
+        }
+
+        // 파서와 동일한 수식어 집합으로 헤더를 인식한다.
+        const kind = matchProcedureHeaderKind(trimmed);
+        if (kind) {
+            headerLine = i;
+            headerKind = kind;
+            break;
+        }
+
+        // 헤더 전에 위쪽의 End Sub/Function/Property를 만나면 프로시저 밖이다.
+        // (atLine 자신이 End 라인인 경우는 그 프로시저 내부로 취급)
+        if (i < atLine && /^\s*End\s+(Sub|Function|Property)\b/i.test(trimmed)) {
+            return undefined;
+        }
+
+        // Stop if we hit a new type/module boundary before any header.
+        if (/^\s*(Module|Class)\b/i.test(trimmed)) {
+            break;
+        }
+    }
+
+    if (headerLine < 0 || !headerKind) {
+        return undefined;
+    }
+
+    // Find matching End <Kind>.
+    let endLine = headerLine;
+    const endRe = new RegExp(`^\\s*End\\s+${headerKind}\\b`, 'i');
+    for (let i = headerLine + 1; i < lineCount; i++) {
+        const trimmed = getLine(i).trim();
+        if (trimmed.startsWith("'")) {
+            continue;
+        }
+        if (endRe.test(trimmed)) {
+            endLine = i;
+            break;
+        }
+    }
+
+    return { startLine: headerLine, endLine };
+}
+
+/**
  * 파라미터/인자 문자열을 최상위 콤마 기준으로 분리한다.
  *
  * 문자열 리터럴("..."), 중첩 괄호 `()`/대괄호 `[]` 내부의 콤마는 구분자로 보지 않는다.
@@ -217,6 +280,12 @@ export function extractCallArgumentsFromSuffix(afterWord: string): string[] | un
         if (inString) {
             continue;
         }
+        if (ch === "'") {
+            // 문자열 밖의 `'`는 주석 시작 — 미완성 호출(`Foo(a ' x, y`)에서
+            // 주석 속 콤마/괄호를 인자로 세지 않도록 여기서 자른다.
+            end = i;
+            break;
+        }
         if (ch === '(') {
             depth++;
             continue;
@@ -231,4 +300,56 @@ export function extractCallArgumentsFromSuffix(afterWord: string): string[] | un
     }
 
     return splitParameters(s.substring(1, end));
+}
+
+/**
+ * 커서 앞 텍스트에서 멤버 접근 한정자 체인을 추출한다 (자동완성용, 순수 함수).
+ * 예)
+ *   "x = loc."   → { chain: ['loc'], partial: '' }
+ *   "Move.App"   → { chain: ['Move'], partial: 'App' }
+ *   "a.b(0).C"   → { chain: ['a', 'b(0)'], partial: 'C' }
+ * 마지막 식별자 앞에 '.'이 없으면(멤버 접근이 아니면) undefined.
+ * 숫자 리터럴("1.5")과 괄호식("(x).")은 체인으로 취급하지 않는다.
+ * 문자열/주석 내부 여부 검사는 호출자가 수행한다.
+ */
+export function extractQualifierChainBefore(
+    textBeforeCursor: string
+): { chain: string[]; partial: string } | undefined {
+    const text = textBeforeCursor;
+    let i = text.length;
+
+    // 1) 커서 직전의 입력 중 단어(partial)
+    const partialEnd = i;
+    while (i > 0 && /[A-Za-z0-9_]/.test(text[i - 1])) { i--; }
+    const partial = text.slice(i, partialEnd);
+    if (i === 0 || text[i - 1] !== '.') { return undefined; }
+
+    // 2) '.' 앞의 세그먼트들을 뒤에서 앞으로 수집
+    const chain: string[] = [];
+    while (i > 0 && text[i - 1] === '.') {
+        i--; // '.' 소비
+        const segEnd = i;
+        // 호출/인덱싱 접미사 "(...)" (중첩 괄호 허용)
+        if (i > 0 && text[i - 1] === ')') {
+            let depth = 0;
+            let j = i - 1;
+            for (; j >= 0; j--) {
+                const ch = text[j];
+                if (ch === ')') { depth++; }
+                else if (ch === '(') {
+                    depth--;
+                    if (depth === 0) { break; }
+                }
+            }
+            if (j < 0 || depth !== 0) { return undefined; }
+            i = j; // '(' 위치로 이동
+        }
+        // 식별자 부분
+        while (i > 0 && /[A-Za-z0-9_]/.test(text[i - 1])) { i--; }
+        const seg = text.slice(i, segEnd);
+        if (!/^[A-Za-z_]/.test(seg)) { return undefined; }
+        chain.unshift(seg);
+    }
+    if (chain.length === 0) { return undefined; }
+    return { chain, partial };
 }

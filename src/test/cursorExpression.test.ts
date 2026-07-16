@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { extractBaseObjectName, escapeRegExp, splitParameters, getParameterArity, argCountMatchesArity, matchProcedureHeaderKind } from '../language/cursorExpression';
+import { extractBaseObjectName, escapeRegExp, splitParameters, getParameterArity, argCountMatchesArity, matchProcedureHeaderKind, extractQualifierChainBefore } from '../language/cursorExpression';
 
 test('extractBaseObjectName: 대입 + 배열 인덱싱에서 기준 객체', () => {
     assert.strictEqual(extractBaseObjectName('returnError = armList(0)'), 'armList');
@@ -84,4 +84,38 @@ test('matchProcedureHeaderKind: 수식어 다중이어도 인식', () => {
 
 test('extractBaseObjectName: 인덱서 qualifier는 인덱스가 아니라 기준 객체', () => {
     assert.strictEqual(extractBaseObjectName('steps(i)'), 'steps');
+});
+
+// ─── extractQualifierChainBefore (멤버 자동완성 한정자 체인) ───
+
+test('extractQualifierChainBefore: 단순 한정자 "loc." → chain [loc], partial 빈문자열', () => {
+    assert.deepStrictEqual(extractQualifierChainBefore('x = loc.'), { chain: ['loc'], partial: '' });
+});
+
+test('extractQualifierChainBefore: 입력 중 partial "Move.App"', () => {
+    assert.deepStrictEqual(extractQualifierChainBefore('Move.App'), { chain: ['Move'], partial: 'App' });
+});
+
+test('extractQualifierChainBefore: 인덱싱/호출 세그먼트 "a.b(0).C"', () => {
+    assert.deepStrictEqual(extractQualifierChainBefore('a.b(0).C'), { chain: ['a', 'b(0)'], partial: 'C' });
+});
+
+test('extractQualifierChainBefore: 호출 인자 속 "foo(bar."', () => {
+    assert.deepStrictEqual(extractQualifierChainBefore('foo(bar.'), { chain: ['bar'], partial: '' });
+});
+
+test('extractQualifierChainBefore: 중첩 괄호 호출 "obj.method(f(1), 2)."', () => {
+    assert.deepStrictEqual(
+        extractQualifierChainBefore('obj.method(f(1), 2).'),
+        { chain: ['obj', 'method(f(1), 2)'], partial: '' });
+});
+
+test('extractQualifierChainBefore: 숫자 리터럴 "1."과 점 없는 입력은 undefined', () => {
+    assert.strictEqual(extractQualifierChainBefore('x = 1.'), undefined);
+    assert.strictEqual(extractQualifierChainBefore('x = 1.5'), undefined);
+    assert.strictEqual(extractQualifierChainBefore('x = ident'), undefined);
+});
+
+test('extractQualifierChainBefore: 괄호식 "(x)."은 체인으로 취급하지 않음', () => {
+    assert.strictEqual(extractQualifierChainBefore('(x).'), undefined);
 });

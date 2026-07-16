@@ -28,6 +28,9 @@ const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_MAX_ATTEMPTS = 10;
 /** end() 후 이 시간 동안 close가 늦어질 수 있어 관찰 로그를 남기는 기준 시간 */
 const GRACEFUL_CLOSE_TIMEOUT_MS = 3_000;
+// 1403 connect 자체 타임아웃: 방화벽 drop 등 블랙홀 대상에서 OS 기본(수십 초)까지
+// 'connecting' 상태로 고착되는 것을 막는다. destroy → close 경로에서 기존 재연결 백오프가 동작.
+const CONNECT_TIMEOUT_MS = 5_000;
 /** Connected 상태에서 이 시간 동안 데이터가 없으면 idle 힌트 표시 */
 const NO_OUTPUT_HINT_MS = 3_000;
 /** payload 없이 종료된 세션이 이 시간 이상 유지되면 정상 idle timeout으로 분류 */
@@ -223,34 +226,33 @@ export class RuntimeConsole implements vscode.Disposable {
     async waitForPayload(timeoutMs = 1500): Promise<boolean> {
         if (this._sessionDataReceived) { return true; }
         return await new Promise<boolean>((resolve) => {
-            const resolver = (value: boolean) => resolve(value);
-            this._payloadWaiters.push(resolver);
+            // 타임아웃 시 배열에서 자기 자신(wrapped)을 제거한다.
+            // (종전에는 push 후 wrapped로 교체한 뒤 filter가 원본 resolver를 찾아 stale waiter가 잔류했다)
             const timeout = setTimeout(() => {
-                this._payloadWaiters = this._payloadWaiters.filter(r => r !== resolver);
+                this._payloadWaiters = this._payloadWaiters.filter(r => r !== wrapped);
                 resolve(this._sessionDataReceived);
             }, timeoutMs);
             const wrapped = (value: boolean) => {
                 clearTimeout(timeout);
-                resolver(value);
+                resolve(value);
             };
-            this._payloadWaiters[this._payloadWaiters.length - 1] = wrapped;
+            this._payloadWaiters.push(wrapped);
         });
     }
 
     async waitUntilReady(timeoutMs = 400): Promise<boolean> {
         if (this._readyForBatch) { return true; }
         return await new Promise<boolean>((resolve) => {
-            const resolver = (value: boolean) => resolve(value);
-            this._readyWaiters.push(resolver);
+            // 위 waitForPayload와 동일한 수정 (stale waiter 잔류 방지).
             const timeout = setTimeout(() => {
-                this._readyWaiters = this._readyWaiters.filter(r => r !== resolver);
+                this._readyWaiters = this._readyWaiters.filter(r => r !== wrapped);
                 resolve(this._readyForBatch);
             }, timeoutMs);
             const wrapped = (value: boolean) => {
                 clearTimeout(timeout);
-                resolver(value);
+                resolve(value);
             };
-            this._readyWaiters[this._readyWaiters.length - 1] = wrapped;
+            this._readyWaiters.push(wrapped);
         });
     }
 
@@ -356,6 +358,7 @@ export class RuntimeConsole implements vscode.Disposable {
         this._onDidDisconnect.dispose();
         this._onDidReceiveLine.dispose();
         this._onDidStatusChanged.dispose();
+        this._onDidReceiveData.dispose();
     }
 
     /** GPL Traffic 채널에 1403 콘솔 트래픽 로깅 */
@@ -812,11 +815,19 @@ export class RuntimeConsole implements vscode.Disposable {
 
         this.logConsoleTraffic('>>>', `CONNECT ${cfg.ip}:${cfg.consolePort}`);
 
+        const connectTimer = setTimeout(() => {
+            if (!this._isConnected && this.socket === socket) {
+                this.logConsoleTraffic('---', `CONNECT timeout (${CONNECT_TIMEOUT_MS}ms) — destroy, 재연결 경로로 위임`);
+                socket.destroy(new Error('connect timeout'));
+            }
+        }, CONNECT_TIMEOUT_MS);
+
         const connectOptions = cfg.preferIPv4
             ? { host: cfg.ip, port: cfg.consolePort, family: 4 }
             : { host: cfg.ip, port: cfg.consolePort };
 
         socket.connect(connectOptions, () => {
+            clearTimeout(connectTimer);
             this._isConnected = true;
             this._connectedAt = Date.now();
             this.carry = '';
@@ -895,7 +906,10 @@ export class RuntimeConsole implements vscode.Disposable {
         });
 
         socket.on('close', (hadError: boolean) => {
+            clearTimeout(connectTimer);
             this.socket = null;
+            // 'end' 없이 에러로 닫힌 경우에도 마지막 미완 라인(carry)을 flush한다 (유실 방지).
+            try { this.processConsoleText('', true); } catch { /* noop */ }
             if (!this._sessionDataReceived) {
                 this.resolvePayloadWaiters(false);
             }

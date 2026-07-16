@@ -18,9 +18,14 @@ export interface StatusResult {
  * STATUS가 없으면 code = -9999.
  */
 export function parseStatus(response: string): StatusResult {
-    const m = response.match(/<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/);
-    if (m) {
-        return { code: parseInt(m[1], 10), message: m[2] || '', raw: response };
+    // DATA 본문에 STATUS 텍스트가 포함될 수 있으므로(파일/로그 덤프 응답),
+    // 실제 종결 STATUS인 "마지막" 블록을 채택한다.
+    const re = /<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/g;
+    let m: RegExpExecArray | null;
+    let last: RegExpExecArray | null = null;
+    while ((m = re.exec(response)) !== null) { last = m; }
+    if (last) {
+        return { code: parseInt(last[1], 10), message: last[2] || '', raw: response };
     }
     return { code: -9999, message: 'No STATUS found', raw: response };
 }
@@ -280,6 +285,9 @@ function normalizeThreadState(raw: string): ThreadState {
     if (s.includes('run')) { return 'Running'; }
     if (s.includes('idle')) { return 'Idle'; }
     if (s.includes('error') || s.includes('err')) { return 'Error'; }
+    // 'stopped'를 'stopp' 포함 검사보다 먼저 확인한다 — 종전에는 "Stopped"가 'Stopping'으로
+    // 정규화되어 정지 완료 스레드가 "아직 정지 중"으로 오판됐다(정지 검증/게이트 오동작 원인).
+    if (s.includes('stopped')) { return 'Stopped'; }
     if (s.includes('stopp') || s.includes('stoping')) { return 'Stopping'; }
     if (s.includes('stop')) { return 'Stopped'; }
     if (s.includes('paus')) { return 'Paused'; }

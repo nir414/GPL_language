@@ -9,6 +9,7 @@ import './responseParser.test';
 import './controllerStatusCodes.test';
 import './gplDictionaryData.test';
 import './gplParserDocComment.test';
+import './gplParserFixes.test';
 import './consoleCommandClassifier.test';
 import './indentationRules.test';
 import './projectSelection.test';

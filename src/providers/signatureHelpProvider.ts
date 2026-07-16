@@ -37,16 +37,25 @@ export class GPLSignatureHelpProvider implements vscode.SignatureHelpProvider {
             return undefined;
         }
 
-        const resolved = this.resolveSignature(call.name, document);
-        if (!resolved) {
+        const resolved = this.resolveSignatures(call.name, document);
+        if (!resolved || resolved.length === 0) {
             return undefined;
         }
 
         const help = new vscode.SignatureHelp();
-        help.signatures = [resolved.info];
-        help.activeSignature = 0;
-        help.activeParameter = resolved.paramCount > 0
-            ? Math.min(call.activeParameter, resolved.paramCount - 1)
+        help.signatures = resolved.map(r => r.info);
+
+        // 활성 시그니처: 현재 인자 인덱스를 수용할 수 있는(파라미터 수 > activeParameter)
+        // 첫 오버로드를 고른다(단순 arity 우선 규칙). 없으면 0번.
+        let activeSignature = resolved.findIndex(r => r.paramCount > call.activeParameter);
+        if (activeSignature < 0) {
+            activeSignature = 0;
+        }
+        help.activeSignature = activeSignature;
+
+        const active = resolved[activeSignature];
+        help.activeParameter = active.paramCount > 0
+            ? Math.min(call.activeParameter, active.paramCount - 1)
             : 0;
         return help;
     }
@@ -89,39 +98,57 @@ export class GPLSignatureHelpProvider implements vscode.SignatureHelpProvider {
         return { name: m[1], activeParameter: top.commas };
     }
 
-    private resolveSignature(
+    private resolveSignatures(
         name: string,
         document: vscode.TextDocument
-    ): { info: vscode.SignatureInformation; paramCount: number } | undefined {
+    ): { info: vscode.SignatureInformation; paramCount: number }[] | undefined {
         // 1) Built-in (properties have no call signature).
         const builtin = findGplBuiltin(name);
         if (builtin && builtin.kind !== 'property') {
-            return this.buildBuiltinSignature(builtin);
+            return [this.buildBuiltinSignature(builtin)];
         }
 
-        // 2) User-defined Sub/Function (cache first, then fall back to parsing this doc).
+        // 2) User-defined Sub/Function — findDefinition은 임의의 오버로드 1개만 돌려주므로,
+        //    이름이 같은 "모든" 호출 가능 심볼을 모아 오버로드별 SignatureInformation을 만든다.
         const lookup = name.includes('.') ? name.split('.').pop()! : name;
-        let sym: GPLSymbol | undefined = this.symbolCache.findDefinition(lookup, document.uri.fsPath);
-        const isCallable = (s?: GPLSymbol) =>
-            !!s && (s.kind === GPLSymbolKind.Function || s.kind === GPLSymbolKind.Sub);
+        const isCallable = (s: GPLSymbol) =>
+            s.kind === GPLSymbolKind.Function || s.kind === GPLSymbolKind.Sub;
 
-        if (!isCallable(sym)) {
+        let syms = this.symbolCache.findAllByName(lookup).filter(isCallable);
+
+        // 캐시에 없으면 현재 문서를 파싱해 보완(워크스페이스 인덱싱 밖에서도 동작).
+        if (syms.length === 0) {
             try {
                 const locals = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                const found = locals.find(s => ciEq(s.name, lookup) && isCallable(s));
-                if (found) {
-                    sym = found;
-                }
+                syms = locals.filter(s => ciEq(s.name, lookup) && isCallable(s));
             } catch {
                 /* ignore parse errors — best effort */
             }
         }
 
-        if (isCallable(sym)) {
-            return this.buildUserSignature(sym!);
+        if (syms.length === 0) {
+            return undefined;
         }
 
-        return undefined;
+        // 현재 파일의 정의를 앞으로(활성 후보가 현재 파일 오버로드부터 보이게).
+        const fsLower = document.uri.fsPath.toLowerCase();
+        const ordered = [
+            ...syms.filter(s => s.filePath.toLowerCase() === fsLower),
+            ...syms.filter(s => s.filePath.toLowerCase() !== fsLower)
+        ];
+
+        // 중복 사본(동일 시그니처 라벨)은 하나만 남긴다.
+        const out: { info: vscode.SignatureInformation; paramCount: number }[] = [];
+        const seen = new Set<string>();
+        for (const s of ordered) {
+            const built = this.buildUserSignature(s);
+            if (seen.has(built.info.label)) {
+                continue;
+            }
+            seen.add(built.info.label);
+            out.push(built);
+        }
+        return out;
     }
 
     private buildBuiltinSignature(b: GPLBuiltinEntry): { info: vscode.SignatureInformation; paramCount: number } {

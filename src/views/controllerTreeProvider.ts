@@ -104,6 +104,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private ftpFlashError: string | null = null;
 	private sysInfo: { label: string; value: string; tooltip?: string; iconId?: string }[] = [];
 	private pollTimer: ReturnType<typeof setTimeout> | null = null;
+	/** 폴링 루프 세대 토큰 — stop/start/디버그 진입 시 증가시켜 낡은 콜백의 재스케줄을 차단 */
+	private pollGeneration = 0;
+	/** 진행 중인 refresh 본문 promise — 강제 갱신이 완료를 기다릴 수 있게 보관 */
+	private _refreshPromise: Promise<void> | null = null;
 	private consecutiveFailures = 0;
 	private lastDetailPollAt = 0;
 	private breakpoints: BreakpointInfo[] = [];
@@ -196,14 +200,21 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const cfg = vscode.workspace.getConfiguration('gpl.controller');
 		const baseInterval = cfg.get<number>('threadPollIntervalMs') ?? 5000;
 		const interval = this.threads.length > 0 ? baseInterval : baseInterval * 3;
+		const generation = this.pollGeneration;
 		this.pollTimer = setTimeout(async () => {
 			this.pollTimer = null;
 			await this.refresh();
+			// refresh 대기 중 stopPolling/enterDebugMode/startPolling이 호출됐다면 이 콜백은
+			// 낡은 세대다 — 재스케줄하지 않는다 (디버그 중 폴링 지속·이중 루프 방지).
+			if (generation !== this.pollGeneration || this._debugModeSubscription) { return; }
 			this.scheduleNextPoll();
 		}, interval);
 	}
 
 	stopPolling(): void {
+		// 세대 토큰 증가 — 진행 중(await refresh) 콜백이 완료돼도 재스케줄하지 못하게 한다.
+		// (enterDebugMode/startPolling도 이 메서드를 거치므로 함께 무효화된다)
+		this.pollGeneration++;
 		if (this.pollTimer) {
 			clearTimeout(this.pollTimer);
 			this.pollTimer = null;
@@ -254,13 +265,28 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 */
 	async refresh(forceDetails: boolean = false): Promise<void> {
 		if (!this._connected) { return; }
-		if (this._refreshInFlight) { return; }
+		if (this._refreshInFlight) {
+			// 폴링 refresh가 진행 중일 때: 일반 폴링 호출은 스킵하되, 강제 갱신(forceDetails)은
+			// 진행 중인 refresh 완료를 기다렸다가 1회 재실행한다 — copySituationForChat/
+			// diagnosticSnapshot이 낡은 스냅샷을 조용히 복사하지 않도록.
+			if (!forceDetails || !this._refreshPromise) { return; }
+			try { await this._refreshPromise; } catch { /* noop */ }
+			if (this._refreshInFlight || !this._connected) { return; }
+		}
+		this._refreshPromise = this.doRefresh(forceDetails);
+		await this._refreshPromise;
+	}
+
+	private async doRefresh(forceDetails: boolean): Promise<void> {
 		this._refreshInFlight = true;
 		try {
 
 		// 경량 주기 폴링: 기본은 경량 Show Thread, 수동 전체 새로고침(forceDetails)일 때만
 		// -stack 상세형으로 thread별 timing까지 받는다(고빈도 폴 페이로드 경량 유지).
 		const threadResp = await trySendCommand(forceDetails ? SHOW_THREAD_LIST_STACK_CMD : SHOW_THREAD_LIST_CMD);
+		// 연결 해제(disconnect/유실) 후 도착한 늦은 응답 가드 — 해제 상태에서
+		// this.threads 재할당이나 후속 명령(ErrorLog/Show Break) 전송을 막는다.
+		if (!this._connected) { return; }
 
 		// 연결 유실 감지: 핵심 상태(Show Thread) 3회 연속 실패 시 자동 해제
 		if (threadResp === null) {
@@ -299,7 +325,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		if (shouldPollDetails) {
 			const errorResp = await trySendCommand('ErrorLog');
+			if (!this._connected) { return; }
 			const breakResp = await trySendCommand('Show Break');
+			if (!this._connected) { return; }
 			if (errorResp !== null) {
 				this.errors = parseErrorLog(errorResp);
 			}

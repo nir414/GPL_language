@@ -187,7 +187,9 @@ function sendCommandDetailedInternal(
 			const statusTagReceived = raw.includes('</STATUS>');
 			const dataTagClosed = raw.includes('</DATA>');
 			return {
-				responseComplete: statusTagReceived || dataTagClosed,
+				// 하드 규칙 2: 완전한 응답은 종결자 </STATUS> 수신으로만 판정한다.
+				// (</DATA>만 닫힌 응답은 STATUS 누락 — idle/close 완료 경로에서 잘렸을 수 있음)
+				responseComplete: statusTagReceived,
 				bytesReceived: Buffer.byteLength(raw, 'utf8'),
 				lastChunkAt: new Date(lastChunkAtMs).toISOString(),
 				idleTimeoutMs: idleMs,
@@ -217,7 +219,9 @@ function sendCommandDetailedInternal(
 			if (idleTimer) clearTimeout(idleTimer);
 
 			const elapsed = Date.now() - startMs;
-			const statusMatch = responseBuffer.match(/<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/);
+			// DATA 본문에 STATUS 텍스트가 포함될 수 있어 마지막 STATUS 블록을 채택한다(로그 라벨용).
+			const statusMatches = [...responseBuffer.matchAll(/<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/g)];
+			const statusMatch = statusMatches.length ? statusMatches[statusMatches.length - 1] : null;
 			const statusStr = statusMatch ? `STATUS ${statusMatch[1]}` : 'OK';
 			const lines = responseBuffer.split(/\r?\n/).filter(l => l.trim() && !l.includes('<STATUS>') && !l.includes('</STATUS>') && !l.includes('<DATA>') && !l.includes('</DATA>')).length;
 			logTraffic('<<<', `${statusStr}  ${lines} lines  ${elapsed}ms`);
@@ -252,8 +256,10 @@ function sendCommandDetailedInternal(
 				idleTimer = null;
 			}
 
-			// 완성 응답 조건 1: <STATUS> 태그 감지
-			if (responseBuffer.includes('</STATUS>')) {
+			// 완성 응답 조건 1(terminator-first): 종결자 </STATUS>가 버퍼 끝에 도달.
+			// includes() 판정은 DATA 본문에 STATUS 텍스트가 담긴 응답(로그/파일 덤프 등)에서
+			// 본문 중간을 종결로 오인할 수 있어 "버퍼 끝" 기준으로 판정한다.
+			if (/<\/STATUS>\s*$/.test(responseBuffer)) {
 				completeResponse();
 				return;
 			}
@@ -261,6 +267,7 @@ function sendCommandDetailedInternal(
 			// 완성 응답 조건 2: 최소 바이트 수 && idle 대기
 			// (부분 수신으로 인한 "무응답" 오해 방지)
 			// waitForStatusClose면 idle 조기 완료를 끄고 오직 </STATUS>/소켓 종료/하드 타임아웃으로만 완료한다.
+			// idle로 완료된 STATUS 없는 응답은 meta.responseComplete=false로 표시된다(하드 규칙 2, B4).
 			if (!waitForStatusClose && responseBuffer.length >= minResponseBytes) {
 				idleTimer = setTimeout(() => {
 					if (!responseBuffer.includes('</STATUS>') && extraIdleMsOnIncomplete > 0 && !extraIdleApplied) {
@@ -304,7 +311,10 @@ function sendCommandDetailedInternal(
 				clearTimeout(timer);
 				if (responseBuffer.length > 0) {
 					const elapsed = Date.now() - startMs;
-					logTraffic('<<<', `(closed) ${responseBuffer.length} bytes  ${elapsed}ms`);
+					// 부분 버퍼도 반환은 한다(HTTP 교차 응답 감지 등 raw 소비자 유지).
+					// 단 meta.responseComplete=false로 표시되어 호출자가 절단 응답을 성공으로 오독하지 않는다(B5).
+					const hasStatusClose = responseBuffer.includes('</STATUS>');
+					logTraffic('<<<', `(closed${hasStatusClose ? '' : ', INCOMPLETE — no </STATUS>'}) ${responseBuffer.length} bytes  ${elapsed}ms`);
 					resolve({ raw: responseBuffer.trim(), meta: buildMeta() });
 				} else {
 					logTraffic('---', `CLOSED without response: ${command}`);

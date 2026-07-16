@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
-import { extractBaseObjectName, escapeRegExp, matchProcedureHeaderKind, extractCallArgumentsFromSuffix } from '../language/cursorExpression';
+import { extractBaseObjectName, escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix } from '../language/cursorExpression';
 import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
@@ -99,53 +99,10 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         document: vscode.TextDocument,
         atLine: number
     ): { startLine: number; endLine: number } | undefined {
-        const total = document.lineCount;
-
-        // Find nearest procedure header above.
-        let headerLine = -1;
-        let headerKind: 'Sub' | 'Function' | 'Property' | undefined;
-
-        for (let i = atLine; i >= 0; i--) {
-            const text = document.lineAt(i).text;
-            const trimmed = text.trim();
-            if (trimmed.startsWith("'")) {
-                continue;
-            }
-
-            // 파서와 동일한 수식어 집합으로 헤더를 인식한다.
-            // (`Public Overrides Sub`, `Friend Shared Function` 등 수식어가 여러 개여도 놓치지 않음)
-            const kind = matchProcedureHeaderKind(trimmed);
-            if (kind) {
-                headerLine = i;
-                headerKind = kind;
-                break;
-            }
-
-            // Stop if we hit a new type/module boundary before any header.
-            if (/^\s*(Module|Class)\b/i.test(trimmed)) {
-                break;
-            }
-        }
-
-        if (headerLine < 0 || !headerKind) {
-            return undefined;
-        }
-
-        // Find matching End <Kind>.
-        let endLine = headerLine;
-        const endRe = new RegExp(`^\\s*End\\s+${headerKind}\\b`, 'i');
-        for (let i = headerLine + 1; i < total; i++) {
-            const trimmed = document.lineAt(i).text.trim();
-            if (trimmed.startsWith("'")) {
-                continue;
-            }
-            if (endRe.test(trimmed)) {
-                endLine = i;
-                break;
-            }
-        }
-
-        return { startLine: headerLine, endLine };
+        // 공용 정본(cursorExpression.findEnclosingProcedureRange)에 위임한다.
+        // 헤더보다 먼저 End Sub/Function/Property를 만나면(=프로시저 사이, 모듈 레벨)
+        // undefined를 돌려주므로, 직전 프로시저에 잘못 귀속되던 문제가 함께 고쳐졌다.
+        return findEnclosingProcedureRange(i => document.lineAt(i).text, document.lineCount, atLine);
     }
 
     private pickBestScopedCandidate(

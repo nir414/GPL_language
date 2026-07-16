@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
-import { isTraceVerbose, ciEq, getQualifiedWordAtPosition } from '../config';
+import { isTraceVerbose, ciEq, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
@@ -175,40 +175,21 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         }
     }
 
-    private isCommentPosition(lineText: string, charIndex: number): boolean {
-        // GPL/VB comment starts with apostrophe (') when not inside a string literal.
-        let inString = false;
-        for (let i = 0; i < lineText.length; i++) {
-            const ch = lineText[i];
-
-            if (ch === '"') {
-                // VB string escape: doubled quote ""
-                if (inString && i + 1 < lineText.length && lineText[i + 1] === '"') {
-                    i++; // consume escaped quote
-                    continue;
-                }
-                inString = !inString;
-                continue;
-            }
-
-            if (!inString && ch === "'") {
-                return charIndex >= i;
-            }
-        }
-
-        return false;
-    }
-
     private getQualifierBefore(text: string, identifierIndex: number): string | undefined {
-        const before = text.substring(0, identifierIndex);
-        const lastDotIndex = before.lastIndexOf('.');
-
-        if (lastDotIndex === -1) {
+        // 점(.)이 식별자 "바로 앞"(사이에 공백만 허용)에 있을 때만 한정자로 인정한다
+        // — isQualifiedAt와 동일 기준. 종전에는 앞쪽 전체 텍스트의 lastIndexOf('.')를 써서
+        // 몇 줄 위의 무관한 `foo.bar`가 한정자로 잡혔고, shouldAcceptByMemberScope가
+        // 유효한 비한정 참조를 조용히 걸러내는 원인이 됐다.
+        let i = identifierIndex - 1;
+        while (i >= 0 && (text[i] === ' ' || text[i] === '\t')) {
+            i--;
+        }
+        if (i < 0 || text[i] !== '.') {
             return undefined;
         }
 
-        // Extract everything before the last dot
-        const objectExpression = before.substring(0, lastDotIndex).trim();
+        // Extract everything before the dot
+        const objectExpression = text.substring(0, i).trim();
 
         // Get the base object name from the expression (handles array indexing, etc.)
         return extractBaseObjectName(objectExpression);
@@ -454,7 +435,8 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
 
                     const range = new vscode.Range(startPos, doc.positionAt(endIndex));
 
-                    if (this.isCommentPosition(lineText, range.start.character)) {
+                    // 주석(')뿐 아니라 문자열("...") 내부의 매치도 참조가 아니다 (config 공용 헬퍼).
+                    if (isInCommentOrString(lineText, range.start.character)) {
                         continue;
                     }
 
@@ -583,7 +565,8 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 }
 
                 const lineText = doc.lineAt(normalizedRange.start.line).text;
-                if (this.isCommentPosition(lineText, normalizedRange.start.character)) {
+                // 주석(')뿐 아니라 문자열("...") 내부의 매치도 참조가 아니다 (config 공용 헬퍼).
+                if (isInCommentOrString(lineText, normalizedRange.start.character)) {
                     return;
                 }
 
@@ -749,9 +732,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // Note: cache-based approach is less accurate because it is name-only and may include duplicates.
         if (!token.isCancellationRequested && locations.length === 0) {
             this.log('[References] Workspace scan returned 0. Falling back to cache-based search.');
-            const refs = this.symbolCache.findReferences(word);
+            const refs = await this.symbolCache.findReferences(word, token);
             for (const ref of refs) {
-                const uri = vscode.Uri.file(ref.symbol.filePath);
+                const uri = vscode.Uri.file(ref.filePath);
 
                 for (const usage of ref.usages) {
                     const p = new vscode.Position(usage.line, usage.character);

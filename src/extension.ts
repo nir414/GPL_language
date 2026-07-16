@@ -54,8 +54,18 @@ let runtimeConsoleHooksBound = false;
 let lastDeploySnapshot: SituationDeploySnapshot | undefined;
 let isDebugSessionActive = false;
 const deployOutcomeHistory: Array<{ mode: 'Build' | 'Deploy & Run'; signature: string; timestamp: number; summary: string }> = [];
+// 히스토리 상한 — 장시간 세션에서 무한 증가 방지 (초과 시 오래된 항목부터 제거)
+const DEPLOY_OUTCOME_HISTORY_MAX = 50;
+function pushDeployOutcome(entry: (typeof deployOutcomeHistory)[number]): void {
+	deployOutcomeHistory.push(entry);
+	while (deployOutcomeHistory.length > DEPLOY_OUTCOME_HISTORY_MAX) {
+		deployOutcomeHistory.shift();
+	}
+}
 const recentDebugLogLines: string[] = [];
 let lastRuntimeErrorContext: RuntimeErrorContext | undefined;
+// 배포 뮤텍스 — 더블클릭/autoOnSave 중첩 등 동시 배포 실행 방지 (runDeploy에서 set/clear)
+let deployInFlight = false;
 
 /**
  * RuntimeConsole 싱글톤 확보.
@@ -281,9 +291,11 @@ export function activate(context: vscode.ExtensionContext) {
 					return true;
 				}
 
-				const state = (found.state || '').toString().toLowerCase();
-				const stillActive = state.includes('run') || state.includes('pause') || state.includes('break') || state.includes('error') || state.includes('stopp');
-				if (!stillActive) {
+				// settled 판정은 deployService.threadSettled와 동일 집합(Idle/Stopped/Error).
+				// 'stopp' 부분 일치는 'Stopped'(정지 완료)까지 활성으로 오판했다 —
+				// 집합 밖 상태(Running/Stopping 등)만 활성으로 본다.
+				const state = (found.state || '').toString().trim();
+				if (/^(idle|stopped|error)$/i.test(state)) {
 					return true;
 				}
 			} catch {
@@ -305,10 +317,8 @@ export function activate(context: vscode.ExtensionContext) {
 					return true;
 				}
 
-				const hasActive = threads.some(t => {
-					const state = (t.state || '').toString().toLowerCase();
-					return state.includes('run') || state.includes('pause') || state.includes('break') || state.includes('error') || state.includes('stopp');
-				});
+				// verifyThreadStopped와 동일한 settled 집합 — 'Stopped'를 활성으로 오판하지 않는다.
+				const hasActive = threads.some(t => !/^(idle|stopped|error)$/i.test((t.state || '').toString().trim()));
 				if (!hasActive) {
 					return true;
 				}
@@ -397,9 +407,14 @@ export function activate(context: vscode.ExtensionContext) {
 		return vscode.workspace.textDocuments.some(doc => isGplDocument(doc));
 	}
 
-	const runtimeConsoleCfg = vscode.workspace.getConfiguration('gpl.runtimeConsole');
-	const autoStartConsoleOnDeploy = runtimeConsoleCfg.get<boolean>('autoStartOnDeploy', false);
-	const autoStartConsoleOnDebug = runtimeConsoleCfg.get<boolean>('autoStartOnDebug', true);
+	// 설정은 activate 1회 스냅샷이 아니라 사용 시점에 읽는다 — 변경이 재시작 없이 반영되도록.
+	// autoStartOnDeploy 코드 폴백은 package.json 기본값(true)과 일치시킨다.
+	const getAutoStartConsoleOnDeploy = (): boolean => vscode.workspace
+		.getConfiguration('gpl.runtimeConsole')
+		.get<boolean>('autoStartOnDeploy', true);
+	const getAutoStartConsoleOnDebug = (): boolean => vscode.workspace
+		.getConfiguration('gpl.runtimeConsole')
+		.get<boolean>('autoStartOnDebug', true);
 
 	const autoStartLiveTerminal = vscode.workspace
 		.getConfiguration('gpl.trace')
@@ -614,6 +629,18 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
+			// 진단 게이트(gpl.diagnostics.experimental, 기본 false)가 꺼져 있으면 updateDiagnostics는
+			// 아무것도 표시하지 않는다 — "분석 완료"로 오인시키지 않고 비활성 상태를 그대로 안내한다.
+			const diagnosticsEnabled = vscode.workspace
+				.getConfiguration('gpl.diagnostics')
+				.get<boolean>('experimental', false);
+			if (!diagnosticsEnabled) {
+				vscode.window.showInformationMessage(
+					'GPL 진단이 비활성화되어 있어 XML 인코딩 분석 결과가 표시되지 않습니다. 설정 gpl.diagnostics.experimental을 켜면 Problems에 결과가 표시됩니다.',
+				);
+				return;
+			}
+
 			// 현재 문서의 진단 업데이트
 			diagnosticProvider.updateDiagnostics(activeEditor.document);
 			vscode.window.showInformationMessage('XML 인코딩 분석이 완료되었습니다. 문제점을 확인하세요.');
@@ -647,6 +674,8 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.workspace.onDidDeleteFiles((event) => {
 			for (const uri of event.files) {
 				symbolCache.removeFile(uri.fsPath);
+				// 폴더 삭제는 폴더 경로 1건만 온다 — 하위 파일 심볼도 prefix로 제거해 stale 정의 방지.
+				symbolCache.deleteByFsPathPrefix(uri.fsPath);
 				diagnosticProvider.clearDiagnostics(uri);
 			}
 		})
@@ -657,6 +686,8 @@ export function activate(context: vscode.ExtensionContext) {
 			for (const f of event.files) {
 				// Remove old cache/diagnostics
 				symbolCache.removeFile(f.oldUri.fsPath);
+				// 폴더 rename 시 옛 경로 하위 파일 심볼도 prefix로 제거 (stale 정의 방지)
+				symbolCache.deleteByFsPathPrefix(f.oldUri.fsPath);
 				diagnosticProvider.clearDiagnostics(f.oldUri);
 
 				// Re-index the new file path so symbol filePath stays correct
@@ -725,6 +756,14 @@ export function activate(context: vscode.ExtensionContext) {
 	// ════════════════════════════════════════════════════════════
 	consoleChannel = vscode.window.createOutputChannel('GPL Console');
 	context.subscriptions.push(consoleChannel);
+
+	// RuntimeConsole 싱글톤은 지연 생성되므로 dispose 시점에 존재하면 함께 정리한다
+	// (소켓/재연결 타이머/EventEmitter 해제).
+	context.subscriptions.push({
+		dispose: () => {
+			try { runtimeConsole?.dispose(); } catch { /* noop */ }
+		},
+	});
 
 	deployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-deploy');
 	context.subscriptions.push(deployDiagnostics);
@@ -826,6 +865,8 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	scheduleExpectedProjectSync('startup');
+	// deactivate 시 디바운스 타이머 해제 (좀비 콜백 방지)
+	context.subscriptions.push({ dispose: () => { if (expectedProjectSyncTimer) { clearTimeout(expectedProjectSyncTimer); expectedProjectSyncTimer = undefined; } } });
 
 	function getPreferredWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
 		const folders = vscode.workspace.workspaceFolders;
@@ -999,16 +1040,21 @@ export function activate(context: vscode.ExtensionContext) {
 		return launchPath;
 	}
 
-	// 연결 유실 감지 → 상태바 + 알림 갱신
-	controllerTree.onDidLoseConnection(() => {
-		runtimeConsole?.stop();
-		if (runtimeConsole) {
-			controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
-		}
-		setControllerConnected(false);
-		logOutput('[Controller] Connection lost (3 consecutive failures)');
-		vscode.window.showWarningMessage('GPL Controller 연결이 끊어졌습니다.');
-	});
+	// 연결 유실 감지 → 상태바 + 알림 갱신 (구독 해제를 위해 subscriptions에 등록)
+	context.subscriptions.push(
+		controllerTree.onDidLoseConnection(() => {
+			runtimeConsole?.stop();
+			if (runtimeConsole) {
+				controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
+			}
+			setControllerConnected(false);
+			// disconnect 명령과 동일하게 낡은 런타임 에러 컨텍스트를 정리한다.
+			lastRuntimeErrorContext = undefined;
+			controllerTree?.setRuntimeErrorContext(undefined);
+			logOutput('[Controller] Connection lost (3 consecutive failures)');
+			vscode.window.showWarningMessage('GPL Controller 연결이 끊어졌습니다.');
+		})
+	);
 
 	// ── Controller commands ──────────────────────────────────
 
@@ -1176,7 +1222,23 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// --- Deploy helper (공통 로직) ---
-	async function runDeploy(skipStart: boolean, quickOpts?: { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string; noStopPrompt?: boolean }) {
+	type QuickDeployOpts = { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string; noStopPrompt?: boolean };
+
+	/** 배포 진입점 — 동시 실행 뮤텍스(deployInFlight)로 본문 전체를 try/finally로 감싼다. */
+	async function runDeploy(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<void> {
+		if (deployInFlight) {
+			vscode.window.showWarningMessage('배포가 이미 진행 중입니다. 완료 후 다시 시도하세요.');
+			return;
+		}
+		deployInFlight = true;
+		try {
+			await runDeployCore(skipStart, quickOpts);
+		} finally {
+			deployInFlight = false;
+		}
+	}
+
+	async function runDeployCore(skipStart: boolean, quickOpts?: QuickDeployOpts) {
 		const modeLabel: SituationDeploySnapshot['mode'] = skipStart ? 'Build' : 'Deploy & Run';
 		const uniqueCodes = (values: number[]): number[] => [...new Set(values)];
 		const buildOutcomeSignature = (result: Awaited<ReturnType<typeof deploy>>, controllerSystemCodes: number[]): string => {
@@ -1367,7 +1429,7 @@ export function activate(context: vscode.ExtensionContext) {
 				const comparisonNote = samePattern.length > 0
 					? `회귀 아님: 동일 결과 패턴 ${samePattern.length + 1}회 관측`
 					: undefined;
-				deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.success ? '성공' : '실패' });
+				pushDeployOutcome({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.success ? '성공' : '실패' });
 				const deployedFolderName = path.basename(projectDir).trim();
 				const remotePathInfo = result.selectedRemoteProjectPath
 					? ` / 경로: ${result.selectedRemoteProjectPath}`
@@ -1429,7 +1491,7 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 					} else {
 						vscode.window.showInformationMessage(`배포 완료: ${result.projectName}${remotePathInfo}`);
-						if (!deployRuntimeConsole && autoStartConsoleOnDeploy) {
+						if (!deployRuntimeConsole && getAutoStartConsoleOnDeploy()) {
 							deployRuntimeConsole = ensureRuntimeConsole();
 							await deployRuntimeConsole.waitUntilReady(800);
 						}
@@ -1460,7 +1522,7 @@ export function activate(context: vscode.ExtensionContext) {
 				const comparisonNote = samePattern.length > 0
 					? `회귀 아님: 동일 실패 패턴 ${samePattern.length + 1}회 관측`
 					: undefined;
-				deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.failedPhase ?? 'FAIL' });
+				pushDeployOutcome({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.failedPhase ?? 'FAIL' });
 				const sysLabel = sysErrors.length > 0
 					? ` / 제어기 시스템 경고 ${sysErrors.length}건 (배포 원인 아님)`
 					: '';
@@ -1557,6 +1619,8 @@ export function activate(context: vscode.ExtensionContext) {
 	let quickCompileTimer: ReturnType<typeof setTimeout> | undefined;
 	let quickCompileInFlight = false;
 	const quickCompilePendingFiles = new Set<string>();
+	// deactivate 시 디바운스 타이머 해제 (좀비 콜백 방지)
+	context.subscriptions.push({ dispose: () => { if (quickCompileTimer) { clearTimeout(quickCompileTimer); quickCompileTimer = undefined; } } });
 
 	/** 저장된 파일이 속한 프로젝트 폴더(.gpr 보유)를 찾는다. 여러 후보 중 가장 깊은(구체적인) 경로를 선택. */
 	async function resolveProjectDirForFile(fsPath: string): Promise<string | undefined> {
@@ -1571,6 +1635,65 @@ export function activate(context: vscode.ExtensionContext) {
 		return matches.sort((a, b) => b.length - a.length)[0];
 	}
 
+	/** autoOnSave 디바운스 타이머 (재)예약. */
+	function scheduleQuickCompileFlush(delayMs: number): void {
+		if (quickCompileTimer) { clearTimeout(quickCompileTimer); }
+		quickCompileTimer = setTimeout(() => {
+			quickCompileTimer = undefined;
+			void flushQuickCompilePending();
+		}, delayMs);
+	}
+
+	/**
+	 * pending 저장 파일 처리. 저장 경로에서는 절대 UI(QuickPick/모달)를 띄우지 않는다.
+	 * - 컴파일/배포가 진행 중이면 pending을 버리지 않고 재예약해 이후에 처리한다.
+	 * - 프로젝트 폴더별로 그룹화해 첫 그룹만 이번에 처리하고, 다른 프로젝트 파일은
+	 *   pending에 남겨 재예약한다 (업로드 필터에서 조용히 탈락하던 문제 방지).
+	 * - 프로젝트(.gpr)를 못 찾는 파일은 로그만 남기고 조용히 건너뛴다.
+	 */
+	async function flushQuickCompilePending(): Promise<void> {
+		if (quickCompilePendingFiles.size === 0) { return; }
+		if (quickCompileInFlight || deployInFlight) {
+			scheduleQuickCompileFlush(1000);
+			return;
+		}
+		quickCompileInFlight = true;
+		try {
+			const groups = new Map<string, string[]>();
+			for (const file of [...quickCompilePendingFiles]) {
+				const dir = await resolveProjectDirForFile(file);
+				if (!dir) {
+					quickCompilePendingFiles.delete(file);
+					logOutput(`[QuickCompile] autoOnSave: 프로젝트(.gpr) 미해석 — 건너뜀: ${file}`);
+					continue;
+				}
+				const list = groups.get(dir);
+				if (list) { list.push(file); } else { groups.set(dir, [file]); }
+			}
+
+			const firstGroup = groups.entries().next();
+			if (firstGroup.done) { return; }
+			const [projectDir, changedFiles] = firstGroup.value;
+			for (const file of changedFiles) { quickCompilePendingFiles.delete(file); }
+
+			await runDeploy(true, {
+				skipStop: true,
+				skipUnchanged: true,
+				quick: true,
+				changedFiles,
+				overrideProjectDir: projectDir,
+				// 저장마다 모달이 뜨면 방해되므로 autoOnSave는 활성 쓰레드 시 조용히 중단.
+				noStopPrompt: true,
+			});
+		} finally {
+			quickCompileInFlight = false;
+			if (quickCompilePendingFiles.size > 0) {
+				// 남은 프로젝트 그룹/처리 중 새로 저장된 파일을 이어서 처리
+				scheduleQuickCompileFlush(1000);
+			}
+		}
+	}
+
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument((doc) => {
 			if (doc.languageId !== 'gpl') { return; }
@@ -1578,32 +1701,7 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!auto) { return; }
 			if (!controllerTree?.isConnected) { return; }
 			quickCompilePendingFiles.add(doc.uri.fsPath);
-			if (quickCompileTimer) { clearTimeout(quickCompileTimer); }
-			quickCompileTimer = setTimeout(async () => {
-				quickCompileTimer = undefined;
-				if (quickCompileInFlight) { return; }
-				quickCompileInFlight = true;
-				// 디바운스 윈도 동안 모인 저장 파일을 한 번에 처리.
-				const changedFiles = [...quickCompilePendingFiles];
-				quickCompilePendingFiles.clear();
-				try {
-					// 저장 파일이 속한 프로젝트 폴더를 해석. 단일 프로젝트면 그 폴더로 묶인다.
-					const projectDir = changedFiles.length > 0
-						? await resolveProjectDirForFile(changedFiles[0])
-						: undefined;
-					await runDeploy(true, {
-						skipStop: true,
-						skipUnchanged: true,
-						quick: true,
-						changedFiles: projectDir ? changedFiles : undefined,
-						overrideProjectDir: projectDir,
-						// 저장마다 모달이 뜨면 방해되므로 autoOnSave는 활성 쓰레드 시 조용히 중단.
-						noStopPrompt: true,
-					});
-				} finally {
-					quickCompileInFlight = false;
-				}
-			}, 600);
+			scheduleQuickCompileFlush(600);
 		})
 	);
 
@@ -2244,7 +2342,6 @@ export function activate(context: vscode.ExtensionContext) {
 				errors: ReturnType<typeof parseCompileErrors>;
 				ok: boolean;
 				note?: string;
-				needsFollowUp: boolean;
 				responseMeta?: {
 					responseComplete: boolean;
 					bytesReceived: number;
@@ -2279,17 +2376,16 @@ export function activate(context: vscode.ExtensionContext) {
 			};
 
 			const tryCompile = async (): Promise<FtpCompileAttempt> => {
+				// 컴파일은 pass 사이에 수 초간 침묵할 수 있어 idle 기반 조기 완료는 응답이 잘려
+				// STATUS/에러 라인을 놓친다. deployService.tryCompile과 동일하게 종결자
+				// </STATUS>까지 대기하고 대형 프로젝트 대비 충분한 상한을 둔다 (§0.2).
 				const detailed = await sendCommandDetailed(`Compile ${name}`, cfg, {
-					idleMs: 300,
-					minResponseBytes: 10,
-					extraIdleMsOnIncomplete: 250,
+					waitForStatusClose: true,
+					timeoutMs: Math.max(cfg.timeoutMs, 60000),
 				});
 				const raw = detailed.raw;
 				const status = parseStatus(raw);
 				const errors = parseCompileErrors(raw);
-				const statusMissing = status.code === -9999;
-				const hasCompileSuccessful = /\bcompile\s+successful\b/i.test(raw);
-				const hasCompilePassLog = /\bpass\s*1\b|\bpass\s*2\b|\bpass\s*3\b/i.test(raw);
 
 				if ((status.code === 0 || isControllerNonBlockingStatus(status.code)) && errors.length === 0) {
 					return {
@@ -2297,81 +2393,21 @@ export function activate(context: vscode.ExtensionContext) {
 						status,
 						errors,
 						ok: true,
-						needsFollowUp: false,
 						responseMeta: detailed.meta,
 					};
 				}
 
-				if (statusMissing && errors.length === 0) {
-					if (hasCompileSuccessful) {
-						return {
-							raw,
-							status: { ...status, code: 0, message: 'STATUS missing tolerated by compile-success marker' },
-							errors,
-							ok: true,
-							note: 'STATUS missing tolerated by compile-success marker',
-							needsFollowUp: false,
-							responseMeta: detailed.meta,
-						};
-					}
-
-					if (hasCompilePassLog) {
-						return {
-							raw,
-							status,
-							errors,
-							ok: false,
-							note: 'STATUS missing with compile-pass logs; follow-up required',
-							needsFollowUp: true,
-							responseMeta: detailed.meta,
-						};
-					}
-				}
-
+				// STATUS가 없으면(-9999) 컴파일 결과를 확인하지 못한 것이다. 'compile successful'
+				// 텍스트 마커나 Show Thread 응답으로 성공을 추정하지 않는다 — 실제 컴파일 에러를
+				// 가리는 오판의 직접 원인이었다. 성공 판정은 STATUS 0 + 에러 없음뿐이다 (§0.2/§0.3).
 				return {
 					raw,
 					status,
 					errors,
 					ok: false,
-					needsFollowUp: false,
+					note: status.code === -9999 ? 'STATUS 누락 — 컴파일 결과 미확인(성공 추정 금지)' : undefined,
 					responseMeta: detailed.meta,
 				};
-			};
-
-			const acceptStatusMissingCompile = async (compile: FtpCompileAttempt): Promise<boolean> => {
-				if (!compile.needsFollowUp) { return false; }
-
-				const followUpConnIssue = (msg: string): boolean =>
-					/ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|EPIPE|Connection error|connect\s+ECONN|socket hang up|timed?\s*out/i.test(msg || '');
-				const maxFollowUpAttempts = 5;
-				const followUpBaseDelayMs = Math.max(500, Math.floor((cfg.timeoutMs || 10000) / 20));
-				// 대형 프로젝트는 컴파일이 백그라운드에서 도는 동안 1402가 새 연결을 거부(ECONNREFUSED)할 수 있어
-				// 보강 판정 Show Thread를 백오프로 재시도한다. 컴파일이 끝나 포트가 열리면 정상 응답을 받는다.
-				for (let attempt = 1; attempt <= maxFollowUpAttempts; attempt++) {
-					logOutput(`│ ⚠ Compile STATUS 누락 감지: 보강 판정(Show Thread ${attempt}/${maxFollowUpAttempts})`);
-					try {
-						const follow = await runStatusCommand('Show Thread');
-						logOutput(`│ RAW ${rawPreview(follow.raw) || '(empty)'}`);
-						if (follow.ok) {
-							logOutput('│ ✔ Compile success (STATUS missing tolerated)');
-							logOutput(`│ ⚠ Compile STATUS 누락 응답을 Show Thread 정상 응답으로 보강 판정 (${attempt}회 시도)`);
-							return true;
-						}
-						logOutput(`│ ⚠ Follow-up failed: STATUS ${follow.status.code} ${follow.status.message || ''}`.trimEnd());
-						return false;
-					} catch (err: any) {
-						const msg = err?.message ?? String(err);
-						if (attempt < maxFollowUpAttempts && followUpConnIssue(msg)) {
-							const delay = Math.min(followUpBaseDelayMs * Math.pow(2, attempt - 1), 8000);
-							logOutput(`│ ⚠ 보강 판정 일시적 연결 실패(컴파일 진행 중 추정): ${msg}. ${delay}ms 후 재시도`);
-							await sleep(delay);
-							continue;
-						}
-						logOutput(`│ ⚠ Follow-up error: ${msg}`);
-						return false;
-					}
-				}
-				return false;
 			};
 
 			const ensureStoppedBeforeCompile = async (): Promise<boolean> => {
@@ -2409,7 +2445,12 @@ export function activate(context: vscode.ExtensionContext) {
 			};
 
 			try {
-				await ensureStoppedBeforeCompile();
+				// §0.6: Stop -all의 STATUS 0은 "정지 요청 수리"일 뿐 정지 완료가 아니다.
+				// 전체 정지가 확인되지 않으면 Load/Compile/Start를 진행하지 않고 중단한다.
+				const stoppedBeforeRun = await ensureStoppedBeforeCompile();
+				if (!stoppedBeforeRun) {
+					throw new Error('Stop -all 후 전체 정지가 확인되지 않았습니다. 스레드 상태를 확인한 뒤 다시 시도하세요 (Load/Compile/Start 중단).');
+				}
 				if (loadBeforeCompile) {
 					const loadedBeforeCompile = await ensureLoadedFromFtp();
 					if (!loadedBeforeCompile) {
@@ -2422,31 +2463,20 @@ export function activate(context: vscode.ExtensionContext) {
 				logOutput(`│ Compile ${name}`);
 				let compile = await tryCompile();
 				logCompileAttempt(compile);
-				if (!compile.ok && await acceptStatusMissingCompile(compile)) {
-					compile = {
-						...compile,
-						status: { ...compile.status, code: 0, message: 'STATUS missing tolerated by Show Thread follow-up' },
-						ok: true,
-					};
-				}
 				if (!compile.ok) {
 					const statusCode = compile.status.code;
 					if (statusCode === -746) {
 						logOutput('│ ⚠ STATUS -746 Interlocked for read');
 						logOutput('│ ⚠ Retry path: Stop → wait → Compile');
-						await ensureStoppedBeforeCompile();
+						const stoppedForRetry = await ensureStoppedBeforeCompile();
+						if (!stoppedForRetry) {
+							throw new Error('Stop -all 후 전체 정지가 확인되지 않아 Compile 재시도를 중단했습니다 (§0.6).');
+						}
 						await sleep(500);
 						compile = await tryCompile();
 						logCompileAttempt(compile);
-						if (!compile.ok && await acceptStatusMissingCompile(compile)) {
-							compile = {
-								...compile,
-								status: { ...compile.status, code: 0, message: 'STATUS missing tolerated by Show Thread follow-up' },
-								ok: true,
-							};
-						}
 						if (!compile.ok) {
-							throw new Error(`Compile failed after retry: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
+							throw new Error(`Compile failed after retry: STATUS ${compile.status.code} ${compile.status.message || ''}${compile.note ? ` — ${compile.note}` : ''}`.trimEnd());
 						}
 						logOutput('│ ✔ Compile success (after interlock retry)');
 					} else if (statusCode === -745) {
@@ -2465,15 +2495,8 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 						compile = await tryCompile();
 						logCompileAttempt(compile);
-						if (!compile.ok && await acceptStatusMissingCompile(compile)) {
-							compile = {
-								...compile,
-								status: { ...compile.status, code: 0, message: 'STATUS missing tolerated by Show Thread follow-up' },
-								ok: true,
-							};
-						}
 						if (!compile.ok) {
-							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
+							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}${compile.note ? ` — ${compile.note}` : ''}`.trimEnd());
 						}
 						logOutput(`│ ✔ Compile success (after reload)`);
 					} else if (statusCode === -508 || statusCode === -743) {
@@ -2484,15 +2507,8 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 						compile = await tryCompile();
 						logCompileAttempt(compile);
-						if (!compile.ok && await acceptStatusMissingCompile(compile)) {
-							compile = {
-								...compile,
-								status: { ...compile.status, code: 0, message: 'STATUS missing tolerated by Show Thread follow-up' },
-								ok: true,
-							};
-						}
 						if (!compile.ok) {
-							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
+							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}${compile.note ? ` — ${compile.note}` : ''}`.trimEnd());
 						}
 						logOutput(`│ ✔ Compile success (after load)`);
 					} else {
@@ -2500,7 +2516,7 @@ export function activate(context: vscode.ExtensionContext) {
 						if (compileError) {
 							throw new Error(`Compile failed: ${compileError.file}:${compileError.line} (${compileError.code}) ${compileError.message}`);
 						}
-						throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}`.trimEnd());
+						throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}${compile.note ? ` — ${compile.note}` : ''}`.trimEnd());
 					}
 				} else {
 					logOutput(`│ ✔ Compile success`);
@@ -2963,7 +2979,7 @@ export function activate(context: vscode.ExtensionContext) {
 					scheduleExpectedProjectSync('debug session started');
 				}
 				controllerTree?.enterDebugMode();
-				if (autoStartConsoleOnDebug) {
+				if (getAutoStartConsoleOnDebug()) {
 					// 디버그 attach 시 1403 런타임 콘솔 자동 시작 (start()는 idempotent).
 					try { ensureRuntimeConsole(); } catch (err: any) {
 						logOutput(`[Console] auto-start on debug failed: ${err?.message ?? err}`);
@@ -3111,8 +3127,8 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-	// Controller cleanup
-	runtimeConsole?.stop();
+	// Controller cleanup — dispose()가 stop()을 포함해 소켓/타이머/EventEmitter까지 해제한다.
+	try { runtimeConsole?.dispose(); } catch { /* noop */ }
 	controllerTree?.stopPolling();
 	stopLiveLogTerminal();
 

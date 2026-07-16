@@ -134,10 +134,7 @@ export async function uploadProject(
 			if (skip) {
 				skipped++;
 			} else {
-				const dir = path.posix.dirname(remotePath);
-				await client.ensureDir(dir);
-				await client.cd('/');
-				await client.uploadFrom(file, remotePath);
+				await uploadVerified(client, file, remotePath, stat.size);
 				uploaded++;
 			}
 
@@ -202,10 +199,7 @@ export async function mirrorProject(
 				skipped++;
 			} else {
 				const remotePath = `${remoteDir}/${relative}`;
-				const dir = path.posix.dirname(remotePath);
-				await client.ensureDir(dir);
-				await client.cd('/');
-				await client.uploadFrom(file, remotePath);
+				await uploadVerified(client, file, remotePath, stat.size);
 				uploaded++;
 			}
 			options?.onProgress?.(i + 1, localFiles.length, relative);
@@ -229,9 +223,34 @@ export async function mirrorProject(
 	}
 }
 
+/**
+ * 업로드 직후 SIZE로 원격 크기를 재확인한다 (부분 업로드 감지, §3-B B6).
+ * - 크기 불일치가 "확인"되면 → 1회 재업로드 후 재확인, 그래도 불일치면 예외(UPLOAD 실패 처리).
+ * - SIZE 조회 자체가 불가하면 검증 불가로 보고 업로드는 인정한다
+ *   (SIZE 미지원/일시 오류로 정상 업로드를 실패로 만들지 않기 위함).
+ */
+async function uploadVerified(client: FtpClient, localFile: string, remotePath: string, localSize: number): Promise<void> {
+	const dir = path.posix.dirname(remotePath);
+	await client.ensureDir(dir);
+	await client.cd('/');
+	await client.uploadFrom(localFile, remotePath);
+	for (let attempt = 0; ; attempt++) {
+		let remoteSize: number | null = null;
+		try { remoteSize = await client.size(remotePath); } catch { remoteSize = null; }
+		if (remoteSize === null || remoteSize === localSize) { return; }
+		if (attempt >= 1) {
+			throw new Error(`업로드 검증 실패: ${remotePath} 크기 불일치 (local ${localSize} / remote ${remoteSize}) — 원격 사본이 불완전할 수 있습니다. 다시 배포하세요.`);
+		}
+		await client.uploadFrom(localFile, remotePath);
+	}
+}
+
 function getAllFiles(dir: string): string[] {
 	const results: string[] = [];
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+		// dot 항목(.git/.history/.vscode/.DS_Store 등)은 제어기로 올릴 대상이 아니다.
+		// (findProjectDirs의 탐색 제외와 대칭 — flash 소모/업로드 시간 낭비 방지)
+		if (entry.name.startsWith('.')) { continue; }
 		const full = path.join(dir, entry.name);
 		if (entry.isDirectory()) {
 			results.push(...getAllFiles(full));
@@ -266,6 +285,9 @@ export async function downloadProject(
 		for (let i = 0; i < remoteFiles.length; i++) {
 			const rf = remoteFiles[i];
 			const localPath = path.join(localDir, rf.relativePath);
+			// 원격 엔트리 이름 검증: localDir 밖으로 나가는 경로(../ 류)는 저장하지 않는다.
+			const relCheck = path.relative(localDir, localPath);
+			if (!relCheck || relCheck.startsWith('..') || path.isAbsolute(relCheck)) { continue; }
 
 			// 로컬 디렉터리 생성
 			const dir = path.dirname(localPath);
@@ -300,6 +322,8 @@ async function collectRemoteFiles(
 	const entries = await client.list(currentDir);
 
 	for (const entry of entries) {
+		// 서버가 '.'/'..'를 목록에 포함하는 경우 무한 재귀/경로 오염 방지.
+		if (entry.name === '.' || entry.name === '..') { continue; }
 		const rel = relative ? `${relative}/${entry.name}` : entry.name;
 		const full = `${currentDir}/${entry.name}`;
 

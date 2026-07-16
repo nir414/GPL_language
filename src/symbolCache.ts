@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { GPLParser, GPLSymbol } from './gplParser';
 import { isTraceOn, ciEq } from './config';
+import { getParameterArity, argCountMatchesArity } from './language/cursorExpression';
 import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
 
 export class SymbolCache {
@@ -47,7 +48,13 @@ export class SymbolCache {
             return;
         }
 
-        const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+        const text = document.getText();
+        // 바이너리 .gpo가 텍스트로 열린 경우(NUL 문자 포함) 심볼 갱신을 건너뛴다 — 쓰레기 심볼 방지.
+        if (text.includes('\u0000')) {
+            return;
+        }
+
+        const symbols = GPLParser.parseDocument(text, document.uri.fsPath);
         this.symbols.set(document.uri.fsPath, symbols);
         
         const fileName = path.basename(document.uri.fsPath);
@@ -80,6 +87,21 @@ export class SymbolCache {
         }
 
         return false;
+    }
+
+    /**
+     * fsPath 자체이거나 `fsPath + path.sep`로 시작하는 모든 캐시 항목을 제거한다(대소문자 무시).
+     * 폴더 삭제/이름변경 시 하위 파일들의 잔류 심볼을 일괄 정리하는 용도 (extension.ts에서 호출).
+     */
+    public deleteByFsPathPrefix(fsPath: string): void {
+        const targetLower = fsPath.toLowerCase();
+        const prefixLower = targetLower.endsWith(path.sep) ? targetLower : targetLower + path.sep;
+        for (const key of Array.from(this.symbols.keys())) {
+            const keyLower = key.toLowerCase();
+            if (keyLower === targetLower || keyLower.startsWith(prefixLower)) {
+                this.symbols.delete(key);
+            }
+        }
     }
 
     /**
@@ -139,7 +161,9 @@ export class SymbolCache {
         // 기존 동작: 현재 파일에서 먼저 찾고, 없으면 경로 근접도로 최적 후보 선택.
         // (workspace 루트와 Test_robot/ 같은 중복 사본 사이에서 튀는 것을 방지)
         if (currentFilePath) {
-            const inFile = candidates.filter(s => s.filePath === currentFilePath);
+            // Windows 경로는 대소문자가 다를 수 있어 무시 비교(deleteByFsPath와 동일 규칙).
+            const currentLower = currentFilePath.toLowerCase();
+            const inFile = candidates.filter(s => s.filePath.toLowerCase() === currentLower);
             if (inFile.length > 0) {
                 return [inFile[0]];
             }
@@ -242,8 +266,9 @@ export class SymbolCache {
                     continue;
                 }
                 if (typeof argCount === 'number') {
-                    const paramCount = s.parameters ? s.parameters.length : 0;
-                    if (paramCount !== argCount) {
+                    // Optional/ParamArray를 반영한 arity 범위 검사 — 종전의 정확 일치(===)는
+                    // `Sub New(Optional ...)`의 0-인자 호출 등을 놓쳤다 (오버로드 해석 모듈과 동일 규칙).
+                    if (!argCountMatchesArity(argCount, getParameterArity(s.parameters))) {
                         continue;
                     }
                 }
@@ -316,7 +341,11 @@ export class SymbolCache {
             return best ? [best] : [];
         }
 
-        const callable = candidates.filter(s => s.kind === 'function' || s.kind === 'sub');
+        // 배열 타입 필드/프로퍼티(`steps() As StepBatch` 등)는 `steps(i)`처럼 괄호로
+        // 인덱싱되므로 호출 문맥에서도 정당한 후보다 — 비호출형 제외에서 살려둔다.
+        const isIndexableArray = (s: GPLSymbol) =>
+            (s.kind === 'variable' || s.kind === 'property') && !!s.returnType && s.returnType.endsWith('[]');
+        const callable = candidates.filter(s => s.kind === 'function' || s.kind === 'sub' || isIndexableArray(s));
         if (callable.length === 0) {
             // In a call context (Foo(...)), non-callable symbols (const/variable/property) should not be selected.
             return [];
@@ -350,13 +379,14 @@ export class SymbolCache {
     }
 
     private scoreFilePath(candidateFilePath: string, preferredFilePath: string): number {
-        // Higher is better
-        if (candidateFilePath === preferredFilePath) {
+        // Higher is better. Windows 경로는 대소문자가 다를 수 있어 무시 비교(deleteByFsPath와 동일 규칙).
+        const candidateLower = candidateFilePath.toLowerCase();
+        const preferredLower = preferredFilePath.toLowerCase();
+        if (candidateLower === preferredLower) {
             return 1000;
         }
 
-        const preferredDir = path.dirname(preferredFilePath);
-        if (path.dirname(candidateFilePath) === preferredDir) {
+        if (path.dirname(candidateLower) === path.dirname(preferredLower)) {
             return 800;
         }
 
@@ -367,7 +397,7 @@ export class SymbolCache {
             const relCandidate = path.relative(ws.uri.fsPath, candidateFilePath);
             const topPreferred = relPreferred.split(path.sep)[0];
             const topCandidate = relCandidate.split(path.sep)[0];
-            if (topPreferred && topPreferred === topCandidate) {
+            if (topPreferred && topPreferred.toLowerCase() === topCandidate.toLowerCase()) {
                 return 500;
             }
         }
@@ -375,20 +405,47 @@ export class SymbolCache {
         return 0;
     }
 
-    public findReferences(symbolName: string): { symbol: GPLSymbol; usages: { line: number; character: number }[] }[] {
-        const references: { symbol: GPLSymbol; usages: { line: number; character: number }[] }[] = [];
+    /**
+     * 캐시에 인덱싱된 "모든" 파일에서 심볼 사용처를 찾는다.
+     *
+     * 종전에는 (a) 해당 이름을 정의한 파일이면서 (b) 에디터에 열린 문서만 스캔해,
+     * 사용-전용 파일과 미오픈 파일의 참조를 통째로 놓쳤다. 이제 인덱싱된 파일 전체를
+     * 대상으로, 열린 문서가 있으면 그 텍스트(저장 전 편집 반영)를, 없으면 디스크에서
+     * 읽어(utf8) 스캔한다. 스캔 자체는 주석/문자열 안전 + 대소문자 무시 단어 경계인
+     * GPLParser.findSymbolUsages를 그대로 사용한다.
+     */
+    public async findReferences(
+        symbolName: string,
+        token?: vscode.CancellationToken
+    ): Promise<{ filePath: string; usages: { line: number; character: number }[] }[]> {
+        const references: { filePath: string; usages: { line: number; character: number }[] }[] = [];
 
-        for (const [filePath, fileSymbols] of this.symbols) {
-            const symbol = fileSymbols.find(s => ciEq(s.name, symbolName));
-            if (symbol) {
-                // Read the file content to find usages
-                const document = vscode.workspace.textDocuments.find((doc: vscode.TextDocument) => doc.uri.fsPath === filePath);
-                if (document) {
-                    const usages = GPLParser.findSymbolUsages(document.getText(), symbolName);
-                    if (usages.length > 0) {
-                        references.push({ symbol, usages });
-                    }
+        for (const filePath of this.symbols.keys()) {
+            if (token?.isCancellationRequested) {
+                break;
+            }
+
+            // 열린 문서 우선(편집 중 내용 유지) — 경로는 Windows 대소문자 무시 비교.
+            const fileLower = filePath.toLowerCase();
+            const document = vscode.workspace.textDocuments.find(
+                (doc: vscode.TextDocument) => doc.uri.fsPath.toLowerCase() === fileLower
+            );
+
+            let text: string;
+            if (document) {
+                text = document.getText();
+            } else {
+                try {
+                    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+                    text = Buffer.from(bytes).toString('utf8');
+                } catch {
+                    continue; // 삭제/접근 불가 파일은 건너뛴다
                 }
+            }
+
+            const usages = GPLParser.findSymbolUsages(text, symbolName);
+            if (usages.length > 0) {
+                references.push({ filePath, usages });
             }
         }
 
@@ -419,7 +476,42 @@ export class SymbolCache {
         return allSymbols;
     }
 
-    public getCompletionItems(currentModule?: string, currentClass?: string): vscode.CompletionItem[] {
+    /**
+     * className의 멤버 목록(필드/상수/프로퍼티/메서드) — 멤버 자동완성용.
+     * 이름 중복(오버로드)은 첫 항목만, 생성자(New)는 제외한다.
+     */
+    public getClassMembers(className: string): GPLSymbol[] {
+        const target = className.toLowerCase();
+        const seen = new Set<string>();
+        const members: GPLSymbol[] = [];
+        for (const s of this.getAllSymbols()) {
+            if (!s.className || s.className.toLowerCase() !== target) { continue; }
+            if (s.kind === 'class' || s.kind === 'module') { continue; }
+            const key = s.name.toLowerCase();
+            if (key === 'new' || seen.has(key)) { continue; }
+            seen.add(key);
+            members.push(s);
+        }
+        return members;
+    }
+
+    /** moduleName 직속(클래스 밖) 멤버 목록 — 모듈 한정자 자동완성용. 클래스 심볼은 포함한다. */
+    public getModuleMembers(moduleName: string): GPLSymbol[] {
+        const target = moduleName.toLowerCase();
+        const seen = new Set<string>();
+        const members: GPLSymbol[] = [];
+        for (const s of this.getAllSymbols()) {
+            if (!s.module || s.module.toLowerCase() !== target) { continue; }
+            if (s.className || s.kind === 'module') { continue; }
+            const key = s.name.toLowerCase();
+            if (seen.has(key)) { continue; }
+            seen.add(key);
+            members.push(s);
+        }
+        return members;
+    }
+
+    public getCompletionItems(): vscode.CompletionItem[] {
         const items: vscode.CompletionItem[] = [];
         const seenNames = new Set<string>();
 
@@ -462,7 +554,7 @@ export class SymbolCache {
      * Build rich completion documentation: a GPL signature codeblock for callables
      * (or `name : type` for fields/consts), followed by the symbol's `'` doc-comment.
      */
-    private buildSymbolDocumentation(symbol: GPLSymbol): vscode.MarkdownString {
+    public buildSymbolDocumentation(symbol: GPLSymbol): vscode.MarkdownString {
         const md = new vscode.MarkdownString();
         if (symbol.kind === 'function' || symbol.kind === 'sub') {
             const params = symbol.parameters?.join(', ') ?? '';
@@ -480,7 +572,7 @@ export class SymbolCache {
         return md;
     }
 
-    private getCompletionItemKind(symbolKind: string): vscode.CompletionItemKind {
+    public getCompletionItemKind(symbolKind: string): vscode.CompletionItemKind {
         switch (symbolKind) {
             case 'module': return vscode.CompletionItemKind.Module;
             case 'class': return vscode.CompletionItemKind.Class;

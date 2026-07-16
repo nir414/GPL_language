@@ -53,8 +53,13 @@ jobs:
       - name: Extract changelog
         run: node scripts/extract-changelog.js "${{ steps.version.outputs.version }}" > release_notes.md
 
+      - name: Delete existing release if present
+        run: gh release delete "v${{ steps.version.outputs.version }}" --yes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           name: GPL Language Support v${{ steps.version.outputs.version }}
           body_path: release_notes.md

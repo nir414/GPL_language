@@ -14,8 +14,8 @@ git commit -m "chore: bump version to 0.7.1"
 git push origin main
 
 # 3. 태그 생성 & 푸시 (자동 릴리즈 트리거)
-git tag v0.7.1
-git push origin v0.7.1
+git tag v0.7.7
+git push origin v0.7.7
 ```
 
 ✅ 완료! GitHub Actions가 자동으로 빌드, 패키징, 릴리즈 노트 생성, Release 생성을 처리합니다.

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
-import { extractBaseObjectName, escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix } from '../language/cursorExpression';
+import { extractBaseObjectName, escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix, getStringLiteralContentAt } from '../language/cursorExpression';
 import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
@@ -257,6 +257,87 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         }
     }
 
+    /**
+     * 문자열 리터럴 속 프로시저 참조 해석.
+     *
+     * GPL은 Thread 생성자 등에서 실행할 프로시저를 문자열로 받는다:
+     *   New Thread("DataFile.SaveReservationThreadFunction",,"SaveReservationThreadFunction")
+     * 문자열 전체가 식별자 형태("Name" / "Class.Proc")일 때만 해석을 시도한다:
+     *   - 커서 segment 앞에 qualifier가 있으면 → 그 클래스/모듈의 Sub/Function
+     *   - 커서 segment 뒤에 '.'이 이어지면 → 클래스/모듈 정의
+     *   - 단일 식별자면 → 이름이 일치하는 Sub/Function
+     * 해석 실패 시 undefined — 기존의 "문자열 내부 차단"과 같은 결과라서
+     * 일반 문장/경로 등의 문자열에서 엉뚱한 곳으로 점프하지 않는다.
+     */
+    private resolveStringLiteralReference(
+        document: vscode.TextDocument,
+        ident: { range: vscode.Range; word: string; qualifier?: string },
+        line: string
+    ): vscode.Definition | undefined {
+        const literal = getStringLiteralContentAt(line, ident.range.start.character);
+        if (!literal || !/^[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*$/.test(literal.text.trim())) {
+            return undefined;
+        }
+
+        const word = ident.word;
+        const isCallable = (s: GPLSymbol) => s.kind === 'sub' || s.kind === 'function';
+        this.log(`[String Ref] literal="${literal.text.trim()}" | word="${word}" | qualifier="${ident.qualifier ?? 'N/A'}"`);
+
+        if (ident.qualifier) {
+            // "Class.Proc"에서 커서가 Proc 위 — 클래스 멤버 → 모듈 멤버 순으로 탐색
+            const inClass = this.symbolCache
+                .findMemberInClassMatches(word, ident.qualifier, document.uri.fsPath)
+                .filter(isCallable);
+            if (inClass.length > 0) {
+                this.log(`[String Ref Found] ${ident.qualifier}.${word} → class member`);
+                return this.buildDefinitionResult(inClass);
+            }
+            const inModule = this.symbolCache
+                .findMemberInModuleMatches(word, ident.qualifier, document.uri.fsPath)
+                .filter(isCallable);
+            if (inModule.length > 0) {
+                this.log(`[String Ref Found] ${ident.qualifier}.${word} → module member`);
+                return this.buildDefinitionResult(inModule);
+            }
+        } else if (/^\s*\./.test(line.substring(ident.range.end.character))) {
+            // "Class.Proc"에서 커서가 첫 segment 위 — 클래스/모듈 정의로
+            const containers = this.symbolCache
+                .findDefinitionMatches(word, document.uri.fsPath)
+                .filter(s => s.kind === 'class' || s.kind === 'module');
+            if (containers.length > 0) {
+                this.log(`[String Ref Found] ${word} → ${containers[0].kind}`);
+                return this.buildDefinitionResult([containers[0]]);
+            }
+        } else {
+            // 단일 식별자 — Sub/Function만 허용 (변수 등과의 우연한 이름 일치는 배제)
+            const procs = this.symbolCache
+                .findDefinitionMatches(word, document.uri.fsPath)
+                .filter(isCallable);
+            if (procs.length > 0) {
+                this.log(`[String Ref Found] ${word} → ${procs[0].kind}`);
+                return this.buildDefinitionResult(procs);
+            }
+        }
+
+        // 캐시 미스 대비: 현재 문서 온디맨드 파싱 폴백 (스레드 프로시저는 같은 파일에 있는 경우가 많다)
+        try {
+            const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+            const matches = localSymbols.filter(s => ciEq(s.name, word) && isCallable(s)
+                && (!ident.qualifier
+                    || ciEq(s.className ?? '', ident.qualifier)
+                    || ciEq(s.module ?? '', ident.qualifier)));
+            if (matches.length > 0) {
+                this.log(`[String Ref Found - Local] ${matches[0].name} @line ${matches[0].line + 1}`);
+                return this.buildDefinitionResult([matches[0]]);
+            }
+        } catch (error) {
+            this.log(`[String Ref Parse Error] ${error}`);
+        }
+
+        this.log(`[String Ref] "${literal.text.trim()}" did not resolve — string stays blocked`);
+        return undefined;
+    }
+
     async provideDefinition(
         document: vscode.TextDocument,
         position: vscode.Position,
@@ -275,9 +356,12 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         const wordRange = ident.range;
         const line = document.lineAt(position.line).text;
 
-        // 주석(')·문자열("...") 내부는 정의 대상이 아니다 — 오검색/엉뚱한 점프 방지 (2026-07-03).
+        // 주석(')·문자열("...") 내부는 원칙적으로 정의 대상이 아니다 — 오검색/엉뚱한 점프 방지 (2026-07-03).
+        // 단, GPL은 프로시저를 문자열로 참조하는 관용구가 있으므로
+        // (예: New Thread("DataFile.SaveReservationThreadFunction")), 문자열 전체가
+        // 식별자 형태이고 Sub/Function 등으로 해석될 때만 예외적으로 점프한다 (2026-07-22).
         if (isInCommentOrString(line, wordRange.start.character)) {
-            return undefined;
+            return this.resolveStringLiteralReference(document, ident, line);
         }
         // 제어 키워드(If/Then/Dim...)는 심볼이 될 수 없다 — 멤버 해석/캐시 미스 낭비 제거.
         if (GPL_CONTROL_KEYWORDS.has(word.toLowerCase())) {

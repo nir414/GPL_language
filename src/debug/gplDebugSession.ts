@@ -118,12 +118,12 @@ type ScopeRef =
         varType: string;
     };
 
-/** `Show Variable` 응답 한 줄의 파싱 결과 (`name, type, value`) */
-interface ParsedVarEntry {
-    name: string;
-    type: string;
-    value: string;
-}
+import {
+    ParsedVarEntry,
+    parseShowVariableMulti,
+    classifyVarEntry,
+    arrayRank,
+} from './showVariableParser';
 
 interface GlobalVariableDescriptor {
     displayName: string;
@@ -857,7 +857,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                             scopeInfo.threadName, scopeInfo.frameIndex, g.lookupNames[0],
                         );
                         const entry = structured?.entry;
-                        if (entry && (this._classifyVarEntry(entry) !== 'simple'
+                        if (entry && (classifyVarEntry(entry) !== 'simple'
                             || (entry.value && entry.value !== '(undefined)'))) {
                             variables.push(this._makeVariable(
                                 g.displayName,
@@ -898,7 +898,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 ));
             }
         } else if (scopeInfo.type === 'expand') {
-            if (this._classifyVarEntry({ name: '', type: scopeInfo.varType, value: '' }) === 'array') {
+            if (classifyVarEntry({ name: '', type: scopeInfo.varType, value: '' }) === 'array') {
                 variables.push(...await this._expandArrayElements(scopeInfo));
             } else {
                 // 중첩 객체(`Loc.Pos` 등)는 지연 재조회 — 공식 문서: 참조된 객체의 값은
@@ -1183,17 +1183,19 @@ export class GPLDebugSession extends LoggingDebugSession {
             //  3) 위에서 결과가 없으면 입력 전체를 제어기 명령으로 전송
             const forceRaw = expression.startsWith('>');
             const rawCommand = forceRaw ? expression.slice(1).trim() : expression;
+            let evalError: { code: number; message: string } | undefined;
 
             if (!forceRaw && threadName) {
                 const structured = await this._queryVariableStructured(
                     threadName, frameIndex, expression,
                 );
                 if (structured) {
-                    const kind = this._classifyVarEntry(structured.entry);
+                    evalError = structured.error;
+                    const kind = classifyVarEntry(structured.entry);
                     if (kind === 'object' && structured.members.length > 0) {
                         // 객체는 응답의 멤버 줄 전체를 보여준다 (기존: 첫 줄만 파싱해 "Object"만 표시)
                         result = [
-                            `${structured.entry.name || expression}, Object`,
+                            `${structured.entry.name || expression}, ${structured.entry.type || 'Object'}`,
                             ...structured.members.map(m => `  ${m.name}, ${m.type}${m.value ? `, ${m.value}` : ''}`),
                         ].join('\n');
                     } else if (kind === 'array') {
@@ -1226,7 +1228,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                 if (!forceRaw && !readOnly) {
                     // 비접두사 입력의 폴백 전송은 읽기 전용 명령만 허용 — 오타/변수명이
                     // 상태 변경 명령으로 흘러가는 사고를 막는다. 의도적 전송은 '>' 접두사로.
-                    result = `변수 평가 실패. 제어기 명령으로 보내려면 '>' 접두사를 사용하세요.`;
+                    result = evalError
+                        ? `${this._formatEvalError(expression, evalError)}\n제어기 명령으로 보내려면 '>' 접두사를 사용하세요.`
+                        : `변수 평가 실패. 제어기 명령으로 보내려면 '>' 접두사를 사용하세요.`;
                 } else {
                     let approved = true;
                     if (!readOnly && vscode.workspace.getConfiguration('gpl')
@@ -1276,7 +1280,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     ? await this._queryVariableStructured(threadName, frameIndex, expression)
                     : null;
                 if (structured) {
-                    const kind = this._classifyVarEntry(structured.entry);
+                    const kind = classifyVarEntry(structured.entry);
                     if (kind !== 'simple') {
                         const v = this._makeVariable(
                             expression,
@@ -1309,6 +1313,11 @@ export class GPLDebugSession extends LoggingDebugSession {
                         const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
                         result = lines.length > 0 ? lines.join('\n') : '';
                     }
+                }
+                // 모든 조회가 실패했을 때만 STATUS 에러 원인을 표시한다 — -729(미정의 심볼)는
+                // 다른 모듈 전역일 수도 있어 Show Global 폴백을 먼저 거쳐야 한다.
+                if (!result && structured?.error) {
+                    result = this._formatEvalError(expression, structured.error);
                 }
                 this._setCachedEvaluate(cacheKey, result || `(${expression} 평가 불가)`, evalRef);
             }
@@ -1553,93 +1562,21 @@ export class GPLDebugSession extends LoggingDebugSession {
      * → STATUS 블록은 먼저 통째로 제거해야 한다.
      */
     private _parseShowVariableEval(raw: string): { name: string; type: string; value: string } {
-        const entries = this._parseShowVariableMulti(raw);
+        const entries = parseShowVariableMulti(raw);
         if (entries.length === 0) {
             return { name: '', type: '', value: '(undefined)' };
         }
         return entries[0];
     }
 
-    /**
-     * `Show Variable` 응답의 모든 유효 줄을 파싱한다.
-     * 공식 문서(Show Variable Command) 기준 응답 형식:
-     *  - 단순 값:  `name, type, value`
-     *  - 배열:     `name, Type(…)` — 전체 값은 표시되지 않음(요소 단위로만 조회 가능)
-     *  - 객체:     `name, Object` + 멤버별 `name.field, type, value` 줄 (여러 줄)
-     */
-    private _parseShowVariableMulti(raw: string): ParsedVarEntry[] {
-        const withoutStatus = raw.replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '');
-        // 알려진 프레임 태그(DATA/STATUS)만 제거 — `<[^>]+>` 전체 제거는 문자열 값에
-        // 포함된 리터럴 `<...>`까지 삼켜 값이 잘리는 문제가 있었다.
-        const cleaned = withoutStatus.replace(/<\/?(?:DATA|STATUS)[^>]*>/gi, '').trim();
-        const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
-
-        const entries: ParsedVarEntry[] = [];
-        for (const rawLine of lines) {
-            const line = rawLine.trim();
-            const parts = this._splitVarLine(line, 3);
-            if (parts.length >= 3) {
-                entries.push({ name: parts[0], type: parts[1], value: parts[2] });
-            } else if (parts.length === 2) {
-                // 배열 헤더(`name, Double(,)`)처럼 값 필드가 없는 줄
-                entries.push({ name: parts[0], type: parts[1], value: '' });
-            } else {
-                // 쉼표 없는 단순 값 (예: Show Global 응답)
-                entries.push({ name: '', type: '', value: line });
-            }
-        }
-        return entries;
-    }
-
-    /**
-     * 쉼표 분할 시 괄호 안의 쉼표는 무시한다.
-     * 이유: 배열 타입은 `Double(,)`, 요소 이름은 `arr(0,1)`처럼 괄호 안에 쉼표를 포함해
-     * 단순 split(',')로는 필드가 깨진다(기존 버그 — 배열 값이 `)` 로 표시되던 원인).
-     * maxParts 도달 시 나머지는 마지막 필드로 합쳐 문자열 값 속 쉼표를 보존한다.
-     */
-    private _splitVarLine(line: string, maxParts: number): string[] {
-        const parts: string[] = [];
-        let depth = 0;
-        let current = '';
-        for (let i = 0; i < line.length; i++) {
-            const ch = line[i];
-            if (ch === '(') { depth++; }
-            else if (ch === ')') { depth = Math.max(0, depth - 1); }
-            if (ch === ',' && depth === 0 && parts.length < maxParts - 1) {
-                parts.push(current.trim());
-                current = '';
-            } else {
-                current += ch;
-            }
-        }
-        if (current.trim().length > 0 || parts.length > 0) {
-            parts.push(current.trim());
-        }
-        return parts;
-    }
-
     // ═══════════════════════════════════════════════════════
     // 구조적 변수 표시 (배열/객체 트리 확장)
+    // 응답 파싱/분류는 showVariableParser.ts — 실기기 캡처 픽스처로 단위 테스트한다.
     // ═══════════════════════════════════════════════════════
 
     /** 배열 확장 시 순차 조회 상한 — 선언 크기를 알 수 없어(공식 문서: 배열 전체 값은
      *  표시되지 않음) 인덱스 0부터 실패할 때까지 조회하며, 직렬 명령 큐 보호를 위해 제한한다. */
     private static readonly ARRAY_EXPAND_MAX = 30;
-
-    private _classifyVarEntry(e: ParsedVarEntry): 'object' | 'array' | 'simple' {
-        if (/^object$/i.test(e.type.trim())) { return 'object'; }
-        // 값 없이 타입에 괄호가 붙으면 배열 헤더 (`Double()`, `Integer(,)` 등).
-        // 요소 응답(`arr(0,0), Double(,), 30.5`)은 값이 있으므로 simple로 분류된다.
-        if (!e.value && /\([^)]*\)\s*$/.test(e.type)) { return 'array'; }
-        return 'simple';
-    }
-
-    /** 배열 타입 문자열에서 차원 수 추출: `Double()`→1, `Double(,)`→2 … */
-    private _arrayRank(type: string): number {
-        const m = type.match(/\(([^)]*)\)\s*$/);
-        if (!m) { return 1; }
-        return (m[1].match(/,/g)?.length ?? 0) + 1;
-    }
 
     /**
      * 파싱된 항목을 DAP Variable로 변환한다. 배열/객체는 variablesReference를 부여해
@@ -1654,7 +1591,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         expression: string,
         memberEntries?: ParsedVarEntry[],
     ): DebugProtocol.Variable {
-        const kind = this._classifyVarEntry(entry);
+        const kind = classifyVarEntry(entry);
         if (kind === 'object') {
             const ref = memberEntries && memberEntries.length > 0
                 ? this._variableHandles.create({
@@ -1669,7 +1606,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                 });
             return {
                 name: displayName,
-                value: 'Object',
+                // 실기기는 타입에 클래스명을 포함해 보고한다(`Object Command`) — 그대로 노출.
+                value: entry.type || 'Object',
                 type: entry.type,
                 evaluateName: expression,
                 variablesReference: ref,
@@ -1698,22 +1636,45 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     /**
      * Show Variable -eval 1회로 변수/식을 구조적으로 조회한다.
-     * @returns null = 응답 없음(미연결 등). 파싱 실패 시 value '(undefined)'인 단순 항목.
+     * @returns null = 응답 없음(미연결 등). 파싱 실패 시 value '(undefined)'인 단순 항목
+     *          + STATUS가 실패면 error(코드/메시지) 동봉 — hover/watch가 원인을 표시한다.
      */
     private async _queryVariableStructured(
         threadName: string,
         frameIndex: number,
         expression: string,
-    ): Promise<{ entry: ParsedVarEntry; members: ParsedVarEntry[] } | null> {
+    ): Promise<{ entry: ParsedVarEntry; members: ParsedVarEntry[]; error?: { code: number; message: string } } | null> {
         const resp = await this._sendCmd(
             `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
         );
         if (!resp) { return null; }
-        const entries = this._parseShowVariableMulti(resp);
+        const entries = parseShowVariableMulti(resp);
         if (entries.length === 0) {
-            return { entry: { name: expression, type: '', value: '(undefined)' }, members: [] };
+            const st = parseStatus(resp);
+            return {
+                entry: { name: expression, type: '', value: '(undefined)' },
+                members: [],
+                error: st.code !== 0 ? { code: st.code, message: st.message } : undefined,
+            };
         }
         return { entry: entries[0], members: entries.slice(1) };
+    }
+
+    /**
+     * Show Variable 실패 STATUS를 사용자 안내 문구로 변환한다.
+     * 실기기 확인(2026-07-22): 인자 있는 프로퍼티/메서드 호출(`cmd.ints(0)`)은
+     * -780 "*Unsupported procedure reference*", 객체의 배열 필드 접근(`cmd.m_rawArgs(0)`)은
+     * -729 "*Undefined symbol*"로 거부된다 — 콘솔 평가의 제어기 측 한계.
+     */
+    private _formatEvalError(expression: string, error: { code: number; message: string }): string {
+        const base = `(평가 실패 ${error.code}: ${error.message || '원인 미상'})`;
+        if (error.code === -780) {
+            return `${base} — 인자 있는 프로퍼티/메서드 호출은 제어기 콘솔이 평가하지 못합니다. 원본 필드를 확인하세요 (예: ${expression.split('.')[0] || expression} 객체를 펼쳐 m_* 필드 조회)`;
+        }
+        if (error.code === -729) {
+            return `${base} — 이 프레임에서 접근할 수 없는 심볼입니다 (객체의 배열 필드는 콘솔 식으로 조회 불가)`;
+        }
+        return base;
     }
 
     /** 멤버 전체 경로(`Loc.Pos.X`)에서 부모 식을 제외한 표시용 이름을 얻는다. */
@@ -1735,7 +1696,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         scope: { threadName: string; frameIndex: number; expression: string; varType: string },
     ): Promise<DebugProtocol.Variable[]> {
         const out: DebugProtocol.Variable[] = [];
-        const rank = this._arrayRank(scope.varType);
+        const rank = arrayRank(scope.varType);
         const suffix = rank > 1 ? ',0'.repeat(rank - 1) : '';
 
         const gen = this._frameCacheGen;
@@ -1757,7 +1718,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 break;
             }
             if (!isSuccess(resp)) { break; } // 범위 밖(STATUS 오류) = 배열 끝
-            const entries = this._parseShowVariableMulti(resp);
+            const entries = parseShowVariableMulti(resp);
             const first = entries[0];
             if (!first) { break; }
             // STATUS 성공이면 값이 빈 문자열이어도 유효한 요소다(빈 String 등) — 계속 진행.

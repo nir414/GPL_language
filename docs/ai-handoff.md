@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-07-16 (§1-R: 자동완성 개선 — 멤버 완성/로컬 완성/점 뒤 중복 삽입 방지; §1-Q: 자체 검토 세션 — §3-B 일괄 적용; 이전 이력 §1-P 이하)
+- 최종 갱신: 2026-07-22 (§1-U: Show Variable 실기기 검증 — 객체 헤더 `Object Command` 분류 수정 + 콘솔 평가 한계(-780/-729) 확인·안내; 같은 날 §1-T)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.7.0** (§1-I까지 포함, 미커밋 — `v0.7.0` 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile` 최종 검증 권장)
+- 현재 package 버전: **0.7.7** (미커밋 변경분 있음 — 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile` 최종 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -833,6 +833,148 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 - `src/providers/completionProvider.ts`(재구성), `src/language/cursorExpression.ts`(+extractQualifierChainBefore),
   `src/symbolCache.ts`(멤버 조회 API), `src/test/cursorExpression.test.ts`(+7).
 
+## 1-S. 2026-07-16 세션(후속2) — 중첩 클래스 파서 수정 + 스모크 하니스 + Dictionary 커버리지 대조
+
+### 배경 (사용자 질문 3건)
+① "VS Code 없이 실시간 점검 가능한가" → 모의 vscode 주입 하니스로 해결(아래).
+② "KDY_AutoAging.gpl의 class 중첩 구조 처리되나" (Module > ZeroPlan > StepBatch > StepAxis 3중 중첩).
+③ "함수 호버는 되는데 상수는 왜 안 보이나".
+
+### ② 중첩 클래스 — 구조적 결함 발견·수정
+- 결함: 파서가 클래스 문맥을 **스택 없이 단일 변수**로 추적 → 안쪽 `End Class`가 바깥 문맥까지
+  소거. 안쪽 클래스 **뒤에 오는** 바깥 클래스 멤버가 모듈 직속으로 오분류되고, 부모 관계 소실.
+  (KDY 파일은 멤버 배치가 우연히 안전한 순서라 겉으론 동작했음)
+- 수정: `gplParser`에 `classStack` 도입(End Class → pop으로 바깥 복귀, Module 진입/End Module에서
+  초기화), `GPLSymbol.parentClassName` 추가(중첩 클래스의 부모 기록, additive).
+  `symbolCache.getClassMembers`가 중첩 클래스를 바깥 클래스 멤버로 노출(ZeroPlan. → StepBatch),
+  completionProvider 체인 하강에 중첩 클래스/모듈 내 클래스 홉 추가(ZeroPlan.StepBatch. → 멤버).
+- 검증: 신규 파서 테스트 4건(안쪽 End Class 뒤 멤버 귀속/모듈 복귀/parentClassName/안쪽 멤버 귀속)
+  포함 **134/134 통과**. 실파일 하니스: `ZeroPlan.` → 멤버 7+StepBatch, `ZeroPlan.StepBatch.` →
+  멤버 7+StepAxis, `steps(0).` → StepBatch 멤버. 문자열 안 `.`은 억제 확인.
+
+### ① 스모크 하니스 (신규 dev 도구 — "VS Code 없이 직접 점검")
+- `scripts/dev/vscodeMock.js` + `scripts/dev/smoke.js`: vscode API 최소 모의를 `Module._load` 훅으로
+  주입해 **컴파일 산출물(out/)의 실제 provider**(호버/완성)를 임의 .gpl 파일로 구동.
+  `node scripts/dev/smoke.js <파일.gpl> [--hover 단어] [--member 한정자.]` (먼저 npm run compile).
+- VSIX에는 미포함(.vscodeignore에 scripts/dev/** 추가). 한계: 실제 UI/디버그 호버/제어기 연동은
+  못 봄 — 그건 여전히 실기기 확인 필요.
+
+### ③ 상수 호버 — 현 코드는 정상 (하니스 실증)
+- KDY 실파일에서 상수 선언부/사용부 호버 모두 정상(`값: 2300`까지 표시). 모듈 레벨 bare `Const`
+  파싱은 2026-03부터, 값 표시는 04-30부터 존재 — 코드 결함 아님.
+- 사용자 환경(설치 VSIX ~0.7.7 추정)에서 안 보인 원인 후보: (a) 설치본이 이전 빌드,
+  (b) **디버깅 중** 디버그 값 호버가 우선되는데 상수는 런타임 변수가 아니라 DA 평가가 실패/빈값
+  → 아무것도 안 뜸. 사용자에게 "편집 중에도 안 보이는지"를 질문한 상태 — 답에 따라
+  (b)면 DA evaluateRequest hover 실패 시 깔끔한 실패 반환(→ VS Code가 언어 호버로 폴백) 개선 검토.
+
+### GPL Dictionary 커버리지 대조 (사용자: "정의 다 들어갔어?")
+- 공식 검색 인덱스(캐시 모드 — 라이브 403 차단) 기준 GPL_Dictionary **384페이지** 중
+  우리 sourceUrl 참조 **319**. 미커버 65 = intro/summary/Statement류 47(함수 아님, §1-J 의도적 제외
+  범주) + 멤버성 18: **생성자 8**(New XmlDoc/TcpClient/TcpListener/UdpClient/IPEndPoint/
+  StreamReader/StreamWriter/Thread), **Try/Catch 문 계열 6**(Statement 범주), ShowDialog
+  Advanced Mode 변형 1, CAddr(Hidden) 1, XmlDoc Encode/Decode 2는 이름으로는 등록돼 있음(URL만 상이).
+- 멤버성 페이지 기준 **319/337 ≈ 95%**. 캐시 인덱스라 사이트 최신과 미세 차이 가능.
+
+### 남은 일
+- [ ] (결정 대기) 생성자 8건을 사전에 등록할지 — `New XmlDoc(...)` 형태라 completion/signature와
+  결합 방식 결정 필요(예: `Class.New` 이름 또는 `New` 키워드 트리거 특수 처리).
+- [ ] 상수 호버: 사용자 답변에 따라 (b) 경로면 DA hover 평가 실패 반환 개선.
+- [ ] smoke 하니스에 정의 이동(definitionProvider) 배터리 추가 검토.
+
+### 변경 파일
+- `src/gplParser.ts`(classStack/parentClassName), `src/symbolCache.ts`(getClassMembers 중첩 노출),
+  `src/providers/completionProvider.ts`(체인 하강 홉), `src/test/gplParserFixes.test.ts`(+4),
+  `scripts/dev/vscodeMock.js`·`scripts/dev/smoke.js`(신규), `.vscodeignore`.
+
+## 1-T. 2026-07-22 세션 — 정의 찾기: `Shared Public Dim` 수식어 순서 + 문자열 속 프로시저 참조(New Thread)
+
+### 증상 (사용자 보고, MergeCode/DataModule.gpl)
+① 59행 `SaveReservationThread.ThreadState`에서 F12가 12행 선언
+   `Shared Public Dim SaveReservationThread As Thread = New Thread(...)`로 이동하지 않음.
+② 12행 `New Thread("DataFile.SaveReservationThreadFunction",,"SaveReservationThreadFunction")`의
+   문자열 속 프로시저 이름에서도 F12가 동작해야 한다는 요청.
+
+### 원인
+① 멤버 변수 정규식 6개(shared 3 + 일반 3)가 전부 `Public Shared Dim` 순서만 허용
+   (`^(Private|Public)\s+Shared\s+...`). GPL은 `Shared Public Dim` 순서도 유효한데
+   (Sub/Function/Property 매치는 이미 수식어 임의 순서 허용) 변수만 빠져 있어 심볼 미인덱싱.
+② definitionProvider가 문자열 내부를 무조건 차단(2026-07-03 오검색 방지 조치)
+   — GPL의 "프로시저를 문자열로 참조" 관용구(Thread 생성자)가 함께 막혔음.
+
+### 조치
+① `src/gplParser.ts`: 멤버 변수 6개 정규식을 공통 수식어 접두
+   `((수식어{Private|Public|Protected|Friend|Shared})+ Dim? | Dim)` 기반 3개(New형/스칼라·Const형/배열형)로
+   통합. 접두 문자열에서 accessModifier/isShared를 판정(`memberMods`). 수식어·Dim이 하나도 없는
+   bare `x As Integer`는 선언으로 오인하지 않도록 접두를 필수화.
+② `src/language/cursorExpression.ts`: `getStringLiteralContentAt`(커서를 감싸는 "..." 내용 추출,
+   주석/문자열 밖은 undefined) 신설 — 순수 모듈이라 Node 테스트 가능.
+   `src/providers/definitionProvider.ts`: 문자열 내부일 때 `resolveStringLiteralReference`로 위임.
+   문자열 전체가 식별자 형태(`Name`/`Class.Proc`)일 때만: qualifier 있으면 클래스→모듈 멤버의
+   Sub/Function, 첫 segment면 클래스/모듈 정의, 단일 식별자면 Sub/Function만 허용(변수와의
+   우연 일치 배제). 캐시 미스 시 현재 문서 온디맨드 파싱 폴백. 해석 실패 시 기존처럼 undefined
+   (일반 문장/경로 문자열에서 엉뚱한 점프 없음 — 기존 차단 의미 보존).
+
+### 검증
+- `npm test` 142/142 통과 (신규: 수식어 순서 5건 + getStringLiteralContentAt 3건).
+- 실기기/실파일 확인은 사용자 몫: DataModule.gpl 59행 → 12행(F12), 12행 문자열 → 78행
+  `SaveReservationThreadFunction` Sub(F12).
+
+### 남은 일
+- [ ] hover/reference도 문자열 속 프로시저 참조를 지원할지 결정(현재는 definition만).
+
+### 변경 파일
+- `src/gplParser.ts`(멤버 변수 수식어 순서 통합), `src/language/cursorExpression.ts`(+getStringLiteralContentAt),
+  `src/providers/definitionProvider.ts`(+resolveStringLiteralReference), `src/test/gplParserFixes.test.ts`(+8).
+
+## 1-U. 2026-07-22 세션 — Show Variable 실기기 검증(§1-P 후속): 객체 헤더 형식 차이 수정 + 콘솔 평가 한계 확인
+
+### 배경/증상
+
+사용자가 실기기(G2400C, GPL 4.2K5)에서 브레이크포인트(ProtocolModule.gpl:2029, `commRoutine`)로
+`OpCommandRunThread1`을 정지시키고 1402로 `Show Variable`을 수동 검증(§1-P가 실기기 미검증 상태였음).
+
+### 실기기 캡처로 확인된 사실 (2026-07-22)
+
+1. **객체 헤더는 `cmd, Object Command`처럼 타입에 클래스명이 붙는다** — 공식 문서 예시(`Loc, Object`)와 다름.
+   기존 `_classifyVarEntry`가 `/^object$/`(정확 일치)라 실기기 응답이 **simple로 오분류 → 트리 확장 불가**(버그).
+2. **객체 덤프는 스칼라 필드만 나열한다**: private 필드(`m_cmd`, `m_rawArg` 등) 포함 7줄이 왔으나,
+   **배열 필드(`m_rawArgs() As String`)는 목록에서 통째로 빠짐**. 프로퍼티(cmd/cmdCode 등 no-arg get)도 안 옴.
+3. **인자 있는 프로퍼티/메서드 호출은 콘솔 평가 불가**: `cmd.ints(0)` → `-780 "*Unsupported procedure reference*"`.
+4. **객체의 배열 필드 요소 접근도 불가**: `cmd.m_rawArgs(0)` → `-729 "*Undefined symbol*"`.
+5. 실용 우회: 인덱스 프로퍼티 값은 원본 필드로 읽는다 — `cmd.m_rawArg = "7,6"` → `ints(0)=7, ints(1)=6`.
+6. `Show Stack` 프레임/브레이크포인트 hit, 문자열 값 속 쉼표(`"7,6"`) 보존은 §1-P 파서 가정대로 동작.
+
+### 조치
+
+- **`src/debug/showVariableParser.ts` 신설(순수 모듈)**: `_parseShowVariableMulti`/`_splitVarLine`/
+  `_classifyVarEntry`/`_arrayRank` + `ParsedVarEntry`를 gplDebugSession에서 추출. 단위 테스트 가능해짐.
+- **분류 수정**: 배열 헤더 판정을 먼저 한 뒤 `/^object\b/`(접두 단어 일치)로 객체 판정 —
+  `Object Command`(실기기)와 `Object`(문서) 모두 수용, `Object Xxx()` 배열 오분류 방지.
+- **표시 개선**: Variables/hover의 객체 값에 클래스명 노출(`Object Command`), REPL 객체 헤더도 동일.
+- **에러 안내**: `_queryVariableStructured`가 실패 STATUS(코드/메시지)를 동봉, `_formatEvalError`가
+  -780(인자 있는 프로퍼티 미지원)/-729(접근 불가 심볼)를 사용자 문구로 변환. hover/watch는
+  **Show Global 폴백까지 실패한 뒤에만** 표시(-729가 타 모듈 전역일 수 있어 순서 중요). REPL은
+  비접두사 폴스루 거부 메시지에 원인 첨부.
+- `src/test/showVariableParser.test.ts` 신설: 실기기 캡처를 픽스처로 7케이스(객체 덤프 8줄 파싱,
+  `Object Command` 분류, 배열/요소/차원, 에러 STATUS, 쉼표 보존).
+
+### 검증
+
+- `npm test` 149/149 통과(신규 7 포함), `npm run compile` 정상.
+- **실기기 UI 검증은 VSIX 재설치 후 필요**: Variables에서 `cmd` 펼침(멤버 7개), hover/Watch 트리,
+  Watch에 `cmd.ints(0)` 입력 시 -780 안내 문구 표시 확인.
+
+### 남은 일
+
+- [ ] VSIX 재설치 후 UI 검증(위). 로컬 배열(`tempStrSplitBuf` 등) 펼침·30개 상한·중첩 객체(`cmdResponse`)는 여전히 미검증(§1-P 잔여).
+- [ ] `cmd.m_cmd`(객체의 스칼라 필드 직접 식)·`cmd.rawArg`(no-arg 프로퍼티) 콘솔 평가 가능 여부 실기기 확인 —
+  가능하면 배열 필드 안내 문구를 더 정확히 조정.
+
+### 변경 파일
+
+- `src/debug/showVariableParser.ts`(신설), `src/debug/gplDebugSession.ts`(파서 위임 + 분류/표시/에러 안내),
+  `src/test/showVariableParser.test.ts`(신설), `src/test/index.ts`(+1 import).
+
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
 - **`ProtocolModule.gpl` 478·480의 `-760 Invalid assignment`**: `isOrgCompleted`는 `RobotModule.gpl:828`에 **`Public ReadOnly Property ... As Boolean`**(읽기 전용)으로 정의됨. 거기에 값을 대입해서 나는 에러. 해결책(택1, 사용자 결정 대기): setter 메서드 추가 / `ReadOnly` 제거 후 `Set` 접근자 추가 / backing 필드 직접 대입.
@@ -846,7 +988,7 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 - [ ] §2 `isOrgCompleted` 대입 방식 확정 후 코드 수정 → MergeCode 재컴파일로 `-742` 해소 확인.
 - [ ] F5/Build Only 경로도 **로컬 매니페스트(파일별 mtime/크기 또는 해시) 기반 차등 업로드** 도입 검토(현재 SIZE 왕복 N회 + 크기충돌 누락 위험). 제어기 FTP의 `MDTM` 지원 여부는 환경 확인 필요 → 안전하게 로컬 mtime/해시 기반 권장. ※ 부분 반영: §1-I에서 F5/수동 Quick Compile은 `/GPL` 미러(원격 목록 조회 + 크기 비교, 원격 전용 삭제)로 전환됨. 남은 것은 크기충돌을 없앨 mtime/해시 강화.
 - [ ] 정의 찾기: 클래스 멤버 스코프 해석(`obj.member`를 obj의 클래스 한정으로) 정확도는 추후 보강 여지. ※ 오버로드 해석(인자 개수+타입, 동점 peek)은 2026-07-13 §1-K에서 구현 완료.
-- [ ] (§1-P) 실기기 검증: Variables 패널에서 배열/객체 펼침(요소 30개 상한 동작 포함), Watch/hover 트리 확장, 객체 멤버·배열 요소 setVariable, Globals 패널의 배열/객체 표시 확인. 배열 요소가 많은 경우 확장 시 응답 지연이 크면 `ARRAY_EXPAND_MAX` 조정.
+- [ ] (§1-P → §1-U에서 일부 완료) 실기기 검증: 1402 수동 검증으로 객체 덤프 형식 확인·분류 버그 수정(2026-07-22, §1-U). **남은 것(VSIX 재설치 후)**: Variables/hover/Watch에서 객체 트리 확장 UI 확인, 로컬 배열 펼침(30개 상한), 중첩 객체(`cmdResponse`), setVariable, Globals 패널 배열/객체 표시. 배열 확장 지연 크면 `ARRAY_EXPAND_MAX` 조정.
 - [ ] (2026-07-16, §1-Q) 자체 검토 세션 변경분 — 로컬 `npm run compile` && `npm test` 후 §1-Q 실기기 검증 체크리스트 수행.
 - [ ] 변경분 커밋/배포 및 회귀 확인.
 

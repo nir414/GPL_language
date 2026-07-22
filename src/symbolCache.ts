@@ -485,8 +485,11 @@ export class SymbolCache {
         const seen = new Set<string>();
         const members: GPLSymbol[] = [];
         for (const s of this.getAllSymbols()) {
-            if (!s.className || s.className.toLowerCase() !== target) { continue; }
-            if (s.kind === 'class' || s.kind === 'module') { continue; }
+            if (s.kind === 'module') { continue; }
+            if (s.kind === 'class') {
+                // 중첩 클래스는 바깥 클래스의 멤버로 노출한다 (예: ZeroPlan. → StepBatch).
+                if (!s.parentClassName || s.parentClassName.toLowerCase() !== target) { continue; }
+            } else if (!s.className || s.className.toLowerCase() !== target) { continue; }
             const key = s.name.toLowerCase();
             if (key === 'new' || seen.has(key)) { continue; }
             seen.add(key);

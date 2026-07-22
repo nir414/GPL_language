@@ -202,6 +202,17 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
                 : this.symbolCache.findAllByName(segName).find(
                     s => !s.className && s.module?.toLowerCase() === holder.name.toLowerCase());
             if (!member?.returnType) {
+                // 중첩 클래스 한정자 하강: Outer.Inner. → Inner 멤버 / Module.Class. → Class 멤버
+                if (!segHasCall) {
+                    const nested: import('../gplParser').GPLSymbol | undefined = this.symbolCache.findAllByName(segName).find(s => s.kind === 'class'
+                        && (holder.kind === 'userClass'
+                            ? s.parentClassName?.toLowerCase() === holder.name.toLowerCase()
+                            : !s.parentClassName && s.module?.toLowerCase() === holder.name.toLowerCase()));
+                    if (nested) {
+                        current = { kind: 'userClass', name: nested.name };
+                        continue;
+                    }
+                }
                 return undefined;
             }
             current = this.typeNameToTarget(member.returnType, segHasCall);

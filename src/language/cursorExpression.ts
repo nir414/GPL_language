@@ -16,6 +16,43 @@ export function escapeRegExp(text: string): string {
 }
 
 /**
+ * character 위치를 감싸는 문자열 리터럴("...")의 내용(따옴표 제외)을 돌려준다.
+ * 주석(`'` 이후)이거나 문자열 밖이면 undefined.
+ *
+ * GPL은 Thread 생성자 등에서 실행할 프로시저를 문자열로 참조하므로
+ * (예: New Thread("DataFile.SaveReservationThreadFunction")),
+ * 정의 찾기가 문자열 속 프로시저 참조를 해석할 때 사용한다.
+ * VB식 이스케이프("")는 토글로 close+open 처리되어 리터럴이 쪼개지지만,
+ * 그런 문자열은 식별자 형태가 아니므로 호출부 검증에서 자연히 걸러진다.
+ */
+export function getStringLiteralContentAt(
+    lineText: string,
+    character: number
+): { text: string; start: number; end: number } | undefined {
+    let strStart = -1; // 현재 열린 문자열의 여는 따옴표 위치 (-1이면 문자열 밖)
+    for (let i = 0; i < lineText.length; i++) {
+        const ch = lineText[i];
+        if (ch === '"') {
+            if (strStart === -1) {
+                strStart = i;
+            } else {
+                if (character > strStart && character < i) {
+                    return { text: lineText.substring(strStart + 1, i), start: strStart + 1, end: i };
+                }
+                strStart = -1;
+            }
+        } else if (ch === "'" && strStart === -1) {
+            return undefined; // 이후 전부 주석
+        }
+    }
+    if (strStart !== -1 && character > strStart) {
+        // 닫는 따옴표가 없는(줄 끝까지 열린) 문자열
+        return { text: lineText.substring(strStart + 1), start: strStart + 1, end: lineText.length };
+    }
+    return undefined;
+}
+
+/**
  * 멤버 접근 표현식에서 점(.) 바로 앞의 "기준 객체 이름"을 추출한다.
  *
  * 표현식의 끝에서부터 스캔하여, "returnError = armList(0).member"처럼

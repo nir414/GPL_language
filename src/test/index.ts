@@ -14,6 +14,7 @@ import './consoleCommandClassifier.test';
 import './indentationRules.test';
 import './projectSelection.test';
 import './overloadResolution.test';
+import './showVariableParser.test';
 import { run } from './harness';
 
 void run();

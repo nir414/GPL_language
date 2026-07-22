@@ -8,6 +8,8 @@ export interface GPLSymbol {
     filePath: string;
     module?: string;
     className?: string;
+    /** 중첩 클래스일 때 감싸는 바깥 클래스 이름 (예: ZeroPlan > StepBatch면 StepBatch의 parent는 ZeroPlan). */
+    parentClassName?: string;
     accessModifier?: 'public' | 'private';
     isShared?: boolean;
     /** True when this symbol is declared inside a Sub/Function/Property body (not indexed in workspace cache by default). */
@@ -95,6 +97,9 @@ export class GPLParser {
         const logicalLines = GPLParser.buildLogicalLines(lines);
         let currentModule: string | undefined;
         let currentClass: string | undefined;
+        // 중첩 클래스 지원: End Class에서 바깥 클래스로 복귀하기 위한 스택.
+        // (단일 변수만 쓰면 안쪽 End Class가 바깥 문맥까지 지워, 이후 멤버가 모듈 직속으로 오분류된다)
+        const classStack: string[] = [];
         // Accumulates the contiguous leading `'` comment block for the *next* declaration.
         let pendingDoc: string[] = [];
         // Track whether we're inside a procedure block (Sub/Function/Property body).
@@ -163,6 +168,7 @@ export class GPLParser {
             if (moduleMatch) {
                 currentModule = moduleMatch[1];
                 currentClass = undefined;
+                classStack.length = 0;
                 blockDepth = 0;
                 const startIndex = GPLParser.findNameColumn(line, moduleMatch[1]);
                 symbols.push({
@@ -179,6 +185,8 @@ export class GPLParser {
             // Parse Class
             const classMatch = trimmedLine.match(/^(Public|Private)?\s*Class\s+(\w+)/i);
             if (classMatch) {
+                const parentClassName = classStack.length ? classStack[classStack.length - 1] : undefined;
+                classStack.push(classMatch[2]);
                 currentClass = classMatch[2];
                 blockDepth = 0;
                 const isXmlRelated = this.isXmlRelatedIdentifier(classMatch[2]);
@@ -192,14 +200,16 @@ export class GPLParser {
                     module: currentModule,
                     className: currentClass,
                     accessModifier: classMatch[1] ? (classMatch[1].toLowerCase() as 'public' | 'private') : undefined,
+                    parentClassName,
                     isXmlRelated: isXmlRelated
                 });
                 continue;
             }
 
-            // Check for End Class to reset currentClass
+            // End Class: 스택을 pop해 바깥 클래스 문맥으로 복귀한다 (중첩 클래스 지원).
             if (trimmedLine.match(/^End\s+Class/i)) {
-                currentClass = undefined;
+                classStack.pop();
+                currentClass = classStack.length ? classStack[classStack.length - 1] : undefined;
                 blockDepth = 0;
                 continue;
             }
@@ -216,6 +226,7 @@ export class GPLParser {
             if (trimmedLine.match(/^End\s+Module/i)) {
                 currentModule = undefined;
                 currentClass = undefined;
+                classStack.length = 0;
                 blockDepth = 0;
                 continue;
             }
@@ -463,7 +474,6 @@ export class GPLParser {
                 }
             }
 
-            // Parse shared variable with New (e.g., "Public Shared Dim storeA As New XmlStore")
             if (blockDepth > 0) {
                 // Local variables inside procedures are not indexed
                 continue;
@@ -488,69 +498,21 @@ export class GPLParser {
                 });
                 continue;
             }
-            const sharedNewVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+(?:Dim\s+)?(\w+)\s+As\s+New\s+(\w+)/i);
-            if (sharedNewVariableMatch) {
-                symbols.push({
-                    name: sharedNewVariableMatch[2],
-                    kind: GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
-                    line: i,
-                    filePath,
-                    module: currentModule,
-                    className: currentClass,
-                    accessModifier: sharedNewVariableMatch[1].toLowerCase() as 'public' | 'private',
-                    isShared: true,
-                    returnType: sharedNewVariableMatch[3]
-                });
-                continue;
-            }
+            // ── 클래스/모듈 멤버 변수·상수 선언 ──────────────────────────────
+            // GPL은 수식어 순서가 자유롭다: "Public Shared Dim x"와 "Shared Public Dim x"
+            // 모두 유효하므로 Sub/Function 매치와 같은 방식으로 수식어 나열을 통째로 허용한다.
+            // bare "x As Integer"를 선언으로 오인하지 않도록 수식어 또는 Dim이 최소 하나 필요하다.
+            // 공통 접두: ((수식어+ Dim?) | Dim) — 캡처 그룹 1에 수식어 문자열이 들어간다.
+            const memberMods = (mods: string) => ({
+                accessModifier: /\bPublic\b/i.test(mods) ? 'public' as const :
+                    /\bPrivate\b/i.test(mods) ? 'private' as const : undefined,
+                isShared: /\bShared\b/i.test(mods)
+            });
 
-            // Parse shared variable/constant (e.g., "Public Shared Dim echoMode As Boolean", "Public Shared x As Integer")
-            const sharedVariableMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+(?:Dim\s+)?(Const\s+)?(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
-            if (sharedVariableMatch) {
-                const isConstant = !!sharedVariableMatch[2];
-                const sharedConstValue = isConstant ? sharedVariableMatch[5]?.trim() : undefined;
-                symbols.push({
-                    name: sharedVariableMatch[3],
-                    kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
-                    line: i,
-                    filePath,
-                    module: currentModule,
-                    className: currentClass,
-                    accessModifier: sharedVariableMatch[1].toLowerCase() as 'public' | 'private',
-                    isShared: true,
-                    returnType: sharedVariableMatch[4],
-                    value: sharedConstValue || undefined
-                });
-                continue;
-            }
-
-            // Parse shared array variable without Dim (e.g., "Public Shared steps() As StepBatch")
-            const sharedArrayNoDimMatch = trimmedLine.match(/^(Private|Public)\s+Shared\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
-            if (sharedArrayNoDimMatch) {
-                symbols.push({
-                    name: sharedArrayNoDimMatch[2],
-                    kind: GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
-                    line: i,
-                    filePath,
-                    module: currentModule,
-                    className: currentClass,
-                    accessModifier: sharedArrayNoDimMatch[1].toLowerCase() as 'public' | 'private',
-                    isShared: true,
-                    returnType: sharedArrayNoDimMatch[3] + '[]'
-                });
-                continue;
-            }
-
-            // Parse variable with New (e.g., "Dim storeA As New XmlStore", "Public Dim t As New Thread(...)")
+            // New 포함 형 (e.g., "Public Shared Dim storeA As New XmlStore", "Dim t As New Thread(...)")
             // MUST be checked BEFORE regular variable pattern
-            const newVariableMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(\w+)\s+As\s+New\s+(\w+)/i);
+            const newVariableMatch = trimmedLine.match(/^((?:(?:Private|Public|Protected|Friend|Shared)\s+)+(?:Dim\s+)?|Dim\s+)(\w+)\s+As\s+New\s+(\w+)/i);
             if (newVariableMatch) {
-                const upperLine = trimmedLine.toUpperCase();
-                const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
-                    upperLine.includes('PRIVATE') ? 'private' as const : undefined;
                 symbols.push({
                     name: newVariableMatch[2],
                     kind: GPLSymbolKind.Variable,
@@ -559,20 +521,17 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    accessModifier,
+                    ...memberMods(newVariableMatch[1]),
                     returnType: newVariableMatch[3]
                 });
                 continue;
             }
 
-            // Parse Variable/Constant (e.g., "Public Dim x As Integer", "Private y As String", "Dim z As Double")
-            const variableMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(Const\s+)?(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
+            // Variable/Constant (e.g., "Public Shared Dim echoMode As Boolean", "Shared Public Dim t As Thread = New Thread(...)")
+            const variableMatch = trimmedLine.match(/^((?:(?:Private|Public|Protected|Friend|Shared)\s+)+(?:Dim\s+)?|Dim\s+)(Const\s+)?(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
             if (variableMatch) {
                 const isConstant = !!variableMatch[2];
                 const varConstValue = isConstant ? variableMatch[5]?.trim() : undefined;
-                const upperLine = trimmedLine.toUpperCase();
-                const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
-                    upperLine.includes('PRIVATE') ? 'private' as const : undefined;
                 symbols.push({
                     name: variableMatch[3],
                     kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
@@ -581,19 +540,16 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    accessModifier,
+                    ...memberMods(variableMatch[1]),
                     returnType: variableMatch[4],
                     value: varConstValue || undefined
                 });
                 continue;
             }
 
-            // Parse array variable (e.g., "Dim kvs(100) As KeyValue", "Public Dim kvs(100) As KeyValue")
-            const arrayMatch = trimmedLine.match(/^(?:(Private|Public)\s+Dim|Private|Public|Dim)\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
+            // Array variable (e.g., "Dim kvs(100) As KeyValue", "Public Shared steps() As StepBatch")
+            const arrayMatch = trimmedLine.match(/^((?:(?:Private|Public|Protected|Friend|Shared)\s+)+(?:Dim\s+)?|Dim\s+)(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
             if (arrayMatch) {
-                const upperLine = trimmedLine.toUpperCase();
-                const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
-                    upperLine.includes('PRIVATE') ? 'private' as const : undefined;
                 symbols.push({
                     name: arrayMatch[2],
                     kind: GPLSymbolKind.Variable,
@@ -602,7 +558,7 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     className: currentClass,
-                    accessModifier,
+                    ...memberMods(arrayMatch[1]),
                     returnType: arrayMatch[3] + '[]'
                 });
                 continue;

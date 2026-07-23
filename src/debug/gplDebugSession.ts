@@ -54,6 +54,7 @@ import {
     parseBreakList,
     parseGpr,
     selectProjectFromCandidates,
+    pickSourceCandidate,
     parseErrorLog,
     isSuccess,
     parseStatus,
@@ -124,6 +125,10 @@ import {
     classifyVarEntry,
     arrayRank,
 } from './showVariableParser';
+import {
+    extractIndexIdentifierTokens,
+    replaceIndexIdentifierTokens,
+} from '../language/cursorExpression';
 
 interface GlobalVariableDescriptor {
     displayName: string;
@@ -162,8 +167,22 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Project context — required for breakpoint commands
     private _projectName = '';
 
-    // Workspace source file cache: basename → full path
-    private _sourceFileMap = new Map<string, string>();
+    // Workspace source file cache: basename → 후보 전체 경로들(동명 파일 전부 보존).
+    // 기존에는 경로 1개만 저장해 스캔 순서상 마지막 파일이 조용히 이겼고, 워크스페이스에
+    // 프로젝트 사본/백업 폴더가 있으면 정지 시 엉뚱한 폴더의 파일이 열렸다.
+    private _sourceFileMap = new Map<string, string[]>();
+    // 디버그 대상 프로젝트의 폴더(Project.gpr 위치들) — 동명 소스 경합 시 우선 선택 기준.
+    private _projectDirs: string[] = [];
+    // 경합 경고 로그를 베이스네임당 1회로 제한(소스맵 재구축 시 리셋)
+    private _sourceResolveWarned = new Set<string>();
+    // 전역 조회 방식 메모(세션 유지, 소스맵 재구축 시 리셋): 정지마다 전역당 최대 3회이던
+    // 직렬 왕복을 성공 방식 기억으로 1회로 줄인다. 'none' = 전부 실패(폴백 생략 대상).
+    private _globalQueryMemo = new Map<
+        string,
+        { method: 'eval' } | { method: 'global'; name: string } | 'none'
+    >();
+    // 전역 후보 열거 캐시 — 63파일 read+parse를 variablesRequest마다 반복하지 않는다.
+    private _globalDescriptorsCache: GlobalVariableDescriptor[] | undefined;
 
     // State polling
     private _pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -455,6 +474,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         // Build source file map for path resolution
+        this._updateProjectDirs();
         this._buildSourceFileMap();
 
         // If stopOnEntry, start the project with -break to pause at Main's first line
@@ -847,40 +867,65 @@ export class GPLDebugSession extends LoggingDebugSession {
             // Show Variable -eval을 먼저 시도하는 이유: Show Global은 숫자/문자열 식만
             // 지원해(공식 문서) 배열/객체 전역이 아예 표시되지 않았고, 타입 정보도 없다.
             // 전역은 어느 프레임에서든 접근 가능하므로 정지 쓰레드 컨텍스트로 조회한다.
+            //
+            // 성능: 전역 1개당 최악 3회(−eval + Show Global ×2)의 직렬 왕복이 정지마다
+            // 반복되던 것을, 성공한 조회 방식을 세션 동안 기억(_globalQueryMemo)해
+            // 다음 정지부터는 전역당 1회 왕복으로 줄인다. (MergeCode 실측 42개 전역
+            // × 최대 3회 = 126회 → 42회)
             const globals = this._getGlobalVariableDescriptors();
 
-            if (globals.length > 0) {
-                for (const g of globals) {
-                    let pushed = false;
-                    if (scopeInfo.threadName) {
-                        const structured = await this._queryVariableStructured(
-                            scopeInfo.threadName, scopeInfo.frameIndex, g.lookupNames[0],
-                        );
-                        const entry = structured?.entry;
-                        if (entry && (classifyVarEntry(entry) !== 'simple'
-                            || (entry.value && entry.value !== '(undefined)'))) {
-                            variables.push(this._makeVariable(
-                                g.displayName,
-                                entry,
-                                scopeInfo.threadName,
-                                scopeInfo.frameIndex,
-                                g.lookupNames[0],
-                                structured!.members,
-                            ));
-                            pushed = true;
-                        }
+            for (const g of globals) {
+                const memoKey = g.displayName.toLowerCase();
+                const memo = this._globalQueryMemo.get(memoKey);
+
+                // 1) 이전에 Show Global로만 성공했던 전역은 -eval 생략하고 직행
+                if (memo && memo !== 'none' && memo.method === 'global') {
+                    const value = await this._readGlobalValueSingle(memo.name);
+                    if (value) {
+                        variables.push({ name: g.displayName, value, variablesReference: 0 });
+                    } else {
+                        // 상황 변화(프로젝트 재시작 등) — 다음 정지에서 전체 사다리 재시도
+                        this._globalQueryMemo.delete(memoKey);
                     }
-                    if (!pushed) {
-                        // 폴백: 기존 Show Global 경로 (정지 쓰레드가 없거나 조회 실패 시)
-                        const value = await this._readGlobalValue(g.lookupNames);
+                    continue;
+                }
+
+                // 2) -eval 시도 (기본 경로 — 배열/객체 트리 지원)
+                let pushed = false;
+                if (scopeInfo.threadName) {
+                    const structured = await this._queryVariableStructured(
+                        scopeInfo.threadName, scopeInfo.frameIndex, g.lookupNames[0],
+                    );
+                    const entry = structured?.entry;
+                    if (entry && (classifyVarEntry(entry, structured!.members.length > 0) !== 'simple'
+                        || (entry.value && entry.value !== '(undefined)'))) {
+                        variables.push(this._makeVariable(
+                            g.displayName,
+                            entry,
+                            scopeInfo.threadName,
+                            scopeInfo.frameIndex,
+                            g.lookupNames[0],
+                            structured!.members,
+                        ));
+                        this._globalQueryMemo.set(memoKey, { method: 'eval' });
+                        pushed = true;
+                    }
+                }
+
+                // 3) 폴백: Show Global 사다리 — 단, 이전 정지에서 전부 실패했던 전역('none')은
+                //    폴백을 생략해 정지당 왕복을 1회로 제한(값이 생기면 -eval이 다시 잡는다).
+                if (!pushed && memo !== 'none') {
+                    let found = false;
+                    for (const name of g.lookupNames) {
+                        const value = await this._readGlobalValueSingle(name);
                         if (value) {
-                            variables.push({
-                                name: g.displayName,
-                                value,
-                                variablesReference: 0,
-                            });
+                            variables.push({ name: g.displayName, value, variablesReference: 0 });
+                            this._globalQueryMemo.set(memoKey, { method: 'global', name });
+                            found = true;
+                            break;
                         }
                     }
+                    if (!found) { this._globalQueryMemo.set(memoKey, 'none'); }
                 }
             }
 
@@ -901,9 +946,10 @@ export class GPLDebugSession extends LoggingDebugSession {
             if (classifyVarEntry({ name: '', type: scopeInfo.varType, value: '' }) === 'array') {
                 variables.push(...await this._expandArrayElements(scopeInfo));
             } else {
-                // 중첩 객체(`Loc.Pos` 등)는 지연 재조회 — 공식 문서: 참조된 객체의 값은
-                // 상위 응답에 포함되지 않고 별도 Show Variable로 조회해야 한다.
-                const structured = await this._queryVariableStructured(
+                // 중첩 객체(`Loc.Pos` 등)는 지연 재조회.
+                // ※ 실기기(GPL 4.2K5, 2026-07-22): 점 표기 멤버 식은 -eval이 거부(-729/-780)
+                //   하므로 이 재조회는 이 펌웨어에서 대부분 실패한다 — 실패 시 원인을 표시한다.
+                const structured = await this._queryVariableStructuredSmart(
                     scopeInfo.threadName, scopeInfo.frameIndex, scopeInfo.expression,
                 );
                 if (structured) {
@@ -914,15 +960,15 @@ export class GPLDebugSession extends LoggingDebugSession {
                             m,
                             scopeInfo.threadName,
                             scopeInfo.frameIndex,
-                            `${scopeInfo.expression}.${bare}`,
+                            `${structured.resolvedExpression}.${bare}`,
                         ));
                     }
-                    if (structured.members.length === 0 && structured.entry.value) {
-                        variables.push({
-                            name: '(값)',
-                            value: structured.entry.value,
-                            variablesReference: 0,
-                        });
+                    if (structured.members.length === 0) {
+                        const value = structured.entry.value && structured.entry.value !== '(undefined)'
+                            ? structured.entry.value
+                            : 'ℹ 이 제어기는 중첩 객체 멤버의 개별 조회를 지원하지 않습니다'
+                              + ' (상위 객체 덤프에 표시된 값까지만 제공)';
+                        variables.push({ name: '(값)', value, variablesReference: 0 });
                     }
                 }
             }
@@ -1186,12 +1232,12 @@ export class GPLDebugSession extends LoggingDebugSession {
             let evalError: { code: number; message: string } | undefined;
 
             if (!forceRaw && threadName) {
-                const structured = await this._queryVariableStructured(
+                const structured = await this._queryVariableStructuredSmart(
                     threadName, frameIndex, expression,
                 );
                 if (structured) {
                     evalError = structured.error;
-                    const kind = classifyVarEntry(structured.entry);
+                    const kind = classifyVarEntry(structured.entry, structured.members.length > 0);
                     if (kind === 'object' && structured.members.length > 0) {
                         // 객체는 응답의 멤버 줄 전체를 보여준다 (기존: 첫 줄만 파싱해 "Object"만 표시)
                         result = [
@@ -1204,6 +1250,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                         result = structured.entry.type
                             ? `${structured.entry.value}  (${structured.entry.type})`
                             : structured.entry.value;
+                    } else if (/\bnull\s*$/i.test(structured.entry.type)) {
+                        // null 객체 참조 요소 (`armList(1), Object() null`)
+                        result = `null  (${structured.entry.type})`;
                     }
                 }
                 if (!result && this._projectName) {
@@ -1276,18 +1325,19 @@ export class GPLDebugSession extends LoggingDebugSession {
                 evalRef = cached.ref;
             } else {
                 // Show Variable -eval thread frame variable → 배열/객체는 트리로 확장 가능
+                // (변수 인덱스 식 `armList(i)`는 식별자 치환 재시도로 지원)
                 const structured = threadName
-                    ? await this._queryVariableStructured(threadName, frameIndex, expression)
+                    ? await this._queryVariableStructuredSmart(threadName, frameIndex, expression)
                     : null;
                 if (structured) {
-                    const kind = classifyVarEntry(structured.entry);
+                    const kind = classifyVarEntry(structured.entry, structured.members.length > 0);
                     if (kind !== 'simple') {
                         const v = this._makeVariable(
                             expression,
                             structured.entry,
                             threadName!,
                             frameIndex,
-                            expression,
+                            structured.resolvedExpression,
                             structured.members,
                         );
                         result = v.value;
@@ -1296,6 +1346,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                         result = structured.entry.type
                             ? `${structured.entry.value}  (${structured.entry.type})`
                             : structured.entry.value;
+                    } else if (/\bnull\s*$/i.test(structured.entry.type)) {
+                        // null 객체 참조 요소 (`armList(1), Object() null`)
+                        result = `null  (${structured.entry.type})`;
                     }
                 }
                 if (!result && this._projectName) {
@@ -1456,12 +1509,12 @@ export class GPLDebugSession extends LoggingDebugSession {
         const lower = base.toLowerCase();
 
         const cached = this._sourceFileMap.get(lower);
-        if (cached) { return cached; }
+        if (cached?.length) { return this._pickSourcePath(lower, cached); }
 
         // 미스: attach 이후 추가/이동된 파일일 수 있으므로 소스맵을 1회 재인덱싱 후 재시도.
         this._buildSourceFileMap();
         const rebuilt = this._sourceFileMap.get(lower);
-        if (rebuilt) { return rebuilt; }
+        if (rebuilt?.length) { return this._pickSourcePath(lower, rebuilt); }
 
         // 그래도 못 찾으면 원본을 그대로 반환하되, 왜 이동이 안 되는지 진단 로그를 남긴다.
         this._log(
@@ -1470,6 +1523,43 @@ export class GPLDebugSession extends LoggingDebugSession {
             `해당 .gpl/.gpo 파일이 열린 워크스페이스 폴더에 포함되어 있는지 확인하세요.`,
         );
         return filename;
+    }
+
+    /** 동명 소스 경합 시 프로젝트 폴더 우선으로 선택하고, 모호하면 베이스네임당 1회 경고를 남긴다. */
+    private _pickSourcePath(key: string, candidates: string[]): string {
+        const pick = pickSourceCandidate(candidates, this._projectDirs)!;
+        if (pick.ambiguous.length > 0 && !this._sourceResolveWarned.has(key)) {
+            this._sourceResolveWarned.add(key);
+            this._log(
+                `⚠ 동명 소스 ${candidates.length}개 경합: "${key}" → ${pick.path} 선택 ` +
+                `(제외: ${pick.ambiguous.join(' | ')}). 엉뚱한 파일이 열리면 워크스페이스에서 ` +
+                `사본/백업 폴더를 정리하거나 launch.json "projectName"을 확인하세요.`,
+            );
+        }
+        return pick.path;
+    }
+
+    /**
+     * 확정된 _projectName과 이름이 일치하는 Project.gpr 폴더들을 수집한다.
+     * 동명 소스 경합(_pickSourcePath)과 Globals 열거 범위 제한의 기준이 된다.
+     */
+    private _updateProjectDirs(): void {
+        this._projectDirs = [];
+        if (!this._projectName) { return; }
+        const want = this._projectName.toLowerCase();
+        for (const folder of vscode.workspace.workspaceFolders ?? []) {
+            for (const gprPath of this._findFiles(folder.uri.fsPath, 'Project.gpr')) {
+                try {
+                    const info = parseGpr(fs.readFileSync(gprPath, 'utf-8'));
+                    if (info.projectName && info.projectName.toLowerCase() === want) {
+                        this._projectDirs.push(path.dirname(gprPath));
+                    }
+                } catch { /* skip */ }
+            }
+        }
+        if (this._projectDirs.length > 0) {
+            this._log(`프로젝트 폴더 확정: ${this._projectDirs.join(', ')}`);
+        }
     }
 
     /**
@@ -1591,7 +1681,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         expression: string,
         memberEntries?: ParsedVarEntry[],
     ): DebugProtocol.Variable {
-        const kind = classifyVarEntry(entry);
+        const kind = classifyVarEntry(entry, (memberEntries?.length ?? 0) > 0);
         if (kind === 'object') {
             const ref = memberEntries && memberEntries.length > 0
                 ? this._variableHandles.create({
@@ -1619,15 +1709,19 @@ export class GPLDebugSession extends LoggingDebugSession {
             });
             return {
                 name: displayName,
-                value: `${entry.type} 배열`,
+                // 객체 배열 헤더의 런타임 클래스 자리 `null`은 표시에서 뺀다 (`Object() null` → `Object()`)
+                value: `${entry.type.replace(/\s+null\s*$/i, '')} 배열`,
                 type: entry.type,
                 evaluateName: expression,
                 variablesReference: ref,
             };
         }
+        // null 객체 참조(`Object() null`, 값 없음)는 빈 값 대신 'null'로 표시
+        const displayValue = entry.value
+            || (/\bnull\s*$/i.test(entry.type) ? 'null' : entry.value);
         return {
             name: displayName,
-            value: entry.type ? `${entry.value}  (${entry.type})` : entry.value,
+            value: entry.type ? `${displayValue}  (${entry.type})` : displayValue,
             type: entry.type || undefined,
             evaluateName: expression,
             variablesReference: 0,
@@ -1661,18 +1755,100 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
+     * -eval의 제어기 측 한계를 우회하는 조회 (실기기 확인 2026-07-22, GPL 4.2K5):
+     * ① 원식 조회 → ② 실패 시 괄호 안 식별자를 정수 값으로 치환해 재시도(`armList(i)`→`armList(3)`)
+     * → ③ 그래도 실패하고 점 표기 식이면 **부모 객체를 덤프해 멤버 줄에서 값 추출**
+     *   (`readyLoc.extraZ2` — 이 펌웨어는 점 표기 멤버 식을 -729/-780으로 거부하고,
+     *    멤버 값은 부모 덤프에만 실려 온다).
+     * @returns resolvedExpression — 실제로 평가에 성공한 식(트리 확장/Watch 추가용)
+     */
+    private async _queryVariableStructuredSmart(
+        threadName: string,
+        frameIndex: number,
+        expression: string,
+        depth: number = 0,
+    ): Promise<{
+        entry: ParsedVarEntry;
+        members: ParsedVarEntry[];
+        error?: { code: number; message: string };
+        resolvedExpression: string;
+    } | null> {
+        const miss = (r: { entry: ParsedVarEntry; members: ParsedVarEntry[] } | null) =>
+            !r || (r.members.length === 0 && (!r.entry.value || r.entry.value === '(undefined)'));
+
+        // ① 원식 그대로
+        const first = await this._queryVariableStructured(threadName, frameIndex, expression);
+        const firstResult = first ? { ...first, resolvedExpression: expression } : null;
+        if (!miss(first)) { return firstResult; }
+
+        // ② 변수 인덱스 치환
+        const tokens = extractIndexIdentifierTokens(expression);
+        if (tokens && tokens.length > 0) {
+            const values = new Map<string, string>();
+            let allResolved = true;
+            for (const t of tokens) {
+                const r = await this._queryVariableStructured(threadName, frameIndex, t);
+                const v = r?.entry.value?.trim();
+                // 정수로 조회된 식별자만 치환 대상
+                if (!v || !/^-?\d+$/.test(v)) { allResolved = false; break; }
+                values.set(t, v);
+            }
+            if (allResolved) {
+                const rewritten = replaceIndexIdentifierTokens(expression, values);
+                if (rewritten !== expression) {
+                    const second = await this._queryVariableStructured(threadName, frameIndex, rewritten);
+                    if (!miss(second)) {
+                        this._log(`인덱스 치환 평가: ${expression} → ${rewritten}`);
+                        return { ...second!, resolvedExpression: rewritten };
+                    }
+                }
+            }
+        }
+
+        // ③ 점 표기 식 → 부모 덤프에서 멤버 값 추출 (1단계만 — 중첩 객체의 멤버는
+        //    부모 덤프에도 "존재"만 실려 와 더 내려갈 수 없다)
+        const lastDot = expression.lastIndexOf('.');
+        if (depth === 0 && lastDot > 0) {
+            const parentExpr = expression.slice(0, lastDot);
+            const leaf = expression.slice(lastDot + 1);
+            // 멤버 이름만 허용 (인덱스 접미사 등 복합 leaf는 덤프에 없음)
+            if (/^[A-Za-z_]\w*$/.test(leaf)) {
+                const parent = await this._queryVariableStructuredSmart(
+                    threadName, frameIndex, parentExpr, depth + 1,
+                );
+                if (parent && parent.members.length > 0) {
+                    const wanted = `.${leaf.toLowerCase()}`;
+                    const m = parent.members.find(e => e.name.toLowerCase().endsWith(wanted));
+                    if (m) {
+                        this._log(`부모 덤프 폴백: ${expression} → ${parent.resolvedExpression} 덤프의 ${m.name}`);
+                        return {
+                            entry: m,
+                            members: [],
+                            resolvedExpression: `${parent.resolvedExpression}.${leaf}`,
+                        };
+                    }
+                }
+            }
+        }
+
+        return firstResult;
+    }
+
+    /**
      * Show Variable 실패 STATUS를 사용자 안내 문구로 변환한다.
-     * 실기기 확인(2026-07-22): 인자 있는 프로퍼티/메서드 호출(`cmd.ints(0)`)은
-     * -780 "*Unsupported procedure reference*", 객체의 배열 필드 접근(`cmd.m_rawArgs(0)`)은
-     * -729 "*Undefined symbol*"로 거부된다 — 콘솔 평가의 제어기 측 한계.
+     * 실기기 확인(2026-07-22, GPL 4.2K5): -eval은 필드/로컬만 평가한다.
+     * - -780 "*Unsupported procedure reference*": 이름이 프로퍼티/메서드로 해석됨 —
+     *   인자 유무와 무관하게 프로퍼티도 평가 불가(`cmd.ints(0)`, 클래스 프로퍼티 `robotIndex` 모두).
+     * - -729 "*Undefined symbol*": 해당 프레임 스코프에 없는 이름(다른 프레임 로컬 등),
+     *   또는 객체의 배열 필드 접근(`cmd.m_rawArgs(0)`).
      */
     private _formatEvalError(expression: string, error: { code: number; message: string }): string {
         const base = `(평가 실패 ${error.code}: ${error.message || '원인 미상'})`;
         if (error.code === -780) {
-            return `${base} — 인자 있는 프로퍼티/메서드 호출은 제어기 콘솔이 평가하지 못합니다. 원본 필드를 확인하세요 (예: ${expression.split('.')[0] || expression} 객체를 펼쳐 m_* 필드 조회)`;
+            return `${base} — 프로퍼티/메서드 참조는 제어기 콘솔이 평가하지 못합니다(필드/로컬만 가능). 백킹 필드를 확인하세요 (예: ${expression.split('.')[0] || expression} 객체를 펼쳐 m_* 필드 조회)`;
         }
         if (error.code === -729) {
-            return `${base} — 이 프레임에서 접근할 수 없는 심볼입니다 (객체의 배열 필드는 콘솔 식으로 조회 불가)`;
+            return `${base} — 현재 프레임 스코프에 없는 이름이거나, 점 표기 멤버 접근입니다 (이 제어기의 콘솔 평가는 프레임의 로컬/파라미터 이름만 지원 — 멤버 값은 부모 객체를 조회하세요)`;
         }
         return base;
     }
@@ -1847,6 +2023,10 @@ export class GPLDebugSession extends LoggingDebugSession {
      */
     private _buildSourceFileMap(): void {
         this._sourceFileMap.clear();
+        this._sourceResolveWarned.clear();
+        // 소스 구성이 바뀌면 전역 열거/조회 메모도 무효 — 파일 추가·이동·프로젝트 변경 대응.
+        this._globalQueryMemo.clear();
+        this._globalDescriptorsCache = undefined;
         const folders = vscode.workspace.workspaceFolders;
         if (!folders) { return; }
 
@@ -1862,11 +2042,21 @@ export class GPLDebugSession extends LoggingDebugSession {
             for (const entry of entries) {
                 const full = path.join(dir, entry.name);
                 if (entry.isDirectory()) {
-                    // Skip common non-source directories
-                    if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'out') { continue; }
+                    // dot 디렉터리(.history/.git 등)와 빌드/출력 폴더는 제외 — 특히
+                    // .history(Local History 확장)의 stale 사본이 소스맵을 오염시켜
+                    // 엉뚱한 파일이 열리는 원인이 된다(_findFiles와 동일 규칙).
+                    if (
+                        entry.name.startsWith('.')
+                        || entry.name === 'node_modules'
+                        || entry.name === 'out'
+                        || entry.name === 'dist'
+                        || entry.name === 'bin'
+                    ) { continue; }
                     this._scanDir(full);
                 } else if (/\.gpl$/i.test(entry.name) || /\.gpo$/i.test(entry.name)) {
-                    this._sourceFileMap.set(entry.name.toLowerCase(), full);
+                    const key = entry.name.toLowerCase();
+                    const list = this._sourceFileMap.get(key);
+                    if (list) { list.push(full); } else { this._sourceFileMap.set(key, [full]); }
                 }
             }
         } catch { /* permission errors etc */ }
@@ -1975,12 +2165,20 @@ export class GPLDebugSession extends LoggingDebugSession {
     /**
      * 워크스페이스의 모든 GPL 소스에서 모듈 레벨(비로컬) 전역 변수를 열거한다.
      * Globals 패널은 public/private 여부와 무관하게 현재 프로젝트의 모듈 전역 상태를 보여주는 것이 유용하다.
+     * 결과는 소스맵 세대 동안 캐시된다(_buildSourceFileMap에서 무효화) — 정지마다
+     * 프로젝트 전체 read+parse를 반복하지 않는다.
      */
     private _getGlobalVariableDescriptors(): GlobalVariableDescriptor[] {
+        if (this._globalDescriptorsCache) { return this._globalDescriptorsCache; }
         const seen = new Set<string>();
         const globals: GlobalVariableDescriptor[] = [];
 
-        for (const [, filePath] of this._sourceFileMap) {
+        for (const [key, candidates] of this._sourceFileMap) {
+            const filePath = this._pickSourcePath(key, candidates);
+            // 프로젝트 폴더를 알면 그 밖의 소스(다른 프로젝트/사본)는 전역 열거에서 제외 —
+            // Globals 패널에 무관한 프로젝트의 전역이 섞이는 것을 막는다.
+            if (this._projectDirs.length > 0
+                && !this._projectDirs.some(d => this._isPathUnder(filePath, d))) { continue; }
             let content: string;
             try {
                 content = fs.readFileSync(filePath, 'utf-8');
@@ -2009,7 +2207,10 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
         }
 
-        return globals.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'accent' }));
+        this._globalDescriptorsCache = globals.sort(
+            (a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'accent' }),
+        );
+        return this._globalDescriptorsCache;
     }
 
     /**
@@ -2018,38 +2219,41 @@ export class GPLDebugSession extends LoggingDebugSession {
      */
     private async _readGlobalValue(lookupNames: string[]): Promise<string> {
         for (const name of lookupNames) {
-            const resp = await this._sendCmd(
-                this._projectName
-                    ? `Show Global ${name}, ${this._projectName}`
-                    : `Show Global ${name}`,
-            );
-            if (!resp || !isSuccess(resp)) {
-                continue;
-            }
+            const value = await this._readGlobalValueSingle(name);
+            if (value) { return value; }
+        }
+        return '';
+    }
 
-            const parsedEval = this._parseShowVariableEval(resp);
-            if (parsedEval.value && parsedEval.value !== '(undefined)') {
-                return parsedEval.type
-                    ? `${parsedEval.value}  (${parsedEval.type})`
-                    : parsedEval.value;
-            }
-
-            const parsedVars = parseVariable(resp);
-            if (parsedVars.length > 0) {
-                return parsedVars.map(v => `${v.name} = ${v.value}`).join(', ');
-            }
-
-            const cleaned = resp
-                .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
-                .replace(/<[^>]+>/g, '')
-                .trim();
-            const lines = cleaned.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-            if (lines.length > 0) {
-                return lines.join(', ');
-            }
+    /** `Show Global <name>` 1회 조회 — 성공 시 표시용 값, 실패 시 ''. */
+    private async _readGlobalValueSingle(name: string): Promise<string> {
+        const resp = await this._sendCmd(
+            this._projectName
+                ? `Show Global ${name}, ${this._projectName}`
+                : `Show Global ${name}`,
+        );
+        if (!resp || !isSuccess(resp)) {
+            return '';
         }
 
-        return '';
+        const parsedEval = this._parseShowVariableEval(resp);
+        if (parsedEval.value && parsedEval.value !== '(undefined)') {
+            return parsedEval.type
+                ? `${parsedEval.value}  (${parsedEval.type})`
+                : parsedEval.value;
+        }
+
+        const parsedVars = parseVariable(resp);
+        if (parsedVars.length > 0) {
+            return parsedVars.map(v => `${v.name} = ${v.value}`).join(', ');
+        }
+
+        const cleaned = resp
+            .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
+            .replace(/<[^>]+>/g, '')
+            .trim();
+        const lines = cleaned.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        return lines.length > 0 ? lines.join(', ') : '';
     }
 
     private _enqueueCommand<T>(work: () => Promise<T>): Promise<T> {

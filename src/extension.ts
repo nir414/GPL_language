@@ -10,6 +10,7 @@ import { GPLDiagnosticProvider } from './providers/diagnosticProvider';
 import { GPLCodeActionProvider } from './providers/codeActionProvider';
 import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
 import { GPLHoverProvider } from './providers/hoverProvider';
+import { GPLEvaluatableExpressionProvider } from './providers/evaluatableExpressionProvider';
 import { GPLSignatureHelpProvider } from './providers/signatureHelpProvider';
 import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile } from './config';
@@ -516,6 +517,15 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.languages.registerHoverProvider(
 			gplSelectors,
 			new GPLHoverProvider(symbolCache, outputChannel)
+		)
+	);
+
+	// 디버그 hover 식 결정: `armList(i)`처럼 인덱스 포함 식을 통째로 평가하고,
+	// Sub/Function 이름 위 hover는 차단(-eval이 프로시저를 실행해 버리는 사고 방지).
+	context.subscriptions.push(
+		vscode.languages.registerEvaluatableExpressionProvider(
+			gplSelectors,
+			new GPLEvaluatableExpressionProvider(symbolCache)
 		)
 	);
 

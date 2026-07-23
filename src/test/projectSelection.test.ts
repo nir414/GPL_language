@@ -3,6 +3,7 @@ import { test } from './harness';
 import {
     selectProjectFromCandidates,
     ProjectCandidate,
+    pickSourceCandidate,
 } from '../controller/responseParser';
 
 /** 소문자 basename 집합 헬퍼. */
@@ -118,4 +119,43 @@ test('selectProject: 이름 없는 후보/빈 배열은 undefined', () => {
         '/ws/NoName/Main.gpl',
     );
     assert.strictEqual(sel, undefined);
+});
+
+// ─── pickSourceCandidate: 동명 소스 경합 해소 (디버그 소스 매핑) ───
+
+test('pickSource: 단일 후보는 그대로, 모호 아님', () => {
+    const r = pickSourceCandidate(['/ws/MergeCode/A.gpl'], []);
+    assert.strictEqual(r?.path, '/ws/MergeCode/A.gpl');
+    assert.deepStrictEqual(r?.ambiguous, []);
+});
+
+test('pickSource: 프로젝트 폴더 하위 후보가 사본을 이긴다 (스캔 순서 무관)', () => {
+    // 기존 버그 시나리오: 사본 폴더가 나중에 스캔되면 조용히 이겼음.
+    const r = pickSourceCandidate(
+        ['/ws/projects/백업/MergeCode구버전/A.gpl', '/ws/projects/MergeCode/A.gpl'],
+        ['/ws/projects/MergeCode'],
+    );
+    assert.strictEqual(r?.path, '/ws/projects/MergeCode/A.gpl');
+    assert.deepStrictEqual(r?.ambiguous, []); // 프로젝트 폴더로 유일하게 좁혀짐 → 확정적
+});
+
+test('pickSource: 프로젝트 폴더 미상이면 얕은 경로 우선 + 모호 표시', () => {
+    const r = pickSourceCandidate(
+        ['/ws/projects/deep/copy/A.gpl', '/ws/projects/MergeCode/A.gpl'],
+        [],
+    );
+    assert.strictEqual(r?.path, '/ws/projects/MergeCode/A.gpl');
+    assert.strictEqual(r?.ambiguous.length, 1); // 경고 로그 대상
+});
+
+test('pickSource: 같은 깊이는 경로 사전순(결정적)', () => {
+    const r = pickSourceCandidate(
+        ['/ws/projects/Beta/A.gpl', '/ws/projects/Alpha/A.gpl'],
+        [],
+    );
+    assert.strictEqual(r?.path, '/ws/projects/Alpha/A.gpl');
+});
+
+test('pickSource: 빈 후보는 undefined', () => {
+    assert.strictEqual(pickSourceCandidate([], []), undefined);
 });

@@ -390,3 +390,176 @@ export function extractQualifierChainBefore(
     if (chain.length === 0) { return undefined; }
     return { chain, partial };
 }
+
+// ─── 디버그 hover/watch용 식 추출 ────────────────────────────
+
+/** extractDebugExpressionAt 결과의 한 세그먼트: `armList(i)` → { name: 'armList', args: 'i' } */
+export interface DebugExpressionSegment {
+    name: string;
+    /** 괄호 그룹 내용(괄호 제외). 없으면 인덱싱/호출 접미사 없는 세그먼트. */
+    args?: string;
+}
+
+/** 커서 위치의 디버그 평가 후보 식 (안전성 판단은 호출자 몫 — 세그먼트 구조를 그대로 노출). */
+export interface DebugExpressionCandidate {
+    /** 앞 체인 + 커서 세그먼트. 예) `armList(i).isCanFlip`의 isCanFlip 커서 → 2개 세그먼트 */
+    segments: DebugExpressionSegment[];
+    /** 커서가 위치한 세그먼트 인덱스(항상 마지막) */
+    cursorSegment: number;
+    startColumn: number;
+    /** 끝(exclusive) — 커서 세그먼트의 괄호 그룹 포함 */
+    endColumn: number;
+}
+
+/** 세그먼트 배열을 GPL 식 문자열로 조립한다. */
+export function buildDebugExpression(segments: DebugExpressionSegment[]): string {
+    return segments
+        .map(s => (s.args !== undefined ? `${s.name}(${s.args})` : s.name))
+        .join('.');
+}
+
+/**
+ * 라인 텍스트의 커서 위치에서 디버그 평가 대상 식을 추출한다 (순수 함수).
+ * 예) `armList(i).isCanFlip = True`
+ *   - `armList` 커서 → segments [{armList, args:'i'}]           (뒤따르는 인덱스 포함)
+ *   - `isCanFlip` 커서 → [{armList, args:'i'}, {isCanFlip}]     (앞 체인 포함)
+ * 문자열/주석 안, 식별자가 아닌 위치는 undefined.
+ * ※ 괄호 그룹이 배열 인덱싱인지 호출인지는 여기서 판단하지 않는다 — 호출자(provider)가
+ *   심볼 정보로 검증해야 한다(-eval은 Sub/Function도 실행하므로 안전성에 중요).
+ */
+export function extractDebugExpressionAt(
+    lineText: string,
+    character: number,
+): DebugExpressionCandidate | undefined {
+    // 1) 커서가 문자열/주석 내부면 제외
+    let inString = false;
+    for (let i = 0; i < Math.min(character, lineText.length); i++) {
+        const ch = lineText[i];
+        if (ch === '"') { inString = !inString; }
+        else if (ch === "'" && !inString) { return undefined; } // 주석 시작 이후
+    }
+    if (inString) { return undefined; }
+
+    // 2) 커서 위치의 식별자 단어
+    let ws = character;
+    while (ws > 0 && /[A-Za-z0-9_]/.test(lineText[ws - 1])) { ws--; }
+    let we = character;
+    while (we < lineText.length && /[A-Za-z0-9_]/.test(lineText[we])) { we++; }
+    const word = lineText.slice(ws, we);
+    if (!/^[A-Za-z_]\w*$/.test(word)) { return undefined; }
+
+    const parseSegment = (raw: string): DebugExpressionSegment | undefined => {
+        const m = raw.match(/^([A-Za-z_]\w*)(?:\((.*)\))?$/);
+        if (!m) { return undefined; }
+        return m[2] !== undefined ? { name: m[1], args: m[2] } : { name: m[1] };
+    };
+
+    // 3) 앞 체인 (`a(0).b.` 형태) — 재구성 텍스트가 원문과 정확히 일치할 때만 채택
+    //    (공백 섞인 `a . b` 등 예외 케이스는 안전하게 커서 단어만 사용)
+    const segments: DebugExpressionSegment[] = [];
+    let startColumn = ws;
+    const before = extractQualifierChainBefore(lineText.slice(0, ws));
+    if (before && before.partial === '') {
+        const chainText = before.chain.join('.') + '.';
+        if (lineText.slice(ws - chainText.length, ws) === chainText) {
+            const parsed = before.chain.map(parseSegment);
+            if (parsed.every(s => s !== undefined)) {
+                segments.push(...(parsed as DebugExpressionSegment[]));
+                startColumn = ws - chainText.length;
+            }
+        }
+    }
+
+    // 4) 커서 단어 + 바로 뒤 괄호 그룹(공백 없이 붙은 것만 — 인덱싱 관용구)
+    let endColumn = we;
+    const cursorSeg: DebugExpressionSegment = { name: word };
+    if (lineText[we] === '(') {
+        let depth = 0;
+        let close = -1;
+        let quoted = false;
+        for (let i = we; i < lineText.length; i++) {
+            const ch = lineText[i];
+            if (ch === '"') { quoted = !quoted; continue; }
+            if (quoted) { continue; }
+            if (ch === "'") { break; } // 주석 — 미완성 그룹
+            if (ch === '(') { depth++; }
+            else if (ch === ')') {
+                depth--;
+                if (depth === 0) { close = i; break; }
+            }
+        }
+        if (close > we) {
+            cursorSeg.args = lineText.slice(we + 1, close);
+            endColumn = close + 1;
+        }
+    }
+    segments.push(cursorSeg);
+
+    return {
+        segments,
+        cursorSegment: segments.length - 1,
+        startColumn,
+        endColumn,
+    };
+}
+
+// ─── 인덱스 식별자 치환 (디버그 어댑터용) ────────────────────
+
+/**
+ * 식의 최상위 괄호 그룹 안에서 식별자(점 경로 포함) 토큰을 추출한다 (순수 함수).
+ * 예) `armList(i)` → ['i'], `m(i, j+1)` → ['i', 'j'], `a(i).b(k)` → ['i', 'k']
+ * 숫자 리터럴만 있으면 빈 배열. 중첩 괄호나 문자열 리터럴이 있으면 치환 불가로 undefined.
+ * 용도: 제어기 콘솔이 변수 인덱스를 평가하지 못할 때 식별자를 값으로 치환해 재시도.
+ */
+export function extractIndexIdentifierTokens(expression: string): string[] | undefined {
+    const tokens: string[] = [];
+    let depth = 0;
+    let i = 0;
+    while (i < expression.length) {
+        const ch = expression[i];
+        if (ch === '"') { return undefined; }
+        if (ch === '(') {
+            depth++;
+            if (depth > 1) { return undefined; } // 중첩 인덱스 식은 미지원
+            i++;
+            continue;
+        }
+        if (ch === ')') { depth = Math.max(0, depth - 1); i++; continue; }
+        if (depth >= 1 && /[A-Za-z_]/.test(ch)) {
+            const m = expression.slice(i).match(/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*/);
+            if (m) {
+                if (!tokens.includes(m[0])) { tokens.push(m[0]); }
+                i += m[0].length;
+                continue;
+            }
+        }
+        i++;
+    }
+    return tokens;
+}
+
+/** 최상위 괄호 그룹 안의 식별자 토큰을 값으로 치환한 식을 돌려준다 (순수 함수). */
+export function replaceIndexIdentifierTokens(
+    expression: string,
+    values: ReadonlyMap<string, string>,
+): string {
+    let out = '';
+    let depth = 0;
+    let i = 0;
+    while (i < expression.length) {
+        const ch = expression[i];
+        if (ch === '(') { depth++; out += ch; i++; continue; }
+        if (ch === ')') { depth = Math.max(0, depth - 1); out += ch; i++; continue; }
+        if (depth >= 1 && /[A-Za-z_]/.test(ch)) {
+            const m = expression.slice(i).match(/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*/);
+            if (m) {
+                out += values.get(m[0]) ?? m[0];
+                i += m[0].length;
+                continue;
+            }
+        }
+        out += ch;
+        i++;
+    }
+    return out;
+}

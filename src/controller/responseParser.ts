@@ -686,6 +686,43 @@ export function selectProjectFromCandidates(
     };
 }
 
+/** pickSourceCandidate 결과. */
+export interface SourceCandidatePick {
+    /** 선택된 경로 */
+    path: string;
+    /**
+     * 선택 근거가 약한(임의 tie-break) 경합 후보들 — 비어 있지 않으면 호출자가 경고 로그로
+     * 후보 목록을 노출해 사용자가 워크스페이스/launch.json을 정리하게 안내한다.
+     */
+    ambiguous: string[];
+}
+
+/**
+ * 같은 베이스네임의 소스 파일 후보 중 디버그 소스 매핑 대상을 결정한다(순수 함수).
+ *
+ * 배경: 워크스페이스에 프로젝트 폴더가 여러 개(사본/백업 포함)면 제어기가 주는
+ * 파일명(베이스네임)이 여러 로컬 파일과 충돌한다. 기존에는 스캔 순서상 마지막 파일이
+ * 조용히 이겨 정지 시 엉뚱한 폴더의 파일이 열렸다.
+ *
+ * 우선순위: ① 디버그 대상 프로젝트 폴더(Project.gpr 위치) 하위 → ② 더 얕은 경로
+ * (사본은 대개 하위/별도 폴더에 있음) → ③ 경로 사전순(결정적).
+ */
+export function pickSourceCandidate(candidates: string[], projectDirs: string[]): SourceCandidatePick | undefined {
+    if (candidates.length === 0) { return undefined; }
+    if (candidates.length === 1) { return { path: candidates[0], ambiguous: [] }; }
+
+    const inProject = candidates.filter(p => projectDirs.some(d => isPathUnder(p, d)));
+    const pool = inProject.length > 0 ? inProject : candidates;
+
+    const depth = (p: string) => path.resolve(p).split(/[\\/]/).length;
+    const sorted = [...pool].sort((a, b) => depth(a) - depth(b) || a.localeCompare(b));
+    return {
+        path: sorted[0],
+        // 프로젝트 폴더로 유일하게 좁혀졌으면 확정적 — 그 외(후보 0개 또는 2개 이상)는 모호.
+        ambiguous: pool.length > 1 ? sorted.slice(1) : [],
+    };
+}
+
 // ─── Stack ────────────────────────────────────────────────
 
 export interface StackFrameInfo {

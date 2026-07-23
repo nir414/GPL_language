@@ -48,6 +48,49 @@ test('classifyVarEntry: 객체 배열 헤더(`RobotArm()`류)는 array가 우선
     assert.strictEqual(classifyVarEntry({ name: 'list', type: 'Object Command()', value: '' }), 'array');
 });
 
+test('classifyVarEntry: null 객체 참조 요소는 simple — 무한 가짜 배열 트리 방지', () => {
+    // 실기기 재현(2026-07-22): `Dim armList(1) As RobotArm`에서 armList(0)만 채우면
+    // `armList(1), Object() null`(null 참조)이 온다. 배열로 오분류하면 null 인덱싱
+    // (`armList(1)(0)`)이 또 null을 성공으로 돌려줘 트리가 무한 재귀했다.
+    assert.strictEqual(
+        classifyVarEntry({ name: 'armList(1)', type: 'Object() null', value: '' }, false), 'simple');
+    // 멤버 줄(점 포함 이름)의 null 참조도 동일
+    assert.strictEqual(
+        classifyVarEntry({ name: 'a(1)(0).armCenterDeg', type: 'Object() null', value: '' }, false), 'simple');
+    // 요소인데 런타임 클래스가 있으면(필드 없는 객체 등) 객체 — 재조회로 덤프 확보
+    assert.strictEqual(
+        classifyVarEntry({ name: 'armList(0)', type: 'Object() RobotArm', value: '' }, false), 'object');
+});
+
+test('classifyVarEntry: 실기기 객체 배열 — `Object() null`=배열, `Object() RobotArm`+멤버=요소 객체', () => {
+    // 실기기 캡처(2026-07-22, moveToReady 프레임):
+    //   armList, Object() null                          ← 배열 전체 (멤버 없음)
+    //   armList(0), Object() RobotArm + 멤버 31줄        ← 요소 객체
+    assert.strictEqual(
+        classifyVarEntry({ name: 'armList', type: 'Object() null', value: '' }, false), 'array');
+    assert.strictEqual(
+        classifyVarEntry({ name: 'armList(0)', type: 'Object() RobotArm', value: '' }, true), 'object');
+    // 멤버 정보 없이 호출되는 expand 경로(저장된 varType)에서도 배열로 판정돼야 요소 조회가 된다
+    assert.strictEqual(
+        classifyVarEntry({ name: '', type: 'Object() null', value: '' }), 'array');
+});
+
+test('parseShowVariableMulti: 실기기 객체 배열 요소 덤프 — 헤더+멤버, 타입에 런타임 클래스', () => {
+    const resp = '<DATA>armList(0), Object() RobotArm\n'
+        + 'armList(0).m_armIndex, Integer, 1\n'
+        + 'armList(0).m_flipSizeDeg, Double, 20\n'
+        + '</DATA>\n<STATUS>0,"Success"</STATUS>';
+    const entries = parseShowVariableMulti(resp);
+    assert.strictEqual(entries.length, 3);
+    assert.deepStrictEqual(entries[0], { name: 'armList(0)', type: 'Object() RobotArm', value: '' });
+    assert.deepStrictEqual(entries[1], { name: 'armList(0).m_armIndex', type: 'Integer', value: '1' });
+});
+
+test('arrayRank: 객체 배열 타입(괄호 뒤 클래스명)도 차원 인식', () => {
+    assert.strictEqual(arrayRank('Object() null'), 1);
+    assert.strictEqual(arrayRank('Object(,) null'), 2);
+});
+
 test('parseShowVariableMulti: 에러 STATUS만 있는 응답은 빈 목록', () => {
     // 실기기: cmd.ints(0) → -780, cmd.m_rawArgs(0) → -729
     const resp = '<DATA></DATA>\n<STATUS>-780,"*Unsupported procedure reference*"</STATUS>';

@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-07-22 (§1-U: Show Variable 실기기 검증 — 객체 헤더 `Object Command` 분류 수정 + 콘솔 평가 한계(-780/-729) 확인·안내; 같은 날 §1-T)
+- 최종 갱신: 2026-07-22 (§1-Y: 객체 배열 분류 + 점 표기 멤버 부모 덤프 폴백; 같은 날 §1-X Globals 지연, §1-W hover 인덱스 식, §1-V 엉뚱한 폴더, §1-U Show Variable 실기기 검증, §1-T)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 현재 package 버전: **0.7.7** (미커밋 변경분 있음 — 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile` 최종 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -939,10 +939,31 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
    기존 `_classifyVarEntry`가 `/^object$/`(정확 일치)라 실기기 응답이 **simple로 오분류 → 트리 확장 불가**(버그).
 2. **객체 덤프는 스칼라 필드만 나열한다**: private 필드(`m_cmd`, `m_rawArg` 등) 포함 7줄이 왔으나,
    **배열 필드(`m_rawArgs() As String`)는 목록에서 통째로 빠짐**. 프로퍼티(cmd/cmdCode 등 no-arg get)도 안 옴.
-3. **인자 있는 프로퍼티/메서드 호출은 콘솔 평가 불가**: `cmd.ints(0)` → `-780 "*Unsupported procedure reference*"`.
-4. **객체의 배열 필드 요소 접근도 불가**: `cmd.m_rawArgs(0)` → `-729 "*Undefined symbol*"`.
+3. **프로퍼티/메서드 참조는 콘솔 평가 불가 — 인자 유무 무관**: `cmd.ints(0)` → `-780`,
+   클래스 프로퍼티 `robotIndex`(getWafer 프레임에서 bare 이름) → `-780`. 즉 이 펌웨어의
+   -eval은 **필드/로컬만** 평가한다(공식 문서의 "no-arg get property 표시"와 다름).
+4. **-729 = 해당 프레임 스코프에 없는 이름**: 다른 프레임의 로컬(`robotArmList`를 프레임 0에서),
+   객체의 배열 필드(`cmd.m_rawArgs(0)`) 모두 -729. **프레임별 스코프가 정확히 분리**되어
+   같은 이름이 프레임 3/4에선 로컬 Integer, 프레임 1/2에선 프로퍼티(-780)로 해석된 사례 확인.
 5. 실용 우회: 인덱스 프로퍼티 값은 원본 필드로 읽는다 — `cmd.m_rawArg = "7,6"` → `ints(0)=7, ints(1)=6`.
 6. `Show Stack` 프레임/브레이크포인트 hit, 문자열 값 속 쉼표(`"7,6"`) 보존은 §1-P 파서 가정대로 동작.
+7. **객체 배열 형식(moveToReady 프레임 실측)**: 배열 전체는 `armList, Object() null`
+   (값/멤버 없음 — 요소는 인덱스로만 조회), 요소는 `armList(0), Object() RobotArm` +
+   **필드 멤버 줄 동봉**(RobotArm 31개 필드 전부 확인, 프로퍼티는 역시 미포함).
+   → `classifyVarEntry`에 `hasMembers` 인자 추가: `Object(…)` 꼴은 멤버 동봉이면 요소 객체,
+   아니면 배열로 분류(멤버 없이는 타입 문자열만으로 구분 불가). `arrayRank`도 괄호 뒤
+   클래스명 형식(`Object(,) null`) 대응. 헤더 표시는 `null` 제거(`Object() 배열`).
+8. `Show Global`은 **모듈 레벨 전역 전용** — 로컬/파라미터는 프레임과 무관하게 -729.
+   (같은 이름이 프레임마다 다르게 해석되는 것은 4번의 프레임 스코프 규칙.)
+9. **변수 인덱스는 네이티브 지원**: `armList(i)` 성공(i=0, `armList(0)`과 동일 덤프,
+   멤버 이름은 입력식 그대로 `armList(i).m_…`로 echo). §1-W의 인덱스 치환 로직은
+   순수 폴백으로만 동작. (인덱스 안 산술식 `x-1` 등은 미확인.)
+10. **점 표기 멤버 식은 -eval이 아예 거부한다**: `readyLoc.extraZ2`(필드) → -729,
+   프로퍼티는 -780. 멤버 값은 **부모 객체 덤프에 실려 올 때만** 확인 가능하고,
+   중첩 객체 멤버(`readyLoc.m_loc, Object Location`)는 존재만 표시되며 **더 내려갈 방법이
+   없다**(공식 문서 "referenced objects show only their presence"의 실체).
+   → 확장 대응(§1-Y): 점 표기 식이 실패하면 부모를 덤프해 멤버 줄에서 값을 추출하는
+   폴백(`_queryVariableStructuredSmart` ③), 중첩 객체 펼침 실패 시 안내 행 표시.
 
 ### 조치
 
@@ -974,6 +995,176 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 
 - `src/debug/showVariableParser.ts`(신설), `src/debug/gplDebugSession.ts`(파서 위임 + 분류/표시/에러 안내),
   `src/test/showVariableParser.test.ts`(신설), `src/test/index.ts`(+1 import).
+
+## 1-V. 2026-07-22 세션 — 디버깅 중 엉뚱한 폴더 파일이 열리는 문제 수정 (소스맵 경합 해소)
+
+### 증상 (사용자 보고 — 엉뚱한 폴더 열림)
+
+디버깅 중 정지/스텝 시 가끔 엉뚱한 폴더의 파일이 열림. 워크스페이스:
+`C:\SVN\pa\...\시뮬레이션\projects` (프로젝트 사본/백업 폴더 다수 포함).
+
+### 원인
+
+1. `_sourceFileMap`이 **베이스네임 → 경로 1개**라서 동명 .gpl이 여러 개면(사본 폴더,
+   다른 프로젝트) **스캔 순서상 마지막 파일이 조용히 덮어씀** → 제어기 파일명을 엉뚱한
+   로컬 파일로 매핑.
+2. `_scanDir`이 dot 폴더를 안 걸러 **`.history`(Local History 확장)의 stale 사본**까지
+   인덱싱 (`_findFiles`에는 같은 이유의 스킵이 이미 있었는데 소스맵 쪽만 누락).
+3. 부수: Globals 패널 열거가 이 맵을 순회해 **다른 프로젝트/사본의 전역까지 혼입**.
+
+### 조치
+
+- `responseParser.ts`에 **`pickSourceCandidate(candidates, projectDirs)` 순수 함수** 추가:
+  ① 디버그 대상 프로젝트 폴더(Project.gpr 위치) 하위 우선 → ② 얕은 경로 우선(사본은 대개
+  하위 폴더) → ③ 사전순(결정적). 모호하면 `ambiguous` 목록 반환.
+- `gplDebugSession.ts`:
+  - `_sourceFileMap`을 `Map<string, string[]>`(후보 전부 보존)로 변경, `_scanDir`에
+    dot/`dist`/`bin` 스킵 추가(`_findFiles`와 동일 규칙).
+  - attach 시 `_updateProjectDirs()`: `_projectName`과 이름이 일치하는 Project.gpr 폴더들을
+    수집(경합 우선순위 기준). 명시적 projectName(launch.json)·자동 감지 모두 커버.
+  - `_resolveSourcePath` → `_pickSourcePath`: 경합 시 위 함수로 선택, **모호하면 베이스네임당
+    1회 경고 로그**(선택/제외 경로 + 사본 정리·projectName 안내).
+  - Globals 열거: 프로젝트 폴더를 알면 그 밖의 소스는 제외(타 프로젝트 전역 혼입 방지).
+
+### 검증 (§1-V)
+
+- `npm test` 154/154 통과(신규 pickSource 5케이스 포함), `npm run compile` 정상.
+- 실기기: VSIX 재설치 후, 사본 폴더가 있는 워크스페이스에서 브레이크 정지 시 올바른
+  프로젝트 폴더의 파일이 열리는지 + 디버그 로그의 "동명 소스 경합" 경고 확인.
+
+### 변경 파일
+
+- `src/controller/responseParser.ts`(+pickSourceCandidate), `src/debug/gplDebugSession.ts`
+  (소스맵 후보화 + `_updateProjectDirs`/`_pickSourcePath` + Globals 범위 제한),
+  `src/test/projectSelection.test.ts`(+5).
+
+## 1-W. 2026-07-22 세션 — 디버그 hover에서 `armList(i)` 같은 인덱스 식 평가 지원
+
+### 요청/배경
+
+사용자: "hover 시 `armList(i)`도 표시 가능하지 않나? `i`가 뭔지 디버거가 아는데."
+확인 결과 **EvaluatableExpressionProvider가 없어** VS Code가 커서 밑 단어(`armList`)만
+어댑터로 보내고 있었음 — 식 자체가 전달되지 않는 구조였다.
+
+### 조치
+
+- **`GPLEvaluatableExpressionProvider` 신설**(`src/providers/evaluatableExpressionProvider.ts`,
+  extension.ts에 등록): 커서 위치에서 체인+인덱스 식(`armList(i)`, `armList(i).isCanFlip`)을
+  구성해 디버그 hover 평가식으로 제공.
+  - **안전 규칙(중요)**: `-eval`은 Sub/Function도 **실행**한다(공식 문서). 따라서
+    ① 커서 이름이 Sub/Function이면 디버그 hover 차단(undefined) — 기본 동작이 파라미터 없는
+    Sub 이름을 -eval로 보내 실행할 수 있던 기존 위험도 함께 제거.
+    ② 괄호 그룹은 그 이름이 **변수/파라미터로 확인될 때만** 포함(호출식 hover 실행 방지).
+    미확인이면 단어만(기존 동작).
+  - 판별: 현재 문서를 `includeLocals/includeParameters`로 온디맨드 파싱(메모이즈 캐시) —
+    워크스페이스 SymbolCache는 로컬/파라미터를 인덱싱하지 않기 때문. 크로스파일 프로시저는
+    SymbolCache `findAllByName`으로 보강.
+- **어댑터 인덱스 치환 재시도** `_queryVariableStructuredSmart`(hover/watch/REPL 경로):
+  원식 조회 실패 시 괄호 안 식별자(`i`, `obj.idx`)를 개별 조회해 **정수 값으로 치환한 식**
+  (`armList(3)`)으로 1회 재시도. 제어기가 변수 인덱스를 직접 평가하면 첫 조회로 끝난다.
+  트리 확장/Watch 추가는 치환된 식(resolvedExpression)을 사용.
+- 순수 함수는 `cursorExpression.ts`에: `extractDebugExpressionAt`/`buildDebugExpression`/
+  `extractIndexIdentifierTokens`(중첩 괄호·문자열은 치환 불가)/`replaceIndexIdentifierTokens`.
+
+### 검증 (§1-W)
+
+- `npm test` 161/161 통과(신규 7: 식 추출 4 + 토큰 추출/치환 3), `npm run compile` 정상.
+- 실기기 미확정 항목: **제어기 콘솔이 변수 인덱스(`armList(i)`)를 직접 평가하는지** —
+  직접 되면 치환 경로는 폴백으로만 동작. 아래 남은 일 참조.
+
+### 남은 일 (§1-W)
+
+- [ ] VSIX 재설치 후: `armList(i)` hover(요소 값/트리), `armList(i).isCanFlip` hover,
+  Watch에 `armList(i)` 추가, Sub 이름 hover 시 디버그 팝업 차단(언어 hover는 유지) 확인.
+- [x] 실기기 1402 확인 완료(§1-U 사실 7~10): 변수 인덱스 네이티브 지원(`armList(i)` 성공),
+  객체 배열 헤더 `Object() null`/요소 `Object() RobotArm`+멤버 동봉, 점 표기 멤버 식은
+  -729/-780 거부(부모 덤프 폴백으로 대응, §1-Y).
+
+### 변경 파일 (§1-W)
+
+- `src/providers/evaluatableExpressionProvider.ts`(신설), `src/extension.ts`(등록),
+  `src/language/cursorExpression.ts`(+4 순수 함수), `src/debug/gplDebugSession.ts`
+  (+`_queryVariableStructuredSmart`, hover/REPL 경로 전환), `src/test/cursorExpression.test.ts`(+7).
+
+## 1-X. 2026-07-22 세션 — Globals 패널 표시 지연 진단·개선
+
+### 증상/진단
+
+사용자: "글로벌 변수 표시가 왜 느리냐". 구조 분석 + 실측:
+
+- Globals 열거 = 프로젝트 .gpl 전부 read+parse(MergeCode 63파일 실측 ~290ms). 파서 메모이즈
+  LRU 상한 32 < 63파일이라 **매 요청 전량 캐시 미스**.
+- 전역 1개당 직렬 1402 왕복 **최소 1회, 최대 3회**(-eval → `Show Global Module.name` →
+  `Show Global name`). MergeCode 전역 42개 실측 → 정지마다 42~126회 직렬 왕복.
+  1402는 단일 명령 스트림이라 병렬화 불가, Show Thread 폴링·Locals 조회와 큐 경쟁.
+- **실기기 확인: `Show Global`은 인자 필수(-205)** — 전역 전체를 한 번에 받는 형식 없음
+  (`Show Global` / `Show Global , MergeCode` 모두 -205). 스레드 정지 여부와 무관.
+
+### 조치 (§1-X)
+
+- **A. 조회 방식 메모** `_globalQueryMemo`(세션 유지, 소스맵 재구축 시 리셋):
+  전역별로 성공한 방식('eval' / 'global'+이름 / 'none')을 기억 —
+  다음 정지부터 전역당 1회 왕복. 'global' 방식이 실패로 바뀌면 메모 삭제 후 다음 정지에서
+  전체 사다리 재시도. 'none'(전부 실패)은 폴백 생략(–eval 1회만 재시도).
+- **C. 열거 캐시** `_globalDescriptorsCache`(소스맵 세대당 1회 계산) +
+  `gplParser._parseCacheMax` 32→128(63파일×옵션 2종 커버).
+- `_readGlobalValue`를 `_readGlobalValueSingle`(1회 조회)로 분해해 메모 직행 경로에 사용.
+- 미적용(후속 옵션): 모듈별 그룹 노드로 지연 조회(B) — 42개가 더 늘어나면 검토.
+
+### 검증 (§1-X)
+
+- `npm test` 161/161, `npm run compile` 정상.
+- 실기기: VSIX 재설치 후 Globals 패널 첫 펼침(사다리 학습) 뒤 **두 번째 정지부터 체감 단축**
+  확인. 스크래치 스크립트 `countGlobals.js`(세션 스크래치패드)로 42개 산출.
+
+### 변경 파일 (§1-X)
+
+- `src/debug/gplDebugSession.ts`(_globalQueryMemo/_globalDescriptorsCache/_readGlobalValueSingle),
+  `src/gplParser.ts`(_parseCacheMax 128).
+
+## 1-Y. 2026-07-22 세션 — 실기기 추가 검증 반영: 객체 배열 분류 + 점 표기 멤버 폴백
+
+### 배경 (§1-Y)
+
+사용자 실기기 테스트 계속: ① `armList` 객체 배열 덤프 성공(§1-U 사실 7),
+② `readyLoc.extraZ2` 개별 조회 -729 발견(§1-U 사실 9 — 점 표기 멤버 식 미지원).
+
+### 조치 (§1-Y)
+
+- **객체 배열 분류 수정**: `classifyVarEntry(entry, hasMembers)` — `Object(…)` 꼴 타입은
+  멤버 동봉이면 요소 객체, 없으면 배열. (기존엔 `Object() null`이 object로 오분류 →
+  Variables에서 배열 펼침이 빈 트리가 될 뻔.) `arrayRank`는 첫 괄호 그룹 기준으로 변경,
+  배열 표시값에서 ` null` 제거. 호출부 5곳에 멤버 유무 전달.
+- **점 표기 멤버 폴백**: `_queryVariableStructuredSmart`에 ③단계 추가 — 점 표기 식 실패 시
+  부모 객체를 덤프(부모는 ①②로 해석 — `armList(i).m_armIndex`도 커버)해 멤버 줄에서 값
+  추출. 깊이 1 제한(중첩 객체 멤버는 덤프에도 값이 없음). hover/Watch/REPL 모두 적용.
+- 중첩 객체 expand 실패 시 `(값) (undefined)` 대신 "중첩 멤버 개별 조회 미지원" 안내 행.
+- -729 안내 문구를 점 표기 케이스 포함으로 갱신.
+- **프로퍼티 이름 hover 차단**(후속, 같은 날): `cmd.ints(0)`의 `ints` 위 hover가 단어 평가로
+  폴백돼 엉뚱한 -729 팝업이 뜨던 것 → provider의 차단 대상에 `Property` 추가(사용자 스크린샷
+  제보). 인자 있는 프로퍼티 값은 원천 조회 불가(백킹 배열도 덤프 제외) — `cmd` 덤프의
+  `m_rawArg`로 확인하는 것이 유일한 우회. `cmd.ints`(인자 누락) → -205도 실측 기록.
+- **null 참조 무한 트리 수정**(후속, 같은 날, 사용자 스크린샷 제보): `Dim armList(1)`처럼
+  일부만 채운 객체 배열에서 빈 요소가 `armList(1), Object() null`(null 참조)로 오는데,
+  "Object(…)+멤버 없음=배열" 규칙이 이를 배열로 오분류 → **제어기가 null 인덱싱
+  (`armList(1)(0)`)도 null 성공으로 응답**해 가짜 30요소 null 배열이 무한 재귀했다.
+  → `classifyVarEntry`: 이름에 인덱스/점이 있는 응답의 `Object(…) null`은 simple(값 `null`
+  표시), 클래스명이 있으면 object(재조회로 덤프 확보). 배열 헤더(맨몸 이름)만 array 유지.
+  Variables/hover/REPL에 null 값 표시 추가. 테스트 165/165(+1).
+
+### 검증 (§1-Y)
+
+- `npm test` 164/164(실기기 캡처 픽스처 3건 추가: `Object() null`/`Object() RobotArm`/rank).
+- 실기기(VSIX 재설치 후): Variables에서 `armList` 펼침 → `(0)` 요소 → 필드 31개 트리,
+  Watch에 `readyLoc.extraZ2` 입력 → 부모 덤프 폴백으로 값 표시(디버그 로그 "부모 덤프 폴백" 확인).
+- ~~여전히 미확정: 변수 인덱스 직접 평가~~ → **확정: 네이티브 지원**(같은 날 실기기,
+  §1-U 사실 9). 치환 로직(②)은 폴백으로만 동작.
+
+### 변경 파일 (§1-Y)
+
+- `src/debug/showVariableParser.ts`(classifyVarEntry hasMembers/arrayRank),
+  `src/debug/gplDebugSession.ts`(Smart ③ 부모 덤프 폴백, expand 안내, 호출부 멤버 유무 전달),
+  `src/test/showVariableParser.test.ts`(+3).
 
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 

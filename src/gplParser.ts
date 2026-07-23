@@ -54,7 +54,9 @@ export class GPLParser {
     // 같은 내용/옵션이면 재파싱하지 않고 캐시 결과를 돌려준다.
     // hover/definition 등 핫패스에서 한 요청당 동일 문서를 여러 번 파싱하던
     // 비용(라인별 정규식 전체 재실행)을 제거한다.
-    private static readonly _parseCacheMax = 32;
+    // 128인 이유: 실사용 프로젝트(MergeCode 63파일)가 32를 넘겨 디버그 Globals 열거 시
+    // 매번 캐시가 전량 밀려나 풀 재파싱이 반복됐다. 파일 수 × 옵션 조합(2종)을 여유 있게 커버.
+    private static readonly _parseCacheMax = 128;
     private static readonly _parseCache = new Map<string, { content: string; symbols: GPLSymbol[] }>();
 
     static parseDocument(content: string, filePath: string, options?: GPLParseOptions): GPLSymbol[] {

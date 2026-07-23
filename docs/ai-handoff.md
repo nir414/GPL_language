@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-07-23 (§1-Z: 0.8.0 릴리즈 메타데이터 정리·검증·패키징; 직전 §1-Y: 객체 배열 분류 + 점 표기 멤버 부모 덤프 폴백)
+- 최종 갱신: 2026-07-23 (§1-AA: 버전/커밋/태그/릴리즈 운영 문서 정리; 직전 §1-Z: 0.8.0 릴리즈 메타데이터 정리·검증·패키징)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 현재 package 버전: **0.8.0** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package:no-bump` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -1189,6 +1189,33 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 ### 릴리즈 후속 작업
 
 - [ ] 원격 push 및 GitHub Release/Actions 결과 확인.
+
+## 1-AA. 2026-07-23 세션 — 버전/커밋/태그/릴리즈 운영 문서 정리
+
+### 문서화 배경
+
+기존 `docs/releases/quick-guide.md`와 `docs/releases/process.md`에 현재 스크립트 구현과 어긋나는 내용이 있었다.
+특히 `npm run package`가 항상 patch bump를 수행한다는 점, `minor/major` 릴리즈에서 `package:no-bump`를
+써야 한다는 점, `pre-release-check`가 clean working tree를 요구한다는 점이 충분히 드러나지 않았다.
+
+### 문서화 조치
+
+- `docs/releases/quick-guide.md`를 현행 기준으로 다시 작성.
+  - 로컬 테스트용 VSIX / 공식 patch 릴리즈 / 공식 minor·major 릴리즈 / 프리릴리즈를 분리해 설명.
+  - `npm run package` vs `npm run package:no-bump` 차이를 첫머리에 명시.
+- `docs/releases/process.md`를 전면 갱신.
+  - 기준 파일(`package.json`, `CHANGELOG.md`, `README.md`, `docs/ai-handoff.md`) 정의.
+  - 표준 릴리즈 절차, GitHub Release 생성 흐름, 자주 하는 실수, 태그 복구 절차 추가.
+  - 공식 릴리즈는 버전을 먼저 고정하고 `package:no-bump`로 패키징하는 흐름을 권장하도록 정리.
+
+### 문서화 검증
+
+- 실제 0.8.0 릴리즈 경험(버전 고정 → 커밋 → `pre-release-check` → `package:no-bump` → tag push)을 기준으로 서술을 맞춤.
+- `Quick Release Guide` 링크를 `process.md` 기준으로 정합화.
+
+### 문서화 후속 작업
+
+- [ ] 다음 patch 릴리즈 때 문서 절차대로 다시 한 번 실제 검증해 drift 없는지 확인.
 
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 

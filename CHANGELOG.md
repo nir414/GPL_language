@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-23
+
 ### Added
 
 - **문자열 속 프로시저 참조 정의 찾기**: `New Thread("DataFile.SaveReservationThreadFunction",,"...")`처럼 GPL이 프로시저를 문자열로 참조하는 관용구에서 F12가 동작합니다. 문자열 전체가 식별자 형태(`Name`/`Class.Proc`)이고 Sub/Function(또는 앞 조각의 클래스/모듈)으로 해석될 때만 이동하므로, 일반 문장/경로 문자열에서 엉뚱한 곳으로 점프하지 않습니다.

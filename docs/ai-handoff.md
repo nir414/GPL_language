@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-07-22 (§1-Y: 객체 배열 분류 + 점 표기 멤버 부모 덤프 폴백; 같은 날 §1-X Globals 지연, §1-W hover 인덱스 식, §1-V 엉뚱한 폴더, §1-U Show Variable 실기기 검증, §1-T)
+- 최종 갱신: 2026-07-23 (§1-Z: 0.8.0 릴리즈 메타데이터 정리·검증·패키징; 직전 §1-Y: 객체 배열 분류 + 점 표기 멤버 부모 덤프 폴백)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.7.7** (미커밋 변경분 있음 — 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile` 최종 검증 권장)
+- 현재 package 버전: **0.8.0** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package:no-bump` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -192,12 +192,12 @@ F10 스텝 한 번의 체감 지연이 ~600-750ms. 분해하면:
 
 ## 1-E. 2026-07-03 세션(후속2) — 디버그 변수 확인 UX: 클릭 즉시 표시
 
-### 배경
+### 릴리즈 배경
 
 호버로 변수 값을 보려면 `editor.hover.delay`(기본 300ms) + 마우스 완전 정지 대기 + 평가 왕복이
 겹쳐 체감이 느리다. 사용자 요청: 호버 판정 개선이 어렵다면 "클릭하면 바로 표시"로 대체.
 
-### 조치
+### 릴리즈 조치
 
 - `src/extension.ts` (activateDebug 직후): 디버그 세션 중 **마우스 클릭**으로 커서가 GPL 식별자
   위에 놓이면 내장 명령 `editor.debug.action.showDebugHover`를 즉시 호출 — 호버 대기 없이 값 표시.
@@ -1165,6 +1165,30 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 - `src/debug/showVariableParser.ts`(classifyVarEntry hasMembers/arrayRank),
   `src/debug/gplDebugSession.ts`(Smart ③ 부모 덤프 폴백, expand 안내, 호출부 멤버 유무 전달),
   `src/test/showVariableParser.test.ts`(+3).
+
+## 1-Z. 2026-07-23 세션 — 0.8.0 릴리즈 메타데이터 정리 + 검증/패키징
+
+### 배경
+
+사용자 요청으로 `0.7.12` 개발 버전을 `0.8.0` 릴리즈로 승격. 현재 저장소는 `npm run package`가
+항상 patch bump를 수행하므로, minor 릴리즈는 **버전을 먼저 고정한 뒤** `package:no-bump`로 패키징해야 함.
+
+### 조치
+
+- `package.json` 버전을 `0.8.0`으로 상향.
+- `CHANGELOG.md`의 `Unreleased` 항목을 `## [0.8.0] - 2026-07-23` 릴리즈 섹션으로 승격.
+- `README.md` 상단 현재 버전과 주요 변경 이력의 현재 섹션을 `0.8.0` 기준으로 정리.
+- 이 인계 문서 헤더의 최종 갱신/현재 package 버전을 릴리즈 상태와 일치하도록 갱신.
+
+### 릴리즈 검증 절차
+
+- 로컬 검증 순서: `npm run compile` → `npm run pre-release-check` → `npm run package:no-bump`
+- 패키징 성공 시 `dist/gpl-language-support-0.8.0.vsix` 산출.
+- 이후 git commit + `v0.8.0` 태그 생성.
+
+### 릴리즈 후속 작업
+
+- [ ] 원격 push 및 GitHub Release/Actions 결과 확인.
 
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 

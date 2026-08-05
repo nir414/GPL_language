@@ -4,7 +4,7 @@
 GPL (Guidance Programming Language) 지원 VS Code 확장.
 IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·배포·디버깅**까지 통합 제공합니다.
 
-> GPL은 [Brooks Automation](https://www.brooksautomation.com/) PreciseFlex 로봇 제어기용 VB.NET 유사 언어입니다.
+> GPL은 [Brooks Automation](https://www2.brooksautomation.com/) PreciseFlex 로봇 제어기용 VB.NET 유사 언어입니다.
 
 ## 빠른 시작 (5분)
 

@@ -1,6 +1,6 @@
 # GPL Language Support
 
-현재 버전: **v0.8.3**
+현재 버전: **v0.8.8**
 GPL (Guidance Programming Language) 지원 VS Code 확장.
 IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·배포·디버깅**까지 통합 제공합니다.
 
@@ -460,7 +460,13 @@ npm run dev:watch     # watch alias (디버그 시작 전에 실행)
 
 ### 주요 변경 이력
 
-#### v0.8.3 (현재)
+#### v0.8.8 (현재)
+
+- **`GPL: Start` / `GPL: Save to Flash` 명령 추가**: Deploy와 Start를 분리 운용, flash 영구 저장은 별도 명령으로 담당
+- **Deploy 기본 업로드가 `/GPL/<projectName>` 직접 업로드로 변경**, `Deploy & Run` 버튼 제거
+- **심볼 조회 성능 개선**: 정의 이동·자동완성·참조 조회가 이름 기준 인덱스 캐시 사용
+
+#### v0.8.3
 
 - **AI 자율 디버깅 API 추가**: Break/Step/Continue/변수평가/상태수집/루프 명령(`gpl.ai.debug.*`) 제공
 - `gpl.ai.debug.loop`로 AI가 조건 기반으로 스텝 진행 및 변수 감시를 반복 수행 가능

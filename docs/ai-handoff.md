@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-07-31 (§1-AL: 트리 "현재 실행 위치 보기"가 .history stale 사본을 열던 버그 수정 — extension.ts resolveGplFilePath를 디버그 어댑터와 같은 규칙(dot 폴더 제외 + pickSourceCandidate)으로 통일, tsc·166/166 통과; 직전 §1-AK: 트리↔디버그 패널 쓰레드 병합 — 실기기 확인 3건 대기)
+- 최종 갱신: 2026-08-05 (v0.8.8 공식 릴리즈 — CHANGELOG [Unreleased]를 [0.8.8]로 확정, README 버전 표기 갱신, v0.8.8 태그 push로 CI 자동 릴리즈. 직전 §1-AL: 트리 "현재 실행 위치 보기" .history stale 사본 버그 수정)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.5** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
+- 현재 package 버전: **0.8.8** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 

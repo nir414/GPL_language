@@ -15,6 +15,7 @@ import './indentationRules.test';
 import './projectSelection.test';
 import './overloadResolution.test';
 import './showVariableParser.test';
+import './symbolCache.test';
 import { run } from './harness';
 
 void run();

@@ -201,8 +201,13 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         return undefined;
     }
 
+    /** 로그 표시용 파일명(경로의 마지막 요소). 인덱스 경로가 Windows 구분자 기준이라 '\\'만 사용. */
+    private fileNameOf(filePath: string): string {
+        return filePath.split('\\').pop() || filePath;
+    }
+
     private formatCandidate(symbol: GPLSymbol): string {
-        const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;
+        const fileName = this.fileNameOf(symbol.filePath);
         const paramCount = symbol.parameters ? symbol.parameters.length : 0;
         return `${symbol.name} [${symbol.kind}] params=${paramCount} file=${fileName} line=${symbol.line + 1} class=${symbol.className || 'N/A'} module=${symbol.module || 'N/A'}`;
     }
@@ -412,14 +417,11 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
             const ctorSymbol = this.symbolCache.findConstructorInClass(constructorClassName, constructorArgCount, document.uri.fsPath);
             if (ctorSymbol) {
-                const fileName = ctorSymbol.filePath.split('\\').pop() || ctorSymbol.filePath;
+                const fileName = this.fileNameOf(ctorSymbol.filePath);
                 this.log(`[Constructor Found] New in class ${constructorClassName}`);
                 this.log(`[Location] File: ${fileName} | Line: ${ctorSymbol.line + 1} | ClassName: ${ctorSymbol.className || 'N/A'}`);
 
-                const uri = vscode.Uri.file(ctorSymbol.filePath);
-                const definitionPosition = new vscode.Position(ctorSymbol.line, 0);
-                const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
-                return new vscode.Location(uri, definitionRange);
+                return this.buildLocation(ctorSymbol);
             }
 
             // As a fallback, parse the current document on demand.
@@ -444,7 +446,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                     const classSymbols = GPLParser.parseDocument(classDoc.getText(), classDef.filePath);
                     const fileCtor = classSymbols.find(s => s.name === 'New' && s.className === constructorClassName);
                     if (fileCtor) {
-                        const fileName = fileCtor.filePath.split('\\').pop() || fileCtor.filePath;
+                        const fileName = this.fileNameOf(fileCtor.filePath);
                         this.log(`[Constructor Found - ClassFile] New in class ${constructorClassName} @line ${fileCtor.line + 1}`);
                         const definitionPosition = new vscode.Position(fileCtor.line, Math.max(0, fileCtor.range?.start ?? 0));
                         const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
@@ -508,7 +510,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
                         if (memberMatches.length > 0) {
                             const memberSymbol = memberMatches[0];
-                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            const fileName = this.fileNameOf(memberSymbol.filePath);
                             this.log(`[Member Found] ${memberName} in module ${objectSymbol.name}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1}`);
@@ -526,7 +528,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                         const memberMatches = this.symbolCache.findMemberInClassMatches(memberName, objectSymbol.name, document.uri.fsPath, callCtx);
                         if (memberMatches.length > 0) {
                             const memberSymbol = memberMatches[0];
-                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            const fileName = this.fileNameOf(memberSymbol.filePath);
                             this.log(`[Member Found] ${memberName} in class ${objectSymbol.name}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
@@ -550,7 +552,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
                         if (memberMatches.length > 0) {
                             const memberSymbol = memberMatches[0];
-                            const fileName = memberSymbol.filePath.split('\\').pop() || memberSymbol.filePath;
+                            const fileName = this.fileNameOf(memberSymbol.filePath);
                             this.log(`[Member Found] ${memberName} in class ${resolvedType}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
@@ -616,7 +618,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             return this.buildLocation(local);
         }
 
-        const fileName = symbol.filePath.split('\\').pop() || symbol.filePath;
+        const fileName = this.fileNameOf(symbol.filePath);
         this.log(`[Symbol Found] ${symbol.name} | File: ${fileName} | Line: ${symbol.line + 1} | ClassName: ${symbol.className || 'N/A'}`);
         return this.buildDefinitionResult(matches);
     }

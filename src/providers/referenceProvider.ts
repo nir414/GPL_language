@@ -396,6 +396,32 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // backtracking(ReDoS) 위험이 구조적으로 사라진다. 헬퍼들이 기대하는 절대 오프셋은
         // doc.offsetAt(...)으로 그대로 복원한다.
         const MAX_SCAN_LINE_LENGTH = 5000; // 비정상적으로 긴(생성·압축) 라인은 스캔에서 제외
+        const MAX_SEARCH_RESULTS = 5000; // 워크스페이스 텍스트 검색 결과 상한
+        const MAX_FOLDER_FALLBACK_FILES = 200; // 폴더 폴백에서 스캔할 최대 파일 수
+
+        const shouldSkipAsDeclaration = (uri: vscode.Uri, range: vscode.Range, doc: vscode.TextDocument): boolean => {
+            if (context.includeDeclaration) {
+                return false;
+            }
+            if (!defSymbol) {
+                return false;
+            }
+            if (uri.fsPath !== defSymbol.filePath) {
+                return false;
+            }
+            if (range.start.line !== defSymbol.line) {
+                return false;
+            }
+
+            // Best-effort: skip the first occurrence of the word on the defining line.
+            const lineText = doc.lineAt(defSymbol.line).text;
+            const firstIdx = lineText.toLowerCase().indexOf(word.toLowerCase());
+            if (firstIdx < 0) {
+                return false;
+            }
+            return range.start.character === firstIdx;
+        };
+
         const scanDocumentText = (doc: vscode.TextDocument, re: RegExp, opts: { unqualifiedOnly?: boolean }): number => {
             const text = doc.getText();
             let added = 0;
@@ -458,29 +484,6 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 }
             }
             return added;
-        };
-
-        const shouldSkipAsDeclaration = (uri: vscode.Uri, range: vscode.Range, doc: vscode.TextDocument): boolean => {
-            if (context.includeDeclaration) {
-                return false;
-            }
-            if (!defSymbol) {
-                return false;
-            }
-            if (uri.fsPath !== defSymbol.filePath) {
-                return false;
-            }
-            if (range.start.line !== defSymbol.line) {
-                return false;
-            }
-
-            // Best-effort: skip the first occurrence of the word on the defining line.
-            const lineText = doc.lineAt(defSymbol.line).text;
-            const firstIdx = lineText.toLowerCase().indexOf(word.toLowerCase());
-            if (firstIdx < 0) {
-                return false;
-            }
-            return range.start.character === firstIdx;
         };
 
         // Always scan the current document directly (covers files outside the workspace).
@@ -601,7 +604,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     { pattern, isRegExp: true, isCaseSensitive: false },
                     token,
                     (r) => enqueue(handleMatch(r, opts)),
-                    { maxResults: 5000 }
+                    { maxResults: MAX_SEARCH_RESULTS }
                 );
                 return ok;
             };
@@ -672,10 +675,10 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                         // Skip .gpo — binary compiled files, useless for text search
                         return lower.endsWith('.gpl');
                     })
-                    .slice(0, 200)
+                    .slice(0, MAX_FOLDER_FALLBACK_FILES)
                     .map(([name]) => vscode.Uri.file(path.join(dirFsPath, name)));
 
-                this.log(`[References] Workspace scan=0; running folder fallback in: ${dirFsPath} (files=${gplFiles.length})`);
+                this.log(`[References] No external references yet; running folder fallback in: ${dirFsPath} (files=${gplFiles.length})`);
 
                 for (const uri of gplFiles) {
                     if (token.isCancellationRequested) {
@@ -739,12 +742,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 for (const usage of ref.usages) {
                     const p = new vscode.Position(usage.line, usage.character);
                     const range = new vscode.Range(p, new vscode.Position(usage.line, usage.character + word.length));
-                    const key = `${uri.toString()}:${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
-                    if (seen.has(key)) {
-                        continue;
-                    }
-                    seen.add(key);
-                    locations.push(new vscode.Location(uri, range));
+                    addLocation(uri, range);
                 }
             }
         }

@@ -1,6 +1,6 @@
 # GPL Language Support
 
-현재 버전: **v0.8.0**
+현재 버전: **v0.8.3**
 GPL (Guidance Programming Language) 지원 VS Code 확장.
 IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·배포·디버깅**까지 통합 제공합니다.
 
@@ -156,6 +156,7 @@ Activity Bar의 **GPL Controller** 아이콘으로 접근:
 | `GPL: Copy Situation for Chat` | 현재 상태를 Markdown으로 클립보드에 복사 (AI 공유용, 최근 배포 결과/실패 단계/에러 코드 포함) |
 | `GPL: Start Live Log Terminal` | 실시간 로그 터미널 시작 + 1403 출력 이벤트 연결 시도 |
 | `GPL: Stop Live Log Terminal` | 실시간 로그 터미널 중지 + 1403 출력 이벤트 소비자 정리 |
+| `GPL: AI Debug Assist` | AI 디버깅 실행 순서(연결→스냅샷→Build Only→(옵션)콘솔/Attach)를 한 번에 수행 |
 
 ### AI/Agent 디버깅 진입점
 
@@ -168,6 +169,7 @@ AI 에이전트가 제어기 디버깅을 보조할 때는 확장 명령과 DAP 
 | 트래픽 확인 | `GPL: Show Traffic Monitor` | `gpl.controller.showTraffic` |
 | 연결 | `GPL: Connect to Controller` | `gpl.controller.connect` |
 | Build Only 검증 | `GPL: Deploy (Build Only)` | `gpl.deploy` |
+| AI 오케스트레이션 | `GPL: AI Debug Assist` | `gpl.ai.debugAssist` |
 | Attach 구성 생성 | `GPL: Create/Update Debug launch.json` | `gpl.debug.generateLaunch` |
 | 빠른 Attach | `GPL: Quick Debug Attach (No launch.json)` | `gpl.debug.attachNow` |
 | 런타임 콘솔 | `GPL: Start Runtime Console` | `gpl.console.start` |
@@ -182,6 +184,42 @@ AI 에이전트가 제어기 디버깅을 보조할 때는 확장 명령과 DAP 
 3. 성공 후 `GPL: Start Runtime Console` 또는 `GPL: Start Live Log Terminal`로 1403 출력을 봅니다.
 4. `.gpl` 파일에 breakpoint를 설정하고 `brooks-gpl` Attach 디버깅을 시작합니다.
 5. 실패 시 Debug Console의 `[GPL Debug] [deploy]` 블록, `GPL Deploy (Debug)` Output, `GPL Console`을 함께 확인합니다.
+
+### AI Debug Assist
+
+`GPL: AI Debug Assist`는 AI/사용자가 **안전한 기본 순서**를 실수 없이 실행할 수 있도록 만든 오케스트레이션 명령입니다.
+
+- 모드:
+  - `진단만`: 연결 + 상태 스냅샷
+  - `Build Only + 진단`: 최신 로컬 코드 업로드/컴파일 검증 + 진단
+  - `Build Only + 콘솔`: Build 성공 후 1403 콘솔 확인
+  - `Build Only + Attach`: Build 성공 후 빠른 Attach
+- 실행 결과 요약은 Output 채널(`GPL Language Support`)의 `[AI Debug Assist]` 섹션에 구조화해 남깁니다.
+- 제어기 조작은 기존 확장 명령을 그대로 호출하므로, 기존 게이트/규칙(직렬 명령, STATUS 판정)을 유지합니다.
+
+### AI 자율 디버깅 API (Break/Step/변수 확인 루프)
+
+AI가 "한 줄씩 진행하며 변수 상태를 확인"하는 자동 루프를 돌릴 수 있도록 다음 명령을 제공합니다.
+
+| 목적 | Command ID | 인자 예시 |
+| --- | --- | --- |
+| 상태 수집(스레드/스택/BP) | `gpl.ai.debug.getState` | `{ includeStackForThread: "MainThread" }` |
+| BP 설정 | `gpl.ai.debug.setBreakpoint` | `{ file: "ProtocolModule.gpl", line: 479, projectName: "MergeCode" }` |
+| BP 해제 | `gpl.ai.debug.clearBreakpoint` | `{ file: "ProtocolModule.gpl", line: 479, projectName: "MergeCode" }` |
+| 스레드 중단 | `gpl.ai.debug.breakThread` | `{ threadName: "MainThread", waitForPause: true, waitTimeoutMs: 5000 }` |
+| 스텝 실행 | `gpl.ai.debug.stepThread` | `{ threadName: "MainThread", mode: "over", waitForPause: true, waitTimeoutMs: 5000 }` |
+| 계속 실행 | `gpl.ai.debug.continueThread` | `{ threadName: "MainThread", noError: false }` |
+| 변수/식 평가 | `gpl.ai.debug.evaluate` | `{ threadName: "MainThread", frameIndex: 0, expression: "robotIndex" }` |
+| 반복 디버그 루프 | `gpl.ai.debug.loop` | `{ threadName: "MainThread", stepMode: "over", maxSteps: 10, stepWaitTimeoutMs: 5000, watchExpressions: ["robotIndex"], stopWhen: { expression: "robotIndex", equals: "5" } }` |
+
+`gpl.ai.debug.loop`는 매 스텝마다 스택 top 위치와 watch 식 값을 수집하고, 조건이 맞으면 자동 중단합니다.
+
+공통 규약 (v0.8.4~):
+
+- 모든 `gpl.ai.debug.*` 명령은 예외를 던지지 않고 항상 `{ ok, ... }` 객체를 반환합니다. 통신 오류 등은 `{ ok: false, error: "command-failed", detail }`로 돌아옵니다.
+- 각 명령의 결과 JSON은 Output 채널(`GPL Language Support`)에 `[AI Debug] <commandId> => {...}` 형식으로도 기록되므로, `executeCommand` 반환값을 직접 받지 못하는 호출자도 Output에서 결과를 확인할 수 있습니다.
+- `breakThread`/`stepThread`는 기본(`waitForPause: true`)으로 STATUS 0(접수) 이후 스레드가 실제로 Paused/Break/Error 상태에 들어올 때까지 폴링한 뒤 `ok`를 판정합니다. 시간 내 정지하지 않으면 `{ ok: false, error: "pause-timeout", state }`. 종전처럼 접수만 확인하려면 `waitForPause: false`.
+- `loop`는 스텝마다 정지 복귀를 확인하고(`stepWaitTimeoutMs`, 기본 5000ms), 루프 도중 스레드가 Error 상태로 전이하면 `stoppedBy: "thread-error"`로 중단해 `lastStatus`를 돌려줍니다. `stopWhen` 평가 결과(값/STATUS/매칭 여부)는 실패해도 trace에 기록되며, 잘못된 `stopWhen.matches` 정규식은 루프 진입 전에 `invalid-stopWhen-matches`로 거부됩니다.
 
 자세한 절차는 [`docs/development/ai-controller-debugging-runbook.md`](docs/development/ai-controller-debugging-runbook.md)를 참고하세요.
 
@@ -275,6 +313,7 @@ AI 에이전트가 제어기 디버깅을 보조할 때는 확장 명령과 DAP 
 | `Console.Write`/`Console.WriteLine` | Brooks GPL Dictionary | 실행 컨텍스트에 따라 `/dev/com1`, GDE output window, TELNET 등으로 destination이 달라질 수 있음 |
 
 참고 문서:
+
 - Brooks FAQ: `Controller_Software/FAQ/Setup_Upgrading/ethernet_ports.htm`
 - Brooks PDB: `Controller_Software/Software_Reference/PDB/Controller_Settings/debug_and_trace.htm`
 - Brooks serial communications: `Controller_Software/Introduction_To_The_Software/Communications/com_serial.htm`
@@ -421,7 +460,17 @@ npm run dev:watch     # watch alias (디버그 시작 전에 실행)
 
 ### 주요 변경 이력
 
-#### v0.8.0 (현재)
+#### v0.8.3 (현재)
+
+- **AI 자율 디버깅 API 추가**: Break/Step/Continue/변수평가/상태수집/루프 명령(`gpl.ai.debug.*`) 제공
+- `gpl.ai.debug.loop`로 AI가 조건 기반으로 스텝 진행 및 변수 감시를 반복 수행 가능
+
+#### v0.8.1
+
+- **AI Debug Assist 명령 추가**: 연결/스냅샷/Build Only/콘솔/Attach를 모드별로 일괄 실행
+- AI가 터미널 우회 없이 확장 명령 경로만 사용해 디버깅 루프를 수행할 수 있도록 오케스트레이션 진입점 제공
+
+#### v0.8.0
 
 - **문자열 속 프로시저 참조 정의 찾기**: `New Thread("Class.Proc",, ...)` 형태의 문자열 참조에서도 F12가 동작
 - **멤버 변수 파싱 보강**: `Shared Public Dim ...` 수식어 순서도 올바르게 인덱싱되어 정의 찾기/호버 정확도 개선

@@ -56,6 +56,11 @@ export interface HoverConfig {
     duringDebug: HoverDuringDebugMode;
 }
 
+// getHoverConfig 기본값 — get() 폴백과 정규화 폴백에 동일하게 사용
+const HOVER_DOC_COMMENT_DEFAULT: HoverDocCommentMode = 'summary';
+const HOVER_DOC_COMMENT_MAX_LINES_DEFAULT = 6;
+const HOVER_DURING_DEBUG_DEFAULT: HoverDuringDebugMode = 'compact';
+
 /**
  * 호버 표시량 설정 (package.json: gpl.hover.*).
  * 잘못된 값은 기본값으로 정규화해 provider 쪽에서 방어 코드가 필요 없게 한다.
@@ -63,21 +68,22 @@ export interface HoverConfig {
 export function getHoverConfig(workspace: WorkspaceConfigHost): HoverConfig {
     const cfg = workspace.getConfiguration('gpl');
 
+    // 명시적 false만 비활성으로 취급 (비-boolean 설정값은 기본 활성).
     const enabled = cfg.get<boolean>('hover.enabled', true) !== false;
 
-    const docRaw = cfg.get<string>('hover.docComment', 'summary');
+    const docRaw = cfg.get<string>('hover.docComment', HOVER_DOC_COMMENT_DEFAULT);
     const docComment: HoverDocCommentMode =
-        docRaw === 'full' || docRaw === 'off' ? docRaw : 'summary';
+        docRaw === 'full' || docRaw === 'off' ? docRaw : HOVER_DOC_COMMENT_DEFAULT;
 
-    const maxRaw = cfg.get<number>('hover.docCommentMaxLines', 6);
+    const maxRaw = cfg.get<number>('hover.docCommentMaxLines', HOVER_DOC_COMMENT_MAX_LINES_DEFAULT);
     const docCommentMaxLines =
         typeof maxRaw === 'number' && Number.isFinite(maxRaw) && maxRaw >= 0
             ? Math.floor(maxRaw)
-            : 6;
+            : HOVER_DOC_COMMENT_MAX_LINES_DEFAULT;
 
-    const dbgRaw = cfg.get<string>('hover.duringDebug', 'compact');
+    const dbgRaw = cfg.get<string>('hover.duringDebug', HOVER_DURING_DEBUG_DEFAULT);
     const duringDebug: HoverDuringDebugMode =
-        dbgRaw === 'off' || dbgRaw === 'normal' ? dbgRaw : 'compact';
+        dbgRaw === 'off' || dbgRaw === 'normal' ? dbgRaw : HOVER_DURING_DEBUG_DEFAULT;
 
     return { enabled, docComment, docCommentMaxLines, duringDebug };
 }
@@ -182,7 +188,7 @@ export function isInCommentOrString(lineText: string, character: number): boolea
 }
 
 /**
- * 심볼이 될 수 없는 GPL(VB계열) 제어 키워드.
+ * 심볼 해석 대상이 될 수 없는 GPL(VB계열) 예약어 — 제어문/선언 키워드/연산자/리터럴 포함.
  * 정의 요청에서 조기 반환해 멤버 해석/캐시 미스/텍스트 스캔 낭비를 없앤다.
  * 주의: `New`(생성자 점프), `Me`/`MyBase`, 타입명(String 등)은 의도적으로 제외.
  */

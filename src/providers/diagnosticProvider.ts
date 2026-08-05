@@ -361,6 +361,9 @@ export class GPLDiagnosticProvider {
 
     /**
      * VB.NET 호환성 이슈 검사
+     *
+     * 참고: Optional 파라미터 진단(optional-parameter)은 삭제됨 — 오버로드 해석 모듈이
+     * Optional/ParamArray를 지원 사양으로 다루므로 "GPL 미지원" 오류 표시는 모순이었다.
      */
     private detectVBCompatibilityIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
         const diagnostics: vscode.Diagnostic[] = [];
@@ -380,8 +383,6 @@ export class GPLDiagnosticProvider {
 
             // 인라인 주석·문자열 리터럴을 제거한 코드만 검사
             const codePart = this.stripCommentsAndStrings(line);
-            
-            // Optional 파라미터 진단(optional-parameter)은 삭제 — 오버로드 해석 모듈이 Optional/ParamArray를 지원 사양으로 다루므로 "GPL 미지원" 오류 표시는 모순이었다.
 
             // On Error GoTo 검사
             if (onErrorPattern.test(codePart)) {

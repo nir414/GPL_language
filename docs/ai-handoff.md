@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-07-23 (§1-AB: 1403 수신 비정상 상태 문서 명시 + 릴리즈 문서 표현 정리; 직전 §1-AA: 버전/커밋/태그/릴리즈 운영 문서 정리)
+- 최종 갱신: 2026-07-31 (§1-AL: 트리 "현재 실행 위치 보기"가 .history stale 사본을 열던 버그 수정 — extension.ts resolveGplFilePath를 디버그 어댑터와 같은 규칙(dot 폴더 제외 + pickSourceCandidate)으로 통일, tsc·166/166 통과; 직전 §1-AK: 트리↔디버그 패널 쓰레드 병합 — 실기기 확인 3건 대기)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.0** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package:no-bump` 검증 권장)
+- 현재 package 버전: **0.8.5** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -310,8 +310,9 @@ Quick Compile 도중 제어기(192.168.0.1)가 완전 무응답이 됨. 로그 �
 
 - [ ] `/GPL` 로드본의 **재부팅 후 영속성** 확인(RAM 기반 의심). 날아간다면 direct 모드 후에는
   flash 사본이 구버전으로 남으므로, 주기적 전체 배포 또는 종료 전 flash 동기화 안내 필요.
-- [ ] `/GPL` 직접 쓰기와 `/flash/projects` 사본의 **이원화 관리 원칙** 문서화: Quick Compile은
-  /GPL만 갱신, 정식 배포(Build/Deploy & Run)가 flash 반영 담당.
+- [x] `/GPL` 직접 쓰기와 `/flash/projects` 사본의 **이원화 관리 원칙** — 2026-07-24 §1-AF에서
+  확정·구현: 모든 배포(Deploy/Quick Compile/F5)는 /GPL 직접, flash 반영은 `GPL: Save to Flash` 전담.
+  (당초 "정식 배포가 flash 담당" 구상은 폐기 — Deploy는 더 이상 flash를 건드리지 않음.)
 - [ ] "Stop 미완료 상태에서 Compile/Start → 메모리 누수 의심" 실기기 재현/관찰 (Show Memory로
   전후 비교 권장). 재현되면 Brooks 문의 고려.
 - [ ] `Load -compile` 옵션 활용 검토(클래식 경로의 Load+Compile 왕복 1회 축소 여지).
@@ -1240,6 +1241,305 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 
 - 1403 근본 원인 조사는 보류(사용자 결정). 재개할 경우 기존 완화 이력(§1-D, §1-L, CHANGELOG 0.6.x~0.7.x)부터 검토.
 
+## 1-AC. 2026-07-24 세션 — AI Debug Assist 오케스트레이션 명령 추가
+
+### 배경
+
+사용자 목표: "GPL 확장만으로 AI가 PA 제어기 디버깅 루프를 직접 수행".
+기존에도 `Connect/Deploy/Snapshot/Attach` 명령은 있었지만, AI가 안정적으로 같은 순서를 반복 실행할
+단일 진입점이 없어서 수동 체인 호출에 의존했다.
+
+### 조치
+
+- `src/extension.ts`
+  - 신규 명령 `gpl.ai.debugAssist` 추가.
+  - 모드 선택형 오케스트레이션:
+    - `진단만 (연결 + 스냅샷)`
+    - `Build Only + 진단`
+    - `Build Only + 콘솔`
+    - `Build Only + Attach`
+  - 내부 실행 순서(확장 명령만 사용):
+    1) 연결 확인(`gpl.controller.connect`)
+    2) 초기 상황 스냅샷(`gpl.controller.copySituationForChat`)
+    3) 모드별 Build Only(`gpl.deploy`)
+    4) 옵션: 콘솔(`gpl.console.start`) 또는 Attach(`gpl.debug.attachNow`)
+    5) 최종 진단 스냅샷(`gpl.diagnosticSnapshot`)
+  - 실행 결과를 `[AI Debug Assist]` 섹션으로 Output(`GPL Language Support`)에 구조화 기록.
+- `package.json`
+  - activationEvents에 `onCommand:gpl.ai.debugAssist` 추가.
+  - commands에 `GPL: AI Debug Assist` 노출.
+  - `view/title` 메뉴(연결 상태)에도 액션 추가.
+- `README.md`
+  - 명령 표/AI 진입점 섹션에 `GPL: AI Debug Assist` 문서화.
+  - 버전 표기 `v0.8.1` 반영.
+- `docs/development/ai-controller-debugging-runbook.md`
+  - AI 오케스트레이션 빠른 경로와 명령 ID 반영.
+
+### 검증/주의
+
+- 본 명령은 기존 상태 변경 게이트/직렬 명령 규칙 위에서 동작한다(직접 TCP/FTP 우회 없음).
+- 런북 파일 끝 공백 관련 markdown lint(`MD012`) 경고가 환경/도구 측 라인계수와 달리 남아
+  추가 정리는 보류. 기능 동작과 직접 무관.
+
+### 남은 일
+
+- [ ] 사용자 로컬에서 `npm run compile` → `npm run pre-release-check` → `npm run package` 검증.
+- [ ] 생성된 VSIX(`dist/gpl-language-support-0.8.1.vsix`) 실설치 후 `GPL: AI Debug Assist` 4개 모드 실기기 확인.
+
+## 1-AD. 2026-07-24 세션 — AI 자율 디버깅 API/루프 추가
+
+### 배경
+
+사용자 요구: "AI가 Break 걸고 변수 확인하며 한 스텝씩 스스로 디버깅".
+기존 `gpl.ai.debugAssist`는 오케스트레이션(연결/빌드/Attach) 중심이라, 반복 제어 루프를
+직접 구성할 저수준 API가 부족했다.
+
+### 조치
+
+- `src/extension.ts`
+  - AI 전용 디버그 API 추가:
+    - `gpl.ai.debug.getState`
+    - `gpl.ai.debug.setBreakpoint`
+    - `gpl.ai.debug.clearBreakpoint`
+    - `gpl.ai.debug.breakThread`
+    - `gpl.ai.debug.stepThread`
+    - `gpl.ai.debug.continueThread`
+    - `gpl.ai.debug.evaluate`
+    - `gpl.ai.debug.loop`
+  - `gpl.ai.debug.loop`는 최대 step 수 내에서 스택 top/Watch 값을 수집하고,
+    `stopWhen` 조건(`equals`/`contains`/`matches`) 충족 시 자동 중단.
+  - 브레이크포인트 명령은 GDE 실측 no-space 형식(`"file"<line>`) 유지.
+- `package.json`
+  - 위 명령들의 activation event 및 commands 노출 추가.
+- `README.md`
+  - "AI 자율 디버깅 API" 섹션 추가 및 사용 예시 반영.
+  - `v0.8.3` 현재 버전 표기 동기화.
+
+### 남은 일
+
+- [ ] 생성된 VSIX(`dist/gpl-language-support-0.8.3.vsix`) 실설치 후 아래 시나리오 실기기 검증:
+  1) `setBreakpoint` → `breakThread` → `evaluate` 값 확인
+  2) `stepThread(mode=over)` 반복 시 위치/값 변동 확인
+  3) `loop` + `stopWhen` 조건 중단 확인
+
+## 1-AF. 2026-07-24 세션 — 배포 경로 이원화: Deploy=/GPL 직접, Save to Flash 신설, Start 버튼 분리
+
+### 배경 (사용자 결정)
+
+사용자 요구 3건: ① Deploy의 기본 업로드 위치는 `ftp://<제어기IP>/GPL/<projectName>`(테스트용),
+② 제어기에 영구 저장하고 싶을 때만 `ftp://<제어기IP>/flash/projects/<projectName>`에 저장,
+③ Deploy와 Start는 합치지 않고 분리. §1-G의 미해결 항목 "이원화 관리 원칙"을 그대로 구현한 것.
+세부 선택(사용자 확인): Deploy & Run은 독립 Start 버튼으로 교체 / Save to Flash는 FTP 복사만
+(Load/Compile 없음) / /GPL 폴더 미존재 시 FTP로 생성해 직접 업로드(검증 전 경고 표시).
+
+### 조치
+
+- `src/controller/deployService.ts`
+  - directGpl 모드에서 `/GPL/<projectName>` 폴더가 없으면 **classic 폴백 대신 FTP로 폴더를
+    생성해 직접 업로드**(`directGplCreate`, 배너에 경고 출력). Load 문서 Remarks("FTP can be
+    used to create the folder and copy the files")가 허용하는 공식 경로.
+  - 단 **changedFiles(autoOnSave) 경로는 생성하지 않음** — 변경 파일 1개만 담긴 불완전한
+    /GPL 폴더 방지, 기존 classic(flash+Load) 폴백 유지. probe 실패 시에도 classic 폴백 유지.
+  - direct 모드 -508/-743 안내 문구를 "전체 배포로 재시도" → "Save to Flash 후 Unload/Load로
+    복구"로 갱신(전체 배포도 이제 direct라서 이전 안내는 무효).
+- `src/extension.ts`
+  - `runDeployCore`: `directGpl: quickOpts?.quick` → **`directGpl: true`** — Deploy(Build Only)도
+    /GPL 직접 미러 업로드 사용. classic 경로는 폴백 전용으로 유지(코드 삭제 없음).
+  - **`gpl.deployRun` 제거**, **`gpl.start` 신설** — 배포 없이 `Start <project>`만 전송.
+    확인 모달(`requireStartConfirmation`, §3-B B2)과 런타임 콘솔 준비(primeForRuntimeStart)는
+    구 Deploy & Run의 START 단계와 동일. 프로젝트명은 .gpr에서 해석(폴더명 폴백).
+  - **`gpl.saveToFlash` 신설** — `mirrorProject`로 `/flash/projects/<projectName>`에 미러 저장만
+    (Stop/Unload/Load/Compile 없음, 원격 전용 파일은 삭제됨을 로그로 표시).
+  - 공용 헬퍼 `pickWorkspaceProjectDir` / `readGprProjectName` 추가.
+- `package.json`: commands/menus/activationEvents에서 deployRun → start(`$(play)`) 교체,
+  saveToFlash(`$(save)`, view/title 오버플로 `1_deploy` 그룹 + threadSection 컨텍스트) 추가,
+  deploy 타이틀을 "/GPL 업로드 + Compile, Start 없음"으로 갱신, autoStartOnDeploy·
+  requireStartConfirmation 설명 문구 동기화.
+- `src/debug/gplDebugSession.ts`: 폴백 관련 낡은 주석 갱신(동작 변화 없음 — F5는 원래 directGpl).
+- `.github/instructions/gpl-ai-controller-debugging.instructions.md`: 명령 표/상태 변경 가드에서
+  deployRun → start 교체, saveToFlash 행 추가.
+- `CHANGELOG.md`: [Unreleased]에 Added/Changed 기록.
+
+### 검증
+
+- 샌드박스 tsc(strict) 통과 여부는 아래 기록 참조. **최종 검증은 사용자 로컬 `npm run compile`(§0.4).**
+- 실기기(G2400C) 검증 필요:
+  1) `/GPL/<name>`이 이미 있는 프로젝트에서 Deploy — 배너 `Mode: direct /GPL upload` + Compile 정상.
+  2) **`/GPL`에 폴더가 없는 프로젝트 최초 Deploy — FTP 생성 후 Compile이 성공하는지(핵심 미검증).**
+     -508/-743이면 제어기가 FTP 생성 폴더를 로드본으로 인식 못 하는 것 → Save to Flash + Load 복구
+     경로 확인 후, 이 경우 최초 배포 로직을 "flash+Load 1회" 방식으로 되돌릴지 결정.
+  3) `GPL: Start` — 확인 모달 → Start 전송 → 1403 콘솔 출력 확인.
+  4) `GPL: Save to Flash` — /flash/projects/<name> 반영 + 로드본/실행 상태에 영향 없는지.
+
+### 남은 일
+
+- [ ] 위 실기기 검증 2) 결과를 이 문서에 기록(§1-G의 "/GPL 재부팅 영속성" 확인도 겸사겸사).
+- [ ] Deploy가 더 이상 flash를 갱신하지 않으므로, **flash 사본이 구버전으로 남는 것이 기본 상태**가
+  됨 — 릴리스/종료 전 Save to Flash 습관 필요. README/사용 문서에 이원화 원칙 안내 추가 검토.
+
+## 1-AG. 2026-07-24 세션(후속) — AI 자율 디버깅 API 견고화 (반환 계약/Output 기록/pause 폴링)
+
+> ⚠ 기록 주의: 이 세션과 **다른 작업 스트림(§1-AE 심볼 조회 성능 개선·§1-AF 배포 경로 이원화, 0.8.5)** 이 같은 날 병행 진행됨.
+> 헤더가 참조하는 §1-AE(심볼 조회 성능 개선) 본문 섹션이 현재 파일에 없음 — 병행 편집 중 유실 가능성 있으니 해당 스트림에서 복원 필요.
+
+### 증상/배경
+
+§1-AD 코드 리뷰에서 자율 루프 관점의 약점 발견:
+(1) 결과가 return만 되고 어디에도 기록되지 않아 `executeCommand` 반환값을 직접 받지 못하는 호출자는 결과를 볼 수 없음(§1-AC의 debugAssist는 Output 기록하는 것과 대조).
+(2) `sendCommand` 예외(타임아웃 등) 시 `{ok:false}` 대신 예외가 전파되어 반환 계약 붕괴.
+(3) `Break`/`Step`의 STATUS 0을 완료로 간주 — §0.6 `Stop -all`과 같은 "접수≠완료" 패턴 위험. loop는 고정 `sleep(120)` 후 바로 Show Stack이라 이전 위치를 읽을 수 있음.
+(4) loop가 스레드 Error 전이를 무시하고 `-noerror`로 계속 스텝. stopWhen 평가 실패(-eval 오류)가 침묵. 잘못된 `stopWhen.matches` 정규식이 루프 중 예외로 사망.
+
+### 조치 (의도 → 방법, `src/extension.ts`의 AI API 블록 재구성)
+
+- **공통 래퍼 `registerAiDebugCommand`** 도입: 8개 명령 전부 try/catch로 감싸 `{ok:false, error:'command-failed', detail}` 통일 + 결과 JSON을 Output에 `[AI Debug] <commandId> => {...}`로 기록(4000자 초과 시 절단). Output만 읽는 AI도 결과 소비 가능.
+- **`waitForThreadPause` 헬퍼**: `Show Thread` 폴링(기본 5000ms/150ms 간격)으로 Paused/Break/Error 진입 확인.
+- **`breakThread`/`stepThread`**: `waitForPause`(기본 **true**)/`waitTimeoutMs` 인자 추가. STATUS 0 후 실제 정지까지 확인해야 `ok:true`. 미정지 시 `pause-timeout`. **ok 의미가 "접수"→"정지 확인"으로 바뀜** — 종전 동작은 `waitForPause:false`.
+- **`loop`**: ① `sleep(120)` → 스텝 후 `waitForThreadPause`(인자 `stepWaitTimeoutMs`, 기본 5000ms), 미복귀 시 `step-pause-timeout`. ② 루프 도중 Error **전이** 시 `stoppedBy:'thread-error'`+`lastStatus`로 중단(시작부터 Error인 스레드는 종전대로 -noerror 스텝 허용). ③ 대상 스레드 소실 시 `thread-not-found`. ④ stopWhen 평가 결과(값/statusCode/matched)를 매 스텝 trace에 기록 — 표현식 오타 가시화. ⑤ `stopWhen.matches` 정규식은 루프 진입 전 1회 검증(`invalid-stopWhen-matches`).
+- `README.md`: AI 자율 디버깅 API 섹션에 공통 규약(반환 계약/Output 기록/waitForPause/loop 동작) 및 인자 예시 갱신.
+
+### 검증
+
+- 샌드박스 `npx tsc --noEmit` 오류 0건, `npm test` 166/166 통과. 파일 수정은 §0.4대로 샌드박스 bash(python)로 수행(LF 유지 확인).
+- 최종 검증은 사용자 로컬 `npm run compile` 필요.
+
+### 남은 일
+
+- [ ] 사용자 로컬 `npm run compile` → `npm run package` → VSIX 재설치.
+- [ ] 실기기 검증(§1-AD 시나리오에 추가): ① `Break`/`Step` 후 `Show Thread` 상태 전이 타이밍 실측 — STATUS 0이 접수인지 완료인지 확정, 폴링 기본 5000ms 적정성 확인 ② `-eval` 응답 실측으로 `normalizeEvalValue` CSV 휴리스틱(`name,type,value` 전제) 확정 ③ Error 전이 중단 동작 확인.
+- [ ] 미적용 리뷰 항목(사용자 보류): **[C]** setBreakpoint의 Show Break 재확인(verify) 옵션, loop watch에 raw 병행. **[D]** `continueThread`/`stepThread`는 실행 재개=모션 재개 가능인데 B2 게이트(`requireStartConfirmation`)가 Start에만 적용 — AI 자율 루프용 확인 게이트 도입 여부 사용자 결정 필요. **기타**: 폴링 간격/maxSteps 상한 설정화, watch·stopWhen frameIndex 0 고정 인자화, getState의 `-stack -web` 활용.
+
+## 1-AH. 2026-07-24 세션(후속2) — 외부 AI(Claude Code) 실전 투입 관찰: MCP 미등록 → 원시 TCP 우회 (분석만, 코드 변경 없음)
+
+### 증상 (사용자 실전 테스트, 전사 확보)
+
+로봇 워크스페이스(MergeCode, `C:\SVN\...\시뮬레이션`)에서 Claude Code에게 "디버깅 해봐"를 지시한 결과:
+
+1. "제어기 연결이 MCP 도구로는 안 잡히네요" → WORKLOG/파일 읽기로 후퇴.
+2. 이후 PowerShell/Node **원시 TCP로 1402 직접 접속** 시도 — 프로토콜을 XML(`<COMMAND><NAME>...`)로 오추측 → 0바이트 → **설치된 확장 번들(0.8.5 out/)을 역공학**해 "평문+`\r\n`" 프레이밍 파악. "샌드박스를 해제하고 실행" 선언까지 진행.
+
+### 원인 분석
+
+- **MCP 미등록이 진짜 원인**: 그 워크스페이스의 `.vscode/mcp.json`은 VS Code(Copilot)용이라 **Claude Code는 읽지 않음**. Claude Code용은 `claude mcp add` 또는 프로젝트 루트 `.mcp.json`. gpl-controller MCP가 세션에 없었음.
+- **가드레일 부재**: "직접 TCP로 확장 경로 우회 금지" 규칙은 이 저장소(README/런북)에만 있고 **로봇 워크스페이스의 CLAUDE.md에는 없음**. AI는 그쪽 CLAUDE.md를 최우선으로 읽는다는 것이 전사로 확인됨. 원시 소켓에는 직렬 큐·Stop 게이트·확인 모달이 전혀 없어 역공학 중 Start류 명령 전송 시 모션 위험.
+- (참고) `gpl.ai.debug.*`는 VS Code `executeCommand` 전용이라 터미널 AI는 호출 불가 — 외부 AI의 정규 경로는 controller-mcp뿐(§1-AG [A]에서 지적한 공백의 실전 재현).
+
+### 다음 세션 개선 계획 (효과 순, 사용자 승인 전 — 착수 시 이 목록에서 선택)
+
+- [ ] **① 로봇 워크스페이스 AI 가이드**: MergeCode 쪽 CLAUDE.md에 "제어기 통신은 gpl-controller MCP만 사용 / 직접 TCP 금지(모션 위험) / 미등록 시 `claude mcp add` 방법" 섹션 + 프로젝트 루트 `.mcp.json`(Claude Code용) 추가. ※ 해당 폴더는 이 저장소 밖 — 템플릿을 만들어 사용자가 배치.
+- [ ] **② 확장 명령 `GPL: Export AI Agent Setup`**: 현재 워크스페이스에 CLAUDE.md 단편 + `.mcp.json` + 런북 요약 자동 생성(어느 로봇 프로젝트든 1회 명령으로 AI-ready).
+- [ ] **③ controller-mcp 디버깅 도구 패리티**: 현재 compile·run 중심 → `gpl.ai.debug.*`와 동일 규약(no-space BP, pause 폴링, STATUS 판정, §1-AG 견고화 규칙)으로 setBreakpoint/step/evaluate/loop 도구 추가.
+- [ ] **④ 완화책**: controller-mcp connect backoff 재시도(확장 트리 폴링 5s와의 1402 순간 충돌 대비 — 확장/MCP 모두 connect-per-command라 상시 점유는 아님).
+
+## 1-AI. 2026-07-28 세션 — src/ 전체 가독성 정리 (동작 불변 리팩터링만)
+
+### 배경/의도
+
+사용자 요청 "전체 코드 가독성 개선". 병렬 리뷰(4개 탐색 에이전트)로 후보 약 100건 수집 후, **동작 불변이 확실한(SAFE) 항목만 적용**. 프로토콜 명령 문자열·타임아웃·재시도 횟수·정규식 의미·STATUS 판정 로직은 일절 변경하지 않음.
+
+### 조치 (파일별 요약)
+
+- `src/xmlUtils.ts`: 어디서도 호출되지 않던 XML 분석기 절반(`analyzeXmlEncoding` + private 헬퍼 9개 + 인터페이스 3개 + `getXmlBestPractices`, 약 250줄) 삭제. `getXmlCodeSnippets`만 잔존 (303→55줄). 실제 XML 진단은 diagnosticProvider/gplParser 담당(주석으로 명시).
+- `src/extension.ts`: 죽은 함수 `logConsole`/`logTraffic` 삭제, 미사용 import(`getTrafficChannel`) 제거, `sendCommandWithBusyRetry`의 항상-undefined `config` 파라미터 제거(호출 7곳 정리). 중복 통합: `confirmDirectorySuggestion`(Directory 제안 모달 2곳), `currentRuntimeConsoleStatus()`(idle 스냅샷 리터럴 3곳), `stopRuntimeConsoleAndSyncTree()`(3곳), runDeployCore 인라인 프로젝트 선택 → 기존 `pickWorkspaceProjectDir` 재사용. 상수화: `RECENT_DEBUG_LOG_MAX=240`, `SETTLED_THREAD_STATE` 정규식(deployService.threadSettled와 동일 유지 주석 포함). `AI_PAUSED_STATES` 인라인 중복 1곳 통일, `(vscode.debug as any)` 캐스트 제거, 인라인 `require('fs')` → 상단 import 사용, no-op `gutterIconPath: undefined` 제거.
+- `src/controller/deployService.ts`: `void`로만 소비되던 `hasCompileSuccessful`/`hasCompilePassLog` 삭제(판정 로직 자체는 §1-A 그대로), 반환 타입의 항상-false `needsFollowUp` 필드 제거, 미사용 import `isSuccess` 제거.
+- `src/controller/responseParser.ts`: **`NO_STATUS_CODE = -9999` 상수 export**(deployService/gplDebugSession의 하드코딩 3곳 교체), XML 태그 제거 정규식 4곳 → `stripXmlTags()` 헬퍼, 잘못된 위치의 `parseThreadList` JSDoc을 함수 위로 이동, `let`→`const` 1곳.
+- `src/debug/gplDebugSession.ts`: import 블록 사이에 끼어 있던 코드 정리(모든 import를 상단으로), 미사용 `GPLSymbol` import·죽은 `_readGlobalValue` 삭제. 상수화: `UNDEFINED_VALUE='(undefined)'`(8곳), `CONTINUE_PAUSED_CONFIRM_COUNT=3`(3곳). 중복 통합: `_showGlobalResponseLines()`(STATUS 제거+라인 분리 2곳), `_isSkippedScanDir()`(_scanDir/_findFiles 공용 제외 규칙). 낡은 주석 정정(_parseShowVariableEval 문서가 이미 showVariableParser로 옮겨진 STATUS 처리를 자기 일로 서술하던 것 등), `_makeVariable`의 no-op 삼항 else(`: entry.value`→`: ''`, value는 string이라 동작 동일).
+- `src/controller/runtimeConsole.ts` / `controllerConnection.ts`: `IMMEDIATE_EOF_SESSION_MS=500` 상수화, 타임스탬프 포맷 중복 → `formatTrafficTimestamp()` export 공용화.
+- `src/providers/*`: codeAction(죽은 로컬 2개·미사용 파라미터 제거, 본문이 동일해진 메서드 2쌍 통합), completion(`isXmlContext` 미사용 파라미터 제거), reference(`shouldSkipAsDeclaration`를 사용처 앞으로 이동, cache 폴백의 dedupe 인라인 → `addLocation` 재사용, `MAX_SEARCH_RESULTS`/`MAX_FOLDER_FALLBACK_FILES` 상수화, 오해 소지 로그 문구 수정), definition(`fileNameOf()` 헬퍼로 7곳 통일, 중복 Location 생성 → `buildLocation` 재사용), hover(`buildCallableSignature()` 추출), diagnostic(루프 한복판의 tombstone 주석을 메서드 doc으로 이동).
+- `src/views/controllerTreeProvider.ts`: 미사용 public `getExpectedProjectFolderName` 삭제, 상태 초기화 8줄×2 → `clearCachedControllerState()`, 쓰레드 집계 4줄×2 → `countThreadStates()`, FTP 섹션 빌더 2벌 → `buildFtpSection()` 공용화, 폴링 상수화(`DEFAULT_THREAD_POLL_MS`/`IDLE_POLL_MULTIPLIER`/`DETAIL_POLL_MULTIPLIER`/`CONNECTION_LOSS_FAILURE_THRESHOLD`) + `baseThreadPollIntervalMs()`.
+- `src/views/controllerDashboardPanel.ts`: no-op `case 'setInterval'` 제거(주석으로 의도 보존). `src/log/liveLogTerminal.ts`: 터미널을 dispose하지 않는 `disposeLiveLogTerminal` → `resetLiveLogTerminalState`로 개명.
+- `src/gplParser.ts`: 494줄 `parseDocumentUncached` 축소 — 캡처 없는 `extractParamName`을 private static으로 이동, 바이트 동일하던 파라미터 심볼 등록 블록 2벌 → `pushParameterSymbols` 클로저, 수식어 추출 2벌 → `procedureModifiers()` static. `this.`/`GPLParser.` 혼용 4곳 통일, `XML_BODY_SCAN_LINES=50` 상수화, includeLocals 도입 이후 낡아진 "로컬은 인덱싱 안 함" 주석 3곳 정정. **파싱 정규식은 무변경.**
+- `src/symbolCache.ts`: 후보 수집 루프 중복 2쌍 → `findMemberCandidatesInClass`/`findMemberCandidatesInModule`를 정본으로 재사용, `scoreFilePath` 점수 상수화(1000/800/500/0), `INDEX_EXCLUDE_GLOB` 상수화, 거짓 로그("GPL/GPO 검색 중..." — 실제로는 *.gpl만, 이미 완료 후 출력) 정정, 불필요한 `(file as vscode.Uri).fsPath ?? String(file)` 방어 캐스트 정리.
+- `src/config.ts`: hover 기본값 3종 상수화(폴백 이중 표기 제거), `!== false` 가드에 의도 주석, `GPL_CONTROL_KEYWORDS` doc이 실제 내용(선언 키워드·리터럴 포함)과 맞게 정정. `src/gplBuiltins.ts`: `normalize` → `normalizeBuiltinName` 개명.
+
+### 검증
+
+- 샌드박스 `tsc --noEmit` exit 0, `tsc -p .` 후 `node ./out/test/index.js` **166/166 통과**.
+- §0.4 규칙대로 **사용자 로컬 `npm run compile` 최종 확인 필요** (이번 세션은 호스트 도구로 편집했고 샌드박스 무결성 tail 검사는 통과).
+- 실기기 영향 가능 경로(1402/1403 명령·배포·디버그 스텝)는 문자열/타이밍 무변경이므로 회귀 위험 낮음. 단 `gpl.controller.disconnect`/`console.stop`/연결유실 경로가 공용 헬퍼를 타므로 한 번의 연결-해제 스모크 테스트 권장.
+
+### 미적용 (리뷰에서 나온 LOW/RISKY 후보 — 원하면 다음 세션에)
+
+- 대형 함수 분해: `runDeployCore`(~330줄), `ftpRun` 핸들러(~280줄), `referenceProvider.provideReferences`(~460줄), `controllerTreeProvider.buildRoot`(~340줄), `definitionProvider.provideDefinition`(~280줄), `gplParser.parseDocumentUncached`의 로컬/멤버 선언 분기 추출.
+- `gplDebugSession`: step 3종(next/stepIn/stepOut) 공통화, `_findFiles`의 오해 소지 `await`(제거 시 마이크로태스크 1틱 변화), `isPathUnder` 중복(responseParser와 파일 간 공유 필요).
+- extension.ts: `console` 지역변수가 전역 console을 가리는 8곳 개명, `gpl.console.start`/`ensure` 본문 공통화, threadStop/ftpStop 핸들러 공통화, 미사용 export `logMessage` 삭제(공개 API 표면 변경).
+- 기타: `controllerConnection.getSessionControllerOverride`(미사용 export) 삭제 여부, `symbolCache.findMemberInModule`(미사용 public) 삭제 여부, diagnostic source 문자열 상수 공유(11곳+codeAction 2곳), documentSymbol/workspaceSymbol의 동일 `getSymbolKind` 공용 모듈화, `gplBuiltins`의 sourceUrl 접두사를 `GPL_DICTIONARY_ROOT_URL +`로 조립(~45곳), treeItem에 대한 probably-dead `(item as any).remotePath` 스탬핑 2줄(실기기에서 FTP 컨텍스트 메뉴 확인 후 제거).
+
+## 1-AJ. 2026-07-28 세션(후속) — GPL Controller 뷰 타이틀 툴바 재구성 (package.json만)
+
+### 배경/의도
+
+사용자 판단: 타이틀 바 버튼 9개는 과다. 자동 새로고침·디버그 자동 Start·디버그 콘솔 `>` 프리픽스로 대체되는 버튼이 많음. **명령 삭제 없이 `menus.view/title`의 `group`만 변경** — `navigation@N`(아이콘 버튼) ↔ 일반 그룹(`...` 오버플로 메뉴) 이동이라 되돌리기 쉬움.
+
+### 조치 (`package.json` `contributes.menus.view/title`)
+
+- 타이틀 바 유지: `connect`(미연결 시)·`stopAll` @1, `quickCompile` @2(구 @5), `start` @3(구 @5).
+- `...` 오버플로로 이동: `deploy` → `1_deploy@0`(saveToFlash@1 위 — 전체 동기화·최초 배포용으로 존치), `refresh` → `2_tools@1`, `sendCommand` → `2_tools@2`(비디버그 상태에선 여전히 유일한 명령 전송 UI), `diagnosticSnapshot`/`ai.debugAssist`/`showTraffic` → `3_diag@1~3`.
+- 판단 근거: deploy(Stop+전체 업로드)와 quickCompile(변경분만, STOP 생략)은 기능이 다르므로 deploy는 삭제하지 않고 강등만. refresh·showTraffic은 트리 항목 inline 버튼(section-threads / runtimeConsoleItem)이 이미 있어 타이틀 바 제거로 손실 없음. start는 디버그가 자동 Start 하지만(비디버그 실행용) 사용자 결정으로 타이틀 바 유지.
+
+### 검증
+
+- 샌드박스 python `json.load` 파싱 정상, view/title 11개 항목 그룹 값 전수 확인. 코드(src) 무변경이라 compile 불필요.
+- **남은 확인**: VS Code 재시작(또는 VSIX 재설치) 후 타이틀 바에 stopAll·quickCompile·start 3개(+미연결 시 connect)만 보이고 나머지가 `...` 메뉴에 있는지 육안 확인.
+
+### 남은 일
+
+- 패키징·배포 시 CHANGELOG.md에 툴바 재구성 항목 추가.
+
+## 1-AK. 2026-07-28 세션(후속2) — 확장 트리 ↔ 디버그 패널 쓰레드 기능 병합
+
+### 배경/의도
+
+사용자 관찰: 확장 트리(gplThreads)와 디버그 패널(CALL STACK)의 쓰레드가 클릭/우클릭 동작이 서로 달라 혼란. 요구: 어느 정도 기능 병합.
+과정에서 확인한 사실: CALL STACK 쓰레드 우클릭 메뉴(일시 중지/스텝/스레드 종료)는 **VS Code 기본 DAP 메뉴**이고, 일시 중지·스텝은 이미 어댑터가 쓰레드 단위 처리 중이었으나 **"스레드 종료"는 `terminateThreadsRequest` 미구현으로 동작하지 않는 상태**였다. 처음엔 `debug/callstack/context` 커스텀 메뉴("GPL: 이 쓰레드 Stop")로 접근했다가, 기본 메뉴와 중복되어 **표준 DAP 구현으로 방향 전환** (커스텀 명령은 도중 제거, package.json 기여 없음).
+
+### 조치
+
+- `src/debug/gplDebugSession.ts`:
+  - `initializeRequest`: `supportsTerminateThreadsRequest = true`.
+  - **`terminateThreadsRequest` 구현**: 선택 쓰레드에만 `Stop <name>` 전송(전체 아님). 성공/실패는 §0.2대로 각 명령 STATUS로만 판정, 실패 시 sendErrorResponse. `_userActionInFlight` 게이트 + 종료 후 `_fastPoll()`.
+  - **`customRequest('gplFocusThread', {name})` 추가**: 정지(Break/Paused/Error) 상태 쓰레드의 StoppedEvent를 재발사해 VS Code 포커스 쓰레드 전환. 제어기 명령 전송 없음(UI 전용), `_pendingAction` 상태머신 불간섭. 정지 상태가 아니거나 미등록이면 무시하고 `{focused:false}` 반환. reason은 상태 기반 근사치(Error→exception, 그 외→breakpoint).
+- `src/extension.ts` `gpl.controller.threadShowLocation`: 위치 열기 성공 후 brooks-gpl 세션이 활성이면 `customRequest('gplFocusThread')` 호출 — 트리에서 정지/에러 쓰레드 클릭 시 Variables/Watch도 그 쓰레드로 전환. 실패는 로그만(부가 기능).
+
+### 검증
+
+- 샌드박스 `tsc --noEmit` exit 0, `node ./out/test/index.js` **166/166 통과**. 파일 tail 무결성 확인(NUL/잘림 없음). §0.4대로 **로컬 `npm run compile` 최종 확인 필요**.
+- **실기기 확인 필요 (모션 영향 낮음 — Stop/포커스 전환만)**:
+  1. 디버그 중 CALL STACK 쓰레드 우클릭 "스레드 종료" → 해당 쓰레드만 Stop되는지, 다른 쓰레드 계속 실행되는지.
+  2. 디버그 중 트리에서 정지/에러 쓰레드 클릭 → 위치 열림 + CALL STACK/Variables 포커스 전환되는지.
+  3. StoppedEvent 재발사가 step/continue 흐름을 깨지 않는지 (포커스 전환 직후 F10/F5 정상 동작).
+
+### 남은 일
+
+- 패키징·배포 시 CHANGELOG.md에 §1-AJ(툴바 재구성)와 함께 항목 추가.
+
+## 1-AL. 2026-07-31 세션 — 트리 "현재 실행 위치 보기"가 .history stale 사본을 열던 버그 수정
+
+### 증상 → 원인
+
+- 사용자 관찰: 디버깅 중 확장 트리의 "현재 실행 위치 보기"가 **전혀 다른 폴더의 `.history/.../projects/` 사본**을 열었다. 반면 **디버그 패널(CALL STACK) 더블클릭은 정상** — 여는 경로가 2개로 갈라져 있었던 것.
+- 원인: 소스 경로 해석이 중복 구현되어 한쪽만 고쳐진 상태였다.
+  - 디버그 어댑터 `gplDebugSession._resolveSourcePath/_pickSourcePath`: dot 폴더(.history 등) 제외 + 동명 경합 시 프로젝트 폴더 우선(`pickSourceCandidate`) — 정상.
+  - `extension.ts resolveGplFilePath`(트리 `threadShowLocation`/`threadShowStack`/`gpl.errorLocation` 이벤트가 공용): `node_modules`/`.git`/`out`만 제외하고 **첫 매치를 그대로 반환** → `.history` 사본이 먼저 걸리면 그걸 열었다.
+
+### 조치 (src/extension.ts)
+
+- `resolveGplFilePath`를 디버그 어댑터와 같은 규칙으로 통일:
+  - `isSkippedScanDir`: dot 폴더 전부 + `node_modules`/`out`/`dist`/`bin` 제외 (gplDebugSession `_isSkippedScanDir`와 동일 규칙).
+  - 첫 매치 반환 → **후보 전부 수집 후 `pickSourceCandidate`(responseParser의 순수 함수, import 추가)로 선택.** 프로젝트 폴더 기준은 `controllerTree.getExpectedProjectName()`과 이름이 일치하는 Project.gpr 폴더(`findExpectedProjectDirs`).
+  - 경합 시 제외 후보를 출력 채널에 경고 로그로 남김(디버그 어댑터와 동일 UX).
+- 보조 함수 `findWorkspaceFilesByName` 분리(Project.gpr 수집과 .gpl 후보 수집이 공용).
+
+### 검증
+
+- 샌드박스 `tsc --noEmit` exit 0, `node ./out/test/index.js` **166/166 통과**. 파일 tail 무결성 확인. §0.4대로 **로컬 `npm run compile` 최종 확인 필요**.
+- 실기기 확인(모션 영향 없음 — 파일 열기뿐): `.history`가 있는 워크스페이스에서 트리 "현재 실행 위치 보기" → 실제 프로젝트 폴더의 파일이 열리는지.
+
+### 남은 일
+
+- 세 해석 경로(`gplDebugSession._resolveSourcePath` / `extension.ts resolveGplFilePath` / `deployService.resolveErrorFilePath`)의 스캔·선택 규칙을 공용 모듈로 빼는 리팩터링 검토 — 이번엔 동작 통일만 하고 구조 변경은 보류(§0 함부로 편집 금지 원칙).
+- 패키징·배포 시 CHANGELOG.md에 항목 추가.
+
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
 - **`ProtocolModule.gpl` 478·480의 `-760 Invalid assignment`**: `isOrgCompleted`는 `RobotModule.gpl:828`에 **`Public ReadOnly Property ... As Boolean`**(읽기 전용)으로 정의됨. 거기에 값을 대입해서 나는 에러. 해결책(택1, 사용자 결정 대기): setter 메서드 추가 / `ReadOnly` 제거 후 `Set` 접근자 추가 / backing 필드 직접 대입.
@@ -1247,6 +1547,8 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(우선, §1-AH) 외부 AI 디버깅 경로 개선 ①~④** — 로봇 워크스페이스 AI 가이드/`.mcp.json`, `GPL: Export AI Agent Setup` 명령, controller-mcp 디버깅 도구 패리티, connect 재시도. 상세와 배경은 §1-AH.
+- [ ] (§1-AG) 로컬 `npm run compile`→`npm run package`→VSIX 재설치 + 실기기 검증(Break/Step 상태 전이 타이밍, `-eval` 응답 형식, Error 전이 중단).
 - [x] (2026-07-10, §1-J) Hover/IntelliSense/Signature Help 개선 + Brooks 사전 +155 — 샌드박스 tsc·90테스트 통과. (실기기 표시 확인은 사용자)
 - [ ] (§1-J 후속) 캐시 초록 기반 60개(XmlNode/Network/Modbus) 항목을 web_fetch rate limit 해제 후 라이브 페이지로 파라미터 세부 재확인.
 - [ ] 사용자 로컬(Windows)에서 `npm run package` 1회 실행해 재검증 후 새 VSIX 재설치. ※ 2026-07-03: 샌드박스 검증 완료, `dist/gpl-language-support-0.6.24.vsix` 생성됨(§1-C).

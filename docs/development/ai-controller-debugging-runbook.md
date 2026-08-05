@@ -20,6 +20,17 @@ GPL Language Support 확장을 통해 AI 에이전트가 Brooks GPL 제어기 �
 7. F5 `Attach to GPL Controller`
 8. 정지 시 Call Stack, Variables, Debug Console, GPL Console을 함께 확인
 
+### AI 오케스트레이션 빠른 경로
+
+`GPL: AI Debug Assist` (`gpl.ai.debugAssist`)는 위 수동 순서를 모드별로 묶어 실행한다.
+
+- `진단만`: 연결 + 스냅샷 수집
+- `Build Only + 진단`: 업로드/컴파일 검증 + 최종 스냅샷
+- `Build Only + 콘솔`: Build 성공 후 1403 콘솔 확인
+- `Build Only + Attach`: Build 성공 후 빠른 Attach
+
+AI가 제어기를 다룰 때는 이 명령을 우선 진입점으로 사용하고, 예외 상황만 개별 명령으로 내려간다.
+
 ## 준비 체크
 
 | 항목 | 확인 위치 |
@@ -30,6 +41,8 @@ GPL Language Support 확장을 통해 AI 에이전트가 Brooks GPL 제어기 �
 | FTP 경로 | `gpl.controller.ftpBasePath`, `gpl.controller.ftpFlashProjectsPath` |
 | 프로젝트명 | `Project.gpr`의 `ProjectName` 또는 launch `projectName` |
 | 최신 빌드 | `GPL: Deploy (Build Only)` 성공 여부 |
+
+추가 진입점: `GPL: AI Debug Assist` (`gpl.ai.debugAssist`)
 
 ## Command ID 목록
 
@@ -298,5 +311,13 @@ SoftEStop
 - `out/` 산출물을 직접 수정하지 않는다.
 - 로그/캐시/상태 파일을 워크스페이스에 자동 생성하지 않는다.
 - 제어기 포트 역할(1402/1403/21/51417)을 바꾸지 않는다.
+<!-- end-of-runbook -->
+
+
+
+
+
+
+
 
 

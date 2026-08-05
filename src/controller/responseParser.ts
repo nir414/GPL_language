@@ -13,9 +13,12 @@ export interface StatusResult {
     raw: string;
 }
 
+/** STATUS 블록이 응답에 없을 때 parseStatus가 반환하는 센티널 코드. */
+export const NO_STATUS_CODE = -9999;
+
 /**
  * 응답에서 `<STATUS>code,"message"</STATUS>` 추출.
- * STATUS가 없으면 code = -9999.
+ * STATUS가 없으면 code = NO_STATUS_CODE(-9999).
  */
 export function parseStatus(response: string): StatusResult {
     // DATA 본문에 STATUS 텍스트가 포함될 수 있으므로(파일/로그 덤프 응답),
@@ -27,11 +30,16 @@ export function parseStatus(response: string): StatusResult {
     if (last) {
         return { code: parseInt(last[1], 10), message: last[2] || '', raw: response };
     }
-    return { code: -9999, message: 'No STATUS found', raw: response };
+    return { code: NO_STATUS_CODE, message: 'No STATUS found', raw: response };
 }
 
 export function isSuccess(response: string): boolean {
     return parseStatus(response).code === 0;
+}
+
+/** XML 태그를 제거한다 — `<DATA>content</DATA>` 같은 인라인 형식 응답 처리용 공통 헬퍼. */
+function stripXmlTags(text: string): string {
+    return text.replace(/<\/?[A-Za-z][^>]*>/g, '');
 }
 
 // ─── Compile Errors ───────────────────────────────────────
@@ -127,16 +135,6 @@ export interface ThreadDetailInfo {
 }
 
 /**
- * `Show Thread` 응답 파싱.
- * 펌웨어마다 컬럼 구분자/갯수가 다를 수 있으므로 유연하게 처리한다.
- * 지원 형식:
- *   - 파이프 구분(`Show Thread -web`, GDE 폴링 형식, 9컬럼):
- *       `name| state| code| "msg"| project| func| procLine| file| fileLine`
- *       예) `Test_robot| Paused| 0| ""| Test_robot| MAIN| 2| Entry_Main.gpl| 22`
- *   - 탭/2+공백 구분: `ThreadName    Running    0    proj    file`
- *   - 쉼표 구분:      `ThreadName, Running`
- */
-/**
  * 파이프 행 끝의 trailing 수치 컬럼(`-stack` 동반 시 index 9+)을 raw 숫자로 수집.
  * 숫자가 아니면 무시하고, 하나도 없으면 undefined.
  */
@@ -161,10 +159,20 @@ function isPureNumericRow(line: string): boolean {
     return cells.length >= 2 && cells.every(c => /^-?\d*\.?\d+$/.test(c));
 }
 
+/**
+ * `Show Thread` 응답 파싱.
+ * 펌웨어마다 컬럼 구분자/갯수가 다를 수 있으므로 유연하게 처리한다.
+ * 지원 형식:
+ *   - 파이프 구분(`Show Thread -web`, GDE 폴링 형식, 9컬럼):
+ *       `name| state| code| "msg"| project| func| procLine| file| fileLine`
+ *       예) `Test_robot| Paused| 0| ""| Test_robot| MAIN| 2| Entry_Main.gpl| 22`
+ *   - 탭/2+공백 구분: `ThreadName    Running    0    proj    file`
+ *   - 쉼표 구분:      `ThreadName, Running`
+ */
 export function parseThreadList(text: string): ThreadInfo[] {
     const threads: ThreadInfo[] = [];
     // XML 태그를 먼저 제거하여 <DATA>content</DATA> 같은 인라인 형식도 처리
-    const cleaned = text.replace(/<\/?[A-Za-z][^>]*>/g, '');
+    const cleaned = stripXmlTags(text);
     const lines = cleaned.split(/\r?\n/);
     for (const line of lines) {
         const trimmed = line.trim();
@@ -744,7 +752,7 @@ export interface StackFrameInfo {
  */
 export function parseStack(text: string): StackFrameInfo[] {
     const frames: StackFrameInfo[] = [];
-    const cleaned = text.replace(/<\/?[A-Za-z][^>]*>/g, '');
+    const cleaned = stripXmlTags(text);
     const lines = cleaned.split(/\r?\n/);
 
     // Regex for text format: Frame N: Module.Method, Line L, filepath
@@ -830,7 +838,7 @@ export interface BreakpointInfo {
  */
 export function parseBreakList(text: string): BreakpointInfo[] {
     const breakpoints: BreakpointInfo[] = [];
-    const cleaned = text.replace(/<\/?[A-Za-z][^>]*>/g, '');
+    const cleaned = stripXmlTags(text);
     const lines = cleaned.split(/\r?\n/);
 
     for (const line of lines) {
@@ -889,7 +897,7 @@ export interface VariableInfo {
  */
 export function parseVariable(text: string): VariableInfo[] {
     const variables: VariableInfo[] = [];
-    const cleaned = text.replace(/<\/?[A-Za-z][^>]*>/g, '');
+    const cleaned = stripXmlTags(text);
     const lines = cleaned.split(/\r?\n/);
 
     for (const line of lines) {
@@ -950,7 +958,7 @@ export function normalizeConsoleLine(line: string): string {
         project = projMatch[1].trim();
     }
 
-    let msg = s.replace(/^.*<L>\d+<\/L>/, '').replace(/<\/E>$/, '').trim();
+    const msg = s.replace(/^.*<L>\d+<\/L>/, '').replace(/<\/E>$/, '').trim();
 
     if (msg && project) {
         return `[${project}] ${msg}`;

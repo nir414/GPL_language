@@ -14,7 +14,7 @@
 
 import * as net from 'net';
 import * as vscode from 'vscode';
-import { getControllerConfig, getTrafficChannel } from './controllerConnection';
+import { getControllerConfig, getTrafficChannel, formatTrafficTimestamp } from './controllerConnection';
 import { normalizeConsoleLine } from './responseParser';
 import { appendLiveLog } from '../log/liveLogTerminal';
 
@@ -35,6 +35,8 @@ const CONNECT_TIMEOUT_MS = 5_000;
 const NO_OUTPUT_HINT_MS = 3_000;
 /** payload 없이 종료된 세션이 이 시간 이상 유지되면 정상 idle timeout으로 분류 */
 const IDLE_TIMEOUT_SESSION_MS = 1_500;
+/** payload 없이 이 시간 안에 종료된 세션은 Immediate EOF(정상 폴링)로 분류 */
+const IMMEDIATE_EOF_SESSION_MS = 500;
 /** no-payload 경고 스로틀 기본값 (로그 스팸 방지) */
 const DEFAULT_UNSTABLE_WARN_COOLDOWN_MS = 60_000;
 /** no-payload 누적 경고 임계치 기본값 */
@@ -363,8 +365,7 @@ export class RuntimeConsole implements vscode.Disposable {
 
     /** GPL Traffic 채널에 1403 콘솔 트래픽 로깅 */
     private logConsoleTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
-        const now = new Date();
-        const ts = now.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+        const ts = formatTrafficTimestamp();
         const line = `[${ts}] [1403] ${direction} ${message}`;
         const ch = getTrafficChannel();
         if (ch) {
@@ -955,7 +956,7 @@ export class RuntimeConsole implements vscode.Disposable {
                 } else {
                     // 빈 세션 — 이벤트 없이 FIN
                     this._consecutiveEmptySessions++;
-                    const reason = elapsed <= 500
+                    const reason = elapsed <= IMMEDIATE_EOF_SESSION_MS
                         ? 'Immediate EOF'
                         : (elapsed >= IDLE_TIMEOUT_SESSION_MS ? 'Idle timeout' : 'Empty batch');
                     noPayloadReason = reason;

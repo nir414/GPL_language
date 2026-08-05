@@ -33,18 +33,6 @@ import {
     ControllerConfig,
 } from '../controller/controllerConnection';
 import { deploy, findProjectDirs, resolveErrorFilePath } from '../controller/deployService';
-
-// 디버그 경로(Attach 전 배포)의 컴파일 진단은 세션 인스턴스가 아니라 모듈 공용 컬렉션에 둔다.
-// 이유: 세션마다 새 컬렉션을 만들면 (a) 종료 시 지워져 Problems에서 사라지고,
-//       (b) 재시도 시 옛 컬렉션이 남아 중복 진단이 생긴다. 공용 1개로 두면 deploy() 시작 시
-//       clear로 갱신되고, 세션이 끝나도 Problems에 유지되어 코드로 점프할 수 있다.
-let _debugDeployDiagnostics: vscode.DiagnosticCollection | undefined;
-function getDebugDeployDiagnostics(): vscode.DiagnosticCollection {
-    if (!_debugDeployDiagnostics) {
-        _debugDeployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-debug-deploy');
-    }
-    return _debugDeployDiagnostics;
-}
 import {
     parseThreadList,
     parseThreadDetail,
@@ -58,11 +46,34 @@ import {
     parseErrorLog,
     isSuccess,
     parseStatus,
+    NO_STATUS_CODE,
     StackFrameInfo,
 } from '../controller/responseParser';
-import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbolKind } from '../gplParser';
 import { isReadOnlyConsoleCommand } from '../controller/consoleCommandClassifier';
 import { fireDebugThreadsUpdated, onDebugPollTrigger } from '../controller/debugBridge';
+import {
+    ParsedVarEntry,
+    parseShowVariableMulti,
+    classifyVarEntry,
+    arrayRank,
+} from './showVariableParser';
+import {
+    extractIndexIdentifierTokens,
+    replaceIndexIdentifierTokens,
+} from '../language/cursorExpression';
+
+// 디버그 경로(Attach 전 배포)의 컴파일 진단은 세션 인스턴스가 아니라 모듈 공용 컬렉션에 둔다.
+// 이유: 세션마다 새 컬렉션을 만들면 (a) 종료 시 지워져 Problems에서 사라지고,
+//       (b) 재시도 시 옛 컬렉션이 남아 중복 진단이 생긴다. 공용 1개로 두면 deploy() 시작 시
+//       clear로 갱신되고, 세션이 끝나도 Problems에 유지되어 코드로 점프할 수 있다.
+let _debugDeployDiagnostics: vscode.DiagnosticCollection | undefined;
+function getDebugDeployDiagnostics(): vscode.DiagnosticCollection {
+    if (!_debugDeployDiagnostics) {
+        _debugDeployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-debug-deploy');
+    }
+    return _debugDeployDiagnostics;
+}
 
 let sharedDeployOutput: vscode.OutputChannel | undefined;
 
@@ -118,17 +129,6 @@ type ScopeRef =
         /** Show Variable이 보고한 타입 문자열 (예: `Object`, `Double(,)`) */
         varType: string;
     };
-
-import {
-    ParsedVarEntry,
-    parseShowVariableMulti,
-    classifyVarEntry,
-    arrayRank,
-} from './showVariableParser';
-import {
-    extractIndexIdentifierTokens,
-    replaceIndexIdentifierTokens,
-} from '../language/cursorExpression';
 
 interface GlobalVariableDescriptor {
     displayName: string;
@@ -231,9 +231,11 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _continueOrigin = new Map<string, { file: string; line: number }>();
 
     // Continue 후 sawRunning=false 상태에서 paused로 관측된 연속 횟수.
-    // 같은 위치에서 N회 연속 paused면 잔재 상태가 너무 오래 지속되었거나
-    // 동일 BP 재히트로 보고 정지로 인정 (마지막 안전망).
+    // 같은 위치에서 CONTINUE_PAUSED_CONFIRM_COUNT회 연속 paused면 잔재 상태가 너무
+    // 오래 지속되었거나 동일 BP 재히트로 보고 정지로 인정 (마지막 안전망).
     private _pendingContinuePausedSeen = 0;
+    /** 연속 paused 관측을 '정지'로 확정하기까지의 횟수 임계값. */
+    private static readonly CONTINUE_PAUSED_CONFIRM_COUNT = 3;
 
     // 사용자 액션(step/continue/pause/disconnect) 처리 중 플래그.
     // 이 플래그가 켜져 있으면 Show Thread 폴링을 보류해서 1402 큐에
@@ -308,6 +310,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         response.body.supportsEvaluateForHovers = true;
         response.body.supportsSetVariable = true;
         response.body.supportsTerminateRequest = false;
+        // CALL STACK 쓰레드 우클릭 "스레드 종료" 활성화 — terminateThreadsRequest에서 Stop <이름> 전송
+        response.body.supportsTerminateThreadsRequest = true;
         response.body.supportsBreakpointLocationsRequest = false;
 
         // Capabilities for step granularity (VS Code 기본 step-over/in/out 모두 지원)
@@ -491,7 +495,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 // Start 실패 시 pending 'entry'를 즉시 해제 — 남겨두면 이후 무관한 정지가
                 // 'entry'로 잘못 보고된다. (STATUS 없는 응답 -9999는 기존처럼 성공 취급)
                 const st = parseStatus(startResp);
-                if (st.code !== 0 && st.code !== -9999) {
+                if (st.code !== 0 && st.code !== NO_STATUS_CODE) {
                     this._pendingAction = null;
                     this._log(`⚠ Start 실패 (STATUS ${st.code}${st.message ? `: ${st.message}` : ''}) — entry 대기를 해제합니다.`);
                 }
@@ -898,7 +902,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     );
                     const entry = structured?.entry;
                     if (entry && (classifyVarEntry(entry, structured!.members.length > 0) !== 'simple'
-                        || (entry.value && entry.value !== '(undefined)'))) {
+                        || (entry.value && entry.value !== GPLDebugSession.UNDEFINED_VALUE))) {
                         variables.push(this._makeVariable(
                             g.displayName,
                             entry,
@@ -964,7 +968,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         ));
                     }
                     if (structured.members.length === 0) {
-                        const value = structured.entry.value && structured.entry.value !== '(undefined)'
+                        const value = structured.entry.value && structured.entry.value !== GPLDebugSession.UNDEFINED_VALUE
                             ? structured.entry.value
                             : 'ℹ 이 제어기는 중첩 객체 멤버의 개별 조회를 지원하지 않습니다'
                               + ' (상위 객체 덤프에 표시된 값까지만 제공)';
@@ -1027,7 +1031,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         // 응답 유실/무-STATUS(-9999)는 기존 동작(성공 가정) 유지 — 과잉 실패 보고 방지.
         if (resp) {
             const st = parseStatus(resp);
-            if (st.code !== 0 && st.code !== -9999) {
+            if (st.code !== 0 && st.code !== NO_STATUS_CODE) {
                 this.sendErrorResponse(response, {
                     id: 2002,
                     format: `변수 설정 실패 (STATUS ${st.code}${st.message ? `: ${st.message}` : ''})`,
@@ -1179,6 +1183,85 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     // ═══════════════════════════════════════════════════════
+    // Custom requests — 확장 UI(GPL Controller 트리 / CALL STACK 메뉴) ↔ 어댑터 연동
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * 확장 쪽 customRequest 처리.
+     * - `gplFocusThread {name}`: 이미 정지(Break/Paused/Error)한 쓰레드의 StoppedEvent를
+     *   재발사해 VS Code 포커스 쓰레드를 전환한다(트리 클릭 → 디버거 연동). 제어기로 명령을
+     *   보내지 않는 UI 전용 동작이며, step 상태머신(`_pendingAction`)은 건드리지 않는다.
+     *   정지 상태가 아니면 무시하고 `{focused:false}`를 돌려준다.
+     */
+    protected customRequest(
+        command: string,
+        response: DebugProtocol.Response,
+        args: any,
+        request?: DebugProtocol.Request,
+    ): void {
+        if (command === 'gplFocusThread') {
+            const name: string | undefined = typeof args?.name === 'string' ? args.name : undefined;
+            const id = name ? this._threadNameToId.get(name) : undefined;
+            const state = name ? this._previousThreadStates.get(name) : undefined;
+            const isStopped = state === 'Break' || state === 'Paused' || state === 'Error';
+            if (name && id !== undefined && isStopped && this._configurationDone) {
+                // 원래 정지 reason은 보관하지 않으므로 상태 기반 근사치 사용 (UI 라벨에만 영향).
+                this.sendEvent(new StoppedEvent(state === 'Error' ? 'exception' : 'breakpoint', id));
+                this._log(`쓰레드 ${name} 포커스 전환 (트리 클릭 연동, StoppedEvent 재발사)`);
+                response.body = { focused: true };
+            } else {
+                response.body = { focused: false };
+            }
+            this.sendResponse(response);
+            return;
+        }
+        super.customRequest(command, response, args, request);
+    }
+
+    /**
+     * CALL STACK 쓰레드 우클릭 "스레드 종료" — 표준 DAP 경로.
+     * 선택한 쓰레드에만 `Stop <name>`을 전송한다 (전체 정지가 아님 — 그건 툴바 Stop -all).
+     * 성공/실패는 §0.2대로 각 Stop 명령 자신의 STATUS로만 판정하고, 하나라도 실패하면
+     * 에러 응답으로 알린다. 상태 반영은 폴링(_fastPoll)이 수행한다.
+     */
+    protected async terminateThreadsRequest(
+        response: DebugProtocol.TerminateThreadsResponse,
+        args: DebugProtocol.TerminateThreadsArguments,
+    ): Promise<void> {
+        const failures: string[] = [];
+        this._userActionInFlight = true;
+        try {
+            for (const threadId of args.threadIds ?? []) {
+                const name = this._threadIdToName.get(threadId);
+                if (!name) {
+                    failures.push(`ID ${threadId}: 미등록 쓰레드`);
+                    continue;
+                }
+                try {
+                    const resp = await this._sendCmd(`Stop ${name}`);
+                    const st = parseStatus(resp ?? '');
+                    if (st.code === 0) {
+                        this._log(`Stop ${name} (스레드 종료 메뉴) → STATUS 0`);
+                    } else {
+                        this._log(`⚠ Stop ${name} (스레드 종료 메뉴) 실패 → STATUS ${st.code}${st.message ? `: ${st.message}` : ''}`);
+                        failures.push(`${name}: STATUS ${st.code}${st.message ? ` ${st.message}` : ''}`);
+                    }
+                } catch (err: any) {
+                    failures.push(`${name}: ${err?.message ?? err}`);
+                }
+            }
+        } finally {
+            this._userActionInFlight = false;
+        }
+        this._fastPoll();
+        if (failures.length) {
+            this.sendErrorResponse(response, 1102, `쓰레드 Stop 실패 — ${failures.join(', ')}`);
+        } else {
+            this.sendResponse(response);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
     // Evaluate (hover / watch / REPL)
     // ═══════════════════════════════════════════════════════
 
@@ -1246,7 +1329,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         ].join('\n');
                     } else if (kind === 'array') {
                         result = `${structured.entry.type} 배열 — 요소는 ${expression}(i) 형식으로 조회`;
-                    } else if (structured.entry.value && structured.entry.value !== '(undefined)') {
+                    } else if (structured.entry.value && structured.entry.value !== GPLDebugSession.UNDEFINED_VALUE) {
                         result = structured.entry.type
                             ? `${structured.entry.value}  (${structured.entry.type})`
                             : structured.entry.value;
@@ -1260,12 +1343,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         `Show Global ${expression}, ${this._projectName}`,
                     );
                     if (gResp) {
-                        // STATUS 블록을 먼저 통째로 제거 — 태그만 벗기면 `0, "Success"`가 값처럼 남는다
-                        const cleaned = gResp
-                            .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
-                            .replace(/<[^>]+>/g, '')
-                            .trim();
-                        const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
+                        const lines = this._showGlobalResponseLines(gResp);
                         if (lines.length > 0) { result = lines.join('\n'); }
                     }
                 }
@@ -1342,7 +1420,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         );
                         result = v.value;
                         evalRef = v.variablesReference;
-                    } else if (structured.entry.value && structured.entry.value !== '(undefined)') {
+                    } else if (structured.entry.value && structured.entry.value !== GPLDebugSession.UNDEFINED_VALUE) {
                         result = structured.entry.type
                             ? `${structured.entry.value}  (${structured.entry.type})`
                             : structured.entry.value;
@@ -1358,12 +1436,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         `Show Global ${expression}, ${this._projectName}`,
                     );
                     if (gResp) {
-                        // STATUS 블록을 먼저 통째로 제거 — 태그만 벗기면 `0, "Success"`가 값처럼 남는다
-                        const cleaned = gResp
-                            .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
-                            .replace(/<[^>]+>/g, '')
-                            .trim();
-                        const lines = cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
+                        const lines = this._showGlobalResponseLines(gResp);
                         result = lines.length > 0 ? lines.join('\n') : '';
                     }
                 }
@@ -1643,20 +1716,27 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
-     * `Show Variable -eval` 응답 파싱.
-     * 제어기 응답 형식: `name, type, value` (예: `i, Integer, 0`)
-     * value에 쉼표가 포함될 수 있으므로 세 번째 필드 이후를 모두 value로 취급한다.
-     *
-     * ⚠ 주의: 응답 끝에는 항상 `<STATUS>0, "Success"</STATUS>` 같은 STATUS 블록이 붙는다.
-     * 단순히 태그만 제거하면 `0, "Success"` 텍스트가 남아 변수 값으로 잘못 파싱된다.
-     * → STATUS 블록은 먼저 통째로 제거해야 한다.
+     * 변수 조회 응답에서 첫 항목만 취하는 래퍼 — 항목이 없으면 value '(undefined)'.
+     * (형식 해석과 STATUS 블록 제거는 parseShowVariableMulti가 담당한다.)
      */
     private _parseShowVariableEval(raw: string): { name: string; type: string; value: string } {
         const entries = parseShowVariableMulti(raw);
         if (entries.length === 0) {
-            return { name: '', type: '', value: '(undefined)' };
+            return { name: '', type: '', value: GPLDebugSession.UNDEFINED_VALUE };
         }
         return entries[0];
+    }
+
+    /**
+     * `Show Global` 응답을 표시용 텍스트 라인으로 정리한다.
+     * STATUS 블록을 먼저 통째로 제거 — 태그만 벗기면 `0, "Success"`가 값처럼 남는다.
+     */
+    private _showGlobalResponseLines(raw: string): string[] {
+        const cleaned = raw
+            .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
+            .replace(/<[^>]+>/g, '')
+            .trim();
+        return cleaned.split(/\r?\n/).filter(l => l.trim().length > 0);
     }
 
     // ═══════════════════════════════════════════════════════
@@ -1667,6 +1747,9 @@ export class GPLDebugSession extends LoggingDebugSession {
     /** 배열 확장 시 순차 조회 상한 — 선언 크기를 알 수 없어(공식 문서: 배열 전체 값은
      *  표시되지 않음) 인덱스 0부터 실패할 때까지 조회하며, 직렬 명령 큐 보호를 위해 제한한다. */
     private static readonly ARRAY_EXPAND_MAX = 30;
+
+    /** 변수 조회 실패/값 없음을 나타내는 표시용 센티널 값. */
+    private static readonly UNDEFINED_VALUE = '(undefined)';
 
     /**
      * 파싱된 항목을 DAP Variable로 변환한다. 배열/객체는 variablesReference를 부여해
@@ -1718,7 +1801,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
         // null 객체 참조(`Object() null`, 값 없음)는 빈 값 대신 'null'로 표시
         const displayValue = entry.value
-            || (/\bnull\s*$/i.test(entry.type) ? 'null' : entry.value);
+            || (/\bnull\s*$/i.test(entry.type) ? 'null' : '');
         return {
             name: displayName,
             value: entry.type ? `${displayValue}  (${entry.type})` : displayValue,
@@ -1746,7 +1829,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (entries.length === 0) {
             const st = parseStatus(resp);
             return {
-                entry: { name: expression, type: '', value: '(undefined)' },
+                entry: { name: expression, type: '', value: GPLDebugSession.UNDEFINED_VALUE },
                 members: [],
                 error: st.code !== 0 ? { code: st.code, message: st.message } : undefined,
             };
@@ -1774,7 +1857,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         resolvedExpression: string;
     } | null> {
         const miss = (r: { entry: ParsedVarEntry; members: ParsedVarEntry[] } | null) =>
-            !r || (r.members.length === 0 && (!r.entry.value || r.entry.value === '(undefined)'));
+            !r || (r.members.length === 0 && (!r.entry.value || r.entry.value === GPLDebugSession.UNDEFINED_VALUE));
 
         // ① 원식 그대로
         const first = await this._queryVariableStructured(threadName, frameIndex, expression);
@@ -2019,7 +2102,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
-     * Build a map of basename(lowercase) → full path for all .gpl/.gpo files in workspace.
+     * Build a map of basename(lowercase) → 동명 후보 전체 경로 배열, for all .gpl/.gpo files in workspace.
      */
     private _buildSourceFileMap(): void {
         this._sourceFileMap.clear();
@@ -2036,22 +2119,26 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._log(`소스 파일 맵: ${this._sourceFileMap.size}개 파일 인덱싱 완료`);
     }
 
+    /**
+     * 재귀 스캔에서 제외할 디렉터리 판별 (_scanDir/_findFiles 공용 규칙).
+     * dot 디렉터리(.history/.git 등)와 빌드/출력 폴더는 제외 — 특히
+     * .history(Local History 확장)의 stale 사본이 소스맵/프로젝트 인식을 오염시킨다.
+     */
+    private static _isSkippedScanDir(name: string): boolean {
+        return name.startsWith('.')
+            || name === 'node_modules'
+            || name === 'out'
+            || name === 'dist'
+            || name === 'bin';
+    }
+
     private _scanDir(dir: string): void {
         try {
             const entries = fs.readdirSync(dir, { withFileTypes: true });
             for (const entry of entries) {
                 const full = path.join(dir, entry.name);
                 if (entry.isDirectory()) {
-                    // dot 디렉터리(.history/.git 등)와 빌드/출력 폴더는 제외 — 특히
-                    // .history(Local History 확장)의 stale 사본이 소스맵을 오염시켜
-                    // 엉뚱한 파일이 열리는 원인이 된다(_findFiles와 동일 규칙).
-                    if (
-                        entry.name.startsWith('.')
-                        || entry.name === 'node_modules'
-                        || entry.name === 'out'
-                        || entry.name === 'dist'
-                        || entry.name === 'bin'
-                    ) { continue; }
+                    if (GPLDebugSession._isSkippedScanDir(entry.name)) { continue; }
                     this._scanDir(full);
                 } else if (/\.gpl$/i.test(entry.name) || /\.gpo$/i.test(entry.name)) {
                     const key = entry.name.toLowerCase();
@@ -2072,16 +2159,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             for (const entry of entries) {
                 const full = path.join(dir, entry.name);
                 if (entry.isDirectory()) {
-                    // dot 디렉터리(.history/.vscode/.git 등)와 빌드/출력 폴더는 건너뛴다.
-                    // 특히 .history(Local History 확장)에는 과거 이름의 stale Project.gpr 사본이
-                    // 쌓여 있어 프로젝트 오인식의 원인이 된다.
-                    if (
-                        entry.name.startsWith('.')
-                        || entry.name === 'node_modules'
-                        || entry.name === 'out'
-                        || entry.name === 'dist'
-                        || entry.name === 'bin'
-                    ) { continue; }
+                    if (GPLDebugSession._isSkippedScanDir(entry.name)) { continue; }
                     results.push(...this._findFiles(full, targetName));
                 } else if (entry.name.toLowerCase() === targetName.toLowerCase()) {
                     results.push(full);
@@ -2094,7 +2172,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     /**
      * GPL 소스를 파싱하여 특정 프로시저 내 로컬 변수/파라미터 이름을 수집한다.
      * @param fileName 제어기가 반환한 파일 basename (e.g. "Entry_Main.gpl")
-     * @param _line 현재 실행 줄 (향후 scope 정밀화에 사용 가능)
+     * @param line 현재 실행 줄 — process 이름으로 프로시저를 못 찾을 때 이 줄이 속한 프로시저를 선택하는 데 사용
      * @param process 스택 프레임의 프로시저 이름 (e.g. "Module.Method" 또는 "Method")
      */
     private _getLocalVariableNames(fileName: string, line: number, process: string): string[] {
@@ -2213,18 +2291,6 @@ export class GPLDebugSession extends LoggingDebugSession {
         return this._globalDescriptorsCache;
     }
 
-    /**
-     * Show Global 질의는 펌웨어/심볼 형태에 따라 qualified/unqualified 이름 중 하나만 먹을 수 있다.
-     * 후보를 순서대로 시도해서 첫 성공 값을 반환한다.
-     */
-    private async _readGlobalValue(lookupNames: string[]): Promise<string> {
-        for (const name of lookupNames) {
-            const value = await this._readGlobalValueSingle(name);
-            if (value) { return value; }
-        }
-        return '';
-    }
-
     /** `Show Global <name>` 1회 조회 — 성공 시 표시용 값, 실패 시 ''. */
     private async _readGlobalValueSingle(name: string): Promise<string> {
         const resp = await this._sendCmd(
@@ -2237,7 +2303,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         const parsedEval = this._parseShowVariableEval(resp);
-        if (parsedEval.value && parsedEval.value !== '(undefined)') {
+        if (parsedEval.value && parsedEval.value !== GPLDebugSession.UNDEFINED_VALUE) {
             return parsedEval.type
                 ? `${parsedEval.value}  (${parsedEval.type})`
                 : parsedEval.value;
@@ -2627,7 +2693,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                                     // origin 미기록 — 비교 불가, 단일 paused 관측만으로는 보류하고
                                     // 카운터로 누적 판정.
                                     this._pendingContinuePausedSeen++;
-                                    if (this._pendingContinuePausedSeen >= 3) {
+                                    if (this._pendingContinuePausedSeen >= GPLDebugSession.CONTINUE_PAUSED_CONFIRM_COUNT) {
                                         isRealStop = true;
                                         this._log(`Continue 후 ${t.name} origin 없이 ${this._pendingContinuePausedSeen}회 paused 관측 → 정지 처리`);
                                     }
@@ -2636,7 +2702,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                                     this._log(`Continue 후 위치 변경 감지: ${origin.file}:${origin.line} → ${detail.file}:${detail.fileLine}`);
                                 } else {
                                     this._pendingContinuePausedSeen++;
-                                    if (this._pendingContinuePausedSeen >= 3) {
+                                    if (this._pendingContinuePausedSeen >= GPLDebugSession.CONTINUE_PAUSED_CONFIRM_COUNT) {
                                         isRealStop = true;
                                         this._log(`Continue 후 ${t.name} 같은 위치(${detail.file}:${detail.fileLine})에서 ${this._pendingContinuePausedSeen}회 paused → 정지 처리 (루프 재히트 또는 잔재 지속)`);
                                     }
@@ -2644,7 +2710,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                             } else {
                                 // 위치 조회 실패 — 카운터 누적
                                 this._pendingContinuePausedSeen++;
-                                if (this._pendingContinuePausedSeen >= 3) {
+                                if (this._pendingContinuePausedSeen >= GPLDebugSession.CONTINUE_PAUSED_CONFIRM_COUNT) {
                                     isRealStop = true;
                                     this._log(`Continue 후 ${t.name} 위치 조회 불가 + ${this._pendingContinuePausedSeen}회 paused → 정지 처리`);
                                 }
@@ -2805,7 +2871,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 skipStart: true,
                 skipUnchanged: args.skipUnchangedOnDeploy,
                 // flash 경유 없이 /GPL/<name>에 직접 미러 동기화한다(변경분만 업로드 + 원격 전용 파일 삭제).
-                // /GPL/<name>이 아직 없으면(최초 배포) deploy()가 classic(flash + Load) 경로로 자동 폴백한다.
+                // /GPL/<name>이 아직 없으면(최초 배포) deploy()가 FTP로 폴더를 생성해 직접 업로드한다.
                 directGpl: true,
                 // 무조건 Stop -all 하지 않는다: 먼저 Show Thread로 확인하고, 활성 쓰레드가 있을 때만
                 // 사용자에게 정지 여부를 모달로 묻는다(Quick Compile과 동일한 게이트, §0.6).

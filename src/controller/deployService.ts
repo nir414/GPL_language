@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
 import { uploadProject, mirrorProject, listRemoteDir } from './ftpClient';
-import { parseCompileErrors, parseStatus, isSuccess, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus, SHOW_THREAD_LIST_CMD } from './responseParser';
+import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus, SHOW_THREAD_LIST_CMD, NO_STATUS_CODE } from './responseParser';
 import { isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 
 export interface DeployOptions {
@@ -24,11 +24,13 @@ export interface DeployOptions {
      */
     changedFiles?: string[];
     /**
-     * Quick Compile용 직접 /GPL 업로드 모드.
+     * 직접 /GPL 업로드 모드 (Deploy/Quick Compile/디버그 F5 공통 기본 경로).
      * Load 문서 Remarks("an external file-copy utility such as FTP can be used to create
      * the folder and copy the files")에 따라 /GPL/<projectName>에 FTP로 직접 파일을 써서
      * Unload(-750 쓰레드 락)와 Load("대상 폴더가 이미 존재하면 안 됨") 제약을 모두 우회한다.
-     * /GPL/<projectName> 폴더가 원격에 없으면 자동으로 기존(flash 업로드 + Unload/Load) 경로로 폴백.
+     * /GPL/<projectName> 폴더가 원격에 없으면 FTP로 생성해 직접 업로드한다(최초 배포).
+     * 단, changedFiles 지정 경로(autoOnSave)에서는 불완전한 폴더 생성을 막기 위해
+     * 기존(flash 업로드 + Unload/Load) 경로로 폴백한다. flash 저장은 Save to Flash가 담당.
      */
     directGpl?: boolean;
     /**
@@ -174,6 +176,7 @@ export async function deploy(
     let directGplDir: string | undefined;
     let directGplName: string | undefined;
     let directProbeError: string | undefined;
+    let directGplCreate = false;
     if (options.directGpl) {
         try {
             const gplEntries = await listRemoteDir(cfg.ip, '/GPL');
@@ -181,7 +184,18 @@ export async function deploy(
             if (hit) {
                 directGplName = hit.name;
                 directGplDir = `/GPL/${hit.name}`;
+            } else if ((options.changedFiles ?? []).length === 0) {
+                // 폴더 없음(최초 배포): FTP로 /GPL/<projectName>을 생성해 직접 업로드한다.
+                // Load 문서 Remarks("an external file-copy utility such as FTP can be used to
+                // create the folder and copy the files")가 허용하는 공식 경로.
+                // ※ 최초 FTP 생성 폴더를 제어기가 로드본으로 인식하는지는 실기기(G2400C) 검증 전.
+                //   Compile이 -508/-743을 주면 인식 실패 → Save to Flash + Load로 복구 안내.
+                directGplName = projectName;
+                directGplDir = `/GPL/${projectName}`;
+                directGplCreate = true;
             }
+            // changedFiles만 올리는 경로(autoOnSave)는 폴더가 없으면 생성하지 않는다 —
+            // 변경 파일 1개만 담긴 불완전한 /GPL 폴더가 만들어지는 것을 막기 위해 클래식 폴백.
         } catch (e: any) {
             directProbeError = e?.message || String(e);
         }
@@ -213,9 +227,13 @@ export async function deploy(
     pushTrace(`│  Local:  ${options.projectDir}`);
     pushTrace(`│  FTP:    ${ftpProjectDir}`);
     if (directActive) {
-        pushTrace(`│  Mode:   direct /GPL upload — Unload/Load 생략`);
+        pushTrace(`│  Mode:   direct /GPL upload — Unload/Load 생략${directGplCreate ? ' (최초: /GPL 폴더 FTP 생성)' : ''}`);
+        if (directGplCreate) {
+            pushTrace(`│  ⚠ /GPL/${projectName} 폴더가 없어 FTP로 새로 생성합니다. 제어기가 이를 로드본으로`);
+            pushTrace(`│    인식하는지 실기기 검증 전 — Compile이 -508/-743이면 Save to Flash 후 Load로 복구하세요.`);
+        }
     } else if (options.directGpl) {
-        pushTrace(`│  Mode:   classic (direct /GPL 폴백${directProbeError ? `: probe 실패 ${directProbeError}` : ': /GPL에 프로젝트 폴더 없음 — 최초 1회는 전체 배포 필요'})`);
+        pushTrace(`│  Mode:   classic (direct /GPL 폴백${directProbeError ? `: probe 실패 ${directProbeError}` : ': 변경 파일 전용 경로(autoOnSave)에서 /GPL 폴더 없음'})`);
     }
     pushTrace(`│  Selected base path: ${result.selectedRemoteBasePath}`);
     pushTrace(`│  Path candidates: ${(result.candidateRemoteProjectPaths ?? []).join(' | ')}`);
@@ -453,7 +471,6 @@ export async function deploy(
         raw: string;
         responseMeta?: CommandResponseMeta;
         note?: string;
-        needsFollowUp: boolean;
     }> {
         try {
             const detailed = await sendCommandDetailed(`Compile ${candidate}`, cfg, {
@@ -466,9 +483,7 @@ export async function deploy(
             const resp = detailed.raw;
             const status = parseStatus(resp);
             const errors = parseCompileErrors(resp);
-            const statusMissing = status.code === -9999;
-            const hasCompileSuccessful = /\bcompile\s+successful\b/i.test(resp);
-            const hasCompilePassLog = /\bpass\s*1\b|\bpass\s*2\b|\bpass\s*3\b/i.test(resp);
+            const statusMissing = status.code === NO_STATUS_CODE;
 
             if (isControllerNonBlockingStatus(status.code) && errors.length === 0) {
                 return {
@@ -477,7 +492,6 @@ export async function deploy(
                     errors,
                     raw: resp,
                     responseMeta: detailed.meta,
-                    needsFollowUp: false,
                 };
             }
             if (status.code === 0 && errors.length === 0) {
@@ -487,7 +501,6 @@ export async function deploy(
                     errors,
                     raw: resp,
                     responseMeta: detailed.meta,
-                    needsFollowUp: false,
                 };
             }
 
@@ -496,9 +509,6 @@ export async function deploy(
             // pass 로그 + Show Thread 응답으로 성공 처리했으나, 이는 실제 컴파일 에러를
             // 가리는 오판의 직접 원인이었다(예: -742를 성공으로 보고). 따라서 절대 성공으로
             // 간주하지 않고, 결과 미확인으로서 실패 처리한다.
-            void hasCompileSuccessful;
-            void hasCompilePassLog;
-
             return {
                 ok: false,
                 statusCode: status.code,
@@ -510,16 +520,14 @@ export async function deploy(
                         ? 'STATUS 미수신이나 에러 라인 검출 → 실패'
                         : 'STATUS 미수신: 컴파일 결과 확인 실패(성공 간주 안 함)')
                     : undefined,
-                needsFollowUp: false,
             };
         } catch (e: any) {
             const errText = e.message || '';
             return {
                 ok: false,
-                statusCode: -9999,
+                statusCode: NO_STATUS_CODE,
                 errors: parseCompileErrors(errText),
                 raw: errText,
-                needsFollowUp: false,
             };
         }
     }
@@ -679,7 +687,7 @@ export async function deploy(
             await sleep(transientCompileRetryDelayMs);
             const retry = await tryCompile(candidate);
             result.compileAttemptLogs.push({
-                command: `Compile ${candidate} (retry transient)` ,
+                command: `Compile ${candidate} (retry transient)`,
                 statusCode: retry.statusCode,
                 raw: retry.raw,
                 errors: retry.errors,
@@ -714,14 +722,14 @@ export async function deploy(
 
         // Direct 모드: 복구용 Unload/Load는 목적(락 회피)에 반하므로 시도하지 않는다.
         // -508/-743(not loaded)이 나온다면 /GPL 폴더는 있으나 로드본이 인식되지 않는 상태 —
-        // 전체 배포로 초기화가 필요하다.
+        // Save to Flash로 /flash/projects에 저장 후 콘솔에서 Unload <name> → Load로 복구한다.
         if (directActive && (isProjectAlreadyLoaded(cr.statusCode) || isProjectNotLoaded(cr.statusCode)
             || hasCode(errText, -745) || hasCode(errText, -508) || hasCode(errText, -743))) {
-            pushTrace('│ ✘ Direct /GPL 모드에서 로드 상태 이상 — 전체 배포(Deploy)로 다시 시도하세요.');
+            pushTrace('│ ✘ Direct /GPL 모드에서 로드 상태 이상 — Save to Flash 후 콘솔에서 Unload/Load로 복구하세요.');
             lastCompileFailure = {
                 command: `Compile ${candidate}`,
                 code: cr.statusCode,
-                message: `${parseStatus(cr.raw).message || 'Load-state error in direct /GPL mode'} — 전체 배포로 재시도 필요`,
+                message: `${parseStatus(cr.raw).message || 'Load-state error in direct /GPL mode'} — Save to Flash + Load로 복구 필요`,
                 raw: cr.raw,
             };
             recoveryFailureRecorded = true;

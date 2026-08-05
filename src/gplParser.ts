@@ -104,43 +104,38 @@ export class GPLParser {
         const classStack: string[] = [];
         // Accumulates the contiguous leading `'` comment block for the *next* declaration.
         let pendingDoc: string[] = [];
-        // Track whether we're inside a procedure block (Sub/Function/Property body).
-        // We intentionally do NOT index local Dim variables as workspace symbols.
+        // Track procedure-body depth (Sub/Function/Property body).
+        // 본문 안의 로컬 선언은 options.includeLocals가 켜진 경우에만 인덱싱한다
+        // (아래 blockDepth > 0 분기 참조).
         let blockDepth = 0;
 
         const includeLocals = !!options?.includeLocals;
         const includeParameters = options?.includeParameters ?? includeLocals;
 
-        const extractParamName = (param: string): { name?: string; type?: string } => {
-            // Examples:
-            // - "axis As Integer"
-            // - "ByRef settings() As AxisZeroSetting"
-            // - "Optional speed As Integer = 10"
-            // - "robotArmList() As RobotArm"
-            const cleaned = param
-                .replace(/\b(ByVal|ByRef|Optional|ParamArray)\b/gi, '')
-                .trim();
+        /** 프로시저 파라미터들을 로컬 변수 심볼로 등록 (Function/Sub 공용). */
+        const pushParameterSymbols = (line: string, i: number, name: string, startIndex: number, params: string[]): void => {
+            if (!includeParameters || params.length === 0) { return; }
+            // 파라미터는 여는 괄호 뒤에서 찾는다 — 프로시저 이름과 같은 이름(대소문자
+            // 무시)의 파라미터가 프로시저 이름 위치로 잡히지 않도록 (findNameColumn 참조).
+            const paramSearchFrom = line.indexOf('(', startIndex + name.length) + 1;
+            for (const p of params) {
+                const { name: pName, type: pType } = GPLParser.extractParamName(p);
+                if (!pName) continue;
 
-            const asMatch = cleaned.match(/\bAs\s+(\w+)\s*(\(\s*,*\s*\))?/i);
-            let type = asMatch ? asMatch[1] : undefined;
-            const typeIsArray = !!(asMatch && asMatch[2]);
-
-            const beforeAs = cleaned.split(/\bAs\b/i)[0].trim();
-            if (!beforeAs) {
-                if (type && typeIsArray) { type += '[]'; }
-                return { type };
+                const pStart = GPLParser.findNameColumn(line, pName, paramSearchFrom);
+                symbols.push({
+                    name: pName,
+                    kind: GPLSymbolKind.Variable,
+                    range: { start: Math.max(0, pStart), end: Math.max(0, pStart) + pName.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    returnType: pType,
+                    isLocal: true,
+                    isParameter: true
+                });
             }
-
-            // The identifier is typically the last token before "As".
-            const tokens = beforeAs.split(/\s+/).filter(Boolean);
-            const last = tokens[tokens.length - 1] || '';
-            // 배열 파라미터(`armList() As RobotArm` / `x As Integer()`)는 로컬 배열 Dim과
-            // 동일하게 `Type[]`로 기록한다 — 호출부 인자 타입 추론(오버로드 해석)과
-            // 멤버 접근의 배열 인식이 일관되도록. (소비처는 [] 접미사를 벗겨 요소 타입을 쓴다.)
-            const nameIsArray = /\(.*\)$/.test(last);
-            if (type && (typeIsArray || nameIsArray)) { type += '[]'; }
-            const name = last.replace(/\(.*\)$/, '').replace(/[^A-Za-z0-9_]/g, '');
-            return { name: name || undefined, type };
         };
 
         for (let li = 0; li < logicalLines.length; li++) {
@@ -191,7 +186,7 @@ export class GPLParser {
                 classStack.push(classMatch[2]);
                 currentClass = classMatch[2];
                 blockDepth = 0;
-                const isXmlRelated = this.isXmlRelatedIdentifier(classMatch[2]);
+                const isXmlRelated = GPLParser.isXmlRelatedIdentifier(classMatch[2]);
                 const startIndex = GPLParser.findNameColumn(line, classMatch[2]);
                 symbols.push({
                     name: classMatch[2],
@@ -246,16 +241,12 @@ export class GPLParser {
                 // 반환 타입의 배열 접미사(`As Integer()`)는 파서의 배열 표기 규칙대로 `Integer[]`로 기록.
                 const returnMatch = header.afterParams.match(/^\s*As\s+(\w+)\s*(\(\s*\))?/i);
                 const returnType = returnMatch ? returnMatch[1] + (returnMatch[2] ? '[]' : '') : undefined;
-                const isXmlRelated = this.isXmlRelatedIdentifier(name);
-                const xmlIssues = this.detectXmlFunctionIssues(line, name, i, lines);
+                const isXmlRelated = GPLParser.isXmlRelatedIdentifier(name);
+                const xmlIssues = GPLParser.detectXmlFunctionIssues(line, name, i, lines);
                 const startIndex = GPLParser.findNameColumn(line, name);
-                
-                // Token-based keyword extraction (order-independent)
-                const upperLine = trimmedLine.toUpperCase();
-                const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
-                                     upperLine.includes('PRIVATE') ? 'private' as const : undefined;
-                const isShared = upperLine.includes('SHARED');
-                
+
+                const { accessModifier, isShared } = GPLParser.procedureModifiers(trimmedLine);
+
                 symbols.push({
                     name,
                     kind: GPLSymbolKind.Function,
@@ -273,31 +264,9 @@ export class GPLParser {
                     docComment
                 });
 
-                if (includeParameters && params.length > 0) {
-                    // 파라미터는 여는 괄호 뒤에서 찾는다 — 프로시저 이름과 같은 이름(대소문자
-                    // 무시)의 파라미터가 프로시저 이름 위치로 잡히지 않도록 (findNameColumn 참조).
-                    const paramSearchFrom = line.indexOf('(', startIndex + name.length) + 1;
-                    for (const p of params) {
-                        const { name: pName, type: pType } = extractParamName(p);
-                        if (!pName) continue;
+                pushParameterSymbols(line, i, name, startIndex, params);
 
-                        const pStart = GPLParser.findNameColumn(line, pName, paramSearchFrom);
-                        symbols.push({
-                            name: pName,
-                            kind: GPLSymbolKind.Variable,
-                            range: { start: Math.max(0, pStart), end: Math.max(0, pStart) + pName.length },
-                            line: i,
-                            filePath,
-                            module: currentModule,
-                            className: currentClass,
-                            returnType: pType,
-                            isLocal: true,
-                            isParameter: true
-                        });
-                    }
-                }
-
-                // Enter function block: skip local Dim declarations inside
+                // Enter function block (로컬 선언 처리는 includeLocals 옵션을 따른다)
                 blockDepth++;
                 continue;
             }
@@ -311,13 +280,9 @@ export class GPLParser {
                 // 최상위 콤마 기준 분리 — 공백뿐인 `( )`는 0개, 기본값 속 콤마는 분리하지 않는다.
                 const params = splitParameters(subHeader.paramText);
                 const startIndex = GPLParser.findNameColumn(line, name);
-                
-                // Token-based keyword extraction (order-independent)
-                const upperLine = trimmedLine.toUpperCase();
-                const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
-                                     upperLine.includes('PRIVATE') ? 'private' as const : undefined;
-                const isShared = upperLine.includes('SHARED');
-                
+
+                const { accessModifier, isShared } = GPLParser.procedureModifiers(trimmedLine);
+
                 symbols.push({
                     name,
                     kind: GPLSymbolKind.Sub,
@@ -332,31 +297,9 @@ export class GPLParser {
                     docComment
                 });
 
-                if (includeParameters && params.length > 0) {
-                    // 파라미터는 여는 괄호 뒤에서 찾는다 — 프로시저 이름과 같은 이름(대소문자
-                    // 무시)의 파라미터가 프로시저 이름 위치로 잡히지 않도록 (findNameColumn 참조).
-                    const paramSearchFrom = line.indexOf('(', startIndex + name.length) + 1;
-                    for (const p of params) {
-                        const { name: pName, type: pType } = extractParamName(p);
-                        if (!pName) continue;
+                pushParameterSymbols(line, i, name, startIndex, params);
 
-                        const pStart = GPLParser.findNameColumn(line, pName, paramSearchFrom);
-                        symbols.push({
-                            name: pName,
-                            kind: GPLSymbolKind.Variable,
-                            range: { start: Math.max(0, pStart), end: Math.max(0, pStart) + pName.length },
-                            line: i,
-                            filePath,
-                            module: currentModule,
-                            className: currentClass,
-                            returnType: pType,
-                            isLocal: true,
-                            isParameter: true
-                        });
-                    }
-                }
-
-                // Enter sub block: skip local Dim declarations inside
+                // Enter sub block (로컬 선언 처리는 includeLocals 옵션을 따른다)
                 blockDepth++;
                 continue;
             }
@@ -591,6 +534,52 @@ export class GPLParser {
      * fromIndex를 주면 그 위치부터 찾는다 — 파라미터는 여는 괄호 뒤부터 찾아
      * 프로시저와 같은 이름(대소문자 무시)이어도 프로시저 이름 위치에 걸리지 않는다.
      */
+    /**
+     * 프로시저 헤더의 수식어 추출 (키워드 순서 무관, Function/Sub 공용).
+     */
+    private static procedureModifiers(trimmedLine: string): { accessModifier?: 'public' | 'private'; isShared: boolean } {
+        const upperLine = trimmedLine.toUpperCase();
+        const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
+                             upperLine.includes('PRIVATE') ? 'private' as const : undefined;
+        const isShared = upperLine.includes('SHARED');
+        return { accessModifier, isShared };
+    }
+
+    /**
+     * 파라미터 선언 문자열에서 이름/타입 추출.
+     * Examples:
+     * - "axis As Integer"
+     * - "ByRef settings() As AxisZeroSetting"
+     * - "Optional speed As Integer = 10"
+     * - "robotArmList() As RobotArm"
+     */
+    private static extractParamName(param: string): { name?: string; type?: string } {
+        const cleaned = param
+            .replace(/\b(ByVal|ByRef|Optional|ParamArray)\b/gi, '')
+            .trim();
+
+        const asMatch = cleaned.match(/\bAs\s+(\w+)\s*(\(\s*,*\s*\))?/i);
+        let type = asMatch ? asMatch[1] : undefined;
+        const typeIsArray = !!(asMatch && asMatch[2]);
+
+        const beforeAs = cleaned.split(/\bAs\b/i)[0].trim();
+        if (!beforeAs) {
+            if (type && typeIsArray) { type += '[]'; }
+            return { type };
+        }
+
+        // The identifier is typically the last token before "As".
+        const tokens = beforeAs.split(/\s+/).filter(Boolean);
+        const last = tokens[tokens.length - 1] || '';
+        // 배열 파라미터(`armList() As RobotArm` / `x As Integer()`)는 로컬 배열 Dim과
+        // 동일하게 `Type[]`로 기록한다 — 호출부 인자 타입 추론(오버로드 해석)과
+        // 멤버 접근의 배열 인식이 일관되도록. (소비처는 [] 접미사를 벗겨 요소 타입을 쓴다.)
+        const nameIsArray = /\(.*\)$/.test(last);
+        if (type && (typeIsArray || nameIsArray)) { type += '[]'; }
+        const name = last.replace(/\(.*\)$/, '').replace(/[^A-Za-z0-9_]/g, '');
+        return { name: name || undefined, type };
+    }
+
     private static findNameColumn(line: string, name: string, fromIndex = 0): number {
         const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi');
         re.lastIndex = Math.max(0, fromIndex);
@@ -789,7 +778,7 @@ export class GPLParser {
         }
         
         // 함수 본문 분석을 위해 몇 줄 더 읽기
-        const functionBody = this.getFunctionBody(lineIndex, allLines);
+        const functionBody = GPLParser.getFunctionBody(lineIndex, allLines);
         
         // O(n²) 성능 패턴 감지 (outStr = outStr & ... 패턴)
         if (/outStr\s*=\s*outStr\s*&/i.test(functionBody)) {
@@ -822,14 +811,17 @@ export class GPLParser {
         return issues;
     }
 
+    /** 함수 본문 스캔 상한(줄 수) — 간단한 휴리스틱 분석용이므로 전체를 읽지 않는다. */
+    private static readonly XML_BODY_SCAN_LINES = 50;
+
     /**
-     * 함수의 본문을 추출 (간단한 구현)
+     * 함수의 본문을 추출 (간단한 구현, 최대 XML_BODY_SCAN_LINES줄까지 스캔)
      */
     static getFunctionBody(startLine: number, lines: string[]): string {
         let body = '';
         let depth = 0;
-        
-        for (let i = startLine; i < Math.min(startLine + 50, lines.length); i++) {
+
+        for (let i = startLine; i < Math.min(startLine + GPLParser.XML_BODY_SCAN_LINES, lines.length); i++) {
             const line = lines[i].trim();
             
             if (line.match(/^(Function|Sub)/i)) {

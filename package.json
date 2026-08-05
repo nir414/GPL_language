@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.8.0",
+    "version": "0.8.7",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -42,7 +42,8 @@
         "onCommand:gpl.stopAll",
         "onCommand:gpl.controller.disconnect",
         "onCommand:gpl.deploy",
-        "onCommand:gpl.deployRun",
+        "onCommand:gpl.start",
+        "onCommand:gpl.saveToFlash",
         "onCommand:gpl.quickCompile",
         "onCommand:gpl.debug.generateLaunch",
         "onCommand:gpl.debug.attachNow",
@@ -52,6 +53,15 @@
         "onCommand:gpl.logs.liveTerminal.start",
         "onCommand:gpl.logs.liveTerminal.stop",
         "onCommand:gpl.threads.refresh",
+        "onCommand:gpl.ai.debugAssist",
+        "onCommand:gpl.ai.debug.getState",
+        "onCommand:gpl.ai.debug.setBreakpoint",
+        "onCommand:gpl.ai.debug.clearBreakpoint",
+        "onCommand:gpl.ai.debug.breakThread",
+        "onCommand:gpl.ai.debug.stepThread",
+        "onCommand:gpl.ai.debug.continueThread",
+        "onCommand:gpl.ai.debug.evaluate",
+        "onCommand:gpl.ai.debug.loop",
         "onCommand:gpl.diagnosticSnapshot",
         "onDebugResolve:brooks-gpl"
     ],
@@ -218,13 +228,18 @@
             },
             {
                 "command": "gpl.deploy",
-                "title": "GPL: Deploy (Build Only)",
+                "title": "GPL: Deploy (/GPL 업로드 + Compile, Start 없음)",
                 "icon": "$(cloud-upload)"
             },
             {
-                "command": "gpl.deployRun",
-                "title": "GPL: Deploy & Run",
-                "icon": "$(rocket)"
+                "command": "gpl.start",
+                "title": "GPL: Start (실행만, 배포 없음)",
+                "icon": "$(play)"
+            },
+            {
+                "command": "gpl.saveToFlash",
+                "title": "GPL: Save to Flash (/flash/projects에 저장만)",
+                "icon": "$(save)"
             },
             {
                 "command": "gpl.quickCompile",
@@ -315,6 +330,43 @@
                 "command": "gpl.diagnosticSnapshot",
                 "title": "GPL: Diagnostic Snapshot",
                 "icon": "$(notebook-render-output)"
+            },
+            {
+                "command": "gpl.ai.debugAssist",
+                "title": "GPL: AI Debug Assist",
+                "icon": "$(hubot)"
+            },
+            {
+                "command": "gpl.ai.debug.getState",
+                "title": "GPL: AI Debug Get State"
+            },
+            {
+                "command": "gpl.ai.debug.setBreakpoint",
+                "title": "GPL: AI Debug Set Breakpoint"
+            },
+            {
+                "command": "gpl.ai.debug.clearBreakpoint",
+                "title": "GPL: AI Debug Clear Breakpoint"
+            },
+            {
+                "command": "gpl.ai.debug.breakThread",
+                "title": "GPL: AI Debug Break Thread"
+            },
+            {
+                "command": "gpl.ai.debug.stepThread",
+                "title": "GPL: AI Debug Step Thread"
+            },
+            {
+                "command": "gpl.ai.debug.continueThread",
+                "title": "GPL: AI Debug Continue Thread"
+            },
+            {
+                "command": "gpl.ai.debug.evaluate",
+                "title": "GPL: AI Debug Evaluate"
+            },
+            {
+                "command": "gpl.ai.debug.loop",
+                "title": "GPL: AI Debug Loop"
             },
             {
                 "command": "gpl.controller.threadStart",
@@ -437,37 +489,47 @@
                 {
                     "command": "gpl.threads.refresh",
                     "when": "view == gplThreads",
-                    "group": "navigation@2"
+                    "group": "2_tools@1"
                 },
                 {
                     "command": "gpl.deploy",
                     "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@4"
+                    "group": "1_deploy@0"
                 },
                 {
-                    "command": "gpl.deployRun",
+                    "command": "gpl.start",
                     "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@5"
+                    "group": "navigation@3"
                 },
                 {
                     "command": "gpl.quickCompile",
                     "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@5"
+                    "group": "navigation@2"
+                },
+                {
+                    "command": "gpl.saveToFlash",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "1_deploy@1"
                 },
                 {
                     "command": "gpl.diagnosticSnapshot",
                     "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@6"
+                    "group": "3_diag@1"
+                },
+                {
+                    "command": "gpl.ai.debugAssist",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "3_diag@2"
                 },
                 {
                     "command": "gpl.controller.showTraffic",
                     "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@7"
+                    "group": "3_diag@3"
                 },
                 {
                     "command": "gpl.controller.sendCommand",
                     "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@3"
+                    "group": "2_tools@2"
                 }
             ],
             "view/item/context": [
@@ -567,14 +629,19 @@
                     "group": "threadSection@1"
                 },
                 {
-                    "command": "gpl.deployRun",
+                    "command": "gpl.start",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@2"
                 },
                 {
-                    "command": "gpl.diagnosticSnapshot",
+                    "command": "gpl.saveToFlash",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@3"
+                },
+                {
+                    "command": "gpl.diagnosticSnapshot",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "threadSection@4"
                 },
                 {
                     "command": "gpl.controller.refreshFtp",
@@ -678,7 +745,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Auto-start runtime console (port 1403) after successful deploy/deployRun."
+                    "description": "Auto-start runtime console (port 1403) after successful deploy."
                 },
                 "gpl.runtimeConsole.autoStartOnDebug": {
                     "scope": "window",
@@ -818,7 +885,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Start 명령(프로그램 실행 — 로봇 모션 가능) 전에 확인 모달을 표시합니다. Deploy & Run의 START 단계와 디버그 attach 후 자동 Start에 적용됩니다."
+                    "description": "Start 명령(프로그램 실행 — 로봇 모션 가능) 전에 확인 모달을 표시합니다. GPL: Start 버튼과 디버그 attach 후 자동 Start에 적용됩니다."
                 },
                 "gpl.controller.ftpBasePath": {
                     "scope": "window",

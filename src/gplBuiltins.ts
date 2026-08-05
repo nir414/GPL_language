@@ -492,7 +492,8 @@ const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
  */
 const GPL_BUILTINS: GPLBuiltinEntry[] = [...GPL_CORE_BUILTINS, ...GPL_DICTIONARY_ENTRIES];
 
-function normalize(value: string): string {
+/** 내장 심볼 이름 비교용 정규화 (trim + 소문자화). */
+function normalizeBuiltinName(value: string): string {
     return value.trim().toLowerCase();
 }
 
@@ -510,7 +511,7 @@ export function getGplBuiltinReferenceUrl(entry: GPLBuiltinEntry): string {
  * - tail: Abs (유일할 때)
  */
 export function findGplBuiltin(name: string): GPLBuiltinEntry | undefined {
-    const target = normalize(name);
+    const target = normalizeBuiltinName(name);
     if (!target) {
         return undefined;
     }
@@ -529,7 +530,7 @@ export function findGplBuiltin(name: string): GPLBuiltinEntry | undefined {
             return false;
         }
         const tail = b.name.includes('.') ? b.name.split('.').pop()! : b.name;
-        return normalize(tail) === target;
+        return normalizeBuiltinName(tail) === target;
     });
 
     if (tailMatches.length === 1) {

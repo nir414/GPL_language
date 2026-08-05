@@ -4,6 +4,47 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`GPL: Start` 명령(`gpl.start`) 추가** — 배포 없이 `Start <project>`만 전송합니다. 기존 `Deploy & Run`의 START 단계를 분리한 것으로, Start 전 확인 모달(`gpl.controller.requireStartConfirmation`)과 런타임 콘솔 준비는 동일하게 적용됩니다.
+- **`GPL: Save to Flash` 명령(`gpl.saveToFlash`) 추가** — 로컬 프로젝트를 `ftp://<제어기IP>/flash/projects/<projectName>`에 미러 동기화로 저장만 합니다(Stop/Unload/Load/Compile 없음). 테스트는 `/GPL`, 영구 저장은 flash라는 이원화 원칙의 저장 담당.
+
+### Changed
+
+- **Deploy 기본 업로드 위치가 `/GPL/<projectName>` 직접 업로드로 변경** — `gpl.deploy`(Build Only)도 Quick Compile/디버그 F5와 동일하게 /GPL 직접 미러 업로드 + Compile을 수행합니다(Unload/Load 생략). `/GPL`에 폴더가 없으면 FTP로 생성해 업로드합니다(Load 문서 Remarks가 허용하는 경로 — 최초 생성 인식 여부는 실기기 검증 전, 실패 시 Save to Flash + Load로 복구 안내). `/flash/projects`는 더 이상 Deploy가 자동으로 건드리지 않습니다.
+- **`Deploy & Run`(`gpl.deployRun`) 버튼 제거** — Deploy와 Start를 분리 운용합니다(Deploy → 필요 시 GPL: Start).
+- autoOnSave(변경 파일만 업로드) 경로는 `/GPL` 폴더가 없을 때 불완전한 폴더 생성을 막기 위해 기존(flash + Load) 경로로 폴백합니다.
+- **심볼 조회 성능 개선** — 정의 이동·자동완성·참조 조회가 이름 기준 인덱스 캐시를 사용하도록 바뀌어, 대규모 워크스페이스에서 반복 조회의 체감 지연을 줄였습니다.
+
+## [0.8.3] - 2026-07-24
+
+### Added
+
+- **AI 자율 디버깅 API(`gpl.ai.debug.*`) 추가**
+  - `gpl.ai.debug.getState`: 스레드/스택/브레이크포인트 상태를 구조화 반환
+  - `gpl.ai.debug.setBreakpoint` / `gpl.ai.debug.clearBreakpoint`: GDE 실측 no-space 형식으로 BP 제어
+  - `gpl.ai.debug.breakThread` / `gpl.ai.debug.stepThread` / `gpl.ai.debug.continueThread`: 스레드 실행 제어
+  - `gpl.ai.debug.evaluate`: `Show Variable -eval` 기반 식/변수 평가 결과 반환
+  - `gpl.ai.debug.loop`: 스텝 반복 + watch 수집 + 조건(`equals/contains/regex`) 충족 시 자동 중단
+
+### Changed
+
+- README에 AI 자율 디버깅 API 섹션을 추가하고 `v0.8.2` 기준 사용 예시를 반영했습니다.
+
+## [0.8.1] - 2026-07-24
+
+### Added
+
+- **AI Debug Assist 명령(`gpl.ai.debugAssist`) 추가**
+  - 확장 명령만 사용해 안전한 디버깅 기본 순서를 오케스트레이션합니다.
+  - 실행 모드: `진단만`, `Build Only + 진단`, `Build Only + 콘솔`, `Build Only + Attach`.
+  - 내부 순서: 제어기 연결 확인 → 상태 스냅샷 수집 → (모드별) Build Only → (옵션) 콘솔/Attach → 최종 진단 스냅샷.
+  - 실행 결과를 `GPL Language Support` Output 채널의 `[AI Debug Assist]` 섹션에 구조화해 기록합니다.
+
+### Changed
+
+- `README.md`의 AI/Agent 디버깅 섹션에 `GPL: AI Debug Assist` 사용 목적과 동작 모드를 문서화했습니다.
+
 ## [0.8.0] - 2026-07-23
 
 ### Added

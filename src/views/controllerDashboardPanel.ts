@@ -70,13 +70,11 @@ export class ControllerDashboardPanel {
 			if (!msg || typeof msg.type !== 'string') {
 				return;
 			}
+			// 참고: 'setInterval' 메시지(폴링 주기 조절)는 아직 미구현 — 수신해도 무시된다.
 			switch (msg.type) {
 				case 'ready':
 				case 'refresh':
 					this.scheduleNextPoll(0);
-					break;
-				case 'setInterval':
-					// 향후 UI에서 폴링 주기 조절용. 현재는 무시 가능.
 					break;
 			}
 		}, null, this.disposables);

@@ -68,6 +68,14 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         return vscode.debug.activeDebugSession?.type === 'brooks-gpl';
     }
 
+    /** Function/Sub 심볼의 표시용 시그니처 문자열 생성 (`Function name(params) As T` / `Sub name(params)`). */
+    private buildCallableSignature(sym: GPLSymbol): string {
+        const params = sym.parameters?.join(', ') ?? '';
+        return sym.kind === GPLSymbolKind.Function
+            ? `Function ${sym.name}(${params})${sym.returnType ? ` As ${sym.returnType}` : ''}`
+            : `Sub ${sym.name}(${params})`;
+    }
+
     private getSymbolKindTitle(kind: GPLSymbolKind): string {
         switch (kind) {
             case GPLSymbolKind.Module:
@@ -255,11 +263,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
 
         if (compact && isCallable) {
             // 디버깅 중: 시그니처 한 줄만 (변수 값 호버를 가리지 않게).
-            const params = sym.parameters?.join(', ') ?? '';
-            const signature = sym.kind === GPLSymbolKind.Function
-                ? `Function ${sym.name}(${params})${sym.returnType ? ` As ${sym.returnType}` : ''}`
-                : `Sub ${sym.name}(${params})`;
-            md.appendCodeblock(signature, 'gpl');
+            md.appendCodeblock(this.buildCallableSignature(sym), 'gpl');
             md.isTrusted = false;
             return new vscode.Hover(md, wordRange);
         }
@@ -267,12 +271,8 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         md.appendMarkdown(`**${kindTitle}** \`${sym.name}\``);
 
         if (isCallable) {
-            const params = sym.parameters?.join(', ') ?? '';
-            const signature = sym.kind === GPLSymbolKind.Function
-                ? `Function ${sym.name}(${params})${sym.returnType ? ` As ${sym.returnType}` : ''}`
-                : `Sub ${sym.name}(${params})`;
             md.appendMarkdown('\n\n');
-            md.appendCodeblock(signature, 'gpl');
+            md.appendCodeblock(this.buildCallableSignature(sym), 'gpl');
         } else {
             const typeText = sym.returnType ? `: \`${sym.returnType}\`` : '';
             md.appendMarkdown(typeText);

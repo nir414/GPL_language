@@ -16,9 +16,9 @@ import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile } from './config';
 
 // Controller integration
-import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, getTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
+import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
 import { deploy, findProjectDirs, resolveErrorFilePath } from './controller/deployService';
-import { listRemoteDir, removeRemoteDir, removeRemoteFile, downloadProject } from './controller/ftpClient';
+import { listRemoteDir, removeRemoteDir, removeRemoteFile, downloadProject, mirrorProject } from './controller/ftpClient';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from './controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
 import { ConnectionStatusBar } from './views/connectionStatusBar';
@@ -31,12 +31,14 @@ import {
 	parseGpr,
 	parseStatus,
 	parseThreadList,
+	parseBreakList,
 	SHOW_THREAD_LIST_CMD,
 	classifyErrorEntry,
 	parseControllerErrorEntry,
 	extractErrorCodeFromEntry,
 	getErrorCodeHint,
 	isControllerNonBlockingStatus,
+	pickSourceCandidate,
 } from './controller/responseParser';
 import { startLiveLogTerminal, stopLiveLogTerminal, appendLiveLog, isLiveLogTerminalEnabled } from './log/liveLogTerminal';
 import { fireDebugPollTrigger } from './controller/debugBridge';
@@ -54,6 +56,7 @@ let deployDiagnostics: vscode.DiagnosticCollection;
 let runtimeConsoleHooksBound = false;
 let lastDeploySnapshot: SituationDeploySnapshot | undefined;
 let isDebugSessionActive = false;
+// 현재는 signature만 중복 알림 억제에 사용된다. mode/timestamp/summary는 향후 진단용 기록.
 const deployOutcomeHistory: Array<{ mode: 'Build' | 'Deploy & Run'; signature: string; timestamp: number; summary: string }> = [];
 // 히스토리 상한 — 장시간 세션에서 무한 증가 방지 (초과 시 오래된 항목부터 제거)
 const DEPLOY_OUTCOME_HISTORY_MAX = 50;
@@ -64,9 +67,33 @@ function pushDeployOutcome(entry: (typeof deployOutcomeHistory)[number]): void {
 	}
 }
 const recentDebugLogLines: string[] = [];
+// recentDebugLogLines 보관 상한 — 초과 시 오래된 라인부터 잘라낸다
+const RECENT_DEBUG_LOG_MAX = 240;
 let lastRuntimeErrorContext: RuntimeErrorContext | undefined;
 // 배포 뮤텍스 — 더블클릭/autoOnSave 중첩 등 동시 배포 실행 방지 (runDeploy에서 set/clear)
 let deployInFlight = false;
+// settled(비활성) 쓰레드 상태 집합 — deployService.threadSettled와 동일하게 유지할 것
+const SETTLED_THREAD_STATE = /^(idle|stopped|error)$/i;
+
+/** 런타임 콘솔 상태 스냅샷 (콘솔 미생성 시 '미연결' idle 스냅샷). */
+function currentRuntimeConsoleStatus(): RuntimeConsoleStatusSnapshot {
+	return runtimeConsole?.getStatusSnapshot() ?? {
+		state: 'idle',
+		connected: false,
+		reason: '미연결',
+		noPayloadStreak: 0,
+		immediateEofStreak: 0,
+		lastChangedAt: Date.now(),
+	};
+}
+
+/** 런타임 콘솔을 중지하고 트리 뷰의 콘솔 상태 표시를 갱신한다. */
+function stopRuntimeConsoleAndSyncTree(): void {
+	runtimeConsole?.stop();
+	if (runtimeConsole) {
+		controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
+	}
+}
 
 /**
  * RuntimeConsole 싱글톤 확보.
@@ -167,42 +194,33 @@ async function normalizeControllerCommandInput(rawCommand: string): Promise<stri
 	}
 
 	if (/^show\s+project\b/i.test(command)) {
-		const projectDir = getControllerConfig().ftpFlashProjectsPath;
-		const suggested = `Directory ${projectDir}`;
-		const action = await vscode.window.showWarningMessage(
-			'Show Project는 컨트롤러 명령이 아닙니다. 프로젝트 목록은 FTP 프로젝트 경로를 Directory로 확인합니다.',
-			suggested,
-			'그대로 실행',
-			'취소',
-		);
-		if (action === suggested) {
-			return suggested;
-		}
-		if (action === '그대로 실행') {
-			return command;
-		}
-		return undefined;
+		return confirmDirectorySuggestion(command,
+			'Show Project는 컨트롤러 명령이 아닙니다. 프로젝트 목록은 FTP 프로젝트 경로를 Directory로 확인합니다.');
 	}
 
 	if (/^directory\s*$/i.test(command)) {
-		const projectDir = getControllerConfig().ftpFlashProjectsPath;
-		const suggested = `Directory ${projectDir}`;
-		const action = await vscode.window.showWarningMessage(
-			'Directory는 path 인자가 필요합니다. 프로젝트 목록 확인에는 설정된 flash projects 경로를 사용합니다.',
-			suggested,
-			'그대로 실행',
-			'취소',
-		);
-		if (action === suggested) {
-			return suggested;
-		}
-		if (action === '그대로 실행') {
-			return command;
-		}
-		return undefined;
+		return confirmDirectorySuggestion(command,
+			'Directory는 path 인자가 필요합니다. 프로젝트 목록 확인에는 설정된 flash projects 경로를 사용합니다.');
 	}
 
 	return command;
+}
+
+/**
+ * flash projects 경로 기반 `Directory ...` 명령을 제안하고 사용자의 선택을 받는다.
+ * 반환: 제안 명령 / 원래 명령(그대로 실행) / undefined(취소).
+ */
+async function confirmDirectorySuggestion(command: string, message: string): Promise<string | undefined> {
+	const projectDir = getControllerConfig().ftpFlashProjectsPath;
+	const suggested = `Directory ${projectDir}`;
+	const action = await vscode.window.showWarningMessage(message, suggested, '그대로 실행', '취소');
+	if (action === suggested) {
+		return suggested;
+	}
+	if (action === '그대로 실행') {
+		return command;
+	}
+	return undefined;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -215,29 +233,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 	function logOutput(msg: string): void {
 		recentDebugLogLines.push(`[main] ${msg}`);
-		if (recentDebugLogLines.length > 240) {
-			recentDebugLogLines.splice(0, recentDebugLogLines.length - 240);
+		if (recentDebugLogLines.length > RECENT_DEBUG_LOG_MAX) {
+			recentDebugLogLines.splice(0, recentDebugLogLines.length - RECENT_DEBUG_LOG_MAX);
 		}
 		outputChannel.appendLine(msg);
 		appendLiveLog(`[main] ${msg}`);
-	}
-
-	function logConsole(msg: string): void {
-		recentDebugLogLines.push(`[console] ${msg}`);
-		if (recentDebugLogLines.length > 240) {
-			recentDebugLogLines.splice(0, recentDebugLogLines.length - 240);
-		}
-		consoleChannel?.appendLine(msg);
-		appendLiveLog(`[console] ${msg}`);
-	}
-
-	function logTraffic(msg: string): void {
-		recentDebugLogLines.push(`[traffic] ${msg}`);
-		if (recentDebugLogLines.length > 240) {
-			recentDebugLogLines.splice(0, recentDebugLogLines.length - 240);
-		}
-		trafficChannel.appendLine(msg);
-		appendLiveLog(`[traffic] ${msg}`);
 	}
 
 	function sleep(ms: number): Promise<void> {
@@ -246,7 +246,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 	async function sendCommandWithBusyRetry(
 		command: string,
-		config?: Parameters<typeof sendCommand>[1],
 		options?: { maxAttempts?: number; baseDelayMs?: number },
 	): Promise<string> {
 		const maxAttempts = Math.max(1, options?.maxAttempts ?? 4);
@@ -255,7 +254,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
-				const resp = await sendCommand(command, config);
+				const resp = await sendCommand(command);
 				const status = parseStatus(resp);
 				if (status.code === 0) {
 					return resp;
@@ -285,7 +284,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const target = threadName.toLowerCase();
 		for (let i = 1; i <= maxAttempts; i++) {
 			try {
-				const resp = await sendCommandWithBusyRetry(SHOW_THREAD_LIST_CMD, undefined, { maxAttempts: 2, baseDelayMs: 250 });
+				const resp = await sendCommandWithBusyRetry(SHOW_THREAD_LIST_CMD, { maxAttempts: 2, baseDelayMs: 250 });
 				const threads = parseThreadList(resp);
 				const found = threads.find(t => t.name.toLowerCase() === target);
 				if (!found) {
@@ -296,7 +295,7 @@ export function activate(context: vscode.ExtensionContext) {
 				// 'stopp' 부분 일치는 'Stopped'(정지 완료)까지 활성으로 오판했다 —
 				// 집합 밖 상태(Running/Stopping 등)만 활성으로 본다.
 				const state = (found.state || '').toString().trim();
-				if (/^(idle|stopped|error)$/i.test(state)) {
+				if (SETTLED_THREAD_STATE.test(state)) {
 					return true;
 				}
 			} catch {
@@ -312,14 +311,14 @@ export function activate(context: vscode.ExtensionContext) {
 	async function verifyAllStopped(maxAttempts = 6): Promise<boolean> {
 		for (let i = 1; i <= maxAttempts; i++) {
 			try {
-				const resp = await sendCommandWithBusyRetry(SHOW_THREAD_LIST_CMD, undefined, { maxAttempts: 2, baseDelayMs: 250 });
+				const resp = await sendCommandWithBusyRetry(SHOW_THREAD_LIST_CMD, { maxAttempts: 2, baseDelayMs: 250 });
 				const threads = parseThreadList(resp);
 				if (threads.length === 0) {
 					return true;
 				}
 
 				// verifyThreadStopped와 동일한 settled 집합 — 'Stopped'를 활성으로 오판하지 않는다.
-				const hasActive = threads.some(t => !/^(idle|stopped|error)$/i.test((t.state || '').toString().trim()));
+				const hasActive = threads.some(t => !SETTLED_THREAD_STATE.test((t.state || '').toString().trim()));
 				if (!hasActive) {
 					return true;
 				}
@@ -346,7 +345,7 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 
 		try {
-			await sendCommandWithBusyRetry('SoftEStop', undefined, { maxAttempts: 3, baseDelayMs: 500 });
+			await sendCommandWithBusyRetry('SoftEStop', { maxAttempts: 3, baseDelayMs: 500 });
 			logOutput('[Recovery] SoftEStop executed');
 			await sleep(800);
 			const ok = targetName ? await verifyThreadStopped(targetName, 8) : await verifyAllStopped(8);
@@ -394,10 +393,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	async function normalizeOpenGplDocuments(reason: string): Promise<void> {
 		for (const document of vscode.workspace.textDocuments) {
-			if (!isGplFile(document) || document.languageId === 'gpl') {
-				continue;
-			}
-
+			// 대상 여부 판정은 normalizeGplDocumentLanguage 진입부에서 수행한다.
 			await normalizeGplDocumentLanguage(document, reason);
 		}
 	}
@@ -796,16 +792,7 @@ export function activate(context: vscode.ExtensionContext) {
 	updateUiContexts(false);
 
 	controllerTree = new ControllerTreeProvider();
-	controllerTree.setRuntimeConsoleStatus(
-		runtimeConsole?.getStatusSnapshot() ?? {
-			state: 'idle',
-			connected: false,
-			reason: '미연결',
-			noPayloadStreak: 0,
-			immediateEofStreak: 0,
-			lastChangedAt: Date.now(),
-		},
-	);
+	controllerTree.setRuntimeConsoleStatus(currentRuntimeConsoleStatus());
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider('gplThreads', controllerTree)
 	);
@@ -1053,10 +1040,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// 연결 유실 감지 → 상태바 + 알림 갱신 (구독 해제를 위해 subscriptions에 등록)
 	context.subscriptions.push(
 		controllerTree.onDidLoseConnection(() => {
-			runtimeConsole?.stop();
-			if (runtimeConsole) {
-				controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
-			}
+			stopRuntimeConsoleAndSyncTree();
 			setControllerConnected(false);
 			// disconnect 명령과 동일하게 낡은 런타임 에러 컨텍스트를 정리한다.
 			lastRuntimeErrorContext = undefined;
@@ -1172,7 +1156,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.debug.attachNow', async () => {
 			// 중복 세션 방지: 이미 brooks-gpl 세션이 살아있으면 사용자에게 처리 방식 선택을 요청
-			const existing = (vscode.debug as any).activeDebugSession as vscode.DebugSession | undefined;
+			const existing = vscode.debug.activeDebugSession;
 			const hasGplSession = existing?.type === 'brooks-gpl';
 			if (hasGplSession) {
 				const pick = await vscode.window.showWarningMessage(
@@ -1219,10 +1203,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.disconnect', () => {
 			// 싱글톤 인스턴스는 보존하고 연결만 끊는다 (v0.5.48 일관성).
-			runtimeConsole?.stop();
-			if (runtimeConsole) {
-				controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
-			}
+			stopRuntimeConsoleAndSyncTree();
 			clearSessionControllerOverride();
 			setControllerConnected(false);
 			lastRuntimeErrorContext = undefined;
@@ -1303,22 +1284,9 @@ export function activate(context: vscode.ExtensionContext) {
 			// 저장 파일이 속한 프로젝트가 이미 결정된 경우(autoOnSave 등) QuickPick 없이 그대로 사용.
 			projectDir = quickOpts.overrideProjectDir;
 		} else {
-			const projectDirs = await findProjectDirs();
-			if (projectDirs.length === 0) {
-				vscode.window.showWarningMessage('워크스페이스에서 .gpr 프로젝트 파일을 찾을 수 없습니다.');
-				return;
-			}
-
-			if (projectDirs.length === 1) {
-				projectDir = projectDirs[0];
-			} else {
-				const pick = await vscode.window.showQuickPick(
-					projectDirs.map(d => ({ label: d })),
-					{ placeHolder: '배포할 프로젝트를 선택하세요' }
-				);
-				if (!pick) { return; }
-				projectDir = pick.label;
-			}
+			const picked = await pickWorkspaceProjectDir('배포할 프로젝트를 선택하세요');
+			if (!picked) { return; }
+			projectDir = picked;
 		}
 
 		const mode = quickOpts?.quick ? 'Quick Compile' : skipStart ? 'Build' : 'Deploy & Run';
@@ -1343,8 +1311,9 @@ export function activate(context: vscode.ExtensionContext) {
 				skipStop: quickOpts?.skipStop,
 				skipUnchanged: quickOpts?.skipUnchanged,
 				changedFiles: quickOpts?.changedFiles,
-				// Quick Compile은 /GPL 직접 업로드 모드 사용 (원격에 /GPL/<name> 없으면 자동 폴백)
-				directGpl: quickOpts?.quick,
+				// 모든 배포는 /GPL 직접 업로드가 기본 (테스트는 /GPL, flash 저장은 gpl.saveToFlash 담당).
+				// /GPL/<name>이 없으면 FTP로 생성 — 단 changedFiles(autoOnSave) 경로는 클래식 폴백.
+				directGpl: true,
 				// 활성 쓰레드 감지 시 사용자에게 Stop -all 여부를 모달로 확인.
 				// autoOnSave 경로(noStopPrompt)는 저장마다 팝업이 뜨면 방해되므로 조용히 중단 유지.
 				confirmStopOnActive: quickOpts?.quick && !quickOpts?.noStopPrompt
@@ -1609,14 +1578,112 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	// gpl.deploy — Stop + Upload + Compile (Start 안 함, 디버그 친화)
+	/** 워크스페이스에서 .gpr 프로젝트 폴더를 선택한다 (1개면 즉시, 여러 개면 QuickPick). */
+	async function pickWorkspaceProjectDir(placeHolder: string): Promise<string | undefined> {
+		const projectDirs = await findProjectDirs();
+		if (projectDirs.length === 0) {
+			vscode.window.showWarningMessage('워크스페이스에서 .gpr 프로젝트 파일을 찾을 수 없습니다.');
+			return undefined;
+		}
+		if (projectDirs.length === 1) { return projectDirs[0]; }
+		const pick = await vscode.window.showQuickPick(
+			projectDirs.map(d => ({ label: d })),
+			{ placeHolder }
+		);
+		return pick?.label;
+	}
+
+	/** 프로젝트 폴더의 .gpr에서 프로젝트명을 읽는다 (실패 시 undefined → 호출부에서 폴더명 폴백). */
+	function readGprProjectName(projectDir: string): string | undefined {
+		try {
+			const gprFile = fs.readdirSync(projectDir).find(f => f.toLowerCase().endsWith('.gpr'));
+			if (!gprFile) { return undefined; }
+			return parseGpr(fs.readFileSync(path.join(projectDir, gprFile), 'utf8')).projectName || undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	// gpl.deploy — Stop + /GPL 직접 업로드 + Compile (Start 안 함, 디버그 친화)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.deploy', () => runDeploy(true))
 	);
 
-	// gpl.deployRun — Stop + Upload + Compile + Start (기존 원클릭 실행)
+	// gpl.start — 배포 없이 Start만 전송. (구 gpl.deployRun의 START 단계를 분리한 것.
+	// Deploy와 Start를 합치지 않는다는 2026-07-24 결정 — 확인 모달은 동일하게 적용, §0.6)
 	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.deployRun', () => runDeploy(false))
+		vscode.commands.registerCommand('gpl.start', async () => {
+			const projectDir = await pickWorkspaceProjectDir('시작할 프로젝트를 선택하세요');
+			if (!projectDir) { return; }
+			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);
+
+			const requireStartConfirm = vscode.workspace.getConfiguration('gpl')
+				.get<boolean>('controller.requireStartConfirmation', true);
+			if (requireStartConfirm) {
+				const pick = await vscode.window.showWarningMessage(
+					`'${projectName}' 프로그램을 시작합니다. 로봇이 움직일 수 있습니다.`,
+					{ modal: true },
+					'Start'
+				);
+				if (pick !== 'Start') { return; }
+			}
+
+			// Start 전 런타임 콘솔 준비 (구 Deploy & Run의 beforeStart와 동일 처리)
+			try {
+				const console = ensureRuntimeConsole();
+				console.primeForRuntimeStart();
+				await console.waitUntilReady(1200);
+				controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
+			} catch (err: any) {
+				logOutput(`[Start] runtime console pre-start failed: ${err?.message ?? err}`);
+			}
+
+			try {
+				logOutput(`[Start] CMD Start ${projectName}`);
+				const raw = await sendCommand(`Start ${projectName}`);
+				const status = parseStatus(raw);
+				if (status.code === 0 || isControllerNonBlockingStatus(status.code)) {
+					if (status.code !== 0) {
+						logOutput(`[Start] STATUS ${status.code} non-blocking (controller environment warning)`);
+					}
+					vscode.window.showInformationMessage(`Start 완료: ${projectName}`);
+					consoleChannel.show(true);
+				} else {
+					vscode.window.showErrorMessage(`Start 실패: STATUS ${status.code}: ${status.message || 'Unknown error'}`);
+				}
+				controllerTree?.refresh();
+			} catch (err: any) {
+				vscode.window.showErrorMessage(`Start 실패: ${err.message ?? err}`);
+			}
+		})
+	);
+
+	// gpl.saveToFlash — 로컬 프로젝트를 /flash/projects/<projectName>에 FTP 저장만 수행.
+	// 제어기 상태는 건드리지 않는다 (Stop/Unload/Load/Compile 없음 — 2026-07-24 결정).
+	// 미러 동기화: 크기 다른 파일만 업로드 + 원격 전용 파일 삭제(낡은 소스가 이후 Load에 섞이는 것 방지).
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.saveToFlash', async () => {
+			const projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요');
+			if (!projectDir) { return; }
+			const cfg = getControllerConfig();
+			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);
+			const remoteDir = `${cfg.ftpFlashProjectsPath}/${projectName}`;
+			outputChannel.show(true);
+			logOutput(`[SaveToFlash] ${projectDir} → ftp://${cfg.ip}${remoteDir} (미러 동기화, Load/Compile 없음)`);
+			try {
+				const stats = await mirrorProject(cfg.ip, projectDir, remoteDir, {
+					onProgress: (current, total, file) => logOutput(`[SaveToFlash] [${current}/${total}] ${file}`),
+					onDelete: (file) => logOutput(`[SaveToFlash] del ${file} (원격 전용 — 로컬에 없어 삭제)`),
+				});
+				logOutput(`[SaveToFlash] 완료: ${stats.uploaded} sent, ${stats.skipped} skipped, ${stats.deleted} deleted`);
+				vscode.window.showInformationMessage(
+					`flash 저장 완료: ${remoteDir} (${stats.uploaded} 업로드, ${stats.skipped} 스킵${stats.deleted ? `, ${stats.deleted} 삭제` : ''})`
+				);
+				await controllerTree?.refreshAll();
+			} catch (err: any) {
+				vscode.window.showErrorMessage(`flash 저장 실패: ${err.message ?? err}`);
+			}
+		})
 	);
 
 	// gpl.quickCompile — 변경분만 업로드 + Compile (STOP/START 생략), 빠른 에러 확인
@@ -1730,10 +1797,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.console.stop', () => {
-			runtimeConsole?.stop();
-			if (runtimeConsole) {
-				controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
-			}
+			stopRuntimeConsoleAndSyncTree();
 			vscode.window.showInformationMessage('GPL 런타임 콘솔 중지');
 		})
 	);
@@ -1800,14 +1864,7 @@ export function activate(context: vscode.ExtensionContext) {
 				'',
 			].join('\n');
 			const body = controllerTree.buildSituationSnapshotMarkdown({
-				runtimeConsoleStatus: runtimeConsole?.getStatusSnapshot() ?? {
-					state: 'idle',
-					connected: false,
-					reason: '미연결',
-					noPayloadStreak: 0,
-					immediateEofStreak: 0,
-					lastChangedAt: Date.now(),
-				},
+				runtimeConsoleStatus: currentRuntimeConsoleStatus(),
 				deploySnapshot: lastDeploySnapshot,
 			});
 			const text = `${header}${body}`;
@@ -1822,14 +1879,7 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!controllerTree) { return; }
 			await controllerTree.refreshAll();
 			const markdown = controllerTree.buildDiagnosticSnapshotMarkdown({
-				runtimeConsoleStatus: runtimeConsole?.getStatusSnapshot() ?? {
-					state: 'idle',
-					connected: false,
-					reason: '미연결',
-					noPayloadStreak: 0,
-					immediateEofStreak: 0,
-					lastChangedAt: Date.now(),
-				},
+				runtimeConsoleStatus: currentRuntimeConsoleStatus(),
 				deploySnapshot: lastDeploySnapshot,
 			});
 
@@ -1844,6 +1894,500 @@ export function activate(context: vscode.ExtensionContext) {
 			vscode.window.showInformationMessage('진단 스냅샷을 클립보드에 복사했어.');
 		})
 	);
+
+	// AI 디버그 어시스트 — 확장 명령만 사용해 안전한 기본 순서를 한 번에 실행.
+	// (직접 FTP/TCP 우회 금지, 상태 변경은 기존 명령의 게이트를 그대로 사용)
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.ai.debugAssist', async () => {
+			type AssistMode = 'diagnose-only' | 'build-only' | 'build-and-console' | 'build-and-attach';
+			const modePick = await vscode.window.showQuickPick(
+				[
+					{ label: '진단만 (연결 + 스냅샷)', description: '상태만 수집하고 코드 변경 실행은 하지 않음', mode: 'diagnose-only' as AssistMode },
+					{ label: 'Build Only + 진단', description: '최신 로컬 코드 업로드/컴파일 검증 후 스냅샷', mode: 'build-only' as AssistMode },
+					{ label: 'Build Only + 콘솔', description: 'Build Only 후 1403 콘솔 연결 확인', mode: 'build-and-console' as AssistMode },
+					{ label: 'Build Only + Attach', description: 'Build Only 성공 시 빠른 Attach 시작', mode: 'build-and-attach' as AssistMode },
+				],
+				{ placeHolder: 'AI 디버그 어시스트 실행 모드를 선택하세요' },
+			);
+			if (!modePick) {
+				return { ok: false, cancelled: true, reason: 'user-cancelled' };
+			}
+
+			const startedAt = Date.now();
+			const steps: string[] = [];
+			const mode = modePick.mode;
+
+			const recordStep = (line: string): void => {
+				steps.push(line);
+				logOutput(`[AI Assist] ${line}`);
+			};
+
+			const summary = {
+				ok: false,
+				cancelled: false,
+				mode,
+				startedAt,
+				finishedAt: 0,
+				durationMs: 0,
+				steps,
+				deploy: undefined as SituationDeploySnapshot | undefined,
+				error: undefined as string | undefined,
+			};
+
+			try {
+				recordStep('시작');
+
+				if (!(controllerTree?.isConnected ?? false)) {
+					recordStep('제어기 연결 시도');
+					await vscode.commands.executeCommand('gpl.controller.connect');
+				}
+
+				if (!(controllerTree?.isConnected ?? false)) {
+					throw new Error('제어기 연결이 완료되지 않았습니다.');
+				}
+				recordStep('제어기 연결 확인 완료');
+
+				recordStep('초기 상태 스냅샷 수집');
+				await vscode.commands.executeCommand('gpl.controller.copySituationForChat');
+
+				if (mode !== 'diagnose-only') {
+					recordStep('Build Only 실행');
+					await vscode.commands.executeCommand('gpl.deploy');
+					summary.deploy = lastDeploySnapshot;
+					if (!lastDeploySnapshot?.success) {
+						throw new Error(`Build Only 실패 (${lastDeploySnapshot?.lastStage ?? 'unknown'})`);
+					}
+					recordStep('Build Only 성공');
+				}
+
+				if (mode === 'build-and-console' || mode === 'build-and-attach') {
+					recordStep('런타임 콘솔 연결 확인');
+					await vscode.commands.executeCommand('gpl.console.start');
+				}
+
+				recordStep('최종 진단 스냅샷 수집');
+				await vscode.commands.executeCommand('gpl.diagnosticSnapshot');
+
+				if (mode === 'build-and-attach') {
+					recordStep('빠른 Attach 시작');
+					await vscode.commands.executeCommand('gpl.debug.attachNow');
+				}
+
+				summary.ok = true;
+				recordStep('완료');
+				vscode.window.showInformationMessage('AI 디버그 어시스트 완료');
+			} catch (err: any) {
+				summary.error = err?.message ?? String(err);
+				recordStep(`실패: ${summary.error}`);
+				vscode.window.showErrorMessage(`AI 디버그 어시스트 실패: ${summary.error}`);
+			} finally {
+				summary.finishedAt = Date.now();
+				summary.durationMs = summary.finishedAt - startedAt;
+
+				const lines: string[] = [];
+				lines.push('# AI Debug Assist Result');
+				lines.push('');
+				lines.push(`- mode: ${summary.mode}`);
+				lines.push(`- ok: ${summary.ok}`);
+				lines.push(`- durationMs: ${summary.durationMs}`);
+				if (summary.deploy) {
+					lines.push(`- deploy.success: ${summary.deploy.success}`);
+					lines.push(`- deploy.lastStage: ${summary.deploy.lastStage}`);
+					lines.push(`- deploy.summary: ${summary.deploy.summary}`);
+				}
+				if (summary.error) {
+					lines.push(`- error: ${summary.error}`);
+				}
+				lines.push('');
+				lines.push('## steps');
+				for (const step of summary.steps) {
+					lines.push(`- ${step}`);
+				}
+
+				logOutput('');
+				logOutput('── [AI Debug Assist] ───────────────────────────────────');
+				for (const line of lines) {
+					logOutput(line);
+				}
+				logOutput('─────────────────────────────────────────────────────────');
+			}
+
+			return summary;
+		})
+	);
+
+	/** AI 디버그 루프용 평가값 정규화: STATUS/태그 제거 후 핵심 payload를 한 줄 값으로 정리 */
+	function normalizeEvalValue(raw: string): string {
+		const dataMatch = raw.match(/<DATA>([\s\S]*?)<\/DATA>/i);
+		const base = (dataMatch ? dataMatch[1] : raw)
+			.replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
+			.replace(/<[^>]+>/g, '')
+			.trim();
+		const lines = base.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+		if (lines.length === 0) { return ''; }
+		const first = lines[0];
+		const csv = first.split(',').map(s => s.trim());
+		if (csv.length >= 3) {
+			return csv.slice(2).join(', ').trim();
+		}
+		return first;
+	}
+
+	function aiBreakpointCommand(projectName: string, fileName: string, line: number, clear = false): string {
+		return `${clear ? 'Set Nobreak' : 'Set Break'} ${projectName} "${fileName}"${line}`;
+	}
+
+	type AIDebugStepMode = 'into' | 'over' | 'out';
+
+	function aiBuildStepCommand(threadName: string, mode: AIDebugStepMode): string {
+		if (mode === 'over') { return `Step ${threadName} -over -noerror`; }
+		if (mode === 'out') { return `Step ${threadName} -out -noerror`; }
+		return `Step ${threadName} -noerror`;
+	}
+
+	// ─── AI 자율 디버깅 API 공통 규약 ─────────────────────────────
+	// 1) 모든 `gpl.ai.debug.*` 명령은 예외를 밖으로 던지지 않고 `{ ok: false, error, detail }`로 반환한다.
+	//    (자율 루프를 도는 호출자가 항상 같은 형태의 결과를 받도록 하는 계약)
+	// 2) 결과 JSON을 Output(`GPL Language Support`)에 `[AI Debug]` 접두어로 기록한다.
+	//    executeCommand 반환값을 직접 받지 못하는 호출자(Output 채널만 읽는 AI 포함)도 결과를 확인할 수 있다.
+
+	type AiDebugResult = { ok: boolean; [key: string]: unknown };
+
+	function logAiDebugResult(commandId: string, result: AiDebugResult): void {
+		let serialized: string;
+		try {
+			serialized = JSON.stringify(result);
+		} catch {
+			serialized = '(unserializable result)';
+		}
+		if (serialized.length > 4000) {
+			serialized = `${serialized.slice(0, 4000)}…(truncated)`;
+		}
+		logOutput(`[AI Debug] ${commandId} => ${serialized}`);
+	}
+
+	function registerAiDebugCommand<TArgs>(
+		commandId: string,
+		handler: (args?: TArgs) => Promise<AiDebugResult>,
+	): void {
+		context.subscriptions.push(
+			vscode.commands.registerCommand(commandId, async (args?: TArgs) => {
+				let result: AiDebugResult;
+				try {
+					result = await handler(args);
+				} catch (err: any) {
+					result = { ok: false, error: 'command-failed', detail: err?.message ?? String(err) };
+				}
+				logAiDebugResult(commandId, result);
+				return result;
+			})
+		);
+	}
+
+	/** 정지 계열로 간주하는 스레드 상태 (Error 포함 — 위치/변수 확인이 가능한 상태) */
+	const AI_PAUSED_STATES: ReadonlySet<string> = new Set(['Paused', 'Break', 'Error']);
+
+	/**
+	 * 스레드가 정지 계열 상태로 들어올 때까지 `Show Thread` 폴링.
+	 * `Break`/`Step`의 STATUS 0은 "접수"일 수 있어(§0.6 `Stop -all`과 같은 패턴),
+	 * 실제 정지 완료는 스레드 상태로 확인한다. (STATUS 의미는 실기기 실측으로 확정 전 — 방어적 처리)
+	 */
+	async function waitForThreadPause(
+		threadName: string,
+		timeoutMs = 5000,
+		pollIntervalMs = 150,
+	): Promise<{ paused: boolean; state?: string; thread?: ReturnType<typeof parseThreadList>[number] }> {
+		const deadline = Date.now() + Math.max(0, timeoutMs);
+		for (;;) {
+			const resp = await sendCommand(SHOW_THREAD_LIST_CMD);
+			const threads = parseThreadList(resp);
+			const found = threads.find(t => t.name === threadName);
+			if (found && AI_PAUSED_STATES.has(found.state)) {
+				return { paused: true, state: found.state, thread: found };
+			}
+			if (Date.now() >= deadline) {
+				return { paused: false, state: found?.state, thread: found };
+			}
+			await sleep(pollIntervalMs);
+		}
+	}
+
+	registerAiDebugCommand('gpl.ai.debug.getState', async (args?: { includeStackForThread?: string; includeBreakpoints?: boolean }) => {
+		if (!(controllerTree?.isConnected ?? false)) {
+			return { ok: false, error: 'not-connected' };
+		}
+
+		const threadResp = await sendCommand(SHOW_THREAD_LIST_CMD);
+		const threads = parseThreadList(threadResp);
+		let stack: ReturnType<typeof parseStack> = [];
+		if (args?.includeStackForThread) {
+			const stackResp = await sendCommand(`Show Stack ${args.includeStackForThread}`);
+			stack = parseStack(stackResp);
+		}
+		let breakpoints: ReturnType<typeof parseBreakList> = [];
+		if (args?.includeBreakpoints ?? true) {
+			const breakResp = await sendCommand('Show Break');
+			breakpoints = parseBreakList(breakResp);
+		}
+
+		return {
+			ok: true,
+			timestamp: Date.now(),
+			connected: controllerTree?.isConnected ?? false,
+			threads,
+			stack,
+			breakpoints,
+		};
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.setBreakpoint', async (args?: { file: string; line: number; projectName?: string }) => {
+		if (!args?.file || !args?.line) {
+			return { ok: false, error: 'missing-file-or-line' };
+		}
+		const projectName = (args.projectName || await resolveExpectedProjectName() || '').trim();
+		if (!projectName) {
+			return { ok: false, error: 'missing-projectName' };
+		}
+		const fileName = path.basename(args.file);
+		const cmd = aiBreakpointCommand(projectName, fileName, Math.max(1, Math.floor(args.line)), false);
+		const raw = await sendCommand(cmd);
+		const status = parseStatus(raw);
+		return {
+			ok: status.code === 0,
+			command: cmd,
+			status,
+		};
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.clearBreakpoint', async (args?: { file: string; line: number; projectName?: string }) => {
+		if (!args?.file || !args?.line) {
+			return { ok: false, error: 'missing-file-or-line' };
+		}
+		const projectName = (args.projectName || await resolveExpectedProjectName() || '').trim();
+		if (!projectName) {
+			return { ok: false, error: 'missing-projectName' };
+		}
+		const fileName = path.basename(args.file);
+		const cmd = aiBreakpointCommand(projectName, fileName, Math.max(1, Math.floor(args.line)), true);
+		const raw = await sendCommand(cmd);
+		const status = parseStatus(raw);
+		return {
+			ok: status.code === 0,
+			command: cmd,
+			status,
+		};
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.breakThread', async (args?: { threadName: string; waitForPause?: boolean; waitTimeoutMs?: number }) => {
+		if (!args?.threadName) {
+			return { ok: false, error: 'missing-threadName' };
+		}
+		const cmd = `Break ${args.threadName}`;
+		const raw = await sendCommand(cmd);
+		const status = parseStatus(raw);
+		if (status.code !== 0) {
+			return { ok: false, command: cmd, status };
+		}
+		// STATUS 0은 "접수"로 보고, 기본은 실제 정지 진입까지 확인한다. 종전 동작은 waitForPause=false.
+		if (args.waitForPause ?? true) {
+			const wait = await waitForThreadPause(args.threadName, args.waitTimeoutMs ?? 5000);
+			if (!wait.paused) {
+				return { ok: false, error: 'pause-timeout', command: cmd, status, state: wait.state };
+			}
+			return { ok: true, command: cmd, status, state: wait.state };
+		}
+		return { ok: true, command: cmd, status };
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.stepThread', async (args?: { threadName: string; mode?: AIDebugStepMode; waitForPause?: boolean; waitTimeoutMs?: number }) => {
+		if (!args?.threadName) {
+			return { ok: false, error: 'missing-threadName' };
+		}
+		const mode: AIDebugStepMode = args.mode ?? 'over';
+		const cmd = aiBuildStepCommand(args.threadName, mode);
+		const raw = await sendCommand(cmd);
+		const status = parseStatus(raw);
+		if (status.code !== 0) {
+			return { ok: false, mode, command: cmd, status };
+		}
+		// 스텝 완료(다음 정지 위치 도달)까지 확인해야 이어지는 Show Stack/evaluate가 이전 위치를 읽지 않는다.
+		if (args.waitForPause ?? true) {
+			const wait = await waitForThreadPause(args.threadName, args.waitTimeoutMs ?? 5000);
+			if (!wait.paused) {
+				return { ok: false, error: 'pause-timeout', mode, command: cmd, status, state: wait.state };
+			}
+			return { ok: true, mode, command: cmd, status, state: wait.state };
+		}
+		return { ok: true, mode, command: cmd, status };
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.continueThread', async (args?: { threadName: string; noError?: boolean }) => {
+		if (!args?.threadName) {
+			return { ok: false, error: 'missing-threadName' };
+		}
+		const cmd = args.noError ? `Continue ${args.threadName} -noerror` : `Continue ${args.threadName}`;
+		const raw = await sendCommand(cmd);
+		const status = parseStatus(raw);
+		return { ok: status.code === 0, command: cmd, status };
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.evaluate', async (args?: { threadName: string; frameIndex?: number; expression: string }) => {
+		if (!args?.threadName || !args?.expression) {
+			return { ok: false, error: 'missing-threadName-or-expression' };
+		}
+		const frameIndex = Math.max(0, Math.floor(args.frameIndex ?? 0));
+		const cmd = `Show Variable -eval ${args.threadName} ${frameIndex} ${args.expression}`;
+		const raw = await sendCommand(cmd);
+		const status = parseStatus(raw);
+		const value = normalizeEvalValue(raw);
+		return {
+			ok: status.code === 0,
+			command: cmd,
+			status,
+			value,
+			raw,
+		};
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.loop', async (args?: {
+		threadName?: string;
+		stepMode?: AIDebugStepMode;
+		maxSteps?: number;
+		watchExpressions?: string[];
+		stopWhen?: { expression: string; equals?: string; contains?: string; matches?: string };
+		stepWaitTimeoutMs?: number;
+	}) => {
+		if (!(controllerTree?.isConnected ?? false)) {
+			await vscode.commands.executeCommand('gpl.controller.connect');
+		}
+		if (!(controllerTree?.isConnected ?? false)) {
+			return { ok: false, error: 'not-connected' };
+		}
+
+		// stopWhen.matches는 루프 진입 전에 1회만 검증 — 잘못된 정규식이 루프 도중 예외로 터지지 않게 한다.
+		let stopWhenRegex: RegExp | undefined;
+		if (args?.stopWhen?.matches) {
+			try {
+				stopWhenRegex = new RegExp(args.stopWhen.matches);
+			} catch (err: any) {
+				return { ok: false, error: 'invalid-stopWhen-matches', detail: err?.message ?? String(err) };
+			}
+		}
+
+		const mode: AIDebugStepMode = args?.stepMode ?? 'over';
+		const maxSteps = Math.max(1, Math.min(50, Math.floor(args?.maxSteps ?? 10)));
+		const stepWaitTimeoutMs = Math.max(500, Math.floor(args?.stepWaitTimeoutMs ?? 5000));
+		const watches = (args?.watchExpressions ?? []).filter(Boolean);
+		const trace: Array<{
+			step: number;
+			threadName: string;
+			threadState?: string;
+			location?: { file: string; line: number; process: string };
+			watches: Array<{ expression: string; ok: boolean; value: string; statusCode: number }>;
+			stopWhen?: { expression: string; ok: boolean; value: string; statusCode: number; matched: boolean };
+			action: string;
+		}> = [];
+
+		let targetThread = (args?.threadName || '').trim();
+		// 시작 시점부터 Error인 스레드는 -noerror 스텝 진행을 허용하고,
+		// 루프 도중 Error로 "전이"한 경우에만 에러 정보와 함께 중단한다.
+		let allowErrorState = true;
+		for (let i = 1; i <= maxSteps; i++) {
+			const threadResp = await sendCommand(SHOW_THREAD_LIST_CMD);
+			const threads = parseThreadList(threadResp);
+			if (!targetThread) {
+				const candidate = threads.find(t => AI_PAUSED_STATES.has(t.state));
+				targetThread = candidate?.name || '';
+			}
+			if (!targetThread) {
+				return { ok: false, error: 'no-paused-or-error-thread', trace };
+			}
+			const current = threads.find(t => t.name === targetThread);
+			if (!current) {
+				return { ok: false, error: 'thread-not-found', threadName: targetThread, steps: i - 1, trace };
+			}
+			if (current.state === 'Error' && !allowErrorState) {
+				trace.push({
+					step: i,
+					threadName: targetThread,
+					threadState: current.state,
+					watches: [],
+					action: `thread entered Error state (lastStatus: ${current.lastStatus || 'n/a'})`,
+				});
+				return { ok: true, stoppedBy: 'thread-error', mode, steps: i, lastStatus: current.lastStatus, trace };
+			}
+			allowErrorState = false;
+
+			const stackResp = await sendCommand(`Show Stack ${targetThread}`);
+			const frames = parseStack(stackResp);
+			const top = frames[0];
+
+			const watchResults: Array<{ expression: string; ok: boolean; value: string; statusCode: number }> = [];
+			for (const exp of watches) {
+				const evalResp = await sendCommand(`Show Variable -eval ${targetThread} 0 ${exp}`);
+				const st = parseStatus(evalResp);
+				const value = normalizeEvalValue(evalResp);
+				watchResults.push({ expression: exp, ok: st.code === 0, value, statusCode: st.code });
+			}
+
+			// stopWhen 평가 결과는 성공/실패와 무관하게 trace에 남긴다 —
+			// 표현식 오타(-eval 실패)를 호출자가 알아챌 수 있어야 한다.
+			let stopWhenResult: { expression: string; ok: boolean; value: string; statusCode: number; matched: boolean } | undefined;
+			if (args?.stopWhen?.expression) {
+				const condResp = await sendCommand(`Show Variable -eval ${targetThread} 0 ${args.stopWhen.expression}`);
+				const condStatus = parseStatus(condResp);
+				const condValue = normalizeEvalValue(condResp);
+				const equalsOk = args.stopWhen.equals !== undefined ? condValue === args.stopWhen.equals : false;
+				const containsOk = args.stopWhen.contains ? condValue.includes(args.stopWhen.contains) : false;
+				const regexOk = stopWhenRegex ? stopWhenRegex.test(condValue) : false;
+				const stopMatched = condStatus.code === 0 && (equalsOk || containsOk || regexOk);
+				stopWhenResult = {
+					expression: args.stopWhen.expression,
+					ok: condStatus.code === 0,
+					value: condValue,
+					statusCode: condStatus.code,
+					matched: stopMatched,
+				};
+				if (stopMatched) {
+					trace.push({
+						step: i,
+						threadName: targetThread,
+						threadState: current.state,
+						location: top ? { file: top.file, line: top.fileLine, process: top.process } : undefined,
+						watches: watchResults,
+						stopWhen: stopWhenResult,
+						action: `stopWhen matched: ${args.stopWhen.expression}=${condValue}`,
+					});
+					return { ok: true, stoppedBy: 'condition', mode, steps: i, trace };
+				}
+			}
+
+			const stepCmd = aiBuildStepCommand(targetThread, mode);
+			const stepResp = await sendCommand(stepCmd);
+			const stepStatus = parseStatus(stepResp);
+			trace.push({
+				step: i,
+				threadName: targetThread,
+				threadState: current.state,
+				location: top ? { file: top.file, line: top.fileLine, process: top.process } : undefined,
+				watches: watchResults,
+				stopWhen: stopWhenResult,
+				action: `${stepCmd} => STATUS ${stepStatus.code}`,
+			});
+
+			if (stepStatus.code !== 0) {
+				return { ok: false, error: `step-failed-${stepStatus.code}`, mode, steps: i, trace };
+			}
+
+			// Step STATUS 0은 접수 신호일 수 있어(§0.6 패턴), 실제 정지 복귀까지 확인 후 다음 반복으로 진행.
+			const wait = await waitForThreadPause(targetThread, stepWaitTimeoutMs);
+			if (!wait.paused) {
+				return { ok: false, error: 'step-pause-timeout', mode, steps: i, lastState: wait.state, trace };
+			}
+		}
+
+		return { ok: true, stoppedBy: 'maxSteps', mode, steps: maxSteps, trace };
+	});
 
 	// 포트 클릭 → 통신 테스트
 	context.subscriptions.push(
@@ -1911,7 +2455,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.stopAll', async () => {
 			try {
-				const stopResp = await sendCommandWithBusyRetry('Stop -all', undefined, { maxAttempts: 5, baseDelayMs: 500 });
+				const stopResp = await sendCommandWithBusyRetry('Stop -all', { maxAttempts: 5, baseDelayMs: 500 });
 				const status = parseStatus(stopResp);
 				if (status.code !== 0 && !isBusyStatus(status.code)) {
 					vscode.window.showErrorMessage(`전체 정지 실패: STATUS ${status.code} ${status.message}`);
@@ -2117,7 +2661,7 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!node?.thread?.name) { return; }
 			try {
 				const threadName = node.thread.name;
-				const stopResp = await sendCommandWithBusyRetry(`Stop ${threadName}`, undefined, { maxAttempts: 5, baseDelayMs: 400 });
+				const stopResp = await sendCommandWithBusyRetry(`Stop ${threadName}`, { maxAttempts: 5, baseDelayMs: 400 });
 				const status = parseStatus(stopResp);
 				if (status.code !== 0 && !isBusyStatus(status.code)) {
 					vscode.window.showErrorMessage(`쓰레드 정지 실패: STATUS ${status.code} ${status.message}`);
@@ -2423,7 +2967,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const ensureStoppedBeforeCompile = async (): Promise<boolean> => {
 				logOutput('│ Phase: Stop before Compile');
 				logOutput('│ Stop -all');
-				const stopResp = await sendCommandWithBusyRetry('Stop -all', undefined, { maxAttempts: 5, baseDelayMs: 500 });
+				const stopResp = await sendCommandWithBusyRetry('Stop -all', { maxAttempts: 5, baseDelayMs: 500 });
 				const stopStatus = parseStatus(stopResp);
 				if (stopStatus.code !== 0 && !isBusyStatus(stopStatus.code)) {
 					throw new Error(`Stop -all failed: STATUS ${stopStatus.code} ${stopStatus.message || ''}`.trimEnd());
@@ -2561,7 +3105,7 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!name) { return; }
 
 			try {
-				const stopResp = await sendCommandWithBusyRetry(`Stop ${name}`, undefined, { maxAttempts: 5, baseDelayMs: 400 });
+				const stopResp = await sendCommandWithBusyRetry(`Stop ${name}`, { maxAttempts: 5, baseDelayMs: 400 });
 				const status = parseStatus(stopResp);
 				if (status.code !== 0 && !isBusyStatus(status.code)) {
 					vscode.window.showErrorMessage(`${name} 중지 실패: STATUS ${status.code} ${status.message}`);
@@ -2608,8 +3152,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const stoppedLineDecoration = vscode.window.createTextEditorDecorationType({
 		isWholeLine: true,
 		backgroundColor: new vscode.ThemeColor('editor.stackFrameHighlightBackground'),
-		gutterIconPath: undefined,  // VS Code 내장 색상 사용
-		overviewRulerColor: new vscode.ThemeColor('editorOverviewRuler.warningForeground'),
+			overviewRulerColor: new vscode.ThemeColor('editorOverviewRuler.warningForeground'),
 		overviewRulerLane: vscode.OverviewRulerLane.Center,
 	});
 	context.subscriptions.push(stoppedLineDecoration);
@@ -2651,37 +3194,85 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	/**
-	 * Resolve a GPL filename (basename) to a workspace file path.
-	 * Scans all workspace folders for .gpl/.gpo files.
+	 * 재귀 스캔에서 제외할 디렉터리 판별 — gplDebugSession._isSkippedScanDir와 같은 규칙.
+	 * dot 디렉터리(.history/.git 등)와 빌드/출력 폴더 제외 — 특히 .history(Local History
+	 * 확장)의 stale 사본이 열리는 문제를 방지한다.
 	 */
-	function resolveGplFilePath(filename: string): string | undefined {
-		// 제어기가 전체 경로를 줄 수 있으므로 베이스네임만 비교 대상으로 삼는다.
-		const target = filename.replace(/^.*[\\/]/, '').toLowerCase();
-		const folders = vscode.workspace.workspaceFolders;
-		if (!folders) { return undefined; }
+	function isSkippedScanDir(name: string): boolean {
+		return name.startsWith('.')
+			|| name === 'node_modules'
+			|| name === 'out'
+			|| name === 'dist'
+			|| name === 'bin';
+	}
 
-		function scan(dir: string): string | undefined {
+	/** 워크스페이스에서 이름이 target(대소문자 무시)인 파일 전부를 수집한다. */
+	function findWorkspaceFilesByName(target: string): string[] {
+		const folders = vscode.workspace.workspaceFolders;
+		if (!folders) { return []; }
+		const lower = target.toLowerCase();
+		const results: string[] = [];
+		const scan = (dir: string): void => {
 			try {
-				const entries = require('fs').readdirSync(dir, { withFileTypes: true });
+				const entries = fs.readdirSync(dir, { withFileTypes: true });
 				for (const entry of entries) {
 					const full = path.join(dir, entry.name);
 					if (entry.isDirectory()) {
-						if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'out') { continue; }
-						const found = scan(full);
-						if (found) { return found; }
-					} else if (entry.name.toLowerCase() === target) {
-						return full;
+						if (isSkippedScanDir(entry.name)) { continue; }
+						scan(full);
+					} else if (entry.name.toLowerCase() === lower) {
+						results.push(full);
 					}
 				}
 			} catch { /* skip */ }
-			return undefined;
-		}
+		};
+		for (const folder of folders) { scan(folder.uri.fsPath); }
+		return results;
+	}
 
-		for (const folder of folders) {
-			const found = scan(folder.uri.fsPath);
-			if (found) { return found; }
+	/**
+	 * 제어기 트리의 기대 프로젝트와 이름이 일치하는 Project.gpr 폴더들을 수집한다.
+	 * 동명 소스 경합 시 우선 선택 기준 (gplDebugSession._updateProjectDirs와 같은 역할).
+	 */
+	function findExpectedProjectDirs(): string[] {
+		const expected = controllerTree?.getExpectedProjectName?.()?.trim();
+		if (!expected) { return []; }
+		const want = expected.toLowerCase();
+		const dirs: string[] = [];
+		for (const gprPath of findWorkspaceFilesByName('Project.gpr')) {
+			try {
+				const info = parseGpr(fs.readFileSync(gprPath, 'utf-8'));
+				if (info.projectName && info.projectName.toLowerCase() === want) {
+					dirs.push(path.dirname(gprPath));
+				}
+			} catch { /* skip */ }
 		}
-		return undefined;
+		return dirs;
+	}
+
+	/**
+	 * Resolve a GPL filename (basename) to a workspace file path.
+	 *
+	 * 디버그 어댑터(gplDebugSession._resolveSourcePath/_pickSourcePath)와 같은 규칙:
+	 * .history 등 dot 폴더 제외 + 동명 경합 시 기대 프로젝트 폴더 우선. 예전에는
+	 * 첫 매치를 그대로 반환해 .history의 stale 사본이 열렸다 (디버그 패널과 트리
+	 * 명령의 동작 불일치 원인).
+	 */
+	function resolveGplFilePath(filename: string): string | undefined {
+		// 제어기가 전체 경로를 줄 수 있으므로 베이스네임만 비교 대상으로 삼는다.
+		const target = filename.replace(/^.*[\\/]/, '');
+		const candidates = findWorkspaceFilesByName(target);
+		if (candidates.length === 0) { return undefined; }
+
+		const pick = pickSourceCandidate(candidates, findExpectedProjectDirs())!;
+		if (pick.ambiguous.length > 0) {
+			logOutput(
+				`⚠ 동명 소스 ${candidates.length}개 경합: "${target}" → ${pick.path} 선택 ` +
+				`(제외: ${pick.ambiguous.join(' | ')}). 엉뚱한 파일이 열리면 워크스페이스에서 ` +
+				`사본/백업 폴더를 정리하세요.`,
+			);
+		}
+		return pick.path;
 	}
 
 	context.subscriptions.push(
@@ -2753,6 +3344,18 @@ export function activate(context: vscode.ExtensionContext) {
 				outputChannel.appendLine(
 					`[Thread] ${threadName} 정지 위치: ${topFrame.file}:${topFrame.fileLine} (${topFrame.process})`,
 				);
+
+				// brooks-gpl 디버그 세션이 활성이면 디버거 포커스도 이 쓰레드로 전환한다
+				// (CALL STACK/Variables/Watch가 해당 쓰레드 기준으로 갱신 — 디버그 패널과의 동작 병합).
+				// 부가 기능이므로 실패해도 위치 표시에는 영향 없음.
+				const dbgSession = vscode.debug.activeDebugSession;
+				if (dbgSession?.type === 'brooks-gpl') {
+					try {
+						await dbgSession.customRequest('gplFocusThread', { name: threadName });
+					} catch (focusErr: any) {
+						outputChannel.appendLine(`[Thread] ${threadName} 디버거 포커스 연동 실패(무시): ${focusErr?.message ?? focusErr}`);
+					}
+				}
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`스택 조회 실패: ${err.message ?? err}`);
 			}

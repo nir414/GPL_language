@@ -63,10 +63,14 @@ export function getTrafficChannel(): vscode.OutputChannel | null {
 	return _trafficChannel;
 }
 
+/** 트래픽 로그용 타임스탬프 (`HH:mm:ss.SSS`, ko-KR 24시간제) — 1402/1403 로거 공용. */
+export function formatTrafficTimestamp(now: Date = new Date()): string {
+	return now.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+}
+
 function logTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
-	const now = new Date();
-	const ts = now.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
-	
+	const ts = formatTrafficTimestamp();
+
 	// 명령 포맷 라벨 추가 (송신 시 자동 판단)
 	let labeledMsg = message;
 	if (direction === '>>>') {

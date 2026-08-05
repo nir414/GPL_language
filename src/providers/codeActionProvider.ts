@@ -14,7 +14,7 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
         // 진단 정보 기반 코드 액션
         for (const diagnostic of context.diagnostics) {
             if (diagnostic.source === 'GPL XML Analysis' || diagnostic.source === 'GPL Performance Analysis') {
-                const action = this.createFixAction(document, diagnostic, range);
+                const action = this.createFixAction(document, diagnostic);
                 if (action) {
                     actions.push(action);
                 }
@@ -40,8 +40,7 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
      */
     private createFixAction(
         document: vscode.TextDocument,
-        diagnostic: vscode.Diagnostic,
-        range: vscode.Range
+        diagnostic: vscode.Diagnostic
     ): vscode.CodeAction | null {
         const action = new vscode.CodeAction(
             `수정: ${diagnostic.message}`,
@@ -90,7 +89,7 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
                 '내장 XML 인코더로 교체',
                 vscode.CodeActionKind.Refactor
             );
-            action.edit = this.createBuiltinEncoderReplacement(document, range, selectedText);
+            action.edit = this.createSafeEscapeXmlReplacement(document, range);
             actions.push(action);
         }
 
@@ -100,7 +99,7 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
                 '성능 최적화 (청크 기반 처리)',
                 vscode.CodeActionKind.RefactorRewrite
             );
-            action.edit = this.createPerformanceOptimization(document, range, selectedText);
+            action.edit = this.createFastEscapeXmlReplacement(document, range);
             actions.push(action);
         }
 
@@ -224,38 +223,6 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
         result = XmlDoc.EncodeEntities(XmlDoc.DecodeEntities(value))`;
         
         edit.replace(document.uri, range, fixedCode);
-        return edit;
-    }
-
-    /**
-     * 내장 인코더 교체
-     */
-    private createBuiltinEncoderReplacement(
-        document: vscode.TextDocument,
-        range: vscode.Range,
-        selectedText: string
-    ): vscode.WorkspaceEdit {
-        const edit = new vscode.WorkspaceEdit();
-        const functionName = selectedText.match(/Function\s+(\w+)/)?.[1] || 'EscapeXml';
-        
-        const builtinVersion = XmlUtils.getXmlCodeSnippets()['xml-escape-safe'];
-        edit.replace(document.uri, range, builtinVersion);
-        return edit;
-    }
-
-    /**
-     * 성능 최적화
-     */
-    private createPerformanceOptimization(
-        document: vscode.TextDocument,
-        range: vscode.Range,
-        selectedText: string
-    ): vscode.WorkspaceEdit {
-        const edit = new vscode.WorkspaceEdit();
-        const functionName = selectedText.match(/Function\s+(\w+)/)?.[1] || 'EscapeXml';
-        
-        const optimizedVersion = XmlUtils.getXmlCodeSnippets()['xml-escape-fast'];
-        edit.replace(document.uri, range, optimizedVersion);
         return edit;
     }
 

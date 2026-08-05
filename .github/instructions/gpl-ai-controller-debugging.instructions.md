@@ -94,8 +94,9 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 | --- | --- | --- | --- |
 | 연결 | GPL: Connect to Controller | `gpl.controller.connect` | 설정 IP/포트 확인 |
 | 연결 해제 | GPL: Disconnect Controller | `gpl.controller.disconnect` | 1403도 함께 정리 |
-| Build Only | GPL: Deploy (Build Only) | `gpl.deploy` | 최신 로컬 코드 검증 기본 경로 |
-| 배포 후 실행 | GPL: Deploy & Run | `gpl.deployRun` | 실행 상태 변경 |
+| Build Only | GPL: Deploy (/GPL 업로드 + Compile) | `gpl.deploy` | 최신 로컬 코드 검증 기본 경로, /GPL 직접 업로드 |
+| 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` | 실행 상태 변경 (구 `gpl.deployRun`에서 분리) |
+| flash 저장 | GPL: Save to Flash | `gpl.saveToFlash` | /flash/projects에 FTP 미러 저장만 (Load/Compile 없음) |
 | launch 생성 | GPL: Create/Update Debug launch.json | `gpl.debug.generateLaunch` | Attach 구성 생성 |
 | 빠른 Attach | GPL: Quick Debug Attach (No launch.json) | `gpl.debug.attachNow` | 임시 디버깅 |
 | 런타임 콘솔 시작 | GPL: Start Runtime Console | `gpl.console.start` | 1403 payload 확인 |
@@ -110,7 +111,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 
 아래 명령은 실행 전 대상과 의도를 확인한다.
 
-- `gpl.deployRun`
+- `gpl.start`
 - `gpl.controller.stopAll`
 - `gpl.controller.threadStart`
 - `gpl.controller.threadStop`

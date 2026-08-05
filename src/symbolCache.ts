@@ -4,9 +4,20 @@ import { GPLParser, GPLSymbol } from './gplParser';
 import { isTraceOn, ciEq } from './config';
 import { getParameterArity, argCountMatchesArity } from './language/cursorExpression';
 import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
+import { buildSymbolNameIndex } from './symbolNameIndex';
+
+// scoreFilePath 점수 체계 — 높을수록 우선 (정의 후보가 여럿일 때 경로 근접도로 선택)
+const SCORE_SAME_FILE = 1000;
+const SCORE_SAME_DIRECTORY = 800;
+const SCORE_SAME_TOP_LEVEL_FOLDER = 500;
+const SCORE_UNRELATED = 0;
+
+/** 워크스페이스 파일 검색 공용 제외 글롭 */
+const INDEX_EXCLUDE_GLOB = '{**/node_modules/**,**/bin/**,**/.git/**}';
 
 export class SymbolCache {
     private symbols: Map<string, GPLSymbol[]> = new Map();
+    private nameIndex: Map<string, GPLSymbol[]> = new Map();
     private outputChannel?: vscode.OutputChannel;
     /** True while refresh/indexWorkspace is running — suppresses duplicate updates from onDidOpenTextDocument. */
     public isRefreshing = false;
@@ -29,6 +40,7 @@ export class SymbolCache {
         this.isRefreshing = true;
         try {
             this.symbols.clear();
+            this.nameIndex.clear();
             await this.indexWorkspace();
         } finally {
             this.isRefreshing = false;
@@ -56,6 +68,7 @@ export class SymbolCache {
 
         const symbols = GPLParser.parseDocument(text, document.uri.fsPath);
         this.symbols.set(document.uri.fsPath, symbols);
+        this.rebuildNameIndex();
         
         const fileName = path.basename(document.uri.fsPath);
         this.log(`[SymbolCache] Updated ${fileName}: ${symbols.length} symbols`);
@@ -68,6 +81,7 @@ export class SymbolCache {
     public removeFile(filePath: string): void {
         const deleted = this.deleteByFsPath(filePath);
         if (deleted) {
+            this.rebuildNameIndex();
             const fileName = path.basename(filePath);
             this.log(`[SymbolCache] Removed ${fileName} from cache`);
         }
@@ -96,11 +110,16 @@ export class SymbolCache {
     public deleteByFsPathPrefix(fsPath: string): void {
         const targetLower = fsPath.toLowerCase();
         const prefixLower = targetLower.endsWith(path.sep) ? targetLower : targetLower + path.sep;
+        let removed = false;
         for (const key of Array.from(this.symbols.keys())) {
             const keyLower = key.toLowerCase();
             if (keyLower === targetLower || keyLower.startsWith(prefixLower)) {
                 this.symbols.delete(key);
+                removed = true;
             }
+        }
+        if (removed) {
+            this.rebuildNameIndex();
         }
     }
 
@@ -127,15 +146,7 @@ export class SymbolCache {
      * 필요하면 findDefinition을 쓰면 된다.
      */
     public findDefinitionMatches(symbolName: string, currentFilePath?: string, call?: number | CallContext): GPLSymbol[] {
-        // 이름이 일치하는 전체 후보를 먼저 모은다.
-        const candidates: GPLSymbol[] = [];
-        for (const [, fileSymbols] of this.symbols) {
-            for (const sym of fileSymbols) {
-                if (ciEq(sym.name, symbolName)) {
-                    candidates.push(sym);
-                }
-            }
-        }
+        const candidates = this.nameIndex.get(symbolName.toLowerCase()) ?? [];
 
         if (candidates.length === 0) {
             return [];
@@ -180,22 +191,8 @@ export class SymbolCache {
     /** findMemberInClass의 다중 후보 버전 — 구분 불가능한 오버로드 동점 그룹을 돌려준다. [0]이 최선. */
     public findMemberInClassMatches(memberName: string, className: string, preferredFilePath?: string, call?: number | CallContext): GPLSymbol[] {
         // Search for the member in the specified class
-        // First, try to find exact match with className
-        const exactCandidates: GPLSymbol[] = [];
-        for (const [, fileSymbols] of this.symbols) {
-            for (const s of fileSymbols) {
-                if (
-                    ciEq(s.name, memberName) &&
-                    s.className !== undefined && ciEq(s.className, className) &&
-                    // 필드(variable)·상수(constant) 포함 — findMemberCandidatesInClass와 동일 수정.
-                    // 호출 문맥(argCount 지정)의 비호출형 제외는 pickBestCallableCandidate가 담당.
-                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property'
-                        || s.kind === 'variable' || s.kind === 'constant')
-                ) {
-                    exactCandidates.push(s);
-                }
-            }
-        }
+        // First, try to find exact match with className (수집 조건은 findMemberCandidatesInClass가 정본)
+        const exactCandidates = this.findMemberCandidatesInClass(memberName, className);
 
         const exactPicks = this.pickCallableMatches(exactCandidates, preferredFilePath, call);
         if (exactPicks.length > 0) {
@@ -231,21 +228,8 @@ export class SymbolCache {
 
     /** findMemberInModule의 다중 후보 버전 — 구분 불가능한 오버로드 동점 그룹을 돌려준다. [0]이 최선. */
     public findMemberInModuleMatches(memberName: string, moduleName: string, preferredFilePath?: string, call?: number | CallContext): GPLSymbol[] {
-        // Search for the member in the specified module
-        const candidates: GPLSymbol[] = [];
-        for (const [, fileSymbols] of this.symbols) {
-            for (const s of fileSymbols) {
-                if (
-                    ciEq(s.name, memberName) &&
-                    s.module !== undefined && ciEq(s.module, moduleName) &&
-                    !s.className &&
-                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'constant' || s.kind === 'variable')
-                ) {
-                    candidates.push(s);
-                }
-            }
-        }
-
+        // 수집 조건은 findMemberCandidatesInModule가 정본 — 선택만 여기서 수행.
+        const candidates = this.findMemberCandidatesInModule(memberName, moduleName);
         return this.pickCallableMatches(candidates, preferredFilePath, call);
     }
 
@@ -254,27 +238,22 @@ export class SymbolCache {
         // The parser records these as kind 'sub' with name 'New' and className set.
         const candidates: GPLSymbol[] = [];
 
-        for (const [, fileSymbols] of this.symbols) {
-            for (const s of fileSymbols) {
-                if (s.kind !== 'sub') {
-                    continue;
-                }
-                if (!s.className || !ciEq(s.className, className)) {
-                    continue;
-                }
-                if (!ciEq(s.name, 'New')) {
-                    continue;
-                }
-                if (typeof argCount === 'number') {
-                    // Optional/ParamArray를 반영한 arity 범위 검사 — 종전의 정확 일치(===)는
-                    // `Sub New(Optional ...)`의 0-인자 호출 등을 놓쳤다 (오버로드 해석 모듈과 동일 규칙).
-                    if (!argCountMatchesArity(argCount, getParameterArity(s.parameters))) {
-                        continue;
-                    }
-                }
-
-                candidates.push(s);
+        for (const s of this.nameIndex.get('new') ?? []) {
+            if (s.kind !== 'sub') {
+                continue;
             }
+            if (!s.className || !ciEq(s.className, className)) {
+                continue;
+            }
+            if (typeof argCount === 'number') {
+                // Optional/ParamArray를 반영한 arity 범위 검사 — 종전의 정확 일치(===)는
+                // `Sub New(Optional ...)`의 0-인자 호출 등을 놓쳤다 (오버로드 해석 모듈과 동일 규칙).
+                if (!argCountMatchesArity(argCount, getParameterArity(s.parameters))) {
+                    continue;
+                }
+            }
+
+            candidates.push(s);
         }
 
         // If we tried to match by argCount and found none, fall back to any constructor.
@@ -287,19 +266,16 @@ export class SymbolCache {
 
     public findMemberCandidatesInClass(memberName: string, className: string): GPLSymbol[] {
         const candidates: GPLSymbol[] = [];
-        for (const [, fileSymbols] of this.symbols) {
-            for (const s of fileSymbols) {
-                if (
-                    ciEq(s.name, memberName) &&
-                    s.className !== undefined && ciEq(s.className, className) &&
-                    // 필드(variable)·상수(constant)도 클래스 멤버다 — 누락 시 `obj.field` 정의 이동이
-                    // fallback 텍스트 검색으로만 동작하던 버그 수정 (2026-07-03).
-                    // 호출 문맥(Foo(...))의 비호출형 제외는 pickBestCallableCandidate가 담당한다.
-                    (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property'
-                        || s.kind === 'variable' || s.kind === 'constant')
-                ) {
-                    candidates.push(s);
-                }
+        for (const s of this.nameIndex.get(memberName.toLowerCase()) ?? []) {
+            if (
+                s.className !== undefined && ciEq(s.className, className) &&
+                // 필드(variable)·상수(constant)도 클래스 멤버다 — 누락 시 `obj.field` 정의 이동이
+                // fallback 텍스트 검색으로만 동작하던 버그 수정 (2026-07-03).
+                // 호출 문맥(Foo(...))의 비호출형 제외는 pickBestCallableCandidate가 담당한다.
+                (s.kind === 'function' || s.kind === 'sub' || s.kind === 'property'
+                    || s.kind === 'variable' || s.kind === 'constant')
+            ) {
+                candidates.push(s);
             }
         }
         return candidates;
@@ -383,11 +359,11 @@ export class SymbolCache {
         const candidateLower = candidateFilePath.toLowerCase();
         const preferredLower = preferredFilePath.toLowerCase();
         if (candidateLower === preferredLower) {
-            return 1000;
+            return SCORE_SAME_FILE;
         }
 
         if (path.dirname(candidateLower) === path.dirname(preferredLower)) {
-            return 800;
+            return SCORE_SAME_DIRECTORY;
         }
 
         // Prefer same top-level folder relative to workspace folder
@@ -398,11 +374,11 @@ export class SymbolCache {
             const topPreferred = relPreferred.split(path.sep)[0];
             const topCandidate = relCandidate.split(path.sep)[0];
             if (topPreferred && topPreferred.toLowerCase() === topCandidate.toLowerCase()) {
-                return 500;
+                return SCORE_SAME_TOP_LEVEL_FOLDER;
             }
         }
 
-        return 0;
+        return SCORE_UNRELATED;
     }
 
     /**
@@ -458,11 +434,10 @@ export class SymbolCache {
      */
     public findAllByName(symbolName: string): GPLSymbol[] {
         const out: GPLSymbol[] = [];
-        for (const [, fileSymbols] of this.symbols) {
-            for (const s of fileSymbols) {
-                if (ciEq(s.name, symbolName)) {
-                    out.push(s);
-                }
+        const bucket = this.nameIndex.get(symbolName.toLowerCase()) ?? [];
+        for (const s of bucket) {
+            if (ciEq(s.name, symbolName)) {
+                out.push(s);
             }
         }
         return out;
@@ -474,6 +449,11 @@ export class SymbolCache {
             allSymbols.push(...fileSymbols);
         }
         return allSymbols;
+    }
+
+    private rebuildNameIndex(): void {
+        const allSymbols = this.getAllSymbols();
+        this.nameIndex = buildSymbolNameIndex(allSymbols);
     }
 
     /**
@@ -596,19 +576,18 @@ export class SymbolCache {
 
         const filesToIndex = projectFiles ?? (await vscode.workspace.findFiles(
             '**/*.gpl',
-            '{**/node_modules/**,**/bin/**,**/.git/**}'
+            INDEX_EXCLUDE_GLOB
         ));
 
         if (projectFiles) {
             this.log(`[SymbolCache] Using Project.gpr sources (${filesToIndex.length} files)`);
         } else {
-            this.log(`[SymbolCache] Searching for GPL/GPO files...`);
-            this.log(`[SymbolCache] Found ${filesToIndex.length} GPL/GPO files`);
+            this.log(`[SymbolCache] Workspace glob: found ${filesToIndex.length} .gpl files`);
         }
 
         for (const file of filesToIndex) {
+            const fsPath = file.fsPath;
             try {
-                const fsPath = (file as vscode.Uri).fsPath ?? String(file);
                 // Skip .gpo files during indexing — they are compiled binary objects
                 if (fsPath.toLowerCase().endsWith('.gpo')) {
                     continue;
@@ -616,7 +595,6 @@ export class SymbolCache {
                 const document = await vscode.workspace.openTextDocument(file);
                 this.updateDocument(document);
             } catch (error) {
-                const fsPath = (file as vscode.Uri).fsPath ?? String(file);
                 this.log(`[SymbolCache] Error loading ${fsPath}: ${error}`);
             }
         }
@@ -630,7 +608,7 @@ export class SymbolCache {
         try {
             const gprFiles = await vscode.workspace.findFiles(
                 '**/Project.gpr',
-                '{**/node_modules/**,**/bin/**,**/.git/**}'
+                INDEX_EXCLUDE_GLOB
             );
 
             if (!gprFiles || gprFiles.length === 0) {

@@ -46,7 +46,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
             return [];
         }
         if (posKind === 'string') {
-            return this.isXmlContext(beforeCursor, currentLine) ? this.getXmlCompletions() : [];
+            return this.isXmlContext(currentLine) ? this.getXmlCompletions() : [];
         }
 
         // ── 멤버 접근 컨텍스트: `obj.` / `Move.` 뒤에서는 해당 한정자의 멤버만 제공 ──
@@ -69,7 +69,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
         completionItems.push(...this.symbolCache.getCompletionItems());
 
         // XML 관련 컨텍스트 감지 및 특화 완성 제공
-        if (this.isXmlContext(beforeCursor, currentLine)) {
+        if (this.isXmlContext(currentLine)) {
             completionItems.push(...this.getXmlCompletions());
         }
 
@@ -381,7 +381,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     /**
      * XML 관련 컨텍스트인지 확인
      */
-    private isXmlContext(beforeCursor: string, fullLine: string): boolean {
+    private isXmlContext(fullLine: string): boolean {
         return /xml|XML|escape|encode|entity|&amp;|&lt;|&gt;|&quot;|&apos;/i.test(fullLine);
     }
 

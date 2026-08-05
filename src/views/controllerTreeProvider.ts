@@ -83,6 +83,15 @@ class InfoNode {
 
 // ── Provider ────────────────────────────────────────────
 
+/** threadPollIntervalMs 설정 미지정 시 기본 폴링 간격 */
+const DEFAULT_THREAD_POLL_MS = 5000;
+/** 실행 중 쓰레드가 없을 때 폴링 간격 배수 (1402 부하 완화) */
+const IDLE_POLL_MULTIPLIER = 3;
+/** 상세(ErrorLog/Show Break) 폴링 간격 배수 */
+const DETAIL_POLL_MULTIPLIER = 2;
+/** Show Thread 연속 실패 이 횟수면 연결 유실로 판정 */
+const CONNECTION_LOSS_FAILURE_THRESHOLD = 3;
+
 export class ControllerTreeProvider implements vscode.TreeDataProvider<ControllerNode>, vscode.Disposable {
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<ControllerNode | undefined>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -142,10 +151,6 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		return this.expectedProjectName;
 	}
 
-	getExpectedProjectFolderName(): string {
-		return this.expectedProjectFolderName;
-	}
-
 	setRuntimeConsoleStatus(status: RuntimeConsoleStatusSnapshot): void {
 		this.runtimeConsoleStatus = status;
 		this._onDidChangeTreeData.fire(undefined);
@@ -173,16 +178,62 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			}
 		} else {
 			this.stopPolling();
-			this.threads = [];
-			this.errors = [];
-			this.breakpoints = [];
-			this.ftpEntries = [];
-			this.ftpError = null;
-			this.ftpFlashEntries = [];
-			this.ftpFlashError = null;
-			this.sysInfo = [];
+			this.clearCachedControllerState();
 			this._onDidChangeTreeData.fire(undefined);
 		}
+	}
+
+	/** FTP 목록 섹션 노드 생성 — /GPL(ftp)과 Flash Projects(ftpFlash) 공용. */
+	private buildFtpSection(
+		id: string,
+		title: string,
+		icon: string,
+		basePath: string,
+		entries: FtpEntry[],
+		error: string | null,
+		folderCtx: string,
+		fileCtx: string,
+	): SectionNode {
+		const sec = new SectionNode(id, title, icon, error ? '조회 실패' : `${entries.length}개`);
+		if (error) {
+			sec.children = [new InfoNode(error, 'error')];
+		} else if (entries.length === 0) {
+			sec.children = [new InfoNode('파일 없음', 'info')];
+		} else {
+			sec.children = entries.map(e => {
+				const entryIcon = e.isDirectory ? 'folder' : 'file';
+				const parts: string[] = [];
+				if (!e.isDirectory) { parts.push(formatSize(e.size)); }
+				if (e.modifiedAt) { parts.push(formatDate(e.modifiedAt)); }
+				const desc = parts.join(' · ');
+				const ctx = e.isDirectory ? folderCtx : fileCtx;
+				const remotePath = `${basePath}/${e.name}`;
+				return new InfoNode(e.name, entryIcon, desc, undefined, ctx, undefined, remotePath, e.name);
+			});
+		}
+		return sec;
+	}
+
+	/** 상태별 쓰레드 수 집계 (트리 루트 설명·상태 스냅샷 공용). */
+	private countThreadStates(): { running: number; paused: number; idle: number; errCount: number } {
+		return {
+			running: this.threads.filter(t => t.state === 'Running').length,
+			paused: this.threads.filter(t => t.state === 'Paused' || t.state === 'Break').length,
+			idle: this.threads.filter(t => t.state === 'Idle').length,
+			errCount: this.threads.filter(t => t.state === 'Error').length,
+		};
+	}
+
+	/** 제어기에서 받아온 캐시 상태 일괄 초기화 (연결 해제/유실 시). */
+	private clearCachedControllerState(): void {
+		this.threads = [];
+		this.errors = [];
+		this.breakpoints = [];
+		this.ftpEntries = [];
+		this.ftpError = null;
+		this.ftpFlashEntries = [];
+		this.ftpFlashError = null;
+		this.sysInfo = [];
 	}
 
 	startPolling(): void {
@@ -197,9 +248,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 */
 	private scheduleNextPoll(): void {
 		if (!this._connected) { return; }
-		const cfg = vscode.workspace.getConfiguration('gpl.controller');
-		const baseInterval = cfg.get<number>('threadPollIntervalMs') ?? 5000;
-		const interval = this.threads.length > 0 ? baseInterval : baseInterval * 3;
+		const baseInterval = this.baseThreadPollIntervalMs();
+		const interval = this.threads.length > 0 ? baseInterval : baseInterval * IDLE_POLL_MULTIPLIER;
 		const generation = this.pollGeneration;
 		this.pollTimer = setTimeout(async () => {
 			this.pollTimer = null;
@@ -209,6 +259,12 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			if (generation !== this.pollGeneration || this._debugModeSubscription) { return; }
 			this.scheduleNextPoll();
 		}, interval);
+	}
+
+	/** 설정된 기본 폴링 간격(ms) 조회. */
+	private baseThreadPollIntervalMs(): number {
+		const cfg = vscode.workspace.getConfiguration('gpl.controller');
+		return cfg.get<number>('threadPollIntervalMs') ?? DEFAULT_THREAD_POLL_MS;
 	}
 
 	stopPolling(): void {
@@ -291,17 +347,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		// 연결 유실 감지: 핵심 상태(Show Thread) 3회 연속 실패 시 자동 해제
 		if (threadResp === null) {
 			this.consecutiveFailures++;
-			if (this.consecutiveFailures >= 3) {
+			if (this.consecutiveFailures >= CONNECTION_LOSS_FAILURE_THRESHOLD) {
 				this._connected = false;
 				this.stopPolling();
-				this.threads = [];
-				this.errors = [];
-				this.breakpoints = [];
-				this.ftpEntries = [];
-				this.ftpError = null;
-				this.ftpFlashEntries = [];
-				this.ftpFlashError = null;
-				this.sysInfo = [];
+				this.clearCachedControllerState();
 				this._onDidChangeTreeData.fire(undefined);
 				this._onDidLoseConnection.fire();
 				return;
@@ -312,9 +361,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		}
 
 		const now = Date.now();
-		const cfg = vscode.workspace.getConfiguration('gpl.controller');
-		const baseInterval = cfg.get<number>('threadPollIntervalMs') ?? 5000;
-		const detailPollIntervalMs = Math.max(baseInterval * 2, 5000);
+		const baseInterval = this.baseThreadPollIntervalMs();
+		const detailPollIntervalMs = Math.max(baseInterval * DETAIL_POLL_MULTIPLIER, DEFAULT_THREAD_POLL_MS);
 		const shouldPollDetailsByState = this.threads.some(
 			t => t.state === 'Error' || t.state === 'Break' || t.state === 'Paused',
 		);
@@ -595,10 +643,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		sections.push(conn);
 
 		// ── 쓰레드
-		const running = this.threads.filter(t => t.state === 'Running').length;
-		const paused = this.threads.filter(t => t.state === 'Paused' || t.state === 'Break').length;
-		const idle = this.threads.filter(t => t.state === 'Idle').length;
-		const errCount = this.threads.filter(t => t.state === 'Error').length;
+		const { running, paused, idle, errCount } = this.countThreadStates();
 
 		let threadDesc: string;
 		if (this.threads.length === 0) {
@@ -638,48 +683,12 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		}
 
 		// ── FTP 파일 (/GPL)
-		const ftpSec = new SectionNode('ftp',
-			`FTP 파일 (${cfg.ftpBasePath})`, 'folder-library',
-			this.ftpError ? '조회 실패' : `${this.ftpEntries.length}개`);
-		if (this.ftpError) {
-			ftpSec.children = [new InfoNode(this.ftpError, 'error')];
-		} else if (this.ftpEntries.length === 0) {
-			ftpSec.children = [new InfoNode('파일 없음', 'info')];
-		} else {
-			ftpSec.children = this.ftpEntries.map(e => {
-				const icon = e.isDirectory ? 'folder' : 'file';
-				const parts: string[] = [];
-				if (!e.isDirectory) { parts.push(formatSize(e.size)); }
-				if (e.modifiedAt) { parts.push(formatDate(e.modifiedAt)); }
-				const desc = parts.join(' · ');
-				const ctx = e.isDirectory ? 'ftpFolder' : 'ftpFile';
-				const remotePath = `${cfg.ftpBasePath}/${e.name}`;
-				return new InfoNode(e.name, icon, desc, undefined, ctx, undefined, remotePath, e.name);
-			});
-		}
-		sections.push(ftpSec);
+		sections.push(this.buildFtpSection('ftp', `FTP 파일 (${cfg.ftpBasePath})`, 'folder-library',
+			cfg.ftpBasePath, this.ftpEntries, this.ftpError, 'ftpFolder', 'ftpFile'));
 
 		// ── Flash Projects (/flash/projects)
-		const flashSec = new SectionNode('ftpFlash',
-			`Flash Projects (${cfg.ftpFlashProjectsPath})`, 'archive',
-			this.ftpFlashError ? '조회 실패' : `${this.ftpFlashEntries.length}개`);
-		if (this.ftpFlashError) {
-			flashSec.children = [new InfoNode(this.ftpFlashError, 'error')];
-		} else if (this.ftpFlashEntries.length === 0) {
-			flashSec.children = [new InfoNode('파일 없음', 'info')];
-		} else {
-			flashSec.children = this.ftpFlashEntries.map(e => {
-				const icon = e.isDirectory ? 'folder' : 'file';
-				const parts: string[] = [];
-				if (!e.isDirectory) { parts.push(formatSize(e.size)); }
-				if (e.modifiedAt) { parts.push(formatDate(e.modifiedAt)); }
-				const desc = parts.join(' · ');
-				const ctx = e.isDirectory ? 'ftpFlashFolder' : 'ftpFlashFile';
-				const remotePath = `${cfg.ftpFlashProjectsPath}/${e.name}`;
-				return new InfoNode(e.name, icon, desc, undefined, ctx, undefined, remotePath, e.name);
-			});
-		}
-		sections.push(flashSec);
+		sections.push(this.buildFtpSection('ftpFlash', `Flash Projects (${cfg.ftpFlashProjectsPath})`, 'archive',
+			cfg.ftpFlashProjectsPath, this.ftpFlashEntries, this.ftpFlashError, 'ftpFlashFolder', 'ftpFlashFile'));
 
 		// ── 시스템 정보
 		const sysSec = new SectionNode('system', '시스템 정보', 'dashboard',
@@ -828,10 +837,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		deploySnapshot?: SituationDeploySnapshot;
 	}): string {
 		const cfg = getControllerConfig();
-		const running = this.threads.filter(t => t.state === 'Running').length;
-		const paused = this.threads.filter(t => t.state === 'Paused' || t.state === 'Break').length;
-		const idle = this.threads.filter(t => t.state === 'Idle').length;
-		const errCount = this.threads.filter(t => t.state === 'Error').length;
+		const { running, paused, idle, errCount } = this.countThreadStates();
 
 		const expected = this.expectedProjectName || '(미설정)';
 		const expectedFolder = this.expectedProjectFolderName || this.expectedProjectName || '(미설정)';

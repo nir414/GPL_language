@@ -41,7 +41,7 @@ export function startLiveLogTerminal(): void {
         },
         close: () => {
             // VS Code terminal UI close
-            disposeLiveLogTerminal();
+            resetLiveLogTerminalState();
         },
     };
 
@@ -56,7 +56,7 @@ export function stopLiveLogTerminal(): void {
     if (!terminal) { return; }
     writeLine('[GPL Live Logs] stopped');
     terminal.dispose();
-    disposeLiveLogTerminal();
+    resetLiveLogTerminalState();
 }
 
 export function appendLiveLog(line: string): void {
@@ -69,7 +69,8 @@ export function isLiveLogTerminalEnabled(): boolean {
     return !!terminal;
 }
 
-function disposeLiveLogTerminal(): void {
+/** 터미널 관련 모듈 상태 초기화 — 터미널 자체의 dispose는 호출부 책임. */
+function resetLiveLogTerminalState(): void {
     closeEmitter?.fire();
     writeEmitter?.dispose();
     closeEmitter?.dispose();

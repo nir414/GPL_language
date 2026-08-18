@@ -41,6 +41,29 @@
 - 8비트 ASCII/유니코드 문자, 심볼명/문자열 리터럴 불가
 - 16진수: &H, 8진수: &O (문자열 연결 시 & 뒤에 공백 필요)
 
+## Static 로컬 변수 — 선언 시 초기화 금지
+
+GPL 4.2K5 실기기에서 **`Static` 로컬 변수에 선언과 동시에 초기값을 주면, 호출할 때마다
+값이 다시 초기화되는 듯한 동작**이 재현됐다(누적 카운터가 계속 1로 유지). 재현 로그는
+[2026-01-02 세션 기록](../archive/sessions/2026-01-02.md) 5절 참조.
+
+- **Static 로컬 변수는 선언 시 초기화(`= 0` 등)를 피한다.**
+- 초기값이 필요하면 "첫 호출 1회만" 초기화하는 가드 패턴을 쓴다:
+
+```vb
+Private Sub Example()
+    Static inited As Integer
+    Static counter As Integer
+
+    If inited = 0 Then
+        counter = 0
+        inited = 1
+    End If
+
+    counter = counter + 1
+End Sub
+```
+
 ## 배열(Arrays)
 
 배열은 별도 문서로 분리했습니다.

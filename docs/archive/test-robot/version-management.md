@@ -1,3 +1,5 @@
+> ⚠️ **아카이브 — Test_robot 시절 문서.** GPL 빌드 산출물 버전 관리 제안이다(마지막 유효: 2025-12-17). 문서가 언급하는 `scripts/BuildProject.ps1`, `bin/build_manifest.json`, `Test_robot/Project.gpr`는 존재하지 않는다. 현행 버전 규칙은 [releases/process.md](../../releases/process.md)다.
+
 # GPL 빌드 메타데이터(버전) 관리
 
 현재 이 리포지토리에서 **실제로 구현되어 있는 버전/빌드 정보 관리**는, 런타임(GPL 코드)에서 버전을 계산하는 방식이 아니라 **빌드 산출물에 메타데이터를 기록**하는 방식입니다.

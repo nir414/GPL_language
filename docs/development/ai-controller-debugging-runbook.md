@@ -2,6 +2,11 @@
 
 GPL Language Support 확장을 통해 AI 에이전트가 Brooks GPL 제어기 디버깅을 보조할 때 쓰는 실행 절차다.
 
+> **역할 분담** — 하드 규칙·금지사항·상태 변경 가드의 정본은
+> `.github/instructions/gpl-ai-controller-debugging.instructions.md`(AI에 자동 로드)이고,
+> **이 문서는 절차·전체 Command ID 표·pktmon 실측(1402/1403 wire 사실)·STATUS 판단표의 정본**이다.
+> 두 문서가 어긋나면 각자의 정본 영역을 따른 뒤 어긋남 자체를 수정한다.
+
 ## 목표
 
 - 최신 로컬 코드가 제어기에 올라갔는지 확인한다.
@@ -13,7 +18,7 @@ GPL Language Support 확장을 통해 AI 에이전트가 Brooks GPL 제어기 �
 
 1. `GPL: Connect to Controller`
 2. `GPL: Copy Situation for Chat`
-3. `GPL: Deploy (Build Only)`
+3. `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` — 이하 "Build Only"
 4. 실패 시 Debug Console의 `[deploy]` 블록과 `GPL Deploy (Debug)` Output 확인
 5. 성공 시 `GPL: Start Runtime Console`
 6. `.gpl` 파일에 breakpoint 설정
@@ -40,34 +45,80 @@ AI가 제어기를 다룰 때는 이 명령을 우선 진입점으로 사용하�
 | 런타임 콘솔 포트 | `gpl.controller.consolePort` 기본 1403. 공식 GDE 범위 안에서 로컬 구현/실측상 runtime event stream으로 사용 |
 | FTP 경로 | `gpl.controller.ftpBasePath`, `gpl.controller.ftpFlashProjectsPath` |
 | 프로젝트명 | `Project.gpr`의 `ProjectName` 또는 launch `projectName` |
-| 최신 빌드 | `GPL: Deploy (Build Only)` 성공 여부 |
+| 최신 빌드 | `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` 성공 여부 |
 
 추가 진입점: `GPL: AI Debug Assist` (`gpl.ai.debugAssist`)
 
 ## Command ID 목록
 
 AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아래 ID를 사용한다. 사람이 실행할 때는 Command Palette 제목을 사용한다.
+(2026-08-18, `package.json` `contributes.commands` 기준으로 재생성 — 이 표가 낡으면 package.json이 정본이다.)
+
+### 연결/상태
 
 | 목적 | 제목 | Command ID |
 | --- | --- | --- |
 | 연결 | GPL: Connect to Controller | `gpl.controller.connect` |
 | 연결 해제 | GPL: Disconnect Controller | `gpl.controller.disconnect` |
-| Build Only | GPL: Deploy (Build Only) | `gpl.deploy` |
-| 배포 후 실행 | GPL: Deploy & Run | `gpl.deployRun` |
+| 대시보드 | GPL: 제어기 대시보드 열기 | `gpl.controller.showDashboard` |
+| 전체 새로고침 | GPL: Refresh All | `gpl.threads.refresh` |
+| FTP 새로고침 | GPL: Refresh FTP Files | `gpl.controller.refreshFtp` |
+| 시스템 정보 새로고침 | GPL: Refresh System Info | `gpl.controller.refreshSystemInfo` |
+| 상태 복사 | GPL: Copy Situation for Chat | `gpl.controller.copySituationForChat` |
+| 진단 스냅샷 | GPL: Diagnostic Snapshot | `gpl.diagnosticSnapshot` |
+| 트래픽 보기 | GPL: Show Traffic Monitor | `gpl.controller.showTraffic` |
+
+### 배포/실행 (상태 변경 — 저속/시뮬레이션 원칙 준수)
+
+| 목적 | 제목 | Command ID |
+| --- | --- | --- |
+| Build Only(배포) | GPL: Deploy (/GPL 업로드 + Compile, Start 없음) | `gpl.deploy` |
+| 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` |
+| Flash 저장 | GPL: Save to Flash (/flash/projects에 저장만) | `gpl.saveToFlash` |
+| 빠른 컴파일 | GPL: 빠른 컴파일 (변경분만 /GPL 직접 업로드, STOP/START 생략) | `gpl.quickCompile` |
+| 전체 정지 | GPL: 모든 쓰레드 중지 (Stop -all) | `gpl.controller.stopAll` (별칭 `gpl.stopAll`) |
+
+### 디버그/콘솔
+
+| 목적 | 제목 | Command ID |
+| --- | --- | --- |
 | launch 생성 | GPL: Create/Update Debug launch.json | `gpl.debug.generateLaunch` |
 | 빠른 Attach | GPL: Quick Debug Attach (No launch.json) | `gpl.debug.attachNow` |
 | 런타임 콘솔 시작 | GPL: Start Runtime Console | `gpl.console.start` |
-| 런타임 콘솔 중지 | GPL: Stop Runtime Console | `gpl.console.stop` |
+| 런타임 콘솔 중지 | GPL: Stop Runtime Console (콘솔 중지) | `gpl.console.stop` |
 | 런타임 콘솔 보장 | GPL: Ensure Runtime Console (1403) | `gpl.console.ensure` |
 | 라이브 로그 시작 | GPL: Start Live Log Terminal | `gpl.logs.liveTerminal.start` |
-| 라이브 로그 중지 | GPL: Stop Live Log Terminal | `gpl.logs.liveTerminal.stop` |
-| 전체 새로고침 | GPL: Refresh All | `gpl.threads.refresh` |
-| 트래픽 보기 | GPL: Show Traffic Monitor | `gpl.controller.showTraffic` |
+| 라이브 로그 중지 | GPL: Stop Live Log Terminal (라이브 로그 중지) | `gpl.logs.liveTerminal.stop` |
 | 직접 명령 | GPL: Send Command to Controller | `gpl.controller.sendCommand` |
-| 상태 복사 | GPL: Copy Situation for Chat | `gpl.controller.copySituationForChat` |
-| 진단 스냅샷 | GPL: Diagnostic Snapshot | `gpl.diagnosticSnapshot` |
+| 중단점 반영 | GPL: Push Editor Breakpoints to Controller | `gpl.controller.pushBreakpoints` |
+| 중단점 가져오기 | GPL: Pull Controller Breakpoints | `gpl.controller.pullBreakpoints` |
+| 중단점 새로고침 | GPL: Refresh Controller Breakpoints | `gpl.controller.refreshBreakpoints` |
+
+### 조회/IO (상태 변경 명령 포함 — Set은 주의)
+
+| 목적 | 제목 | Command ID |
+| --- | --- | --- |
+| 전역변수 보기/편집 | GPL: 전역변수 보기/편집 (Show/Set Global) | `gpl.controller.showGlobal` |
+| DIO 조회 | GPL: DIO 조회 (Show DIO) | `gpl.controller.showDio` |
+| DIO 출력 설정 | GPL: DIO 출력 설정 (Set DIO) — **하드웨어 출력 변경** | `gpl.controller.setDio` |
+
+### AI 에이전트 전용
+
+| 목적 | 제목 | Command ID |
+| --- | --- | --- |
 | AI Agent Setup 내보내기 | GPL: Export AI Agent Setup | `gpl.ai.exportAgentSetup` |
-| 전체 정지 | GPL: 모든 쓰레드 중지 | `gpl.controller.stopAll` / `gpl.stopAll` |
+| AI 디버그 어시스트 | GPL: AI Debug Assist | `gpl.ai.debugAssist` |
+| 상태 조회 | GPL: AI Debug Get State | `gpl.ai.debug.getState` |
+| 중단점 설정/해제 | GPL: AI Debug Set/Clear Breakpoint | `gpl.ai.debug.setBreakpoint` / `gpl.ai.debug.clearBreakpoint` |
+| 쓰레드 제어 | GPL: AI Debug Break/Step/Continue Thread | `gpl.ai.debug.breakThread` / `gpl.ai.debug.stepThread` / `gpl.ai.debug.continueThread` |
+| 식 평가 | GPL: AI Debug Evaluate | `gpl.ai.debug.evaluate` |
+| 디버그 루프 | GPL: AI Debug Loop | `gpl.ai.debug.loop` |
+
+### 트리 컨텍스트 메뉴 전용 (트리 항목 인자 필요 — 팔레트 단독 실행 부적합)
+
+`gpl.controller.threadStart`/`threadStop`/`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`,
+`gpl.controller.ftpRun`/`ftpStop`/`ftpDownload`/`ftpDelete`/`ftpUnload`,
+`gpl.controller.consoleToggle`/`clearErrors`/`copyError`
 
 ## 권장 launch 구성
 
@@ -108,7 +159,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 
 ### 2. Build Only
 
-- `GPL: Deploy (Build Only)`를 먼저 실행한다.
+- `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)`를 먼저 실행한다.
 - 이 단계는 STOP -> UPLOAD -> COMPILE까지 수행하고 START는 하지 않는다.
 - 실패하면 아래 순서로 본다.
 
@@ -286,7 +337,9 @@ SoftEStop
 | `-505` | Directory 인자 누락 등 입력 부족 | `Directory <path>` 형태로 재시도 |
 | `-714` | unknown command | 명령명 확인, 프로젝트 목록은 `Directory /flash/projects` 사용 |
 | `-745` | project already exists 가능 | 이미 로드된 상태인지 확인 |
-| `-742` / `-746` / `-752` | compile/load 일시 상태 가능 | raw trace, 자동 재시도 로그, 실제 compile error |
+| `-742` | Compilation errors — 명확한 컴파일 실패 (일시 상태 아님) | 컴파일 에러 상세 확인 후 소스 수정. `Start`가 -742를 내면 그 프로젝트는 실행 불가 |
+| `-746` | compile/load 일시 상태 가능 | raw trace, 자동 재시도 로그 확인 |
+| `-752` | "Timeout stopping thread" — 비치명, 정지 진행 중 | 스레드 상태 재확인(settle 게이트)으로 Stop 성공 여부 판정, 1회 자동 재시도 (`ai-handoff.md` §1-AU) |
 | `-1521` / `-1520` / `-1519` / `-1518` | controller 환경/parameter DB 문제 | GPL 코드 수정 전 제어기 환경 확인 |
 
 ## 보고 템플릿

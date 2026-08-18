@@ -68,3 +68,6 @@ docs/.history/
 
 # Development files (local only)
 media/
+
+# MkDocs build output
+site/

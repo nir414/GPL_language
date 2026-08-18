@@ -1,0 +1,2 @@
+# MkDocs 문서 사이트 빌드 의존성 (로컬: pip install -r requirements-docs.txt)
+mkdocs-material==9.7.7

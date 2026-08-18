@@ -1,3 +1,5 @@
+> ⚠️ **폐기 (아카이브) — 따라 하지 말 것.** PowerShell UI 자동화로 컨트롤러에 ZIP을 업로드하던 절차다(마지막 유효: 2025-12-08). 여기 나오는 스크립트(`UploadController.ps1` 등)는 존재하지 않으며, **별도 PowerShell/FTP 업로드로 확장의 Deploy 경로를 우회하는 것은 현행 하드 규칙이 금지한다.** 현행 절차: [ai-controller-debugging-runbook.md](../../development/ai-controller-debugging-runbook.md).
+
 # Controller 자동 업로드 시스템
 
 GPL Controller 프로젝트를 자동으로 ZIP으로 압축하고 Controller에 업로드하는 완전 자동화 시스템입니다.

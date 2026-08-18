@@ -1,0 +1,110 @@
+site_name: GPL Language Support
+site_description: Brooks/Precise Automation GPL(Guidance Programming Language) 언어 가이드와 VS Code 확장 개발 문서
+site_url: https://nir414.github.io/GPL_language/
+repo_url: https://github.com/nir414/GPL_language
+repo_name: nir414/GPL_language
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+# ai-handoff.md 는 AI 작업자용 저장소 전용 문서이므로 사이트에서 제외한다.
+# (exclude_docs 를 정의하면 기본값을 대체하므로 dotfile 제외 패턴 `.*` 를 함께 유지)
+exclude_docs: |
+  .*
+  /ai-handoff.md
+
+theme:
+  name: material
+  language: ko
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 다크 모드로 전환
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 라이트 모드로 전환
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+
+plugins:
+  - search:
+      lang:
+        - ko
+        - en
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # 한글 헤딩 앵커 유지 (기본 slugify 는 비ASCII 문자를 제거함)
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - 홈: README.md
+  - GPL 언어:
+      - 시작하기: gpl-language/getting-started.md
+      - 데이터 타입: gpl-language/datatypes.md
+      - Location (Cartesian): gpl-language/location-cartesian.md
+      - 배열: gpl-language/arrays.md
+      - 문자열: gpl-language/strings.md
+      - 자주 하는 실수: gpl-language/common-mistakes.md
+      - 예외 처리: gpl-language/error-handling.md
+      - 에러 방지 체크리스트: gpl-language/error-prevention.md
+      - 스레딩: gpl-language/threading.md
+      - 스레드 안전성: gpl-language/thread-safety.md
+      - 네트워킹: gpl-language/networking.md
+      - 파일 입출력: gpl-language/file-io.md
+  - 개발 가이드:
+      - 제어기 디버깅 런북: development/ai-controller-debugging-runbook.md
+      - 설계 원칙: development/design-principles.md
+      - Broker/Workbench 아키텍처: development/broker-workbench-architecture.md
+  - 레퍼런스:
+      - GPL Dictionary: reference/dictionary.md
+      - 콘솔 명령: reference/console-commands.md
+      - 로봇 호밍 방법: reference/robot-homing-methods.md
+  - 릴리스:
+      - 빠른 가이드: releases/quick-guide.md
+      - 상세 프로세스: releases/process.md
+  - 아카이브:
+      - 개요: archive/README.md
+      - 인시던트 기록: archive/incidents.md
+      - 세션 기록:
+          - 2025-12-09: archive/sessions/2025-12-09.md
+          - 2025-12-09 워크플로 회고: archive/sessions/2025-12-09-workflow-retro.md
+          - 2026-01-02: archive/sessions/2026-01-02.md
+          - StreamWriter 노트: archive/sessions/streamwriter-notes.md
+      - 리뷰:
+          - 2025-12-08: archive/reviews/2025-12-08.md
+      - Test_robot 시절 문서:
+          - 인수인계서 (폐기): archive/test-robot/handover.md
+          - 프로젝트 구조 (폐기): archive/test-robot/project-structure.md
+          - 버전 관리 (폐기): archive/test-robot/version-management.md
+          - 업로드 자동화 (폐기): archive/test-robot/automation.md
+          - 파일 저장 시스템 (폐기): archive/test-robot/file-io-implementation.md

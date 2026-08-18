@@ -6,6 +6,11 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 
 이 지침은 AI 에이전트가 GPL Language Support 확장을 사용해 제어기 상태를 진단하거나 디버깅을 보조할 때 적용한다.
 
+> **역할 분담** — 이 파일이 **하드 규칙·금지사항·상태 변경 가드의 정본**이다. 절차 상세,
+> 전체 Command ID 표, pktmon 실측(1402/1403), STATUS 판단표의 정본은
+> `docs/development/ai-controller-debugging-runbook.md`다. 아래 quick reference는 자주 쓰는
+> 명령의 발췌본이므로, 없는 명령은 runbook(또는 `package.json` `contributes.commands`)을 본다.
+
 ## 핵심 원칙
 
 - 제어기 조작은 GPL Language Support 확장의 VS Code 명령, DAP 세션, TreeView 액션을 우선 사용한다.
@@ -54,7 +59,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
    - 실패하면 포트/IP/방화벽/제어기 상태부터 확인한다.
 
 2. 최신 코드 검증
-   - 먼저 `GPL: Deploy (Build Only)` (`gpl.deploy`)로 STOP -> UPLOAD -> COMPILE 단계만 확인한다.
+   - 먼저 `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` (`gpl.deploy`)로 STOP -> UPLOAD -> COMPILE 단계만 확인한다.
    - 성공 전에는 Attach 디버깅으로 넘어가지 않는다.
    - 실패하면 실패 단계, 실패 명령, STATUS 코드, raw trace를 먼저 읽는다.
 
@@ -96,7 +101,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 | --- | --- | --- | --- |
 | 연결 | GPL: Connect to Controller | `gpl.controller.connect` | 설정 IP/포트 확인 |
 | 연결 해제 | GPL: Disconnect Controller | `gpl.controller.disconnect` | 1403도 함께 정리 |
-| Build Only | GPL: Deploy (/GPL 업로드 + Compile) | `gpl.deploy` | 최신 로컬 코드 검증 기본 경로, /GPL 직접 업로드 |
+| Build Only | GPL: Deploy (/GPL 업로드 + Compile, Start 없음) | `gpl.deploy` | 최신 로컬 코드 검증 기본 경로, /GPL 직접 업로드 |
 | 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` | 실행 상태 변경 (구 `gpl.deployRun`에서 분리) |
 | flash 저장 | GPL: Save to Flash | `gpl.saveToFlash` | /flash/projects에 FTP 미러 저장만 (Load/Compile 없음) |
 | launch 생성 | GPL: Create/Update Debug launch.json | `gpl.debug.generateLaunch` | Attach 구성 생성 |
@@ -140,7 +145,9 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 - `STATUS -508`: 파일/경로 없음. FTP 경로, `/GPL` vs `/flash/projects`, 프로젝트명 대소문자 확인.
 - `STATUS -745`: 이미 로드된 프로젝트일 수 있다. 문맥 없이 치명 실패로 단정하지 않는다.
 - `STATUS -742`: `*Compilation errors*` — **명확한 컴파일 실패다.** 일시 상태로 간주하지 말고, 응답을 `</STATUS>`까지 받아 에러 라인(`file:line:(code): *msg*`)을 표시한다. `Start`가 -742를 내면 그 프로젝트는 컴파일 에러로 실행 불가다.
-- `STATUS -746/-752`: 컴파일/로드 일시 상태 가능. raw trace와 재시도 로그를 확인한다.
+- `STATUS -746`: 컴파일/로드 일시 상태 가능. raw trace와 재시도 로그를 확인한다.
+- `STATUS -752`: "Timeout stopping thread" — **비치명, 정지 진행 중.** Stop 실패로 즉시 단정하지 말고
+  스레드 상태 재확인(settle 게이트)으로 판정한다 (`docs/ai-handoff.md` §1-AU).
 - 1403 `Immediate EOF`: 이벤트 큐가 비어 있을 수 있다. 반복 횟수와 active thread를 같이 본다.
 - 1403 `Connection refused`: 런타임 콘솔 서비스/포트 상태를 우선 확인한다.
 - ErrorLog의 제어기 시스템 코드와 GPL 코드 예외를 분리한다.

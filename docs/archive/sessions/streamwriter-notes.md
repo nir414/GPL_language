@@ -1,3 +1,5 @@
+> ℹ️ 핵심 내용(Flush/Close/AutoFlush 의미, 기본값, 공식 URL)은 2026-08-18에 [gpl-language/file-io.md](../../gpl-language/file-io.md)로 승격됐다. 이 파일은 Test_robot 비동기 저장에 적용한 이력 기록으로 보존한다.
+
 # StreamWriter Flush/Close/AutoFlush 요약 (Brooks / GPL Dictionary)
 
 작성일: 2025-12-17

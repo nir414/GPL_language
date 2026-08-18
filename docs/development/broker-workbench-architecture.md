@@ -55,7 +55,7 @@ GUI 야망(제어기 GUI, 시뮬레이터, 풍부한 상태 모니터)이 커질
 ### 결정적 사실 — 단일 명령 스트림은 이미 코드로 강제됨
 
 ```ts
-// controllerConnection.ts:130-145 (요약)
+// controllerConnection.ts — controllerCommandQueue / enqueueControllerCommand (요약. 줄번호는 리팩터링으로 변하므로 심볼명으로 찾을 것)
 let controllerCommandQueue: Promise<void> = Promise.resolve();
 function enqueueControllerCommand<T>(task) {
   // 모든 명령을 하나의 Promise 체인에 직렬화 + 명령 간 idle gap(성공 15ms / 실패 100ms)

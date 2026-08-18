@@ -1,3 +1,5 @@
+> ⚠️ **아카이브 — 2025-12-09 데이터 소실 세션의 작업 방식 회고** (구 `development/workflow-improvements.md`). 여기 제안된 개선은 이후 `docs/ai-handoff.md` §0 하드 규칙과 `.github/instructions/gpl-ai-controller-debugging.instructions.md`로 제도화·강화됐다. 같은 사건의 조치 기록: [2025-12-09.md](./2025-12-09.md).
+
 # AI 에이전트 작업 흐름 개선안
 
 ## 문제점: 2025-12-09 데이터 소실 분석 중 발생한 오류들

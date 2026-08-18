@@ -7,6 +7,9 @@
 src/
 scripts/
 docs/
+mkdocs.yml
+requirements-docs.txt
+site/**
 out/**/*.js.map
 out/test/**
 *.vsix

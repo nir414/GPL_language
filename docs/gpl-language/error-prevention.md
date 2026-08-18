@@ -21,10 +21,10 @@
 
 1. **전역 검색**: 동일 심볼이 다른 파일에도 있는지 확인
     - VS Code: `Ctrl+Shift+F` (검색) / `Ctrl+Shift+H` (바꾸기)
-    - PowerShell 예시(선택): `Select-String -Path "Test_robot\\*.gpl" -Pattern "Trim\(" -List`
+    - PowerShell 예시(선택): `Select-String -Path "<프로젝트 폴더>\\*.gpl" -Pattern "Trim\(" -List`
     - (참고) bash/grep 사용 환경이면 아래처럼 검색 가능
       ```bash
-      grep -r "Trim(" Test_robot/ --include="*.gpl"
+      grep -r "Trim(" <프로젝트 폴더>/ --include="*.gpl"
       ```
 
 2. **GPL 대체 함수 매핑**:
@@ -102,16 +102,17 @@ End If
     - `Continue While`
 - (참고) bash/grep 사용 환경이면 아래처럼 검색 가능
     ```bash
-    grep -r "Select Case" Test_robot/ --include="*.gpl"
-    grep -r "Continue For" Test_robot/ --include="*.gpl"
-    grep -r "Continue While" Test_robot/ --include="*.gpl"
+    grep -r "Select Case" <프로젝트 폴더>/ --include="*.gpl"
+    grep -r "Continue For" <프로젝트 폴더>/ --include="*.gpl"
+    grep -r "Continue While" <프로젝트 폴더>/ --include="*.gpl"
     ```
 
 ---
 
 ## 9.3 표준 상수/유틸 일관성 검사
 
-코드 리뷰 시 항상 체크:
+코드 리뷰 시 항상 체크 (아래 모듈명은 옛 Test_robot 프로젝트 기준 — 자기 프로젝트의
+공용 유틸/로거/저장 모듈로 바꿔 읽는다):
 
 - [ ] **개행 문자**: `Core_Utils.CRLF` 사용? (vbCrLf 미사용?)
 - [ ] **탭 문자**: `Core_Utils.TAB` 사용? (vbTab 미사용?)

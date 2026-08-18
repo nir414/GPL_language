@@ -13,7 +13,7 @@
 > 레거시 명칭 메모(과거 기록 읽기용):
 > - (구) XmlAsyncSave(.gpl) → (현) Data_AsyncSave.gpl
 > - (구) XmlStore(.gpl) → (현) Data_XmlStore.gpl (내부 Class 이름은 여전히 XmlStore)
-> - (구) FileIOManager(.gpl) → (현) IO_FileManager.gpl
+> - (구) FileIOManager(.gpl) → IO_FileManager.gpl → (최종) Storage_File_Manager.gpl
 > - (구) ErrorHandlerKDY(.gpl) → (현) Core_ErrorHandler.gpl
 > - (구) Main.gpl → (현) Core_Main.gpl
 > - (구) XMLHandler_KDY.gpl → (현) 리포지토리에서 제거됨
@@ -52,7 +52,8 @@
   - **Socket에는 `Nothing`을 절대 대입하지 말 것.** (대입 자체가 위험)
   - Socket을 Property로 노출하더라도 **setter 제공 금지**(Get-only 권장).
   - 리뷰 시 "Socket"과 "= Nothing" 조합은 우선적으로 차단.
-  - 관련 규칙은 아래 문서에 상시 반영:
+  - 관련 규칙은 아래 문서에 상시 반영 (당시 경로 — 현재는
+    `docs/gpl-language/common-mistakes.md` / `error-prevention.md`로 개편됨):
     - `docs/Project/COMMON_MISTAKES.md` (0-6)
     - `docs/Project/ERROR_PREVENTION_CHECKLIST.md` (Socket 안전 항목)
 

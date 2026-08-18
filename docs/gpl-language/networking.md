@@ -1,6 +1,6 @@
 # GPL Networking (Brooks/Guidance) — 프로젝트용 정리
 
-> 상위 인덱스(큰 분류 TOC): [GPL_DICTIONARY_GUIDE.md](./GPL_DICTIONARY_GUIDE.md)
+> 상위 인덱스(큰 분류 TOC): [GPL Dictionary 가이드](../reference/dictionary.md)
 
 > 출처: Brooks Automation GPL Dictionary / Networking Classes
 > 
@@ -14,7 +14,9 @@
 이 문서는 **컨트롤러(GPL) 네트워크 API를 프로젝트 관점에서 빠르게 다시 꺼내 쓰기** 위해 만든 요약입니다.
 
 - “개념/규칙”은 문서 내용을 기반으로 정리하고,
-- “프로젝트에서의 실제 사용”은 `Test_robot/Net_Tcp_*.gpl` 흐름에 맞춰 연결합니다.
+- “프로젝트에서의 실제 사용”은 옛 Test_robot 프로젝트의 `Net_Tcp_*.gpl` 흐름을 사례로 씁니다.
+  (해당 코드는 현재 저장소에 없다 — 패턴 학습용 사례로만 읽을 것. 구조 개요:
+  [아카이브 project-structure](../archive/test-robot/project-structure.md))
 
 ---
 
@@ -185,7 +187,7 @@ Networking 클래스는 다음 역할로 구성됩니다.
 
 ---
 
-## 7) 우리 프로젝트에서의 적용 포인트 (Test_robot)
+## 7) 적용 사례 (옛 Test_robot 프로젝트 — 현재 저장소에 없음)
 
 ### 7.1 서버 흐름(accept/session/receive)
 - 서버 루프 분리 모듈: `Test_robot/Net_Tcp_ServerLoop.gpl`

@@ -9,7 +9,9 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 1. **`docs/ai-handoff.md` — 필독.** 하드 규칙(§0), 세션별 변경 이력(무엇을/왜/어떻게),
    미해결 항목(§2, §3)이 모두 여기에 있다. 다음 할 일도 §3 체크리스트에서 고른다.
 2. `.github/instructions/gpl-ai-controller-debugging.instructions.md` — 제어기 디버깅 하드 규칙 상세.
-3. `docs/development/project-structure.md` 외 `docs/development/*` — 구조·워크플로·버전 관리.
+3. 구조는 이 파일의 §저장소 구조 + `docs/ai-handoff.md` §4(핵심 파일), 릴리스/버전 규칙은
+   `docs/releases/process.md`, 제어기 디버깅은 `docs/development/ai-controller-debugging-runbook.md`.
+   (옛 `docs/development/project-structure.md` 등 Test_robot 시절 문서는 `docs/archive/test-robot/`으로 이관됨.)
 
 ## 자주 쓰는 명령
 

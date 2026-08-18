@@ -1,21 +1,33 @@
-# GPL Language Support - 문서 가이드
+# GPL Language Support — 문서 가이드
 
 **GPL (Guidance Programming Language)** 개발을 위한 종합 문서 모음입니다.
 
 > **참고**: 여기서 말하는 GPL은 Brooks Automation의 **Guidance Programming Language**이며 GNU GPL 라이선스와 무관합니다.
 
+이 폴더는 [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/) 사이트로 빌드됩니다.
+로컬 미리보기: `npm run docs:serve` (또는 `mkdocs serve`).
+
+---
+
+## AI 작업자라면 (필독 순서)
+
+1. 루트 [CLAUDE.md](https://github.com/nir414/GPL_language/blob/main/CLAUDE.md) — 시작 가이드, 하드 규칙 요약, 기록 규칙
+2. [ai-handoff.md](https://github.com/nir414/GPL_language/blob/main/docs/ai-handoff.md) — **핵심 인계 문서.** 하드 규칙(§0), 세션별 변경 이력(§1), 미해결 항목(§2·§3), 핵심 파일(§4).
+   저장소 전용 작업 문서라 문서 사이트에는 포함되지 않습니다.
+3. [제어기 디버깅 런북](development/ai-controller-debugging-runbook.md) — 절차, Command ID, STATUS 판단표
+
 ---
 
 ## 📚 문서 구조
 
-### 🎓 [gpl-language/](gpl-language/) - GPL 언어 학습 자료
+### 🎓 [GPL 언어 학습 자료](gpl-language/getting-started.md) (`gpl-language/`)
 
 GPL 언어의 핵심 개념, 문법, 베스트 프랙티스를 다룹니다.
 
 **추천 읽기 순서:**
 
 1. **[getting-started.md](gpl-language/getting-started.md)** - GPL 언어 개요 및 VB.NET과의 차이점
-2. **[datatypes.md](gpl-language/datatypes.md)** - 데이터 타입, 상수, ASCII 제약 사항
+2. **[datatypes.md](gpl-language/datatypes.md)** - 데이터 타입, 상수, ASCII 제약, Static 초기화 함정
 3. **[location-cartesian.md](gpl-language/location-cartesian.md)** - Location Cartesian/PosWrtRef/XYZ와 관련 컴파일 오류 정리
 4. **[arrays.md](gpl-language/arrays.md)** - 배열(0-based, upper bound, ReDim, 참조 공유)
 5. **[strings.md](gpl-language/strings.md)** - 문자열 처리 표준 (Left/Right/Val 대체 패턴)
@@ -28,24 +40,24 @@ GPL 언어의 핵심 개념, 문법, 베스트 프랙티스를 다룹니다.
 - **[threading.md](gpl-language/threading.md)** - Thread 클래스 및 동기화 (TestAndSet 패턴)
 - **[thread-safety.md](gpl-language/thread-safety.md)** - 스레드 안전성 상세 가이드
 - **[networking.md](gpl-language/networking.md)** - TCP/UDP 네트워킹 (Socket, TcpClient, UdpClient)
-- **[file-io.md](gpl-language/file-io.md)** - 파일 입출력 구현
+- **[file-io.md](gpl-language/file-io.md)** - 파일 입출력, StreamWriter Flush/AutoFlush 의미
 
 ---
 
-### 🛠️ [development/](development/) - 프로젝트 개발 가이드
+### 🛠️ 개발 가이드 (`development/`)
 
-GPL 프로젝트 개발 및 운영을 위한 실무 가이드입니다.
+VS Code 확장 개발·운영을 위한 현행 실무 가이드입니다.
 
-- **[project-structure.md](development/project-structure.md)** - 프로젝트 구조 및 아키텍처
-- **[automation.md](development/automation.md)** - 컨트롤러 업로드 자동화
-- **[ai-controller-debugging-runbook.md](development/ai-controller-debugging-runbook.md)** - AI 에이전트용 제어기 디버깅 절차와 command ID
-- **[handover.md](development/handover.md)** - 개발자 인수인계 가이드
-- **[version-management.md](development/version-management.md)** - 버전 관리 전략
-- **[workflow-improvements.md](development/workflow-improvements.md)** - AI 에이전트 워크플로우 개선 사항
+- **[ai-controller-debugging-runbook.md](development/ai-controller-debugging-runbook.md)** - AI 에이전트용 제어기 디버깅 절차, Command ID, STATUS 판단표
+- **[design-principles.md](development/design-principles.md)** - 설계 원칙, 코딩 우선순위, Quality Gate
+- **[broker-workbench-architecture.md](development/broker-workbench-architecture.md)** - Broker 프로세스 + GPL Workbench 분리 설계 (Draft)
+
+> 옛 GPL 로봇 프로젝트(Test_robot) 시절의 개발 문서(인수인계서, 구조, 버전 관리, 업로드
+> 자동화)는 [아카이브](archive/README.md)의 `test-robot/`으로 이관됐습니다. 현행 문서가 아닙니다.
 
 ---
 
-### 📖 [reference/](reference/) - 참고 자료
+### 📖 참고 자료 (`reference/`)
 
 GPL 공식 레퍼런스 및 참고 문서입니다.
 
@@ -55,20 +67,20 @@ GPL 공식 레퍼런스 및 참고 문서입니다.
 
 ---
 
-### 🚀 [releases/](releases/) - 릴리즈 프로세스
+### 🚀 릴리즈 프로세스 (`releases/`)
 
-VS Code 확장 릴리즈 관련 가이드입니다.
+VS Code 확장 릴리즈(버전 관리 규칙 포함) 가이드입니다.
 
 - **[quick-guide.md](releases/quick-guide.md)** - 빠른 릴리즈 가이드 (3단계)
 - **[process.md](releases/process.md)** - 상세 릴리즈 체크리스트 및 문제 해결
 
 ---
 
-### 📦 [archive/](archive/) - 히스토리 및 기록
+### 📦 히스토리 및 기록 (`archive/`)
 
 프로젝트 히스토리, 세션 요약, 인시던트 기록입니다.
 
-- **[archive/README.md](archive/README.md)** - 아카이브 인덱스(인시던트/세션/리뷰)
+- **[archive/README.md](archive/README.md)** - 아카이브 인덱스(인시던트/세션/리뷰/test-robot)
 - **[incidents.md](archive/incidents.md)** - 발생한 이슈 및 해결 방법
 
 ---
@@ -81,7 +93,7 @@ VS Code 확장 릴리즈 관련 가이드입니다.
 - **코드 액션**: VB.NET 호환성 대안 제안, 권장 패턴 제시
 - **자동완성**: GPL 특화 패턴 및 API 제안
 
-자세한 내용은 프로젝트 루트의 [README.md](../README.md)를 참고하세요.
+확장 자체의 기능/설치 안내는 [저장소 README](https://github.com/nir414/GPL_language#readme)를 참고하세요.
 
 ---
 
@@ -95,19 +107,8 @@ VS Code 확장 릴리즈 관련 가이드입니다.
 ### 프로젝트 링크
 
 - [GitHub Repository](https://github.com/nir414/GPL_language)
-- [Issues](https://github.com/nir414/GPL_language/issues)
-- [Contributing Guidelines](../CONTRIBUTING.md)
+- [Issues](https://github.com/nir414/GPL_language/issues) — 문서 개선 제안/오류 제보도 여기로
 
 ---
 
-## 📝 문서 기여
-
-문서 개선 사항이나 오류를 발견하시면:
-
-1. [Issues](https://github.com/nir414/GPL_language/issues)에 제보
-2. Pull Request로 직접 수정 제안
-3. [기여 가이드라인](../CONTRIBUTING.md) 참고
-
----
-
-**마지막 업데이트**: 2026년 5월 29일
+**마지막 업데이트**: 2026년 8월 18일

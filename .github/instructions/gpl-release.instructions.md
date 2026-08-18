@@ -10,7 +10,8 @@ description: "Use when changing package version, README version text, building t
 - 검증/패키징 순서는 기본적으로 다음을 따른다.
   1. `npm run compile`
   2. `npm run pre-release-check`
-  3. `npm run package` (필수)
+  3. `npm run package` — **patch 계열 작업에만.** minor/major/pre-release 공식 릴리즈는
+     버전을 먼저 수동 설정한 뒤 `npm run package:no-bump`를 쓴다 (정본: `docs/releases/process.md`).
 - VSIX 생성 후에는 **파일 경로만 안내**한다.
 
 ## 절대 금지

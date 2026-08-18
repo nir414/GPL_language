@@ -3,8 +3,16 @@ name: CI
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
 
 jobs:
   build:

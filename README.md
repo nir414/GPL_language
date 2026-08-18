@@ -1,6 +1,6 @@
 # GPL Language Support
 
-현재 버전: **v0.8.8**
+현재 버전: **v0.8.14**
 GPL (Guidance Programming Language) 지원 VS Code 확장.
 IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·배포·디버깅**까지 통합 제공합니다.
 
@@ -18,7 +18,7 @@ IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·�
 
 1. `settings.json`에 `gpl.controller.ip` 설정
 2. 명령 팔레트(`Ctrl+Shift+P`) → `GPL: Connect to Controller`
-3. `GPL: Deploy (Build Only)` 실행으로 업로드/컴파일 확인
+3. `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` 실행으로 업로드/컴파일 확인
 
 ### 3) 디버깅 시작하기
 
@@ -32,11 +32,12 @@ IntelliSense, 정의/참조 탐색, 호버, 코드 폴딩, **제어기 연결·�
 
 - 사용자/기능 관점 개요: `README.md` (이 문서)
 - 상세 개발 문서: `docs/development/`
-    - `project-structure.md`: 구조/역할
-    - `workflow-improvements.md`: 개발 흐름 개선 이력
-    - `version-management.md`: 버전 관리 규칙
+    - `ai-controller-debugging-runbook.md`: 제어기 디버깅 절차/Command ID
+    - `design-principles.md`: 설계 원칙·코딩 우선순위
+    - `broker-workbench-architecture.md`: Broker/Workbench 분리 설계(Draft)
 - GPL 언어/레퍼런스 문서: `docs/gpl-language/`, `docs/reference/`
-- 릴리즈 절차: `docs/releases/process.md`, `docs/releases/quick-guide.md`
+- 릴리즈 절차(버전 관리 규칙 포함): `docs/releases/process.md`, `docs/releases/quick-guide.md`
+- 문서 사이트: `mkdocs serve` (또는 `npm run docs:serve`) — Material for MkDocs
 
 ## 설치
 

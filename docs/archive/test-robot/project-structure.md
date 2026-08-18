@@ -1,3 +1,5 @@
+> ⚠️ **아카이브 — Test_robot 시절 문서.** 삭제된 `Test_robot` GPL 로봇 프로젝트의 구조 문서다(마지막 유효: 2026-01-02). 현재 VS Code 확장의 구조는 루트 `CLAUDE.md` §저장소 구조와 `docs/ai-handoff.md` §4(핵심 파일)를 본다.
+
 # Test_robot 프로젝트 구조 (v2 - 전문가 수준 재설계)
 
 ## 🏗️ 모듈 분류 체계

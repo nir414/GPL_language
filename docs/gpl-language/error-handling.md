@@ -221,6 +221,7 @@ End If
 - [ ] 가능하면 `Core_ErrorHandler` 함수 활용
 
 ## 참고
-- 기준 모듈: `Core_ErrorHandler.gpl`
-- 적용 모듈: `Storage_File_Manager.gpl`, `Data_XmlStore.gpl`, `Data_AsyncSave.gpl`
-- 시스템 상태 정보 (SoftEStop, PowerState)는 `Core_ErrorHandler` 함수 사용 시 자동 포함
+- 이 문서의 예제 모듈명(`Core_ErrorHandler`, `Storage_File_Manager`, `Data_XmlStore`,
+  `Data_AsyncSave`)은 옛 Test_robot 프로젝트에서 온 것으로, 현재 저장소에는 해당 코드가 없다.
+  패턴(중앙 로거 모듈 + 호출 위치 문자열 + 예외 객체 전달)은 그대로 유효하다.
+- 시스템 상태 정보 (SoftEStop, PowerState)는 중앙 로거에서 함께 수집하면 자동 포함시킬 수 있다

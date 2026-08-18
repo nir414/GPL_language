@@ -1,3 +1,5 @@
+> ⚠️ **아카이브 — Test_robot 시절 문서.** 현재 저장소에 존재하지 않는 GPL 로봇 애플리케이션 `Test_robot`의 인수인계서다(마지막 유효: 2025-12-09). 여기 적힌 파일·태스크·다음 작업은 현행이 아니다. 지금도 유효한 설계 원칙·코딩 우선순위·Quality Gate는 [design-principles.md](../../development/design-principles.md)로 추출됐다.
+
 # 🤖 Developer Handover Guide
 
 ## Test_robot GPL 프로젝트 인수인계 문서

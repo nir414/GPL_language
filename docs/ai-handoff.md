@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-18 (§1-AX: 컴파일 에러 점프 최종 포커스를 편집기로 + 점프 로직 공용화. 직전: §1-AW 활동바 아이콘 CPU 칩)
+- 최종 갱신: 2026-08-18 (§1-BA: 문서 정리 2차 — file-io 분리, 런북 명령 표 재생성, 정본 역할 분담, pre-release-check README 버전 검사, Pages 배포. 직전: §1-AZ MkDocs 도입)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 현재 package 버전: **0.8.14** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -1871,6 +1871,68 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 - **검증**: `npm run compile` 통과, `npm test` 166/166 통과. 실사용 포커스 동작 확인은 VSIX 재설치 후 사용자.
 - **남은 일(선택)**: autoOnSave 자동 Quick Compile 경로에서도 점프가 발생한다(§1-AV 게이트 통과 후 에러가 나는 경우). 저장 시마다 커서 이동이 방해가 되면 `gpl.deploy.jumpToFirstError`를 끄거나 "수동 배포만 점프" 옵션 분리를 검토.
 
+## 1-AY. 2026-08-18 세션 — Rename(F2) 프로바이더 신규 (라이벌 확장 대응)
+
+- **배경**: 마켓플레이스에 GPL 지원 라이벌 확장 `kimhui.vb-helper`(2026-07-30 게시, VB.NET+GPL+PAC **에디터 전용**, 제어기 연동 없음) 등장. 기능 비교 결과 우리 확장에 없는 편집 기능 중 사용자 결정으로 **Rename만** 도입 (`.pac` 언어 지원·스니펫은 보류 — "우리 방향과 다름"/"표준화 어려움", 재제안 금지).
+- **의도/설계** (신규 `src/providers/renameProvider.ts` + 순수 로직 `src/language/renameCore.ts`):
+  - **대상 판별은 정의 이동과 같은 해석 순서** (로컬 → 멤버 접근 → 캐시 → 온디맨드 파싱). F12로 정의에 못 가는 식별자는 F2도 거부 — 이름만 같은 코드를 텍스트 치환으로 깨뜨리지 않는 안전선. 예약어(광역 셋, renameCore.GPL_RENAME_RESERVED)·GPL 내장 심볼(gplBuiltins)은 원본/새 이름 양쪽에서 거부.
+  - **로컬 변수/파라미터**: `findEnclosingProcedureRange`로 감싸는 프로시저 안의 비한정(`.` 뒤가 아닌) 매치만 변경.
+  - **전역 심볼**: `GPLReferenceProvider.provideReferences`를 **정의 위치에서** 재실행(호출부/정의부 어디서 F2 해도 결과 동일)하되, rename 특성에 맞게 3가지 보정:
+    1. **함수 반환값 대입**(`FunctionName = ...`) — 참조 검색은 의도적으로 제외하지만 rename은 필수 포함 (누락 시 컴파일 깨짐).
+    2. **문자열 프로시저 참조** — GPL 스레드 관용구 `New Thread("Mod.Proc")`의 문자열도 함께 변경. 기준은 정의 이동(resolveStringLiteralReference)과 동일: "F12로 점프되는 문자열만 F2로 바뀐다" (식별자 형태 리터럴 + 한정자 일치 검증). Module/Class rename 시 `"Name.xxx"`의 첫 세그먼트도 처리.
+    3. **섀도잉 필터** — 동명 로컬이 선언된 다른 프로시저 안의 비한정 매치는 그 로컬을 가리키므로 제외 (참조 검색의 과탐이 rename에서는 코드 파손이 되는 것 방지).
+  - 같은 스코프 동명 충돌 검사(거부), 새 이름 식별자 형식 검증.
+- **부수 변경**: `isInCommentOrString` 정본을 `config.ts` → `language/cursorExpression.ts`로 이동 (renameCore가 vscode 비의존이어야 Node 단독 테스트 가능). config.ts가 re-export하므로 기존 import 경로 전부 무변경. extension.ts는 GPLReferenceProvider 인스턴스를 변수로 빼 Rename과 공유.
+- **검증**: `npm test` 178/178 통과 (신규 renameCore 12케이스: 예약어/경계/주석·문자열 제외/skipQualified/반환값 대입/문자열 세그먼트/컨테이너/주석 속 문자열 + isInCommentOrString 이동 회귀). 실사용(F2) 검증은 VSIX 재설치 후 사용자.
+- **남은 일**: ① MergeCode 실프로젝트에서 F2 실사용 검증 (특히 스레드 문자열 참조·오버로드·클래스 멤버) ② 다음 릴리스 패키징 시 CHANGELOG에 "Rename(F2) 지원" 항목 추가 ③ (선택) rename 결과 미리보기 유도 문서화 — VS Code 기본은 즉시 적용이므로 대규모 rename 전 `Ctrl+Enter`(미리보기) 권장 안내.
+
+## 1-AZ. 2026-08-18 세션 — 문서 전면 정리 + Material for MkDocs 사이트 도입
+
+### 증상/배경 (사용자 요청: "문서 자료 정리 + Material for MkDocs 도입")
+
+- 전수 조사 결과 `docs/development/` 7개 중 **5개가 지금은 삭제되고 없는 GPL 로봇 앱(Test_robot) 시절 문서**였고, 그중 `automation.md`는 현행 하드 규칙이 금지하는 절차(별도 PowerShell/FTP 업로드로 Deploy 경로 우회)를 "권장 워크플로"로 서술 — CLAUDE.md 3단계 읽기 순서를 따르는 신규 작업자(AI 포함)가 금지 경로를 정상 절차로 학습할 위험.
+- 그 외: 런북 `-742`를 "일시 상태 가능"으로 오기(instructions와 정면 모순), 폐지된 `gpl.deployRun` 잔존, 루트 README 버전 v0.8.8(실제 0.8.14, 6릴리스 연속 방치), `networking.md`가 옛 파일명(`GPL_DICTIONARY_GUIDE.md`) 링크, `gpl-release.instructions.md`의 "`npm run package` (필수)"가 process.md의 minor/major 금지 규칙과 모순.
+
+### 조치
+
+- **MkDocs 사이트 골격**: `mkdocs.yml`(Material, `language: ko`, 라이트/다크, 한글 앵커 보존용 `pymdownx.slugs` slugify, `exclude_docs`로 ai-handoff.md·dotfile 제외 — 사용자 결정), `requirements-docs.txt`(mkdocs-material==9.7.7 고정), `.github/workflows/docs.yml`(main 푸시 시 `mkdocs build --strict` → GitHub Pages 배포, docs 경로 필터), `ci.yml`에 docs `paths-ignore`, npm `docs:serve`/`docs:build`, `.gitignore`에 `site/`, `.vscodeignore`에 mkdocs 파일.
+- **Test_robot 시절 문서 이관**: `handover.md`·`project-structure.md`·`version-management.md`·`automation.md` → `docs/archive/test-robot/`(각 최상단에 폐기 배너: 마지막 유효 시점·현행 대체 문서 명시), `workflow-improvements.md` → `docs/archive/sessions/2025-12-09-workflow-retro.md`(동일 사건 세션 기록과 짝). handover의 고유 가치(설계 근거·코딩 우선순위·래퍼 지양·Quality Gate)는 신규 `docs/development/design-principles.md`로 추출. `development/`에는 runbook·design-principles·broker-workbench 3개만 남음.
+- **런북 P0 교정**: `-742`를 "명확한 컴파일 실패"로 분리(-746 일시 상태, -752는 §1-AU 의미로 명시), `gpl.deployRun` 행 → `gpl.start`/`gpl.saveToFlash`/`gpl.quickCompile`로 교체, 명령 제목을 package.json 실제 제목으로 갱신. ※ 조사 에이전트가 "`gpl.stopAll` 미존재"라 보고했으나 **검증 결과 extension.ts:2708에 별칭으로 실존** — 삭제하지 않음 (하드 규칙 3: 단정 전 소스 확인의 실례).
+- **모순 해소**: `gpl-release.instructions.md`의 "`npm run package` (필수)" → patch 전용으로 조건부화(정본: releases/process.md), CLAUDE.md 읽기 순서 3번을 현행 문서로 재지정, 루트 README 버전 0.8.14·문서 링크 갱신.
+- **아카이브의 살아있는 지식 승격**: Static 로컬 변수 선언 시 초기화 함정(2026-01-02 세션) → `gpl-language/datatypes.md`, StreamWriter AutoFlush 기본값(serial·/NVRAM=True)+공식 URL 8개 → `gpl-language/file-io.md`. 원본엔 승격 표시.
+- **링크/인덱스**: `networking.md` 깨진 링크 수정, `docs/README.md` 전면 재작성(사이트 홈, ai-handoff를 필독 1순위로 GitHub 링크 등재, 디렉터리 링크·CONTRIBUTING 유령 링크 제거), archive README에 test-robot 폴더 등재, incidents 레거시 명칭 매핑 1세대 보강(IO_FileManager → Storage_File_Manager), 아카이브 내 깨진 전방 링크에 "(당시 경로)" 주석.
+
+### 검증
+
+- `mkdocs build --strict` **경고 0건 통과** (한글 앵커는 빌드 산출물 HTML의 id와 dictionary.md TOC 9개 전부 일치 확인). `package.json` JSON 유효성 확인. 이관 경로를 참조하는 잔존 참조 grep 0건. 코드(src) 무변경이므로 compile/package 불필요.
+
+### 남은 일
+
+- 사용자: 커밋/푸시 후 **GitHub 저장소 Settings → Pages → Source를 "GitHub Actions"로 설정**해야 첫 배포가 됨 (미설정 시 deploy job 실패).
+- 아래 §3 체크리스트에 후속 4건 추가함 (런북 Command ID 표 재생성, 런북↔instructions 정본 단일화, pre-release-check README 버전 대조, gpl-language 문서의 Test_robot 잔재 점검).
+
+## 1-BA. 2026-08-18 세션(후속) — 문서 정리 2차: Test_robot 잔재 제거·정본 정리·Pages 배포
+
+### 배경 (사용자: "불필요/오류 문서 알아서 제거, 남은 일 이어서")
+
+§1-AZ의 후속 체크리스트 4건 + gpl-language 문서에 남아 있던 "삭제된 Test_robot 코드가 이 저장소에 구현돼 있다"는 프레이밍 정리.
+
+### 조치
+
+- **file-io.md 분리**: 범용 GPL 지식(StreamReader Peek 패턴, File 클래스, StreamWriter Flush/AutoFlush, Flash 수명 원칙)만 남기고, Test_robot 저장 시스템 구현 설명(Storage_File_Manager/Data_AsyncSave/XmlStore/DatStore, FileIOTest, 모듈 에러 코드)은 `archive/test-robot/file-io-implementation.md` 신설로 이관.
+- **프레이밍 교정** (예제 코드는 유효하므로 유지, 서술만 수정): networking.md §7을 "적용 사례(옛 Test_robot — 현재 저장소에 없음)"로, thread-safety.md의 "본 리포지토리의 Data_AsyncSave" 서술 수정, error-handling.md "적용 모듈" → 예제 출처 설명으로, error-prevention.md의 `Test_robot/` grep 경로 → `<프로젝트 폴더>`로 일반화 + 체크리스트 모듈명에 "옛 프로젝트 기준" 주석.
+- **런북 Command ID 표 재생성**: package.json `contributes.commands` 57개를 단일 출처로 6개 카테고리 표로 재작성. "이 표가 낡으면 package.json이 정본" 명시. 트리 컨텍스트 전용 명령은 별도 절로 분리(팔레트 단독 실행 부적합).
+- **정본 역할 분담 명시**: runbook·instructions 양쪽 최상단에 상호 역할 선언 추가. instructions의 `-752` 의미 교정("Timeout stopping thread" 비치명, §1-AU), `-746`과 분리. 낡은 명령 제목("Deploy (Build Only)", "(/GPL 업로드 + Compile)") 실제 제목으로 갱신.
+- **pre-release-check.js**: README "현재 버전: **vX.Y.Z**" ↔ package.json 버전 대조 검사 추가(표기 부재/불일치 시 실패). 현재 README(v0.8.14)로 회귀 확인.
+
+### 검증
+
+- `mkdocs build --strict` 통과. pre-release-check의 새 정규식을 현재 README에 대해 단독 실행으로 확인(match v0.8.14). 이관/수정된 경로를 참조하는 잔존 참조 grep 확인.
+
+### 남은 일
+
+- (선택) markdownlint 스타일 경고(MD022/MD032 등)가 문서 전반에 있으나 빌드 무관 — 일괄 정리는 별도 세션에서.
+
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
 - **`ProtocolModule.gpl` 478·480의 `-760 Invalid assignment`**: `isOrgCompleted`는 `RobotModule.gpl:828`에 **`Public ReadOnly Property ... As Boolean`**(읽기 전용)으로 정의됨. 거기에 값을 대입해서 나는 에러. 해결책(택1, 사용자 결정 대기): setter 메서드 추가 / `ReadOnly` 제거 후 `Set` 접근자 추가 / backing 필드 직접 대입.
@@ -1889,6 +1951,12 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 - [ ] 정의 찾기: 클래스 멤버 스코프 해석(`obj.member`를 obj의 클래스 한정으로) 정확도는 추후 보강 여지. ※ 오버로드 해석(인자 개수+타입, 동점 peek)은 2026-07-13 §1-K에서 구현 완료.
 - [ ] (§1-P → §1-U에서 일부 완료) 실기기 검증: 1402 수동 검증으로 객체 덤프 형식 확인·분류 버그 수정(2026-07-22, §1-U). **남은 것(VSIX 재설치 후)**: Variables/hover/Watch에서 객체 트리 확장 UI 확인, 로컬 배열 펼침(30개 상한), 중첩 객체(`cmdResponse`), setVariable, Globals 패널 배열/객체 표시. 배열 확장 지연 크면 `ARRAY_EXPAND_MAX` 조정.
 - [ ] (2026-07-16, §1-Q) 자체 검토 세션 변경분 — 로컬 `npm run compile` && `npm test` 후 §1-Q 실기기 검증 체크리스트 수행.
+- [ ] (2026-08-18, §1-AY) Rename(F2) 실사용 검증 — MergeCode에서 로컬 변수/모듈 프로시저/클래스 멤버/스레드 문자열 참조 rename 확인. 다음 릴리스 CHANGELOG에 "Rename(F2) 지원" 기재.
+- [ ] (2026-08-18, §1-AZ) GitHub Pages 첫 배포 — 커밋/푸시 후 저장소 Settings → Pages → Source를 "GitHub Actions"로 설정, docs.yml 성공과 사이트(https://nir414.github.io/GPL_language/) 확인.
+- [x] (§1-AZ → §1-BA 완료) 런북 Command ID 표 재생성 — package.json `contributes.commands` 57개 기준 카테고리별 재생성(연결/상태, 배포/실행, 디버그/콘솔, 조회/IO, AI 전용, 트리 전용).
+- [x] (§1-AZ → §1-BA 완료) 런북 ↔ instructions 정본 단일화 — 양쪽 최상단에 역할 분담 명시(instructions=하드 규칙·가드 정본, runbook=절차·전체 명령 표·pktmon 실측·STATUS 판단표 정본). instructions의 `-752`를 "Timeout stopping thread, 비치명"으로 교정, 낡은 명령 제목 갱신. 표 자체의 물리적 제거는 하지 않음(AI 자동 로드 파일의 자족성 유지).
+- [x] (§1-AZ → §1-BA 완료) `pre-release-check`에 README "현재 버전: **vX.Y.Z**" ↔ package.json 대조 검사 추가 (불일치·표기 부재 시 실패).
+- [x] (§1-AZ → §1-BA 완료) `gpl-language/` Test_robot 잔재 정리 — file-io.md를 범용 지식만 남기고 구현 설명은 `archive/test-robot/file-io-implementation.md`로 분리. networking/thread-safety/error-handling/error-prevention의 "이 저장소에 있다"는 프레이밍을 "옛 프로젝트 사례"로 교정(예제 코드 자체는 유효하므로 유지).
 - [ ] 변경분 커밋/배포 및 회귀 확인.
 
 ### 3-B. 코드 리뷰 권고 — 미적용(검증/결정 필요)

@@ -72,6 +72,15 @@ check(`CHANGELOG contains version ${version}`, () => {
     return changelog.includes(`## [${version}]`);
 });
 
+// 4.5 README.md 버전 표기 대조 (v0.8.8 표기가 6릴리스 연속 방치됐던 사고 방지, ai-handoff §1-AZ)
+check(`README.md version text matches v${version}`, () => {
+    const readme = fs.readFileSync('README.md', 'utf8');
+    const m = readme.match(/현재 버전:\s*\*\*v([\d.]+(?:-[a-z]+\.\d+)?)\*\*/);
+    if (!m) throw new Error('README.md에서 "현재 버전: **vX.Y.Z**" 표기를 찾지 못함');
+    if (m[1] !== version) throw new Error(`README=v${m[1]} != package.json=v${version}`);
+    return true;
+});
+
 // 5. Git 상태 확인
 const gitStatus = gitCheck('git status --porcelain');
 check('Git working directory is clean', () => {

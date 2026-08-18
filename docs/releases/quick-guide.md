@@ -23,6 +23,10 @@ npm run package
 
 ### 공식 PATCH 릴리즈
 
+> `npm run package`(자동 patch bump) 하나로도 patch를 만들 수 있지만, **공식 릴리즈는
+> 아래처럼 버전을 먼저 확정하고 `package:no-bump`를 쓰는 절차를 권장**한다
+> (상세: [process.md](process.md)).
+
 ```powershell
 node scripts/bump-version.js patch
 # CHANGELOG.md / README.md / docs/ai-handoff.md 정리

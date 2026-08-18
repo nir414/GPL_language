@@ -1063,7 +1063,9 @@
         "dev:install": "node -e \"console.error('dev:install is disabled to prevent opening new VS Code windows. Build VSIX with npm run dev:cycle, then install manually from Extensions > Install from VSIX.'); process.exit(1);\"",
         "dev:cycle:open": "node -e \"console.error('dev:cycle:open is disabled to prevent opening new VS Code windows. Use npm run dev:install only when explicit reinstall is needed.'); process.exit(1);\"",
         "dev:host": "node -e \"console.error('dev:host is disabled to prevent opening new VS Code windows.'); process.exit(1);\"",
-        "dev:watch": "npm run watch"
+        "dev:watch": "npm run watch",
+        "docs:serve": "mkdocs serve",
+        "docs:build": "mkdocs build --strict"
     },
     "devDependencies": {
         "@types/node": "16.x",

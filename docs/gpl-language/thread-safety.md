@@ -1,6 +1,6 @@
 # GPL 스레드 안전(Thread-Safety) 가이드
 
-본 문서는 GPL(Guidance Programming Language)에서의 스레드 안전 개념과 주의사항, 그리고 실전 패턴(세마포어 Interlock)을 요약합니다. 마지막에는 본 리포지토리의 Data_AsyncSave/XmlStore(Data_XmlStore) 설계에 어떻게 적용하는지 팁을 덧붙입니다.
+본 문서는 GPL(Guidance Programming Language)에서의 스레드 안전 개념과 주의사항, 그리고 실전 패턴(세마포어 Interlock)을 요약합니다. 마지막에는 비동기 저장 큐 설계(옛 Test_robot 프로젝트의 Data_AsyncSave/XmlStore 사례 — 현재 저장소에는 코드 없음)에 적용하는 팁을 덧붙입니다.
 
 ## 1) 스레드 전환과 데이터 경합
 
@@ -68,7 +68,7 @@ Public Function ReadString(ByRef sg As String) As String
 End Function
 ```
 
-## 4) Data_AsyncSave/XmlStore(Data_XmlStore)에의 적용 팁
+## 4) 비동기 저장 큐에의 적용 팁 (Data_AsyncSave/XmlStore 사례)
 
 - 공유 상태(큐 인덱스/카운터, 경로/XML 버퍼)는 반드시 Interlock으로 보호
 - 문자열 큐에 넣기/빼기, 인덱스 갱신은 acquire_sem / release_sem 범위 내에서 실행

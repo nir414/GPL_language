@@ -20,5 +20,4 @@ package-lock.json
 controller-mcp/**
 captures/**
 dist/**
-test_*.js
 scripts/dev/**

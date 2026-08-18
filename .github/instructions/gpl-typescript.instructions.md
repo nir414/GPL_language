@@ -10,7 +10,6 @@ applyTo: "src/**/*.ts"
 - GPL/VB.NET 심볼 비교는 대소문자를 무시하므로 반드시 `ciEq()`를 사용한다.
 - Function/Sub 이름은 PascalCase를 사용한다. 단, 생성자 `Sub New(...)`는 예외다.
 - `docs/`는 GPL 로봇 프로젝트 문서이며 확장 코드와 별개다.
-- `test_parser.js`, `test_1403_manual.js` 등 루트 테스트 파일은 수동 검증용으로 취급한다.
 - 구문 강조는 `syntaxes/gpl.tmGrammar.json`의 VB.NET 재사용 방식을 유지하고, 불필요한 커스텀 문법 추가를 피한다.
 - 새 기능을 직접 구현하기 전에 기존 의존성이나 검증된 npm 패키지 활용 가능성을 먼저 확인한다.
 

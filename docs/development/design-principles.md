@@ -1,7 +1,8 @@
 # 설계 원칙과 코딩 우선순위
 
 > 출처: 옛 Test_robot GPL 프로젝트 인수인계서(`handover.md`, 2025-12-09)에서 지금도 유효한
-> 원칙만 추출했다. 원문 전체는 [아카이브](../archive/test-robot/handover.md)에 있다.
+> 원칙만 추출했다. 원문은 저장소 밖으로 반출됨(2026-08-18) — git 이력의
+> `docs/archive/test-robot/handover.md`에서 열람 가능.
 > 이 원칙들은 GPL 코드와 이 저장소의 TypeScript 코드 양쪽에 적용된다.
 
 ## 코딩 우선순위

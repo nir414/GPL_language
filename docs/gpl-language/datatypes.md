@@ -28,13 +28,15 @@
 ## 상수
 - GPL_CR: ASCII CR(13)
 - GPL_LF: ASCII LF(10)
-- GPL_Righty: 오른쪽 어깨 구성(&H01)
-- GPL_Lefty: 왼쪽 어깨 구성(&H02)
-- GPL_Above: 팔꿈치 위(&H04)
-- GPL_Below: 팔꿈치 아래(&H08)
-- GPL_Flip: 손목 위(&H10)
-- GPL_NoFlip: 손목 아래(&H20)
-- GPL_Single: 손목 위치 제한(&H1000)
+- 로봇 자세(configuration) 지정 플래그 — 같은 목표 위치에 대해 팔이 취할 자세를 선택하는 비트 값
+  ([원문](https://www2.brooksautomation.com/Controller_Software/Introduction_To_The_Software/Guidance_Programming_Language/data_type_and_variables.htm) 표현 그대로 유지):
+  - GPL_Righty: Assert right shouldered configuration (&H01)
+  - GPL_Lefty: Assert left shouldered configuration (&H02)
+  - GPL_Above: Assert elbow above wrist configuration (&H04)
+  - GPL_Below: Assert elbow below wrist configuration (&H08)
+  - GPL_Flip: Assert wrist pitched up configuration (&H10)
+  - GPL_NoFlip: Assert wrist pitched down configuration (&H20)
+  - GPL_Single: Assert restrict wrist position to within +/- 180 degrees (&H1000)
 
 ## 기타
 - 모든 입력 문자는 7비트 ASCII만 허용

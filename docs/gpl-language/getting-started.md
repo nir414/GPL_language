@@ -11,17 +11,9 @@ Guidance Programming Language(GPL)은 Brooks Automation Guidance 컨트롤러 �
 ## 주요 특징
 - 임베디드 언어: 컨트롤러에 내장, 독립 실행
 - 자동화 최적화: 모션, 위치, 프로파일 등
-
 - 제어 명령어: If, For, While, Sub, Function, 예외 처리
 - 통신: MODBUS/TCP, TCP/UDP, 시리얼, XML
 - 안전: E-Stop, Soft E-Stop, 토크 제한
-
-	Robot.Home()
-	Move.Linear(homeLoc)
-
-
-- 바이오/의료: 샘플 핸들링
-- 전자/기계: 피킹 앤 플레이싱, 나사 조임
 
 ## XML 파싱 예시(GPL)
 ```vb

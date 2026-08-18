@@ -4,8 +4,8 @@ GPL(Guidance Programming Language)의 파일 입출력 API와 Flash 메모리 �
 저장 패턴을 정리한다.
 
 > 옛 Test_robot 프로젝트의 저장 시스템 구현(`Storage_File_Manager`/`Data_AsyncSave` 등)
-> 설명은 [아카이브](../archive/test-robot/file-io-implementation.md)로 이관됐다. 그 설계의
-> 근거(Flash 수명, 원자적 쓰기)는 아래 원칙과 [design-principles](../development/design-principles.md)에 남아 있다.
+> 설명은 저장소 밖으로 반출됨(2026-08-18, git 이력의 `docs/archive/test-robot/file-io-implementation.md`).
+> 그 설계의 근거(Flash 수명, 원자적 쓰기)는 아래 원칙과 [design-principles](../development/design-principles.md)에 남아 있다.
 
 ## 저장 경로와 Flash 메모리 특성
 

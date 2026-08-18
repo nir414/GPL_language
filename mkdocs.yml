@@ -102,9 +102,3 @@ nav:
           - StreamWriter 노트: archive/sessions/streamwriter-notes.md
       - 리뷰:
           - 2025-12-08: archive/reviews/2025-12-08.md
-      - Test_robot 시절 문서:
-          - 인수인계서 (폐기): archive/test-robot/handover.md
-          - 프로젝트 구조 (폐기): archive/test-robot/project-structure.md
-          - 버전 관리 (폐기): archive/test-robot/version-management.md
-          - 업로드 자동화 (폐기): archive/test-robot/automation.md
-          - 파일 저장 시스템 (폐기): archive/test-robot/file-io-implementation.md

@@ -15,8 +15,8 @@
 
 - “개념/규칙”은 문서 내용을 기반으로 정리하고,
 - “프로젝트에서의 실제 사용”은 옛 Test_robot 프로젝트의 `Net_Tcp_*.gpl` 흐름을 사례로 씁니다.
-  (해당 코드는 현재 저장소에 없다 — 패턴 학습용 사례로만 읽을 것. 구조 개요:
-  [아카이브 project-structure](../archive/test-robot/project-structure.md))
+  (해당 코드는 현재 저장소에 없다 — 패턴 학습용 사례로만 읽을 것. 구조 개요 문서는
+  저장소 밖으로 반출됨: git 이력의 `docs/archive/test-robot/project-structure.md`)
 
 ---
 

@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-18 (§1-BA: 문서 정리 2차 — file-io 분리, 런북 명령 표 재생성, 정본 역할 분담, pre-release-check README 버전 검사, Pages 배포. 직전: §1-AZ MkDocs 도입)
+- 최종 갱신: 2026-08-18 (§1-BB: Test_robot 아카이브 저장소 밖 반출 + getting-started 응용분야 문구 사실 확인, datatypes 상수 원문 교체. 직전: §1-BA 문서 정리 2차)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 현재 package 버전: **0.8.14** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -1932,6 +1932,28 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 ### 남은 일
 
 - (선택) markdownlint 스타일 경고(MD022/MD032 등)가 문서 전반에 있으나 빌드 무관 — 일괄 정리는 별도 세션에서.
+
+## 1-BB. 2026-08-18 세션(3차) — Test_robot 아카이브 반출 + datatypes 상수 원문 교체
+
+### 배경 (사용자 요청)
+
+- `datatypes.md`의 로봇 구성 상수(GPL_Righty 등) 한국어 번역이 의미 불명("손목 위" 등) — 원문 영어로 교체 요청.
+- `docs/archive/test-robot/`(§1-AZ에서 이관한 폐기 문서 5개)가 확장과 무관한 옛 프로젝트 자료라 저장소에 남아 있는 것 자체가 불필요하다고 판단, 저장소 밖 반출 요청.
+
+### 조치
+
+- **datatypes.md 상수 절 교체**: GPL_Righty~GPL_Single 7개를 Brooks 공식 원문 영어 서술로 교체(WebFetch로 원문 대조), 앞에 "로봇 자세(configuration) 지정 플래그" 한 줄 안내와 원문 링크 추가. 기존 번역은 "pitched up/down" 등 핵심 의미가 소실돼 있었음.
+- **getting-started.md 잔재 제거**: "바이오/의료: 샘플 핸들링" 등 응용 분야 2줄은 2026-02-05 클라우드 에이전트 커밋(35ddb0b)의 AI 생성 README 소개문 잔재로 확인 → 같은 섹션의 고아 코드 조각(`Robot.Home()`/`Move.Linear` 2줄, 설명 유실)과 함께 삭제. "주요 특징" 불릿 목록도 하나로 정리.
+- **Test_robot 아카이브 반출**: `docs/archive/test-robot/` 5개 파일(handover, project-structure, version-management, automation, file-io-implementation)을 저장소 밖 `C:\Users\Doyun\Downloads\test robot\`으로 이동, 폴더 삭제. 원문은 git 이력(`docs/archive/test-robot/`)에서 열람 가능.
+- **참조 정리**: mkdocs.yml nav의 "Test_robot 시절 문서" 절 삭제, CLAUDE.md 읽기 순서 각주, design-principles.md·file-io.md·networking.md의 아카이브 링크를 "저장소 밖 반출(git 이력에서 열람)" 서술로 교체, archive/README.md에 "반출된 문서" 절 신설, reviews/2025-12-08.md 주석 갱신.
+
+### 검증
+
+- `npm run docs:build`(mkdocs `--strict`) 통과. `archive/test-robot` 잔존 링크 grep — 남은 것은 전부 "git 이력의 ..." 안내 문구와 §1-AZ/§1-BA 이력 기록뿐(당시 사실이므로 유지).
+
+### 남은 일
+
+- 없음.
 
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 

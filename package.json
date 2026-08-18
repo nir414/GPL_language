@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.8.8",
+    "version": "0.8.14",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -53,6 +53,10 @@
         "onCommand:gpl.logs.liveTerminal.start",
         "onCommand:gpl.logs.liveTerminal.stop",
         "onCommand:gpl.threads.refresh",
+        "onCommand:gpl.controller.pushBreakpoints",
+        "onCommand:gpl.controller.pullBreakpoints",
+        "onCommand:gpl.controller.refreshBreakpoints",
+        "onCommand:gpl.ai.exportAgentSetup",
         "onCommand:gpl.ai.debugAssist",
         "onCommand:gpl.ai.debug.getState",
         "onCommand:gpl.ai.debug.setBreakpoint",
@@ -332,6 +336,24 @@
                 "icon": "$(notebook-render-output)"
             },
             {
+                "command": "gpl.controller.pushBreakpoints",
+                "title": "GPL: Push Editor Breakpoints to Controller (에디터 중단점 반영)"
+            },
+            {
+                "command": "gpl.controller.pullBreakpoints",
+                "title": "GPL: Pull Controller Breakpoints (제어기 중단점 가져오기)"
+            },
+            {
+                "command": "gpl.controller.refreshBreakpoints",
+                "title": "GPL: Refresh Controller Breakpoints (중단점 새로고침)",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "gpl.ai.exportAgentSetup",
+                "title": "GPL: Export AI Agent Setup",
+                "icon": "$(hubot)"
+            },
+            {
                 "command": "gpl.ai.debugAssist",
                 "title": "GPL: AI Debug Assist",
                 "icon": "$(hubot)"
@@ -530,9 +552,69 @@
                     "command": "gpl.controller.sendCommand",
                     "when": "view == gplThreads && gpl.ui.connected",
                     "group": "2_tools@2"
+                },
+                {
+                    "command": "gpl.controller.copySituationForChat",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "2_tools@3"
+                },
+                {
+                    "command": "gpl.debug.attachNow",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "2_debug@1"
+                },
+                {
+                    "command": "gpl.debug.generateLaunch",
+                    "when": "view == gplThreads",
+                    "group": "2_debug@2"
+                },
+                {
+                    "command": "gpl.controller.pushBreakpoints",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "2_debug@3"
+                },
+                {
+                    "command": "gpl.controller.pullBreakpoints",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "2_debug@4"
+                },
+                {
+                    "command": "gpl.console.start",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "3_console@1"
+                },
+                {
+                    "command": "gpl.console.stop",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "3_console@2"
+                },
+                {
+                    "command": "gpl.logs.liveTerminal.start",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "3_console@3"
+                },
+                {
+                    "command": "gpl.logs.liveTerminal.stop",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "3_console@4"
+                },
+                {
+                    "command": "gpl.ai.exportAgentSetup",
+                    "when": "view == gplThreads",
+                    "group": "3_diag@4"
+                },
+                {
+                    "command": "gpl.controller.disconnect",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "9_connection@1"
                 }
             ],
             "view/item/context": [
+                {
+                    "command": "gpl.controller.refreshBreakpoints",
+                    "when": "view == gplThreads && viewItem == section-breakpoints",
+                    "group": "inline"
+                },
                 {
                     "command": "gpl.controller.showTraffic",
                     "when": "view == gplThreads && viewItem == runtimeConsoleItem",
@@ -887,6 +969,18 @@
                     "default": true,
                     "description": "Start 명령(프로그램 실행 — 로봇 모션 가능) 전에 확인 모달을 표시합니다. GPL: Start 버튼과 디버그 attach 후 자동 Start에 적용됩니다."
                 },
+                "gpl.controller.syncEditorBreakpoints": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "에디터 중단점 변경(추가/제거/활성 토글)을 연결된 제어기에 즉시 Set Break/Nobreak로 반영합니다. VS Code 중단점이 단일 원본이 됩니다. brooks-gpl 디버그 세션 중에는 DAP가 동기화를 담당하므로 개입하지 않습니다. 외부 AI(MCP)가 실행을 제어하는 워크플로에서 켜면 편리합니다."
+                },
+                "gpl.controller.autoShowPausedLocation": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "디버그 세션이 없을 때 스레드가 정지(Paused/Break/Error)로 전이하면 정지 위치 파일을 자동으로 열어 표시합니다. 외부 AI(MCP)나 GDE가 세운 정지를 에디터가 따라가는 용도입니다."
+                },
                 "gpl.controller.ftpBasePath": {
                     "scope": "window",
                     "type": "string",
@@ -938,16 +1032,27 @@
                 },
                 "gpl.quickCompile.autoOnSave": {
                     "scope": "window",
-                    "type": "boolean",
-                    "default": false,
-                    "description": ".gpl 파일을 저장할 때마다 빠른 컴파일(변경분 업로드 + Compile, STOP/START 생략)을 자동 실행합니다. 제어기에 연결되어 있을 때만 동작하며 600ms 디바운스가 적용됩니다."
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "on",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "조건 충족 시에만 자동 실행(기본): 제어기가 완전 STOP 상태(쓰레드가 하나도 없음)이고 /GPL/<프로젝트>가 이미 존재할 때만 저장 파일을 업로드+Compile합니다. 조건 미충족·디버그 세션 중에는 팝업 없이 조용히 건너뜁니다.",
+                        "항상 시도(구 true): 게이트 없이 저장마다 실행합니다. 활성 쓰레드가 있으면 조용히 중단하고, /GPL 폴더가 없으면 classic(/flash) 경로로 폴백합니다.",
+                        "사용 안 함(구 false)."
+                    ],
+                    "default": "auto",
+                    "description": ".gpl 파일을 저장할 때 빠른 컴파일(변경분 업로드 + Compile, STOP/START 생략)을 자동 실행합니다. 제어기에 연결되어 있을 때만 동작하며 600ms 디바운스가 적용됩니다. 업로드 도중 Compile/Start가 겹치면 제어기 이상이 생길 수 있어, 기본값 \"auto\"는 완전 STOP 상태에서만 동작합니다. (구버전 boolean 값도 인식: true=on, false=off)"
                 }
             }
         }
     },
     "scripts": {
-        "vscode:prepublish": "npm run compile",
+        "vscode:prepublish": "npm run compile && npm run bundle:mcp",
         "compile": "tsc -p ./",
+        "bundle:mcp": "node scripts/bundle-mcp.js",
         "watch": "tsc -watch -p ./",
         "test": "npm run compile && node ./out/test/index.js",
         "pre-release-check": "node scripts/pre-release-check.js",
@@ -964,6 +1069,7 @@
         "@types/node": "16.x",
         "@types/vscode": "^1.74.0",
         "@vscode/vsce": "^2.26.1",
+        "esbuild": "^0.28.1",
         "typescript": "^4.9.4"
     },
     "dependencies": {

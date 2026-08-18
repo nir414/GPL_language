@@ -14,7 +14,12 @@
 /** 정상 완료. */
 export const STATUS_OK = 0;
 
-/** 컨트롤러 일시 사용 불가 / busy (재시도 대상). */
+/**
+ * -752 "Timeout stopping thread" (GPL 에러 문서 정본).
+ * 정지 요청 후 3초(제어기 내부 대기) 안에 쓰레드가 멈추지 않았다는 뜻으로, 요청 자체는
+ * 접수되어 쓰레드는 하던 일(모션/I/O 등)을 마치면 멈춘다 — 비치명, 재시도 대상.
+ * Compile 직후 등 다른 명령에서도 일시적 busy 계열로 관찰되어 이 이름을 유지한다.
+ */
 export const STATUS_CONTROLLER_BUSY = -752;
 
 /** Compile 직후 일시적으로 나타날 수 있어 1회 재시도 대상인 STATUS. */

@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
 import { uploadProject, mirrorProject, listRemoteDir } from './ftpClient';
 import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus, SHOW_THREAD_LIST_CMD, NO_STATUS_CODE } from './responseParser';
-import { isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
+import { isBusyStatus, isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 
 export interface DeployOptions {
     projectDir: string;
@@ -41,6 +41,17 @@ export interface DeployOptions {
      */
     confirmStopOnActive?: (activeThreadsDesc: string) => Promise<boolean> | boolean;
     beforeStart?: () => Promise<void> | void;
+    /**
+     * autoOnSave 자동 게이트 (gpl.quickCompile.autoOnSave = "auto").
+     * 아래 조건이 하나라도 미충족이면 제어기를 건드리지 않고 조용히 중단한다
+     * (failedPhase 'AUTO_GATE' — 호출측은 팝업 없이 로그만 남긴다):
+     * 1. /GPL/<projectName> 폴더가 원격에 이미 존재 (없어도 생성하지 않고 classic 폴백도 없음)
+     * 2. Show Thread 목록이 완전히 비어 있음 — 정지 상태(Idle/Stopped/Error) 쓰레드도 없어야 한다.
+     *    업로드/삭제 도중 Compile/Start가 겹치면 제어기가 죽을 수 있어(2026-08-18 사용자 관찰)
+     *    "쓰레드가 존재하지 않는 완전 STOP 상태"에서만 자동 업로드를 허용한다.
+     * 확인 불가(프로브 무응답)도 미충족으로 취급한다 — 판단은 live 데이터로만(§0 하드 규칙).
+     */
+    autoGate?: boolean;
 }
 
 export interface CompileAttemptLog {
@@ -63,7 +74,7 @@ export interface DeployResult {
     selectedRemoteProjectPath?: string;
     candidateRemoteProjectPaths?: string[];
     uploadStats?: { uploaded: number; skipped: number; totalBytes: number; deleted?: number };
-    failedPhase?: 'STOP' | 'THREAD_CHECK' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK';
+    failedPhase?: 'AUTO_GATE' | 'STOP' | 'THREAD_CHECK' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK';
     failedCommand?: string;
     failedStatusCode?: number;
     failedStatusMessage?: string;
@@ -147,8 +158,12 @@ export async function deploy(
         };
     }
 
-    output.show(true);
-    diagnosticCollection.clear();
+    if (!options.autoGate) {
+        // autoOnSave 게이트 경로는 저장마다 실행된다 — 출력 패널 포커스 강탈 금지,
+        // 게이트 미충족 스킵 시 기존 컴파일 진단(빨간 줄)도 지우지 않는다(UPLOAD 진입 시 clear).
+        output.show(true);
+        diagnosticCollection.clear();
+    }
 
     // ── .gpr 파싱 ──────────────────────────────
 
@@ -200,6 +215,20 @@ export async function deploy(
             directProbeError = e?.message || String(e);
         }
     }
+
+    // autoGate 조건 1: /GPL/<projectName>이 이미 존재해야 한다.
+    // 없거나(생성 필요 포함) 프로브가 실패하면 제어기를 건드리지 않고 조용히 중단한다.
+    if (options.autoGate && (!directGplDir || directGplCreate)) {
+        const reason = directProbeError
+            ? `/GPL 프로브 실패: ${directProbeError}`
+            : `/GPL/${projectName} 폴더 없음 (자동 모드에서는 생성하지 않음 — 최초 1회는 수동 Deploy로 올리세요)`;
+        pushTrace(`│ [autoOnSave] 게이트 미충족 — 건너뜀: ${reason}`);
+        result.failedPhase = 'AUTO_GATE';
+        result.failedCommand = 'AutoGate /GPL probe';
+        result.failedStatusMessage = reason;
+        return result;
+    }
+
     const directActive = !!directGplDir;
 
     let ftpProjectDir: string;
@@ -235,8 +264,11 @@ export async function deploy(
     } else if (options.directGpl) {
         pushTrace(`│  Mode:   classic (direct /GPL 폴백${directProbeError ? `: probe 실패 ${directProbeError}` : ': 변경 파일 전용 경로(autoOnSave)에서 /GPL 폴더 없음'})`);
     }
-    pushTrace(`│  Selected base path: ${result.selectedRemoteBasePath}`);
-    pushTrace(`│  Path candidates: ${(result.candidateRemoteProjectPaths ?? []).join(' | ')}`);
+    if (!directActive) {
+        // direct 모드에서는 base(/GPL)와 후보 경로가 위 FTP 줄과 동일해 중복 — classic에서만 출력.
+        pushTrace(`│  Selected base path: ${result.selectedRemoteBasePath}`);
+        pushTrace(`│  Path candidates: ${(result.candidateRemoteProjectPaths ?? []).join(' | ')}`);
+    }
     pushTrace(`│  Target: ${cfg.ip}:${cfg.port}`);
     pushTrace(`╰──────────────────────────────────────────────────────╯`);
 
@@ -260,8 +292,21 @@ export async function deploy(
         }
     }
 
-    /** Stop -all 전송(무응답 시 1회 재시도). 성공이면 null, 실패면 실패 정보를 반환. */
-    async function sendStopAll(): Promise<{ command: string; code?: number; message: string } | null> {
+    type StopAllOutcome =
+        | { kind: 'accepted' }   // STATUS 0 — 정지 요청 접수(완료 아님, §0.6)
+        | { kind: 'stopping' }   // STATUS -752 — 정지 진행 중(비치명), settle 게이트로 판정
+        | { kind: 'failed'; command: string; code?: number; message: string };
+
+    /**
+     * Stop -all 전송(무응답 시 1회 재전송).
+     *
+     * STATUS -752 "Timeout stopping thread"는 정지 요청 후 3초(제어기 내부 대기) 안에
+     * 쓰레드가 멈추지 않았다는 뜻일 뿐, 요청 자체는 접수되어 하던 일(모션/I/O)을 마치면
+     * 멈춘다(GPL 에러 문서: "This is not a critical error"). 실패로 판정하지 않고
+     * 'stopping'으로 분류해, 호출측이 settle 게이트(Show Thread 폴링)로 실제 정지를
+     * 판정하게 한다 — Compile 쪽 transient(-742/-746/-752) 처리와 대칭 (2026-08-05).
+     */
+    async function sendStopAll(): Promise<StopAllOutcome> {
         pushTrace('│ CMD Stop -all');
         let resp = await trySendCommand('Stop -all', cfg);
         if (resp === null) {
@@ -269,17 +314,21 @@ export async function deploy(
             resp = await trySendCommand('Stop -all', cfg);
             if (resp === null) {
                 pushTrace('│ ✘ Stop -all failed after retry');
-                return { command: 'Stop -all', message: 'No response (timeout or connection failure)' };
+                return { kind: 'failed', command: 'Stop -all', message: 'No response (timeout or connection failure)' };
             }
         }
         const status = parseStatus(resp);
         pushTrace(`│ RAW ${rawPreview(resp) || '(empty)'}`);
-        if (status.code !== 0) {
-            pushTrace(`│ ✘ Stop -all failed: STATUS ${status.code}: ${status.message}`);
-            return { command: 'Stop -all', code: status.code, message: status.message };
+        if (status.code === 0) {
+            pushTrace('│ ✔ Stop -all 접수 — 실제 정지는 아래 게이트에서 확인');
+            return { kind: 'accepted' };
         }
-        pushTrace('│ ✔ Stop complete (요청 접수)');
-        return null;
+        if (isBusyStatus(status.code)) {
+            pushTrace(`│ ⚠ STATUS ${status.code}: ${status.message} — 정지 진행 중(비치명, 하던 일을 마치면 정지). 정지 완료 게이트로 실제 상태를 확인합니다`);
+            return { kind: 'stopping' };
+        }
+        pushTrace(`│ ✘ Stop -all failed: STATUS ${status.code}: ${status.message}`);
+        return { kind: 'failed', command: 'Stop -all', code: status.code, message: status.message };
     }
 
     /**
@@ -287,8 +336,11 @@ export async function deploy(
      * Show Thread 무응답 시에는 확인 불가로 보고 경고 후 통과시킨다(기존 동작 수준 유지).
      */
     async function waitThreadsSettle(timeoutMs = 8000): Promise<{ ok: boolean; cancelled?: boolean; activeDesc?: string }> {
-        const deadline = Date.now() + timeoutMs;
+        const startedAt = Date.now();
+        const deadline = startedAt + timeoutMs;
         let lastActiveDesc = '';
+        let lastLoggedDesc = '';
+        let lastLoggedAt = 0;
         while (Date.now() < deadline) {
             if (token?.isCancellationRequested) { return { ok: false, cancelled: true }; }
             const probe = await probeActiveThreads();
@@ -296,38 +348,58 @@ export async function deploy(
                 pushTrace('│ ⚠ Show Thread 무응답 — 정지 완료 확인 불가(계속 진행)');
                 return { ok: true };
             }
+            const elapsed = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
             if (probe.active.length === 0) {
-                pushTrace(`│ ✔ 모든 쓰레드 정지 확인 (${probe.total}개)`);
+                // total은 Show Thread 목록의 쓰레드 수 — 완전 정지 후에는 목록이 비어 0이 된다.
+                pushTrace(`│ ✔ 모든 쓰레드 정지 확인 (${elapsed}${probe.total > 0 ? `, 정지 상태 ${probe.total}개` : ''})`);
                 return { ok: true };
             }
             lastActiveDesc = probe.active.map(t => `${t.name}(${t.state})`).join(', ');
-            pushTrace(`│ … 정지 대기: ${lastActiveDesc}`);
+            // 500ms 폴링을 그대로 찍으면 같은 줄이 십수 번 반복된다 — 상태가 바뀌면 즉시,
+            // 같은 상태면 2초에 한 번만 경과 시간과 함께 남긴다.
+            if (lastActiveDesc !== lastLoggedDesc || Date.now() - lastLoggedAt >= 2000) {
+                pushTrace(`│ … 정지 대기 ${elapsed}: ${lastActiveDesc}`);
+                lastLoggedDesc = lastActiveDesc;
+                lastLoggedAt = Date.now();
+            }
             await sleep(500);
         }
         return { ok: false, activeDesc: lastActiveDesc };
     }
 
-    /** Stop -all → 정지 완료 게이트를 수행하고, 실패 시 result에 기록한다. true면 계속 진행 가능. */
+    /**
+     * Stop -all → 정지 완료 게이트를 수행하고, 실패 시 result에 기록한다. true면 계속 진행 가능.
+     *
+     * STATUS 0도 -752(stopping)도 "정지 완료"가 아니므로 실제 정지는 항상 settle
+     * 게이트(Show Thread 폴링)로 판정한다. 게이트에서 정지가 확인되지 않으면
+     * Stop -all을 1회 자동 재시도한 뒤 다시 게이트를 돌린다 — 가끔 나는 -752
+     * 타임아웃 때문에 사용자가 손으로 재시도할 필요가 없도록 (2026-08-05).
+     */
     async function stopAllAndSettle(): Promise<boolean> {
-        const stopFail = await sendStopAll();
-        if (stopFail) {
-            result.failedPhase = 'STOP';
-            result.failedCommand = stopFail.command;
-            result.failedStatusCode = stopFail.code;
-            result.failedStatusMessage = stopFail.message;
-            return false;
-        }
-        const settle = await waitThreadsSettle();
-        if (settle.cancelled) { return false; }
-        if (!settle.ok) {
+        const maxStopAttempts = 2;
+        for (let attempt = 1; attempt <= maxStopAttempts; attempt++) {
+            const stop = await sendStopAll();
+            if (stop.kind === 'failed') {
+                result.failedPhase = 'STOP';
+                result.failedCommand = stop.command;
+                result.failedStatusCode = stop.code;
+                result.failedStatusMessage = stop.message;
+                return false;
+            }
+            const settle = await waitThreadsSettle();
+            if (settle.cancelled) { return false; }
+            if (settle.ok) { return true; }
+            if (attempt < maxStopAttempts) {
+                pushTrace(`│ ↻ 정지 미확인(${settle.activeDesc}) — Stop -all 자동 재시도 (${attempt + 1}/${maxStopAttempts})`);
+                continue;
+            }
             pushTrace(`│ ✘ Stop -all 후에도 쓰레드가 정지되지 않음: ${settle.activeDesc}`);
             pushTrace('│   → 정지 미완료 상태에서 Compile/Start를 보내지 않고 중단합니다.');
             result.failedPhase = 'STOP';
             result.failedCommand = 'Show Thread (stop settle gate)';
             result.failedStatusMessage = `Stop -all 후에도 활성 쓰레드 존재: ${settle.activeDesc}`;
-            return false;
         }
-        return true;
+        return false;
     }
 
     // ── Phase 1: STOP ─────────────────────────────
@@ -349,7 +421,28 @@ export async function deploy(
         pushTrace('');
         pushTrace('━━ [SKIP] STOP 생략 (빠른 컴파일) — 쓰레드 상태 확인 ━━━━━━━━━━━━');
         const probe = await probeActiveThreads();
-        if (probe === null) {
+        // autoGate 조건 2: 쓰레드 목록이 완전히 비어 있어야 한다(정지 상태 쓰레드도 불허).
+        // 확인 불가(무응답)도 미충족 — 정지 미확인 상태에서 자동 업로드를 보내지 않는다.
+        if (options.autoGate) {
+            if (probe === null) {
+                pushTrace('│ [autoOnSave] 게이트 미충족 — 건너뜀: Show Thread 무응답(정지 상태 확인 불가)');
+                result.failedPhase = 'AUTO_GATE';
+                result.failedCommand = 'AutoGate Show Thread';
+                result.failedStatusMessage = 'Show Thread 무응답 — 제어기 정지 상태를 확인할 수 없어 자동 업로드를 건너뜁니다.';
+                return result;
+            }
+            if (probe.total > 0) {
+                const desc = probe.active.length > 0
+                    ? `활성 쓰레드 ${probe.active.map(t => `${t.name}(${t.state})`).join(', ')}`
+                    : `정지 상태 쓰레드 ${probe.total}개 존재`;
+                pushTrace(`│ [autoOnSave] 게이트 미충족 — 건너뜀: ${desc} (완전 STOP 상태에서만 자동 업로드)`);
+                result.failedPhase = 'AUTO_GATE';
+                result.failedCommand = 'AutoGate Show Thread';
+                result.failedStatusMessage = `${desc} — 쓰레드가 존재하지 않는 완전 STOP 상태에서만 자동 업로드합니다.`;
+                return result;
+            }
+            pushTrace('│ ✔ [autoOnSave] 게이트 통과: 쓰레드 없음(완전 STOP 상태) + /GPL 폴더 존재');
+        } else if (probe === null) {
             pushTrace('│ ⚠ Show Thread 무응답 — 쓰레드 상태 확인 불가(계속 진행)');
         } else if (probe.active.length > 0) {
             const desc = probe.active.map(t => `${t.name}(${t.state})`).join(', ');
@@ -391,6 +484,12 @@ export async function deploy(
 
     if (token?.isCancellationRequested) { return result; }
 
+    if (options.autoGate) {
+        // 게이트 통과 → 실제 업로드/컴파일 진행이 확정된 시점에 이전 진단을 비운다
+        // (게이트 스킵 시 기존 빨간 줄을 지우지 않기 위해 entry가 아닌 여기서 clear).
+        diagnosticCollection.clear();
+    }
+
     const changedFiles = (options.changedFiles ?? []).filter(Boolean);
     const useChangedOnly = changedFiles.length > 0;
     if (useChangedOnly) {
@@ -408,12 +507,15 @@ export async function deploy(
         if (useMirror) {
             pushTrace('│ Mode: mirror sync (변경분만 업로드 + 원격 전용 파일 삭제, Unload 생략)');
             const stats = await mirrorProject(cfg.ip, options.projectDir, ftpProjectDir, {
-                onProgress: (current, total, file) => {
-                    const pct = Math.floor((current / total) * 100);
-                    pushTrace(`│ [${current}/${total}] (${pct}%) ${file}`);
+                // 스킵 파일까지 전부 나열하면 파일 수만큼 로그가 쏟아진다 — 실제 전송분만 남긴다.
+                onProgress: (current, total, file, action) => {
+                    if (action === 'uploaded') {
+                        pushTrace(`│ ↑ [${current}/${total}] ${file}`);
+                    }
                 },
+                // ✘는 실패 기호로 오독된다 — 미러 삭제는 정상 동작이므로 −로 표기.
                 onDelete: (file) => {
-                    pushTrace(`│ ✘ del ${file} (원격 전용 — 로컬에 없어 삭제)`);
+                    pushTrace(`│ − del ${file} (원격 전용 — 로컬에 없어 삭제)`);
                 },
             });
             result.uploadStats = {
@@ -428,9 +530,10 @@ export async function deploy(
             const stats = await uploadProject(cfg.ip, options.projectDir, ftpProjectDir, {
                 skipUnchanged: options.skipUnchanged,
                 onlyFiles: useChangedOnly ? changedFiles : undefined,
-                onProgress: (current, total, file) => {
-                    const pct = Math.floor((current / total) * 100);
-                    pushTrace(`│ [${current}/${total}] (${pct}%) ${file}`);
+                onProgress: (current, total, file, action) => {
+                    if (action === 'uploaded') {
+                        pushTrace(`│ ↑ [${current}/${total}] ${file}`);
+                    }
                 },
             });
             result.uploadStats = stats;
@@ -912,7 +1015,8 @@ export async function deploy(
         if (result.errorLog.length === 0) {
             pushTrace('│ ✔ No active errors');
         } else {
-            pushTrace(`│ ⚠ ${result.errorLog.length} error(s):`);
+            // 과거 누적 항목이 섞일 수 있으므로 "에러 N개" 단정 대신 ErrorLog 항목 수로 표기.
+            pushTrace(`│ ⚠ ErrorLog ${result.errorLog.length}건:`);
             for (const el of result.errorLog) {
                 pushTrace(`│   ${el}`);
             }
@@ -926,7 +1030,7 @@ export async function deploy(
     const doneLabel = options.skipStart ? 'Build' : 'Deploy';
     pushTrace('');
     pushTrace('══════════════════════════════════════════════════════');
-    pushTrace(`✔ ${doneLabel} ${result.success ? 'complete' : 'failed'}: ${result.projectName}`);
+    pushTrace(`${result.success ? '✔' : '✘'} ${doneLabel} ${result.success ? 'complete' : 'failed'}: ${result.projectName}`);
     pushTrace('══════════════════════════════════════════════════════');
 
     return result;
@@ -997,6 +1101,41 @@ export function resolveErrorFilePath(file: string, projectDir: string): string {
         // 탐색 실패는 무시하고 기본 경로 사용
     }
     return direct;
+}
+
+/**
+ * 첫 번째 컴파일 에러 위치로 포커스·커서를 이동하고 Problems 패널을 표시한다.
+ * (수동 Deploy/Quick Compile과 디버그 F5 배포 경로 공통 UX.
+ *  설정 gpl.deploy.jumpToFirstError로 토글, 기본 켜짐.)
+ */
+export async function jumpToFirstCompileError(
+    errors: CompileError[],
+    projectDir: string,
+    logError: (message: string) => void
+): Promise<void> {
+    if (errors.length === 0) { return; }
+    const jumpEnabled = vscode.workspace
+        .getConfiguration('gpl')
+        .get<boolean>('deploy.jumpToFirstError', true);
+    if (!jumpEnabled) { return; }
+
+    const first = errors[0];
+    // Problems 패널 명령은 키보드 포커스를 패널로 가져가므로 편집기 점프보다
+    // 먼저 실행해야 최종 포커스·커서가 에러 줄의 편집기에 남는다.
+    await vscode.commands.executeCommand('workbench.actions.view.problems');
+    try {
+        const filePath = resolveErrorFilePath(first.file, projectDir);
+        const doc = await vscode.workspace.openTextDocument(filePath);
+        const editor = await vscode.window.showTextDocument(doc, { preview: false });
+        const lineIdx = Math.min(Math.max(0, first.line - 1), doc.lineCount - 1);
+        const lineInfo = doc.lineAt(lineIdx);
+        // 컴파일러는 파일:줄만 보고하므로(컬럼 없음) 들여쓰기 뒤 첫 문자에 커서를 둔다.
+        const cursor = new vscode.Position(lineIdx, lineInfo.firstNonWhitespaceCharacterIndex);
+        editor.selection = new vscode.Selection(cursor, cursor);
+        editor.revealRange(lineInfo.range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    } catch (jumpErr: any) {
+        logError(`첫 에러 파일 열기 실패: ${jumpErr?.message ?? jumpErr}`);
+    }
 }
 
 /**

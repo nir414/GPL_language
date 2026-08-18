@@ -91,7 +91,7 @@ export async function uploadProject(
 		 * 항상 업로드한다. → 저장 파일만 올리는 빠른 컴파일 경로에서 사용.
 		 */
 		onlyFiles?: string[];
-		onProgress?: (current: number, total: number, file: string) => void;
+		onProgress?: (current: number, total: number, file: string, action: 'uploaded' | 'skipped') => void;
 	},
 ): Promise<{ uploaded: number; skipped: number; totalBytes: number }> {
 	const client = await createClient(host);
@@ -138,7 +138,7 @@ export async function uploadProject(
 				uploaded++;
 			}
 
-			options?.onProgress?.(i + 1, files.length, relative);
+			options?.onProgress?.(i + 1, files.length, relative, skip ? 'skipped' : 'uploaded');
 		}
 
 		return { uploaded, skipped, totalBytes };
@@ -160,7 +160,7 @@ export async function mirrorProject(
 	localDir: string,
 	remoteDir: string,
 	options?: {
-		onProgress?: (current: number, total: number, file: string) => void;
+		onProgress?: (current: number, total: number, file: string, action: 'uploaded' | 'skipped') => void;
 		onDelete?: (file: string) => void;
 	},
 ): Promise<{ uploaded: number; skipped: number; deleted: number; totalBytes: number }> {
@@ -195,14 +195,15 @@ export async function mirrorProject(
 			totalBytes += stat.size;
 
 			const remote = remoteByRel.get(relative.toLowerCase());
-			if (remote && remote.size === stat.size) {
+			const skip = !!remote && remote.size === stat.size;
+			if (skip) {
 				skipped++;
 			} else {
 				const remotePath = `${remoteDir}/${relative}`;
 				await uploadVerified(client, file, remotePath, stat.size);
 				uploaded++;
 			}
-			options?.onProgress?.(i + 1, localFiles.length, relative);
+			options?.onProgress?.(i + 1, localFiles.length, relative, skip ? 'skipped' : 'uploaded');
 		}
 
 		// 3) 원격에만 있는 파일 삭제 (낡은 소스 제거)

@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-05 (v0.8.8 공식 릴리즈 — CHANGELOG [Unreleased]를 [0.8.8]로 확정, README 버전 표기 갱신, v0.8.8 태그 push로 CI 자동 릴리즈. 직전 §1-AL: 트리 "현재 실행 위치 보기" .history stale 사본 버그 수정)
+- 최종 갱신: 2026-08-18 (§1-AX: 컴파일 에러 점프 최종 포커스를 편집기로 + 점프 로직 공용화. 직전: §1-AW 활동바 아이콘 CPU 칩)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.8** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
+- 현재 package 버전: **0.8.14** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -1427,7 +1427,8 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 ### 다음 세션 개선 계획 (효과 순, 사용자 승인 전 — 착수 시 이 목록에서 선택)
 
 - [ ] **① 로봇 워크스페이스 AI 가이드**: MergeCode 쪽 CLAUDE.md에 "제어기 통신은 gpl-controller MCP만 사용 / 직접 TCP 금지(모션 위험) / 미등록 시 `claude mcp add` 방법" 섹션 + 프로젝트 루트 `.mcp.json`(Claude Code용) 추가. ※ 해당 폴더는 이 저장소 밖 — 템플릿을 만들어 사용자가 배치.
-- [ ] **② 확장 명령 `GPL: Export AI Agent Setup`**: 현재 워크스페이스에 CLAUDE.md 단편 + `.mcp.json` + 런북 요약 자동 생성(어느 로봇 프로젝트든 1회 명령으로 AI-ready).
+  - 진행(2026-08-05): **① 완료.** `.mcp.json`을 시뮬레이션 워크스페이스 루트에 배치(이 저장소의 `controller-mcp/src/index.js` 절대경로 참조, HOST 192.168.0.1/PORT 1402/PROJECT MergeCode), 서버 단독 기동 stderr `ready` 확인. 로봇 워크스페이스 CLAUDE.md에 §7(제어기 통신 — MCP만 사용/직접 TCP 금지/STATUS 판정/디버그 흐름/안전 규칙/동시 접속 주의/1403 미지원 안내) 추가. 남은 검증: 사용자가 해당 워크스페이스에서 Claude Code 재시작 → `.mcp.json` 승인 → `/mcp` 연결 확인. 배경: 사용자가 로봇 워크스페이스에서 `controller-mcp`를 `cd`+`npm start`로 직접 실행 시도 → 그 폴더에 없어 ENOENT(§1-AH 증상 재현).
+- [x] **② 확장 명령 `GPL: Export AI Agent Setup`**: **완료(2026-08-05, §1-AN)** — esbuild 단일 파일 번들을 VSIX에 동봉하고, 명령이 globalStorage 복사 + `.mcp.json` 병합 생성 + CLAUDE.md 가드 섹션 upsert를 수행. 상세·남은 검증은 §1-AN.
 - [ ] **③ controller-mcp 디버깅 도구 패리티**: 현재 compile·run 중심 → `gpl.ai.debug.*`와 동일 규약(no-space BP, pause 폴링, STATUS 판정, §1-AG 견고화 규칙)으로 setBreakpoint/step/evaluate/loop 도구 추가.
 - [ ] **④ 완화책**: controller-mcp connect backoff 재시도(확장 트리 폴링 5s와의 1402 순간 충돌 대비 — 확장/MCP 모두 connect-per-command라 상시 점유는 아님).
 
@@ -1540,6 +1541,336 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 - 세 해석 경로(`gplDebugSession._resolveSourcePath` / `extension.ts resolveGplFilePath` / `deployService.resolveErrorFilePath`)의 스캔·선택 규칙을 공용 모듈로 빼는 리팩터링 검토 — 이번엔 동작 통일만 하고 구조 변경은 보류(§0 함부로 편집 금지 원칙).
 - 패키징·배포 시 CHANGELOG.md에 항목 추가.
 
+## 1-AM. 2026-08-05 세션 — CALL STACK에서 Running 쓰레드 클릭 → 현재 실행 위치 열기
+
+### 증상 → 원인
+
+- 사용자 관찰: 디버그 패널(CALL STACK)에서 **Running 쓰레드를 더블클릭해도 실행 중 위치가 열리지 않는다** (정지 쓰레드는 정상).
+- 원인: 기능 제거가 아니라 **원래 CALL STACK에서는 불가능한 동작**이었다. DAP 규칙상 VS Code는 정지된 쓰레드에만 stackTrace를 요청하므로 Running 쓰레드는 프레임이 없고 클릭해도 아무 일도 안 일어난다. 실행 중 위치를 열어주던 것은 확장 트리의 "현재 실행 위치 보기"(Show Stack 스냅샷)였고, 사용자는 그 동작이 CALL STACK에도 있기를 기대.
+
+### 조치
+
+- `src/debug/gplDebugSession.ts`:
+  - `customRequest('gplThreadInfo', {threadId})` 추가: DAP threadId → `{name, state, msSinceResume}` 반환. 제어기 명령 없는 UI 전용 조회. `state`는 최근 폴 캐시(`_previousThreadStates`) 기준.
+  - `_lastResumeAt` 필드 추가 — continue/step 4개 요청에서 `Date.now()` 기록. `msSinceResume`으로 노출해 확장이 "재개 직후 VS Code 자동 포커스 전환"(사용자 클릭 아님)을 걸러내는 데 쓴다(fast poll 첫 발이 30ms라 상태가 이미 Running으로 갱신됐을 수 있는 레이스 대비).
+- `src/extension.ts`:
+  - `vscode.debug.onDidChangeActiveStackItem` 리스너 등록: 활성 스택 아이템이 **프레임이 아닌 쓰레드**(frameId 없음)이고 세션 타입 `brooks-gpl`이며 `gplThreadInfo` 상태가 `Running`이면 `gpl.controller.threadShowLocation` 실행(트리와 동일 경로 — Show Stack 스냅샷 → 경로 해석 → 열기+데코레이션). `msSinceResume < 2000`이면 스킵(재개 직후 자동 이벤트 무시).
+  - 이 API는 VS Code 1.90+ (engines는 ^1.74) — `typeof` 존재 확인 후 등록, 구버전에서는 이 기능만 조용히 비활성.
+
+### 한계 (알고 수용)
+
+- `onDidChangeActiveStackItem`은 **선택 변경 시에만** 발화 — 같은 Running 쓰레드를 연달아 다시 클릭하면 이벤트가 없어 재조회되지 않는다. 갱신하려면 다른 항목 클릭 후 다시 클릭하거나 트리의 "현재 실행 위치 보기" 사용.
+- 정지 쓰레드 클릭은 기존대로 VS Code 기본 동작(프레임 열기)에 맡긴다 — 이 리스너는 개입하지 않음.
+
+### 검증
+
+- 로컬 `npm run compile` exit 0, `npm test` **166/166 통과**.
+- 실기기 확인 필요 (모션 영향 없음 — 읽기 전용 Show Stack + 파일 열기뿐):
+  1. 디버그 중 CALL STACK에서 Running 쓰레드 클릭 → 현재 실행 위치 파일:라인이 열리는지.
+  2. F5(Continue) 직후 자동으로 파일이 튀어 열리지 **않는지** (2초 가드 동작 확인).
+  3. 정지 쓰레드 클릭/스텝 흐름이 기존과 동일한지 (리스너 비개입 확인).
+
+### 남은 일
+
+- 패키징·배포 시 CHANGELOG.md에 항목 추가.
+- (선택) 같은 쓰레드 재클릭 시 위치 갱신이 필요하다는 피드백이 오면 `debug/callstack/context` 우클릭 메뉴("현재 실행 위치 보기") 추가 검토.
+
+## 1-AN. 2026-08-05 세션(후속) — MCP 서버 VSIX 동봉 + `GPL: Export AI Agent Setup` 구현 (§1-AH ①·② 완료, 0.8.9)
+
+### 배경/의도
+
+- 사용자 목표: "확장에서 되는 디버깅을 AI가 해줬으면". 경로 결론은 §1-AH 그대로 controller-mcp가 정규 경로 — 남은 문제는 배포·등록의 마찰이었다.
+- 이날 수동 선행 조치: 시뮬레이션 워크스페이스에 `.mcp.json` 배치 + CLAUDE.md §7 가드 섹션(§1-AH ① 진행 기록), `~/.claude.json` user 스코프 전역 등록(백업 `.claude.json.bak-20260805`, `claude` CLI가 PATH에 없어 Node로 직접 기록).
+- 혼동 정리(사용자 질문으로 확인된 것): VS Code 확장 뷰의 "MCP 서버" 갤러리와 `.vscode/mcp.json`은 **Copilot용**이라 Claude Code가 읽지 않는다. Claude Code 등록 주체는 프로젝트 `.mcp.json` / user `~/.claude.json`뿐. **VSIX 동봉만으로는 자동 등록되지 않으므로** Export 명령이 "동봉 → 등록"의 간극을 메운다.
+
+### 조치 (의도 → 방법)
+
+- **서버 동봉**: `scripts/bundle-mcp.js` 신설 + devDep `esbuild`. `controller-mcp/src/index.js` → `out/mcp/gpl-controller-mcp.cjs` 단일 CJS(약 724KB, node18 target). node_modules를 싣지 않아 §1-C 심링크 EACCES·용량 문제가 원천 차단됨. `npm run bundle:mcp` 스크립트 추가, `vscode:prepublish`를 `compile && bundle:mcp`로 확장(번들 실패 시 vsce 중단 → package.js가 버전 롤백).
+- **`src/ai/exportAgentSetup.ts` 신설** — `gpl.ai.exportAgentSetup` (`GPL: Export AI Agent Setup`):
+  1. 동봉 번들을 `globalStorage/mcp/gpl-controller-mcp.cjs`로 복사. **확장 설치 경로를 .mcp.json에 직접 쓰면 업데이트 시 버전 폴더가 바뀌어 조용히 깨지므로** 버전 무관 안정 경로를 사용, 명령 재실행 시 최신 번들로 갱신.
+  2. 워크스페이스 루트 `.mcp.json`에 gpl-controller 항목 **병합**(다른 서버 항목 보존, 기존 파일 파싱 실패 시 덮어쓰지 않고 중단). env는 설정 `gpl.controller.ip/port` + `detectWorkspaceProjectName()` 결과.
+  3. CLAUDE.md 가드 섹션 upsert — 마커 블록(`<!-- BEGIN/END gpl-controller-mcp guide -->`)이 있으면 그 블록만 교체(재실행 안전), 마커 없이 같은 제목의 수동 섹션이 있으면 건너뜀(중복 방지), 없으면 append. 내용: MCP만 사용/원시 TCP 금지/STATUS 판정/전형적 디버그 흐름/모션 안전 규칙/1402 단일 클라이언트 경합/1403 미노출 안내.
+- `extension.ts`에 명령 등록(결과 JSON을 Output `[AI Setup]`으로 기록 — §1-AG Output 기록 규약과 동일 취지), package.json contributes/activationEvents 추가.
+
+### 검증
+
+- 로컬 `npm run compile` exit 0, `npm test` **166/166 통과**.
+- 번들 단독 기동 스모크: `node out/mcp/gpl-controller-mcp.cjs` → stderr `[gpl-controller-mcp] ready` 확인.
+- `npm run package` → **0.8.9** VSIX 생성(117 files, 594KB), zip 목록에서 `extension/out/mcp/gpl-controller-mcp.cjs` 포함 확인.
+
+### 남은 일
+
+- [x] ~~0.8.9 VSIX 설치 → 실워크스페이스에서 `GPL: Export AI Agent Setup` 실행~~ — **실사용 확인(2026-08-05)**: 사용자가 시뮬레이션 워크스페이스에서 실행, `.mcp.json`이 globalStorage 경로로 갱신되고 CLAUDE.md 블록 생성됨. 단 수동 §7과 중복 생성 발견 → §1-AO에서 수정(0.8.10). 남은 확인: Claude Code 재시작 → `/mcp` 연결 → `compile_project`/`show_threads` 실동작.
+- [ ] 등록 경로 정리: 현재 user 스코프(`~/.claude.json`) 전역 등록과 프로젝트 `.mcp.json`이 공존(우선순위 local>project>user). 시뮬레이션 워크스페이스의 수동 `.mcp.json`(저장소 경로 참조)은 Export 재실행 시 globalStorage 경로로 갱신됨. 정착 후 한쪽으로 일원화 검토.
+- [ ] §1-AH ③(controller-mcp 도구 견고화 패리티 — Break/Step 후 pause 폴링 등 §1-AG 규약), ④(connect backoff), **1403 실시간 스트림 도구**(console_start/read(cursor)/stop 링버퍼)는 미착수.
+
+## 1-AO. 2026-08-05 세션(후속2) — GPL Controller 뷰 메뉴에 명령 8종 추가 + Export CLAUDE.md 중복 감지 수정 (0.8.10)
+
+### 배경
+
+- 사용자가 0.8.9 설치 후 시뮬레이션 워크스페이스에서 `GPL: Export AI Agent Setup`을 실행 — `.mcp.json`이 globalStorage 경로로 정상 갱신됨(§1-AN 실사용 검증). 그러나 CLAUDE.md에 **수동 §7이 있는데도 자동 블록이 중복 append**됨: 중복 감지가 제목 "정확 일치" 기준이라 수동 제목의 번호 접두(`## 7. 제어기 통신 — ...`)를 놓침.
+- 사용자 요청: Command Palette 대신 **GPL Controller 뷰 "..." 메뉴(GUI)에서** GPL 명령들을 실행하고 싶음.
+
+### 조치
+
+- `exportAgentSetup.ts`: 중복 감지 기준을 제목 본문 포함 여부(`CLAUDE_SECTION_TOPIC` = "제어기 통신 — gpl-controller MCP 도구만 사용한다")로 완화 — 번호 접두 등 변형도 잡힘. 시뮬레이션 CLAUDE.md의 수동 §7은 삭제해 **마커 블록만** 남김(재실행 시 자동 갱신되는 쪽으로 관리 일원화).
+- `package.json` view/title 메뉴 추가(§1-AJ 그룹 구조 유지): `2_debug`(attachNow, generateLaunch), `2_tools`에 copySituationForChat, `3_console`(console start/stop, liveTerminal start/stop), `3_diag`에 exportAgentSetup, `9_connection`(disconnect). exportAgentSetup·generateLaunch는 제어기 연결이 불필요해 when에 `gpl.ui.connected` 조건 없음.
+
+### 검증
+
+- `npm test` 166/166, `npm run package` → **0.8.10** VSIX(117 files). 메뉴 실표시/실행은 VSIX 설치 후 확인 필요.
+
+### 남은 일
+
+- [ ] 0.8.10 설치 → 뷰 "..." 메뉴에 새 명령 8종 표시·실행 확인, Export 재실행 시 CLAUDE.md 블록이 중복 없이 교체되는지 확인.
+
+## 1-AP. 2026-08-05 세션(후속3) — 에디터 중단점→제어기 동기화 + 정지 위치 자동 표시 (0.8.11)
+
+### 증상/배경
+
+- 사용자 관찰(MCP 실사용): AI가 MCP `set_breakpoint`/`pause_thread`로 제어기에 브레이크를 걸면 **VS Code 중단점 UI와 정지 위치가 갱신되지 않음**. 원인은 구조적 — MCP는 VS Code를 우회해 1402로 직접 명령하므로 "제어기 → VS Code" 방향 연결고리가 없다.
+- 방향 결정(사용자 제안 채택): 제어기→에디터 미러링(Show Break 폴링) 대신 **에디터 중단점을 단일 원본**으로 삼고 확장이 제어기에 밀어넣는다. 빨간 점이 항상 진실이라 어긋남이 구조적으로 없고, 1402 추가 폴링도 불필요. AI는 실행 제어만 담당. (완전한 디버그 UI 실시간 동기화는 여전히 Broker의 몫 — broker-workbench-architecture.md §9)
+
+### 조치
+
+- **`src/controller/breakpointSync.ts` 신설** (`EditorBreakpointSync`): `vscode.debug.onDidChangeBreakpoints` 구독 → 연결 상태 + 설정 `gpl.controller.syncEditorBreakpoints`(기본 **false**, 옵트인) 확인 후 `Set Break`/`Set Nobreak` 전송(GDE no-space 형식 — gplDebugSession._bpCommand와 동일 유지 필요).
+  - 예외 처리: brooks-gpl 디버그 세션 중엔 DAP가 소유하므로 개입 안 함(이중 전송 방지) / 미연결이면 건너뛰고 **연결 확립 에지(false→true)에서 pushAll로 따라잡기**(setControllerConnected에 훅) / 프로젝트명 미확정 시 잘못 보내지 않고 skip+로그 / 조건·히트카운트·로그 BP는 일반 BP로 설정+안내 / STATUS 실패·예외는 Output `[BP Sync]` 기록 / **제거는 전송 시점 기록(_tracked) 기준**이라 편집으로 위치가 밀려도 정확히 지움 / changed(토글·이동)는 "기록 제거 후 재설정"으로 수렴.
+  - 수동 일괄 반영: `gpl.controller.pushBreakpoints`(`GPL: Push Editor Breakpoints to Controller`, 뷰 메뉴 2_debug@3). 추가만 하며 제어기 쪽 기존(GDE 등) BP는 건드리지 않음.
+- **정지 위치 자동 표시**: ControllerTreeProvider에 `onDidThreadPause` 이벤트 추가 — 일반 폴링에서 스레드가 비정지→정지(Paused/Break/Error) 전이하거나 **정지 상태로 새로 나타나면**(stopOnEntry, 스레드 0개에서 시작해도 잡힘) 발생. extension.ts가 구독해 §1-AM의 `threadShowLocation` 경로로 파일 열기+강조. 설정 `gpl.controller.autoShowPausedLocation`(기본 **true**).
+  - 오발화 방지: 연결 후 **첫 수신 목록은 비교 제외**(`hasReceivedThreadList` — 이미 정지돼 있던 스레드로 점프 안 함, 재연결 시 리셋) / 한 폴 주기 최대 1건(다중 파일 점프 방지) / 디버그 세션 중엔 미발화(디버그 모드는 bridge 경로라 자연 배제 + 구독부 이중 가드) / 이벤트 dispose 처리.
+- exportAgentSetup 생성 가이드에 **중단점 워크플로** 문단 추가: 동기화 설정이 켜져 있으면 AI는 `set_breakpoint` 대신 사용자에게 에디터 관리 요청, 직접 쓸 땐 위치(file:line) 보고.
+
+### 검증
+
+- `npm test` 166/166, `npm run package` → **0.8.11** VSIX. 실기기/시뮬레이션 확인 필요:
+  1. 설정 켜고 연결 → 에디터에서 BP 추가/제거/토글 → `Show Break`로 제어기 반영 확인, Output `[BP Sync]` 로그.
+  2. AI(MCP)로 start_project(stopOnEntry) / pause_thread → 몇 초 내 에디터가 정지 위치로 점프하는지.
+  3. F5 디버그 세션 중에는 두 기능 모두 개입하지 않는지(기존 DAP 동작 그대로).
+  4. 연결 직후 이미 정지돼 있던 스레드로 점프하지 **않는지**.
+
+### 남은 일
+
+- [ ] 0.8.11 설치 후 위 검증 4항목 수행 (모션 영향 없음 — Set Break/Nobreak + 읽기 전용 조회뿐).
+- [ ] (선택) MCP `set_breakpoint`로 건 BP는 여전히 에디터에 안 보임 — 가이드로 완화했으나, 원하면 `list_breakpoints` 기반 단발 "pull" 명령 추가 검토.
+
+## 1-AQ. 2026-08-05 세션(후속4) — 배포 STOP 단계 -752 즉시 실패 제거: settle 게이트 판정 + Stop -all 1회 자동 재시도 (0.8.12)
+
+### 증상/원인
+
+- 사용자 보고: Quick Compile에서 활성 쓰레드 감지 → 사용자 승인으로 `Stop -all` 전송 → 제어기가 `STATUS -752 "Timeout stopping thread"` → 확장이 **즉시 실패로 판정하고 배포 중단**. 가끔 재현되며 손으로 재시도하면 성공.
+- -752의 공식 의미(GPL Error Code 문서 language_errors.htm, 사용자 제공): **정지 요청 후 3초(제어기 내부 대기) 안에 쓰레드가 멈추지 않았다는 뜻일 뿐, 요청은 접수되어 쓰레드는 하던 일(모션/I/O)을 마치면 멈춘다. "This is not a critical error."** 빨리 멈추려면 SoftEStop 후 Stop.
+- 직접 원인은 `deployService.sendStopAll`의 비대칭: 무응답만 1회 재전송하고 **STATUS 에러는 종류 불문 즉시 실패**, settle 게이트(`waitThreadsSettle`, Show Thread 폴링)는 STATUS 0에서만 진입. Compile 쪽은 이미 -742/-746/-752를 transient로 1회 재시도하는데 STOP만 -752를 치명 취급.
+
+### 조치
+
+- `src/controller/deployService.ts`:
+  - `sendStopAll`이 3분류를 반환: `accepted`(STATUS 0) / `stopping`(-752, 비치명) / `failed`(무응답 재전송 실패·기타 STATUS).
+  - `stopAllAndSettle`: accepted든 stopping이든 **항상 settle 게이트로 실제 정지를 판정**(STATUS 0도 "접수"일 뿐이므로, §0.6). 게이트에서 정지 미확인이면 **Stop -all 1회 자동 재시도 후 게이트 재수행**, 그래도 미확인이면 기존과 동일하게 STOP 실패로 중단(Compile/Start 미전송 — 안전 게이트 유지).
+- `src/controller/controllerStatusCodes.ts`: `STATUS_CONTROLLER_BUSY(-752)` 주석을 공식 문서 의미("Timeout stopping thread", 비치명)로 갱신(기존 "일시 busy" 서술은 부정확).
+
+### 검증
+
+- `npm test` 166/166, `npm run package` → **0.8.12** VSIX. 실기기 확인: 스레드 실행 중 Quick Compile → Stop 승인 → -752가 나와도 배포가 이어지는지(트레이스에 "정지 진행 중(비치명)" → settle 게이트 → 통과).
+
+### 발견 — Stop/settle/busy-retry 로직이 4곳에 제각각 (통일 필요, §3 항목 추가)
+
+| 위치 | busy(-752) 재시도 | settle 확인 | 비고 |
+| --- | --- | --- | --- |
+| deployService (deploy/F5/Quick Compile) | 이번에 수정(게이트+1회 재시도) | `waitThreadsSettle` | 이번 세션 정비 |
+| extension.ts 수동 명령(stopAll/Stop thread/SoftEStop) | `sendCommandWithBusyRetry`(최대 5회) | `verifyAllStopped`/`verifyThreadStopped` + SoftEStop 복구 제안 | 가장 관대·완성형 |
+| extension.ts ftpRun | busy 재시도 5회, 잔여 busy 통과 | 자체 게이트 | deployService와 별도 구현 |
+| gplDebugSession (`_sendCmd`) | **없음** | **없음** | disconnect/attach preflight/Stop thread — 실패해도 진행이라 저위험이나 -752가 "실패" 로그로 남음 |
+| controller-mcp | 없음 (ok:false로 AI에 반환) | 없음 | AI가 -752를 치명으로 오해 가능 — 도구 설명/가이드에 의미 명시 필요 |
+
+- settled 상태 집합(`/^(idle|stopped|error)$/i`)이 `extension.ts:78`(SETTLED_THREAD_STATE)과 `deployService.threadSettled`에 **주석 동기화 의존으로 중복**.
+
+### 남은 일
+
+- [ ] 0.8.12 설치 후 실기기 검증(위 시나리오 — 모션 영향 없음: Stop -all + 읽기 전용 Show Thread뿐).
+- [ ] Stop/settle/busy-retry 통일 리팩터링 → §3 체크리스트 참조.
+
+## 1-AR. 2026-08-05 세션(후속5) — 제어기 중단점 실시간 보기: 트리 섹션 상시 표시 + 클릭 열기 + 인라인 새로고침 + Pull 명령 (0.8.13)
+
+### 배경
+
+- 사용자 요청: "제어기의 브레이크 상태를 실시간으로 보고 싶다 — 동기화든 수동 새로고침이든". 조사 결과 트리에 이미 "브레이크포인트 (N)" 섹션이 있고 상세 폴링(`Show Break`, ~10초 주기 또는 정지 스레드 존재 시)이 데이터를 받고 있었으나, 체감을 막는 3가지: ① 0개면 섹션 자체가 사라져 상태 확인 불가 ② 폴링 주기 외 즉시 갱신 수단 없음 ③ 항목 클릭해도 위치가 안 열림.
+
+### 조치
+
+- `controllerTreeProvider.ts`:
+  - 브레이크포인트 섹션 **상시 표시**(0개면 "없음" 안내 노드) — 상태가 항상 보인다.
+  - 항목 클릭 → `gpl.controller.openBreakpointLocation`으로 해당 파일:줄 열기(툴팁에 "배포본 기준 줄 번호" 명시 — 로컬 수정 시 어긋날 수 있음).
+  - `refreshBreakpointsNow()` 공개 메서드: `Show Break` 1회만 재조회(전체 refresh보다 경량). 성공 시 파싱 목록 반환(pull이 재사용), 미연결/실패 시 null.
+- `extension.ts` 명령 3종:
+  - `gpl.controller.refreshBreakpoints` — 섹션 헤더 **인라인 ↻ 버튼**(viewItem == section-breakpoints, 기존 `section-${id}` contextValue 활용).
+  - `gpl.controller.openBreakpointLocation` — 트리 항목 클릭용(내부, contributes 미등록).
+  - `gpl.controller.pullBreakpoints`(`GPL: Pull Controller Breakpoints`, 뷰 메뉴 2_debug@4) — **단발 pull**: 제어기 중단점을 에디터 빨간 점으로 반영. 이미 있는 위치(파일+줄 일치)는 건너뛰어 동기화 리스너와의 에코를 최소화(신규분 재전송은 멱등이라 무해). 파일 미해석 건수 보고.
+- `breakpointSync.ts`: `onDidSync` 콜백 추가 — 에디터→제어기 동기화 배치가 실제로 뭔가 보낸 직후 `refreshBreakpointsNow()` 호출 → **에디터에서 중단점을 찍으면 1초 내 트리 섹션에도 반영**(다음 폴링을 기다리지 않음).
+- 갱신 주기 정리: 상시 폴링(~10초/정지 스레드 시 매 폴) + 동기화 직후 즉시 + 인라인 ↻ 수동 — "실시간 보기"는 이 3중으로 충족. 상시 폴링 주기 단축은 1402 트래픽 증가라 보류.
+
+### 검증
+
+- `npm test` 166/166, **0.8.13** VSIX. 실기기 확인: ① 0개일 때 섹션 표시 ② AI(MCP)가 set_breakpoint → 다음 폴링(≤10초) 또는 ↻ 클릭으로 트리 반영 ③ 항목 클릭 → 위치 열림 ④ 에디터 BP 추가(동기화 on) → 트리 즉시 반영 ⑤ Pull → 빨간 점 생성·중복 스킵.
+
+### 남은 일
+
+- [ ] 0.8.13 설치 후 위 5개 시나리오 확인 (모두 읽기 전용 조회 + 에디터 조작 — 모션 영향 없음).
+
+## 1-AS. 2026-08-05 세션(후속6) — controller-mcp: AI 디버깅 낭비 패턴 구조적 차단 (run_to_line·정지확인 내장·힌트 주입)
+
+### 증상 (사용자 관찰 + AI 자가 분석)
+
+MCP로 AI 디버깅 시 "엄청 느리고 의미 없는 반복": ① 분기 흐름이 코드만으로 결정된 상태에서 정보 없는 줄을 45회 한 줄 스텝 — 규칙상 Step 후 show_thread 확인(접수≠완료)이 필요해 스텝당 MCP 왕복 2회 = 약 90왕복 낭비 ② `-eval`이 property/메서드를 평가 못 한다(-780)는 걸 알고도 유사 시도 반복, `wherej` 같은 없는 명령 시도(-714) ③ 원인 특정에 실제 필요한 건 코드 읽기 + eval 2~3회뿐이었음.
+
+### 원인 분석 → 방침
+
+- 문서 규칙(런북/CLAUDE.md)은 세션이 길어지면 잊힌다. **유도는 도구 응답 안에서, 낭비가 일어나는 그 시점에** 해야 효과적.
+- 온라인 조사로 방침 뒷받침(2026-08-05, 본 세션): line-by-line 스텝은 LLM 에이전트의 알려진 비효율 패턴이며 해법은 고수준 관측 반환(arXiv 2604.24212 ADI), 도구는 워크플로 단위로 통합하고 에러는 다음 행동을 지시해야 함(Anthropic "Writing effective tools for agents", Datadog MCP 사례), LLM은 순차 디버깅 훈련 데이터가 부족해 도구 설계로 보정 필요(MSR debug-gym).
+
+### 조치 (`controller-mcp/src/*` — VSIX 번들 `out/mcp`는 다음 `npm run package` 때 재생성)
+
+- `parse.js`: 확장 `responseParser.ts`에서 `parseThreadDetail`(콤마 형식 상세)·`normalizeThreadState`(Stopped/Stopping 순서 주의 포함) 이식, `PAUSED_STATES`(Paused/Break/Error), `statusHint(code)`(-729/-780 eval 한계, -714 없는 명령, -505/-508/-742/-745/-9999 행동 지향 힌트) 추가.
+- `index.js`:
+  - **정지 확인 내장(접수≠완료 자동화)**: `waitForThreadPause()` — `Show Thread <thread>` 상세를 150ms 폴링, 정지 계열 상태로 완료 판정. 접수 직후 옛 위치 Paused 레이스는 직전 위치 스냅샷과 같은 관측을 600ms 무시(stale grace)로 처리. `pause_thread`/`step_thread`/`continue_thread`가 정지 위치(file:line/state)까지 반환 → **스텝당 MCP 왕복 2회 → 1회**.
+  - **`run_to_line` 신설(여러 줄 진행의 기본 경로)**: 임시 중단점 → Continue → 정지 확인 → `evals` 배치 평가 → 중단점 정리(기본 해제, `keepBreakpoint` 옵션)를 1회 호출로. `atRequestedLine`으로 다른 지점 정지(다른 BP/에러)도 구분 보고.
+  - **관측 배치**: `step_thread`/`run_to_line`에 `evals: string[]` — 정지 확인 후 프레임 0에서 여러 변수를 한 응답으로(ADI의 배치 관측 방향).
+  - **연속 스텝 넛지**: 같은 스레드 연속 스텝 3회째부터 응답에 `advice`(run_to_line/정적 분석 전환 권고). 차단은 안 함. continue/run_to_line/set_breakpoint/pause가 스트릭 리셋.
+  - **실패 힌트 주입**: `runCommand`가 실패 STATUS에 `hint` 자동 첨부. eval은 DATA 안 `(-729)/(-780)` 패턴도 감지. description에도 eval 한계(필드/로컬만) 명시.
+- `README.md`(controller-mcp): §5 도구 목록/§6 권장 흐름(정적 분석 먼저 → run_to_line+evals, 스텝은 "다음 한 줄의 효과가 질문일 때만")/§7 설계 주의 갱신.
+
+### 검증
+
+- `controller-mcp` `npm test` 10/10 통과(신규: parseThreadDetail·normalizeThreadState·statusHint), `node --check` 통과. **실기기 미검증** — 아래 남은 일.
+
+### 남은 일
+
+- [ ] 실기기 검증(시뮬레이션 모드): ① step_thread가 정지 위치를 반환하는지(접수 직후 stale grace 동작 포함) ② run_to_line 도달/미도달/다른 BP 정지 3케이스 ③ evals 배치 응답 ④ -780/-714 힌트 표기 ⑤ 연속 스텝 3회 advice. `Show Thread <name>` 상세가 Running 중에도 위치를 주는지 실측 확인.
+- [ ] step/continue의 대상 인자 실측 재확인: GDE 캡처(§runbook)는 `Step <project>` 형식인데 MCP는 스레드명을 넣는다(기존 세션에서 45회 스텝이 동작했으므로 스레드명=프로젝트명 환경에선 유효). 다르게 명명된 스레드에서 확인 필요.
+- [ ] 런북/instructions의 "Step 후 show_thread 확인" 서술을 "MCP 도구는 정지 확인 내장"으로 갱신(다음 문서 정리 때).
+
+## 1-AT. 2026-08-05 세션(후속7) — 배포 로그 가독성 개선 (폴링 스팸·전량 나열·오해 소지 기호 정리)
+
+### 증상 (사용자 로그 제시)
+
+Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms 폴링마다 같은 `… 정지 대기: IOMonitorThreadFunction(Paused)` 줄을 십수 번 반복 ② mirror sync가 스킵 포함 65개 파일을 전부 나열(실제 전송은 3개) ③ `✘ del Compile.log`가 실패처럼 보임(정상 미러 삭제인데 실패 기호) ④ `✔ Stop complete (요청 접수)` 문구 모순(complete vs 접수) ⑤ `✔ 모든 쓰레드 정지 확인 (0개)`의 "(0개)"가 혼란(Show Thread 목록 수인데 맥락 없음) ⑥ direct 모드에서 헤더의 `Selected base path`/`Path candidates`가 FTP 줄과 중복 ⑦ [ErrorLog 분류]에서 같은 코드(-1600 Trj/AutoEx)에 동일 보일러플레이트 설명이 항목마다 반복.
+
+### 조치
+
+- `src/controller/deployService.ts`:
+  - `waitThreadsSettle`: 상태 문자열이 바뀌면 즉시, 같은 상태면 **2초에 한 번만** 경과 시간과 함께 출력(`… 정지 대기 3.5s: …`). 완료 줄은 `✔ 모든 쓰레드 정지 확인 (1.5s, 정지 상태 N개)` 형식 — total 0(목록 비어 있음)이면 개수 생략.
+  - 업로드 진행: `onProgress`의 action으로 **실제 전송된 파일만** `│ ↑ [i/total] 파일명` 출력(스킵은 `Mirror/Upload done` 요약 카운트로만). 퍼센트 표기 제거.
+  - 미러 삭제 기호 `✘ del` → `− del`(✘는 실패 전용으로 유지).
+  - Stop 접수: `✔ Stop complete (요청 접수)` → `✔ Stop -all 접수 — 실제 정지는 아래 게이트에서 확인`.
+  - 헤더: `Selected base path`/`Path candidates`는 classic 모드에서만 출력(direct 모드는 FTP 줄과 중복).
+  - ERROR CHECK: `⚠ N error(s):` → `⚠ ErrorLog N건:`(과거 누적 항목이 섞이므로 단정 회피).
+  - **버그 수정**: 최종 요약줄이 실패 시에도 `✔ Build failed`로 찍히던 것을 성공/실패에 따라 `✔`/`✘`로.
+- `src/controller/ftpClient.ts`: `uploadProject`/`mirrorProject`의 `onProgress`에 4번째 인자 `action: 'uploaded' | 'skipped'` 추가(기존 호출자는 인자 무시로 호환).
+- `src/extension.ts` [ErrorLog 분류]: 부가 설명(detail/해석/권장)을 **코드당 한 번만** 출력(같은 코드 반복 시 요약 줄만).
+
+### 검증
+
+- 로컬 `npm run compile` 통과. 실기기 로그 출력 확인은 다음 배포 때 자연 검증(로직 변경 아님 — 판정 규약(STATUS/settle 게이트)은 건드리지 않고 출력만 변경).
+
+### 남은 일
+
+- [ ] 다음 `npm run package`(버전 bump) 때 CHANGELOG에 본 로그 개선 항목 추가.
+
+## 1-AU. 2026-08-05 세션(후속8) — controller-mcp 2차: keep-alive 연결·세션 로그·사전 가드·debug_snapshot (§1-AS 실사용 피드백 반영)
+
+### 증상 (§1-AS 적용 후 재시도, 사용자 분석)
+
+여전히 느림: ① `-eval` 제약으로 왕복 증가 — `robotType`, `automaticRetractScaraArm`, `getStation(3).teachingPointCountPerArm` 전부 `-780 Unsupported procedure reference`, 프레임 로컬 `cmd`도 실패(성공은 `theMotionLoger.lastStage` 같은 모듈전역.필드뿐) ② "여기 위치" 파악에 수천 줄 RobotModule.gpl 탐색 등 준비가 김 ③ 1402 직렬화 채널의 호출당 왕복 지연 + AI가 안전 규칙상 스텝/컨티뉴 **앞에** 상태 확인을 또 끼움(사후 확인 내장했지만 사전 확인 중복은 남았었음). 추가 요청: 관련 로그를 사용자가 복사해 올 수 있게, 그리고 AI가 뭘 하는지 말하면서 작업하게.
+
+### 조치 (`controller-mcp/src/*`)
+
+- **`console.js` keep-alive 재작성**: connect-per-command(명령마다 TCP 연결, 150ms 폴링마다 재접속!) → 연결 유지 + 유휴 `GPL_IDLE_CLOSE_MS`(기본 30s) 후 종료. 죽은 재사용 소켓(0바이트 끊김/쓰기 실패)은 새 연결로 1회 자동 재시도. `onCommand` 훅(명령/소요시간/raw/에러) 추가. 가짜 1402 서버 스모크로 재사용·재접속·직렬화 검증.
+- **세션 로그**: 모든 도구 호출(시작 args/완료 ms/1402 왕복 수)과 1402 명령(ms/STATUS)을 링버퍼(2000줄) + 파일(`GPL_MCP_LOG_DIR`, 기본 `%TEMP%\gpl-mcp\gpl-mcp-<ts>.log`, 시작 시 stderr에 경로 출력)에 기록. `get_session_log(tail?)` 도구 신설. 사용자는 `Get-Content <파일> -Wait`로 실시간 관찰(= "AI가 뭘 하는지 보이게") 가능, 파일 복사로 낭비 분석 공유.
+- **사전 상태 가드 내장**: `step_thread`/`continue_thread`는 스냅샷에서 비정지면 명령 전송 없이 `refused: thread-not-paused`+현재 위치 반환, `pause_thread`는 이미 정지면 `alreadyPaused`+위치 반환. `run_to_line`은 스레드가 이미 실행 중이면 Continue를 생략하고 중단점 히트만 대기. description에 "사전·사후 확인 내장 — 앞뒤 show_thread 금지" 명시. step 응답에 `before` 위치 포함.
+- **`debug_snapshot(thread?, evals?, frame?)` 신설**: 스레드 목록+정지 스레드 자동 선택+위치 상세+스택+선택 evals를 1회 호출로(상황 파악 원샷).
+- **eval 힌트 정밀화(§1-U 실측 정합)**: -780(프로퍼티/메서드, 인자 무관 — 백킹 필드/부모 덤프/정적 분석 대안 제시)과 -729(프레임 스코프 밖/점 표기 멤버 — show_stack으로 프레임 확인, 모듈전역.필드·arr(i)는 가능)를 분리. `eval_expression` description에 가능/불가 목록 명시.
+- **문서**: controller-mcp README(도구/흐름 0번 "말하면서 작업"/환경변수/keep-alive), 런북 §6(MCP 내장 확인 — 앞뒤 show_thread 금지), instructions 핵심 원칙(보고 규칙 + MCP 내장 확인) 갱신.
+
+### 검증
+
+- `controller-mcp` `npm test` 10/10(-780/-729 힌트 단언 갱신), `node --check` 3파일 통과, keep-alive 스모크(가짜 서버: 3명령 1연결 재사용 → 강제 끊김 후 자동 재접속 → 동시 3발사 직렬화) PASS. 루트 `npm test` 166/166(무관 회귀 없음 확인). **실기기 미검증.**
+
+### 남은 일
+
+- [ ] 실기기 검증(§1-AS 체크리스트에 추가): keep-alive가 GDE/확장 동시 접속과 공존하는지(1402 다중 클라이언트 수용은 기존 관찰상 가능), 유휴 30s 종료 동작, debug_snapshot 자동 스레드 선택, 사전 가드 refused 응답.
+- [ ] 로그 파일 크기 관리(장기 세션 시 rotate) — 필요해지면.
+- [ ] MCP 서버 재시작 후 사용(현재 연결된 세션에는 새 도구/동작 미반영), VSIX 번들은 다음 `npm run package` 때 갱신.
+
+## 1-AV. 2026-08-18 세션 — autoOnSave 조건부 자동 활성화(기본 "auto") + Start 계열 배포 뮤텍스 가드
+
+### 요구/배경 (사용자)
+
+- autoOnSave(저장 시 자동 빠른 컴파일)가 **기본적으로, 단 조건부로** 켜지길 원함. 조건:
+  ① 제어기가 **완전 STOP 상태** — "모든 쓰레드가 종료되어 존재하지 않는 상황"(정지 상태 쓰레드도 없음).
+  ② `/GPL/<projectName>` 폴더가 원격에 이미 존재.
+- 이유(안전): **업로드/파일 삭제 도중 Compile/Start가 겹치면 제어기가 죽는 것 같다**(사용자 관찰).
+  §0.6(Stop 후 Compile/Start 이상)과 같은 계열의 충돌로 판단, 자동 경로는 보수적으로 게이트.
+
+### 조치
+
+- **설정 `gpl.quickCompile.autoOnSave`: boolean → enum 문자열** (`package.json`):
+  - `"auto"`(신규 **기본값**): 아래 AUTO_GATE 충족 시에만 조용히 실행. 미충족이면 팝업/패널 포커스/스냅샷 없이 Output 로그 한 줄만 남기고 스킵.
+  - `"on"`(구 `true`): 기존 동작 그대로(게이트 없음, 활성 쓰레드 시 조용히 중단, /GPL 없으면 classic 폴백).
+  - `"off"`(구 `false`): 사용 안 함.
+  - 구버전 boolean 값 호환: `extension.ts getAutoOnSaveMode()`가 `true→on`, `false→off`로 해석(명시적 false 사용자는 계속 꺼짐). **미설정 사용자는 이번 버전부터 "auto"로 동작이 바뀜** — CHANGELOG에 명시.
+- **`deployService.ts`에 `DeployOptions.autoGate` + `failedPhase 'AUTO_GATE'` 추가**. 게이트는 deploy() 내부에서 live 데이터로만 판정(§0 하드 규칙):
+  - 조건 1(/GPL probe 직후): `/GPL/<projectName>` 미존재·프로브 실패·생성 필요 → AUTO_GATE 스킵. **자동 모드는 폴더를 생성하지 않고 classic 폴백도 하지 않는다**(불완전 업로드/의도치 않은 flash 쓰기 방지). 최초 1회는 수동 Deploy로 올리라고 안내.
+  - 조건 2(skipStop 쓰레드 프로브): `Show Thread  -web` 목록이 **완전히 비어야**(total 0) 진행. 정지 상태(Idle/Stopped/Error) 쓰레드가 있어도 스킵(기존 게이트보다 엄격 — 사용자 정의 "STOP 상태"). 무응답(STATUS 미수신)도 "확인 불가 = 미충족"으로 스킵.
+  - autoGate 경로는 진입 시 `output.show(true)`/`diagnosticCollection.clear()`를 하지 않음(저장마다 포커스 강탈 방지, 게이트 스킵 시 기존 빨간 줄 보존). 진단 clear는 게이트 통과 후 UPLOAD 진입 시점에 수행.
+- **`extension.ts`**: `QuickDeployOpts.autoGate` 전달, `runDeployCore`에서 `AUTO_GATE` 결과는 실패 처리(팝업·스냅샷·outputChannel.show) 전에 로그 한 줄로 조기 반환. flush에서 `brooks-gpl` 디버그 세션 중이면 프로브 왕복 없이 스킵. 저장 핸들러/flush는 `getAutoOnSaveMode()` 사용.
+- **Start 계열 명령에 배포 뮤텍스(`deployInFlight`) 가드 추가** — 사용자가 경고한 "업로드 도중 Start" 충돌의 확장 내부 경로 차단:
+  - `gpl.start`, `gpl.controller.threadStart`, `gpl.controller.ftpRun`(Compile & Start): 업로드/배포 진행 중이면 경고 후 거부.
+  - `gpl.saveToFlash`: FTP 미러(원격 삭제 포함)를 `deployInFlight`로 감싸 autoOnSave/배포와 상호 배제(기존엔 뮤텍스 밖이었음).
+  - 한계: **MCP(controller-mcp)·GDE 등 외부 클라이언트의 Start/Compile은 이 뮤텍스로 못 막는다.** 자동 모드의 "쓰레드 0개" 게이트로 창을 최소화할 뿐, 근본 차단은 아님.
+- **업로드 전 미저장 파일 확인 모달(같은 날 후속 요청)** — `extension.ts confirmSaveDirtyProjectDocs()`:
+  - Deploy/Quick Compile(runDeployCore 수동 경로)·Save to Flash 실행 시, 해당 projectDir 하위의 dirty 문서가 있으면
+    Start 확인과 같은 모달("저장 후 계속" + 취소)로 확인. 취소하거나 저장 실패 시 업로드를 시작하지 않는다
+    (미저장 상태로 올리면 디스크의 이전 내용이 업로드돼 혼동 유발).
+  - autoOnSave(changedFiles) 경로는 저장이 트리거이므로 이 모달을 띄우지 않는다(저장 경로 UI 금지 규칙 유지).
+  - 확인 저장으로 autoOnSave pending에 들어간 파일은 runDeployCore 경로에서는 제거(같은 업로드가 처리 — 중복 컴파일 방지),
+    Save to Flash 경로에서는 유지(/GPL 동기화는 이후 autoOnSave가 자체 게이트로 처리 — flash 업로드는 /GPL을 갱신하지 않음).
+
+### 검증
+
+- `npm run compile` 통과, `npm test` 166/166 통과(회귀 없음). **실기기(G2400C) 미검증.**
+- 실기기 검증 체크리스트(다음 작업자/사용자):
+  1. 완전 STOP(쓰레드 0) + /GPL/MergeCode 존재 상태에서 .gpl 저장 → 자동 업로드+Compile 실행되는지, Output에 `[autoOnSave] 게이트 통과` 로그.
+  2. 프로그램 실행 중 저장 → 팝업 없이 Output `게이트 미충족 — 활성 쓰레드` 한 줄만 남고 제어기 무접촉(FTP LIST/Show Thread 프로브만)인지.
+  3. Stop 직후(정지 상태 쓰레드 잔존) 저장 → `정지 상태 쓰레드 N개 존재` 스킵 확인.
+  4. /GPL에 프로젝트 없는 워크스페이스에서 저장 → `/GPL/<name> 폴더 없음` 스킵(classic 폴백/폴더 생성 없음) 확인.
+  5. 디버그(F5) 세션 중 저장 → `디버그 세션 진행 중` 스킵.
+  6. 수동 Deploy 진행 중 `gpl.start`/트리 쓰레드 시작/ftpRun → "업로드/배포가 진행 중" 경고로 거부되는지.
+  7. 게이트 스킵 시 기존 컴파일 에러 빨간 줄이 지워지지 않는지.
+  8. 미저장 .gpl 파일이 있는 상태에서 수동 Quick Compile/Deploy/Save to Flash → "저장 후 계속/취소" 모달,
+     취소 시 업로드 미시작, "저장 후 계속" 시 저장→업로드 진행 + 같은 파일이 autoOnSave로 중복 컴파일되지 않는지.
+
+### 남은 일
+
+- [ ] 실기기 검증(위 체크리스트) 후 `npm run package`(→0.8.14 예정) + VSIX 재설치.
+- [ ] 외부 클라이언트(MCP/GDE) Start와 확장 업로드의 교차 충돌은 미해결 — 필요 시 controller-mcp 쪽에도 "업로드 중" 상호 신호 검토.
+
+## 1-AW. 2026-08-18 세션 — 활동바 "GPL Controller" 아이콘 교체 (CPU 칩)
+
+- **요구**: 기존 `resources/gpl-controller.svg`(박스+점 3개+막대) 모양이 마음에 들지 않는다며 교체 요청. 컨셉 선택지(로봇 팔/CPU 칩/콘솔 터미널) 중 사용자가 **CPU 칩** 선택.
+- **조치**: SVG를 CPU 칩 실루엣(본체 사각 외곽선 + 중앙 다이 + 4방향 핀 3개씩)으로 재작성. viewBox 128 유지, 색상 `#4FC3F7` 유지(활동바에서는 마스크 처리되어 테마 색이 입혀지므로 실루엣만 유효). `package.json`의 참조 경로(활동바 컨테이너 + gplThreads 뷰) 변경 없음.
+- **검증**: 코드 변경 없음(에셋만). VS Code 창 리로드(또는 VSIX 재설치) 후 활동바 아이콘 표시 확인은 사용자.
+
+## 1-AX. 2026-08-18 세션 — 컴파일 에러 점프 최종 포커스를 편집기로 + 점프 로직 공용 헬퍼화
+
+- **증상**: 컴파일 에러 발생 시 편집하던 커서가 사라져 보임(사용자 보고).
+- **원인**: 배포 실패 분기에서 ① `showTextDocument`로 첫 에러 위치 점프(포커스+커서 이동) 후 ② `workbench.actions.view.problems` 명령이 **마지막에** 실행되어 키보드 포커스를 Problems 패널로 가져감 → 편집기 캐럿 비활성화가 "커서 사라짐"으로 인지됨.
+- **사용자 결정**: 에러 시 포커스·커서를 에러 위치로 옮기는 동작 자체는 **정상 사양으로 확정**. 최종 포커스가 패널에 남는 부분만 수정.
+- **조치**:
+  - 순서 교체 — Problems 패널 명령을 먼저 실행하고 편집기 점프를 마지막에. 최종 포커스·커서가 에러 줄 편집기에 남는다.
+  - 중복 제거 — extension.ts(수동 Deploy/Quick Compile)와 gplDebugSession.ts(F5 배포)의 동일 점프 로직을 `deployService.jumpToFirstCompileError()` 공용 헬퍼로 추출(설정 `gpl.deploy.jumpToFirstError` 체크 포함). 두 경로가 다시 어긋날 여지 제거.
+  - 소소한 개선 — 커서를 컬럼 0 대신 들여쓰기 뒤 첫 문자(`firstNonWhitespaceCharacterIndex`)에 배치(컴파일러는 파일:줄만 보고, 컬럼 정보 없음). reveal은 `InCenter` → `InCenterIfOutsideViewport`(에러 줄이 이미 보이면 스크롤 점프 없음).
+- **검증**: `npm run compile` 통과, `npm test` 166/166 통과. 실사용 포커스 동작 확인은 VSIX 재설치 후 사용자.
+- **남은 일(선택)**: autoOnSave 자동 Quick Compile 경로에서도 점프가 발생한다(§1-AV 게이트 통과 후 에러가 나는 경우). 저장 시마다 커서 이동이 방해가 되면 `gpl.deploy.jumpToFirstError`를 끄거나 "수동 배포만 점프" 옵션 분리를 검토.
+
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
 - **`ProtocolModule.gpl` 478·480의 `-760 Invalid assignment`**: `isOrgCompleted`는 `RobotModule.gpl:828`에 **`Public ReadOnly Property ... As Boolean`**(읽기 전용)으로 정의됨. 거기에 값을 대입해서 나는 에러. 해결책(택1, 사용자 결정 대기): setter 메서드 추가 / `ReadOnly` 제거 후 `Set` 접근자 추가 / backing 필드 직접 대입.
@@ -1547,7 +1878,8 @@ Variables/Watch/hover에서 배열·객체 변수의 표시가 깨짐.
 
 ## 3. 다음에 할 일 (체크리스트)
 
-- [ ] **(우선, §1-AH) 외부 AI 디버깅 경로 개선 ①~④** — 로봇 워크스페이스 AI 가이드/`.mcp.json`, `GPL: Export AI Agent Setup` 명령, controller-mcp 디버깅 도구 패리티, connect 재시도. 상세와 배경은 §1-AH.
+- [ ] **(2026-08-05, §1-AQ) Stop/settle/busy-retry 처리 통일 리팩터링** — 같은 로직이 4곳+MCP에 제각각(§1-AQ 표 참조). 제안: ① `sendCommandWithBusyRetry`를 `controllerConnection.ts`(또는 공용 모듈)로 이동해 extension.ts/deployService/gplDebugSession이 공유 ② settled 상태 집합(`/^(idle|stopped|error)$/i`)과 settle 폴러를 단일 정본으로(현재 extension.ts:78과 deployService.threadSettled가 주석 동기화 의존 중복) ③ Stop 계열 공통 규약 확립: "Stop 전송 → STATUS 0/-752 모두 '접수'로 간주 → settle 폴링 → 미확인 시 Stop 1회 자동 재시도 → (수동 경로) SoftEStop 복구 제안 / (자동 경로) 중단" ④ controller-mcp 도구 설명·exportAgentSetup 가이드에 -752 비치명 의미 명시. ※ 모션/정지 흐름에 닿는 변경이므로 §3-B 원칙대로 저속/시뮬레이션 검증 후 적용.
+- [ ] **(우선, §1-AH) 외부 AI 디버깅 경로 개선** — ①(워크스페이스 AI 가이드/`.mcp.json`)·②(`GPL: Export AI Agent Setup`)는 **완료(2026-08-05, §1-AN)**. 남은 것: ③ controller-mcp 디버깅 도구 견고화 패리티(§1-AG 규약) — **대부분 완료(2026-08-05, §1-AS: 정지확인 내장·run_to_line·statusHint, 실기기 검증 남음)**, ④ connect backoff, + **1403 실시간 스트림 도구**(console_start/read(cursor)/stop). 상세와 배경은 §1-AH/§1-AN.
 - [ ] (§1-AG) 로컬 `npm run compile`→`npm run package`→VSIX 재설치 + 실기기 검증(Break/Step 상태 전이 타이밍, `-eval` 응답 형식, Error 전이 중단).
 - [x] (2026-07-10, §1-J) Hover/IntelliSense/Signature Help 개선 + Brooks 사전 +155 — 샌드박스 tsc·90테스트 통과. (실기기 표시 확인은 사용자)
 - [ ] (§1-J 후속) 캐시 초록 기반 60개(XmlNode/Network/Modbus) 항목을 web_fetch rate limit 해제 후 라이브 페이지로 파라미터 세부 재확인.

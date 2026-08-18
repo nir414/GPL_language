@@ -32,7 +32,7 @@ import {
     getControllerConfig,
     ControllerConfig,
 } from '../controller/controllerConnection';
-import { deploy, findProjectDirs, resolveErrorFilePath } from '../controller/deployService';
+import { deploy, findProjectDirs, jumpToFirstCompileError } from '../controller/deployService';
 import {
     parseThreadList,
     parseThreadDetail,
@@ -229,6 +229,10 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     // Continue 직전 정지 위치(file, line) — sawRunning을 놓쳤을 때 위치 변경으로 새 정지 확인.
     private _continueOrigin = new Map<string, { file: string; line: number }>();
+
+    // 마지막 Continue/Step 시각 — gplThreadInfo가 msSinceResume으로 노출.
+    // 확장이 재개 직후 VS Code의 자동 포커스 전환(사용자 클릭 아님)을 걸러내는 데 쓴다.
+    private _lastResumeAt = 0;
 
     // Continue 후 sawRunning=false 상태에서 paused로 관측된 연속 횟수.
     // 같은 위치에서 CONTINUE_PAUSED_CONFIRM_COUNT회 연속 paused면 잔재 상태가 너무
@@ -1070,6 +1074,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             // Clear stale handles from previous stop
             this._clearStaleState();
             this._pendingAction = 'continue';
+            this._lastResumeAt = Date.now();
             this._pendingThreadId = args.threadId;
             this._pendingContinueSawRunning = false;
             this._pendingContinuePausedSeen = 0;
@@ -1104,6 +1109,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (threadName) {
             this._clearStaleState();
             this._pendingAction = 'step';
+            this._lastResumeAt = Date.now();
             this._pendingThreadId = args.threadId;
             this._userActionInFlight = true;
             try {
@@ -1126,6 +1132,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (threadName) {
             this._clearStaleState();
             this._pendingAction = 'step';
+            this._lastResumeAt = Date.now();
             this._pendingThreadId = args.threadId;
             this._userActionInFlight = true;
             try {
@@ -1148,6 +1155,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (threadName) {
             this._clearStaleState();
             this._pendingAction = 'step';
+            this._lastResumeAt = Date.now();
             this._pendingThreadId = args.threadId;
             this._userActionInFlight = true;
             try {
@@ -1192,6 +1200,10 @@ export class GPLDebugSession extends LoggingDebugSession {
      *   재발사해 VS Code 포커스 쓰레드를 전환한다(트리 클릭 → 디버거 연동). 제어기로 명령을
      *   보내지 않는 UI 전용 동작이며, step 상태머신(`_pendingAction`)은 건드리지 않는다.
      *   정지 상태가 아니면 무시하고 `{focused:false}`를 돌려준다.
+     * - `gplThreadInfo {threadId}`: DAP threadId → 쓰레드 이름/최근 폴 상태 조회.
+     *   CALL STACK에서 Running 쓰레드 클릭 시 확장이 실행 위치를 열기 위한 UI 전용
+     *   조회이며 제어기로 명령을 보내지 않는다. `msSinceResume`은 마지막 Continue/Step
+     *   이후 경과 ms — 재개 직후 자동 포커스 이벤트를 사용자 클릭과 구분하는 용도.
      */
     protected customRequest(
         command: string,
@@ -1212,6 +1224,17 @@ export class GPLDebugSession extends LoggingDebugSession {
             } else {
                 response.body = { focused: false };
             }
+            this.sendResponse(response);
+            return;
+        }
+        if (command === 'gplThreadInfo') {
+            const threadId: number | undefined = typeof args?.threadId === 'number' ? args.threadId : undefined;
+            const name = threadId !== undefined ? this._threadIdToName.get(threadId) : undefined;
+            response.body = {
+                name: name ?? null,
+                state: (name ? this._previousThreadStates.get(name) : undefined) ?? null,
+                msSinceResume: this._lastResumeAt > 0 ? Date.now() - this._lastResumeAt : null,
+            };
             this.sendResponse(response);
             return;
         }
@@ -2939,28 +2962,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                 }
             }
 
-            // 컴파일 에러가 있으면 첫 에러 위치로 점프하고 Problems 패널을 띄운다.
-            // (수동 Deploy 경로와 동일한 UX. 설정 gpl.deploy.jumpToFirstError로 토글.)
-            if (result.compileErrors.length > 0) {
-                const jumpEnabled = vscode.workspace
-                    .getConfiguration('gpl')
-                    .get<boolean>('deploy.jumpToFirstError', true);
-                if (jumpEnabled) {
-                    const first = result.compileErrors[0];
-                    try {
-                        const filePath = resolveErrorFilePath(first.file, projectDir);
-                        const doc = await vscode.workspace.openTextDocument(filePath);
-                        const editor = await vscode.window.showTextDocument(doc, { preview: false });
-                        const targetLine = Math.max(0, first.line - 1);
-                        const range = doc.lineAt(Math.min(targetLine, doc.lineCount - 1)).range;
-                        editor.selection = new vscode.Selection(range.start, range.start);
-                        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-                    } catch (jumpErr: any) {
-                        this._log(`[deploy] 첫 에러 파일 열기 실패: ${jumpErr?.message ?? jumpErr}`);
-                    }
-                    await vscode.commands.executeCommand('workbench.actions.view.problems');
-                }
-            }
+            await jumpToFirstCompileError(result.compileErrors, projectDir,
+                msg => this._log(`[deploy] ${msg}`));
 
             deployOutput.show(true);
             return { ok: false };

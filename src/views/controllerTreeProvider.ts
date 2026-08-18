@@ -104,6 +104,18 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private readonly _onDidLoseConnection = new vscode.EventEmitter<void>();
 	readonly onDidLoseConnection = this._onDidLoseConnection.event;
 
+	/**
+	 * 일반 폴링에서 스레드가 실행→정지(Paused/Break/Error) 전이하거나 정지 상태로 새로
+	 * 나타난 것(stopOnEntry)을 감지하면 발생. 외부(MCP AI/GDE)가 세운 정지를 에디터가
+	 * 따라가는 용도(ai-handoff §1-AP). 디버그 세션 중에는 bridge 경로(enterDebugMode)로
+	 * 갱신되므로 이 이벤트는 발생하지 않는다.
+	 */
+	private readonly _onDidThreadPause = new vscode.EventEmitter<{ name: string; state: string }>();
+	readonly onDidThreadPause = this._onDidThreadPause.event;
+
+	/** 정지로 간주하는 상태 (extension.ts AI_PAUSED_STATES와 동일 취지) */
+	private static readonly PAUSED_STATES: ReadonlySet<string> = new Set(['Paused', 'Break', 'Error']);
+
 	private _connected = false;
 	private threads: ThreadInfo[] = [];
 	private errors: string[] = [];
@@ -119,6 +131,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private _refreshPromise: Promise<void> | null = null;
 	private consecutiveFailures = 0;
 	private lastDetailPollAt = 0;
+	/** 연결 후 Show Thread 목록을 한 번이라도 수신했는지 — 첫 목록은 정지 전이 비교에서 제외 */
+	private hasReceivedThreadList = false;
 	private breakpoints: BreakpointInfo[] = [];
 	private expectedProjectName = '';
 	private expectedProjectFolderName = '';
@@ -168,6 +182,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this._connected = connected;
 		this.consecutiveFailures = 0;
 		this.lastDetailPollAt = 0;
+		this.hasReceivedThreadList = false; // 새 연결마다 정지 전이 비교 기준을 다시 잡는다
 		if (connected) {
 			this._onDidChangeTreeData.fire(undefined);
 			if (options?.refresh !== false) {
@@ -226,6 +241,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 	/** 제어기에서 받아온 캐시 상태 일괄 초기화 (연결 해제/유실 시). */
 	private clearCachedControllerState(): void {
+		this.hasReceivedThreadList = false;
 		this.threads = [];
 		this.errors = [];
 		this.breakpoints = [];
@@ -357,7 +373,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			}
 		} else {
 			this.consecutiveFailures = 0;
-			this.threads = parseThreadList(threadResp);
+			const nextThreads = parseThreadList(threadResp);
+			// 첫 수신 목록은 비교 기준이 없으므로 전이 감지에서 제외한다
+			// (연결 직후 이미 정지돼 있던 스레드로 점프 방지).
+			if (this.hasReceivedThreadList) {
+				this.firePauseTransitions(this.threads, nextThreads);
+			}
+			this.hasReceivedThreadList = true;
+			this.threads = nextThreads;
 		}
 
 		const now = Date.now();
@@ -518,6 +541,40 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this.stopPolling();
 		this._onDidChangeTreeData.dispose();
 		this._onDidLoseConnection.dispose();
+		this._onDidThreadPause.dispose();
+	}
+
+	/**
+	 * Show Break만 즉시 재조회해 브레이크포인트 섹션을 갱신한다.
+	 * 수동 새로고침 버튼과 에디터 중단점 동기화 직후 즉시 반영용(전체 refresh보다 가볍다).
+	 * 성공 시 파싱된 목록을, 미연결/실패 시 null을 돌려준다(pull 명령이 재사용).
+	 */
+	async refreshBreakpointsNow(): Promise<BreakpointInfo[] | null> {
+		if (!this._connected) { return null; }
+		const resp = await trySendCommand('Show Break');
+		if (resp === null || !this._connected) { return null; }
+		this.breakpoints = parseBreakList(resp);
+		this._onDidChangeTreeData.fire(undefined);
+		return this.breakpoints;
+	}
+
+	/**
+	 * 이전/새 스레드 목록을 비교해 정지 전이를 감지한다.
+	 * - 기존 스레드의 비정지→정지 전이, 또는 정지 상태로 새로 나타난 스레드(stopOnEntry —
+	 *   스레드 0개 상태에서 시작해도 잡히도록 빈 previous도 비교 대상이며, 첫 수신 여부는
+	 *   호출부의 hasReceivedThreadList가 거른다)에 발생.
+	 * - 한 폴 주기에 최대 1건만 발생시켜 다중 파일 점프를 막는다.
+	 */
+	private firePauseTransitions(previous: ThreadInfo[], next: ThreadInfo[]): void {
+		const prevStates = new Map(previous.map(t => [t.name, t.state]));
+		for (const t of next) {
+			if (!ControllerTreeProvider.PAUSED_STATES.has(t.state)) { continue; }
+			const prevState = prevStates.get(t.name);
+			if (prevState === undefined || !ControllerTreeProvider.PAUSED_STATES.has(prevState)) {
+				this._onDidThreadPause.fire({ name: t.name, state: t.state });
+				return;
+			}
+		}
 	}
 
 	// ── Build tree ──────────────────────────────────────
@@ -669,16 +726,25 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			: [new InfoNode('쓰레드 없음', 'info')];
 		sections.push(threadSec);
 
-		// ── 브레이크포인트
-		if (this.breakpoints.length > 0) {
+		// ── 브레이크포인트 (제어기 기준 — 0개여도 상시 표시해 상태를 보이게 한다, §1-AR)
+		{
+			const totalHits = this.breakpoints.reduce((s, b) => s + b.hitCount, 0);
 			const bpSec = new SectionNode('breakpoints',
 				`브레이크포인트 (${this.breakpoints.length})`, 'debug-breakpoint',
-				`${this.breakpoints.reduce((s, b) => s + b.hitCount, 0)} hits`);
-			bpSec.children = this.breakpoints.map(bp => {
-				const loc = `${bp.file}:${bp.fileLine}`;
-				const desc = bp.hitCount > 0 ? `${bp.proc} · ${bp.hitCount} hits` : bp.proc;
-				return new InfoNode(loc, 'debug-breakpoint-data', desc, undefined, 'breakpointItem');
-			});
+				this.breakpoints.length > 0 ? `${totalHits} hits` : '없음');
+			if (this.breakpoints.length === 0) {
+				bpSec.children = [new InfoNode('제어기에 설정된 브레이크포인트 없음', 'circle-slash')];
+			} else {
+				bpSec.children = this.breakpoints.map(bp => {
+					const loc = `${bp.file}:${bp.fileLine}`;
+					const desc = bp.hitCount > 0 ? `${bp.proc} · ${bp.hitCount} hits` : bp.proc;
+					return new InfoNode(loc, 'debug-breakpoint-data', desc, {
+						command: 'gpl.controller.openBreakpointLocation',
+						title: '위치 열기',
+						arguments: [{ file: bp.file, line: bp.fileLine }],
+					}, 'breakpointItem', `${bp.project} · ${bp.proc} (procLine ${bp.procLine})\n클릭하면 해당 위치를 엽니다 (배포본 기준 줄 번호)`);
+				});
+			}
 			sections.push(bpSec);
 		}
 

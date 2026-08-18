@@ -9,6 +9,8 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 ## 핵심 원칙
 
 - 제어기 조작은 GPL Language Support 확장의 VS Code 명령, DAP 세션, TreeView 액션을 우선 사용한다.
+- **말하면서 작업한다**: 제어기 조작 전에 한 줄로 "무엇을 왜" 하는지 보고하고, 관측 결과가 오면 즉시 한 줄로 해석을 보고한다. 조용한 연속 도구 호출 금지.
+- MCP(gpl-controller) 도구 `step_thread`/`continue_thread`/`pause_thread`/`run_to_line`은 사전·사후 상태 확인이 내장되어 있다 — 도구 호출 앞뒤에 show_thread를 별도로 끼워 넣지 않는다. 여러 줄 진행은 스텝 반복 대신 `run_to_line`을 사용한다.
 - 제어기 TCP 명령은 병렬로 보내지 않는다.
 - Stop, Deploy, Compile, Start, Continue, Step 같은 상태 변경 명령은 사용자의 의도를 확인한 뒤 실행한다.
 - 직접 FTP 업로드, 별도 PowerShell 업로드 스크립트, 임의 TCP/FTP 자동화로 확장 경로를 우회하지 않는다.

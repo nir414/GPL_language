@@ -17,7 +17,9 @@ import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFil
 
 // Controller integration
 import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
-import { deploy, findProjectDirs, resolveErrorFilePath } from './controller/deployService';
+import { exportAiAgentSetup } from './ai/exportAgentSetup';
+import { EditorBreakpointSync } from './controller/breakpointSync';
+import { deploy, findProjectDirs, jumpToFirstCompileError } from './controller/deployService';
 import { listRemoteDir, removeRemoteDir, removeRemoteFile, downloadProject, mirrorProject } from './controller/ftpClient';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from './controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
@@ -783,10 +785,17 @@ export function activate(context: vscode.ExtensionContext) {
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.debugging', isDebugSessionActive);
 	}
 
+	let breakpointSync: EditorBreakpointSync | undefined;
+
 	function setControllerConnected(connected: boolean, options?: { refreshTree?: boolean }): void {
+		const wasConnected = controllerTree?.isConnected ?? false;
 		statusBar?.setConnected(connected);
 		updateUiContexts(connected);
 		controllerTree?.setConnected(connected, { refresh: options?.refreshTree });
+		if (connected && !wasConnected) {
+			// 연결 확립 에지에서 에디터 중단점으로 제어기를 따라잡는다 (설정 켜진 경우만, §1-AP)
+			breakpointSync?.onControllerConnected();
+		}
 	}
 
 	updateUiContexts(false);
@@ -795,6 +804,113 @@ export function activate(context: vscode.ExtensionContext) {
 	controllerTree.setRuntimeConsoleStatus(currentRuntimeConsoleStatus());
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider('gplThreads', controllerTree)
+	);
+
+	// 에디터 중단점 → 제어기 실시간 동기화 (설정 gpl.controller.syncEditorBreakpoints, §1-AP).
+	// VS Code 중단점을 단일 원본으로 삼아, 외부 AI(MCP)는 실행 제어만 담당하게 한다.
+	breakpointSync = new EditorBreakpointSync({
+		isConnected: () => controllerTree?.isConnected ?? false,
+		isDebugSessionActive: () => isDebugSessionActive,
+		resolveProjectName: () => resolveExpectedProjectName(),
+		log: line => logOutput(line),
+		// 동기화 배치 직후 트리의 중단점 섹션을 즉시 갱신 (다음 상세 폴링까지 기다리지 않음)
+		onDidSync: () => { void controllerTree?.refreshBreakpointsNow(); },
+	});
+	context.subscriptions.push(breakpointSync);
+
+	// 트리 중단점 섹션 인라인 새로고침 — Show Break 1회만 재조회 (전체 새로고침보다 가볍다)
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.refreshBreakpoints', async () => {
+			const list = await controllerTree?.refreshBreakpointsNow();
+			if (!list) {
+				vscode.window.showWarningMessage('GPL: 제어기 미연결 — 브레이크포인트를 조회할 수 없습니다.');
+			}
+		})
+	);
+
+	// 트리 중단점 항목 클릭 → 해당 위치 열기 (줄 번호는 배포본 기준 — 로컬 수정 시 어긋날 수 있음)
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.openBreakpointLocation', async (args?: { file?: string; line?: number }) => {
+			const file = args?.file;
+			const line = args?.line ?? 0;
+			if (!file || line <= 0) { return; }
+			const filePath = resolveGplFilePath(file);
+			if (!filePath) {
+				vscode.window.showWarningMessage(`GPL: "${file}"을 워크스페이스에서 찾을 수 없습니다.`);
+				return;
+			}
+			const doc = await vscode.workspace.openTextDocument(filePath);
+			const editor = await vscode.window.showTextDocument(doc, { preview: false });
+			const lineIdx = Math.min(line - 1, doc.lineCount - 1);
+			editor.revealRange(new vscode.Range(lineIdx, 0, lineIdx, 0), vscode.TextEditorRevealType.InCenter);
+			editor.selection = new vscode.Selection(lineIdx, 0, lineIdx, 0);
+		})
+	);
+
+	// 제어기 중단점 → 에디터 가져오기 (단발 pull — 사용자가 명시 실행할 때만, 상시 미러링 아님).
+	// 에디터에 이미 있는 위치는 건너뛰므로 동기화 리스너와의 에코는 신규 항목에만 발생(멱등이라 무해).
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.pullBreakpoints', async () => {
+			const list = await controllerTree?.refreshBreakpointsNow();
+			if (!list) {
+				vscode.window.showWarningMessage('GPL: 제어기 미연결 — 중단점을 가져올 수 없습니다.');
+				return { ok: false, error: 'not-connected' };
+			}
+			let added = 0, existing = 0, unresolved = 0;
+			const toAdd: vscode.SourceBreakpoint[] = [];
+			for (const bp of list) {
+				if (!bp.file || bp.fileLine <= 0) { unresolved++; continue; }
+				const filePath = resolveGplFilePath(bp.file);
+				if (!filePath) {
+					unresolved++;
+					logOutput(`[BP Pull] 파일 미해석: ${bp.file}:${bp.fileLine} (${bp.project})`);
+					continue;
+				}
+				const uri = vscode.Uri.file(filePath);
+				const lineIdx = bp.fileLine - 1;
+				const already = vscode.debug.breakpoints.some(b =>
+					b instanceof vscode.SourceBreakpoint &&
+					b.location.uri.fsPath.toLowerCase() === uri.fsPath.toLowerCase() &&
+					b.location.range.start.line === lineIdx);
+				if (already) { existing++; continue; }
+				toAdd.push(new vscode.SourceBreakpoint(new vscode.Location(uri, new vscode.Position(lineIdx, 0))));
+				added++;
+			}
+			if (toAdd.length > 0) {
+				vscode.debug.addBreakpoints(toAdd);
+			}
+			const msg = `제어기 중단점 가져오기: 추가 ${added}, 이미 있음 ${existing}, 해석 불가 ${unresolved}` +
+				(added > 0 ? ' (줄 번호는 배포본 기준)' : '');
+			logOutput(`[BP Pull] ${msg}`);
+			vscode.window.showInformationMessage(`GPL: ${msg}`);
+			return { ok: true, added, existing, unresolved };
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.pushBreakpoints', async () => {
+			const result = await breakpointSync!.pushAll();
+			const msg = `에디터 중단점 push: 성공 ${result.sent}, 실패 ${result.failed}, 제외 ${result.skipped}`;
+			logOutput(`[BP Sync] ${msg}`);
+			if (result.failed > 0) {
+				vscode.window.showWarningMessage(`GPL: ${msg} — 자세한 내용은 GPL Output 확인`);
+			} else {
+				vscode.window.showInformationMessage(`GPL: ${msg}`);
+			}
+			return result;
+		})
+	);
+
+	// 외부(MCP AI/GDE)가 세운 스레드 정지를 에디터가 따라간다 (설정 gpl.controller.autoShowPausedLocation).
+	// 디버그 세션 중에는 DAP가 정지 위치를 표시하므로 개입하지 않는다.
+	context.subscriptions.push(
+		controllerTree.onDidThreadPause(async ({ name, state }) => {
+			if (isDebugSessionActive) { return; }
+			const cfg = vscode.workspace.getConfiguration('gpl.controller');
+			if (cfg.get<boolean>('autoShowPausedLocation') === false) { return; }
+			logOutput(`[Thread] ${name} → ${state} 전이 감지 — 정지 위치 자동 표시`);
+			await vscode.commands.executeCommand('gpl.controller.threadShowLocation', { thread: { name } });
+		})
 	);
 	// 트리 등록뿐 아니라 provider 인스턴스 자체도 정리 대상에 등록한다.
 	// (pollTimer / EventEmitter / _debugModeSubscription 등이 deactivate 시 해제되도록)
@@ -1213,7 +1329,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// --- Deploy helper (공통 로직) ---
-	type QuickDeployOpts = { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string; noStopPrompt?: boolean };
+	type QuickDeployOpts = { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string; noStopPrompt?: boolean; autoGate?: boolean };
 
 	/** 배포 진입점 — 동시 실행 뮤텍스(deployInFlight)로 본문 전체를 try/finally로 감싼다. */
 	async function runDeploy(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<void> {
@@ -1227,6 +1343,42 @@ export function activate(context: vscode.ExtensionContext) {
 		} finally {
 			deployInFlight = false;
 		}
+	}
+
+	/**
+	 * projectDir 하위의 저장되지 않은(dirty) 파일이 있으면 저장 여부를 모달로 확인하고 저장한다.
+	 * 업로드는 디스크 내용을 올리므로, 미저장 편집분이 있으면 이전 내용이 올라가 혼동을 유발한다
+	 * (Start 확인 모달과 같은 패턴 — '저장 후 계속' + 취소).
+	 * 반환: ok=false면 사용자가 취소했거나 저장 실패 — 호출측은 업로드를 시작하지 말 것.
+	 * ※ autoOnSave 같은 저장-트리거 경로에서는 호출 금지(저장 경로에서는 UI를 띄우지 않는다).
+	 */
+	async function confirmSaveDirtyProjectDocs(projectDir: string): Promise<{ ok: boolean; savedFiles: string[] }> {
+		const root = path.resolve(projectDir);
+		const dirtyDocs = vscode.workspace.textDocuments.filter(doc => {
+			if (doc.uri.scheme !== 'file' || !doc.isDirty) { return false; }
+			const rel = path.relative(root, path.resolve(doc.uri.fsPath));
+			return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+		});
+		if (dirtyDocs.length === 0) { return { ok: true, savedFiles: [] }; }
+
+		const names = dirtyDocs.map(d => path.basename(d.uri.fsPath)).join('\n');
+		const pick = await vscode.window.showWarningMessage(
+			`저장되지 않은 파일 ${dirtyDocs.length}개가 있습니다. 저장 후 업로드할까요?`,
+			{ modal: true, detail: `저장하지 않으면 디스크의 이전 내용이 업로드됩니다.\n\n${names}` },
+			'저장 후 계속'
+		);
+		if (pick !== '저장 후 계속') { return { ok: false, savedFiles: [] }; }
+
+		const savedFiles: string[] = [];
+		for (const doc of dirtyDocs) {
+			if (await doc.save()) {
+				savedFiles.push(doc.uri.fsPath);
+			} else {
+				vscode.window.showErrorMessage(`파일 저장 실패: ${path.basename(doc.uri.fsPath)} — 업로드를 중단합니다.`);
+				return { ok: false, savedFiles };
+			}
+		}
+		return { ok: true, savedFiles };
 	}
 
 	async function runDeployCore(skipStart: boolean, quickOpts?: QuickDeployOpts) {
@@ -1289,6 +1441,18 @@ export function activate(context: vscode.ExtensionContext) {
 			projectDir = picked;
 		}
 
+		// 업로드 전 미저장 파일 확인 — 수동 경로(Deploy/Quick Compile)만.
+		// autoOnSave(changedFiles) 경로는 저장이 트리거라 대상 파일이 방금 저장됐고, 저장 경로에서는 UI를 띄우지 않는다.
+		if (!quickOpts?.changedFiles?.length) {
+			const dirty = await confirmSaveDirtyProjectDocs(projectDir);
+			if (!dirty.ok) {
+				logOutput('[Deploy] 미저장 파일 확인에서 취소됨 — 업로드를 시작하지 않음');
+				return;
+			}
+			// 방금 저장한 파일이 autoOnSave pending에 들어갔다면 이번 업로드가 함께 처리하므로 제거(중복 컴파일 방지).
+			for (const f of dirty.savedFiles) { quickCompilePendingFiles.delete(f); }
+		}
+
 		const mode = quickOpts?.quick ? 'Quick Compile' : skipStart ? 'Build' : 'Deploy & Run';
 		logOutput(`[Deploy] Starting ${mode}: ${projectDir} → ${cfg.ip}`);
 		outputChannel.show(true);
@@ -1311,6 +1475,7 @@ export function activate(context: vscode.ExtensionContext) {
 				skipStop: quickOpts?.skipStop,
 				skipUnchanged: quickOpts?.skipUnchanged,
 				changedFiles: quickOpts?.changedFiles,
+				autoGate: quickOpts?.autoGate,
 				// 모든 배포는 /GPL 직접 업로드가 기본 (테스트는 /GPL, flash 저장은 gpl.saveToFlash 담당).
 				// /GPL/<name>이 없으면 FTP로 생성 — 단 changedFiles(autoOnSave) 경로는 클래식 폴백.
 				directGpl: true,
@@ -1334,6 +1499,13 @@ export function activate(context: vscode.ExtensionContext) {
 				},
 			}, outputChannel, deployDiagnostics);
 
+			// autoOnSave 자동 게이트 미충족 — 실패가 아니라 "스킵"이다.
+			// 저장마다 팝업/패널 포커스/스냅샷 기록이 생기면 방해되므로 로그 한 줄만 남긴다.
+			if (!result.success && result.failedPhase === 'AUTO_GATE') {
+				logOutput(`[QuickCompile] autoOnSave 건너뜀: ${result.failedStatusMessage ?? '게이트 미충족'}`);
+				return;
+			}
+
 			// errorLog를 제어기 시스템 에러 / GPL 배포 에러로 분류해 출력 채널에 기록한다.
 			// 이 함수는 성공·실패 경로 공통으로 호출된다.
 			function logErrorLogSections(): { sysCount: number; deployErrCount: number } {
@@ -1343,22 +1515,30 @@ export function activate(context: vscode.ExtensionContext) {
 
 				logOutput('');
 				logOutput('── [ErrorLog 분류] ──────────────────────────────────────');
+				// 같은 코드가 연달아 나오면(예: Trj/AutoEx 동시 -1600) 동일한 설명이 항목마다
+				// 반복돼 로그가 부푼다 — 부가 설명(detail/해석/권장)은 코드당 한 번만 출력한다.
+				const printedNotes = new Set<string>();
 				for (const entry of result.errorLog) {
 					const c = classifyErrorEntry(entry);
 					const code = extractErrorCodeFromEntry(entry) ?? c.parsedCode;
 					const hint = typeof code === 'number' ? getErrorCodeHint(code) : undefined;
+					const noteKey = typeof code === 'number' ? `code:${code}` : `text:${c.summary}`;
+					const firstOfCode = !printedNotes.has(noteKey);
+					printedNotes.add(noteKey);
 					if (c.isControllerSystem) {
 						sysCount++;
 						logOutput(`[⚠ 환경 경고] ${typeof code === 'number' ? `[${code}] ` : ''}${c.summary}`);
-						if (c.detail) { logOutput(`          ${c.detail}`); }
-						if (hint) {
-							logOutput(`          해석: ${hint.meaning}`);
-							logOutput(`          권장: ${hint.action}`);
+						if (firstOfCode) {
+							if (c.detail) { logOutput(`          ${c.detail}`); }
+							if (hint) {
+								logOutput(`          해석: ${hint.meaning}`);
+								logOutput(`          권장: ${hint.action}`);
+							}
 						}
 					} else {
 						deployErrCount++;
 						logOutput(`[✘ 코드/배포 에러] ${typeof code === 'number' ? `[${code}] ` : ''}${c.summary}`);
-						if (hint) {
+						if (firstOfCode && hint) {
 							logOutput(`          해석: ${hint.meaning}`);
 							logOutput(`          권장: ${hint.action}`);
 						}
@@ -1517,26 +1697,8 @@ export function activate(context: vscode.ExtensionContext) {
 					errMsg = `코드 수정 효과 검증 불가: COMPILE 환경 블로커 감지${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
 				} else if (result.compileErrors.length > 0) {
 					errMsg = `${result.compileErrors.length}개 컴파일 에러${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
-					// 첫 번째 컴파일 에러 위치로 자동 점프 + Problems 패널 표시 (설정으로 토글)
-					const jumpEnabled = vscode.workspace
-						.getConfiguration('gpl')
-						.get<boolean>('deploy.jumpToFirstError', true);
-					if (jumpEnabled) {
-						const first = result.compileErrors[0];
-						try {
-							const filePath = resolveErrorFilePath(first.file, projectDir);
-							const doc = await vscode.workspace.openTextDocument(filePath);
-							const editor = await vscode.window.showTextDocument(doc, { preview: false });
-							const targetLine = Math.max(0, first.line - 1);
-							const range = doc.lineAt(Math.min(targetLine, doc.lineCount - 1)).range;
-							editor.selection = new vscode.Selection(range.start, range.start);
-							editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-						} catch (jumpErr: any) {
-							outputChannel.appendLine(`[Deploy] 첫 에러 파일 열기 실패: ${jumpErr?.message ?? jumpErr}`);
-						}
-						// Problems 패널을 띄워 전체 진단을 한눈에 볼 수 있게 한다.
-						await vscode.commands.executeCommand('workbench.actions.view.problems');
-					}
+					await jumpToFirstCompileError(result.compileErrors, projectDir,
+						msg => outputChannel.appendLine(`[Deploy] ${msg}`));
 				} else if (sysErrors.length > 0 && result.errorLog.length === sysErrors.length) {
 					// 에러 로그 전체가 제어기 시스템 에러인 경우 — GPL 코드 원인 없음을 명시
 					const firstSys = classifyErrorEntry(sysErrors[0]);
@@ -1613,6 +1775,11 @@ export function activate(context: vscode.ExtensionContext) {
 	// Deploy와 Start를 합치지 않는다는 2026-07-24 결정 — 확인 모달은 동일하게 적용, §0.6)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.start', async () => {
+			// 업로드/컴파일 도중 Start가 겹치면 제어기 이상(사망)을 유발할 수 있다 — 배포 뮤텍스로 차단.
+			if (deployInFlight) {
+				vscode.window.showWarningMessage('업로드/배포가 진행 중입니다. 완료 후 Start를 실행하세요. (업로드 중 Start는 제어기 이상을 유발할 수 있음)');
+				return;
+			}
 			const projectDir = await pickWorkspaceProjectDir('시작할 프로젝트를 선택하세요');
 			if (!projectDir) { return; }
 			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);
@@ -1663,13 +1830,25 @@ export function activate(context: vscode.ExtensionContext) {
 	// 미러 동기화: 크기 다른 파일만 업로드 + 원격 전용 파일 삭제(낡은 소스가 이후 Load에 섞이는 것 방지).
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.saveToFlash', async () => {
+			if (deployInFlight) {
+				vscode.window.showWarningMessage('업로드/배포가 진행 중입니다. 완료 후 flash 저장을 실행하세요.');
+				return;
+			}
 			const projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요');
 			if (!projectDir) { return; }
+			// 업로드 전 미저장 파일 확인. savedFiles는 pending에서 지우지 않는다 —
+			// flash 업로드는 /GPL을 갱신하지 않으므로 /GPL 동기화는 이후 autoOnSave가 자체 게이트로 처리.
+			if (!(await confirmSaveDirtyProjectDocs(projectDir)).ok) {
+				logOutput('[SaveToFlash] 미저장 파일 확인에서 취소됨 — 업로드를 시작하지 않음');
+				return;
+			}
 			const cfg = getControllerConfig();
 			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);
 			const remoteDir = `${cfg.ftpFlashProjectsPath}/${projectName}`;
 			outputChannel.show(true);
 			logOutput(`[SaveToFlash] ${projectDir} → ftp://${cfg.ip}${remoteDir} (미러 동기화, Load/Compile 없음)`);
+			// FTP 미러(원격 파일 삭제 포함) 중 autoOnSave/배포가 겹치지 않도록 배포 뮤텍스에 포함.
+			deployInFlight = true;
 			try {
 				const stats = await mirrorProject(cfg.ip, projectDir, remoteDir, {
 					onProgress: (current, total, file) => logOutput(`[SaveToFlash] [${current}/${total}] ${file}`),
@@ -1682,6 +1861,8 @@ export function activate(context: vscode.ExtensionContext) {
 				await controllerTree?.refreshAll();
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`flash 저장 실패: ${err.message ?? err}`);
+			} finally {
+				deployInFlight = false;
 			}
 		})
 	);
@@ -1691,8 +1872,19 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('gpl.quickCompile', () => runDeploy(true, { skipStop: true, skipUnchanged: true, quick: true }))
 	);
 
-	// .gpl 저장 시 자동 빠른 컴파일 (설정 gpl.quickCompile.autoOnSave, 기본 off). 600ms 디바운스 + 동시실행 방지.
+	// .gpl 저장 시 자동 빠른 컴파일 (설정 gpl.quickCompile.autoOnSave, 기본 "auto"). 600ms 디바운스 + 동시실행 방지.
 	// 저장된 파일만 업로드 후 Compile하여, 매 저장마다 프로젝트 전체를 스캔/조회하는 비효율을 제거한다.
+	// "auto"(기본): 제어기가 완전 STOP(쓰레드 없음)이고 /GPL/<project>가 존재할 때만 조용히 실행(AUTO_GATE).
+	// "on"(구 true): 게이트 없이 항상 시도(활성 쓰레드 시 조용히 중단, /GPL 없으면 classic 폴백) / "off"(구 false): 사용 안 함.
+	type AutoOnSaveMode = 'off' | 'on' | 'auto';
+	function getAutoOnSaveMode(): AutoOnSaveMode {
+		// 구버전 boolean 설정값 호환: true → "on", false → "off". 미설정 시 스키마 기본값 "auto".
+		const raw = vscode.workspace.getConfiguration('gpl').get<unknown>('quickCompile.autoOnSave');
+		if (raw === true || raw === 'on') { return 'on'; }
+		if (raw === false || raw === 'off') { return 'off'; }
+		return 'auto';
+	}
+
 	let quickCompileTimer: ReturnType<typeof setTimeout> | undefined;
 	let quickCompileInFlight = false;
 	const quickCompilePendingFiles = new Set<string>();
@@ -1730,6 +1922,18 @@ export function activate(context: vscode.ExtensionContext) {
 	 */
 	async function flushQuickCompilePending(): Promise<void> {
 		if (quickCompilePendingFiles.size === 0) { return; }
+		const mode = getAutoOnSaveMode();
+		if (mode === 'off') {
+			// 저장~flush 사이에 설정이 꺼졌으면 pending을 버린다.
+			quickCompilePendingFiles.clear();
+			return;
+		}
+		if (mode === 'auto' && vscode.debug.activeDebugSession?.type === 'brooks-gpl') {
+			// 디버그 세션 중 자동 업로드 금지 — 정지 중 쓰레드와의 충돌 방지(프로브 왕복도 생략).
+			quickCompilePendingFiles.clear();
+			logOutput('[QuickCompile] autoOnSave 건너뜀: brooks-gpl 디버그 세션 진행 중');
+			return;
+		}
 		if (quickCompileInFlight || deployInFlight) {
 			scheduleQuickCompileFlush(1000);
 			return;
@@ -1761,6 +1965,8 @@ export function activate(context: vscode.ExtensionContext) {
 				overrideProjectDir: projectDir,
 				// 저장마다 모달이 뜨면 방해되므로 autoOnSave는 활성 쓰레드 시 조용히 중단.
 				noStopPrompt: true,
+				// "auto" 모드: 완전 STOP(쓰레드 없음) + /GPL/<project> 존재 시에만 진행(deployService AUTO_GATE).
+				autoGate: mode === 'auto',
 			});
 		} finally {
 			quickCompileInFlight = false;
@@ -1774,8 +1980,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument((doc) => {
 			if (doc.languageId !== 'gpl') { return; }
-			const auto = vscode.workspace.getConfiguration('gpl').get<boolean>('quickCompile.autoOnSave', false);
-			if (!auto) { return; }
+			if (getAutoOnSaveMode() === 'off') { return; }
 			if (!controllerTree?.isConnected) { return; }
 			quickCompilePendingFiles.add(doc.uri.fsPath);
 			scheduleQuickCompileFlush(600);
@@ -1892,6 +2097,18 @@ export function activate(context: vscode.ExtensionContext) {
 			logOutput('─────────────────────────────────────────────────────────');
 			outputChannel.show(true);
 			vscode.window.showInformationMessage('진단 스냅샷을 클립보드에 복사했어.');
+		})
+	);
+
+	// AI Agent Setup 내보내기 — 현재 워크스페이스에 .mcp.json(동봉 MCP 서버 등록) +
+	// CLAUDE.md 가드 섹션을 생성해, 외부 AI(Claude Code)가 제어기를 안전하게 다룰 수 있게 한다.
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.ai.exportAgentSetup', async () => {
+			const config = getControllerConfig();
+			const projectName = (await detectWorkspaceProjectName())?.trim() || undefined;
+			const result = await exportAiAgentSetup(context, { ip: config.ip, port: config.port, projectName });
+			logOutput(`[AI Setup] gpl.ai.exportAgentSetup => ${JSON.stringify(result)}`);
+			return result;
 		})
 	);
 
@@ -2647,6 +2864,11 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.threadStart', async (node: any) => {
 			if (!node?.thread?.name) { return; }
+			// 업로드/컴파일 도중 Start가 겹치면 제어기 이상을 유발할 수 있다 — 배포 뮤텍스로 차단.
+			if (deployInFlight) {
+				vscode.window.showWarningMessage('업로드/배포가 진행 중입니다. 완료 후 쓰레드를 시작하세요.');
+				return;
+			}
 			try {
 				await sendCommand(`Start ${node.thread.name}`);
 				controllerTree?.refresh();
@@ -2822,6 +3044,11 @@ export function activate(context: vscode.ExtensionContext) {
 			const name: string | undefined = node?.projectName || node?.label;
 			const loadPath: string | undefined = node?.remotePath;
 			if (!name || !loadPath) { return; }
+			// 업로드 도중 Compile/Start가 겹치면 제어기 이상을 유발할 수 있다 — 배포 뮤텍스로 차단.
+			if (deployInFlight) {
+				vscode.window.showWarningMessage('업로드/배포가 진행 중입니다. 완료 후 컴파일 & 실행을 사용하세요.');
+				return;
+			}
 
 			const cfg = getControllerConfig();
 			const loadBeforeCompile = vscode.workspace
@@ -3361,6 +3588,29 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		})
 	);
+
+	// CALL STACK에서 Running 쓰레드 클릭 → 현재 실행 위치 열기 (Show Stack 스냅샷).
+	// 정지 쓰레드는 VS Code가 스택 프레임으로 기본 처리하므로 여기서는 다루지 않는다.
+	// onDidChangeActiveStackItem은 VS Code 1.90+ API — engines(^1.74)보다 새 API라
+	// 존재 여부를 확인하고 등록한다(구버전에서는 이 기능만 조용히 비활성).
+	const debugApi = vscode.debug as any;
+	if (typeof debugApi.onDidChangeActiveStackItem === 'function') {
+		context.subscriptions.push(debugApi.onDidChangeActiveStackItem(async (item: any) => {
+			// DebugStackFrame(frameId 보유)은 정지 쓰레드 포커스 — 기본 동작에 맡긴다.
+			if (!item || typeof item.threadId !== 'number' || 'frameId' in item) { return; }
+			if (item.session?.type !== 'brooks-gpl') { return; }
+			try {
+				const info = await item.session.customRequest('gplThreadInfo', { threadId: item.threadId });
+				if (!info?.name || info.state !== 'Running') { return; }
+				// Continue/Step 직후 VS Code가 포커스를 쓰레드로 자동 전환하며 오는
+				// 이벤트는 사용자 클릭이 아니므로 무시한다.
+				if (typeof info.msSinceResume === 'number' && info.msSinceResume < 2000) { return; }
+				await vscode.commands.executeCommand('gpl.controller.threadShowLocation', { thread: { name: info.name } });
+			} catch (err: any) {
+				outputChannel.appendLine(`[Thread] CALL STACK Running 쓰레드 위치 열기 실패(무시): ${err?.message ?? err}`);
+			}
+		}));
+	}
 
 	// 쓰레드 클릭 → 액션 QuickPick (상세/스택/위치/제어/복사)
 	context.subscriptions.push(

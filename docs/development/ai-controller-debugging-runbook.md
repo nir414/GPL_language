@@ -66,6 +66,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 직접 명령 | GPL: Send Command to Controller | `gpl.controller.sendCommand` |
 | 상태 복사 | GPL: Copy Situation for Chat | `gpl.controller.copySituationForChat` |
 | 진단 스냅샷 | GPL: Diagnostic Snapshot | `gpl.diagnosticSnapshot` |
+| AI Agent Setup 내보내기 | GPL: Export AI Agent Setup | `gpl.ai.exportAgentSetup` |
 | 전체 정지 | GPL: 모든 쓰레드 중지 | `gpl.controller.stopAll` / `gpl.stopAll` |
 
 ## 권장 launch 구성
@@ -161,6 +162,10 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 - Step Over/Into/Out은 Debug UI 또는 F10/F11을 사용한다.
 - Continue 후 바로 다시 멈추면 위치, breakpoint hit count, 1403 이벤트를 같이 확인한다.
 - 같은 위치 재정지는 루프 재히트, breakpoint 잔재, Continue 반영 지연을 구분한다.
+- **MCP(gpl-controller) 경로**: `step_thread`/`continue_thread`/`pause_thread`/`run_to_line`은
+  **사전(비정지 거부)·사후(정지 폴링+위치 반환) 상태 확인이 내장**되어 있다. 도구 호출
+  앞뒤에 show_thread를 별도로 끼워 넣지 말 것(왕복 2~3배 낭비). 여러 줄 진행은 스텝
+  반복 대신 `run_to_line`(+`evals` 배치 관측)이 기본 경로다.
 
 ### 7. Error thread
 
@@ -312,12 +317,3 @@ SoftEStop
 - 로그/캐시/상태 파일을 워크스페이스에 자동 생성하지 않는다.
 - 제어기 포트 역할(1402/1403/21/51417)을 바꾸지 않는다.
 <!-- end-of-runbook -->
-
-
-
-
-
-
-
-
-

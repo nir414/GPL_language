@@ -2,6 +2,58 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.8.14] - 2026-08-18
+
+### Fixed
+
+- **컴파일 에러 점프 후 편집기 커서가 사라져 보이던 문제 수정** — 에러 발생 시 첫 에러 위치로 점프한 뒤 Problems 패널 명령이 마지막에 실행되어 키보드 포커스를 패널로 가져가는 순서 문제였습니다. 이제 Problems 패널을 먼저 열고 편집기 점프를 마지막에 수행해, 최종 포커스와 커서가 에러 줄의 편집기에 남습니다. 커서는 컬럼 0 대신 들여쓰기 뒤 첫 문자에 놓이고, 에러 줄이 이미 화면에 보이면 불필요한 스크롤 재중앙 정렬을 하지 않습니다. (수동 Deploy/Quick Compile과 디버그 F5 배포 경로 공통)
+
+### Changed
+
+- **저장 시 자동 빠른 컴파일(`gpl.quickCompile.autoOnSave`)이 조건부 자동 모드 `"auto"`를 기본값으로 사용합니다** (기존 boolean → `"auto"`/`"on"`/`"off"` 문자열, 구버전 `true`/`false` 값도 인식). `"auto"`는 제어기가 **완전 STOP 상태**(쓰레드가 하나도 존재하지 않음)이고 **`/GPL/<프로젝트>` 폴더가 이미 존재**할 때만 저장 파일을 업로드+Compile하며, 조건 미충족(실행 중·정지 쓰레드 잔존·/GPL 폴더 없음·확인 불가·디버그 세션 중)이면 팝업 없이 Output 로그 한 줄만 남기고 조용히 건너뜁니다. 업로드/파일 삭제 도중 Compile/Start가 겹치면 제어기 이상이 생길 수 있어 자동 경로는 보수적으로 게이트합니다. 자동 모드는 /GPL 폴더를 새로 만들거나 classic(/flash) 경로로 폴백하지 않으므로, 최초 1회는 수동 Deploy로 올려야 합니다.
+
+### Added
+
+- **업로드 중 실행 충돌 방지 가드** — 업로드/배포가 진행 중일 때 `GPL: Start`, 트리의 쓰레드 시작, FTP 뷰의 "컴파일 & 실행", `Save to Flash`를 경고와 함께 거부합니다(업로드 도중 Compile/Start가 겹치면 제어기 이상을 유발할 수 있음). `Save to Flash`의 FTP 미러(원격 파일 삭제 포함)도 같은 뮤텍스에 포함되어 autoOnSave와 겹치지 않습니다.
+- **업로드 전 미저장 파일 확인 모달** — Deploy/Quick Compile/Save to Flash 실행 시 해당 프로젝트에 저장되지 않은 파일이 있으면 "저장 후 계속 / 취소" 모달로 확인합니다(Start 확인 모달과 같은 패턴). 저장하지 않으면 디스크의 이전 내용이 업로드되므로, 취소하면 업로드를 시작하지 않습니다. autoOnSave 경로는 저장이 트리거이므로 이 모달을 띄우지 않습니다.
+
+## [0.8.13] - 2026-08-05
+
+### Added
+
+- **제어기 중단점 실시간 보기 개선** — GPL Controller 트리의 "브레이크포인트" 섹션이 0개일 때도 항상 표시되어 현재 상태를 확인할 수 있고, 섹션 헤더의 인라인 ↻ 버튼으로 `Show Break`만 즉시 재조회할 수 있습니다(전체 새로고침보다 가볍습니다). 항목을 클릭하면 해당 파일:줄이 열립니다(줄 번호는 배포본 기준). 에디터 중단점 동기화(`syncEditorBreakpoints`)가 켜져 있으면 중단점을 찍는 즉시 트리에도 반영됩니다.
+- **`GPL: Pull Controller Breakpoints` 명령 추가** — 제어기에 설정된 중단점(GDE/AI가 건 것 포함)을 에디터 빨간 점으로 가져옵니다. 이미 같은 위치에 있는 중단점은 건너뛰며, 워크스페이스에서 찾지 못한 파일은 건수로 보고합니다. 상시 미러링이 아니라 명시적으로 실행할 때만 동작합니다.
+
+## [0.8.12] - 2026-08-05
+
+### Fixed
+
+- **배포(STOP 단계)가 STATUS -752 "Timeout stopping thread"를 즉시 실패로 판정하던 문제 수정** — -752는 정지 요청 후 3초(제어기 내부 대기) 안에 쓰레드가 멈추지 않았다는 뜻일 뿐, 요청 자체는 접수되어 쓰레드는 하던 일을 마치면 멈춥니다(GPL 에러 문서 기준 비치명). 이제 배포 중 Stop -all이 -752를 돌려주면 실패로 중단하는 대신 정지 완료 게이트(Show Thread 폴링)로 실제 정지를 확인하고, 게이트에서 정지가 확인되지 않으면 Stop -all을 1회 자동 재시도합니다. 가끔 나는 -752 때문에 사용자가 배포를 손으로 재시도할 필요가 없어집니다.
+
+## [0.8.11] - 2026-08-05
+
+### Added
+
+- **에디터 중단점 → 제어기 실시간 동기화** (`gpl.controller.syncEditorBreakpoints`, 기본 꺼짐) — 켜면 VS Code에서 중단점을 추가/제거/토글할 때 확장이 즉시 `Set Break`/`Set Nobreak`를 제어기로 전송합니다. VS Code 중단점이 단일 원본이 되어, 외부 AI(MCP)가 실행을 제어할 때도 에디터 빨간 점과 제어기 상태가 어긋나지 않습니다. 연결 직후에는 에디터 중단점으로 자동 따라잡고, brooks-gpl 디버그 세션 중에는 DAP가 담당하므로 개입하지 않습니다. 수동 일괄 반영은 `GPL: Push Editor Breakpoints to Controller`(뷰 "..." 메뉴 포함).
+- **정지 위치 자동 표시** (`gpl.controller.autoShowPausedLocation`, 기본 켜짐) — 디버그 세션이 없을 때 스레드가 정지(Paused/Break/Error)로 전이하거나 stopOnEntry로 정지 상태로 새로 나타나면, 트리 폴링이 감지해 정지 위치 파일을 자동으로 열고 강조합니다. 외부 AI(MCP)나 GDE가 세운 정지를 에디터가 따라갑니다. 연결 직후 이미 정지돼 있던 스레드로는 점프하지 않습니다.
+
+## [0.8.10] - 2026-08-05
+
+### Added
+
+- **GPL Controller 뷰 타이틀 "..." 메뉴에 자주 쓰는 명령 추가** — Quick Debug Attach, Debug launch.json 생성, 런타임 콘솔 시작/중지, 라이브 로그 터미널 시작/중지, Copy Situation for Chat, Export AI Agent Setup, Disconnect Controller. Command Palette를 열지 않고 GUI에서 바로 실행할 수 있습니다.
+
+### Fixed
+
+- `GPL: Export AI Agent Setup`이 CLAUDE.md에 **번호가 붙은 수동 섹션 제목**("## 7. 제어기 통신 — …")을 중복으로 감지하지 못하고 같은 내용을 한 번 더 추가하던 문제 수정 — 제목 본문 기준으로 감지합니다.
+
+## [0.8.9] - 2026-08-05
+
+### Added
+
+- **`GPL: Export AI Agent Setup` 명령(`gpl.ai.exportAgentSetup`) 추가** — 현재 워크스페이스를 외부 AI(Claude Code) 디버깅 가능 상태로 만듭니다. VSIX에 동봉된 gpl-controller MCP 서버 번들을 확장 globalStorage(버전 무관 안정 경로)로 복사하고, 그 경로를 가리키는 `.mcp.json`(기존 항목 병합 보존)과 제어기 안전 규칙 CLAUDE.md 가드 섹션(마커 블록, 재실행 시 교체)을 생성/갱신합니다. Claude Code 세션을 새로 시작하면 gpl-controller 도구가 활성화됩니다.
+- **controller-mcp 서버를 esbuild 단일 파일로 번들해 VSIX에 동봉** — `out/mcp/gpl-controller-mcp.cjs`(약 724KB). `npm run bundle:mcp`로 생성되며 패키징(`vscode:prepublish`)에 자동 포함됩니다. node_modules를 싣지 않으므로 저장소 클론 없이 확장 설치만으로 MCP 서버가 배포됩니다.
+
 ## [0.8.8] - 2026-08-05
 
 ### Added

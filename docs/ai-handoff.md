@@ -1908,8 +1908,8 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ### 남은 일
 
-- 사용자: 커밋/푸시 후 **GitHub 저장소 Settings → Pages → Source를 "GitHub Actions"로 설정**해야 첫 배포가 됨 (미설정 시 deploy job 실패).
-- 아래 §3 체크리스트에 후속 4건 추가함 (런북 Command ID 표 재생성, 런북↔instructions 정본 단일화, pre-release-check README 버전 대조, gpl-language 문서의 Test_robot 잔재 점검).
+- ~~GitHub Pages Source 설정~~ → §1-BA에서 API로 활성화·배포·검증 완료.
+- 후속 4건(런북 Command ID 표 재생성, 런북↔instructions 정본 단일화, pre-release-check README 버전 대조, gpl-language Test_robot 잔재 점검)도 §1-BA에서 완료.
 
 ## 1-BA. 2026-08-18 세션(후속) — 문서 정리 2차: Test_robot 잔재 제거·정본 정리·Pages 배포
 
@@ -1952,7 +1952,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 - [ ] (§1-P → §1-U에서 일부 완료) 실기기 검증: 1402 수동 검증으로 객체 덤프 형식 확인·분류 버그 수정(2026-07-22, §1-U). **남은 것(VSIX 재설치 후)**: Variables/hover/Watch에서 객체 트리 확장 UI 확인, 로컬 배열 펼침(30개 상한), 중첩 객체(`cmdResponse`), setVariable, Globals 패널 배열/객체 표시. 배열 확장 지연 크면 `ARRAY_EXPAND_MAX` 조정.
 - [ ] (2026-07-16, §1-Q) 자체 검토 세션 변경분 — 로컬 `npm run compile` && `npm test` 후 §1-Q 실기기 검증 체크리스트 수행.
 - [ ] (2026-08-18, §1-AY) Rename(F2) 실사용 검증 — MergeCode에서 로컬 변수/모듈 프로시저/클래스 멤버/스레드 문자열 참조 rename 확인. 다음 릴리스 CHANGELOG에 "Rename(F2) 지원" 기재.
-- [ ] (2026-08-18, §1-AZ) GitHub Pages 첫 배포 — 커밋/푸시 후 저장소 Settings → Pages → Source를 "GitHub Actions"로 설정, docs.yml 성공과 사이트(https://nir414.github.io/GPL_language/) 확인.
+- [x] (2026-08-18, §1-AZ → §1-BA 완료) GitHub Pages 첫 배포 — Pages를 API로 `build_type=workflow` 활성화, 커밋 `915c97a` 푸시 → docs.yml 성공, 사이트 HTTP 200 확인(https://nir414.github.io/GPL_language/). 같은 푸시의 CI(compile)도 성공.
 - [x] (§1-AZ → §1-BA 완료) 런북 Command ID 표 재생성 — package.json `contributes.commands` 57개 기준 카테고리별 재생성(연결/상태, 배포/실행, 디버그/콘솔, 조회/IO, AI 전용, 트리 전용).
 - [x] (§1-AZ → §1-BA 완료) 런북 ↔ instructions 정본 단일화 — 양쪽 최상단에 역할 분담 명시(instructions=하드 규칙·가드 정본, runbook=절차·전체 명령 표·pktmon 실측·STATUS 판단표 정본). instructions의 `-752`를 "Timeout stopping thread, 비치명"으로 교정, 낡은 명령 제목 갱신. 표 자체의 물리적 제거는 하지 않음(AI 자동 로드 파일의 자족성 유지).
 - [x] (§1-AZ → §1-BA 완료) `pre-release-check`에 README "현재 버전: **vX.Y.Z**" ↔ package.json 대조 검사 추가 (불일치·표기 부재 시 실패).

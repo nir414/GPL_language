@@ -114,6 +114,26 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 식 평가 | GPL: AI Debug Evaluate | `gpl.ai.debug.evaluate` |
 | 디버그 루프 | GPL: AI Debug Loop | `gpl.ai.debug.loop` |
 
+인자 예시:
+
+| Command ID | 인자 예시 |
+| --- | --- |
+| `gpl.ai.debug.getState` | `{ includeStackForThread: "MainThread" }` |
+| `gpl.ai.debug.setBreakpoint` / `clearBreakpoint` | `{ file: "ProtocolModule.gpl", line: 479, projectName: "MergeCode" }` |
+| `gpl.ai.debug.breakThread` | `{ threadName: "MainThread", waitForPause: true, waitTimeoutMs: 5000 }` |
+| `gpl.ai.debug.stepThread` | `{ threadName: "MainThread", mode: "over", waitForPause: true, waitTimeoutMs: 5000 }` |
+| `gpl.ai.debug.continueThread` | `{ threadName: "MainThread", noError: false }` |
+| `gpl.ai.debug.evaluate` | `{ threadName: "MainThread", frameIndex: 0, expression: "robotIndex" }` |
+| `gpl.ai.debug.loop` | `{ threadName: "MainThread", stepMode: "over", maxSteps: 10, stepWaitTimeoutMs: 5000, watchExpressions: ["robotIndex"], stopWhen: { expression: "robotIndex", equals: "5" } }` |
+
+공통 규약:
+
+- 모든 `gpl.ai.debug.*` 명령은 예외를 던지지 않고 항상 `{ ok, ... }` 객체를 반환한다. 통신 오류 등은 `{ ok: false, error: "command-failed", detail }`.
+- 각 명령의 결과 JSON은 Output 채널(`GPL Language Support`)에 `[AI Debug] <commandId> => {...}` 형식으로도 기록된다 — `executeCommand` 반환값을 직접 받지 못하는 호출자도 Output에서 결과를 확인할 수 있다.
+- `breakThread`/`stepThread`는 기본(`waitForPause: true`)으로 STATUS 0(접수) 이후 스레드가 실제로 Paused/Break/Error 상태에 들어올 때까지 폴링한 뒤 `ok`를 판정한다. 시간 내 정지하지 않으면 `{ ok: false, error: "pause-timeout", state }`. 접수만 확인하려면 `waitForPause: false`.
+- `loop`는 스텝마다 정지 복귀를 확인하고(`stepWaitTimeoutMs`, 기본 5000ms) 스택 top 위치와 watch 식 값을 수집하며, `stopWhen` 조건이 맞으면 자동 중단한다. 루프 도중 스레드가 Error 상태로 전이하면 `stoppedBy: "thread-error"`로 중단해 `lastStatus`를 돌려준다. `stopWhen` 평가 결과(값/STATUS/매칭 여부)는 실패해도 trace에 기록되며, 잘못된 `stopWhen.matches` 정규식은 루프 진입 전에 `invalid-stopWhen-matches`로 거부된다.
+- 별칭: `gpl.stopAll`은 `gpl.controller.stopAll`과 동일 동작(자동화/에이전트 호출 호환용).
+
 ### 트리 컨텍스트 메뉴 전용 (트리 항목 인자 필요 — 팔레트 단독 실행 부적합)
 
 `gpl.controller.threadStart`/`threadStop`/`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`,
@@ -187,6 +207,18 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | Empty batch | payload 없는 배치 |
 | Connection refused | 1403 서비스/포트 연결 실패 |
 | no-payload streak | 반복 빈 세션, active thread와 함께 판단 |
+
+1403 재연결/경고 튜닝은 `gpl.runtimeConsole.*` 설정으로 조정한다(Settings UI에서 `gpl.runtimeConsole` 검색). `Immediate EOF` 세션은 빠른 재접속, 일반 idle 세션은 완만한 적응형 재연결을 쓰며, 활성 쓰레드 유무를 추정해 1403을 멈추지 않는다(제어기 연결이 유지되는 동안 1403도 유지 시도).
+
+포트/콘솔 근거 문서 (www2.brooksautomation.com 경로 — 공식 문서와 확장 실측 근거를 분리해 해석):
+
+| 대상 | 근거 수준 | 문서 경로 |
+| --- | --- | --- |
+| `1402~1404` = GDE 포트 범위 | Brooks 공식 FAQ | `Controller_Software/FAQ/Setup_Upgrading/ethernet_ports.htm` |
+| `1402` = GDE editor port | Brooks PDB 공식 문서 | `Controller_Software/Software_Reference/PDB/Controller_Settings/debug_and_trace.htm` |
+| `1403` = 런타임 출력/event batch | 확장 구현 + 실기 로그 | — (공식 개별 역할 명시 없음) |
+| `/dev/com1` = primary serial console (일반 serial I/O와 충돌 가능) | Brooks serial 공식 문서 | `Controller_Software/Introduction_To_The_Software/Communications/com_serial.htm`, `.../Guidance_Programming_Language/File_Serial_Streams/serialio.htm` |
+| `Console.Write` destination은 실행 컨텍스트에 따라 가변 | Brooks GPL Dictionary | `Controller_Software/Software_Reference/GPL_Dictionary/Console/c_write.htm` |
 
 ### 4. Attach
 

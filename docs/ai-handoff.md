@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-18 (§1-BB: Test_robot 아카이브 저장소 밖 반출 + getting-started 응용분야 문구 사실 확인, datatypes 상수 원문 교체. 직전: §1-BA 문서 정리 2차)
+- 최종 갱신: 2026-08-18 (§1-BC: README 과포화 정리 — 변경 이력·버전 표기 제거, AI 규약·1403 상세 runbook 이관, pre-release-check 버전 검사 전환. 직전: §1-BB Test_robot 아카이브 반출)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 현재 package 버전: **0.8.14** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -1950,6 +1950,34 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 ### 검증
 
 - `npm run docs:build`(mkdocs `--strict`) 통과. `archive/test-robot` 잔존 링크 grep — 남은 것은 전부 "git 이력의 ..." 안내 문구와 §1-AZ/§1-BA 이력 기록뿐(당시 사실이므로 유지).
+
+### 남은 일
+
+- 없음.
+
+## 1-BC. 2026-08-18 세션(4차) — README 과포화 정리 (중복 압축·버전 표기 제거)
+
+### 배경 (사용자 요청)
+
+- 루트 README가 636줄로 과포화 — 중복 압축·불필요 내용 제거 요청.
+- "현재 버전: **vX.Y.Z**" 같은 **수시로 바뀌는 내용은 README에 포함하지 않는다**(수정 부담).
+- 확장 명령 표는 정리된 형태로 유지, 소개는 "무엇을 위한 확장인가" 중심으로.
+- 언어 기능(자동완성/F12)은 셀링 포인트가 아님(100% 동작 확신 없고 혁신 요소 아님) — 제어기 연동·디버깅을 앞세울 것.
+
+### 조치
+
+- **README 636줄 → 209줄 재작성**:
+  - "주요 변경 이력" 섹션(~175줄) 삭제 — CHANGELOG.md가 정본(모든 버전 커버 확인). 섹션 자체가 "v0.8.8 (현재)"로 이미 낡아 있었음(이중 관리 실패의 증거).
+  - "현재 버전" 표기 제거. 소개를 목적 중심(GDE 대비 간극)으로 재작성하고 Brooks/GPL 원문 링크 유지, 기능 순서를 제어기 통합 → 디버거 → 언어 기능으로 재배치. 빠른 시작도 연결 → 배포 → 디버깅 순.
+  - 명령 표를 package.json `contributes.commands` 기준 3그룹(연결·배포·실행 / 디버깅·모니터링 / AI 에이전트용)으로 재구성 — **존재하지 않는 `GPL: Deploy & Run` 제거**, `GPL: Start`/`Save to Flash`/`빠른 컴파일`/Push·Pull Breakpoints 반영.
+  - 설정 표 20개 → 핵심 6개만 남기고 "Settings UI에서 `gpl.` 검색" 안내로 대체.
+  - 프로젝트 구조 트리, 상세 디버그 실행 절차(방법1/2, v0.5.73+ Attach 실패 로그 포인트) 삭제/축약 — ai-handoff §4·runbook이 담당.
+- **제거분은 저장소 밖 백업으로** (사용자 정정: 다른 프로젝트 문서로 옮기지 말고 §1-BB Test_robot 반출과 같은 방식으로 백업 후 제거): 정리 전 README 원본 전문(635줄)을 `C:\Users\Doyun\Downloads\GPL_language_backup\README_2026-08-18_정리전_원본.md`로 백업. 처음에 runbook으로 옮겼던 `gpl.ai.debug.*` 인자 예시·`{ok,...}` 반환 규약, Brooks 포트/콘솔 근거 문서 표, 1403 재연결 튜닝 안내는 runbook에서도 되돌림(git checkout) — 이 내용들은 백업 파일과 git 이력(HEAD:README.md)에서만 열람 가능.
+- **pre-release-check.js 4.5 검사 전환**: §1-BA의 "README 버전 대조" → **"README에 버전 표기가 없어야 함"**. 표기 방치 사고(v0.8.8 6릴리스 방치)의 재발 방지책을 대조에서 표기 금지로 전환.
+
+### 검증
+
+- README에 `현재 버전:` 패턴 부재 확인(새 검사 로직 단독 실행 통과), `npm run docs:build`(mkdocs `--strict`) 통과. 코드(src) 무변경.
 
 ### 남은 일
 

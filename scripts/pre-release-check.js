@@ -72,12 +72,13 @@ check(`CHANGELOG contains version ${version}`, () => {
     return changelog.includes(`## [${version}]`);
 });
 
-// 4.5 README.md 버전 표기 대조 (v0.8.8 표기가 6릴리스 연속 방치됐던 사고 방지, ai-handoff §1-AZ)
-check(`README.md version text matches v${version}`, () => {
+// 4.5 README.md에 버전 표기가 없어야 함 (2026-08-18 정책: 수시로 바뀌는 버전 표기를
+// README에 두지 않는다. v0.8.8 표기가 6릴리스 연속 방치됐던 사고의 재발 방지책을
+// "대조 검사"에서 "표기 자체 금지"로 전환, ai-handoff §1-BC)
+check('README.md has no hardcoded version text', () => {
     const readme = fs.readFileSync('README.md', 'utf8');
-    const m = readme.match(/현재 버전:\s*\*\*v([\d.]+(?:-[a-z]+\.\d+)?)\*\*/);
-    if (!m) throw new Error('README.md에서 "현재 버전: **vX.Y.Z**" 표기를 찾지 못함');
-    if (m[1] !== version) throw new Error(`README=v${m[1]} != package.json=v${version}`);
+    const m = readme.match(/현재 버전:\s*\*\*v[\d.]+/);
+    if (m) throw new Error(`README.md에 버전 표기(${m[0]}...)가 있음 — 버전은 CHANGELOG/Releases에서만 관리`);
     return true;
 });
 

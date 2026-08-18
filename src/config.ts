@@ -168,24 +168,9 @@ export function getQualifiedWordAtPosition(
     return { range: segRange, word: chosen.text, qualifier };
 }
 
-/**
- * position(라인 내 문자 위치)이 GPL 주석(`'` 이후) 또는 문자열 리터럴("...") 내부인지 판별.
- * 정의/호버/참조 Provider가 주석·문자열 속 단어를 심볼로 오해석하지 않도록 조기 차단용.
- * VB식 이스케이프("")는 토글 2회로 자연 처리된다.
- */
-export function isInCommentOrString(lineText: string, character: number): boolean {
-    let inString = false;
-    const end = Math.min(character, lineText.length);
-    for (let i = 0; i < end; i++) {
-        const ch = lineText[i];
-        if (ch === '"') {
-            inString = !inString;
-        } else if (ch === "'" && !inString) {
-            return true; // 이후 전부 주석
-        }
-    }
-    return inString;
-}
+// isInCommentOrString의 정본은 language/cursorExpression.ts로 이동했다
+// (vscode 비의존 모듈에서도 쓰기 위함). 기존 import 경로 호환을 위해 re-export.
+export { isInCommentOrString } from './language/cursorExpression';
 
 /**
  * 심볼 해석 대상이 될 수 없는 GPL(VB계열) 예약어 — 제어문/선언 키워드/연산자/리터럴 포함.

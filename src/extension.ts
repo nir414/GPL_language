@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { GPLDefinitionProvider } from './providers/definitionProvider';
 import { GPLReferenceProvider } from './providers/referenceProvider';
+import { GPLRenameProvider } from './providers/renameProvider';
 import { GPLCompletionProvider } from './providers/completionProvider';
 import { GPLDocumentSymbolProvider } from './providers/documentSymbolProvider';
 import { GPLWorkspaceSymbolProvider } from './providers/workspaceSymbolProvider';
@@ -467,11 +468,20 @@ export function activate(context: vscode.ExtensionContext) {
 		)
 	);
 
-	// Reference provider (Find All References)
+	// Reference provider (Find All References) — Rename provider가 재사용하므로 인스턴스 공유
+	const referenceProvider = new GPLReferenceProvider(symbolCache, outputChannel);
 	context.subscriptions.push(
 		vscode.languages.registerReferenceProvider(
 			gplSelectors,
-			new GPLReferenceProvider(symbolCache, outputChannel)
+			referenceProvider
+		)
+	);
+
+	// Rename provider (F2) — 참조 검색 재사용 + 반환값 대입/문자열 프로시저 참조/섀도잉 보정
+	context.subscriptions.push(
+		vscode.languages.registerRenameProvider(
+			gplSelectors,
+			new GPLRenameProvider(symbolCache, referenceProvider, outputChannel)
 		)
 	);
 

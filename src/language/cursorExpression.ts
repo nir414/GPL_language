@@ -53,6 +53,27 @@ export function getStringLiteralContentAt(
 }
 
 /**
+ * position(라인 내 문자 위치)이 GPL 주석(`'` 이후) 또는 문자열 리터럴("...") 내부인지 판별.
+ * 정의/호버/참조/이름변경 Provider가 주석·문자열 속 단어를 심볼로 오해석하지 않도록 조기 차단용.
+ * VB식 이스케이프("")는 토글 2회로 자연 처리된다.
+ * (원래 config.ts에 있었으나, vscode 비의존 모듈(renameCore 등)에서도 쓰도록 이 파일로 이동.
+ *  config.ts가 re-export하므로 기존 import 경로도 그대로 동작한다.)
+ */
+export function isInCommentOrString(lineText: string, character: number): boolean {
+    let inString = false;
+    const end = Math.min(character, lineText.length);
+    for (let i = 0; i < end; i++) {
+        const ch = lineText[i];
+        if (ch === '"') {
+            inString = !inString;
+        } else if (ch === "'" && !inString) {
+            return true; // 이후 전부 주석
+        }
+    }
+    return inString;
+}
+
+/**
  * 멤버 접근 표현식에서 점(.) 바로 앞의 "기준 객체 이름"을 추출한다.
  *
  * 표현식의 끝에서부터 스캔하여, "returnError = armList(0).member"처럼

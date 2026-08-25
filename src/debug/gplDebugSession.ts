@@ -33,6 +33,7 @@ import {
     ControllerConfig,
 } from '../controller/controllerConnection';
 import { deploy, findProjectDirs, jumpToFirstCompileError } from '../controller/deployService';
+import { getDeployLock, describeDeployLock } from '../controller/deployLock';
 import {
     parseThreadList,
     parseThreadDetail,
@@ -375,7 +376,12 @@ export class GPLDebugSession extends LoggingDebugSession {
                 );
                 startApproved = pick === 'Start';
             }
-            if (startApproved) {
+            if (startApproved && !(await this._waitDeployLockForStart('자동 Start'))) {
+                // 다른 창/프로세스의 업로드/배포가 계속 잡혀 있음 — 업로드 도중 Start는 제어기 이상을 유발할 수 있어 보내지 않는다.
+                vscode.window.showWarningMessage(
+                    `Start 보류 — 다른 배포/업로드가 진행 중입니다. 완료 후 디버그 콘솔에서 >Start ${this._projectName} 를 사용하세요.`,
+                );
+            } else if (startApproved) {
                 this._log(`Start ${this._projectName} (auto-start after configurationDone)`);
                 await this._sendCmd(`Start ${this._projectName}`);
                 // Start 직후 곧바로 히트하는 BP(진입 부근 정지)를 빠르게 감지한다 (읽기 전용 폴).
@@ -487,7 +493,10 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         // If stopOnEntry, start the project with -break to pause at Main's first line
         this._stopOnEntry = !!args.stopOnEntry;
-        if (this._stopOnEntry && this._projectName) {
+        if (this._stopOnEntry && this._projectName && !(await this._waitDeployLockForStart('stopOnEntry Start'))) {
+            // 다른 창/프로세스의 업로드/배포가 계속 잡혀 있음 — attach 상태는 유지하고 Start만 보내지 않는다.
+            this._log(`⚠ stopOnEntry Start를 보내지 않았습니다. 배포/업로드 완료 후 디버그 콘솔에서 >Start ${this._projectName} -break -bex 를 사용하세요.`);
+        } else if (this._stopOnEntry && this._projectName) {
             this._pendingAction = 'entry';
             // -break 진입 시작은 첫 줄에서 즉시 정지하므로(모션은 사용자가 continue해야 시작)
             // 자동 Start 확인 게이트(gpl.controller.requireStartConfirmation) 대상이 아니다.
@@ -2875,6 +2884,30 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
+     * Start 전 배포 잠금 확인 — 다른 창/프로세스가 업로드/배포 중이면 최대 20초 기다리고, 그래도 잡혀 있으면 false.
+     * 업로드 도중 Start는 제어기 이상을 유발할 수 있다(이슈 #17). 이 세션의 F5 배포는 deploy() 종료 시 이미 해제됐다.
+     */
+    private async _waitDeployLockForStart(what: string): Promise<boolean> {
+        if (!this._config) { return true; }
+        const lock = getDeployLock(this._config.ip);
+        const deadline = Date.now() + 20_000;
+        let logged = false;
+        for (;;) {
+            const cur = lock.current();
+            if (!cur) { return true; }
+            if (!logged) {
+                this._log(`${what} 대기: 배포 잠금 보유 중 (${describeDeployLock(cur.record)}) — 최대 20초`);
+                logged = true;
+            }
+            if (Date.now() >= deadline) {
+                this._log(`⚠ ${what} 보류: 배포 잠금이 계속 잡혀 있음 (${describeDeployLock(cur.record)}) — 업로드 도중 Start는 제어기 이상을 유발할 수 있어 보내지 않습니다.`);
+                return false;
+            }
+            await new Promise<void>(resolve => setTimeout(resolve, 500));
+        }
+    }
+
+    /**
      * Run build-only deploy before attach.
      */
     private async _runDeployBeforeAttach(args: IAttachRequestArguments): Promise<{ ok: boolean; cancelled?: boolean }> {
@@ -2896,19 +2929,21 @@ export class GPLDebugSession extends LoggingDebugSession {
                 // flash 경유 없이 /GPL/<name>에 직접 미러 동기화한다(변경분만 업로드 + 원격 전용 파일 삭제).
                 // /GPL/<name>이 아직 없으면(최초 배포) deploy()가 FTP로 폴더를 생성해 직접 업로드한다.
                 directGpl: true,
-                // 무조건 Stop -all 하지 않는다: 먼저 Show Thread로 확인하고, 활성 쓰레드가 있을 때만
-                // 사용자에게 정지 여부를 모달로 묻는다(Quick Compile과 동일한 게이트, §0.6).
-                // 실행 중 업로드는 파일 충돌·메모리 누수 위험이 있으므로, 미승인 시 THREAD_CHECK로 중단한다.
+                // 배포 잠금 owner 라벨(다른 창/MCP 경고 문구에 표시). 잠금 자체는 deploy() 안에서 획득된다.
+                lockOwner: 'F5 Deploy',
+                // 무조건 Stop -all 하지 않는다: 업로드 뒤 Compile 직전에 Show Thread로 확인하고, 활성 쓰레드가
+                // 있을 때만 사용자에게 정지 여부를 모달로 묻는다(Quick Compile과 동일한 게이트, §0.6).
+                // 미승인 시 THREAD_CHECK로 중단 — 업로드는 이미 끝났고 Compile만 수행하지 않는다.
                 skipStop: true,
                 confirmStopOnActive: async (activeDesc: string) => {
                     const pick = await vscode.window.showWarningMessage(
-                        '실행 중인 쓰레드가 있습니다. Stop -all로 정지한 후 디버깅을 시작할까요?',
+                        '실행 중인 쓰레드가 있습니다. Stop -all로 정지한 후 Compile하고 디버깅을 시작할까요?',
                         {
                             modal: true,
                             detail:
                                 `활성 쓰레드: ${activeDesc}\n\n` +
-                                '정지하지 않으면 디버깅을 시작하지 않습니다. ' +
-                                '(실행 중 업로드는 파일 충돌·메모리 누수를 유발할 수 있습니다.)',
+                                '업로드는 완료되었습니다. 정지하지 않으면 Compile과 디버깅을 시작하지 않습니다 ' +
+                                '(정지 미완료 상태의 Compile은 제어기 이상을 유발할 수 있습니다).',
                         },
                         'Stop 후 디버그 시작',
                     );
@@ -2922,6 +2957,12 @@ export class GPLDebugSession extends LoggingDebugSession {
         );
 
         if (!result.success) {
+            // 배포 잠금을 다른 배포/창/프로세스가 보유 중 — 제어기를 건드리지 않았다. 컨텍스트를 남기고 중단.
+            if (result.failedPhase === 'LOCKED') {
+                this._log(`[deploy] 배포 잠금 보유 중이라 시작하지 않음 — ${result.failedStatusMessage ?? '(보유자 미상)'}`);
+                vscode.window.showWarningMessage(`디버그 배포 불가 — ${result.failedStatusMessage ?? '배포가 이미 진행 중입니다'}. 완료 후 다시 시도하세요.`);
+                return { ok: false, cancelled: true };
+            }
             // 사용자가 쓰레드 정지 확인을 취소한 경우(THREAD_CHECK)는 실패가 아니라 취소로 다룬다.
             // 컴파일 에러 UI(첫 에러 점프 / Problems 패널)를 띄우지 않고 조용히 중단한다.
             if (result.failedPhase === 'THREAD_CHECK') {

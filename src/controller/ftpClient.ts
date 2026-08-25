@@ -155,6 +155,11 @@ export async function uploadProject(
  * - Unload/Load 없이 로드본(/GPL/<name>)을 로컬과 일치시키는 것이 목적.
  * 한계: 크기 비교라서 내용이 달라도 크기가 같으면 놓친다(skipUnchanged와 동일).
  */
+export interface RemoteFileRef {
+	remotePath: string;
+	relativePath: string;
+}
+
 export async function mirrorProject(
 	host: string,
 	localDir: string,
@@ -162,8 +167,14 @@ export async function mirrorProject(
 	options?: {
 		onProgress?: (current: number, total: number, file: string, action: 'uploaded' | 'skipped') => void;
 		onDelete?: (file: string) => void;
+		/**
+		 * true면 원격 전용 파일을 지우지 않고 `pendingDeletes`로 돌려준다. 호출측이 안전한 시점
+		 * (배포에서는 Stop settle 게이트 통과 뒤)에 `removeRemoteFiles`로 처리한다 — 쓰레드 실행 중
+		 * 원격 파일 삭제가 무해한지는 미검증이라 업로드와 분리한다(2026-08-25, 이슈 #17).
+		 */
+		deferDelete?: boolean;
 	},
-): Promise<{ uploaded: number; skipped: number; deleted: number; totalBytes: number }> {
+): Promise<{ uploaded: number; skipped: number; deleted: number; totalBytes: number; pendingDeletes: RemoteFileRef[] }> {
 	const client = await createClient(host);
 	try {
 		// 1) 원격 파일 목록(재귀). 원격 폴더가 없거나 조회 실패면 빈 목록으로 취급 → 전체 업로드.
@@ -206,9 +217,14 @@ export async function mirrorProject(
 			options?.onProgress?.(i + 1, localFiles.length, relative, skip ? 'skipped' : 'uploaded');
 		}
 
-		// 3) 원격에만 있는 파일 삭제 (낡은 소스 제거)
+		// 3) 원격에만 있는 파일 삭제 (낡은 소스 제거) — deferDelete면 목록만 돌려준다.
+		const pendingDeletes: RemoteFileRef[] = [];
 		for (const rf of remoteFiles) {
 			if (localRelSet.has(rf.relativePath.toLowerCase())) { continue; }
+			if (options?.deferDelete) {
+				pendingDeletes.push({ remotePath: rf.remotePath, relativePath: rf.relativePath });
+				continue;
+			}
 			try {
 				await client.remove(rf.remotePath);
 				deleted++;
@@ -218,7 +234,35 @@ export async function mirrorProject(
 			}
 		}
 
-		return { uploaded, skipped, deleted, totalBytes };
+		return { uploaded, skipped, deleted, totalBytes, pendingDeletes };
+	} finally {
+		client.close();
+	}
+}
+
+/**
+ * 원격 파일 목록을 한 연결로 삭제한다(mirrorProject deferDelete의 후처리).
+ * 개별 실패는 non-fatal — 남은 파일은 Compile 결과로 드러난다. 삭제 성공 수를 돌려준다.
+ */
+export async function removeRemoteFiles(
+	host: string,
+	files: RemoteFileRef[],
+	onDelete?: (file: string) => void,
+): Promise<number> {
+	if (files.length === 0) { return 0; }
+	const client = await createClient(host);
+	let deleted = 0;
+	try {
+		for (const rf of files) {
+			try {
+				await client.remove(rf.remotePath);
+				deleted++;
+				onDelete?.(rf.relativePath);
+			} catch {
+				// non-fatal
+			}
+		}
+		return deleted;
 	} finally {
 		client.close();
 	}

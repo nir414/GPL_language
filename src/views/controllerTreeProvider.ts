@@ -26,7 +26,8 @@ import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
 export interface SituationDeploySnapshot {
 	mode: 'Build' | 'Deploy & Run';
 	success: boolean;
-	lastStage: 'STOP' | 'THREAD_CHECK' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
+	// 순서(2026-08-25 재배치): UPLOAD → STOP/THREAD_CHECK → COMPILE → START → ERROR_CHECK
+	lastStage: 'LOCKED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
 	compileErrorCodes: number[];
 	controllerSystemCodes: number[];
 	updatedAt: number;
@@ -34,6 +35,16 @@ export interface SituationDeploySnapshot {
 	comparisonNote?: string;
 	unverifiableReason?: string;
 	compileRawSummary?: string[];
+}
+
+/**
+ * "컴파일 필요" 상태 — /GPL 소스는 업로드됐지만 Compile이 수행되지 않은 프로젝트.
+ * Brooks 문서상 Start는 컴파일하지 않으므로(실기기 확인 전) 이 상태의 Start는 이전 프로그램을 실행한다.
+ */
+export interface CompileStaleState {
+	projectName: string;
+	since: number;
+	reason: string;
 }
 
 export interface RuntimeErrorContext {
@@ -145,11 +156,18 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		lastChangedAt: Date.now(),
 	};
 	private runtimeErrorContext?: RuntimeErrorContext;
+	private compileStale?: CompileStaleState;
 
 	/** 디버그 세션 중 bridge 이벤트 구독 핸들 */
 	private _debugModeSubscription: vscode.Disposable | undefined;
 
 	get isConnected(): boolean { return this._connected; }
+
+	/** "컴파일 필요" 상태 표시(프로젝트 상태 섹션). undefined면 해제. */
+	setCompileStale(state?: CompileStaleState): void {
+		this.compileStale = state;
+		this._onDidChangeTreeData.fire(undefined);
+	}
 
 	setExpectedProjectName(name?: string): void {
 		this.setExpectedProjectContext(name, name);
@@ -636,12 +654,15 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const hasUnexpectedRunning = !!expected && runningProjects.length > 0 && !hasExpectedRunning;
 		const missingExpectedFtp = !!expectedFolder && !hasExpectedFtp;
 		const buildOnlyReady = !!expected && hasExpectedFtp && runningProjects.length === 0;
-		const mismatch = missingExpectedFtp || hasUnexpectedRunning;
-		const contextDescription = mismatch
-			? '불일치 감지'
-			: buildOnlyReady
-				? '빌드 전용 상태'
-				: '정상';
+		const stale = this.compileStale;
+		const mismatch = missingExpectedFtp || hasUnexpectedRunning || !!stale;
+		const contextDescription = stale
+			? '컴파일 필요'
+			: mismatch
+				? '불일치 감지'
+				: buildOnlyReady
+					? '빌드 전용 상태'
+					: '정상';
 
 		const ctxSec = new SectionNode(
 			'projectContext',
@@ -663,6 +684,19 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			new InfoNode(`FTP: ${expectedFolder || '(미설정)'} / 현재: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}`, 'folder-library',
 				hasExpectedFtp || !expectedFolder ? undefined : `${expectedFolder} 폴더 없음`),
 		];
+		if (stale) {
+			// /GPL 소스만 올라가고 Compile은 안 된 상태 — Start하면 이전 프로그램이 돈다(이슈 #17 재배치의 부수 상태).
+			ctxSec.collapsed = false;
+			ctxSec.children.unshift(new InfoNode(
+				`컴파일 필요: ${stale.projectName}`,
+				'warning',
+				stale.reason,
+				{ command: 'gpl.quickCompile', title: 'Quick Compile' },
+				'compileStaleItem',
+				`/GPL 소스가 컴파일본보다 최신입니다 (${new Date(stale.since).toLocaleString()} 이후). ` +
+				'Start는 컴파일하지 않으므로 이전 프로그램이 실행됩니다 — 클릭하면 Quick Compile을 실행합니다.',
+			));
+		}
 		sections.push(ctxSec);
 
 		// ── 연결 정보 (간소화)
@@ -1081,11 +1115,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				stageMap.COMPILE = 'OK';
 				stageMap.RUNNING = deploy.mode === 'Build' ? 'SKIP' : 'OK';
 			} else {
-				// THREAD_CHECK(빠른 컴파일의 사전 쓰레드 게이트) 실패는 STOP 단계 실패와 동급으로 취급.
-				const stoppedStageFailed = deploy.lastStage === 'STOP' || deploy.lastStage === 'THREAD_CHECK';
-				stageMap.STOPPING = stoppedStageFailed ? 'FAIL' : 'OK';
-				stageMap.UPLOADING = deploy.lastStage === 'UPLOAD' ? 'FAIL' : (stoppedStageFailed ? 'N/A' : 'OK');
-				stageMap.COMPILE = deploy.lastStage === 'COMPILE' ? 'FAIL' : ((deploy.lastStage === 'START' || deploy.lastStage === 'ERROR_CHECK') ? 'OK' : 'N/A');
+				// 순서(2026-08-25 재배치, 이슈 #17): UPLOAD → STOP/THREAD_CHECK → COMPILE → START.
+				// THREAD_CHECK(빠른 컴파일의 Compile 전 쓰레드 게이트)·COMPILE_DEFERRED는 STOP 단계 실패와 동급으로 취급.
+				const stage = deploy.lastStage;
+				const uploadFailed = stage === 'UPLOAD' || stage === 'LOCKED';
+				const stoppedStageFailed = stage === 'STOP' || stage === 'THREAD_CHECK' || stage === 'COMPILE_DEFERRED';
+				stageMap.UPLOADING = uploadFailed ? 'FAIL' : 'OK';
+				stageMap.STOPPING = uploadFailed ? 'N/A' : (stoppedStageFailed ? 'FAIL' : 'OK');
+				stageMap.COMPILE = stage === 'COMPILE' ? 'FAIL' : ((stage === 'START' || stage === 'ERROR_CHECK') ? 'OK' : 'N/A');
 				stageMap.RUNNING = deploy.mode === 'Build'
 					? 'SKIP'
 					: (deploy.lastStage === 'START' ? 'FAIL' : ((deploy.lastStage === 'ERROR_CHECK' || deploy.lastStage === 'SUCCESS') ? 'OK' : 'N/A'));

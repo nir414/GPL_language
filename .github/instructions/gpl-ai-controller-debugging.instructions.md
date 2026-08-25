@@ -59,7 +59,9 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
    - 실패하면 포트/IP/방화벽/제어기 상태부터 확인한다.
 
 2. 최신 코드 검증
-   - 먼저 `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` (`gpl.deploy`)로 STOP -> UPLOAD -> COMPILE 단계만 확인한다.
+   - 먼저 `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` (`gpl.deploy`)로 UPLOAD -> STOP -> COMPILE 단계만 확인한다.
+   - 배포/업로드 중에는 배포 잠금(`%TEMP%\gpl-controller\<ip>.lock.json`)이 잡힌다. "배포가 진행 중입니다 (…)" 경고나
+     MCP의 "배포 잠금 보유 중" 거부가 나오면 우회하지 말고 완료를 기다린다(업로드 도중 Compile/Start는 제어기 이상 유발).
    - 성공 전에는 Attach 디버깅으로 넘어가지 않는다.
    - 실패하면 실패 단계, 실패 명령, STATUS 코드, raw trace를 먼저 읽는다.
 

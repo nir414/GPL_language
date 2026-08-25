@@ -10,12 +10,30 @@ import * as vscode from 'vscode';
 import { getControllerConfig } from '../controller/controllerConnection';
 import { isGplDocument } from '../config';
 
+/** "컴파일 필요" 표시 정보(controllerTreeProvider.CompileStaleState와 동일 형태). */
+export interface StatusBarCompileStale {
+    projectName: string;
+    since: number;
+    reason: string;
+}
+
 export class ConnectionStatusBar implements vscode.Disposable {
     private item: vscode.StatusBarItem;
     private _isConnected = false;
+    private compileStale: StatusBarCompileStale | undefined;
     private disposables: vscode.Disposable[] = [];
 
     get isConnected(): boolean { return this._isConnected; }
+
+    /**
+     * "컴파일 필요" 상태 — /GPL 소스는 업로드됐지만 Compile은 안 된 프로젝트(이슈 #17 재배치의 부수 상태).
+     * Start는 컴파일하지 않으므로 사용자가 놓치지 않게 상태바에 경고 배지로 보인다. undefined면 해제.
+     */
+    setCompileStale(state?: StatusBarCompileStale): void {
+        this.compileStale = state;
+        this.updateDisplay(this._isConnected);
+        this.updateVisibility();
+    }
 
     constructor() {
         this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -55,9 +73,19 @@ export class ConnectionStatusBar implements vscode.Disposable {
     private updateDisplay(connected: boolean): void {
         const cfg = getControllerConfig();
         if (connected) {
-            this.item.text = `$(plug) GPL: ${cfg.ip}`;
-            this.item.backgroundColor = undefined;
-            this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect`;
+            const stale = this.compileStale;
+            if (stale) {
+                this.item.text = `$(plug) GPL: ${cfg.ip} $(warning) 컴파일 필요: ${stale.projectName}`;
+                this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+                this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect\n\n` +
+                    `컴파일 필요: ${stale.projectName} — ${stale.reason}\n` +
+                    `${new Date(stale.since).toLocaleString()} 이후 /GPL 소스가 컴파일본보다 최신입니다. ` +
+                    'Start는 컴파일하지 않으므로 이전 프로그램이 실행됩니다 — Quick Compile을 먼저 실행하세요.';
+            } else {
+                this.item.text = `$(plug) GPL: ${cfg.ip}`;
+                this.item.backgroundColor = undefined;
+                this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect`;
+            }
         } else {
             this.item.text = `$(debug-disconnect) GPL: ${cfg.ip} (offline)`;
             this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');

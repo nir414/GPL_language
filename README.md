@@ -50,8 +50,9 @@ Brooks PreciseFlex 제어기에 직접 연결하여 VS Code 안에서 배포·�
 
 - **TCP 명령**(포트 1402) · **FTP 업로드**(포트 21) · **런타임 출력 스트림**(포트 1403) ·
   **UDP 제어기 자동 검색**(포트 51417)
-- **배포 워크플로**: STOP → UPLOAD → COMPILE — 컴파일 에러는 Problems 패널에 자동 연동,
-  실행(START)과 flash 저장은 별도 명령으로 분리
+- **배포 워크플로**: UPLOAD → STOP → COMPILE — 업로드는 프로그램 실행 중에도 진행하고 정지 요구는
+  Compile 직전에만, 컴파일 에러는 Problems 패널에 자동 연동, 실행(START)과 flash 저장은 별도 명령으로 분리.
+  업로드/배포 중에는 배포 잠금으로 다른 창·MCP의 Compile/Start를 차단(잠금 보유자·단계·경과를 경고에 표시)
 - **사이드바 GPL Controller 패널**: 연결 정보, 쓰레드 실시간 상태/개별 제어, 제어기
   브레이크포인트 목록, FTP 파일 관리(컴파일/실행/다운로드/삭제), 시스템 정보, 에러 로그
 - **실시간 로그 터미널**: 1402/1403 트래픽을 VS Code 터미널에 미러링 (파일 미생성, 메모리 버퍼만 사용)
@@ -79,7 +80,7 @@ Continue(F5), 변수 조회(Variables/Hover/Debug Console), Call Stack·다중 �
 
 | 옵션 | 효과 |
 |---|---|
-| `deployBeforeAttach` | F5 시점에 STOP → UPLOAD → COMPILE 후 attach |
+| `deployBeforeAttach` | F5 시점에 UPLOAD → STOP → COMPILE 후 attach |
 | `projectDir` | 다중 프로젝트 워크스페이스에서 배포 대상 고정 |
 | `stopAllBeforeAttach` | attach 직전 `Stop -all`로 다른 프로젝트 쓰레드 간섭 차단 |
 | `clearProjectBreakpointsOnAttach` | attach 직전 대상 프로젝트의 기존 제어기 브레이크포인트 정리 |
@@ -108,7 +109,7 @@ Continue(F5), 변수 조회(Variables/Hover/Debug Console), Call Stack·다중 �
 | 명령 | 설명 |
 |---|---|
 | `GPL: Connect to Controller` / `Disconnect Controller` | 제어기 연결/해제 |
-| `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` | STOP → UPLOAD → COMPILE — 로컬 코드 업로드 후 검증 |
+| `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` | UPLOAD → STOP → COMPILE — 로컬 코드 업로드 후 검증 |
 | `GPL: 빠른 컴파일` | 변경분만 /GPL에 직접 업로드 + Compile (STOP/START 생략) |
 | `GPL: Start` | 실행만 (배포 없음) |
 | `GPL: Save to Flash` | `/flash/projects`에 영구 저장만 |

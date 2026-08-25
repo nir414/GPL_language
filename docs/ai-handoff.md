@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-18 (§1-BC: README 과포화 정리 — 변경 이력·버전 표기 제거, AI 규약·1403 상세 runbook 이관, pre-release-check 버전 검사 전환. 직전: §1-BB Test_robot 아카이브 반출)
+- 최종 갱신: 2026-08-25 (§1-BD: 이슈 #15·#17 통합 — 배포 잠금(프로세스 간 파일, 보유자·단계·경과 표시) + 배포 순서 UPLOAD→STOP→COMPILE 재배치 + "컴파일 필요" 상태. 직전: §1-BC README 과포화 정리)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.14** (태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
+- 현재 package 버전: **0.8.15** (working tree — §1-BD 변경분 포함, 미배포. 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -1820,12 +1820,13 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 - **`deployService.ts`에 `DeployOptions.autoGate` + `failedPhase 'AUTO_GATE'` 추가**. 게이트는 deploy() 내부에서 live 데이터로만 판정(§0 하드 규칙):
   - 조건 1(/GPL probe 직후): `/GPL/<projectName>` 미존재·프로브 실패·생성 필요 → AUTO_GATE 스킵. **자동 모드는 폴더를 생성하지 않고 classic 폴백도 하지 않는다**(불완전 업로드/의도치 않은 flash 쓰기 방지). 최초 1회는 수동 Deploy로 올리라고 안내.
   - 조건 2(skipStop 쓰레드 프로브): `Show Thread  -web` 목록이 **완전히 비어야**(total 0) 진행. 정지 상태(Idle/Stopped/Error) 쓰레드가 있어도 스킵(기존 게이트보다 엄격 — 사용자 정의 "STOP 상태"). 무응답(STATUS 미수신)도 "확인 불가 = 미충족"으로 스킵.
-  - autoGate 경로는 진입 시 `output.show(true)`/`diagnosticCollection.clear()`를 하지 않음(저장마다 포커스 강탈 방지, 게이트 스킵 시 기존 빨간 줄 보존). 진단 clear는 게이트 통과 후 UPLOAD 진입 시점에 수행.
+    ※ **2026-08-25 §1-BD에서 변경**: 조건 2는 이제 UPLOAD *뒤*·COMPILE 직전에 적용되고, 미충족이면 업로드는 유지한 채 Compile만 보류(`COMPILE_DEFERRED` → "컴파일 필요" 표시)한다. "자동 업로드까지 스킵"은 당시 사양.
+  - autoGate 경로는 진입 시 `output.show(true)`/`diagnosticCollection.clear()`를 하지 않음(저장마다 포커스 강탈 방지, 게이트 스킵 시 기존 빨간 줄 보존). 진단 clear는 게이트 통과 후 수행(당시 UPLOAD 진입 시점 → §1-BD 이후 COMPILE 진입 시점).
 - **`extension.ts`**: `QuickDeployOpts.autoGate` 전달, `runDeployCore`에서 `AUTO_GATE` 결과는 실패 처리(팝업·스냅샷·outputChannel.show) 전에 로그 한 줄로 조기 반환. flush에서 `brooks-gpl` 디버그 세션 중이면 프로브 왕복 없이 스킵. 저장 핸들러/flush는 `getAutoOnSaveMode()` 사용.
 - **Start 계열 명령에 배포 뮤텍스(`deployInFlight`) 가드 추가** — 사용자가 경고한 "업로드 도중 Start" 충돌의 확장 내부 경로 차단:
   - `gpl.start`, `gpl.controller.threadStart`, `gpl.controller.ftpRun`(Compile & Start): 업로드/배포 진행 중이면 경고 후 거부.
   - `gpl.saveToFlash`: FTP 미러(원격 삭제 포함)를 `deployInFlight`로 감싸 autoOnSave/배포와 상호 배제(기존엔 뮤텍스 밖이었음).
-  - 한계: **MCP(controller-mcp)·GDE 등 외부 클라이언트의 Start/Compile은 이 뮤텍스로 못 막는다.** 자동 모드의 "쓰레드 0개" 게이트로 창을 최소화할 뿐, 근본 차단은 아님.
+  - 한계(당시): ~~MCP(controller-mcp)·GDE 등 외부 클라이언트의 Start/Compile은 이 뮤텍스로 못 막는다.~~ → **2026-08-25 §1-BD에서 MCP·다른 VS Code 창까지 차단**(프로세스 간 잠금 파일 `%TEMP%/gpl-controller/<ip>.lock.json`; `deployInFlight` boolean은 폐지). GDE는 여전히 못 막는다(브로커 전환 전까지의 한계).
 - **업로드 전 미저장 파일 확인 모달(같은 날 후속 요청)** — `extension.ts confirmSaveDirtyProjectDocs()`:
   - Deploy/Quick Compile(runDeployCore 수동 경로)·Save to Flash 실행 시, 해당 projectDir 하위의 dirty 문서가 있으면
     Start 확인과 같은 모달("저장 후 계속" + 취소)로 확인. 취소하거나 저장 실패 시 업로드를 시작하지 않는다
@@ -1983,6 +1984,43 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 - 없음.
 
+## 1-BD. 2026-08-25 세션 — 이슈 #15·#17 통합: 배포 잠금(프로세스 간) + 배포 순서 UPLOAD→STOP→COMPILE 재배치 + "컴파일 필요" 상태
+
+검토 문서(설계 근거·겹침 지도·결정표): Artifact `https://claude.ai/code/artifact/e5aa9332-0856-40d8-9242-a3fd6fce9541` (세션 산출물, 구현 *전* 계획 — 이 §가 정본). GitHub 이슈 #15, #17(보충 의견 포함).
+
+### 증상 (사용자, 2026-08-20 실사용)
+
+- **#15**: `gpl.deploy` 시 "배포가 이미 진행 중입니다" 경고가 원인 불명으로 뜸 — `deployInFlight`가 QuickPick/미저장 모달 대기 중에도 잡혀 있고, 경고에 누가/어느 단계/언제부터인지가 없음.
+- **#17**: 쓰레드 동작 중 FTP 업로드는 무해한데 STOP을 업로드 앞에 강제 → autoOnSave가 쓰레드 하나만 있어도 전부 스킵, 전체 Deploy도 불필요하게 일찍 정지. 진짜 위험("업로드 도중 Compile/Start → 제어기 사망")은 프로세스 내부 boolean으로만 막혀 MCP·다른 창에는 열려 있었음. 보충 의견: STOP+settle 게이트는 제거가 아니라 **Compile/Start 직전으로 이동**.
+
+### 원인 (소스 대조)
+
+- `runDeploy`가 플래그를 세운 뒤 `runDeployCore`가 UI를 await(구 1449/1457행). 고정 경고 문자열 5곳. `deployInFlight`는 extension.ts 지역 변수 — F5 경로(`gplDebugSession._runDeployBeforeAttach`) 미참여, MCP는 무관.
+- `deploy()` 순서 STOP→UPLOAD→COMPILE, autoGate 조건 2가 UPLOAD 전에 `total>0`이면 AUTO_GATE로 전부 스킵.
+- Brooks 공식 문서(live 2026-08-25 — **문서는 가설, 실기기 확인 항목 §3 ③④**): `Start`는 컴파일하지 않음(`-compile` 스위치 별도), `Compile`은 "may not be actively executing in a thread". → 재배치하면 "소스는 최신, 컴파일본은 이전" 상태가 생기므로 표시·확인이 짝으로 필요.
+
+### 조치
+
+- **A. 배포 잠금** `src/controller/deployLock.ts`(vscode 무의존, 단위 테스트 12건): 메모리 레코드 + 파일 `%TEMP%/gpl-controller/<ip>.lock.json` `{version, owner, stage, since, heartbeat, pid, host}`. 획득은 `wx` 배타 생성, 갱신은 임시파일+rename, heartbeat 5 s(+업로드 onProgress), stale = pid 미존재 ‖ heartbeat 30 s 초과 ‖ 자기 pid 잔재 → 자동 정리 후 1회 재시도. release는 세대 토큰 + pid/since 일치 시에만 삭제(뒤늦은 finally가 새 보유자를 지우지 않음). `describeDeployLock` → "owner — stage, N초 경과". **강제 해제 버튼은 두지 않음**(안전 가드이므로; stale 자동 만료가 대체 — 결정표). 이 파일은 로그가 아니라 조정 프리미티브로 하드 규칙 1과 무관.
+  - `deploy()`가 진입 시 획득/finally 해제(`DeployOptions.lockOwner`, 단계 배너마다 `setStage`). F5 경로 자동 참여. 보유 중이면 `failedPhase 'LOCKED'` + `lockHolder`(`makeLockedResult`).
+  - `extension.ts`: `deployInFlight` 폐지 → `currentDeployLockHolder()` 조회 + `warnDeployBusy(action, holder, hint)`로 문구 통합([출력 보기] 버튼). `runDeploy`는 UI 전 조회만 하고 잠금은 `deploy()` 안(UI 뒤)에서. `gpl.saveToFlash`는 UI 뒤 `acquire('Save to Flash','FTP_MIRROR')`. autoOnSave flush는 잠금 중 재예약, LOCKED 결과면 changedFiles를 pending에 되돌림. `gpl.start`/`threadStart`/`ftpRun` 가드 교체.
+  - `gplDebugSession`: `_waitDeployLockForStart` — 자동 Start/stopOnEntry Start 전 최대 20 s 대기, 계속 잡혀 있으면 Start만 보류(attach 유지).
+- **B. MCP** `controller-mcp/src/deployLock.js`(읽기 전용, 파일 계약 동일, node:test 8건) + `index.js` `guardDeployLock`/`sendGuarded`: 첫 단어 `Compile|Start|Load|Unload`인 명령은 최대 `GPL_LOCK_WAIT_MS`(20000) 대기 후 진행, 초과 시 보유자·단계·경과와 함께 오류(우회 금지 문구). `controller_status`에 `deployLock` 필드. README 환경변수 표(`GPL_LOCK_WAIT_MS`/`GPL_LOCK_DIR`), `exportAgentSetup` CLAUDE 섹션에 규칙 추가. MCP는 FTP를 하지 않으므로 잠금을 쓰지 않음.
+- **C. deployService 재배치**: UPLOAD → STOP(`!skipStop`) / THREAD_CHECK(`skipStop`; autoGate 조건 2는 여기) → 지연 삭제 → COMPILE → START → ERROR CHECK. `mirrorProject({ deferDelete: true })` → `pendingDeletes` → settle 뒤 `removeRemoteFiles`(실행 중 원격 삭제 무해가 미검증이라 지연 — 결정표). autoGate 미충족은 `COMPILE_DEFERRED`(업로드 유지, Compile 보류), THREAD_CHECK 메시지는 "업로드는 완료됨, Compile 미수행". autoGate 진단 clear는 COMPILE 진입 시점으로. `DeployPhase` 타입 신설(LOCKED/COMPILE_DEFERRED). 트리 `stageMap`을 새 순서로. 클래식 경로의 Unload/Load 동기화는 COMPILE 단계 안이라 그대로 STOP 뒤.
+- **D. "컴파일 필요" 상태** `extension.ts compileStaleProjects`: COMPILE_DEFERRED/THREAD_CHECK/업로드 후 Compile 실패 시 set, Compile 성공(deploy·ftpRun) 시 clear. 트리 "프로젝트 상태"에 경고 노드(클릭→Quick Compile), 상태바 배지(`ConnectionStatusBar.setCompileStale`), `gpl.start`/`threadStart`는 `confirmStartWhenCompileStale` 모달("Compile 후 Start / 그대로 Start / 취소"). 한계: MCP `compile_project`로 컴파일하면 확장은 모르므로 상태가 남는다(다음 확장 Compile 성공 시 해제).
+- **E. 문서**: README 워크플로 3곳, package.json(`deployBeforeAttach`·`autoOnSave` 설명), runbook, instructions, broker 설계 표, CHANGELOG [0.8.15], §1-AV 낡은 서술 무효 표시, §3·§4.
+
+### 검증
+
+- `npm run compile` 통과, `npm test` **190/190**(신규 deployLock 12건 포함), `controller-mcp` `node --test` **18/18**(신규 8건), `npm run pre-release-check` 16/17 — 실패 1건은 "working tree clean"(미커밋 상태라 정상). 편집한 모든 파일 CRLF 유지 확인.
+- **실기기(G2400C) 미검증** — §3 체크리스트 ①~⑧. **C(재배치)는 제어기 명령 순서를 바꾸므로 하드 규칙 6에 따라 저속/시뮬레이션 검증 전 배포 금지.** 검토 문서의 권장은 "A·B·D(무영향) 먼저 배포, C는 검증 뒤"였으나 사용자 지시로 한 working tree에 모두 구현했다 — 분할 배포가 필요하면 C(deployService의 Phase 1/2 블록 + deferDelete + COMPILE_DEFERRED 처리)를 별 브랜치로 떼어낼 것.
+
+### 남은 일
+
+- §3 ①~⑧ 실기기 검증, #17 ④ 재현 절차 기록. 검증 후 이슈 #15·#17 종결 코멘트.
+- GDE의 Compile/Start는 여전히 못 막는다 — 브로커(broker-workbench Phase 1–2) 전환 시 잠금 파일 writer를 브로커가 승계(파일 계약 유지).
+- (선택, 사용자 요청 시) 경과 3분 초과 시에만 노출되는 "강제 해제" 버튼 + 2단계 확인.
+
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
 - **`ProtocolModule.gpl` 478·480의 `-760 Invalid assignment`**: `isOrgCompleted`는 `RobotModule.gpl:828`에 **`Public ReadOnly Property ... As Boolean`**(읽기 전용)으로 정의됨. 거기에 값을 대입해서 나는 에러. 해결책(택1, 사용자 결정 대기): setter 메서드 추가 / `ReadOnly` 제거 후 `Set` 접근자 추가 / backing 필드 직접 대입.
@@ -1990,6 +2028,16 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-08-25, §1-BD) 배포 순서 재배치 + 배포 잠금 — 실기기 검증, 릴리스 전 필수(하드 규칙 6)**:
+  ① 쓰레드 실행 중 Quick Compile → 업로드 동안 프로그램 계속 실행 → "Stop 후 계속" 모달 → Stop → settle → Compile (GPL Traffic 채널에서 명령 순서 확인)
+  ② autoOnSave "auto" + 쓰레드 존재 → 업로드만, Compile 미전송(트래픽 로그), 트리 "프로젝트 상태"·상태바에 "컴파일 필요"
+  ③ "컴파일 필요" 상태에서 `GPL: Start` → 모달 → "Compile 후 Start" 정상 / "그대로 Start"가 실제로 옛 프로그램을 실행하는지(=Start 비컴파일 — Brooks 문서 주장, 실측으로 확정)
+  ④ 실행 중 `Compile`을 보내면 실제 STATUS가 무엇인지(문서: "may not be actively executing in a thread")
+  ⑤ 업로드 실패(케이블 분리) 시 쓰레드 상태 불변(재배치로 STOP이 뒤로 갔으므로 예전과 달리 프로그램이 계속 돈다)
+  ⑥ 실행 중 원격 전용 파일 삭제가 무해한지 → 확인되면 `deferDelete` 지연 제거 여부 결정
+  ⑦ 업로드 중 다른 창 `GPL: Start` / MCP `compile_project` → 경고에 보유자·단계·경과 / MCP는 20초 대기 후 진행 또는 보유자 정보와 함께 거부
+  ⑧ 확장 창 강제 종료 후 `%TEMP%\gpl-controller\<ip>.lock.json`이 30초 내 stale 처리되어 다음 배포가 정상 획득(Output `[Lock]` 로그)
+- [ ] (§1-BD, 이슈 #17 ④) "업로드 중 Compile/Start → 제어기 사망" 재현 절차·양상(무응답/재부팅/ErrorLog) 기록 — 시뮬레이터 우선, 사용자 실기기 작업. 확인되면 이슈 #17에 코멘트.
 - [ ] **(2026-08-05, §1-AQ) Stop/settle/busy-retry 처리 통일 리팩터링** — 같은 로직이 4곳+MCP에 제각각(§1-AQ 표 참조). 제안: ① `sendCommandWithBusyRetry`를 `controllerConnection.ts`(또는 공용 모듈)로 이동해 extension.ts/deployService/gplDebugSession이 공유 ② settled 상태 집합(`/^(idle|stopped|error)$/i`)과 settle 폴러를 단일 정본으로(현재 extension.ts:78과 deployService.threadSettled가 주석 동기화 의존 중복) ③ Stop 계열 공통 규약 확립: "Stop 전송 → STATUS 0/-752 모두 '접수'로 간주 → settle 폴링 → 미확인 시 Stop 1회 자동 재시도 → (수동 경로) SoftEStop 복구 제안 / (자동 경로) 중단" ④ controller-mcp 도구 설명·exportAgentSetup 가이드에 -752 비치명 의미 명시. ※ 모션/정지 흐름에 닿는 변경이므로 §3-B 원칙대로 저속/시뮬레이션 검증 후 적용.
 - [ ] **(우선, §1-AH) 외부 AI 디버깅 경로 개선** — ①(워크스페이스 AI 가이드/`.mcp.json`)·②(`GPL: Export AI Agent Setup`)는 **완료(2026-08-05, §1-AN)**. 남은 것: ③ controller-mcp 디버깅 도구 견고화 패리티(§1-AG 규약) — **대부분 완료(2026-08-05, §1-AS: 정지확인 내장·run_to_line·statusHint, 실기기 검증 남음)**, ④ connect backoff, + **1403 실시간 스트림 도구**(console_start/read(cursor)/stop). 상세와 배경은 §1-AH/§1-AN.
 - [ ] (§1-AG) 로컬 `npm run compile`→`npm run package`→VSIX 재설치 + 실기기 검증(Break/Step 상태 전이 타이밍, `-eval` 응답 형식, Error 전이 중단).
@@ -2034,11 +2082,13 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ```
 src/controller/controllerConnection.ts   # sendCommandDetailed, waitForStatusClose
-src/controller/deployService.ts          # deploy(), tryCompile, changedFiles/onlyFiles, directGpl(§1-G), Stop 완료 게이트
-src/controller/ftpClient.ts              # uploadProject onlyFiles
+src/controller/deployService.ts          # deploy() = 잠금 획득 → UPLOAD → STOP/THREAD_CHECK(settle 게이트) → COMPILE → ERROR CHECK(§1-BD 재배치), tryCompile, directGpl(§1-G), COMPILE_DEFERRED
+src/controller/deployLock.ts             # 배포 잠금 — 메모리+파일(%TEMP%/gpl-controller/<ip>.lock.json), pid/heartbeat stale 자동 만료, describeDeployLock (§1-BD, 이슈 #15·#17)
+src/controller/ftpClient.ts              # uploadProject onlyFiles, mirrorProject deferDelete + removeRemoteFiles(§1-BD)
 src/controller/responseParser.ts         # parseStatus, parseCompileErrors
-src/debug/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach, getDebugDeployDiagnostics
-src/extension.ts                         # runDeploy, autoOnSave
+src/debug/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach(lockOwner 'F5 Deploy'), _waitDeployLockForStart, getDebugDeployDiagnostics
+src/extension.ts                         # runDeploy(잠금 조회 + warnDeployBusy), autoOnSave, 컴파일 필요 상태(compileStaleProjects/confirmStartWhenCompileStale)
+controller-mcp/src/deployLock.js         # 잠금 파일 읽기 전용 구현(확장과 파일 계약 공유) — Compile/Start/Load/Unload 유한 대기·거부(§1-BD)
 src/gplParser.ts                         # Property/Sub/Function 파싱 + parseDocument 메모이즈 캐시(§1-B E) + docComment 수집(§1-J)
 src/gplBuiltins.ts                       # 핵심 빌트인/String 함수 (Trim→메서드, Rnd(seed), Replace 제거, Asc/Chr/… 추가) + Bit 문자열 전역함수(§1-J)
 src/gplDictionaryData.ts                 # Move/Robot/Location/Profile/.../String 클래스 사전 + Controller/Thread/Exception/File/XML/Network 등 +153(§1-J)

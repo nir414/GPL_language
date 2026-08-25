@@ -180,7 +180,10 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 ### 2. Build Only
 
 - `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)`를 먼저 실행한다.
-- 이 단계는 STOP -> UPLOAD -> COMPILE까지 수행하고 START는 하지 않는다.
+- 이 단계는 UPLOAD -> STOP(+정지 완료 게이트) -> COMPILE까지 수행하고 START는 하지 않는다
+  (2026-08-25 재배치: 업로드는 실행 중에도 무해, 정지 요구는 Compile 직전에만 — GitHub #17).
+- 실행 중에는 배포 잠금 파일(`%TEMP%\gpl-controller\<ip>.lock.json`)이 잡혀 다른 창·MCP의 Compile/Start가 대기·거부된다.
+  "배포가 진행 중입니다 (보유자 — 단계, 경과)" 경고가 뜨면 Output 채널의 `[Lock]`/단계 배너로 진행 상황을 확인한다.
 - 실패하면 아래 순서로 본다.
 
 ```text

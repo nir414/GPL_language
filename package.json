@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.8.14",
+    "version": "0.8.16",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -128,7 +128,7 @@
                             },
                             "deployBeforeAttach": {
                                 "type": "boolean",
-                                "description": "Deploy (STOP→UPLOAD→COMPILE) before attaching debugger.",
+                                "description": "Deploy (UPLOAD→STOP→COMPILE) before attaching debugger.",
                                 "default": false
                             },
                             "projectDir": {
@@ -1039,12 +1039,12 @@
                         "off"
                     ],
                     "enumDescriptions": [
-                        "조건 충족 시에만 자동 실행(기본): 제어기가 완전 STOP 상태(쓰레드가 하나도 없음)이고 /GPL/<프로젝트>가 이미 존재할 때만 저장 파일을 업로드+Compile합니다. 조건 미충족·디버그 세션 중에는 팝업 없이 조용히 건너뜁니다.",
+                        "조건 충족 시에만 자동 실행(기본): /GPL/<프로젝트>가 이미 존재하면 저장 파일을 업로드하고, Compile은 제어기가 완전 STOP 상태(쓰레드가 하나도 없음)일 때만 수행합니다. 쓰레드가 있으면 업로드만 하고 Compile은 보류해 트리·상태바에 '컴파일 필요'로 표시합니다. /GPL 폴더 없음·디버그 세션 중에는 팝업 없이 조용히 건너뜁니다.",
                         "항상 시도(구 true): 게이트 없이 저장마다 실행합니다. 활성 쓰레드가 있으면 조용히 중단하고, /GPL 폴더가 없으면 classic(/flash) 경로로 폴백합니다.",
                         "사용 안 함(구 false)."
                     ],
                     "default": "auto",
-                    "description": ".gpl 파일을 저장할 때 빠른 컴파일(변경분 업로드 + Compile, STOP/START 생략)을 자동 실행합니다. 제어기에 연결되어 있을 때만 동작하며 600ms 디바운스가 적용됩니다. 업로드 도중 Compile/Start가 겹치면 제어기 이상이 생길 수 있어, 기본값 \"auto\"는 완전 STOP 상태에서만 동작합니다. (구버전 boolean 값도 인식: true=on, false=off)"
+                    "description": ".gpl 파일을 저장할 때 빠른 컴파일(변경분 업로드 + Compile, STOP/START 생략)을 자동 실행합니다. 제어기에 연결되어 있을 때만 동작하며 600ms 디바운스가 적용됩니다. 업로드 도중 Compile/Start가 겹치면 제어기 이상이 생길 수 있어 배포 잠금(다른 창·MCP 포함)으로 차단하며, 기본값 \"auto\"는 업로드는 항상 하되 Compile은 완전 STOP 상태에서만 수행합니다. (구버전 boolean 값도 인식: true=on, false=off)"
                 }
             }
         }

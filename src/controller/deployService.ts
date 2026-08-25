@@ -1,16 +1,22 @@
 /**
- * 배포 서비스: STOP → UPLOAD → COMPILE (→ START) 워크플로.
+ * 배포 서비스: UPLOAD → STOP(+정지 완료 게이트) → COMPILE (→ START) 워크플로.
  * skipStart 옵션으로 Start 단계를 생략하여 디버그 준비용으로 사용 가능.
  * controller-f5.ps1의 핵심 로직을 TypeScript로 포팅.
+ *
+ * 2026-08-25(이슈 #17) 단계 재배치: 사용자 관찰상 "쓰레드 실행 중 FTP 업로드"는 무해하고, 진짜 위험은
+ * ① 업로드 도중 Compile/Start(제어기 사망) ② 정지 미완료 상태의 Compile/Start(§0.6)다. 그래서 업로드를
+ * 먼저 하고 정지 요구(STOP + settle 게이트)는 COMPILE 직전으로 옮겼다 — 게이트 자체는 그대로다.
+ * ①은 deploy() 전체를 감싸는 배포 잠금(deployLock.ts, 프로세스 간 파일)으로 막는다.
  */
 
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
-import { uploadProject, mirrorProject, listRemoteDir } from './ftpClient';
+import { uploadProject, mirrorProject, listRemoteDir, removeRemoteFiles, RemoteFileRef } from './ftpClient';
 import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus, SHOW_THREAD_LIST_CMD, NO_STATUS_CODE } from './responseParser';
 import { isBusyStatus, isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
+import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
 
 export interface DeployOptions {
     projectDir: string;
@@ -43,16 +49,32 @@ export interface DeployOptions {
     beforeStart?: () => Promise<void> | void;
     /**
      * autoOnSave 자동 게이트 (gpl.quickCompile.autoOnSave = "auto").
-     * 아래 조건이 하나라도 미충족이면 제어기를 건드리지 않고 조용히 중단한다
-     * (failedPhase 'AUTO_GATE' — 호출측은 팝업 없이 로그만 남긴다):
-     * 1. /GPL/<projectName> 폴더가 원격에 이미 존재 (없어도 생성하지 않고 classic 폴백도 없음)
-     * 2. Show Thread 목록이 완전히 비어 있음 — 정지 상태(Idle/Stopped/Error) 쓰레드도 없어야 한다.
-     *    업로드/삭제 도중 Compile/Start가 겹치면 제어기가 죽을 수 있어(2026-08-18 사용자 관찰)
-     *    "쓰레드가 존재하지 않는 완전 STOP 상태"에서만 자동 업로드를 허용한다.
+     * 1. /GPL/<projectName> 폴더가 원격에 이미 존재해야 업로드한다 (없어도 생성하지 않고 classic 폴백도 없음
+     *    → failedPhase 'AUTO_GATE', 제어기를 건드리지 않음).
+     * 2. Compile은 Show Thread 목록이 완전히 비어 있을 때만 — 정지 상태(Idle/Stopped/Error) 쓰레드도 없어야 한다.
+     *    쓰레드가 있으면 업로드는 그대로 두고 Compile만 보류한다(failedPhase 'COMPILE_DEFERRED', 2026-08-25 재배치).
+     *    호출측은 "컴파일 필요" 상태로 표시하고 팝업 없이 로그만 남긴다.
      * 확인 불가(프로브 무응답)도 미충족으로 취급한다 — 판단은 live 데이터로만(§0 하드 규칙).
      */
     autoGate?: boolean;
+    /**
+     * 배포 잠금 레코드의 owner 라벨(경고·MCP 거부 문구에 표시). 미지정 시 옵션에서 유추
+     * ('autoOnSave Quick Compile' / 'Quick Compile' / 'Deploy').
+     */
+    lockOwner?: string;
 }
+
+/** 배포 단계/결과 분류. 실패 단계뿐 아니라 LOCKED·AUTO_GATE·COMPILE_DEFERRED 같은 "중단" 결과도 담는다. */
+export type DeployPhase =
+    | 'LOCKED'            // 배포 잠금을 다른 배포/창/프로세스가 보유 중 — 제어기를 건드리지 않음
+    | 'AUTO_GATE'         // autoOnSave: /GPL 폴더 없음 등으로 업로드 전 스킵
+    | 'UPLOAD'
+    | 'STOP'
+    | 'THREAD_CHECK'      // 활성 쓰레드 + 사용자 미승인 → 업로드는 완료, Compile 미수행
+    | 'COMPILE_DEFERRED'  // autoOnSave: 업로드 완료, 쓰레드 존재로 Compile 보류
+    | 'COMPILE'
+    | 'START'
+    | 'ERROR_CHECK';
 
 export interface CompileAttemptLog {
     command: string;
@@ -74,17 +96,52 @@ export interface DeployResult {
     selectedRemoteProjectPath?: string;
     candidateRemoteProjectPaths?: string[];
     uploadStats?: { uploaded: number; skipped: number; totalBytes: number; deleted?: number };
-    failedPhase?: 'AUTO_GATE' | 'STOP' | 'THREAD_CHECK' | 'UPLOAD' | 'COMPILE' | 'START' | 'ERROR_CHECK';
+    failedPhase?: DeployPhase;
     failedCommand?: string;
     failedStatusCode?: number;
     failedStatusMessage?: string;
     attemptedProjectNames?: string[];
+    /** failedPhase === 'LOCKED'일 때 잠금 보유자(경고 문구용) */
+    lockHolder?: DeployLockRecord;
     trace: string[];
+}
+
+function emptyResult(): DeployResult {
+    return {
+        success: false,
+        projectName: '',
+        compileErrors: [],
+        compileAttemptLogs: [],
+        precheckWarnings: [],
+        errorLog: [],
+        trace: [],
+    };
+}
+
+/** 배포 잠금 보유 중이라 시작하지 못했을 때의 결과(호출측 사전 검사에서도 재사용). */
+export function makeLockedResult(holder: DeployLockRecord): DeployResult {
+    return {
+        ...emptyResult(),
+        failedPhase: 'LOCKED',
+        failedCommand: 'DeployLock acquire',
+        failedStatusMessage: `배포가 이미 진행 중입니다 (${describeDeployLock(holder)})`,
+        lockHolder: holder,
+    };
+}
+
+function defaultLockOwner(options: DeployOptions): string {
+    if ((options.changedFiles ?? []).length > 0) { return 'autoOnSave Quick Compile'; }
+    if (options.skipStop) { return 'Quick Compile'; }
+    return options.skipStart ? 'Deploy' : 'Deploy & Run';
 }
 
 /**
  * 프로젝트를 제어기에 배포한다.
  * Output channel에 단계별 진행 상태를 출력한다.
+ *
+ * 진입 시 배포 잠금(deployLock.ts)을 획득하고 종료 시 해제한다 — 호출측은 프로젝트 선택·미저장 확인 같은
+ * UI를 *먼저* 끝내고 이 함수를 불러야 UI 대기 중 잠금이 잡히지 않는다(이슈 #15). 잠금이 이미 잡혀 있으면
+ * 제어기를 건드리지 않고 failedPhase 'LOCKED'로 즉시 돌아온다. 디버그 F5 경로도 같은 함수를 쓰므로 자동 참여.
  */
 export async function deploy(
     options: DeployOptions,
@@ -93,7 +150,33 @@ export async function deploy(
     token?: vscode.CancellationToken,
     controllerOverride?: Partial<ControllerConfig>
 ): Promise<DeployResult> {
-    const cfg = { ...getControllerConfig(), ...controllerOverride };
+    const cfg: ControllerConfig = { ...getControllerConfig(), ...controllerOverride };
+    const owner = options.lockOwner ?? defaultLockOwner(options);
+    const acquired = getDeployLock(cfg.ip).acquire(owner, 'PREPARE');
+    if (!acquired.ok) {
+        output.appendLine(`[Lock] 배포 잠금 획득 실패 — ${describeDeployLock(acquired.holder)}${acquired.local ? '' : ' (다른 창/프로세스)'}`);
+        return makeLockedResult(acquired.holder);
+    }
+    // autoOnSave는 저장마다 도니 잠금 로그로 채널을 채우지 않는다.
+    const quiet = !!options.autoGate;
+    const startedAt = Date.now();
+    if (!quiet) { output.appendLine(`[Lock] 배포 잠금 획득: ${owner} (pid ${process.pid})`); }
+    try {
+        return await deployLocked(options, output, diagnosticCollection, token, cfg, acquired.handle);
+    } finally {
+        acquired.handle.release();
+        if (!quiet) { output.appendLine(`[Lock] 배포 잠금 해제: ${owner} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`); }
+    }
+}
+
+async function deployLocked(
+    options: DeployOptions,
+    output: vscode.OutputChannel,
+    diagnosticCollection: vscode.DiagnosticCollection,
+    token: vscode.CancellationToken | undefined,
+    cfg: ControllerConfig,
+    lock: DeployLockHandle,
+): Promise<DeployResult> {
     const result: DeployResult = {
         success: false,
         projectName: '',
@@ -402,93 +485,18 @@ export async function deploy(
         return false;
     }
 
-    // ── Phase 1: STOP ─────────────────────────────
-
-    if (!options.skipStop) {
-        pushTrace('');
-        phase++;
-        pushTrace(`━━ [${phase}/${totalPhases}] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-
-        if (token?.isCancellationRequested) { return result; }
-
-        if (!(await stopAllAndSettle())) {
-            return result;
-        }
-    } else {
-        // STOP 단계 생략(빠른 컴파일). phase는 올리지 않아 UPLOAD가 [1/N]이 되도록 한다.
-        // 대신 활성 쓰레드가 있으면 업로드/Compile 전에 사용자에게 Stop 여부를 확인한다
-        // (정지 미완료 상태의 Compile/Start는 제어기 이상을 유발할 수 있음, §0.6).
-        pushTrace('');
-        pushTrace('━━ [SKIP] STOP 생략 (빠른 컴파일) — 쓰레드 상태 확인 ━━━━━━━━━━━━');
-        const probe = await probeActiveThreads();
-        // autoGate 조건 2: 쓰레드 목록이 완전히 비어 있어야 한다(정지 상태 쓰레드도 불허).
-        // 확인 불가(무응답)도 미충족 — 정지 미확인 상태에서 자동 업로드를 보내지 않는다.
-        if (options.autoGate) {
-            if (probe === null) {
-                pushTrace('│ [autoOnSave] 게이트 미충족 — 건너뜀: Show Thread 무응답(정지 상태 확인 불가)');
-                result.failedPhase = 'AUTO_GATE';
-                result.failedCommand = 'AutoGate Show Thread';
-                result.failedStatusMessage = 'Show Thread 무응답 — 제어기 정지 상태를 확인할 수 없어 자동 업로드를 건너뜁니다.';
-                return result;
-            }
-            if (probe.total > 0) {
-                const desc = probe.active.length > 0
-                    ? `활성 쓰레드 ${probe.active.map(t => `${t.name}(${t.state})`).join(', ')}`
-                    : `정지 상태 쓰레드 ${probe.total}개 존재`;
-                pushTrace(`│ [autoOnSave] 게이트 미충족 — 건너뜀: ${desc} (완전 STOP 상태에서만 자동 업로드)`);
-                result.failedPhase = 'AUTO_GATE';
-                result.failedCommand = 'AutoGate Show Thread';
-                result.failedStatusMessage = `${desc} — 쓰레드가 존재하지 않는 완전 STOP 상태에서만 자동 업로드합니다.`;
-                return result;
-            }
-            pushTrace('│ ✔ [autoOnSave] 게이트 통과: 쓰레드 없음(완전 STOP 상태) + /GPL 폴더 존재');
-        } else if (probe === null) {
-            pushTrace('│ ⚠ Show Thread 무응답 — 쓰레드 상태 확인 불가(계속 진행)');
-        } else if (probe.active.length > 0) {
-            const desc = probe.active.map(t => `${t.name}(${t.state})`).join(', ');
-            pushTrace(`│ ⚠ 활성 쓰레드 존재: ${desc}`);
-
-            let stopApproved = false;
-            if (options.confirmStopOnActive) {
-                pushTrace('│ … 사용자에게 Stop -all 실행 여부 확인 중');
-                try {
-                    stopApproved = await options.confirmStopOnActive(desc);
-                } catch {
-                    stopApproved = false;
-                }
-            }
-
-            if (!stopApproved) {
-                pushTrace('│ ✘ 중단: 활성 쓰레드 존재 (사용자 미승인 또는 확인 경로 없음)');
-                pushTrace('│   → 프로그램 STOP 후 재시도하거나, STOP이 포함된 전체 배포를 사용하세요.');
-                result.failedPhase = 'THREAD_CHECK';
-                result.failedCommand = 'Show Thread';
-                result.failedStatusMessage = `활성 쓰레드 존재: ${desc} — STOP 후 재시도하세요.`;
-                return result;
-            }
-
-            pushTrace('│ ✔ 사용자 승인 — Stop -all 실행 후 정지 확인');
-            if (!(await stopAllAndSettle())) {
-                return result;
-            }
-        } else {
-            pushTrace(`│ ✔ 활성 쓰레드 없음 (총 ${probe.total}개 모두 정지 상태)`);
-        }
-    }
-
-    // ── Phase 2: UPLOAD ───────────────────────────
+    // ── Phase 1: UPLOAD ───────────────────────────
+    // 2026-08-25(이슈 #17) 재배치: STOP보다 먼저 업로드한다. "쓰레드 실행 중 FTP 업로드"는 무해(사용자 관찰)하고
+    // 위험한 것은 "업로드 도중 Compile/Start"(배포 잠금이 차단)와 "정지 미완료 상태의 Compile/Start"(§0.6 —
+    // 아래 Phase 2 게이트가 그대로 담당)다. 프로그램은 업로드 동안 계속 돌고, 정지 시간은 Compile 직전으로 줄어든다.
+    // 원격 전용 파일 삭제는 실행 중 무해가 미검증이라 정지 확인 뒤로 지연한다(pendingDeletes).
 
     pushTrace('');
     phase++;
     pushTrace(`━━ [${phase}/${totalPhases}] UPLOAD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lock.setStage('UPLOAD');
 
     if (token?.isCancellationRequested) { return result; }
-
-    if (options.autoGate) {
-        // 게이트 통과 → 실제 업로드/컴파일 진행이 확정된 시점에 이전 진단을 비운다
-        // (게이트 스킵 시 기존 빨간 줄을 지우지 않기 위해 entry가 아닌 여기서 clear).
-        diagnosticCollection.clear();
-    }
 
     const changedFiles = (options.changedFiles ?? []).filter(Boolean);
     const useChangedOnly = changedFiles.length > 0;
@@ -497,40 +505,41 @@ export async function deploy(
     }
 
     // Direct /GPL 모드에서 changedFiles 제약이 없는 경우(수동 Quick Compile, 디버그 F5)는
-    // 미러 동기화한다: 크기가 다르거나 새로 생긴 파일만 올리고, 로컬에 없는 원격 파일은 삭제한다.
+    // 미러 동기화한다: 크기가 다르거나 새로 생긴 파일만 올리고, 로컬에 없는 원격 파일은 (정지 확인 뒤) 삭제한다.
     // Unload로 /GPL 폴더를 통째로 비우는 대신 파일 단위로 맞춰 왕복을 줄이고(속도),
     // 로컬에서 지운/이름 바꾼 파일이 원격에 남아 오컴파일되는 것도 막는다(정확성).
     // autoOnSave(useChangedOnly)는 저장 파일만 올리는 초경량 경로라 전체 목록 조회/삭제가 있는 미러를 쓰지 않는다.
     const useMirror = directActive && !useChangedOnly;
+    let pendingDeletes: RemoteFileRef[] = [];
 
     try {
         if (useMirror) {
-            pushTrace('│ Mode: mirror sync (변경분만 업로드 + 원격 전용 파일 삭제, Unload 생략)');
+            pushTrace('│ Mode: mirror sync (변경분만 업로드, 원격 전용 파일 삭제는 정지 확인 뒤, Unload 생략)');
             const stats = await mirrorProject(cfg.ip, options.projectDir, ftpProjectDir, {
+                deferDelete: true,
                 // 스킵 파일까지 전부 나열하면 파일 수만큼 로그가 쏟아진다 — 실제 전송분만 남긴다.
                 onProgress: (current, total, file, action) => {
+                    lock.heartbeat();
                     if (action === 'uploaded') {
                         pushTrace(`│ ↑ [${current}/${total}] ${file}`);
                     }
                 },
-                // ✘는 실패 기호로 오독된다 — 미러 삭제는 정상 동작이므로 −로 표기.
-                onDelete: (file) => {
-                    pushTrace(`│ − del ${file} (원격 전용 — 로컬에 없어 삭제)`);
-                },
             });
+            pendingDeletes = stats.pendingDeletes;
             result.uploadStats = {
                 uploaded: stats.uploaded,
                 skipped: stats.skipped,
                 totalBytes: stats.totalBytes,
-                deleted: stats.deleted,
+                deleted: 0,
             };
-            pushTrace(`│ ✔ Mirror done: ${stats.uploaded} sent, ${stats.skipped} skipped, ${stats.deleted} deleted`);
+            pushTrace(`│ ✔ Mirror done: ${stats.uploaded} sent, ${stats.skipped} skipped${pendingDeletes.length > 0 ? `, ${pendingDeletes.length} remote-only (정지 확인 뒤 삭제)` : ''}`);
             pushTrace(`│   Compile below validates the mirrored controller copy at ${ftpProjectDir}`);
         } else {
             const stats = await uploadProject(cfg.ip, options.projectDir, ftpProjectDir, {
                 skipUnchanged: options.skipUnchanged,
                 onlyFiles: useChangedOnly ? changedFiles : undefined,
                 onProgress: (current, total, file, action) => {
+                    lock.heartbeat();
                     if (action === 'uploaded') {
                         pushTrace(`│ ↑ [${current}/${total}] ${file}`);
                     }
@@ -548,13 +557,110 @@ export async function deploy(
         return result;
     }
 
+    // ── Phase 2: STOP / THREAD_CHECK — Compile 직전 정지 게이트(§0.6) ─────────
+    // 정지 미완료 상태에서 Compile/Start를 보내지 않는다는 규칙은 그대로다. 업로드는 이미 끝났으므로
+    // 여기서 중단되면 "/GPL 소스는 최신, 컴파일본은 이전" 상태가 된다 — 호출측이 '컴파일 필요'로 표시한다.
+
+    if (!options.skipStop) {
+        pushTrace('');
+        phase++;
+        pushTrace(`━━ [${phase}/${totalPhases}] STOP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        lock.setStage('STOP');
+
+        if (token?.isCancellationRequested) { return result; }
+
+        if (!(await stopAllAndSettle())) {
+            return result;
+        }
+    } else {
+        // STOP 단계 생략(빠른 컴파일). phase는 올리지 않는다.
+        // 대신 활성 쓰레드가 있으면 Compile 전에 사용자에게 Stop 여부를 확인한다.
+        pushTrace('');
+        pushTrace('━━ [SKIP] STOP 생략 (빠른 컴파일) — Compile 전 쓰레드 상태 확인 ━━━━━━━━');
+        lock.setStage('THREAD_CHECK');
+        const probe = await probeActiveThreads();
+        const deferNote = pendingDeletes.length > 0 ? ` (원격 전용 파일 ${pendingDeletes.length}개 삭제도 보류)` : '';
+        // autoGate 조건 2: Compile은 쓰레드 목록이 완전히 비어 있을 때만(정지 상태 쓰레드도 불허).
+        // 확인 불가(무응답)도 미충족. 업로드는 이미 완료했으므로 Compile만 보류한다(COMPILE_DEFERRED).
+        if (options.autoGate) {
+            if (probe === null) {
+                pushTrace(`│ [autoOnSave] Compile 보류: Show Thread 무응답(정지 상태 확인 불가) — 업로드는 완료됨${deferNote}`);
+                result.failedPhase = 'COMPILE_DEFERRED';
+                result.failedCommand = 'AutoGate Show Thread';
+                result.failedStatusMessage = '업로드 완료, Compile 보류 — Show Thread 무응답으로 제어기 정지 상태를 확인할 수 없음';
+                return result;
+            }
+            if (probe.total > 0) {
+                const desc = probe.active.length > 0
+                    ? `활성 쓰레드 ${probe.active.map(t => `${t.name}(${t.state})`).join(', ')}`
+                    : `정지 상태 쓰레드 ${probe.total}개 존재`;
+                pushTrace(`│ [autoOnSave] Compile 보류: ${desc} — 업로드는 완료됨, 쓰레드가 없는 완전 STOP 상태에서 Compile${deferNote}`);
+                result.failedPhase = 'COMPILE_DEFERRED';
+                result.failedCommand = 'AutoGate Show Thread';
+                result.failedStatusMessage = `업로드 완료, Compile 보류 — ${desc}`;
+                return result;
+            }
+            pushTrace('│ ✔ [autoOnSave] 게이트 통과: 쓰레드 없음(완전 STOP 상태)');
+        } else if (probe === null) {
+            pushTrace('│ ⚠ Show Thread 무응답 — 쓰레드 상태 확인 불가(계속 진행)');
+        } else if (probe.active.length > 0) {
+            const desc = probe.active.map(t => `${t.name}(${t.state})`).join(', ');
+            pushTrace(`│ ⚠ 활성 쓰레드 존재: ${desc}`);
+
+            let stopApproved = false;
+            if (options.confirmStopOnActive) {
+                pushTrace('│ … 사용자에게 Stop -all 실행 여부 확인 중');
+                try {
+                    stopApproved = await options.confirmStopOnActive(desc);
+                } catch {
+                    stopApproved = false;
+                }
+            }
+
+            if (!stopApproved) {
+                pushTrace(`│ ✘ 중단: 활성 쓰레드 존재 (사용자 미승인 또는 확인 경로 없음) — 업로드는 완료됨, Compile 미수행${deferNote}`);
+                pushTrace('│   → 프로그램 STOP 후 Quick Compile을 다시 실행하거나, STOP이 포함된 전체 배포를 사용하세요.');
+                result.failedPhase = 'THREAD_CHECK';
+                result.failedCommand = 'Show Thread';
+                result.failedStatusMessage = `활성 쓰레드 존재: ${desc} — 업로드는 완료됨, Compile은 STOP 후 다시 실행하세요.`;
+                return result;
+            }
+
+            pushTrace('│ ✔ 사용자 승인 — Stop -all 실행 후 정지 확인');
+            if (!(await stopAllAndSettle())) {
+                return result;
+            }
+        } else {
+            pushTrace(`│ ✔ 활성 쓰레드 없음 (총 ${probe.total}개 모두 정지 상태)`);
+        }
+    }
+
+    // ── 지연된 원격 전용 파일 삭제 (정지 확인 뒤) ──
+    if (pendingDeletes.length > 0) {
+        lock.setStage('UPLOAD');
+        pushTrace(`│ 원격 전용 파일 ${pendingDeletes.length}개 삭제 (정지 확인 후)`);
+        // ✘는 실패 기호로 오독된다 — 미러 삭제는 정상 동작이므로 −로 표기.
+        const deleted = await removeRemoteFiles(cfg.ip, pendingDeletes, file => pushTrace(`│ − del ${file} (원격 전용 — 로컬에 없어 삭제)`));
+        if (result.uploadStats) { result.uploadStats.deleted = deleted; }
+        if (deleted < pendingDeletes.length) {
+            pushTrace(`│ ⚠ 삭제 실패 ${pendingDeletes.length - deleted}개 (non-fatal — 남은 파일은 Compile 결과로 드러남)`);
+        }
+    }
+
     // ── Phase 3: COMPILE ──────────────────────────
 
     pushTrace('');
     phase++;
     pushTrace(`━━ [${phase}/${totalPhases}] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lock.setStage('COMPILE');
 
     if (token?.isCancellationRequested) { return result; }
+
+    if (options.autoGate) {
+        // 게이트 통과 → 실제 컴파일 진행이 확정된 시점에 이전 진단을 비운다
+        // (게이트 스킵/보류 시 기존 빨간 줄을 지우지 않기 위해 entry가 아닌 여기서 clear).
+        diagnosticCollection.clear();
+    }
 
     // Direct 모드에서는 /GPL의 실제 폴더명(=로드된 프로젝트명)을 최우선 후보로 사용한다.
     const compileCandidates = directActive
@@ -954,6 +1060,7 @@ export async function deploy(
         pushTrace('');
         phase++;
         pushTrace(`━━ [${phase}/${totalPhases}] START ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        lock.setStage('START');
 
         if (token?.isCancellationRequested) { return result; }
 
@@ -1007,6 +1114,7 @@ export async function deploy(
     pushTrace('');
     phase++;
     pushTrace(`━━ [${phase}/${totalPhases}] ERROR CHECK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lock.setStage('ERROR_CHECK');
 
     const errorLogResp = await trySendCommand('ErrorLog', cfg);
     if (errorLogResp) {

@@ -17,6 +17,7 @@ import './overloadResolution.test';
 import './showVariableParser.test';
 import './symbolCache.test';
 import './renameCore.test';
+import './deployLock.test';
 import { run } from './harness';
 
 void run();

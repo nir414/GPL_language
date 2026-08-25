@@ -20,7 +20,8 @@ import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFil
 import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
 import { exportAiAgentSetup } from './ai/exportAgentSetup';
 import { EditorBreakpointSync } from './controller/breakpointSync';
-import { deploy, findProjectDirs, jumpToFirstCompileError } from './controller/deployService';
+import { deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult, DeployResult } from './controller/deployService';
+import { getDeployLock, describeDeployLock, DeployLockRecord } from './controller/deployLock';
 import { listRemoteDir, removeRemoteDir, removeRemoteFile, downloadProject, mirrorProject } from './controller/ftpClient';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from './controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
@@ -73,8 +74,20 @@ const recentDebugLogLines: string[] = [];
 // recentDebugLogLines 보관 상한 — 초과 시 오래된 라인부터 잘라낸다
 const RECENT_DEBUG_LOG_MAX = 240;
 let lastRuntimeErrorContext: RuntimeErrorContext | undefined;
-// 배포 뮤텍스 — 더블클릭/autoOnSave 중첩 등 동시 배포 실행 방지 (runDeploy에서 set/clear)
-let deployInFlight = false;
+// 배포 잠금 — 구 boolean `deployInFlight`를 대체(2026-08-25, 이슈 #15·#17). 획득/해제는 deploy()(deployService)와
+// gpl.saveToFlash가 하고, 여기서는 조회만 한다. 잠금 파일(%TEMP%/gpl-controller/<ip>.lock.json)은 다른 VS Code 창과
+// controller-mcp도 읽으므로 "업로드 도중 Compile/Start" 차단이 프로세스 경계를 넘는다 (controller/deployLock.ts).
+/** 현재 배포 잠금 보유자(이 창·다른 창·살아 있는 다른 프로세스). 없으면 undefined. */
+function currentDeployLockHolder(): DeployLockRecord | undefined {
+	return getDeployLock(getControllerConfig().ip).current()?.record;
+}
+/**
+ * "컴파일 필요" 상태 — /GPL 소스는 업로드됐지만 Compile이 수행되지 않은 프로젝트(소문자 키).
+ * Brooks 문서상 `Start`는 컴파일하지 않으므로(실기기 확인 전) 이 상태에서 Start하면 이전 프로그램이 실행된다.
+ * 업로드 후 Compile 보류(autoOnSave/THREAD_CHECK)·Compile 실패 시 set, Compile 성공 시 clear.
+ */
+interface CompileStaleInfo { projectName: string; projectDir?: string; since: number; reason: string }
+const compileStaleProjects = new Map<string, CompileStaleInfo>();
 // settled(비활성) 쓰레드 상태 집합 — deployService.threadSettled와 동일하게 유지할 것
 const SETTLED_THREAD_STATE = /^(idle|stopped|error)$/i;
 
@@ -241,6 +254,39 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 		outputChannel.appendLine(msg);
 		appendLiveLog(`[main] ${msg}`);
+	}
+
+	/** 배포 잠금 보유 중 경고 — 누가·어느 단계·언제부터인지 함께 보여 준다(이슈 #15). */
+	function warnDeployBusy(action: string, holder: DeployLockRecord, hint?: string): void {
+		const msg = `${action} 불가 — 배포가 진행 중입니다 (${describeDeployLock(holder)})${hint ? `. ${hint}` : ''}`;
+		logOutput(`[Lock] ${msg}`);
+		void vscode.window.showWarningMessage(msg, '출력 보기').then(pick => {
+			if (pick === '출력 보기') { outputChannel.show(true); }
+		});
+	}
+
+	function findCompileStale(projectName: string): CompileStaleInfo | undefined {
+		return compileStaleProjects.get(projectName.trim().toLowerCase());
+	}
+
+	function markCompileStale(projectName: string, reason: string, projectDir?: string): void {
+		const key = projectName.trim().toLowerCase();
+		if (!key) { return; }
+		const prev = compileStaleProjects.get(key);
+		const info: CompileStaleInfo = { projectName, projectDir: projectDir ?? prev?.projectDir, since: prev?.since ?? Date.now(), reason };
+		compileStaleProjects.set(key, info);
+		logOutput(`[Deploy] 컴파일 필요 상태: ${projectName} — ${reason} (Start는 컴파일하지 않으므로 이전 프로그램이 실행됨)`);
+		controllerTree?.setCompileStale(info);
+		statusBar?.setCompileStale(info);
+	}
+
+	function clearCompileStale(projectName: string): void {
+		const key = projectName.trim().toLowerCase();
+		if (!compileStaleProjects.delete(key)) { return; }
+		logOutput(`[Deploy] 컴파일 필요 상태 해제: ${projectName}`);
+		const next = compileStaleProjects.values().next();
+		controllerTree?.setCompileStale(next.done ? undefined : next.value);
+		statusBar?.setCompileStale(next.done ? undefined : next.value);
 	}
 
 	function sleep(ms: number): Promise<void> {
@@ -1341,18 +1387,42 @@ export function activate(context: vscode.ExtensionContext) {
 	// --- Deploy helper (공통 로직) ---
 	type QuickDeployOpts = { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string; noStopPrompt?: boolean; autoGate?: boolean };
 
-	/** 배포 진입점 — 동시 실행 뮤텍스(deployInFlight)로 본문 전체를 try/finally로 감싼다. */
-	async function runDeploy(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<void> {
-		if (deployInFlight) {
-			vscode.window.showWarningMessage('배포가 이미 진행 중입니다. 완료 후 다시 시도하세요.');
-			return;
+	/**
+	 * 배포 진입점. 잠금은 deploy() 안에서 — 프로젝트 선택/미저장 확인 UI가 끝난 뒤 — 획득한다(UI 대기 중 잠금 금지, 이슈 #15).
+	 * 여기서는 이미 잡혀 있으면 컨텍스트와 함께 경고하고 바로 끝낸다. 결과는 호출측(autoOnSave 재예약, Start 전 Compile)이 쓴다.
+	 */
+	async function runDeploy(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<DeployResult | undefined> {
+		const holder = currentDeployLockHolder();
+		if (holder) {
+			if (quickOpts?.changedFiles?.length) {
+				logOutput(`[QuickCompile] autoOnSave 대기 — 배포 잠금 보유 중 (${describeDeployLock(holder)})`);
+			} else {
+				warnDeployBusy(quickOpts?.quick ? 'Quick Compile' : 'Deploy', holder, '완료 후 다시 시도하세요');
+			}
+			return makeLockedResult(holder);
 		}
-		deployInFlight = true;
-		try {
-			await runDeployCore(skipStart, quickOpts);
-		} finally {
-			deployInFlight = false;
+		return runDeployCore(skipStart, quickOpts);
+	}
+
+	/**
+	 * Start 전 "컴파일 필요" 상태 확인. Brooks 문서상 Start는 컴파일하지 않으므로(실기기 확인 전) 이전 프로그램이
+	 * 실행될 수 있음을 알리고 Compile 후 Start / 그대로 Start / 취소를 고르게 한다. true면 Start 진행.
+	 */
+	async function confirmStartWhenCompileStale(projectName: string, projectDir?: string): Promise<boolean> {
+		const stale = findCompileStale(projectName);
+		if (!stale) { return true; }
+		const dir = projectDir ?? stale.projectDir;
+		const choices = dir ? ['Compile 후 Start', '그대로 Start'] : ['그대로 Start'];
+		const pick = await vscode.window.showWarningMessage(
+			`'${projectName}'의 /GPL 소스가 컴파일본보다 최신입니다. Start는 컴파일하지 않으므로 이전 프로그램이 실행됩니다.`,
+			{ modal: true, detail: `사유: ${stale.reason}\n발생: ${new Date(stale.since).toLocaleString()}` },
+			...choices,
+		);
+		if (pick === 'Compile 후 Start') {
+			const r = await runDeploy(true, { skipStop: true, skipUnchanged: true, quick: true, overrideProjectDir: dir });
+			return !!r?.success;
 		}
+		return pick === '그대로 Start';
 	}
 
 	/**
@@ -1391,7 +1461,7 @@ export function activate(context: vscode.ExtensionContext) {
 		return { ok: true, savedFiles };
 	}
 
-	async function runDeployCore(skipStart: boolean, quickOpts?: QuickDeployOpts) {
+	async function runDeployCore(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<DeployResult | undefined> {
 		const modeLabel: SituationDeploySnapshot['mode'] = skipStart ? 'Build' : 'Deploy & Run';
 		const uniqueCodes = (values: number[]): number[] => [...new Set(values)];
 		const buildOutcomeSignature = (result: Awaited<ReturnType<typeof deploy>>, controllerSystemCodes: number[]): string => {
@@ -1486,6 +1556,8 @@ export function activate(context: vscode.ExtensionContext) {
 				skipUnchanged: quickOpts?.skipUnchanged,
 				changedFiles: quickOpts?.changedFiles,
 				autoGate: quickOpts?.autoGate,
+				// 배포 잠금 레코드의 owner — 다른 창/MCP가 "누가 잡고 있는지" 볼 수 있게 경로별로 구분.
+				lockOwner: quickOpts?.changedFiles?.length ? 'autoOnSave Quick Compile' : (quickOpts?.quick ? 'Quick Compile' : 'Deploy'),
 				// 모든 배포는 /GPL 직접 업로드가 기본 (테스트는 /GPL, flash 저장은 gpl.saveToFlash 담당).
 				// /GPL/<name>이 없으면 FTP로 생성 — 단 changedFiles(autoOnSave) 경로는 클래식 폴백.
 				directGpl: true,
@@ -1509,11 +1581,38 @@ export function activate(context: vscode.ExtensionContext) {
 				},
 			}, outputChannel, deployDiagnostics);
 
+			// 배포 잠금 보유 중(UI 확인이 끝난 사이 다른 창/autoOnSave가 먼저 잡은 경우) — 컨텍스트와 함께 안내.
+			if (result.failedPhase === 'LOCKED') {
+				if (quickOpts?.changedFiles?.length) {
+					logOutput(`[QuickCompile] autoOnSave 대기 — ${result.failedStatusMessage ?? '배포 잠금 보유 중'}`);
+				} else if (result.lockHolder) {
+					warnDeployBusy(mode, result.lockHolder, '완료 후 다시 시도하세요');
+				}
+				return result;
+			}
+
 			// autoOnSave 자동 게이트 미충족 — 실패가 아니라 "스킵"이다.
 			// 저장마다 팝업/패널 포커스/스냅샷 기록이 생기면 방해되므로 로그 한 줄만 남긴다.
 			if (!result.success && result.failedPhase === 'AUTO_GATE') {
 				logOutput(`[QuickCompile] autoOnSave 건너뜀: ${result.failedStatusMessage ?? '게이트 미충족'}`);
-				return;
+				return result;
+			}
+
+			// 업로드는 됐지만 Compile은 보류(autoOnSave: 쓰레드 존재) — 팝업 없이 "컴파일 필요" 상태로만 표시(이슈 #17).
+			if (!result.success && result.failedPhase === 'COMPILE_DEFERRED') {
+				markCompileStale(result.projectName, 'autoOnSave 업로드 후 Compile 보류(쓰레드 존재)', projectDir);
+				logOutput(`[QuickCompile] autoOnSave: ${result.failedStatusMessage ?? '업로드 완료, Compile 보류'}`);
+				return result;
+			}
+
+			// 활성 쓰레드 + Stop 미승인(또는 자동 경로) — 업로드는 완료, Compile 미수행. 실패가 아닌 "중단"으로 다룬다.
+			if (!result.success && result.failedPhase === 'THREAD_CHECK') {
+				markCompileStale(result.projectName, `${mode} 업로드 후 Compile 미수행(활성 쓰레드)`, projectDir);
+				const msg = `${mode} 중단: ${result.failedStatusMessage ?? '활성 쓰레드 존재'}`;
+				logOutput(`[Deploy] ${msg}`);
+				lastDeploySnapshot = makeDeploySnapshot(false, 'THREAD_CHECK', msg, [], []);
+				if (!quickOpts?.changedFiles?.length) { vscode.window.showWarningMessage(msg); }
+				return result;
 			}
 
 			// errorLog를 제어기 시스템 에러 / GPL 배포 에러로 분류해 출력 채널에 기록한다.
@@ -1590,6 +1689,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (result.success) {
+				clearCompileStale(result.projectName);
 				const controllerSystemCodes = result.errorLog
 					.map(e => classifyErrorEntry(e).parsedCode)
 					.filter((code): code is number => typeof code === 'number');
@@ -1681,6 +1781,10 @@ export function activate(context: vscode.ExtensionContext) {
 				logErrorLogSections();
 				logCompileRawSection();
 				outputChannel.show(true);
+				if (result.uploadStats) {
+					// 업로드는 됐고 Compile이 실패 — 컴파일본은 이전 상태이므로 Start 전 확인 대상.
+					markCompileStale(result.projectName, `${mode} 업로드 후 Compile 실패(${result.failedPhase ?? 'FAIL'})`, projectDir);
+				}
 				const phaseLabel = result.failedPhase ? ` (${result.failedPhase} 단계)` : '';
 				const sysErrors = result.errorLog.filter(e => classifyErrorEntry(e).isControllerSystem);
 				const sysCodes = sysErrors
@@ -1735,6 +1839,7 @@ export function activate(context: vscode.ExtensionContext) {
 					makeRawCompileSummary(result),
 				);
 			}
+			return result;
 		} catch (err: any) {
 			lastDeploySnapshot = {
 				mode: modeLabel,
@@ -1785,14 +1890,20 @@ export function activate(context: vscode.ExtensionContext) {
 	// Deploy와 Start를 합치지 않는다는 2026-07-24 결정 — 확인 모달은 동일하게 적용, §0.6)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.start', async () => {
-			// 업로드/컴파일 도중 Start가 겹치면 제어기 이상(사망)을 유발할 수 있다 — 배포 뮤텍스로 차단.
-			if (deployInFlight) {
-				vscode.window.showWarningMessage('업로드/배포가 진행 중입니다. 완료 후 Start를 실행하세요. (업로드 중 Start는 제어기 이상을 유발할 수 있음)');
+			// 업로드/컴파일 도중 Start가 겹치면 제어기 이상(사망)을 유발할 수 있다 — 배포 잠금(다른 창/프로세스 포함)으로 차단.
+			const busy = currentDeployLockHolder();
+			if (busy) {
+				warnDeployBusy('Start', busy, '완료 후 Start를 실행하세요 (업로드 중 Start는 제어기 이상을 유발할 수 있음)');
 				return;
 			}
 			const projectDir = await pickWorkspaceProjectDir('시작할 프로젝트를 선택하세요');
 			if (!projectDir) { return; }
 			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);
+			// /GPL 소스만 올라가고 Compile은 안 된 상태면 이전 프로그램이 실행된다 — 먼저 확인.
+			if (!(await confirmStartWhenCompileStale(projectName, projectDir))) { return; }
+			// "Compile 후 Start"를 고른 경우 배포가 끝난 뒤이므로 잠금을 다시 확인한다.
+			const busyAfter = currentDeployLockHolder();
+			if (busyAfter) { warnDeployBusy('Start', busyAfter); return; }
 
 			const requireStartConfirm = vscode.workspace.getConfiguration('gpl')
 				.get<boolean>('controller.requireStartConfirmation', true);
@@ -1840,8 +1951,9 @@ export function activate(context: vscode.ExtensionContext) {
 	// 미러 동기화: 크기 다른 파일만 업로드 + 원격 전용 파일 삭제(낡은 소스가 이후 Load에 섞이는 것 방지).
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.saveToFlash', async () => {
-			if (deployInFlight) {
-				vscode.window.showWarningMessage('업로드/배포가 진행 중입니다. 완료 후 flash 저장을 실행하세요.');
+			const busy = currentDeployLockHolder();
+			if (busy) {
+				warnDeployBusy('Save to Flash', busy, '완료 후 flash 저장을 실행하세요');
 				return;
 			}
 			const projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요');
@@ -1857,11 +1969,19 @@ export function activate(context: vscode.ExtensionContext) {
 			const remoteDir = `${cfg.ftpFlashProjectsPath}/${projectName}`;
 			outputChannel.show(true);
 			logOutput(`[SaveToFlash] ${projectDir} → ftp://${cfg.ip}${remoteDir} (미러 동기화, Load/Compile 없음)`);
-			// FTP 미러(원격 파일 삭제 포함) 중 autoOnSave/배포가 겹치지 않도록 배포 뮤텍스에 포함.
-			deployInFlight = true;
+			// FTP 미러(원격 파일 삭제 포함) 중 autoOnSave/배포/MCP의 Compile·Start가 겹치지 않도록 배포 잠금에 포함.
+			// 프로젝트 선택·미저장 확인 UI가 끝난 뒤에 잡는다(UI 대기 중 잠금 금지, 이슈 #15).
+			const acquired = getDeployLock(cfg.ip).acquire('Save to Flash', 'FTP_MIRROR');
+			if (!acquired.ok) {
+				warnDeployBusy('Save to Flash', acquired.holder, '완료 후 flash 저장을 실행하세요');
+				return;
+			}
 			try {
 				const stats = await mirrorProject(cfg.ip, projectDir, remoteDir, {
-					onProgress: (current, total, file) => logOutput(`[SaveToFlash] [${current}/${total}] ${file}`),
+					onProgress: (current, total, file) => {
+						acquired.handle.heartbeat();
+						logOutput(`[SaveToFlash] [${current}/${total}] ${file}`);
+					},
 					onDelete: (file) => logOutput(`[SaveToFlash] del ${file} (원격 전용 — 로컬에 없어 삭제)`),
 				});
 				logOutput(`[SaveToFlash] 완료: ${stats.uploaded} sent, ${stats.skipped} skipped, ${stats.deleted} deleted`);
@@ -1872,7 +1992,7 @@ export function activate(context: vscode.ExtensionContext) {
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`flash 저장 실패: ${err.message ?? err}`);
 			} finally {
-				deployInFlight = false;
+				acquired.handle.release();
 			}
 		})
 	);
@@ -1944,7 +2064,8 @@ export function activate(context: vscode.ExtensionContext) {
 			logOutput('[QuickCompile] autoOnSave 건너뜀: brooks-gpl 디버그 세션 진행 중');
 			return;
 		}
-		if (quickCompileInFlight || deployInFlight) {
+		if (quickCompileInFlight || currentDeployLockHolder()) {
+			// 다른 배포(이 창/다른 창/Save to Flash)가 진행 중 — pending을 버리지 않고 재예약.
 			scheduleQuickCompileFlush(1000);
 			return;
 		}
@@ -1967,7 +2088,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const [projectDir, changedFiles] = firstGroup.value;
 			for (const file of changedFiles) { quickCompilePendingFiles.delete(file); }
 
-			await runDeploy(true, {
+			const r = await runDeploy(true, {
 				skipStop: true,
 				skipUnchanged: true,
 				quick: true,
@@ -1975,9 +2096,13 @@ export function activate(context: vscode.ExtensionContext) {
 				overrideProjectDir: projectDir,
 				// 저장마다 모달이 뜨면 방해되므로 autoOnSave는 활성 쓰레드 시 조용히 중단.
 				noStopPrompt: true,
-				// "auto" 모드: 완전 STOP(쓰레드 없음) + /GPL/<project> 존재 시에만 진행(deployService AUTO_GATE).
+				// "auto" 모드: /GPL/<project>가 있으면 업로드, Compile은 쓰레드가 하나도 없을 때만(없으면 COMPILE_DEFERRED → 컴파일 필요 표시).
 				autoGate: mode === 'auto',
 			});
+			if (r?.failedPhase === 'LOCKED') {
+				// 다른 배포가 잠금을 잡고 있었다 — 저장분을 버리지 않고 pending에 되돌려 finally에서 재예약한다.
+				for (const file of changedFiles) { quickCompilePendingFiles.add(file); }
+			}
 		} finally {
 			quickCompileInFlight = false;
 			if (quickCompilePendingFiles.size > 0) {
@@ -2874,11 +2999,16 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.threadStart', async (node: any) => {
 			if (!node?.thread?.name) { return; }
-			// 업로드/컴파일 도중 Start가 겹치면 제어기 이상을 유발할 수 있다 — 배포 뮤텍스로 차단.
-			if (deployInFlight) {
-				vscode.window.showWarningMessage('업로드/배포가 진행 중입니다. 완료 후 쓰레드를 시작하세요.');
+			// 업로드/컴파일 도중 Start가 겹치면 제어기 이상을 유발할 수 있다 — 배포 잠금(다른 창/프로세스 포함)으로 차단.
+			const busy = currentDeployLockHolder();
+			if (busy) {
+				warnDeployBusy('쓰레드 시작', busy, '완료 후 쓰레드를 시작하세요');
 				return;
 			}
+			// /GPL 소스만 올라가고 Compile은 안 된 프로젝트면 이전 프로그램이 실행된다 — 먼저 확인.
+			if (!(await confirmStartWhenCompileStale(node.thread.project || node.thread.name))) { return; }
+			const busyAfter = currentDeployLockHolder();
+			if (busyAfter) { warnDeployBusy('쓰레드 시작', busyAfter); return; }
 			try {
 				await sendCommand(`Start ${node.thread.name}`);
 				controllerTree?.refresh();
@@ -3054,9 +3184,10 @@ export function activate(context: vscode.ExtensionContext) {
 			const name: string | undefined = node?.projectName || node?.label;
 			const loadPath: string | undefined = node?.remotePath;
 			if (!name || !loadPath) { return; }
-			// 업로드 도중 Compile/Start가 겹치면 제어기 이상을 유발할 수 있다 — 배포 뮤텍스로 차단.
-			if (deployInFlight) {
-				vscode.window.showWarningMessage('업로드/배포가 진행 중입니다. 완료 후 컴파일 & 실행을 사용하세요.');
+			// 업로드 도중 Compile/Start가 겹치면 제어기 이상을 유발할 수 있다 — 배포 잠금(다른 창/프로세스 포함)으로 차단.
+			const busy = currentDeployLockHolder();
+			if (busy) {
+				warnDeployBusy('컴파일 & 실행', busy, '완료 후 컴파일 & 실행을 사용하세요');
 				return;
 			}
 
@@ -3312,6 +3443,9 @@ export function activate(context: vscode.ExtensionContext) {
 				} else {
 					logOutput(`│ ✔ Compile success`);
 				}
+
+				// Compile이 성공했으니 "컴파일 필요" 상태가 있었다면 해제.
+				clearCompileStale(name);
 
 				// 2) 콘솔 자동 시작/재연결 (Start 직전 블라인드 구간 완화)
 				const console = ensureRuntimeConsole();

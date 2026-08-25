@@ -8,6 +8,8 @@
 //   GPL_PORT       콘솔 포트            (기본 1402)
 //   GPL_PROJECT    기본 프로젝트명      (기본 MergeCode)
 //   GPL_TIMEOUT_MS 명령 타임아웃(ms)    (기본 15000)
+//   GPL_LOCK_WAIT_MS 배포 잠금 대기 상한(ms) (기본 20000) — VS Code 확장이 FTP 업로드/배포 중이면
+//                  Compile/Start/Load/Unload를 이 시간까지 기다렸다 진행, 초과 시 거부 (src/deployLock.js)
 //
 // 주의: stdout은 MCP 전송 채널이다. 로그는 반드시 stderr(console.error)로만.
 
@@ -29,12 +31,14 @@ import {
   statusHint,
   isSuccess,
 } from './parse.js';
+import { readDeployLock, waitForDeployLockRelease, describeDeployLock, DEPLOY_GUARDED_COMMAND_RE } from './deployLock.js';
 
 const HOST = process.env.GPL_HOST || '192.168.0.1';
 const PORT = parseInt(process.env.GPL_PORT || '1402', 10);
 const DEFAULT_PROJECT = process.env.GPL_PROJECT || 'MergeCode';
 const TIMEOUT = parseInt(process.env.GPL_TIMEOUT_MS || '15000', 10);
 const IDLE_CLOSE = parseInt(process.env.GPL_IDLE_CLOSE_MS || '30000', 10);
+const LOCK_WAIT_MS = parseInt(process.env.GPL_LOCK_WAIT_MS || '20000', 10);
 
 // ── 세션 로그 ─────────────────────────────────────────────────────────────
 // 모든 도구 호출과 1402 명령을 타임스탬프/소요시간/STATUS와 함께 기록한다.
@@ -81,8 +85,36 @@ function textResult(payload) {
   return { content: [{ type: 'text', text }] };
 }
 
+// ── 배포 잠금 가드 ────────────────────────────────────────────────────────
+// VS Code 확장이 FTP 업로드/배포 중이면 %TEMP%/gpl-controller/<ip>.lock.json을 잡고 있다(확장 deployLock.ts와
+// 파일 계약 공유). 업로드 도중 Compile/Start(그리고 /GPL 폴더를 건드리는 Load/Unload)가 겹치면 제어기가 죽을
+// 수 있어(2026-08-20 관찰, GitHub #17) 해당 명령은 잠금이 풀릴 때까지 유한 대기 후 진행하고, 초과 시 거부한다.
+// 대기를 서버가 내장하므로 AI가 폴링 왕복을 반복할 필요가 없다(§1-AS와 같은 취지).
+async function guardDeployLock(command) {
+  if (!DEPLOY_GUARDED_COMMAND_RE.test(command)) return;
+  const first = readDeployLock(HOST);
+  if (!first) return;
+  logLine(`  lock  배포 잠금 대기: ${describeDeployLock(first)} (최대 ${LOCK_WAIT_MS}ms) ← ${command}`);
+  const wait = await waitForDeployLockRelease(HOST, { maxMs: LOCK_WAIT_MS });
+  if (wait.released) {
+    logLine(`  lock  해제 확인 (${wait.waitedMs}ms 대기) → ${command}`);
+    return;
+  }
+  throw new Error(
+    `배포 잠금 보유 중 — ${describeDeployLock(wait.holder)}. VS Code 확장의 업로드/배포가 끝나기 전에는 ` +
+    'Compile/Start/Load/Unload를 보내지 않는다(업로드 도중 겹치면 제어기 이상 유발). 우회하지 말고 잠시 후 ' +
+    `재시도하거나 사용자에게 알린다. 잠금 파일: ${wait.file}`,
+  );
+}
+
+/** 잠금 가드를 거친 전송(Compile/Start/Load/Unload만 실제로 대기·거부된다). */
+async function sendGuarded(command, opts) {
+  await guardDeployLock(command);
+  return consoleClient.send(command, opts);
+}
+
 async function runCommand(command, opts) {
-  const raw = await consoleClient.send(command, opts);
+  const raw = await sendGuarded(command, opts);
   const status = parseStatus(raw);
   const ok = isSuccess(status);
   const result = { command, status, ok, data: extractData(raw) };
@@ -229,7 +261,10 @@ tool('controller_status',
     const raw = await consoleClient.send('Show Thread -web');
     const status = parseStatus(raw);
     const { threads } = parseThreadList(raw);
-    return textResult({ host: HOST, port: PORT, ok: isSuccess(status), status, threadCount: threads.length, threads });
+    // 배포 잠금(VS Code 확장이 업로드/배포 중이면 존재) — 있으면 Compile/Start는 대기·거부된다.
+    const lock = readDeployLock(HOST);
+    const deployLock = lock ? { holder: lock.owner, stage: lock.stage, since: new Date(lock.since).toISOString(), describe: describeDeployLock(lock) } : null;
+    return textResult({ host: HOST, port: PORT, ok: isSuccess(status), status, threadCount: threads.length, threads, deployLock });
   });
 
 // ── 컴파일/실행 ───────────────────────────────────────────────────────────
@@ -237,7 +272,7 @@ tool('compile_project',
   '프로젝트를 컴파일한다(Compile). 성공/실패는 STATUS로만 판정하고, 실패 시 에러 라인을 파싱해 돌려준다.',
   { project: z.string().optional().describe(`프로젝트명(기본 ${DEFAULT_PROJECT})`) },
   async ({ project }) => {
-    const raw = await consoleClient.send(`Compile ${proj(project)}`, { timeoutMs: Math.max(TIMEOUT, 60000) });
+    const raw = await sendGuarded(`Compile ${proj(project)}`, { timeoutMs: Math.max(TIMEOUT, 60000) });
     const status = parseStatus(raw);
     const { errors, aggregate } = parseCompileErrors(raw);
     return textResult({ command: `Compile ${proj(project)}`, ok: isSuccess(status), status, errorCount: errors.length, errors, aggregate });

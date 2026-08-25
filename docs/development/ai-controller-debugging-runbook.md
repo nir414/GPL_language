@@ -136,7 +136,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 
 ### 트리 컨텍스트 메뉴 전용 (트리 항목 인자 필요 — 팔레트 단독 실행 부적합)
 
-`gpl.controller.threadStart`/`threadStop`/`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`,
+`gpl.controller.threadStart`/`threadStop`/`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`(Step Over)/`threadStepInto`/`threadStepOut`/`threadShowLocation`/`threadShowStack`,
 `gpl.controller.ftpRun`/`ftpStop`/`ftpDownload`/`ftpDelete`/`ftpUnload`,
 `gpl.controller.consoleToggle`/`clearErrors`/`copyError`
 
@@ -245,7 +245,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 
 ### 6. Step/Continue
 
-- Step Over/Into/Out은 Debug UI 또는 F10/F11을 사용한다.
+- Step Over/Into/Out은 Debug UI(F10/F11/Shift+F11) 또는 GPL Controller 트리에서 정지 쓰레드 우클릭 메뉴를 사용한다(인라인 버튼은 Step Over 하나). 트리 경로도 `<STATUS>` 판정 → 정지 복귀 폴링(5초) → 정지 위치 표시 순서로 동작한다(2026-08-25).
 - Continue 후 바로 다시 멈추면 위치, breakpoint hit count, 1403 이벤트를 같이 확인한다.
 - 같은 위치 재정지는 루프 재히트, breakpoint 잔재, Continue 반영 지연을 구분한다.
 - **MCP(gpl-controller) 경로**: `step_thread`/`continue_thread`/`pause_thread`/`run_to_line`은
@@ -342,7 +342,7 @@ SoftEStop
 - **응답 프레이밍**: 모든 1402 응답은 `<DATA>...</DATA>\r\n<STATUS>code,"message"</STATUS>\r\n`. 에러도 DATA+STATUS로 옴(예: `-508`은 `<DATA>(-508): *File not found* <path>/Project.gpr</DATA>`). 명령 송신은 plain text + `\r\n`(CRLF).
 - **스레드 목록**: 인자 없는 `Show Thread`는 스레드가 실행 중이어도 `<DATA></DATA>` 빈 응답. 전체 열거는 GDE처럼 **`Show Thread  -web`**(파이프 9컬럼: `name| state| code| "msg"| project| func| procLine| file| fileLine`). 특정 스레드 상세는 `Show Thread <name>`(콤마 형식).
 - **브레이크포인트**: `Set Break <project> "<file>"<line>` — **따옴표와 줄번호 사이 공백 없음**. 목록은 `Show Break`, 해제는 `Set Nobreak <project> "<file>"<line>`.
-- **스텝**: step over = `Step <project> -over -noerror`, step into = `Step <project> -noerror`(`-into` 플래그 없음). 모든 step에 `-noerror`.
+- **스텝**: step over = `Step <project> -over -noerror`, step into = `Step <project> -noerror`(`-into` 플래그 없음). 모든 step에 `-noerror`. Brooks 문서상 전체 구문은 `Step thread [-into] [-over] [-out] [-noerror]`(스위치 없음 = `-into`, `-noerror` = 에러를 낸 스텝을 건너뜀) — `-out`은 GDE 캡처에 없어 **실기기 미검증**(2026-08-25 확인, 트리 메뉴·Shift+F11이 사용).
 - **실행/중지**: `Start <project> -event`(이벤트 모드), `Continue <project>`, `Stop` 단독은 `-205 Missing argument` → 전체 중지는 `Stop -a`.
 - **플래시/메모리 조회**: 용량은 `dir -f /flash`(→ `used/total`), 메모리는 `memory`. (`Directory <path>`와는 별개 명령.)
 - **Load 경로 규칙**: `Load <dir>`는 `<dir>/Project.gpr`를 찾는다. `-508`이면 STOR 경로와 `Load` 경로 기준(`/GPL` vs `/flash/projects`)을 대조한다.

@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.8.17",
+    "version": "0.8.18",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -417,8 +417,28 @@
             },
             {
                 "command": "gpl.controller.threadStep",
-                "title": "스텝 실행",
+                "title": "스텝 오버 (Step Over)",
                 "icon": "$(debug-step-over)"
+            },
+            {
+                "command": "gpl.controller.threadStepInto",
+                "title": "스텝 인투 (Step Into)",
+                "icon": "$(debug-step-into)"
+            },
+            {
+                "command": "gpl.controller.threadStepOut",
+                "title": "스텝 아웃 (Step Out)",
+                "icon": "$(debug-step-out)"
+            },
+            {
+                "command": "gpl.controller.threadShowLocation",
+                "title": "현재 위치 보기",
+                "icon": "$(go-to-file)"
+            },
+            {
+                "command": "gpl.controller.threadShowStack",
+                "title": "스택 보기 (Show Stack)",
+                "icon": "$(list-tree)"
             },
             {
                 "command": "gpl.controller.ftpRun",
@@ -681,9 +701,19 @@
                     "group": "thread@2"
                 },
                 {
-                    "command": "gpl.controller.threadStop",
+                    "command": "gpl.controller.threadStepInto",
                     "when": "view == gplThreads && viewItem == gplThread-paused",
                     "group": "thread@3"
+                },
+                {
+                    "command": "gpl.controller.threadStepOut",
+                    "when": "view == gplThreads && viewItem == gplThread-paused",
+                    "group": "thread@4"
+                },
+                {
+                    "command": "gpl.controller.threadStop",
+                    "when": "view == gplThreads && viewItem == gplThread-paused",
+                    "group": "thread@5"
                 },
                 {
                     "command": "gpl.controller.threadContinueNoError",
@@ -694,6 +724,16 @@
                     "command": "gpl.controller.threadStop",
                     "when": "view == gplThreads && viewItem == gplThread-error",
                     "group": "thread@2"
+                },
+                {
+                    "command": "gpl.controller.threadShowLocation",
+                    "when": "view == gplThreads && viewItem =~ /^gplThread-(paused|error|running)$/",
+                    "group": "threadInspect@1"
+                },
+                {
+                    "command": "gpl.controller.threadShowStack",
+                    "when": "view == gplThreads && viewItem =~ /^gplThread-(paused|error|running)$/",
+                    "group": "threadInspect@2"
                 },
                 {
                     "command": "gpl.threads.refresh",

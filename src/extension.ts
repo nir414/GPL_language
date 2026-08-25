@@ -3052,14 +3052,63 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	// ─── 트리 쓰레드 제어(Break/Continue/Step) 공통 ─────────────────────
+	// 하드 규칙 2: 성공/실패는 그 명령의 <STATUS>로 판정한다(이전엔 전송 후 바로 refresh만 했음).
+	// Break/Step의 STATUS 0은 "접수"일 수 있어(§0.6 패턴) 실제 정지 복귀는 waitForThreadPause로 확인한다.
+	async function sendThreadCommandChecked(cmd: string, failLabel: string): Promise<boolean> {
+		const resp = await sendCommand(cmd);
+		const status = parseStatus(resp);
+		outputChannel.appendLine(`[Thread] >>> ${cmd} => STATUS ${status.code}${status.message ? ` ${status.message}` : ''}`);
+		if (status.code !== 0) {
+			vscode.window.showErrorMessage(`${failLabel} 실패: STATUS ${status.code} ${status.message}`);
+			return false;
+		}
+		return true;
+	}
+
+	const TREE_STEP_LABEL: Record<AIDebugStepMode, string> = { over: '스텝 오버', into: '스텝 인투', out: '스텝 아웃' };
+
+	/**
+	 * 트리 인라인/컨텍스트 메뉴의 Step. 명령 문자열은 디버그 어댑터·AI API와 같은 `aiBuildStepCommand`로 만든다
+	 * (GDE 실측: over=`-over -noerror`, into=`-noerror`; out=`-out -noerror`는 Brooks 문서상 스위치 — 실기기 미검증).
+	 * 정지 복귀가 확인되면 정지 위치를 에디터에 표시한다(설정 gpl.controller.autoShowPausedLocation, 기본 true).
+	 */
+	async function runTreeThreadStep(node: any, mode: AIDebugStepMode): Promise<void> {
+		const name: string | undefined = node?.thread?.name;
+		if (!name) { return; }
+		const label = TREE_STEP_LABEL[mode];
+		try {
+			if (!(await sendThreadCommandChecked(aiBuildStepCommand(name, mode), `${name} ${label}`))) { return; }
+			const wait = await waitForThreadPause(name, 5000);
+			controllerTree?.refresh();
+			if (!wait.paused) {
+				// 긴 모션 한 줄을 스텝하면 정지 복귀가 늦을 수 있다 — 팝업 대신 상태바/Output로만 알린다(트리 폴링이 이어서 갱신).
+				vscode.window.setStatusBarMessage(`${name} ${label}: 접수됨, 정지 복귀 대기 중 (${wait.state ?? '상태 미확인'})`, 5000);
+				outputChannel.appendLine(`[Thread] ${name} ${label}: 5초 내 정지 복귀 미확인 (state=${wait.state ?? '?'})`);
+				return;
+			}
+			if (vscode.workspace.getConfiguration('gpl.controller').get<boolean>('autoShowPausedLocation') !== false) {
+				await vscode.commands.executeCommand('gpl.controller.threadShowLocation', node);
+			}
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`${label} 실패: ${err.message ?? err}`);
+		}
+	}
+
 	// 쓰레드 일시정지 (Break)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.threadBreak', async (node: any) => {
-			if (!node?.thread?.name) { return; }
+			const name: string | undefined = node?.thread?.name;
+			if (!name) { return; }
 			try {
-				await sendCommand(`Break ${node.thread.name}`);
-				vscode.window.showInformationMessage(`${node.thread.name} 일시정지`);
+				if (!(await sendThreadCommandChecked(`Break ${name}`, `${name} 일시정지`))) { return; }
+				const wait = await waitForThreadPause(name, 5000);
 				controllerTree?.refresh();
+				if (wait.paused) {
+					vscode.window.showInformationMessage(`${name} 일시정지 (${wait.state})`);
+				} else {
+					vscode.window.showWarningMessage(`${name} 일시정지 명령은 접수됐지만 아직 ${wait.state ?? '상태 미확인'} 상태입니다. 잠시 후 트리에서 다시 확인하세요.`);
+				}
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`일시정지 실패: ${err.message ?? err}`);
 			}
@@ -3069,9 +3118,10 @@ export function activate(context: vscode.ExtensionContext) {
 	// 쓰레드 재개 (Continue)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.threadContinue', async (node: any) => {
-			if (!node?.thread?.name) { return; }
+			const name: string | undefined = node?.thread?.name;
+			if (!name) { return; }
 			try {
-				await sendCommand(`Continue ${node.thread.name}`);
+				await sendThreadCommandChecked(`Continue ${name}`, `${name} 재개`);
 				controllerTree?.refresh();
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`재개 실패: ${err.message ?? err}`);
@@ -3082,10 +3132,12 @@ export function activate(context: vscode.ExtensionContext) {
 	// 쓰레드 에러 건너뛰기 계속 (Continue -noerror)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.threadContinueNoError', async (node: any) => {
-			if (!node?.thread?.name) { return; }
+			const name: string | undefined = node?.thread?.name;
+			if (!name) { return; }
 			try {
-				await sendCommand(`Continue ${node.thread.name} -noerror`);
-				vscode.window.showInformationMessage(`${node.thread.name} 에러 건너뛰고 재개`);
+				if (await sendThreadCommandChecked(`Continue ${name} -noerror`, `${name} 재개`)) {
+					vscode.window.showInformationMessage(`${name} 에러 건너뛰고 재개`);
+				}
 				controllerTree?.refresh();
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`재개 실패: ${err.message ?? err}`);
@@ -3093,17 +3145,11 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// 쓰레드 스텝 실행 (Step)
+	// 쓰레드 스텝 — 인라인 버튼(아이콘 $(debug-step-over))은 Step Over. Into/Out은 컨텍스트 메뉴에서.
 	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.controller.threadStep', async (node: any) => {
-			if (!node?.thread?.name) { return; }
-			try {
-				await sendCommand(`Step ${node.thread.name}`);
-				controllerTree?.refresh();
-			} catch (err: any) {
-				vscode.window.showErrorMessage(`스텝 실행 실패: ${err.message ?? err}`);
-			}
-		})
+		vscode.commands.registerCommand('gpl.controller.threadStep', (node: any) => runTreeThreadStep(node, 'over')),
+		vscode.commands.registerCommand('gpl.controller.threadStepInto', (node: any) => runTreeThreadStep(node, 'into')),
+		vscode.commands.registerCommand('gpl.controller.threadStepOut', (node: any) => runTreeThreadStep(node, 'out')),
 	);
 
 	// FTP 프로젝트 다운로드
@@ -3780,7 +3826,9 @@ export function activate(context: vscode.ExtensionContext) {
 				items.push({ label: '$(debug-stop) 정지 (Stop)', action: 'stop' });
 			} else if (state === 'Paused' || state === 'Break') {
 				items.push({ label: '$(debug-continue) 재개 (Continue)', action: 'continue' });
-				items.push({ label: '$(debug-step-over) 스텝 (Step)', action: 'step' });
+				items.push({ label: '$(debug-step-over) 스텝 오버 (Step -over)', action: 'step' });
+				items.push({ label: '$(debug-step-into) 스텝 인투 (Step -into)', action: 'stepInto' });
+				items.push({ label: '$(debug-step-out) 스텝 아웃 (Step -out)', action: 'stepOut' });
 				items.push({ label: '$(debug-stop) 정지 (Stop)', action: 'stop' });
 			} else if (state === 'Error') {
 				items.push({ label: '$(debug-continue) 에러 건너뛰고 재개', action: 'continueNoError' });
@@ -3805,6 +3853,8 @@ export function activate(context: vscode.ExtensionContext) {
 				case 'continue': await vscode.commands.executeCommand('gpl.controller.threadContinue', node); break;
 				case 'continueNoError': await vscode.commands.executeCommand('gpl.controller.threadContinueNoError', node); break;
 				case 'step': await vscode.commands.executeCommand('gpl.controller.threadStep', node); break;
+				case 'stepInto': await vscode.commands.executeCommand('gpl.controller.threadStepInto', node); break;
+				case 'stepOut': await vscode.commands.executeCommand('gpl.controller.threadStepOut', node); break;
 				case 'stop': await vscode.commands.executeCommand('gpl.controller.threadStop', node); break;
 				case 'start': await vscode.commands.executeCommand('gpl.controller.threadStart', node); break;
 				case 'copy': {

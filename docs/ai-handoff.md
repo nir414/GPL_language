@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-25 (§1-BD: 이슈 #15·#17 통합 — 배포 잠금(프로세스 간 파일, 보유자·단계·경과 표시) + 배포 단계 UPLOAD ∥ STOP 병행 → COMPILE 재구성 + "컴파일 필요" 상태. 직전: §1-BC README 과포화 정리)
+- 최종 갱신: 2026-08-25 (§1-BE: 트리 쓰레드 제어 정비 — 스텝 버튼의 아이콘(Over)/명령(Into) 불일치 수정, Step Into/Out·스택 보기 우클릭 메뉴, Break/Continue/Step `<STATUS>` 판정. 직전: §1-BD 배포 잠금 + UPLOAD ∥ STOP 병행)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.17** (§1-BD 변경분 포함. 세션 중 사용자가 `npm run package`로 0.8.16(순차 버전, f88cbd6)·0.8.17(병행 버전, 44c9d32+) VSIX를 로컬 빌드 — CHANGELOG는 0.8.17로 통합 기재. 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
+- 현재 package 버전: **0.8.18** (§1-BE 변경분 포함 — 2026-08-25 `npm run package`로 VSIX 로컬 빌드(0.8.16 순차 버전 f88cbd6 · 0.8.17 병행 버전 44c9d32+ · 0.8.18 트리 쓰레드 정비). 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -2013,7 +2013,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ### 검증
 
-- `npm run compile` 통과, `npm test` **190/190**(신규 deployLock 12건 포함), `controller-mcp` `node --test` **18/18**(신규 8건), `npm run pre-release-check` 16/17 — 실패 1건은 "working tree clean"(미커밋 상태라 정상). 편집한 모든 파일 CRLF 유지 확인.
+- `npm run compile` 통과, `npm test` **190/190**(신규 deployLock 12건 포함), `controller-mcp` `node --test` **18/18**(신규 8건), `npm run pre-release-check` 16/17 — 실패 1건은 "working tree clean"(미커밋 상태라 정상). 편집한 모든 파일 CRLF 유지 확인(→ **§1-BE 정정**: 이 저장소는 파일별 LF/CRLF 혼재이며 extension.ts 등 대부분은 LF — 각 파일의 기존 형식 유지가 맞는 표현).
 - **실기기(G2400C) 미검증** — §3 체크리스트 ①~⑧. **C(재배치)는 제어기 명령 순서를 바꾸므로 하드 규칙 6에 따라 저속/시뮬레이션 검증 전 배포 금지.** 검토 문서의 권장은 "A·B·D(무영향) 먼저 배포, C는 검증 뒤"였으나 사용자 지시로 한 working tree에 모두 구현했다 — 분할 배포가 필요하면 C(deployService의 Phase 1/2 블록 + deferDelete + COMPILE_DEFERRED 처리)를 별 브랜치로 떼어낼 것.
 
 ### 남은 일
@@ -2023,6 +2023,39 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 - **Compile→Start 연속 실행 경로 검토(§0.7)**: F5 `deployBeforeAttach`(deploy Compile → `Start -break -bex`)와 FTP 뷰 '컴파일 & 실행'(`gpl.controller.ftpRun`)은 Compile 직후 Start를 보낸다 — Start가 자체 컴파일하므로 컴파일 중복. 안전성 테스트 후 F5는 "Compile 생략 + Start만" 또는 "Compile만"으로, ftpRun은 분리/제거 여부 사용자 결정.
 - (선택, 사용자 요청 시) 경과 3분 초과 시에만 노출되는 "강제 해제" 버튼 + 2단계 확인.
 
+## 1-BE. 2026-08-25 세션(후속) — 트리 쓰레드 제어 정비: 스텝 버튼 아이콘/명령 불일치 수정 + Step Into/Out·스택 보기 우클릭 메뉴 + `<STATUS>` 판정
+
+### 증상 (사용자 질문)
+
+- GPL Controller 트리에서 일시정지 쓰레드에 인라인 버튼이 재개·스텝 **2개만** 보인다 — "쓰레드 동작 종류가 더 다양하지 않나?"
+
+### 원인 (소스 대조)
+
+- 인라인 2개(Continue/Step)는 **의도된 설계**: 트리=가벼운 상태 확인·응급 제어, 세분 스텝은 디버그 어댑터(F10/F11) 몫(controllerTreeProvider `toThreadItem` 주석, 런북 §6). 인라인이 늘면 라벨 폭을 잡아먹는 문제도 있다(이미 `P...`로 잘림). 다만 대조 중 어긋남 3건:
+  1. **`gpl.controller.threadStep`이 `Step <t>`(플래그 없음)를 보냈다** — GDE 실측·Brooks 문서 모두 플래그 없음 = step **into**인데, 아이콘은 `$(debug-step-over)`. 버튼 모양과 동작이 달랐고, 런북 "모든 step에 `-noerror`"도 빠져 있었다. 같은 파일의 `aiBuildStepCommand`(AI API·디버그 어댑터용)는 3모드를 올바르게 만들고 있었는데 트리만 안 썼다.
+  2. **`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`이 `<STATUS>`를 보지 않고** 전송 직후 `refresh()`만 했다(하드 규칙 2 위반). `threadStop`·`gpl.ai.debug.stepThread`는 판정+정지 복귀 확인을 하고 있어 트리 경로만 느슨했다.
+  3. **일시정지/에러 쓰레드에서 스택 보기 도달 불가**: 클릭=위치 이동 고정, 액션 QuickPick(`threadActions`)은 비정지 상태에만 연결, 우클릭 메뉴엔 Continue/Step/Stop만. `threadShowStack`/`threadShowLocation`이 `contributes.commands`에 미선언이라 메뉴에 올릴 수도 없었다.
+- Brooks 문서(live 2026-08-25, `Console_Commands/step.htm`): `Step thread_name [-into] [-over] [-out] [-noerror]`, 스위치 없음 = `-into`, `-noerror` = 에러를 낸 스텝을 건너뜀. **`-out`은 GDE 캡처(2026-06-23)에 없어 실기기 미검증**(디버그 어댑터 Shift+F11은 이미 `-out -noerror`를 보내고 있었음 — 문서상 지원, 실측은 §3).
+
+### 조치
+
+- `src/extension.ts`(트리 쓰레드 핸들러 블록):
+  - `sendThreadCommandChecked(cmd, failLabel)` — `parseStatus`로 판정, STATUS≠0이면 에러 메시지+`false`, Output에 `[Thread] >>> <cmd> => STATUS n msg` 기록.
+  - `runTreeThreadStep(node, mode)` — `aiBuildStepCommand` **재사용**(디버그 어댑터·AI API와 명령 문자열 단일 소스) → STATUS 판정 → `waitForThreadPause`(5초) → `refresh()` → `gpl.controller.autoShowPausedLocation`(기본 true)이면 `threadShowLocation`으로 정지 줄 표시. 5초 내 미복귀(긴 모션 한 줄 등)는 팝업 대신 **상태바 5초 + Output**만(트리 폴링이 이어서 갱신).
+  - `threadStep` = **over**(아이콘과 일치), 신규 `threadStepInto`/`threadStepOut`. `threadBreak`는 STATUS + 정지 복귀 확인 뒤 메시지(미복귀는 경고), `threadContinue`/`-noerror`는 STATUS 판정. `threadActions` QuickPick의 정지 항목도 3종으로(현재 정지 쓰레드는 클릭이 위치 이동이라 도달 안 되지만 표기 일관성).
+- `package.json`: `contributes.commands` — `threadStep` 제목 "스텝 오버 (Step Over)", 신규 `threadStepInto`(`$(debug-step-into)`)/`threadStepOut`(`$(debug-step-out)`)/`threadShowLocation`(`$(go-to-file)`)/`threadShowStack`(`$(list-tree)`). `view/item/context` — **인라인은 그대로 Continue + Step(Over) 2개 유지**(라벨 폭·오조작 방지). 우클릭 paused: Continue/Step Over/Step Into/Step Out/Stop(`thread@1~5`), error: Continue -noerror/Stop, 신규 그룹 `threadInspect@1~2`(현재 위치 보기/스택 보기, `viewItem =~ /^gplThread-(paused|error|running)$/` — 구분선으로 분리됨).
+- 문서: 런북(트리 전용 명령 목록, §6 스텝 안내에 트리 경로, GDE 실측 스텝 구문에 문서상 전체 구문·`-out` 미검증 표기), README 패널 항목 한 줄, CHANGELOG [0.8.18].
+
+### 검증
+
+- `npm run compile` 통과, `npm test` **190/190**, `npm run pre-release-check` 16/17(실패 1건은 "working tree clean" — 미커밋이라 정상). package.json 검사: commands 60개, `view/item/context` 42개, 메뉴→명령 미선언 0. 편집 파일의 **기존 줄바꿈 형식 유지**를 바이트 단위(CRLF 개수)로 확인 — 이 저장소는 파일별로 LF/CRLF가 **혼재**한다(extension.ts·package.json·ai-handoff.md·런북·README는 LF, CHANGELOG.md·controllerTreeProvider.ts는 CRLF). ※ Git Bash에서 grep에 ANSI-C 인용(`$'…'`)으로 CR 한 글자를 넘기면 빈 패턴이 되어 모든 줄을 세므로 CRLF 판정에 쓰지 말 것 — Python으로 바이트를 직접 세는 쪽이 안전(이번 세션에서 오판 발생 후 정정).
+- **실기기 미검증** — §3 항목. 인라인 스텝의 의미가 into→over로 **바뀌므로**(하드 규칙 6) 저속/시뮬레이션에서 먼저 확인.
+
+### 남은 일
+
+- §3 ①~⑤ 실기기 검증. `Step -out` 실측 STATUS를 런북 "GDE 1402 실측 명령 포맷"에 기록.
+- (선택) 일시정지 쓰레드 인라인에 Stop 추가 여부 — 오조작 위험 때문에 지금은 우클릭에만.
+
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
 - **`ProtocolModule.gpl` 478·480의 `-760 Invalid assignment`**: `isOrgCompleted`는 `RobotModule.gpl:828`에 **`Public ReadOnly Property ... As Boolean`**(읽기 전용)으로 정의됨. 거기에 값을 대입해서 나는 에러. 해결책(택1, 사용자 결정 대기): setter 메서드 추가 / `ReadOnly` 제거 후 `Set` 접근자 추가 / backing 필드 직접 대입.
@@ -2030,6 +2063,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-08-25, §1-BE) 트리 쓰레드 스텝 정비 — 실기기 검증(저속/시뮬레이션 우선, 하드 규칙 6)**: ① 인라인 스텝이 `Step <t> -over -noerror`를 보내고 호출문을 **넘어가는지**(GPL Traffic·정지 줄) ② 우클릭 Step Into(`-noerror`)가 프로시저 **안으로** 들어가는지 ③ **Step Out(`-out -noerror`) STATUS 최초 실측**(Brooks 문서상 지원, GDE 캡처엔 없음) → 결과를 런북 "GDE 1402 실측 명령 포맷"에 기록 ④ 정지/에러 쓰레드 우클릭 → 스택 보기/현재 위치 보기 ⑤ STATUS≠0 경로(예: Running 쓰레드에 Continue, Idle 쓰레드에 Break) 에러 메시지 문구 확인.
 - [ ] **(2026-08-25, §1-BD) 배포 순서 재배치 + 배포 잠금 — 실기기 검증, 릴리스 전 필수(하드 규칙 6)**:
   ① 전체 Deploy(쓰레드 실행 중): 업로드(FTP)와 `Stop -all`/`Show Thread` 폴링(1402)이 **동시에** 나가는지(GPL Traffic 타임스탬프 vs Output `↑` 라인), 둘 다 끝난 뒤에만 `Compile`이 나가는지. 쓰레드 실행 중 Quick Compile: 업로드가 진행되는 동안 "Stop 후 계속" 모달 → 승인 → Stop → settle → (업로드 완료 확인) → Compile. 총 소요가 이전(순차)보다 줄었는지 체감/로그로 확인
   ①-b 동시 진행 중 1402 명령(Stop/Show Thread)이 FTP 전송과 간섭하지 않는지(ECONNRESET·STATUS 누락 없음) — 사용자 주장 "문제 없음"의 실측 확정
@@ -2090,7 +2124,7 @@ src/controller/deployLock.ts             # 배포 잠금 — 메모리+파일(%T
 src/controller/ftpClient.ts              # uploadProject onlyFiles, mirrorProject deferDelete + removeRemoteFiles(§1-BD)
 src/controller/responseParser.ts         # parseStatus, parseCompileErrors
 src/debug/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach(lockOwner 'F5 Deploy'), _waitDeployLockForStart, getDebugDeployDiagnostics
-src/extension.ts                         # runDeploy(잠금 조회 + warnDeployBusy), autoOnSave, 컴파일 필요 상태(compileStaleProjects/confirmStartWhenCompileStale)
+src/extension.ts                         # runDeploy(잠금 조회 + warnDeployBusy), autoOnSave, 컴파일 필요 상태(compileStaleProjects/confirmStartWhenCompileStale), 트리 쓰레드 제어(sendThreadCommandChecked/runTreeThreadStep — aiBuildStepCommand 공유, §1-BE)
 controller-mcp/src/deployLock.js         # 잠금 파일 읽기 전용 구현(확장과 파일 계약 공유) — Compile/Start/Load/Unload 유한 대기·거부(§1-BD)
 src/gplParser.ts                         # Property/Sub/Function 파싱 + parseDocument 메모이즈 캐시(§1-B E) + docComment 수집(§1-J)
 src/gplBuiltins.ts                       # 핵심 빌트인/String 함수 (Trim→메서드, Rnd(seed), Replace 제거, Asc/Chr/… 추가) + Bit 문자열 전역함수(§1-J)

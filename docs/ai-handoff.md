@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-25 (§1-BD: 이슈 #15·#17 통합 — 배포 잠금(프로세스 간 파일, 보유자·단계·경과 표시) + 배포 순서 UPLOAD→STOP→COMPILE 재배치 + "컴파일 필요" 상태. 직전: §1-BC README 과포화 정리)
+- 최종 갱신: 2026-08-25 (§1-BD: 이슈 #15·#17 통합 — 배포 잠금(프로세스 간 파일, 보유자·단계·경과 표시) + 배포 단계 UPLOAD ∥ STOP 병행 → COMPILE 재구성 + "컴파일 필요" 상태. 직전: §1-BC README 과포화 정리)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 현재 package 버전: **0.8.15** (working tree — §1-BD 변경분 포함, 미배포. 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -1984,7 +1984,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 - 없음.
 
-## 1-BD. 2026-08-25 세션 — 이슈 #15·#17 통합: 배포 잠금(프로세스 간) + 배포 순서 UPLOAD→STOP→COMPILE 재배치 + "컴파일 필요" 상태
+## 1-BD. 2026-08-25 세션 — 이슈 #15·#17 통합: 배포 잠금(프로세스 간) + 배포 단계 UPLOAD ∥ STOP 병행 → COMPILE + "컴파일 필요" 상태
 
 검토 문서(설계 근거·겹침 지도·결정표): Artifact `https://claude.ai/code/artifact/e5aa9332-0856-40d8-9242-a3fd6fce9541` (세션 산출물, 구현 *전* 계획 — 이 §가 정본). GitHub 이슈 #15, #17(보충 의견 포함).
 
@@ -2006,7 +2006,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
   - `extension.ts`: `deployInFlight` 폐지 → `currentDeployLockHolder()` 조회 + `warnDeployBusy(action, holder, hint)`로 문구 통합([출력 보기] 버튼). `runDeploy`는 UI 전 조회만 하고 잠금은 `deploy()` 안(UI 뒤)에서. `gpl.saveToFlash`는 UI 뒤 `acquire('Save to Flash','FTP_MIRROR')`. autoOnSave flush는 잠금 중 재예약, LOCKED 결과면 changedFiles를 pending에 되돌림. `gpl.start`/`threadStart`/`ftpRun` 가드 교체.
   - `gplDebugSession`: `_waitDeployLockForStart` — 자동 Start/stopOnEntry Start 전 최대 20 s 대기, 계속 잡혀 있으면 Start만 보류(attach 유지).
 - **B. MCP** `controller-mcp/src/deployLock.js`(읽기 전용, 파일 계약 동일, node:test 8건) + `index.js` `guardDeployLock`/`sendGuarded`: 첫 단어 `Compile|Start|Load|Unload`인 명령은 최대 `GPL_LOCK_WAIT_MS`(20000) 대기 후 진행, 초과 시 보유자·단계·경과와 함께 오류(우회 금지 문구). `controller_status`에 `deployLock` 필드. README 환경변수 표(`GPL_LOCK_WAIT_MS`/`GPL_LOCK_DIR`), `exportAgentSetup` CLAUDE 섹션에 규칙 추가. MCP는 FTP를 하지 않으므로 잠금을 쓰지 않음.
-- **C. deployService 재배치**: UPLOAD → STOP(`!skipStop`) / THREAD_CHECK(`skipStop`; autoGate 조건 2는 여기) → 지연 삭제 → COMPILE → START → ERROR CHECK. `mirrorProject({ deferDelete: true })` → `pendingDeletes` → settle 뒤 `removeRemoteFiles`(실행 중 원격 삭제 무해가 미검증이라 지연 — 결정표). autoGate 미충족은 `COMPILE_DEFERRED`(업로드 유지, Compile 보류), THREAD_CHECK 메시지는 "업로드는 완료됨, Compile 미수행". autoGate 진단 clear는 COMPILE 진입 시점으로. `DeployPhase` 타입 신설(LOCKED/COMPILE_DEFERRED). 트리 `stageMap`을 새 순서로. 클래식 경로의 Unload/Load 동기화는 COMPILE 단계 안이라 그대로 STOP 뒤.
+- **C. deployService 재구성 — UPLOAD ∥ STOP 병행**: `runUpload()`와 `runStopGate()`(`!skipStop`: Stop -all+settle / `skipStop`: Show Thread 프로브 → autoGate 조건 2 또는 사용자 Stop 확인)를 `Promise.all`로 **동시에** 시작하고 둘 다 끝난 뒤에만 진행(실패한 쪽이 있어도 업로드 완료 전에 돌아가 잠금을 풀지 않음) → 지연 삭제 → COMPILE → (START) → ERROR CHECK. 총 소요 = max(업로드, 정지). **의도 정정**: 첫 커밋 `f88cbd6`은 이슈 문장을 "UPLOAD → STOP 순차"로 읽어 구현했으나, 사용자 보충(#17 코멘트 2026-08-25 — 목적은 속도, Stop은 재시도로 오래 걸릴 수 있고 업로드와 동시 진행에 문제 없음)으로 병행으로 수정. **COMPILE과 START는 한 번에 하나만**(연속/동시 실행 안전성은 추후 테스트 — 사용자 결정; 현재 deploy() 호출자는 모두 skipStart이고 Start는 `gpl.start`가 별도). 단계 표시는 `[1/N] UPLOAD ∥ STOP (동시 진행)` 한 배너, 잠금 stage는 `UPLOAD+STOP`/`UPLOAD+THREAD_CHECK`. `mirrorProject({ deferDelete: true })` → `pendingDeletes` → settle 뒤 `removeRemoteFiles`(실행 중 원격 삭제 무해가 미검증이라 지연 — 결정표). autoGate 미충족은 `COMPILE_DEFERRED`(업로드 유지, Compile 보류), THREAD_CHECK 메시지는 "업로드는 완료됨, Compile 미수행". autoGate 진단 clear는 COMPILE 진입 시점으로. `DeployPhase` 타입 신설(LOCKED/COMPILE_DEFERRED). 트리 `stageMap`을 새 순서로. 클래식 경로의 Unload/Load 동기화는 COMPILE 단계 안이라 그대로 STOP 뒤.
 - **D. "컴파일 필요" 상태** `extension.ts compileStaleProjects`: COMPILE_DEFERRED/THREAD_CHECK/업로드 후 Compile 실패 시 set, Compile 성공(deploy·ftpRun) 시 clear. 트리 "프로젝트 상태"에 경고 노드(클릭→Quick Compile), 상태바 배지(`ConnectionStatusBar.setCompileStale`), `gpl.start`/`threadStart`는 `confirmStartWhenCompileStale` 모달("Compile 후 Start / 그대로 Start / 취소"). 한계: MCP `compile_project`로 컴파일하면 확장은 모르므로 상태가 남는다(다음 확장 Compile 성공 시 해제).
 - **E. 문서**: README 워크플로 3곳, package.json(`deployBeforeAttach`·`autoOnSave` 설명), runbook, instructions, broker 설계 표, CHANGELOG [0.8.15], §1-AV 낡은 서술 무효 표시, §3·§4.
 
@@ -2029,7 +2029,8 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 ## 3. 다음에 할 일 (체크리스트)
 
 - [ ] **(2026-08-25, §1-BD) 배포 순서 재배치 + 배포 잠금 — 실기기 검증, 릴리스 전 필수(하드 규칙 6)**:
-  ① 쓰레드 실행 중 Quick Compile → 업로드 동안 프로그램 계속 실행 → "Stop 후 계속" 모달 → Stop → settle → Compile (GPL Traffic 채널에서 명령 순서 확인)
+  ① 전체 Deploy(쓰레드 실행 중): 업로드(FTP)와 `Stop -all`/`Show Thread` 폴링(1402)이 **동시에** 나가는지(GPL Traffic 타임스탬프 vs Output `↑` 라인), 둘 다 끝난 뒤에만 `Compile`이 나가는지. 쓰레드 실행 중 Quick Compile: 업로드가 진행되는 동안 "Stop 후 계속" 모달 → 승인 → Stop → settle → (업로드 완료 확인) → Compile. 총 소요가 이전(순차)보다 줄었는지 체감/로그로 확인
+  ①-b 동시 진행 중 1402 명령(Stop/Show Thread)이 FTP 전송과 간섭하지 않는지(ECONNRESET·STATUS 누락 없음) — 사용자 주장 "문제 없음"의 실측 확정
   ② autoOnSave "auto" + 쓰레드 존재 → 업로드만, Compile 미전송(트래픽 로그), 트리 "프로젝트 상태"·상태바에 "컴파일 필요"
   ③ "컴파일 필요" 상태에서 `GPL: Start` → 모달 → "Compile 후 Start" 정상 / "그대로 Start"가 실제로 옛 프로그램을 실행하는지(=Start 비컴파일 — Brooks 문서 주장, 실측으로 확정)
   ④ 실행 중 `Compile`을 보내면 실제 STATUS가 무엇인지(문서: "may not be actively executing in a thread")

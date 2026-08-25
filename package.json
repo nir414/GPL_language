@@ -128,7 +128,7 @@
                             },
                             "deployBeforeAttach": {
                                 "type": "boolean",
-                                "description": "Deploy (UPLOAD→STOP→COMPILE) before attaching debugger.",
+                                "description": "Deploy (UPLOAD ∥ STOP → COMPILE) before attaching debugger.",
                                 "default": false
                             },
                             "projectDir": {

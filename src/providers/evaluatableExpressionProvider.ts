@@ -42,8 +42,11 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
             // 로컬/파라미터가 있으면 변수 확정(로컬이 동명 프로시저를 가린다)
             if (named.some(s => this._isVariable(s) && s.isLocal)) { return 'variable'; }
             const cacheNamed = this.symbolCache.findAllByName(name);
-            if ([...named, ...cacheNamed].some(s => this._isCallable(s))) { return 'callable'; }
-            if ([...named, ...cacheNamed].some(s => this._isVariable(s))) { return 'variable'; }
+            const all = [...named, ...cacheNamed];
+            if (all.some(s => this._isCallable(s, docSymbols))) { return 'callable'; }
+            if (all.some(s => this._isVariable(s))) { return 'variable'; }
+            // 백킹 필드로 해석 가능한 Property는 변수처럼 평가를 허용한다(디버그 어댑터가 -780을 치환해 값을 얻는다)
+            if (all.some(s => s.kind === GPLSymbolKind.Property && this._isResolvableProperty(s, docSymbols))) { return 'variable'; }
             return 'unknown';
         };
 
@@ -68,13 +71,29 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
         return new vscode.EvaluatableExpression(range, buildDebugExpression(segments));
     }
 
-    private _isCallable(s: GPLSymbol): boolean {
+    private _isCallable(s: GPLSymbol, docSymbols: GPLSymbol[]): boolean {
         // Property 포함 이유(실기기 2026-07-22): 이 제어기의 -eval은 프로퍼티를 인자 유무와
         // 무관하게 평가하지 못한다(-780/-205). 프로퍼티 이름 위 hover가 단어 평가로 폴백되면
         // 엉뚱한 -729("ints" 단독 평가)가 떠서, 디버그 팝업을 차단하는 쪽이 정확하다.
+        // 예외(GitHub #26): 백킹 필드로 해석 가능한 Property는 디버그 어댑터가 -780을 치환해 값을 보여주므로 허용.
         return s.kind === GPLSymbolKind.Sub
             || s.kind === GPLSymbolKind.Function
-            || s.kind === GPLSymbolKind.Property;
+            || (s.kind === GPLSymbolKind.Property && !this._isResolvableProperty(s, docSymbols));
+    }
+
+    /**
+     * Property가 백킹 필드로 해석 가능한가 — ① 파서가 기록한 Get 반환식(`getterReturnExpr`)이 있거나
+     * ② 같은 클래스에 관례 이름 `m_<프로퍼티>` 필드가 있으면(문서 또는 워크스페이스 캐시). WriteOnly는 불가.
+     */
+    private _isResolvableProperty(s: GPLSymbol, docSymbols: GPLSymbol[]): boolean {
+        if (s.hasGetter === false) { return false; }
+        if (s.getterReturnExpr) { return true; }
+        if (!s.className) { return false; }
+        const backing = `m_${s.name}`.toLowerCase();
+        const cls = s.className.toLowerCase();
+        const isBacking = (m: GPLSymbol) => m.kind === GPLSymbolKind.Variable && !m.isLocal
+            && m.name.toLowerCase() === backing && (m.className ?? '').toLowerCase() === cls;
+        return docSymbols.some(isBacking) || this.symbolCache.getClassMembers(s.className).some(isBacking);
     }
 
     private _isVariable(s: GPLSymbol): boolean {

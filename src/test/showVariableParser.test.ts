@@ -5,6 +5,10 @@ import {
     classifyVarEntry,
     arrayRank,
     splitVarLine,
+    isTypeToken,
+    isLocationType,
+    summarizeLocation,
+    annotateLocationMember,
 } from '../debug/showVariableParser';
 
 // ─── 실기기 캡처 픽스처 (GPL 4.x, 2026-07-22, MergeCode/OpCommandRunThread1) ───
@@ -101,6 +105,82 @@ test('arrayRank: 차원 수 추출', () => {
     assert.strictEqual(arrayRank('Double()'), 1);
     assert.strictEqual(arrayRank('Double(,)'), 2);
     assert.strictEqual(arrayRank('Integer(,,)'), 3);
+});
+
+// ─── 시스템 Location 덤프 픽스처 (GPL 4.2K5, 2026-08-25, GitHub #27) ───
+// Show Variable -eval JogCommandRunThread 0 Robot.Where(1) — 멤버 줄이 2열(name, value)+주석 값
+const REAL_LOCATION_CART = '<DATA>Robot.Where(1), Object Location\n'
+    + 'Robot.Where(1).Type, 0 = Cartesian\n'
+    + 'Robot.Where(1).Config, 1  = Righty\n'
+    + 'Robot.Where(1).X, 636\n'
+    + 'Robot.Where(1).Y, 0\n'
+    + 'Robot.Where(1).Z, 0\n'
+    + 'Robot.Where(1).Yaw, 0\n'
+    + 'Robot.Where(1).Pitch, 90\n'
+    + 'Robot.Where(1).Roll, -180\n'
+    + 'Robot.Where(1).RefFrame, Null\n'
+    + 'Robot.Where(1).ZClearance, 1E+32\n'
+    + 'Robot.Where(1).ZWorld, 0\n'
+    + '</DATA>\n<STATUS>0,"Success"</STATUS>';
+const REAL_LOCATION_ANGLES = '<DATA>Robot.WhereAngles(1), Object Location\n'
+    + 'Robot.WhereAngles(1).Type, 1 = Angles\n'
+    + 'Robot.WhereAngles(1).Angle(1), 0\n'
+    + 'Robot.WhereAngles(1).Angle(2), 0\n'
+    + 'Robot.WhereAngles(1).Angle(3), 0\n'
+    + 'Robot.WhereAngles(1).Angle(4), 0\n'
+    + 'Robot.WhereAngles(1).Angle(5), 0.196000011246651\n'
+    + 'Robot.WhereAngles(1).ZClearance, 1E+32\n'
+    + 'Robot.WhereAngles(1).ZWorld, 0\n'
+    + '</DATA>\n<STATUS>0,"Success"</STATUS>';
+
+test('isTypeToken: 타입 토큰과 2열 값 구분', () => {
+    for (const t of ['Integer', 'Double', 'String', 'Boolean', 'Double(,)', 'String()', 'Object', 'Object Command',
+        'Object Location', 'Object() null', 'Object() RobotArm', 'RobotArm()']) {
+        assert.strictEqual(isTypeToken(t), true, `타입이어야 함: ${t}`);
+    }
+    for (const v of ['636', '-180', '1E+32', '0.196000011246651', '0 = Cartesian', '1  = Righty', 'Null', '"7,6"', '']) {
+        assert.strictEqual(isTypeToken(v), false, `값이어야 함: ${v}`);
+    }
+});
+
+test('parseShowVariableMulti: Location 덤프 2열 멤버는 value로(type 비움), 주석 값 보존, Null→null', () => {
+    const entries = parseShowVariableMulti(REAL_LOCATION_CART);
+    assert.strictEqual(entries.length, 12);
+    assert.deepStrictEqual(entries[0], { name: 'Robot.Where(1)', type: 'Object Location', value: '' });
+    const byLeaf = (leaf: string) => entries.find(e => e.name.endsWith(`.${leaf}`))!;
+    assert.deepStrictEqual(byLeaf('X'), { name: 'Robot.Where(1).X', type: '', value: '636' });
+    assert.strictEqual(byLeaf('Type').value, '0 = Cartesian');
+    assert.strictEqual(byLeaf('Config').value, '1  = Righty');
+    assert.strictEqual(byLeaf('RefFrame').value, 'null');
+    assert.strictEqual(byLeaf('Roll').value, '-180');
+    // 2열 값 줄은 simple — 배열/객체로 오분류되지 않는다
+    assert.strictEqual(classifyVarEntry(byLeaf('X')), 'simple');
+    assert.strictEqual(classifyVarEntry(byLeaf('RefFrame')), 'simple');
+    assert.strictEqual(classifyVarEntry(entries[0], true), 'object');
+});
+
+test('parseShowVariableMulti: 단일 프로퍼티 3열·빈 문자열 2열(`x.Text, String`)은 종전대로 type', () => {
+    const single = parseShowVariableMulti('<DATA>Robot.Where(1).Config, Integer, 1</DATA>\n<STATUS>0,"Success"</STATUS>');
+    assert.deepStrictEqual(single[0], { name: 'Robot.Where(1).Config', type: 'Integer', value: '1' });
+    const empty = parseShowVariableMulti('<DATA>Robot.Where(1).Text, String</DATA>\n<STATUS>0,"Success"</STATUS>');
+    assert.deepStrictEqual(empty[0], { name: 'Robot.Where(1).Text', type: 'String', value: '' });
+});
+
+test('summarizeLocation: Cartesian/Angles 한 줄 요약, 미지 Type은 undefined', () => {
+    const cart = parseShowVariableMulti(REAL_LOCATION_CART);
+    assert.strictEqual(isLocationType(cart[0].type), true);
+    assert.strictEqual(summarizeLocation(cart.slice(1)), '(636, 0, 0 | 0, 90, -180) cfg=1');
+    const ang = parseShowVariableMulti(REAL_LOCATION_ANGLES);
+    assert.strictEqual(summarizeLocation(ang.slice(1)), 'Angles(0, 0, 0, 0, 0.196)');
+    assert.strictEqual(summarizeLocation([{ name: 'l.X', type: '', value: '1' }]), undefined);
+    assert.strictEqual(summarizeLocation([]), undefined);
+    assert.strictEqual(isLocationType('Object Command'), false);
+});
+
+test('annotateLocationMember: ZClearance 1E+32만 "(미설정)" 주석', () => {
+    assert.strictEqual(annotateLocationMember('Robot.Where(1).ZClearance', '1E+32'), '1E+32 (미설정)');
+    assert.strictEqual(annotateLocationMember('Robot.Where(1).ZClearance', '25'), '25');
+    assert.strictEqual(annotateLocationMember('Robot.Where(1).X', '1E+32'), '1E+32');
 });
 
 test('splitVarLine: 괄호 안 쉼표 무시 + maxParts 이후 병합', () => {

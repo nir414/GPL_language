@@ -50,7 +50,7 @@ import {
     NO_STATUS_CODE,
     StackFrameInfo,
 } from '../controller/responseParser';
-import { GPLParser, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbolKind, GPLSymbol } from '../gplParser';
 import { isReadOnlyConsoleCommand } from '../controller/consoleCommandClassifier';
 import { fireDebugThreadsUpdated, onDebugPollTrigger } from '../controller/debugBridge';
 import {
@@ -58,6 +58,9 @@ import {
     parseShowVariableMulti,
     classifyVarEntry,
     arrayRank,
+    isLocationType,
+    summarizeLocation,
+    annotateLocationMember,
 } from './showVariableParser';
 import {
     extractIndexIdentifierTokens,
@@ -120,6 +123,8 @@ type ScopeRef =
         /** 멤버 경로 조합용 부모 식 (setVariable/Watch 추가에 사용) */
         parentExpression: string;
         entries: ParsedVarEntry[];
+        /** 헤더 타입(`Object RNDRobot`) — 클래스 Property 가상 자식 생성용(GitHub #26) */
+        classType?: string;
     }
     | {
         type: 'expand';
@@ -184,6 +189,8 @@ export class GPLDebugSession extends LoggingDebugSession {
     >();
     // 전역 후보 열거 캐시 — 63파일 read+parse를 variablesRequest마다 반복하지 않는다.
     private _globalDescriptorsCache: GlobalVariableDescriptor[] | undefined;
+    // Property 심볼 색인(이름별·클래스별) — -780 백킹 필드 치환과 가상 Property 자식에 사용(GitHub #26). 소스맵 세대 동안 캐시.
+    private _propertyIndexCache: { byName: Map<string, GPLSymbol[]>; byClass: Map<string, GPLSymbol[]> } | undefined;
 
     // State polling
     private _pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -959,6 +966,11 @@ export class GPLDebugSession extends LoggingDebugSession {
                     `${scopeInfo.parentExpression}.${bare}`,
                 ));
             }
+            // 클래스 Property를 가상 자식으로 — 덤프의 백킹 필드 값을 재사용하므로 왕복 없음(GitHub #26)
+            variables.push(...this._propertyChildren(
+                scopeInfo.classType, scopeInfo.entries, scopeInfo.parentExpression,
+                scopeInfo.threadName, scopeInfo.frameIndex,
+            ));
         } else if (scopeInfo.type === 'expand') {
             if (classifyVarEntry({ name: '', type: scopeInfo.varType, value: '' }) === 'array') {
                 variables.push(...await this._expandArrayElements(scopeInfo));
@@ -980,6 +992,10 @@ export class GPLDebugSession extends LoggingDebugSession {
                             `${structured.resolvedExpression}.${bare}`,
                         ));
                     }
+                    variables.push(...this._propertyChildren(
+                        structured.entry.type, structured.members, structured.resolvedExpression,
+                        scopeInfo.threadName, scopeInfo.frameIndex,
+                    ));
                     if (structured.members.length === 0) {
                         const value = structured.entry.value && structured.entry.value !== GPLDebugSession.UNDEFINED_VALUE
                             ? structured.entry.value
@@ -1354,10 +1370,12 @@ export class GPLDebugSession extends LoggingDebugSession {
                     evalError = structured.error;
                     const kind = classifyVarEntry(structured.entry, structured.members.length > 0);
                     if (kind === 'object' && structured.members.length > 0) {
-                        // 객체는 응답의 멤버 줄 전체를 보여준다 (기존: 첫 줄만 파싱해 "Object"만 표시)
+                        // 객체는 응답의 멤버 줄 전체를 보여준다 (기존: 첫 줄만 파싱해 "Object"만 표시).
+                        // Location은 한 줄 요약을 헤더에 덧붙이고, 2열 멤버(타입 없음)는 빈 칸 없이 잇는다(GitHub #27).
+                        const locSummary = isLocationType(structured.entry.type) ? summarizeLocation(structured.members) : undefined;
                         result = [
-                            `${structured.entry.name || expression}, ${structured.entry.type || 'Object'}`,
-                            ...structured.members.map(m => `  ${m.name}, ${m.type}${m.value ? `, ${m.value}` : ''}`),
+                            `${structured.entry.name || expression}, ${structured.entry.type || 'Object'}${locSummary ? `  ${locSummary}` : ''}`,
+                            ...structured.members.map(m => `  ${[m.name, m.type, m.value].filter(Boolean).join(', ')}`),
                         ].join('\n');
                     } else if (kind === 'array') {
                         result = `${structured.entry.type} 배열 — 요소는 ${expression}(i) 형식으로 조회`;
@@ -1369,6 +1387,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         // null 객체 참조 요소 (`armList(1), Object() null`)
                         result = `null  (${structured.entry.type})`;
                     }
+                    if (result && structured.via) { result += `\n  ← ${structured.via}`; }
                 }
                 if (!result && this._projectName) {
                     const gResp = await this._sendCmd(
@@ -1460,6 +1479,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                         // null 객체 참조 요소 (`armList(1), Object() null`)
                         result = `null  (${structured.entry.type})`;
                     }
+                    // 프로퍼티를 백킹 필드로 치환해 얻은 값이면 출처를 함께 보인다(GitHub #26)
+                    if (result && structured.via) { result += `  ← ${structured.via}`; }
                 }
                 if (!result && this._projectName) {
                     // Fallback: might be a global variable — Show Global은 프로젝트명이
@@ -1805,14 +1826,18 @@ export class GPLDebugSession extends LoggingDebugSession {
                     frameIndex,
                     parentExpression: expression,
                     entries: memberEntries,
+                    classType: entry.type,
                 })
                 : this._variableHandles.create({
                     type: 'expand', threadName, frameIndex, expression, varType: entry.type,
                 });
+            // 시스템 Location은 펼치지 않아도 읽히게 한 줄 요약을 값에 넣는다(GitHub #27):
+            // Cartesian `(X, Y, Z | Yaw, Pitch, Roll) cfg=N`, Angles `Angles(a1, …)`.
+            const locSummary = isLocationType(entry.type) && memberEntries?.length ? summarizeLocation(memberEntries) : undefined;
             return {
                 name: displayName,
                 // 실기기는 타입에 클래스명을 포함해 보고한다(`Object Command`) — 그대로 노출.
-                value: entry.type || 'Object',
+                value: locSummary ? `${locSummary}  (${entry.type})` : (entry.type || 'Object'),
                 type: entry.type,
                 evaluateName: expression,
                 variablesReference: ref,
@@ -1831,8 +1856,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                 variablesReference: ref,
             };
         }
-        // null 객체 참조(`Object() null`, 값 없음)는 빈 값 대신 'null'로 표시
-        const displayValue = entry.value
+        // null 객체 참조(`Object() null`, 값 없음)는 빈 값 대신 'null'로 표시.
+        // Location 멤버의 ZClearance 1E+32는 "(미설정)" 주석을 붙인다(GitHub #27).
+        const displayValue = annotateLocationMember(entry.name, entry.value)
             || (/\bnull\s*$/i.test(entry.type) ? 'null' : '');
         return {
             name: displayName,
@@ -1887,9 +1913,14 @@ export class GPLDebugSession extends LoggingDebugSession {
         members: ParsedVarEntry[];
         error?: { code: number; message: string };
         resolvedExpression: string;
+        /** 프로퍼티를 백킹 필드로 치환해 얻은 값이면 그 출처 설명(표시용, GitHub #26) */
+        via?: string;
     } | null> {
         const miss = (r: { entry: ParsedVarEntry; members: ParsedVarEntry[] } | null) =>
             !r || (r.members.length === 0 && (!r.entry.value || r.entry.value === GPLDebugSession.UNDEFINED_VALUE));
+
+        // `Me.x`는 이 제어기 콘솔에서 -712 Invalid syntax(실측 2026-08-25, GitHub #26) — 접두를 벗기고 평가한다.
+        expression = expression.replace(/^Me\.(?=[A-Za-z_])/i, '');
 
         // ① 원식 그대로
         const first = await this._queryVariableStructured(threadName, frameIndex, expression);
@@ -1916,6 +1947,43 @@ export class GPLDebugSession extends LoggingDebugSession {
                         this._log(`인덱스 치환 평가: ${expression} → ${rewritten}`);
                         return { ...second!, resolvedExpression: rewritten };
                     }
+                }
+            }
+        }
+
+        // ②-b 프로퍼티 → 백킹 필드 치환 (GitHub #26). -780은 "식의 마지막 요소가 사용자 프로시저"일 때 난다(실측 2026-08-25).
+        //     같은 클래스 프레임이면 점 표기 치환식이 바로 읽히고, 다른 클래스 프레임에서는 Private 필드 점 표기가
+        //     -729라 부모 객체 덤프(프레임 무관, Private 포함 전체 필드)에서 멤버 줄을 추출한다.
+        if (depth === 0 && first?.error?.code === -780) {
+            const candidates = this._propertyBackingCandidates(expression);
+            for (const cand of candidates) {
+                const r = await this._queryVariableStructured(threadName, frameIndex, cand.expr);
+                if (!miss(r)) {
+                    this._log(`프로퍼티 치환 평가: ${expression} → ${cand.expr}`);
+                    return { ...r!, resolvedExpression: cand.expr, via: cand.via };
+                }
+                if (cand.parentExpr && r?.error?.code === -729) {
+                    const parent = await this._queryVariableStructuredSmart(threadName, frameIndex, cand.parentExpr, depth + 1);
+                    const wanted = `.${cand.backingLeaf.toLowerCase()}`;
+                    const m = parent?.members.find(e => e.name.toLowerCase().endsWith(wanted));
+                    if (parent && m) {
+                        this._log(`프로퍼티 치환(부모 덤프) 평가: ${expression} → ${parent.resolvedExpression} 덤프의 ${m.name}`);
+                        return {
+                            entry: m,
+                            members: [],
+                            resolvedExpression: `${parent.resolvedExpression}.${cand.backingLeaf}`,
+                            via: cand.via,
+                        };
+                    }
+                }
+            }
+            // 반환형이 Location인 프로퍼티는 시스템 멤버 `.Pos`를 붙이면 체인 중간 실행이 허용돼 덤프를 받을 수 있다(실측 2026-08-25).
+            if (candidates.some(c => c.symbols.some(s => /^Location$/i.test(s.returnType ?? '')))) {
+                const posExpr = `${expression}.Pos`;
+                const r = await this._queryVariableStructured(threadName, frameIndex, posExpr);
+                if (!miss(r)) {
+                    this._log(`Location 프로퍼티 우회 평가: ${expression} → ${posExpr}`);
+                    return { ...r!, resolvedExpression: posExpr, via: `${posExpr} (Location 프로퍼티 우회)` };
                 }
             }
         }
@@ -1960,12 +2028,142 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _formatEvalError(expression: string, error: { code: number; message: string }): string {
         const base = `(평가 실패 ${error.code}: ${error.message || '원인 미상'})`;
         if (error.code === -780) {
-            return `${base} — 프로퍼티/메서드 참조는 제어기 콘솔이 평가하지 못합니다(필드/로컬만 가능). 백킹 필드를 확인하세요 (예: ${expression.split('.')[0] || expression} 객체를 펼쳐 m_* 필드 조회)`;
+            return `${base} — 프로퍼티/메서드 참조는 제어기 콘솔이 평가하지 못합니다(필드/로컬만 가능). 소스에서 Property로 확인되면 백킹 필드(Get 반환식·m_이름)로 자동 치환하지만 이 식은 치환할 수 없었습니다. 백킹 필드를 직접 확인하세요 (예: ${expression.split('.')[0] || expression} 객체를 펼쳐 m_* 필드 조회)`;
         }
         if (error.code === -729) {
             return `${base} — 현재 프레임 스코프에 없는 이름이거나, 점 표기 멤버 접근입니다 (이 제어기의 콘솔 평가는 프레임의 로컬/파라미터 이름만 지원 — 멤버 값은 부모 객체를 조회하세요)`;
         }
+        if (error.code === -762 || error.code === -763) {
+            // 실측(2026-08-25, GitHub #27): -762 "*Location not a Cartesian type*"(Angles에 X 접근), -763 "*Location not an angles type*"(Cartesian에 Angle(i) 접근)
+            const guide = error.code === -763
+                ? 'Cartesian(Type 0)이라 Angle(i)가 없습니다 — X/Y/Z/Yaw/Pitch/Roll을'
+                : 'Angles(Type 1)라 X/Y/Z/Yaw/Pitch/Roll이 없습니다 — Angle(1..n)을';
+            return `${base} — Location 타입 불일치: 이 Location은 ${guide} 조회하세요`;
+        }
+        if (error.code === -712) {
+            return `${base} — 콘솔 평가기가 받지 않는 구문입니다(\`Me.\` 접두, CStr/CInt 같은 시스템 함수 감싸기, 산술식). 변수/필드 식만 입력하세요`;
+        }
         return base;
+    }
+
+    // ─── Property → 백킹 필드 해석 (GitHub #26) ─────────────────────────────
+    // 실측(GPL 4.2K5, 2026-08-25): -eval은 식의 **마지막 요소**가 사용자 Property/Function이면 -780을 낸다(체인 중간은 실행됨).
+    // 값 자체는 백킹 필드에 있고, 객체 덤프에는 Private 포함 전체 필드가 프레임과 무관하게 실려 온다. 그래서
+    // Property 이름 → 백킹 필드(파서가 기록한 Get 반환식 또는 관례 m_이름) → 필요 시 부모 덤프 추출 순으로 값을 찾는다.
+
+    /** 프로젝트 소스의 Property 심볼 색인(이름별·클래스별, 소문자 키). 소스맵 세대 동안 캐시(_buildSourceFileMap에서 무효화). */
+    private _getPropertyIndex(): { byName: Map<string, GPLSymbol[]>; byClass: Map<string, GPLSymbol[]> } {
+        if (this._propertyIndexCache) { return this._propertyIndexCache; }
+        const byName = new Map<string, GPLSymbol[]>();
+        const byClass = new Map<string, GPLSymbol[]>();
+        for (const [key, candidates] of this._sourceFileMap) {
+            const filePath = this._pickSourcePath(key, candidates);
+            if (this._projectDirs.length > 0
+                && !this._projectDirs.some(d => this._isPathUnder(filePath, d))) { continue; }
+            let content: string;
+            try { content = fs.readFileSync(filePath, 'utf-8'); } catch { continue; }
+            const symbols = GPLParser.parseDocument(content, filePath, { includeLocals: false, includeParameters: false });
+            for (const s of symbols) {
+                if (s.kind !== GPLSymbolKind.Property) { continue; }
+                const n = s.name.toLowerCase();
+                byName.set(n, [...(byName.get(n) ?? []), s]);
+                if (s.className) {
+                    const c = s.className.toLowerCase();
+                    byClass.set(c, [...(byClass.get(c) ?? []), s]);
+                }
+            }
+        }
+        this._propertyIndexCache = { byName, byClass };
+        return this._propertyIndexCache;
+    }
+
+    /** `Object RNDRobot` / `Object() RobotArm` 헤더 타입에서 클래스 이름. `null`이나 타입만 있으면 undefined. */
+    private _classNameOfType(type: string | undefined): string | undefined {
+        const m = (type ?? '').match(/^object\b[^A-Za-z_]*([A-Za-z_]\w*)\s*$/i);
+        const name = m?.[1];
+        return name && !/^null$/i.test(name) ? name : undefined;
+    }
+
+    /**
+     * Property 식의 백킹 필드 후보. 식의 마지막 요소가 소스에서 Property로 확인될 때만 만든다(인자 있는 프로퍼티는 제외).
+     * 순서: ① Get 본문 `Return <식>`(getterReturnExpr) ② 관례 `m_<이름>`(getter가 있는 프로퍼티만).
+     */
+    private _propertyBackingCandidates(expression: string): Array<{
+        /** 제어기에 보낼 치환식(부모 식 포함) */ expr: string;
+        /** 부모 덤프에서 찾을 멤버 leaf 이름 */ backingLeaf: string;
+        /** 표시용 출처 설명 */ via: string;
+        parentExpr: string | undefined;
+        symbols: GPLSymbol[];
+    }> {
+        const lastDot = expression.lastIndexOf('.');
+        const leaf = lastDot >= 0 ? expression.slice(lastDot + 1) : expression;
+        if (!/^[A-Za-z_]\w*$/.test(leaf)) { return []; }
+        const symbols = this._getPropertyIndex().byName.get(leaf.toLowerCase());
+        if (!symbols || symbols.length === 0) { return []; }
+        const parentExpr = lastDot > 0 ? expression.slice(0, lastDot) : undefined;
+        const out: ReturnType<GPLDebugSession['_propertyBackingCandidates']> = [];
+        const seen = new Set<string>();
+        const add = (backing: string, via: string) => {
+            const key = backing.toLowerCase();
+            if (seen.has(key)) { return; }
+            seen.add(key);
+            out.push({
+                expr: parentExpr ? `${parentExpr}.${backing}` : backing,
+                backingLeaf: backing.split('.').pop()!.replace(/\(.*$/, ''),
+                via,
+                parentExpr,
+                symbols,
+            });
+        };
+        for (const s of symbols) {
+            // 단순 식(식별자·점 체인·인덱스)만 — 산술/함수 감싸기는 콘솔이 -712로 거부해 왕복만 낭비한다
+            if (s.getterReturnExpr && /^[A-Za-z_][\w.]*(\([^()]*\))?$/.test(s.getterReturnExpr)) {
+                add(s.getterReturnExpr, `${s.getterReturnExpr} (Get 반환식)`);
+            }
+        }
+        if (symbols.some(s => s.hasGetter !== false)) {
+            add(`m_${leaf}`, `m_${leaf} (관례)`);
+        }
+        return out;
+    }
+
+    /**
+     * 클래스 객체 노드의 가상 Property 자식(GitHub #26 제안 4). 덤프에 이미 실려 온 멤버 줄에서 백킹 필드 값을 찾으므로
+     * 제어기 왕복이 없다. 해석 불가(복잡한 getter·백킹 필드 없음)면 `(프로시저 — 평가 불가)`, WriteOnly는 제외.
+     */
+    private _propertyChildren(
+        classType: string | undefined,
+        members: ParsedVarEntry[],
+        parentExpression: string,
+        threadName: string,
+        frameIndex: number,
+    ): DebugProtocol.Variable[] {
+        const className = this._classNameOfType(classType);
+        if (!className || members.length === 0) { return []; }
+        const props = this._getPropertyIndex().byClass.get(className.toLowerCase());
+        if (!props || props.length === 0) { return []; }
+        const bareOf = (e: ParsedVarEntry) => this._memberBareName(e.name, parentExpression);
+        const memberNames = new Set(members.map(e => bareOf(e).toLowerCase()));
+        const out: DebugProtocol.Variable[] = [];
+        const seen = new Set<string>();
+        for (const p of props) {
+            const key = p.name.toLowerCase();
+            if (seen.has(key) || p.hasGetter === false || memberNames.has(key)) { continue; }
+            seen.add(key);
+            const backing = [p.getterReturnExpr, `m_${p.name}`]
+                .filter((b): b is string => !!b && /^[A-Za-z_]\w*$/.test(b))
+                .map(b => b.toLowerCase());
+            const m = members.find(e => backing.includes(bareOf(e).toLowerCase()));
+            const hint: DebugProtocol.VariablePresentationHint = { kind: 'property', attributes: ['readOnly'] };
+            if (!m) {
+                out.push({ name: p.name, value: '(프로시저 — 평가 불가)', variablesReference: 0, presentationHint: hint });
+                continue;
+            }
+            const bare = bareOf(m);
+            const v = this._makeVariable(p.name, m, threadName, frameIndex, `${parentExpression}.${bare}`);
+            out.push({ ...v, value: `${v.value}  ← ${bare}`, presentationHint: hint });
+        }
+        return out;
     }
 
     /** 멤버 전체 경로(`Loc.Pos.X`)에서 부모 식을 제외한 표시용 이름을 얻는다. */
@@ -2142,6 +2340,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         // 소스 구성이 바뀌면 전역 열거/조회 메모도 무효 — 파일 추가·이동·프로젝트 변경 대응.
         this._globalQueryMemo.clear();
         this._globalDescriptorsCache = undefined;
+        this._propertyIndexCache = undefined;
         const folders = vscode.workspace.workspaceFolders;
         if (!folders) { return; }
 

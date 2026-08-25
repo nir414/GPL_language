@@ -243,3 +243,68 @@ test('getStringLiteralContentAt: 닫히지 않은 문자열은 줄 끝까지를 
     const line = 'x = "unterminated';
     assert.strictEqual(getStringLiteralContentAt(line, line.indexOf('unterminated'))?.text, 'unterminated');
 });
+
+// ─── Property getter 반환식 기록 (GitHub #26, 2026-08-25) ─────────────────
+// 디버거가 제어기 -eval의 -780(프로퍼티 참조 평가 불가)을 백킹 필드 평가로 우회하는 근거.
+
+test('Property: Get 본문이 `Return <식>` 한 문장이면 getterReturnExpr에 기록', () => {
+    const src = [
+        'Class RNDRobot',
+        '    Private m_armCount As Integer',
+        "    ' 암 개수",
+        '    Public ReadOnly Property armCount As Integer',
+        '        Get',
+        "            Return m_armCount ' 백킹 필드",
+        '        End Get',
+        '    End Property',
+        'End Class',
+    ].join('\n');
+    const p = parse(src).find(s => s.name === 'armCount' && s.kind === GPLSymbolKind.Property);
+    assert.ok(p, 'Property 심볼이 파싱되어야 한다');
+    assert.strictEqual(p!.getterReturnExpr, 'm_armCount');
+    assert.strictEqual(p!.hasGetter, true);
+    assert.strictEqual(p!.className, 'RNDRobot');
+    assert.strictEqual(p!.returnType, 'Integer');
+});
+
+test('Property: 분기/계산이 있는 getter·Set만 있는 프로퍼티는 getterReturnExpr 없음', () => {
+    const src = [
+        'Class C',
+        '    Public Property total As Integer',
+        '        Get',
+        '            If m_a > 0 Then',
+        '                Return m_a',
+        '            End If',
+        '            Return m_b',
+        '        End Get',
+        '        Set(ByVal value As Integer)',
+        '            m_a = value',
+        '        End Set',
+        '    End Property',
+        '    Public WriteOnly Property sink As Integer',
+        '        Set(ByVal value As Integer)',
+        '            m_b = value',
+        '        End Set',
+        '    End Property',
+        '    Public Property loc As Location',
+        '        Get',
+        '            Return m_loc',
+        '        End Get',
+        '        Set(ByVal value As Location)',
+        '            m_loc = value',
+        '        End Set',
+        '    End Property',
+        'End Class',
+    ].join('\n');
+    const syms = parse(src);
+    const total = syms.find(s => s.name === 'total')!;
+    assert.strictEqual(total.getterReturnExpr, undefined);
+    assert.strictEqual(total.hasGetter, true);
+    const sink = syms.find(s => s.name === 'sink')!;
+    assert.strictEqual(sink.getterReturnExpr, undefined);
+    assert.strictEqual(sink.hasGetter, false);
+    // Set 블록이 뒤따라도 Get의 단일 Return은 인식된다
+    const loc = syms.find(s => s.name === 'loc')!;
+    assert.strictEqual(loc.getterReturnExpr, 'm_loc');
+    assert.strictEqual(loc.returnType, 'Location');
+});

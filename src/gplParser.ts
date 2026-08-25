@@ -27,6 +27,13 @@ export interface GPLSymbol {
     /** Initializer value for constants (e.g. "123" from "Const X As Integer = 123"). */
     value?: string;
     returnType?: string;
+    /**
+     * Property 전용. Get 본문이 `Return <식>` 한 문장뿐이면 그 식(예: `m_armCount`). 디버거가 제어기 -eval의
+     * -780(프로퍼티 참조 평가 불가)을 백킹 필드 평가로 우회하는 근거(GitHub #26). 분기·계산이 있는 getter는 undefined.
+     */
+    getterReturnExpr?: string;
+    /** Property 전용. `Get … End Get` 블록이 있으면 true, WriteOnly(Set만)면 false. 블록을 못 훑었으면 undefined. */
+    hasGetter?: boolean;
     isXmlRelated?: boolean;
     hasXmlIssues?: string[];
 }
@@ -313,6 +320,7 @@ export class GPLParser {
                 const propAccess = /\bPublic\b/i.test(propMods)
                     ? 'public'
                     : (/\bPrivate\b/i.test(propMods) ? 'private' : undefined);
+                const getter = GPLParser.extractSimpleGetterReturn(logicalLines, li + 1);
                 symbols.push({
                     name: propertyMatch[2],
                     kind: GPLSymbolKind.Property,
@@ -325,7 +333,9 @@ export class GPLParser {
                     isShared: /\bShared\b/i.test(propMods),
                     // 배열 반환(`As Integer()`)은 `Integer[]`로 기록 — Function과 동일 규칙.
                     returnType: propertyMatch[3] ? propertyMatch[3] + (propertyMatch[4] ? '[]' : '') : undefined,
-                    docComment
+                    docComment,
+                    hasGetter: getter.hasGetter,
+                    ...(getter.returnExpr ? { getterReturnExpr: getter.returnExpr } : {}),
                 });
 
                 // Enter property block (if it has Get/Set); End Property will decrement.
@@ -553,6 +563,52 @@ export class GPLParser {
      * - "Optional speed As Integer = 10"
      * - "robotArmList() As RobotArm"
      */
+    /**
+     * Property 선언 다음 줄부터 `End Property`까지 훑어 Get 블록 유무와, Get 본문이 `Return <식>` **한 문장**이면
+     * 그 식을 돌려준다(GitHub #26 — 디버거의 -780 우회용). 주석·빈 줄은 무시하고, Set 블록 안은 세지 않는다.
+     * `End Property` 없이 다음 선언이 시작되면 거기서 멈춘다(깨진 소스 방어). 최대 400 논리행만 본다.
+     */
+    private static extractSimpleGetterReturn(
+        logicalLines: Array<{ line: number; text: string }>,
+        from: number,
+    ): { hasGetter: boolean; returnExpr?: string } {
+        const declStart = /^(?:(?:Public|Private|Protected|Friend|Shared|ReadOnly|WriteOnly|Default|Overrides|Overridable|NotOverridable|MustOverride|Shadows|Overloads)\b\s+)*(?:Sub|Function|Property|Class|Module)\b/i;
+        let inGet = false;
+        let inSet = false;
+        let hasGetter = false;
+        let stmtCount = 0;
+        let returnExpr: string | undefined;
+        for (let k = from; k < logicalLines.length && k < from + 400; k++) {
+            const t = logicalLines[k].text.trim();
+            if (!t || t.startsWith("'")) { continue; }
+            if (/^End\s+Property\b/i.test(t)) { break; }
+            if (declStart.test(t)) { break; }
+            if (/^Get\b/i.test(t)) { inGet = true; hasGetter = true; continue; }
+            if (/^End\s+Get\b/i.test(t)) { inGet = false; continue; }
+            if (/^Set\b/i.test(t)) { inSet = true; continue; }
+            if (/^End\s+Set\b/i.test(t)) { inSet = false; continue; }
+            if (!inGet || inSet) { continue; }
+            stmtCount++;
+            const rm = t.match(/^Return\s+(.+)$/i);
+            if (rm && stmtCount === 1) {
+                const expr = GPLParser.stripTrailingComment(rm[1]).trim();
+                returnExpr = expr || undefined;
+            }
+        }
+        return { hasGetter, ...(stmtCount === 1 && returnExpr ? { returnExpr } : {}) };
+    }
+
+    /** 문자열 리터럴 밖의 첫 `'`부터 잘라 낸다(줄 끝 주석 제거). */
+    private static stripTrailingComment(text: string): string {
+        let inString = false;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (ch === '"') { inString = !inString; continue; }
+            if (ch === "'" && !inString) { return text.slice(0, i); }
+        }
+        return text;
+    }
+
     private static extractParamName(param: string): { name?: string; type?: string } {
         const cleaned = param
             .replace(/\b(ByVal|ByRef|Optional|ParamArray)\b/gi, '')

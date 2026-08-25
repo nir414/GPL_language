@@ -26,8 +26,9 @@ export class ConnectionStatusBar implements vscode.Disposable {
     get isConnected(): boolean { return this._isConnected; }
 
     /**
-     * "컴파일 필요" 상태 — /GPL 소스는 업로드됐지만 Compile은 안 된 프로젝트(이슈 #17 재배치의 부수 상태).
-     * Start는 컴파일하지 않으므로 사용자가 놓치지 않게 상태바에 경고 배지로 보인다. undefined면 해제.
+     * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트(이슈 #17 재구성의 부수 상태).
+     * Start는 제어기가 자체 컴파일하므로(ai-handoff §0.7) 소스 에러가 있으면 Start가 실패한다 — 놓치지 않게 상태바에
+     * 경고 배지로 보인다. undefined면 해제.
      */
     setCompileStale(state?: StatusBarCompileStale): void {
         this.compileStale = state;
@@ -75,12 +76,12 @@ export class ConnectionStatusBar implements vscode.Disposable {
         if (connected) {
             const stale = this.compileStale;
             if (stale) {
-                this.item.text = `$(plug) GPL: ${cfg.ip} $(warning) 컴파일 필요: ${stale.projectName}`;
+                this.item.text = `$(plug) GPL: ${cfg.ip} $(warning) 컴파일 검증 필요: ${stale.projectName}`;
                 this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
                 this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect\n\n` +
-                    `컴파일 필요: ${stale.projectName} — ${stale.reason}\n` +
-                    `${new Date(stale.since).toLocaleString()} 이후 /GPL 소스가 컴파일본보다 최신입니다. ` +
-                    'Start는 컴파일하지 않으므로 이전 프로그램이 실행됩니다 — Quick Compile을 먼저 실행하세요.';
+                    `컴파일 검증 필요: ${stale.projectName} — ${stale.reason}\n` +
+                    `${new Date(stale.since).toLocaleString()} 이후 /GPL 소스가 아직 Compile로 검증되지 않았습니다. ` +
+                    'Start는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start가 실패합니다 — Quick Compile로 먼저 확인하세요.';
             } else {
                 this.item.text = `$(plug) GPL: ${cfg.ip}`;
                 this.item.backgroundColor = undefined;

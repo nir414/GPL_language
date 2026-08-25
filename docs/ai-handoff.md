@@ -2,7 +2,7 @@
 
 - 최종 갱신: 2026-08-25 (§1-BD: 이슈 #15·#17 통합 — 배포 잠금(프로세스 간 파일, 보유자·단계·경과 표시) + 배포 단계 UPLOAD ∥ STOP 병행 → COMPILE 재구성 + "컴파일 필요" 상태. 직전: §1-BC README 과포화 정리)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.15** (working tree — §1-BD 변경분 포함, 미배포. 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
+- 현재 package 버전: **0.8.17** (§1-BD 변경분 포함. 세션 중 사용자가 `npm run package`로 0.8.16(순차 버전, f88cbd6)·0.8.17(병행 버전, 44c9d32+) VSIX를 로컬 빌드 — CHANGELOG는 0.8.17로 통합 기재. 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -19,6 +19,7 @@
    - 2026-07-03 추가: 반대 방향 문제도 확인됨(호스트 도구로 쓴 파일이 샌드박스에서 잘리거나 NUL 패딩으로 보임). **파일 수정을 샌드박스 bash(heredoc/python)로 수행하면 양쪽이 일관된다.**
 5. **하위 프로젝트 `npm install`은 Windows에서만 실행한다.** 리눅스 샌드박스/WSL에서 실행하면 `node_modules/.bin`에 유닉스 심볼릭 링크가 생기고, Windows의 `vsce package`가 `EACCES: permission denied, scandir ...`로 죽는다(2026-07-03 실제 발생, §1-C). `scripts/package.js`의 preflight가 이를 감지해 준다.
 6. **`Stop -all`의 STATUS 0은 "정지 요청 접수"이지 정지 완료가 아니다.** 정지 완료 전에 `Compile`/`Start`를 보내면 제어기 이상 현상(메모리 누수 의심, 2026-07-08 사용자 관찰, §1-G)이 발생할 수 있다. Compile/Start 전에는 반드시 `Show Thread`로 모든 쓰레드가 Idle/Stopped/Error임을 확인한다. `deploy()`에 게이트가 구현돼 있으니 우회 경로를 만들지 말 것.
+7. **PA 제어기의 `Start`는 자체적으로 Compile을 수행한다(사용자 실사용 사실, 2026-08-25 명시).** Brooks 문서는 "Compile 명령으로 사전 컴파일되어 있어야 하며 `-compile` 스위치가 별도"라고 하지만 실제 동작이 다르다(문서 회의주의 사례 — 문서는 가설, 실기기가 사실). 함의: **Compile 직후 Start를 연속으로 보내지 않는다 — 한 번에 하나만.** 컴파일이 두 번 겹치는 연속 실행은 위험 의심이며 안전성은 추후 실기기 테스트. Deploy는 Compile까지, 실행은 `GPL: Start`가 별도. "컴파일 검증 필요" 상태의 뜻은 "옛 바이너리가 실행된다"가 아니라 "에러 미검증 — Start 시 자체 컴파일이 실패할 수 있고 Problems 연동이 없다". 기존 연속 경로(F5 `deployBeforeAttach` → `Start -break -bex`, FTP 뷰 '컴파일 & 실행')는 현황 유지·검토 대상(§1-BD 남은 일).
 
 ---
 
@@ -1997,7 +1998,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 - `runDeploy`가 플래그를 세운 뒤 `runDeployCore`가 UI를 await(구 1449/1457행). 고정 경고 문자열 5곳. `deployInFlight`는 extension.ts 지역 변수 — F5 경로(`gplDebugSession._runDeployBeforeAttach`) 미참여, MCP는 무관.
 - `deploy()` 순서 STOP→UPLOAD→COMPILE, autoGate 조건 2가 UPLOAD 전에 `total>0`이면 AUTO_GATE로 전부 스킵.
-- Brooks 공식 문서(live 2026-08-25 — **문서는 가설, 실기기 확인 항목 §3 ③④**): `Start`는 컴파일하지 않음(`-compile` 스위치 별도), `Compile`은 "may not be actively executing in a thread". → 재배치하면 "소스는 최신, 컴파일본은 이전" 상태가 생기므로 표시·확인이 짝으로 필요.
+- Brooks 공식 문서(live 2026-08-25): `Start`는 컴파일하지 않음(`-compile` 스위치 별도), `Compile`은 "may not be actively executing in a thread". **→ 사용자 정정(같은 날): PA 제어기의 `Start`는 자체적으로 Compile을 수행한다(실사용 사실, §0.7).** 문서 회의주의 사례. 함의가 바뀐다: 재구성으로 생기는 "소스는 업로드됨, Compile 미수행" 상태는 "옛 바이너리 실행" 위험이 아니라 "에러 미검증(Start 시 자체 컴파일 실패 가능, Problems 연동 없음)"이며, Compile→Start 연속 실행은 컴파일 중복이라 피한다(한 번에 하나만).
 
 ### 조치
 
@@ -2007,7 +2008,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
   - `gplDebugSession`: `_waitDeployLockForStart` — 자동 Start/stopOnEntry Start 전 최대 20 s 대기, 계속 잡혀 있으면 Start만 보류(attach 유지).
 - **B. MCP** `controller-mcp/src/deployLock.js`(읽기 전용, 파일 계약 동일, node:test 8건) + `index.js` `guardDeployLock`/`sendGuarded`: 첫 단어 `Compile|Start|Load|Unload`인 명령은 최대 `GPL_LOCK_WAIT_MS`(20000) 대기 후 진행, 초과 시 보유자·단계·경과와 함께 오류(우회 금지 문구). `controller_status`에 `deployLock` 필드. README 환경변수 표(`GPL_LOCK_WAIT_MS`/`GPL_LOCK_DIR`), `exportAgentSetup` CLAUDE 섹션에 규칙 추가. MCP는 FTP를 하지 않으므로 잠금을 쓰지 않음.
 - **C. deployService 재구성 — UPLOAD ∥ STOP 병행**: `runUpload()`와 `runStopGate()`(`!skipStop`: Stop -all+settle / `skipStop`: Show Thread 프로브 → autoGate 조건 2 또는 사용자 Stop 확인)를 `Promise.all`로 **동시에** 시작하고 둘 다 끝난 뒤에만 진행(실패한 쪽이 있어도 업로드 완료 전에 돌아가 잠금을 풀지 않음) → 지연 삭제 → COMPILE → (START) → ERROR CHECK. 총 소요 = max(업로드, 정지). **의도 정정**: 첫 커밋 `f88cbd6`은 이슈 문장을 "UPLOAD → STOP 순차"로 읽어 구현했으나, 사용자 보충(#17 코멘트 2026-08-25 — 목적은 속도, Stop은 재시도로 오래 걸릴 수 있고 업로드와 동시 진행에 문제 없음)으로 병행으로 수정. **COMPILE과 START는 한 번에 하나만**(연속/동시 실행 안전성은 추후 테스트 — 사용자 결정; 현재 deploy() 호출자는 모두 skipStart이고 Start는 `gpl.start`가 별도). 단계 표시는 `[1/N] UPLOAD ∥ STOP (동시 진행)` 한 배너, 잠금 stage는 `UPLOAD+STOP`/`UPLOAD+THREAD_CHECK`. `mirrorProject({ deferDelete: true })` → `pendingDeletes` → settle 뒤 `removeRemoteFiles`(실행 중 원격 삭제 무해가 미검증이라 지연 — 결정표). autoGate 미충족은 `COMPILE_DEFERRED`(업로드 유지, Compile 보류), THREAD_CHECK 메시지는 "업로드는 완료됨, Compile 미수행". autoGate 진단 clear는 COMPILE 진입 시점으로. `DeployPhase` 타입 신설(LOCKED/COMPILE_DEFERRED). 트리 `stageMap`을 새 순서로. 클래식 경로의 Unload/Load 동기화는 COMPILE 단계 안이라 그대로 STOP 뒤.
-- **D. "컴파일 필요" 상태** `extension.ts compileStaleProjects`: COMPILE_DEFERRED/THREAD_CHECK/업로드 후 Compile 실패 시 set, Compile 성공(deploy·ftpRun) 시 clear. 트리 "프로젝트 상태"에 경고 노드(클릭→Quick Compile), 상태바 배지(`ConnectionStatusBar.setCompileStale`), `gpl.start`/`threadStart`는 `confirmStartWhenCompileStale` 모달("Compile 후 Start / 그대로 Start / 취소"). 한계: MCP `compile_project`로 컴파일하면 확장은 모르므로 상태가 남는다(다음 확장 Compile 성공 시 해제).
+- **D. "컴파일 검증 필요" 상태** `extension.ts compileStaleProjects`: COMPILE_DEFERRED/THREAD_CHECK/업로드 후 Compile 실패 시 set, Compile 성공(deploy·ftpRun) 시 clear. 트리 "프로젝트 상태"에 경고 노드(클릭→Quick Compile), 상태바 배지(`ConnectionStatusBar.setCompileStale`), `gpl.start`/`threadStart`는 `confirmStartWhenCompileStale` 모달 **"Compile만 실행 / 그대로 Start / 취소"** — Start가 자체 컴파일하므로(§0.7) "Compile만 실행"은 에러 확인만 하고 Start하지 않는다(Compile 직후 Start 연속 금지). 처음엔 "Compile 후 Start" 선택지였으나 §0.7 명시 후 같은 날 수정. 한계: MCP `compile_project`로 컴파일하면 확장은 모르므로 상태가 남는다(다음 확장 Compile 성공 시 해제).
 - **E. 문서**: README 워크플로 3곳, package.json(`deployBeforeAttach`·`autoOnSave` 설명), runbook, instructions, broker 설계 표, CHANGELOG [0.8.15], §1-AV 낡은 서술 무효 표시, §3·§4.
 
 ### 검증
@@ -2019,6 +2020,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 - §3 ①~⑧ 실기기 검증, #17 ④ 재현 절차 기록. 검증 후 이슈 #15·#17 종결 코멘트.
 - GDE의 Compile/Start는 여전히 못 막는다 — 브로커(broker-workbench Phase 1–2) 전환 시 잠금 파일 writer를 브로커가 승계(파일 계약 유지).
+- **Compile→Start 연속 실행 경로 검토(§0.7)**: F5 `deployBeforeAttach`(deploy Compile → `Start -break -bex`)와 FTP 뷰 '컴파일 & 실행'(`gpl.controller.ftpRun`)은 Compile 직후 Start를 보낸다 — Start가 자체 컴파일하므로 컴파일 중복. 안전성 테스트 후 F5는 "Compile 생략 + Start만" 또는 "Compile만"으로, ftpRun은 분리/제거 여부 사용자 결정.
 - (선택, 사용자 요청 시) 경과 3분 초과 시에만 노출되는 "강제 해제" 버튼 + 2단계 확인.
 
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
@@ -2032,7 +2034,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
   ① 전체 Deploy(쓰레드 실행 중): 업로드(FTP)와 `Stop -all`/`Show Thread` 폴링(1402)이 **동시에** 나가는지(GPL Traffic 타임스탬프 vs Output `↑` 라인), 둘 다 끝난 뒤에만 `Compile`이 나가는지. 쓰레드 실행 중 Quick Compile: 업로드가 진행되는 동안 "Stop 후 계속" 모달 → 승인 → Stop → settle → (업로드 완료 확인) → Compile. 총 소요가 이전(순차)보다 줄었는지 체감/로그로 확인
   ①-b 동시 진행 중 1402 명령(Stop/Show Thread)이 FTP 전송과 간섭하지 않는지(ECONNRESET·STATUS 누락 없음) — 사용자 주장 "문제 없음"의 실측 확정
   ② autoOnSave "auto" + 쓰레드 존재 → 업로드만, Compile 미전송(트래픽 로그), 트리 "프로젝트 상태"·상태바에 "컴파일 필요"
-  ③ "컴파일 필요" 상태에서 `GPL: Start` → 모달 → "Compile 후 Start" 정상 / "그대로 Start"가 실제로 옛 프로그램을 실행하는지(=Start 비컴파일 — Brooks 문서 주장, 실측으로 확정)
+  ③ "컴파일 검증 필요" 상태에서 `GPL: Start` → 모달 → "Compile만 실행"은 Start하지 않음 / "그대로 Start"는 제어기 자체 컴파일(§0.7)로 새 코드가 실행되는지, 소스 에러가 있을 때 Start의 STATUS(-742 추정)와 소요 시간(암묵 컴파일 시간) 기록
   ④ 실행 중 `Compile`을 보내면 실제 STATUS가 무엇인지(문서: "may not be actively executing in a thread")
   ⑤ 업로드 실패(케이블 분리) 시 쓰레드 상태 불변(재배치로 STOP이 뒤로 갔으므로 예전과 달리 프로그램이 계속 돈다)
   ⑥ 실행 중 원격 전용 파일 삭제가 무해한지 → 확인되면 `deferDelete` 지연 제거 여부 결정

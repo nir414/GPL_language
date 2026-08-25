@@ -8,7 +8,8 @@
  * settle 폴링·재시도를 반복하느라 오래 걸리므로 업로드와 겹쳐 총 소요를 max(업로드, 정지)로 줄인다.
  * 진짜 위험은 ① 업로드 도중 Compile/Start(제어기 사망) ② 정지 미완료 상태의 Compile/Start(§0.6)다. 두 작업이
  * *모두* 끝난 뒤에만 COMPILE로 가고(②), ①은 deploy() 전체를 감싸는 배포 잠금(deployLock.ts, 프로세스 간 파일)으로 막는다.
- * COMPILE과 START는 한 번에 하나만 보낸다(사용자 결정 — 연속 실행 안전성은 추후 테스트; Start는 gpl.start가 별도 담당).
+ * COMPILE과 START는 한 번에 하나만 보낸다 — PA 제어기의 Start는 자체적으로 Compile을 수행하므로(사용자 실사용 사실,
+ * ai-handoff §0.7) Compile 직후 Start는 컴파일 중복이다(연속 실행 안전성은 추후 테스트; Start는 gpl.start가 별도 담당).
  */
 
 import * as vscode from 'vscode';

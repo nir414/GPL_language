@@ -82,8 +82,9 @@ function currentDeployLockHolder(): DeployLockRecord | undefined {
 	return getDeployLock(getControllerConfig().ip).current()?.record;
 }
 /**
- * "컴파일 필요" 상태 — /GPL 소스는 업로드됐지만 Compile이 수행되지 않은 프로젝트(소문자 키).
- * Brooks 문서상 `Start`는 컴파일하지 않으므로(실기기 확인 전) 이 상태에서 Start하면 이전 프로그램이 실행된다.
+ * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트(소문자 키).
+ * PA 제어기의 `Start`는 자체적으로 Compile을 수행하므로(사용자 실사용 사실, ai-handoff §0.7 — Brooks 문서와 다름)
+ * 옛 바이너리가 도는 문제는 아니지만, 소스에 에러가 있으면 Start가 실패하고 Problems 연동도 없다 → Start 전 안내.
  * 업로드 후 Compile 보류(autoOnSave/THREAD_CHECK)·Compile 실패 시 set, Compile 성공 시 clear.
  */
 interface CompileStaleInfo { projectName: string; projectDir?: string; since: number; reason: string }
@@ -275,7 +276,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const prev = compileStaleProjects.get(key);
 		const info: CompileStaleInfo = { projectName, projectDir: projectDir ?? prev?.projectDir, since: prev?.since ?? Date.now(), reason };
 		compileStaleProjects.set(key, info);
-		logOutput(`[Deploy] 컴파일 필요 상태: ${projectName} — ${reason} (Start는 컴파일하지 않으므로 이전 프로그램이 실행됨)`);
+		logOutput(`[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (Start는 제어기가 자체 컴파일 — 소스 에러가 있으면 Start 실패, 먼저 Quick Compile 권장)`);
 		controllerTree?.setCompileStale(info);
 		statusBar?.setCompileStale(info);
 	}
@@ -283,7 +284,7 @@ export function activate(context: vscode.ExtensionContext) {
 	function clearCompileStale(projectName: string): void {
 		const key = projectName.trim().toLowerCase();
 		if (!compileStaleProjects.delete(key)) { return; }
-		logOutput(`[Deploy] 컴파일 필요 상태 해제: ${projectName}`);
+		logOutput(`[Deploy] 컴파일 검증 필요 상태 해제: ${projectName}`);
 		const next = compileStaleProjects.values().next();
 		controllerTree?.setCompileStale(next.done ? undefined : next.value);
 		statusBar?.setCompileStale(next.done ? undefined : next.value);
@@ -1405,22 +1406,27 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	/**
-	 * Start 전 "컴파일 필요" 상태 확인. Brooks 문서상 Start는 컴파일하지 않으므로(실기기 확인 전) 이전 프로그램이
-	 * 실행될 수 있음을 알리고 Compile 후 Start / 그대로 Start / 취소를 고르게 한다. true면 Start 진행.
+	 * Start 전 "컴파일 검증 필요" 상태 확인. PA 제어기의 Start는 자체적으로 Compile을 수행하므로(§0.7) 소스에 에러가
+	 * 있으면 Start가 실패하고 Problems 연동도 없다 — 먼저 Compile로 검증할지 묻는다. 단 Compile 직후 Start를 연속으로
+	 * 보내지 않으므로(한 번에 하나만, 컴파일 중복 회피) "Compile만 실행"을 고르면 Start는 하지 않는다. true면 Start 진행.
 	 */
 	async function confirmStartWhenCompileStale(projectName: string, projectDir?: string): Promise<boolean> {
 		const stale = findCompileStale(projectName);
 		if (!stale) { return true; }
 		const dir = projectDir ?? stale.projectDir;
-		const choices = dir ? ['Compile 후 Start', '그대로 Start'] : ['그대로 Start'];
+		const choices = dir ? ['Compile만 실행', '그대로 Start'] : ['그대로 Start'];
 		const pick = await vscode.window.showWarningMessage(
-			`'${projectName}'의 /GPL 소스가 컴파일본보다 최신입니다. Start는 컴파일하지 않으므로 이전 프로그램이 실행됩니다.`,
-			{ modal: true, detail: `사유: ${stale.reason}\n발생: ${new Date(stale.since).toLocaleString()}` },
+			`'${projectName}'의 /GPL 소스가 아직 Compile로 검증되지 않았습니다. Start는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start가 실패합니다(Problems 연동 없음).`,
+			{
+				modal: true,
+				detail: `사유: ${stale.reason}\n발생: ${new Date(stale.since).toLocaleString()}\n\n` +
+					'"Compile만 실행"은 에러를 확인만 하고 Start하지 않습니다(Compile 직후 Start 연속 실행은 피함 — 한 번에 하나만).',
+			},
 			...choices,
 		);
-		if (pick === 'Compile 후 Start') {
-			const r = await runDeploy(true, { skipStop: true, skipUnchanged: true, quick: true, overrideProjectDir: dir });
-			return !!r?.success;
+		if (pick === 'Compile만 실행') {
+			await runDeploy(true, { skipStop: true, skipUnchanged: true, quick: true, overrideProjectDir: dir });
+			return false;
 		}
 		return pick === '그대로 Start';
 	}
@@ -1899,9 +1905,9 @@ export function activate(context: vscode.ExtensionContext) {
 			const projectDir = await pickWorkspaceProjectDir('시작할 프로젝트를 선택하세요');
 			if (!projectDir) { return; }
 			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);
-			// /GPL 소스만 올라가고 Compile은 안 된 상태면 이전 프로그램이 실행된다 — 먼저 확인.
+			// /GPL 소스가 Compile로 검증되지 않았으면 안내(Start는 제어기가 자체 컴파일 — 소스 에러 시 Start 실패, §0.7).
 			if (!(await confirmStartWhenCompileStale(projectName, projectDir))) { return; }
-			// "Compile 후 Start"를 고른 경우 배포가 끝난 뒤이므로 잠금을 다시 확인한다.
+			// 모달 대기 동안 다른 배포가 시작됐을 수 있으므로 잠금을 다시 확인한다.
 			const busyAfter = currentDeployLockHolder();
 			if (busyAfter) { warnDeployBusy('Start', busyAfter); return; }
 
@@ -3005,7 +3011,7 @@ export function activate(context: vscode.ExtensionContext) {
 				warnDeployBusy('쓰레드 시작', busy, '완료 후 쓰레드를 시작하세요');
 				return;
 			}
-			// /GPL 소스만 올라가고 Compile은 안 된 프로젝트면 이전 프로그램이 실행된다 — 먼저 확인.
+			// /GPL 소스가 Compile로 검증되지 않은 프로젝트면 안내(Start는 제어기가 자체 컴파일 — 소스 에러 시 Start 실패, §0.7).
 			if (!(await confirmStartWhenCompileStale(node.thread.project || node.thread.name))) { return; }
 			const busyAfter = currentDeployLockHolder();
 			if (busyAfter) { warnDeployBusy('쓰레드 시작', busyAfter); return; }

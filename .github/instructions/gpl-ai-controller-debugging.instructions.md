@@ -41,6 +41,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
    - 결정에는 근거를, 미해결에는 리스크와 다음 액션을 함께 남긴다. 코드 식별자·경로·STATUS·로그 원문은 변형 없이 보존한다.
    - 세션 종료 전 핸드오프가 현재 상태와 일치하는지 확인하고, 완료/미완료를 정확히 표시한다.
 5. 환경 주의: 이 작업 환경에서 방금 수정한 파일이 잘려 읽혀 `tsc`가 가짜 문법 오류를 낼 수 있다. 코드 오류로 단정하지 말고, 검증은 사용자 로컬 `npm run compile`로 확인한다.
+6. **PA 제어기의 `Start`는 자체적으로 Compile을 수행한다**(사용자 실사용 사실 — Brooks 문서의 "사전 컴파일 필요·`-compile` 별도"와 다름). 따라서 **Compile 직후 Start를 연속으로 보내지 않는다(한 번에 하나만)**: 에러 확인은 `Compile`(또는 `GPL: Deploy`), 실행은 `Start`(`GPL: Start`)만. 컴파일 중복의 안전성은 미확인. Brooks 공식 문서는 가설로 다루고 실기기 응답을 사실로 삼는다(`docs/ai-handoff.md` §0.7).
 
 ## 먼저 수집할 증거
 

@@ -38,8 +38,9 @@ export interface SituationDeploySnapshot {
 }
 
 /**
- * "컴파일 필요" 상태 — /GPL 소스는 업로드됐지만 Compile이 수행되지 않은 프로젝트.
- * Brooks 문서상 Start는 컴파일하지 않으므로(실기기 확인 전) 이 상태의 Start는 이전 프로그램을 실행한다.
+ * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
+ * PA 제어기의 Start는 자체적으로 Compile을 수행하므로(ai-handoff §0.7) 옛 바이너리 문제는 아니지만,
+ * 소스 에러가 있으면 Start가 실패하고 Problems 연동이 없다 — 먼저 Quick Compile로 확인하도록 안내한다.
  */
 export interface CompileStaleState {
 	projectName: string;
@@ -163,7 +164,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 	get isConnected(): boolean { return this._connected; }
 
-	/** "컴파일 필요" 상태 표시(프로젝트 상태 섹션). undefined면 해제. */
+	/** "컴파일 검증 필요" 상태 표시(프로젝트 상태 섹션). undefined면 해제. */
 	setCompileStale(state?: CompileStaleState): void {
 		this.compileStale = state;
 		this._onDidChangeTreeData.fire(undefined);
@@ -657,7 +658,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const stale = this.compileStale;
 		const mismatch = missingExpectedFtp || hasUnexpectedRunning || !!stale;
 		const contextDescription = stale
-			? '컴파일 필요'
+			? '컴파일 검증 필요'
 			: mismatch
 				? '불일치 감지'
 				: buildOnlyReady
@@ -685,16 +686,17 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				hasExpectedFtp || !expectedFolder ? undefined : `${expectedFolder} 폴더 없음`),
 		];
 		if (stale) {
-			// /GPL 소스만 올라가고 Compile은 안 된 상태 — Start하면 이전 프로그램이 돈다(이슈 #17 재배치의 부수 상태).
+			// /GPL 소스만 올라가고 Compile로 검증되지 않은 상태(이슈 #17 재구성의 부수 상태). Start는 자체 컴파일하므로(§0.7)
+			// 옛 프로그램이 도는 건 아니지만, 소스 에러가 있으면 Start가 실패하고 Problems 연동이 없다.
 			ctxSec.collapsed = false;
 			ctxSec.children.unshift(new InfoNode(
-				`컴파일 필요: ${stale.projectName}`,
+				`컴파일 검증 필요: ${stale.projectName}`,
 				'warning',
 				stale.reason,
 				{ command: 'gpl.quickCompile', title: 'Quick Compile' },
 				'compileStaleItem',
-				`/GPL 소스가 컴파일본보다 최신입니다 (${new Date(stale.since).toLocaleString()} 이후). ` +
-				'Start는 컴파일하지 않으므로 이전 프로그램이 실행됩니다 — 클릭하면 Quick Compile을 실행합니다.',
+				`/GPL 소스가 아직 Compile로 검증되지 않았습니다 (${new Date(stale.since).toLocaleString()} 이후). ` +
+				'Start는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start가 실패합니다 — 클릭하면 Quick Compile로 먼저 확인합니다.',
 			));
 		}
 		sections.push(ctxSec);

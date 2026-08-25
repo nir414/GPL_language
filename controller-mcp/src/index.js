@@ -269,7 +269,8 @@ tool('controller_status',
 
 // ── 컴파일/실행 ───────────────────────────────────────────────────────────
 tool('compile_project',
-  '프로젝트를 컴파일한다(Compile). 성공/실패는 STATUS로만 판정하고, 실패 시 에러 라인을 파싱해 돌려준다.',
+  '프로젝트를 컴파일한다(Compile) — 에러 확인용. 성공/실패는 STATUS로만 판정하고, 실패 시 에러 라인을 파싱해 돌려준다. ' +
+  '실행이 목적이면 이 도구 대신 start_project만 호출할 것(Start가 자체 컴파일 — Compile 직후 Start 연속 호출 금지).',
   { project: z.string().optional().describe(`프로젝트명(기본 ${DEFAULT_PROJECT})`) },
   async ({ project }) => {
     const raw = await sendGuarded(`Compile ${proj(project)}`, { timeoutMs: Math.max(TIMEOUT, 60000) });
@@ -279,7 +280,8 @@ tool('compile_project',
   });
 
 tool('start_project',
-  '프로젝트 실행을 시작한다(Start). stopOnEntry=true면 진입점에서 정지(-break -bex). [시뮬레이션 모드 권장]',
+  '프로젝트 실행을 시작한다(Start). stopOnEntry=true면 진입점에서 정지(-break -bex). [시뮬레이션 모드 권장] ' +
+  'PA 제어기의 Start는 자체적으로 Compile을 수행하므로 compile_project 직후 연속 호출하지 말 것(한 번에 하나만).',
   {
     project: z.string().optional(),
     stopOnEntry: z.boolean().optional().describe('진입점에서 멈춤(디버그 시작용)'),

@@ -33,6 +33,9 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
    preflight가 감지해 주지만, 애초에 만들지 않는 것이 원칙.
 6. 모션/하드웨어에 영향 가능한 변경(자동 `Start`, 브레이크포인트 명령 형식 등)은 저속/시뮬레이션
    검증 없이 적용하지 않는다 (`docs/ai-handoff.md` §3-B).
+7. **PA 제어기의 `Start`는 자체적으로 Compile을 수행한다**(사용자 실사용 사실 — Brooks 문서와 다름).
+   따라서 Compile 직후 Start를 연속으로 보내지 않는다(한 번에 하나만). Deploy는 Compile까지, 실행은
+   `GPL: Start` 별도 (`docs/ai-handoff.md` §0.7).
 
 ## 작업을 마칠 때 반드시 남길 기록 (기록 규칙)
 

@@ -2,18 +2,20 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
-## [0.8.15] - 2026-08-25
+## [0.8.17] - 2026-08-25
+
+> 0.8.15·0.8.16은 같은 날의 로컬 중간 빌드입니다(0.8.16은 업로드→정지를 순차로 구현한 버전). 아래 내용은 0.8.17 기준입니다.
 
 ### Changed
 
-- **배포 단계를 UPLOAD ∥ STOP → COMPILE로 재구성했습니다** (GitHub #17). FTP 업로드와 정지(`Stop -all` + 정지 완료 게이트)를 **동시에** 진행하고, 둘 다 완료가 확인된 뒤에 Compile합니다 — 소요 시간이 "업로드 + 정지"에서 "max(업로드, 정지)"로 줄고, "정지 미완료 상태의 Compile/Start 금지" 규칙은 그대로 유지됩니다. Compile과 Start는 한 번에 하나만 보냅니다(Deploy는 Compile까지, Start는 `GPL: Start`가 별도). 미러 동기화의 원격 전용 파일 삭제는 실행 중 안전성이 확인되지 않아 정지 확인 뒤로 미룹니다. 이에 따라 활성 쓰레드 때문에 Quick Compile/F5 배포를 중단하면 업로드는 이미 끝난 상태이며, 메시지가 "업로드 완료, Compile 미수행"으로 바뀝니다. ※ 실기기 검증 전 — 시뮬레이션/저속에서 먼저 확인하세요.
+- **배포 단계를 UPLOAD ∥ STOP → COMPILE로 재구성했습니다** (GitHub #17). FTP 업로드와 정지(`Stop -all` + 정지 완료 게이트)를 **동시에** 진행하고, 둘 다 완료가 확인된 뒤에 Compile합니다 — 소요 시간이 "업로드 + 정지"에서 "max(업로드, 정지)"로 줄고, "정지 미완료 상태의 Compile/Start 금지" 규칙은 그대로 유지됩니다. Compile과 Start는 한 번에 하나만 보냅니다(Deploy는 Compile까지, Start는 `GPL: Start`가 별도) — PA 제어기의 Start는 자체적으로 Compile을 수행하므로 Compile 직후 Start는 컴파일 중복입니다. 미러 동기화의 원격 전용 파일 삭제는 실행 중 안전성이 확인되지 않아 정지 확인 뒤로 미룹니다. 이에 따라 활성 쓰레드 때문에 Quick Compile/F5 배포를 중단하면 업로드는 이미 끝난 상태이며, 메시지가 "업로드 완료, Compile 미수행"으로 바뀝니다. ※ 실기기 검증 전 — 시뮬레이션/저속에서 먼저 확인하세요.
 - **autoOnSave `"auto"` 모드가 쓰레드가 있어도 업로드는 수행합니다.** `/GPL/<프로젝트>`가 있으면 저장 파일을 올리고, Compile만 "쓰레드가 하나도 없는 완전 STOP 상태"에서 수행합니다(그 외에는 Compile 보류 → "컴파일 필요" 표시). 이전에는 쓰레드가 하나라도 있으면 업로드까지 전부 건너뛰었습니다.
 - **"배포가 이미 진행 중입니다" 경고에 원인이 표시됩니다** (GitHub #15) — 누가(Deploy / Quick Compile / autoOnSave / Save to Flash / F5), 어느 단계(UPLOAD·STOP·COMPILE…), 몇 초 경과인지와 [출력 보기] 버튼. 배포 잠금은 프로젝트 선택·미저장 확인 대화상자가 끝난 뒤에 잡으므로, 대화상자를 열어 둔 채로는 더 이상 다른 배포를 막지 않습니다.
 
 ### Added
 
 - **프로세스 간 배포 잠금** — 업로드/배포 중에는 `%TEMP%\gpl-controller\<제어기IP>.lock.json` 잠금 파일을 잡습니다(보유자·단계·시각·PID·heartbeat). 다른 VS Code 창의 Start/Deploy/Save to Flash와 gpl-controller MCP 서버의 `compile_project`/`start_project`/`unload_project`, `controller_command`의 Compile/Start/Load/Unload가 이 잠금을 읽어 대기(MCP는 최대 20초, `GPL_LOCK_WAIT_MS`) 또는 거부합니다 — 업로드 도중 Compile/Start가 겹쳐 제어기가 이상해지는 경로를 프로세스 경계 너머까지 차단합니다. 확장이 비정상 종료해도 PID/heartbeat(30초)로 자동 만료되어 창 리로드 없이 복구됩니다. F5 디버그 배포도 같은 잠금에 참여하며, 디버그 세션의 Start도 잠금이 풀릴 때까지(최대 20초) 기다립니다.
-- **"컴파일 필요" 상태 표시** — /GPL 소스는 올라갔지만 Compile이 수행되지 않은(보류·중단·실패) 프로젝트를 GPL Controller 트리 "프로젝트 상태"와 상태바에 경고로 표시합니다. Brooks 문서상 `Start`는 컴파일하지 않으므로(실기기 확인 전) 이 상태에서 `GPL: Start`/쓰레드 시작을 누르면 "Compile 후 Start / 그대로 Start / 취소"를 먼저 묻습니다. Compile 성공 시 자동 해제됩니다.
+- **"컴파일 검증 필요" 상태 표시** — /GPL 소스는 올라갔지만 Compile로 검증되지 않은(보류·중단·실패) 프로젝트를 GPL Controller 트리 "프로젝트 상태"와 상태바에 경고로 표시합니다. PA 제어기의 `Start`는 자체적으로 Compile을 수행하므로(실사용 관찰 — Brooks 문서와 다름) 옛 프로그램이 도는 문제는 아니지만, 소스에 에러가 있으면 Start가 실패하고 Problems 연동도 없습니다. 이 상태에서 `GPL: Start`/쓰레드 시작을 누르면 "Compile만 실행 / 그대로 Start / 취소"를 먼저 묻습니다(Compile 직후 Start 연속 실행은 피함). Compile 성공 시 자동 해제됩니다.
 - MCP `controller_status` 응답에 `deployLock` 필드(현재 잠금 보유자·단계·경과) 추가. `GPL: Export AI Agent Setup`이 생성하는 AI 가이드에도 잠금 거부 시 대응 규칙이 들어갑니다.
 
 ## [0.8.14] - 2026-08-18

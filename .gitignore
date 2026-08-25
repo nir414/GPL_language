@@ -66,8 +66,9 @@ captures/
 # Documentation local history
 docs/.history/
 
-# Development files (local only)
-media/
+# media/ 는 웹뷰 리소스(dashboard.html 등)로 VSIX에 실려야 하므로 추적한다.
+# (2026-08-25까지 `media/` 전체가 무시돼 dashboard.html이 CI 빌드 VSIX에서 빠져 폴백 화면만 떴음 — GitHub #18 처리 중 발견.)
+# 로컬 전용 산출물이 생기면 개별 파일 패턴으로 무시할 것.
 
 # MkDocs build output
 site/

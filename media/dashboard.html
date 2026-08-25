@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="Content-Security-Policy"
+		content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>제어기 대시보드</title>
+	<style>
+		:root {
+			--ok: #3fb950;
+			--warn: #d29922;
+			--err: #f85149;
+			--idle: #8b949e;
+			--accent: var(--vscode-focusBorder, #3794ff);
+			--gap: 12px;
+			--card-bg: var(--vscode-editorWidget-background, rgba(127,127,127,0.08));
+			--card-border: var(--vscode-editorWidget-border, rgba(127,127,127,0.25));
+		}
+		* { box-sizing: border-box; }
+		body {
+			margin: 0;
+			padding: 14px;
+			font-family: var(--vscode-font-family, sans-serif);
+			font-size: var(--vscode-font-size, 13px);
+			color: var(--vscode-foreground);
+			background: var(--vscode-editor-background);
+		}
+		/* ── 헤더 ── */
+		.topbar { display: flex; align-items: center; gap: 10px; margin-bottom: var(--gap); flex-wrap: wrap; }
+		.dot {
+			width: 11px; height: 11px; border-radius: 50%;
+			background: var(--idle); flex: 0 0 auto;
+		}
+		.dot.live { background: var(--ok); animation: pulse 1.6s infinite; }
+		.dot.down { background: var(--err); }
+		.dot.paused { background: var(--warn); }
+		@keyframes pulse {
+			0% { box-shadow: 0 0 0 0 rgba(63,185,80,0.45); }
+			70% { box-shadow: 0 0 0 7px rgba(63,185,80,0); }
+			100% { box-shadow: 0 0 0 0 rgba(63,185,80,0); }
+		}
+		.conn-label { font-weight: 600; }
+		.target { color: var(--idle); font-variant-numeric: tabular-nums; }
+		.spacer { flex: 1 1 auto; }
+		.updated { color: var(--idle); font-size: 0.85em; font-variant-numeric: tabular-nums; }
+		button, select {
+			font-family: inherit; font-size: 0.9em;
+			color: var(--vscode-button-foreground, #fff);
+			background: var(--vscode-button-background, #0e639c);
+			border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+		}
+		button:hover, select:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+		button.secondary, select {
+			color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+			background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.2));
+		}
+		button.secondary:hover, select:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,0.3)); }
+		label.ctl { color: var(--idle); font-size: 0.85em; display: inline-flex; align-items: center; gap: 4px; }
+
+		/* ── 상태 스트립: 흘깃 봐도 정상/이상이 보이는 큰 배지 ── */
+		.strip {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+			gap: var(--gap);
+			margin-bottom: var(--gap);
+		}
+		.badge {
+			display: flex; flex-direction: column; gap: 4px;
+			padding: 12px 14px; border-radius: 10px;
+			border: 1px solid var(--card-border);
+			background: var(--card-bg);
+			border-left-width: 6px;
+			transition: border-color 0.3s, background 0.3s;
+		}
+		.badge .k { font-size: 0.75em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--idle); }
+		.badge .v { font-size: 1.55em; font-weight: 800; letter-spacing: 0.02em; line-height: 1.1; }
+		.badge .s { font-size: 0.82em; color: var(--idle); }
+		.badge.ok   { border-left-color: var(--ok); }
+		.badge.ok .v { color: var(--ok); }
+		.badge.warn { border-left-color: var(--warn); }
+		.badge.warn .v { color: var(--warn); }
+		.badge.err  { border-left-color: var(--err); background: rgba(248,81,73,0.10); }
+		.badge.err .v { color: var(--err); }
+		.badge.na   { border-left-color: var(--idle); }
+		.badge.na .v { color: var(--idle); }
+		.badge.flash { animation: flash 0.9s ease-out 1; }
+		@keyframes flash {
+			0% { box-shadow: 0 0 0 0 rgba(55,148,255,0.0); background: rgba(55,148,255,0.25); }
+			100% { box-shadow: 0 0 0 10px rgba(55,148,255,0); }
+		}
+
+		/* ── 카드 그리드 ── */
+		.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--gap); }
+		.card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+		.card h2 {
+			margin: 0 0 8px 0; display: flex; align-items: center; gap: 8px;
+			font-size: 0.78em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--idle);
+		}
+		.card h2 .sub { font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: auto; }
+		.full { grid-column: 1 / -1; }
+
+		/* ── 스레드 ── */
+		.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+		.chip { display: flex; flex-direction: column; align-items: center; min-width: 56px; padding: 6px 10px; border-radius: 6px; background: rgba(127,127,127,0.1); }
+		.chip .n { font-size: 1.3em; font-weight: 700; font-variant-numeric: tabular-nums; }
+		.chip .l { font-size: 0.72em; color: var(--idle); text-transform: uppercase; }
+		.chip.run .n { color: var(--ok); }
+		.chip.pause .n { color: var(--warn); }
+		.chip.err .n { color: var(--err); }
+		table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+		th, td { text-align: left; padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		thead th { font-size: 0.75em; color: var(--idle); font-weight: 600; border-bottom: 1px solid var(--card-border); }
+		tbody tr.dim { opacity: 0.55; }
+		tbody tr.changed td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+		.state { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.8em; font-weight: 600; background: rgba(139,148,158,0.18); color: var(--idle); }
+		.state.Running { background: rgba(63,185,80,0.18); color: var(--ok); }
+		.state.Paused, .state.Break { background: rgba(210,153,34,0.18); color: var(--warn); }
+		.state.Error { background: rgba(248,81,73,0.18); color: var(--err); }
+		.state.Stopping, .state.Stopped { background: rgba(139,148,158,0.25); }
+		.loc { color: var(--vscode-textLink-foreground, #3794ff); }
+		.na { color: var(--idle); }
+		.empty { color: var(--idle); font-style: italic; }
+
+		/* ── 축 게이지 ── */
+		.axes { display: grid; grid-template-columns: auto 1fr auto auto; gap: 6px 10px; align-items: center; }
+		.axes .name { font-weight: 600; }
+		.axes .val { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; min-width: 6.5em; }
+		.axes .delta { font-size: 0.78em; color: var(--idle); min-width: 4.5em; text-align: right; font-variant-numeric: tabular-nums; }
+		.axes .delta.moving { color: var(--warn); font-weight: 600; }
+		.gauge { position: relative; height: 12px; border-radius: 6px; background: rgba(127,127,127,0.16); overflow: hidden; }
+		.gauge .zero { position: absolute; left: 50%; top: 0; width: 1px; height: 100%; background: rgba(127,127,127,0.55); }
+		.gauge .bar { position: absolute; top: 2px; height: 8px; border-radius: 4px; background: var(--accent); transition: left 0.25s, width 0.25s; }
+		.gauge .bar.moving { background: var(--warn); }
+		.axes .range { grid-column: 1 / -1; font-size: 0.72em; color: var(--idle); }
+
+		/* ── 직교 좌표 ── */
+		.cart { display: grid; grid-template-columns: minmax(150px, 1fr) auto; gap: var(--gap); align-items: start; }
+		.cart table th, .cart table td { text-align: right; padding: 3px 6px; }
+		.cart table td:first-child, .cart table th:first-child { text-align: left; color: var(--idle); }
+		.cart .val { font-weight: 600; }
+		.xy { width: 170px; height: 170px; border-radius: 8px; background: rgba(127,127,127,0.10); display: block; }
+		.xy .grid-line { stroke: rgba(127,127,127,0.35); stroke-width: 1; }
+		.xy .trail { fill: none; stroke: var(--accent); stroke-opacity: 0.55; stroke-width: 1.5; }
+		.xy .pt { fill: var(--accent); }
+		.xy .pt.moving { fill: var(--warn); }
+		.xy text { fill: var(--idle); font-size: 9px; }
+
+		/* ── 로그 ── */
+		.log { max-height: 240px; overflow: auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.85em; line-height: 1.5; }
+		.log-row { padding: 2px 4px; border-bottom: 1px dashed rgba(127,127,127,0.18); white-space: pre-wrap; word-break: break-all; }
+		.log-row:last-child { border-bottom: none; }
+		.log-row.new { background: rgba(248,81,73,0.12); box-shadow: inset 3px 0 0 var(--err); }
+	</style>
+</head>
+<body>
+	<div class="topbar">
+		<span id="dot" class="dot"></span>
+		<span id="connLabel" class="conn-label">연결 확인 중…</span>
+		<span id="target" class="target"></span>
+		<span class="spacer"></span>
+		<label class="ctl">주기
+			<select id="intervalSel" title="폴링 주기 — 이 탭이 열려 있는 동안만 적용">
+				<option value="500">0.5s</option>
+				<option value="1000">1s</option>
+				<option value="1500">1.5s</option>
+				<option value="3000">3s</option>
+				<option value="5000">5s</option>
+			</select>
+		</label>
+		<button id="pauseBtn" class="secondary" title="자동 갱신 일시정지/재개">일시정지</button>
+		<button id="refreshBtn">새로고침</button>
+		<span id="updated" class="updated"></span>
+	</div>
+
+	<div class="strip">
+		<div id="bConn" class="badge na"><span class="k">연결</span><span class="v">—</span><span class="s"></span></div>
+		<div id="bPower" class="badge na"><span class="k">고전원 (서보)</span><span class="v">—</span><span class="s">Controller.PowerEnabled</span></div>
+		<div id="bThreads" class="badge na"><span class="k">스레드</span><span class="v">—</span><span class="s"></span></div>
+		<div id="bError" class="badge na"><span class="k">에러</span><span class="v">—</span><span class="s"></span></div>
+	</div>
+
+	<div class="grid">
+		<div class="card full">
+			<h2>스레드 <span class="sub" id="threadSub"></span></h2>
+			<div class="chips" id="chips">
+				<div class="chip run"><span class="n" id="cRun">0</span><span class="l">Run</span></div>
+				<div class="chip pause"><span class="n" id="cPause">0</span><span class="l">Pause</span></div>
+				<div class="chip"><span class="n" id="cIdle">0</span><span class="l">Idle</span></div>
+				<div class="chip err"><span class="n" id="cErr">0</span><span class="l">Error</span></div>
+			</div>
+			<table>
+				<thead><tr><th>이름</th><th>상태</th><th>위치</th><th>프로시저</th><th>마지막 STATUS</th></tr></thead>
+				<tbody id="threadBody"><tr><td class="na" colspan="5">데이터 없음</td></tr></tbody>
+			</table>
+		</div>
+
+		<div class="card">
+			<h2>축 위치 <span class="sub">조인트 (deg/mm) · 게이지는 관측 범위 자동 조정</span></h2>
+			<div class="axes" id="axes"><span class="na">데이터 없음</span></div>
+		</div>
+
+		<div class="card">
+			<h2>직교 좌표 <span class="sub">World · Robot.Where</span></h2>
+			<div class="cart">
+				<table>
+					<tbody>
+						<tr><td>X</td><td class="val" id="cx">—</td><td>Yaw</td><td class="val" id="cyaw">—</td></tr>
+						<tr><td>Y</td><td class="val" id="cy">—</td><td>Pitch</td><td class="val" id="cpitch">—</td></tr>
+						<tr><td>Z</td><td class="val" id="cz">—</td><td>Roll</td><td class="val" id="croll">—</td></tr>
+					</tbody>
+				</table>
+				<svg id="xy" class="xy" viewBox="0 0 170 170" aria-label="XY 평면 위치(관측 범위 자동 조정)">
+					<line class="grid-line" x1="85" y1="6" x2="85" y2="164"></line>
+					<line class="grid-line" x1="6" y1="85" x2="164" y2="85"></line>
+					<polyline id="xyTrail" class="trail" points=""></polyline>
+					<circle id="xyPt" class="pt" cx="-10" cy="-10" r="5"></circle>
+					<text x="8" y="14" id="xyLabel">X / Y</text>
+				</svg>
+			</div>
+		</div>
+
+		<div class="card full">
+			<h2>에러 로그 <span class="sub" id="logSub">ErrorLog 최신 20건 · 새 항목은 붉게</span></h2>
+			<div class="log" id="log"><div class="empty">로그 없음</div></div>
+		</div>
+	</div>
+
+	<script nonce="${nonce}">
+		const vscode = acquireVsCodeApi();
+		const $ = (id) => document.getElementById(id);
+		const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+		const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+		const fmt = (v, digits = 3) => (isNum(v) ? v.toFixed(digits) : null);
+
+		// ── 세션 상태(변화 감지·자동 범위) ──
+		const state = {
+			paused: false,
+			badges: {},                 // id → 마지막 class (변화 시 flash)
+			prevJoints: [],             // 이전 폴링 조인트 값
+			jointRange: [],             // 축별 관측 |max| (게이지 스케일)
+			prevThreads: new Map(),     // name → state
+			seenErrors: new Set(),      // 이미 본 에러 줄
+			firstErrors: true,
+			xyBounds: null,             // {minX,maxX,minY,maxY}
+			xyTrail: [],                // 최근 XY 점
+			prevCart: null,
+		};
+		const MOVE_EPS = 0.01;
+
+		function setBadge(id, cls, value, sub) {
+			const el = $(id);
+			const prev = state.badges[id];
+			el.className = 'badge ' + cls;
+			el.querySelector('.v').textContent = value;
+			if (sub !== undefined) el.querySelector('.s').textContent = sub;
+			if (prev !== undefined && prev !== cls + '|' + value) {
+				el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+			}
+			state.badges[id] = cls + '|' + value;
+		}
+
+		function renderHeader(s) {
+			const dot = $('dot');
+			if (state.paused) {
+				dot.className = 'dot paused';
+			} else {
+				dot.className = s.connected ? 'dot live' : 'dot down';
+			}
+			$('connLabel').textContent = s.connected ? '연결됨' : '연결 끊김';
+			$('target').textContent = s.target ? (s.target.ip + ':' + s.target.port) : '';
+			$('updated').textContent = '갱신 ' + new Date(s.timestamp || Date.now()).toLocaleTimeString();
+		}
+
+		function renderBadges(s) {
+			// 연결
+			if (s.connected) setBadge('bConn', 'ok', 'ONLINE', s.target ? s.target.ip : '');
+			else setBadge('bConn', 'err', 'OFFLINE', s.note || '제어기 응답 없음');
+
+			// 고전원
+			if (!s.connected) setBadge('bPower', 'na', '—', 'Controller.PowerEnabled');
+			else if (s.powerEnabled === true) setBadge('bPower', 'ok', 'ON', '모터 전원 켜짐 — 모션 가능');
+			else if (s.powerEnabled === false) setBadge('bPower', 'warn', 'OFF', '모터 전원 꺼짐');
+			else setBadge('bPower', 'na', '?', '조회 실패');
+
+			// 스레드
+			const sum = s.threadSummary || { running: 0, paused: 0, idle: 0, error: 0, total: 0 };
+			if (!s.connected) setBadge('bThreads', 'na', '—', '');
+			else if (sum.error > 0) setBadge('bThreads', 'err', sum.error + ' ERROR', `실행 ${sum.running} · 정지 ${sum.paused} · 전체 ${sum.total}`);
+			else if (sum.paused > 0) setBadge('bThreads', 'warn', sum.paused + ' PAUSED', `실행 ${sum.running} · 전체 ${sum.total}`);
+			else if (sum.running > 0) setBadge('bThreads', 'ok', sum.running + ' RUNNING', `전체 ${sum.total}`);
+			else setBadge('bThreads', 'na', 'IDLE', `전체 ${sum.total}`);
+
+			// 에러(스레드 Error 수 + 이번 폴링에서 새로 나타난 로그 줄)
+			const errs = Array.isArray(s.errors) ? s.errors : [];
+			const fresh = state.firstErrors ? 0 : errs.filter((e) => !state.seenErrors.has(e)).length;
+			if (!s.connected) setBadge('bError', 'na', '—', '');
+			else if (sum.error > 0 || fresh > 0) setBadge('bError', 'err', (sum.error > 0 ? sum.error + ' 스레드' : '') + (fresh > 0 ? (sum.error > 0 ? ' · ' : '') + '새 로그 ' + fresh : ''), errs[0] ? String(errs[0]).slice(0, 80) : '');
+			else setBadge('bError', 'ok', '없음', errs.length ? `최근 로그 ${errs.length}건(변화 없음)` : '로그 없음');
+		}
+
+		function renderThreads(s) {
+			const sum = s.threadSummary || { running: 0, paused: 0, idle: 0, error: 0, total: 0 };
+			$('cRun').textContent = sum.running;
+			$('cPause').textContent = sum.paused;
+			$('cIdle').textContent = sum.idle;
+			$('cErr').textContent = sum.error;
+			$('threadSub').textContent = sum.total ? `전체 ${sum.total}` : '';
+
+			const threads = Array.isArray(s.threads) ? s.threads : [];
+			const body = $('threadBody');
+			if (threads.length === 0) {
+				body.innerHTML = '<tr><td class="na" colspan="5">' + (s.connected ? '스레드 없음' : '데이터 없음') + '</td></tr>';
+				state.prevThreads.clear();
+				return;
+			}
+			const order = { Error: 0, Paused: 1, Break: 1, Running: 2, Stopping: 3, Stopped: 4, Idle: 5 };
+			const sorted = threads.slice().sort((a, b) => (order[a.state] ?? 6) - (order[b.state] ?? 6) || String(a.name).localeCompare(String(b.name)));
+			const next = new Map();
+			body.innerHTML = sorted.map((t) => {
+				const st = String(t.state || '');
+				const changed = state.prevThreads.has(t.name) && state.prevThreads.get(t.name) !== st;
+				next.set(t.name, st);
+				const loc = t.file ? (esc(t.file) + (t.fileLine ? ':' + t.fileLine : '')) : '';
+				const status = t.lastStatus && t.lastStatus !== '0' ? esc(t.lastStatus) : '';
+				return '<tr class="' + (st === 'Idle' ? 'dim' : '') + (changed ? ' changed' : '') + '">' +
+					'<td>' + esc(t.name) + '</td>' +
+					'<td><span class="state ' + esc(st) + '">' + esc(st || '?') + '</span></td>' +
+					'<td class="loc">' + (loc || '<span class="na">—</span>') + '</td>' +
+					'<td>' + (t.func ? esc(t.func) : '<span class="na">—</span>') + '</td>' +
+					'<td>' + (status || '<span class="na">—</span>') + '</td>' +
+					'</tr>';
+			}).join('');
+			state.prevThreads = next;
+		}
+
+		function renderJoints(s) {
+			const box = $('axes');
+			const angles = Array.isArray(s.jointAngles) ? s.jointAngles.filter(isNum) : [];
+			if (angles.length === 0) {
+				box.innerHTML = '<span class="na">데이터 없음</span>';
+				return;
+			}
+			let html = '';
+			let anyMoving = false;
+			angles.forEach((v, i) => {
+				const prev = state.prevJoints[i];
+				const delta = isNum(prev) ? v - prev : 0;
+				const moving = Math.abs(delta) > MOVE_EPS;
+				anyMoving = anyMoving || moving;
+				// 축별 관측 |max|로 스케일 — 축 한계값을 모르므로 세션 중 본 범위에 맞춘다(최소 1)
+				state.jointRange[i] = Math.max(state.jointRange[i] || 1, Math.abs(v) * 1.05);
+				const range = state.jointRange[i];
+				const frac = Math.max(-1, Math.min(1, v / range));
+				const left = frac >= 0 ? 50 : 50 + frac * 50;
+				const width = Math.abs(frac) * 50;
+				html += '<span class="name">J' + (i + 1) + '</span>' +
+					'<div class="gauge"><div class="zero"></div><div class="bar' + (moving ? ' moving' : '') + '" style="left:' + left + '%;width:' + Math.max(width, 0.5) + '%"></div></div>' +
+					'<span class="val">' + v.toFixed(3) + '</span>' +
+					'<span class="delta' + (moving ? ' moving' : '') + '">' + (isNum(prev) ? (moving ? (delta > 0 ? '▲ ' : '▼ ') + Math.abs(delta).toFixed(3) : '·') : '') + '</span>';
+			});
+			html += '<span class="range">게이지 범위 ±' + state.jointRange.slice(0, angles.length).map((r) => r.toFixed(0)).join(' / ') + (anyMoving ? ' · 이동 중' : '') + '</span>';
+			box.innerHTML = html;
+			state.prevJoints = angles.slice();
+		}
+
+		function renderCartesian(s) {
+			const c = s.cartesian || {};
+			const map = { cx: c.x, cy: c.y, cz: c.z, cyaw: c.yaw, cpitch: c.pitch, croll: c.roll };
+			for (const id in map) {
+				const v = fmt(map[id]);
+				const el = $(id);
+				el.textContent = v === null ? '—' : v;
+				el.classList.toggle('na', v === null);
+			}
+			// XY 평면 미니 플롯: 관측 범위(여유 10%)로 자동 조정, 최근 40점 궤적
+			const pt = $('xyPt');
+			if (!isNum(c.x) || !isNum(c.y)) {
+				pt.setAttribute('cx', -10); pt.setAttribute('cy', -10);
+				$('xyTrail').setAttribute('points', '');
+				return;
+			}
+			const b = state.xyBounds || { minX: c.x - 1, maxX: c.x + 1, minY: c.y - 1, maxY: c.y + 1 };
+			b.minX = Math.min(b.minX, c.x); b.maxX = Math.max(b.maxX, c.x);
+			b.minY = Math.min(b.minY, c.y); b.maxY = Math.max(b.maxY, c.y);
+			state.xyBounds = b;
+			const span = Math.max(b.maxX - b.minX, b.maxY - b.minY, 2) * 1.1;
+			const cx0 = (b.minX + b.maxX) / 2, cy0 = (b.minY + b.maxY) / 2;
+			const px = (x) => 85 + ((x - cx0) / span) * 158;
+			const py = (y) => 85 - ((y - cy0) / span) * 158;
+			const moving = state.prevCart && (Math.abs(c.x - state.prevCart.x) > MOVE_EPS || Math.abs(c.y - state.prevCart.y) > MOVE_EPS);
+			state.prevCart = { x: c.x, y: c.y };
+			state.xyTrail.push([c.x, c.y]);
+			if (state.xyTrail.length > 40) state.xyTrail.shift();
+			$('xyTrail').setAttribute('points', state.xyTrail.map(([x, y]) => px(x).toFixed(1) + ',' + py(y).toFixed(1)).join(' '));
+			pt.setAttribute('cx', px(c.x).toFixed(1)); pt.setAttribute('cy', py(c.y).toFixed(1));
+			pt.setAttribute('class', 'pt' + (moving ? ' moving' : ''));
+			$('xyLabel').textContent = 'X / Y · 범위 ' + span.toFixed(0);
+		}
+
+		function renderLog(s) {
+			const log = $('log');
+			const errs = Array.isArray(s.errors) ? s.errors : [];
+			if (errs.length === 0) {
+				log.innerHTML = '<div class="empty">로그 없음</div>';
+				state.firstErrors = false;
+				return;
+			}
+			log.innerHTML = errs.map((e) => {
+				const isNew = !state.firstErrors && !state.seenErrors.has(e);
+				return '<div class="log-row' + (isNew ? ' new' : '') + '">' + esc(e) + '</div>';
+			}).join('');
+			errs.forEach((e) => state.seenErrors.add(e));
+			state.firstErrors = false;
+		}
+
+		function render(s) {
+			renderHeader(s);
+			renderBadges(s);
+			renderThreads(s);
+			renderJoints(s);
+			renderCartesian(s);
+			renderLog(s);
+		}
+
+		function applyConfig(cfg) {
+			if (typeof cfg.pollMs === 'number') {
+				const sel = $('intervalSel');
+				const opt = Array.from(sel.options).find((o) => Number(o.value) === cfg.pollMs);
+				if (!opt) {
+					const o = document.createElement('option');
+					o.value = String(cfg.pollMs); o.textContent = (cfg.pollMs / 1000) + 's';
+					sel.appendChild(o);
+				}
+				sel.value = String(cfg.pollMs);
+			}
+			if (typeof cfg.paused === 'boolean') {
+				state.paused = cfg.paused;
+				$('pauseBtn').textContent = cfg.paused ? '재개' : '일시정지';
+				const dot = $('dot');
+				if (cfg.paused) dot.className = 'dot paused';
+			}
+		}
+
+		window.addEventListener('message', (event) => {
+			const msg = event.data;
+			if (!msg) { return; }
+			if (msg.type === 'status' && msg.snapshot) {
+				render(msg.snapshot);
+			} else if (msg.type === 'config') {
+				applyConfig(msg);
+			} else if (msg.type === 'error') {
+				$('connLabel').textContent = '오류: ' + (msg.message || '');
+				$('dot').className = 'dot down';
+				setBadge('bConn', 'err', 'ERROR', String(msg.message || '').slice(0, 80));
+			}
+		});
+
+		$('refreshBtn').addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
+		$('intervalSel').addEventListener('change', (e) => vscode.postMessage({ type: 'setInterval', ms: Number(e.target.value) }));
+		$('pauseBtn').addEventListener('click', () => vscode.postMessage({ type: 'pause', paused: !state.paused }));
+
+		vscode.postMessage({ type: 'ready' });
+	</script>
+</body>
+</html>

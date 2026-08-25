@@ -4,6 +4,9 @@
  *
  * 표시 조건: GPL 파일이 활성 에디터에 열려 있거나, 제어기에 연결된 상태.
  * 그 외에는 자동으로 숨김.
+ *
+ * 연결 중에는 바로 오른쪽에 `$(dashboard)` 항목이 함께 떠서 제어기 대시보드 탭으로 바로 들어갈 수 있다
+ * (GitHub #18 — 기존 항목 클릭은 연결 토글에 묶여 있어 대시보드 진입 경로가 없었다).
  */
 
 import * as vscode from 'vscode';
@@ -19,6 +22,8 @@ export interface StatusBarCompileStale {
 
 export class ConnectionStatusBar implements vscode.Disposable {
     private item: vscode.StatusBarItem;
+    /** 대시보드 바로가기(연결 중에만 표시). */
+    private dashboardItem: vscode.StatusBarItem;
     private _isConnected = false;
     private compileStale: StatusBarCompileStale | undefined;
     private disposables: vscode.Disposable[] = [];
@@ -41,6 +46,11 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.item.command = 'gpl.controller.connect';
         this.updateDisplay(false);
 
+        this.dashboardItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+        this.dashboardItem.text = '$(dashboard)';
+        this.dashboardItem.command = 'gpl.controller.showDashboard';
+        this.dashboardItem.tooltip = '제어기 대시보드 열기 — 연결·고전원·스레드·축 위치·에러를 새 탭에서 시각적으로 확인';
+
         this.disposables.push(
             vscode.window.onDidChangeActiveTextEditor(() => this.updateVisibility())
         );
@@ -61,6 +71,7 @@ export class ConnectionStatusBar implements vscode.Disposable {
     dispose(): void {
         this.disposables.forEach(d => d.dispose());
         this.item.dispose();
+        this.dashboardItem.dispose();
     }
 
     private updateVisibility(): void {
@@ -68,6 +79,11 @@ export class ConnectionStatusBar implements vscode.Disposable {
             this.item.show();
         } else {
             this.item.hide();
+        }
+        if (this._isConnected) {
+            this.dashboardItem.show();
+        } else {
+            this.dashboardItem.hide();
         }
     }
 

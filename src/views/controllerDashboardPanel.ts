@@ -3,9 +3,11 @@
  *
  * 사이드바 TreeView 대신, 편집기 영역(ViewColumn.Beside)에 코드와 나란히 띄우는
  * "한눈에 보는" 상태 화면. 제어기 웹 Operator 화면(master/jog)을 참고해 기능 중심으로
- * 구성: 통신 상태 · 고전원(서보) ON/OFF · 축별 위치 · 로그.
+ * 구성: 상태 배지(연결·고전원·스레드·에러) · 스레드 표 · 축 게이지 · 직교 좌표/XY 플롯 · 로그 (GitHub #18).
  *
  * HTML은 media/dashboard.html에서 로드하며, 데이터는 postMessage로 주입한다.
+ * 웹뷰 → 확장 메시지: `ready`/`refresh`(즉시 1회 폴링), `setInterval {ms}`(이 탭이 열려 있는 동안 폴링 주기 덮어쓰기),
+ * `pause {paused}`(자동 갱신 일시정지 — 새로고침 버튼은 여전히 1회 폴링). 확장 → 웹뷰: `status {snapshot}`, `config {pollMs, paused}`, `error`.
  */
 
 import * as vscode from 'vscode';
@@ -14,6 +16,7 @@ import { fetchControllerStatus, ControllerStatusSnapshot } from '../controller/c
 const VIEW_TYPE = 'gplControllerDashboard';
 const DEFAULT_POLL_MS = 1500;
 const MIN_POLL_MS = 500;
+const MAX_POLL_MS = 60000;
 
 export class ControllerDashboardPanel {
 	private static current: ControllerDashboardPanel | undefined;
@@ -26,6 +29,10 @@ export class ControllerDashboardPanel {
 	private pollInFlight = false;
 	private visible = true;
 	private disposed = false;
+	/** 웹뷰 주기 선택으로 덮어쓴 폴링 주기(ms). 탭을 닫으면 사라지고 설정값으로 돌아간다. */
+	private pollOverrideMs: number | undefined;
+	/** 자동 갱신 일시정지(수동 새로고침은 계속 동작). */
+	private paused = false;
 
 	static show(context: vscode.ExtensionContext, log?: vscode.OutputChannel): void {
 		const column = vscode.ViewColumn.Beside;
@@ -70,11 +77,34 @@ export class ControllerDashboardPanel {
 			if (!msg || typeof msg.type !== 'string') {
 				return;
 			}
-			// 참고: 'setInterval' 메시지(폴링 주기 조절)는 아직 미구현 — 수신해도 무시된다.
 			switch (msg.type) {
 				case 'ready':
-				case 'refresh':
+					this.postConfig();
 					this.scheduleNextPoll(0);
+					break;
+				case 'refresh':
+					// 일시정지 중에도 수동 새로고침은 1회 폴링한다(이후 자동 재예약은 paused가 막는다).
+					this.scheduleNextPoll(0);
+					break;
+				case 'setInterval': {
+					const ms = Number(msg.ms);
+					if (Number.isFinite(ms) && ms > 0) {
+						this.pollOverrideMs = Math.min(MAX_POLL_MS, Math.max(MIN_POLL_MS, Math.round(ms)));
+						this.postConfig();
+						if (!this.paused) {
+							this.scheduleNextPoll();
+						}
+					}
+					break;
+				}
+				case 'pause':
+					this.paused = !!msg.paused;
+					this.postConfig();
+					if (this.paused) {
+						this.stopPolling();
+					} else {
+						this.scheduleNextPoll(0);
+					}
 					break;
 			}
 		}, null, this.disposables);
@@ -119,6 +149,10 @@ export class ControllerDashboardPanel {
 		if (this.disposed || !this.visible) {
 			return;
 		}
+		// 자동 재예약(delay 미지정)은 일시정지 중엔 하지 않는다. 명시적 즉시 폴링(0)은 허용.
+		if (this.paused && delayMs === undefined) {
+			return;
+		}
 		this.stopPolling();
 		const interval = delayMs ?? this.pollIntervalMs();
 		this.pollTimer = setTimeout(() => {
@@ -135,9 +169,19 @@ export class ControllerDashboardPanel {
 	}
 
 	private pollIntervalMs(): number {
+		if (this.pollOverrideMs !== undefined) {
+			return this.pollOverrideMs;
+		}
 		const cfg = vscode.workspace.getConfiguration('gpl.controller');
 		const raw = cfg.get<number>('dashboardPollIntervalMs') ?? DEFAULT_POLL_MS;
 		return Math.max(MIN_POLL_MS, raw);
+	}
+
+	/** 웹뷰의 주기 선택/일시정지 버튼 표시를 확장 쪽 실제 상태와 맞춘다. */
+	private postConfig(): void {
+		if (!this.disposed) {
+			void this.panel.webview.postMessage({ type: 'config', pollMs: this.pollIntervalMs(), paused: this.paused });
+		}
 	}
 
 	private async pollOnce(): Promise<void> {

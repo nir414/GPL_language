@@ -43,7 +43,8 @@ MCP 클라이언트가 보통 자동으로 실행하지만, 수동 점검도 가
 
 ```bash
 GPL_HOST=192.168.0.1 GPL_PROJECT=MergeCode npm start
-# stderr 에 "[gpl-controller-mcp] ready — target 192.168.0.1:1402 ..." 가 뜨면 정상
+# stderr 에 "[gpl-controller-mcp] ready — v0.8.19 <sha> (<빌드시각>) — target 192.168.0.1:1402 ..." 가 뜨면 정상
+# (소스 직접 실행이면 "vdev (unbundled source)". 번들 버전은 get_session_log / controller_status 의 server 필드에도 나온다)
 ```
 
 파서 단위테스트(제어기 없이):
@@ -84,7 +85,10 @@ claude mcp add gpl-controller \
 
 **기본**
 - `controller_command(command)` — 임의 콘솔 명령(에스케이프 해치)
-- `controller_status()` — 연결/스레드 상태 요약(`Show Thread -web`)
+- `controller_status(detail?)` — 상태 요약 1회: 연결(1402 도달성) · 스레드 상태별 개수와 정지 스레드 위치 ·
+  고전원(`Execute Controller.PowerEnabled`) · 배포 잠금 · `server`(빌드 스탬프). **연결 실패 시** ICMP/TCP를 구분해
+  "재부팅 중 / 서비스 다운(ECONNREFUSED) / 완전 무응답" verdict를 돌려준다(단명 연결 반복 금지). `detail:true`면
+  스레드 전체 목록(compact)과 최근 `ErrorLog` 10줄. 시뮬레이션/실기 판별 명령은 미확인이라 `simulation`은 항상 `null`.
 - `get_session_log(tail?)` — 이 세션의 도구 호출/1402 명령 로그(왕복 낭비 분석·공유용).
   같은 내용이 파일(`GPL_MCP_LOG_DIR`, 서버 시작 시 stderr에 경로 출력)에도 기록되며,
   사용자는 `Get-Content "<로그파일>" -Wait`로 AI의 제어기 조작을 실시간 관찰할 수 있다.
@@ -115,15 +119,20 @@ claude mcp add gpl-controller \
 - `list_breakpoints()` — `Show Break`
 
 **관찰**
-- `debug_snapshot(thread?, evals?, frame?)` — **상황 파악 원샷**: 스레드 목록 + 정지
+- `debug_snapshot(thread?, evals?, frame?, listLocals?)` — **상황 파악 원샷**: 스레드 목록(compact) + 요약 + 정지
   스레드 위치 상세 + 호출 스택 + 선택 변수 평가를 한 호출로. 세션 시작/정지 직후엔
-  show_threads/show_thread/show_stack을 따로 부르지 말고 이걸 먼저.
-- `show_threads()` — 전체 스레드(구조화)
+  show_threads/show_thread/show_stack을 따로 부르지 말고 이걸 먼저. `listLocals:true`면 해당 프레임 변수 전체
+  덤프(`Show Variable <thread> <frame>` — Brooks 문서상 구문, **실기기 미검증**)를 원문으로 덧붙인다.
+- `show_threads(verbose?)` — 전체 스레드를 이름 있는 키(`name/state/project/procedure/procLine/file/line`)로.
+  기본은 compact(빈 값·0 생략, 스레드당 ~80B); `verbose:true`일 때만 원문 줄·fields 포함.
 - `show_thread(thread)` — 스레드 상세/현재 위치
 - `show_stack(thread)` — 호출 스택
-- `eval_expression(thread, frame, expression)` — `Show Variable -eval` 로 프레임 변수 평가.
-  **한계: 필드/로컬 변수 직접 참조만 가능** — property·메서드 호출·점 표기는 -729/-780으로
-  항상 실패한다(실패 응답에 힌트 자동 포함).
+- `eval_expression(thread, frame, expression)` — `Show Variable -eval` 로 프레임 변수 평가. 결과는
+  `{name, type, value, kind(simple|object|array), members?}`로 구조화(원문 재파싱 불필요). **한계(실측)**: 식의 마지막
+  요소가 사용자 property/메서드면 `-780`, 다른 클래스 프레임의 Private 점 표기는 `-729`, `Me.`/CStr()/산술은 `-712`.
+  `-780`이면 관례 백킹 필드 `m_<이름>`으로 자동 재시도하고(→ `-729`면 부모 객체 덤프에서 추출) 성공 시 `resolvedAs`를
+  표시한다. `Me.` 접두는 자동 제거. 체인 중간의 사용자 Property/Function은 실행되므로 `x.loc.X`, `x.loc.Pos`처럼
+  마지막을 시스템 멤버로 끝내면 읽힌다(실패 응답에 힌트 자동 포함).
 - `set_variable(expression, project?)` — `Execute <expression>, <project>`
 
 **실패 응답 힌트**: 알려진 STATUS 코드(-780/-729 eval 한계, -714 없는 명령, -508 경로,

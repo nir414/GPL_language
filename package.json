@@ -57,6 +57,7 @@
         "onCommand:gpl.controller.pullBreakpoints",
         "onCommand:gpl.controller.refreshBreakpoints",
         "onCommand:gpl.ai.exportAgentSetup",
+        "onCommand:gpl.ai.checkAgentSetup",
         "onCommand:gpl.ai.debugAssist",
         "onCommand:gpl.ai.debug.getState",
         "onCommand:gpl.ai.debug.setBreakpoint",
@@ -354,6 +355,11 @@
                 "icon": "$(hubot)"
             },
             {
+                "command": "gpl.ai.checkAgentSetup",
+                "title": "GPL: Check AI Agent Setup",
+                "icon": "$(checklist)"
+            },
+            {
                 "command": "gpl.ai.debugAssist",
                 "title": "GPL: AI Debug Assist",
                 "icon": "$(hubot)"
@@ -622,6 +628,11 @@
                     "command": "gpl.ai.exportAgentSetup",
                     "when": "view == gplThreads",
                     "group": "3_diag@4"
+                },
+                {
+                    "command": "gpl.ai.checkAgentSetup",
+                    "when": "view == gplThreads",
+                    "group": "3_diag@5"
                 },
                 {
                     "command": "gpl.controller.disconnect",
@@ -1068,7 +1079,13 @@
                     "type": "number",
                     "default": 1500,
                     "minimum": 500,
-                    "description": "제어기 대시보드 실시간 상태 폴링 주기(ms). 최소 500."
+                    "description": "제어기 대시보드 실시간 상태 폴링 주기(ms). 최소 500. 대시보드 탭 상단의 주기 선택은 그 탭이 열려 있는 동안만 이 값을 덮어씁니다."
+                },
+                "gpl.ai.autoRefreshMcpBundle": {
+                    "scope": "application",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "확장 활성화 시 globalStorage의 gpl-controller MCP 서버 사본이 동봉 번들과 다르면(sha256) 자동으로 갱신합니다. GPL: Export AI Agent Setup을 실행한 적이 없는 PC에는 영향이 없습니다. 갱신 뒤에는 Claude Code에서 /mcp 재연결이 필요합니다."
                 },
                 "gpl.quickCompile.autoOnSave": {
                     "scope": "window",

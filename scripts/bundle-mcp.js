@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
 const entry = path.join(repoRoot, 'controller-mcp', 'src', 'index.js');
@@ -30,6 +31,17 @@ if (!fs.existsSync(depsDir)) {
 
 const esbuild = require('esbuild');
 
+// 빌드 스탬프(GitHub #23): 확장 버전·빌드 시각·git sha를 번들 안(define → index.js BUILD)과 사이드카
+// out/mcp/gpl-controller-mcp.build.json에 함께 기록한다. 서버 stderr ready 줄·get_session_log·controller_status.server와
+// 확장의 `GPL: Check AI Agent Setup`이 "지금 어느 번들인가"를 이 값으로 판별한다(McpServer version은 늘 0.1.0이어서 구별이 안 됐음).
+const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+let gitSha = null;
+try {
+    gitSha = execSync('git rev-parse --short HEAD', { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || null;
+} catch { /* git 없음/비저장소 — 스탬프에서 생략 */ }
+const build = { version: pkg.version, builtAt: new Date().toISOString(), gitSha, bundled: true };
+const buildInfoFile = outFile.replace(/\.cjs$/, '.build.json');
+
 esbuild.build({
     entryPoints: [entry],
     bundle: true,
@@ -38,12 +50,16 @@ esbuild.build({
     format: 'cjs',
     outfile: outFile,
     logLevel: 'info',
+    define: {
+        __GPL_MCP_BUILD_JSON__: JSON.stringify(JSON.stringify(build)),
+    },
     banner: {
-        js: '// bundled from controller-mcp/src by scripts/bundle-mcp.js — do not edit; stdout은 MCP 전송 채널(로그는 stderr만)',
+        js: `// bundled from controller-mcp/src by scripts/bundle-mcp.js — do not edit; stdout은 MCP 전송 채널(로그는 stderr만)\n// build: v${build.version} ${gitSha ?? ''} ${build.builtAt}`,
     },
 }).then(() => {
+    fs.writeFileSync(buildInfoFile, JSON.stringify(build, null, 2) + '\n');
     const size = fs.statSync(outFile).size;
-    console.log(`bundle:mcp DONE: ${path.relative(repoRoot, outFile)} (${Math.round(size / 1024)} KB)`);
+    console.log(`bundle:mcp DONE: ${path.relative(repoRoot, outFile)} (${Math.round(size / 1024)} KB) — v${build.version} ${gitSha ?? ''} ${build.builtAt}`);
 }).catch((err) => {
     console.error('bundle:mcp FAILED:', err);
     process.exit(1);

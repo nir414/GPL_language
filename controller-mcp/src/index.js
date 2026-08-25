@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -26,7 +27,9 @@ import {
   parseCompileErrors,
   parseThreadList,
   parseThreadDetail,
-  normalizeThreadState,
+  compactThread,
+  summarizeThreads,
+  parseShowVariable,
   PAUSED_STATES,
   statusHint,
   isSuccess,
@@ -39,6 +42,19 @@ const DEFAULT_PROJECT = process.env.GPL_PROJECT || 'MergeCode';
 const TIMEOUT = parseInt(process.env.GPL_TIMEOUT_MS || '15000', 10);
 const IDLE_CLOSE = parseInt(process.env.GPL_IDLE_CLOSE_MS || '30000', 10);
 const LOCK_WAIT_MS = parseInt(process.env.GPL_LOCK_WAIT_MS || '20000', 10);
+
+// ── 빌드 스탬프 ───────────────────────────────────────────────────────────
+// scripts/bundle-mcp.js가 esbuild define으로 JSON 문자열을 주입한다(확장 버전·빌드 시각·git sha). 소스를 직접 실행하면
+// 식별자가 없으므로 'dev'. 목적(GitHub #23): globalStorage 사본이 구버전으로 남아도 "지금 어느 번들이 돌고 있나"를
+// stderr ready 줄·get_session_log·controller_status.server로 즉시 알 수 있게 한다(McpServer version 문자열도 이 값).
+const BUILD = (() => {
+  try {
+    // eslint-disable-next-line no-undef
+    if (typeof __GPL_MCP_BUILD_JSON__ === 'string') return JSON.parse(__GPL_MCP_BUILD_JSON__);
+  } catch { /* noop */ }
+  return { version: 'dev', builtAt: null, gitSha: null, bundled: false };
+})();
+const BUILD_LABEL = `v${BUILD.version}${BUILD.gitSha ? ` ${BUILD.gitSha}` : ''}${BUILD.builtAt ? ` (${BUILD.builtAt})` : ' (unbundled source)'}`;
 
 // ── 세션 로그 ─────────────────────────────────────────────────────────────
 // 모든 도구 호출과 1402 명령을 타임스탬프/소요시간/STATUS와 함께 기록한다.
@@ -78,7 +94,7 @@ const consoleClient = new ControllerConsole({
   },
 });
 
-const server = new McpServer({ name: 'gpl-controller-mcp', version: '0.1.0' });
+const server = new McpServer({ name: 'gpl-controller-mcp', version: String(BUILD.version) });
 
 function textResult(payload) {
   const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
@@ -197,17 +213,111 @@ async function snapshotThread(thread) {
 
 const EVAL_LIMIT_RE = /\(-7(?:29|80)\)/;
 
-/** 정지 직후 여러 변수를 한 번에 평가(관측 배치). 각 결과에 실패 힌트 포함. */
+/**
+ * 변수 1회 평가 → 구조화 결과 `{ expression, ok, name, type, value, kind, members?, status, resolvedAs?, hint? }`.
+ *  - 원문 재파싱을 없앤다(GitHub #24 ③). 파싱 실패 시에만 `data` 원문.
+ *  - `Me.` 접두는 -712라 미리 벗긴다.
+ *  - 프로퍼티 -780 자동 우회(GitHub #24 ④/#26): 마지막 요소가 식별자면 관례 백킹 필드 `m_<이름>`으로 재시도하고, 그것이
+ *    -729(다른 클래스 프레임의 Private 점 표기)이며 부모 식이 있으면 부모 객체 덤프(프레임 무관, Private 포함)에서
+ *    `.m_<이름>` 멤버 줄을 추출한다. 우회로 얻은 값은 `resolvedAs`에 출처를 표시한다.
+ */
+async function evalOne(thread, frame, expression) {
+  const expr = String(expression).replace(/^Me\.(?=[A-Za-z_])/i, '');
+  const cmd = (e) => `Show Variable -eval ${thread} ${frame} ${e}`;
+  const r = await runCommand(cmd(expr));
+  const out = { expression, ok: r.ok, status: r.status };
+  const attach = (res, resolvedAs) => {
+    const parsed = parseShowVariable(res.data);
+    if (parsed) {
+      out.name = parsed.name; out.type = parsed.type; out.value = parsed.value; out.kind = parsed.kind;
+      if (parsed.members.length) out.members = parsed.members;
+    } else {
+      out.data = res.data;
+    }
+    if (resolvedAs) out.resolvedAs = resolvedAs;
+  };
+  if (r.ok) { attach(r); return out; }
+
+  if (r.status.code === -780) {
+    const lastDot = expr.lastIndexOf('.');
+    const leaf = lastDot >= 0 ? expr.slice(lastDot + 1) : expr;
+    const parent = lastDot > 0 ? expr.slice(0, lastDot) : null;
+    if (/^[A-Za-z_]\w*$/.test(leaf)) {
+      const backing = `m_${leaf}`;
+      const backingExpr = parent ? `${parent}.${backing}` : backing;
+      const r2 = await runCommand(cmd(backingExpr));
+      if (r2.ok) { out.ok = true; out.status = r2.status; attach(r2, backingExpr); return out; }
+      if (parent && r2.status.code === -729) {
+        const dump = await runCommand(cmd(parent));
+        const parsed = dump.ok ? parseShowVariable(dump.data) : null;
+        const want = `.${backing.toLowerCase()}`;
+        const m = parsed?.members.find((e) => e.name.toLowerCase().endsWith(want));
+        if (m) {
+          Object.assign(out, { ok: true, status: dump.status, name: m.name, type: m.type, value: m.value, kind: 'simple',
+            resolvedAs: `${parent} 덤프의 ${m.name}` });
+          return out;
+        }
+      }
+    }
+  }
+  const hint = r.hint ?? (EVAL_LIMIT_RE.test(String(r.data)) ? statusHint(-780) : undefined);
+  if (hint) out.hint = hint;
+  if (r.data) out.data = r.data;
+  return out;
+}
+
+/** 정지 직후 여러 변수를 한 번에 평가(관측 배치). 각 결과는 evalOne과 같은 구조. */
 async function evalMany(thread, frame, expressions) {
   const out = [];
-  for (const expression of expressions) {
-    const r = await runCommand(`Show Variable -eval ${thread} ${frame} ${expression}`);
-    const entry = { expression, ok: r.ok, value: r.data, status: r.status };
-    const hint = r.hint ?? (EVAL_LIMIT_RE.test(String(r.data)) ? statusHint(-780) : undefined);
-    if (hint) entry.hint = hint;
-    out.push(entry);
-  }
+  for (const expression of expressions) out.push(await evalOne(thread, frame, expression));
   return out;
+}
+
+/** 고전원 상태(Execute Controller.PowerEnabled — 확장 controllerStatus.ts와 같은 프로브). 실패/해석 불가면 null. */
+async function probePowerEnabled() {
+  try {
+    const raw = await consoleClient.send('Execute Controller.PowerEnabled', { timeoutMs: 4000 });
+    if (!isSuccess(parseStatus(raw))) return null;
+    const payload = extractData(raw);
+    if (/\b(true|on|enabled)\b/i.test(payload)) return true;
+    if (/\b(false|off|disabled)\b/i.test(payload)) return false;
+    const m = payload.match(/-?\d+/);
+    return m ? parseInt(m[0], 10) !== 0 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** ICMP 1회(best-effort). ping 미지원/실패면 alive:null. Windows ping은 "Destination host unreachable"에도 종료코드 0이라 TTL= 응답으로 판정. */
+function pingOnce(host, timeoutMs = 2500) {
+  const isWin = process.platform === 'win32';
+  const args = isWin ? ['-n', '1', '-w', '1000', host] : ['-c', '1', '-W', '1', host];
+  const t0 = Date.now();
+  return new Promise((resolve) => {
+    try {
+      execFile('ping', args, { timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
+        const alive = isWin ? /TTL=/i.test(String(stdout || '')) : !err;
+        resolve({ alive, ms: Date.now() - t0 });
+      });
+    } catch {
+      resolve({ alive: null, ms: Date.now() - t0 });
+    }
+  });
+}
+
+/**
+ * 1402 접속 실패의 원인을 구분한다(GitHub #24 ②, #22 사고 교훈): 재부팅 중(ICMP만 응답) / 서비스 다운(ECONNREFUSED) /
+ * 완전 무응답. AI가 단명 연결을 반복하며 추정하지 않도록 판정 문장을 함께 준다.
+ */
+async function probeReachability(err) {
+  const code = err?.code ?? (/timed out/i.test(err?.message ?? '') ? 'ETIMEDOUT' : undefined);
+  const icmp = await pingOnce(HOST);
+  let verdict;
+  if (code === 'ECONNREFUSED') verdict = '호스트는 살아 있으나 1402 서비스가 닫혀 있다(제어기 소프트웨어 다운/재시작 중).';
+  else if (icmp.alive === true) verdict = 'ICMP는 응답하나 1402 TCP가 실패 — 부팅 중(서비스 미기동)이거나 소켓 점유/타임아웃.';
+  else if (icmp.alive === false) verdict = 'ICMP·TCP 모두 무응답 — 전원/네트워크/재부팅 초기 단계.';
+  else verdict = 'ICMP 판정 불가(ping 미지원) — TCP 실패만 확인됨.';
+  return { tcp1402: false, error: code ?? String(err?.message ?? err), icmp, verdict };
 }
 
 /** 정지 확인 결과를 도구 응답용 위치 요약으로 변환. */
@@ -249,22 +359,50 @@ tool('get_session_log',
   '왕복 낭비 자가 점검과 사용자 공유용. 같은 내용이 로그 파일에도 기록된다.',
   { tail: z.number().int().min(1).max(2000).optional().describe('마지막 N줄(기본 200)') },
   async ({ tail }) => textResult({
+    server: BUILD,
     logFile: LOG_FILE,
     hint: LOG_FILE ? `사용자는 PowerShell에서 'Get-Content "${LOG_FILE}" -Wait'로 실시간 관찰 가능` : '파일 로그 비활성(링버퍼만)',
     entries: logRing.slice(-(tail ?? 200)),
   }));
 
+/** 배포 잠금(VS Code 확장이 업로드/배포 중이면 존재) — 있으면 Compile/Start는 대기·거부된다. */
+function deployLockInfo() {
+  const lock = readDeployLock(HOST);
+  return lock
+    ? { holder: lock.owner, stage: lock.stage, since: new Date(lock.since).toISOString(), describe: describeDeployLock(lock) }
+    : null;
+}
+
 tool('controller_status',
-  '제어기 연결/스레드 상태를 빠르게 확인한다(Show Thread -web).',
-  {},
-  async () => {
-    const raw = await consoleClient.send('Show Thread -web');
+  '제어기 상태 요약 1회: 연결(1402 도달성)·스레드 상태별 개수와 정지 스레드 위치·고전원(Controller.PowerEnabled)·배포 잠금·서버 빌드. ' +
+  '연결 실패 시 ICMP/TCP를 구분해 "재부팅 중 / 서비스 다운 / 완전 무응답"을 판정해 준다(단명 연결 반복 금지). ' +
+  'detail=true면 스레드 전체 목록(compact)과 최근 ErrorLog 10줄을 덧붙인다. 시뮬레이션/실기 판별 명령은 실측 확인 전이라 simulation은 항상 null — 사용자에게 확인할 것.',
+  { detail: z.boolean().optional().describe('true면 스레드 전체 목록(compact)과 최근 ErrorLog 10줄 포함') },
+  async ({ detail }) => {
+    const base = { host: HOST, port: PORT, server: BUILD, deployLock: deployLockInfo() };
+    let raw;
+    try {
+      raw = await consoleClient.send('Show Thread -web');
+    } catch (err) {
+      const reachable = await probeReachability(err);
+      return textResult({
+        ...base, ok: false, connected: false, reachable,
+        hint: `${reachable.verdict} 재시도 전에 사용자에게 제어기 상태를 확인할 것.`,
+      });
+    }
     const status = parseStatus(raw);
     const { threads } = parseThreadList(raw);
-    // 배포 잠금(VS Code 확장이 업로드/배포 중이면 존재) — 있으면 Compile/Start는 대기·거부된다.
-    const lock = readDeployLock(HOST);
-    const deployLock = lock ? { holder: lock.owner, stage: lock.stage, since: new Date(lock.since).toISOString(), describe: describeDeployLock(lock) } : null;
-    return textResult({ host: HOST, port: PORT, ok: isSuccess(status), status, threadCount: threads.length, threads, deployLock });
+    const powerEnabled = await probePowerEnabled();
+    const result = {
+      ...base, ok: isSuccess(status), connected: true, status, powerEnabled, simulation: null,
+      threads: summarizeThreads(threads),
+    };
+    if (detail) {
+      result.threadList = threads.map(compactThread);
+      const log = await runCommand('ErrorLog -web ,10');
+      result.errorLog = log.ok ? log.data.split(/\r?\n/).map((l) => l.trim()).filter(Boolean) : log.status;
+    }
+    return textResult(result);
   });
 
 // ── 컴파일/실행 ───────────────────────────────────────────────────────────
@@ -476,21 +614,18 @@ tool('debug_snapshot',
   '세션 시작 직후·정지 직후 "지금 어디서 뭘 하고 있나"는 show_threads/show_thread/show_stack을 따로 부르지 말고 이걸 먼저 쓸 것.',
   {
     thread: z.string().optional().describe('생략 시 정지(Paused/Break/Error) 상태인 첫 스레드 자동 선택'),
-    evals: z.array(z.string()).optional().describe('정지 스레드에서 평가할 필드/로컬 변수 목록'),
+    evals: z.array(z.string()).optional().describe('정지 스레드에서 평가할 필드/로컬 변수 목록(프로퍼티는 m_백킹 필드로 자동 재시도)'),
     frame: z.number().int().min(0).optional().describe('evals 평가 프레임(기본 0)'),
+    listLocals: z.boolean().optional()
+      .describe('true면 정지 스레드의 해당 프레임 변수 전체 덤프(`Show Variable <thread> <frame>`, 이름 생략)를 원문으로 포함 — Brooks 문서상 구문, 실기기 미검증. 어떤 이름이 있는지 몰라 evals 이름을 추측하는 왕복을 없애는 용도'),
   },
-  async ({ thread, evals, frame }) => {
+  async ({ thread, evals, frame, listLocals }) => {
     const raw = await consoleClient.send('Show Thread -web');
     const status = parseStatus(raw);
     const { threads } = parseThreadList(raw);
-    const summary = threads.map((t) => ({
-      name: t.name,
-      state: normalizeThreadState(t.fields[1] ?? ''),
-      raw: t.raw,
-    }));
-    const result = { ok: isSuccess(status), status, threads: summary };
+    const result = { ok: isSuccess(status), status, summary: summarizeThreads(threads), threads: threads.map(compactThread) };
     const focus = thread
-      ?? summary.find((t) => PAUSED_STATES.has(t.state))?.name
+      ?? threads.find((t) => PAUSED_STATES.has(t.state))?.name
       ?? null;
     if (focus) {
       const detail = await snapshotThread(focus);
@@ -498,7 +633,13 @@ tool('debug_snapshot',
       result.location = locationOf(detail);
       const stack = await runCommand(`Show Stack ${focus}`);
       result.stack = stack.ok ? stack.data : stack;
-      if (evals?.length && detail && PAUSED_STATES.has(detail.state)) {
+      const isPaused = !!(detail && PAUSED_STATES.has(detail.state));
+      if (listLocals && isPaused) {
+        const locals = await runCommand(`Show Variable ${focus} ${frame ?? 0}`);
+        result.locals = locals.ok ? locals.data : locals;
+        result.localsNote = '`Show Variable <thread> <frame>`(변수명 생략) — Brooks 문서상 "해당 레벨 변수 전체 표시", 실기기 미검증. 형식이 다르면 사용자에게 보고할 것.';
+      }
+      if (evals?.length && isPaused) {
         result.evals = await evalMany(focus, frame ?? 0, evals);
       }
     } else {
@@ -508,13 +649,19 @@ tool('debug_snapshot',
   });
 
 tool('show_threads',
-  '전체 스레드 목록(Show Thread -web)을 구조화해 반환.',
-  {},
-  async () => {
+  '전체 스레드 목록(Show Thread -web) — 이름 있는 키(name/state/project/procedure/file/line)로 구조화해 반환. ' +
+  'verbose=true일 때만 원문 줄(rawLines)과 열 배열(fields)을 함께 준다(기본은 compact — 토큰 절약).',
+  { verbose: z.boolean().optional().describe('원문 줄·fields 포함') },
+  async ({ verbose }) => {
     const raw = await consoleClient.send('Show Thread -web');
     const status = parseStatus(raw);
     const { threads, rawLines } = parseThreadList(raw);
-    return textResult({ ok: isSuccess(status), status, threads, rawLines });
+    return textResult({
+      ok: isSuccess(status), status,
+      summary: summarizeThreads(threads),
+      threads: verbose ? threads : threads.map(compactThread),
+      ...(verbose ? { rawLines } : {}),
+    });
   });
 
 tool('show_thread',
@@ -528,20 +675,18 @@ tool('show_stack',
   async ({ thread }) => textResult(await runCommand(`Show Stack ${thread}`)));
 
 tool('eval_expression',
-  '정지된 스레드의 특정 프레임에서 변수를 평가한다(Show Variable -eval <thread> <frame> <expr>). ' +
-  '평가 가능(GPL 4.2K5 실측): 그 프레임의 로컬/파라미터, 모듈 전역, 모듈전역.public필드(theMotionLoger.lastStage 형태), 배열 인덱스 arr(i), 객체명(필드 덤프 반환). ' +
-  '평가 불가: 프로퍼티/메서드 호출(-780, 인자 유무 무관), 객체 멤버 점 표기(-729), 다른 프레임의 로컬(-729). 실패하면 같은 부류로 재시도하지 말고 응답 hint를 따를 것. ' +
+  '정지된 스레드의 특정 프레임에서 변수를 평가한다(Show Variable -eval <thread> <frame> <expr>). 결과는 `{name,type,value,kind,members?}`로 구조화된다. ' +
+  '평가 가능(GPL 4.2K5 실측): 그 프레임의 로컬/파라미터, 모듈 전역, 모듈전역.public필드(theMotionLoger.lastStage 형태), 배열 인덱스 arr(i), 객체명(필드 덤프 반환), ' +
+  '체인 중간의 사용자 Property/Function(마지막이 시스템 멤버여야 함: `x.loc.X`, `x.loc.Pos`). ' +
+  '평가 불가: 마지막 요소가 사용자 프로퍼티/메서드(-780 — 관례 백킹 필드 m_<이름>으로 자동 재시도하고 성공하면 resolvedAs 표시), 다른 클래스 프레임의 Private 점 표기(-729), 다른 프레임의 로컬(-729), ' +
+  '`Me.`(자동 제거)·CStr() 감싸기·산술(-712). 실패하면 같은 부류로 재시도하지 말고 응답 hint를 따를 것. ' +
   '여러 값은 debug_snapshot/step_thread/run_to_line의 evals로 배치하면 왕복을 아낀다.',
   {
     thread: z.string(),
     frame: z.number().int().min(0).describe('스택 프레임 인덱스(0=최상단). 로컬이 -729면 show_stack으로 프레임 확인'),
-    expression: z.string().describe('로컬/필드/배열요소(프로퍼티·메서드 호출 불가)'),
+    expression: z.string().describe('로컬/필드/배열요소/객체명(프로퍼티는 m_백킹 필드 자동 재시도)'),
   },
-  async ({ thread, frame, expression }) => {
-    const r = await runCommand(`Show Variable -eval ${thread} ${frame} ${expression}`);
-    if (!r.hint && EVAL_LIMIT_RE.test(String(r.data))) r.hint = statusHint(-780);
-    return textResult(r);
-  });
+  async ({ thread, frame, expression }) => textResult(await evalOne(thread, frame, expression)));
 
 tool('set_variable',
   '변수/식에 값을 대입한다(Execute <expression>, <project>). 예: expression="myVar = 1". [시뮬레이션 모드 권장]',
@@ -551,12 +696,12 @@ tool('set_variable',
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`[gpl-controller-mcp] ready — target ${HOST}:${PORT}, default project "${DEFAULT_PROJECT}"`);
+  console.error(`[gpl-controller-mcp] ready — ${BUILD_LABEL} — target ${HOST}:${PORT}, default project "${DEFAULT_PROJECT}"`);
   if (LOG_FILE) {
     console.error(`[gpl-controller-mcp] session log: ${LOG_FILE}`);
     console.error(`[gpl-controller-mcp] 실시간 관찰: Get-Content "${LOG_FILE}" -Wait`);
   }
-  logLine(`session start — target ${HOST}:${PORT}, project "${DEFAULT_PROJECT}", idleClose ${IDLE_CLOSE}ms`);
+  logLine(`session start — ${BUILD_LABEL} — target ${HOST}:${PORT}, project "${DEFAULT_PROJECT}", idleClose ${IDLE_CLOSE}ms`);
 }
 
 main().catch((err) => {

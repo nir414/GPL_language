@@ -143,9 +143,16 @@ export function parseThreadDetail(text) {
 export function statusHint(code) {
   switch (code) {
     case -780:
-      return '프로퍼티/메서드 참조는 인자 유무와 무관하게 -eval이 평가하지 못한다(GPL 4.2K5 실측, ai-handoff §1-U). ' +
-        '유사 표현으로 재시도하지 말 것. 대안: ① 백킹 필드(m_*)를 직접 읽기 ② 부모 객체명만 평가해 필드 덤프에서 읽기 ' +
-        '③ 소스 정적 분석으로 값 유도.';
+      return '식의 **마지막 요소**가 사용자 프로퍼티/메서드면 -eval이 거부한다(GPL 4.2K5 실측 2026-08-25; 체인 중간의 사용자 Property/Function은 실행됨). ' +
+        '유사 표현·CStr()/산술 감싸기(-712)로 재시도하지 말 것. 대안: ① 백킹 필드 m_<이름> 직접 읽기(eval_expression이 자동 재시도, resolvedAs 표시) ' +
+        '② 부모 객체명만 평가해 필드 덤프에서 읽기(덤프는 프레임 무관하게 Private 포함) ③ 객체(Location 등)를 돌려주는 프로퍼티/함수는 ' +
+        '뒤에 시스템 멤버를 하나 붙이기(`x.loc.Pos`, `x.loc.X`) ④ 소스 정적 분석으로 값 유도.';
+    case -712:
+      return '콘솔 평가기가 받지 않는 구문 — `Me.` 접두(자동 제거됨), CStr/CInt/CDbl 감싸기, 산술식은 불가. 변수/필드/배열요소 식만 보낼 것.';
+    case -762:
+      return 'Location 타입 불일치: 이 Location은 Angles(Type 1)라 X/Y/Z/Yaw/Pitch/Roll이 없다. Angle(1..n)을 조회할 것.';
+    case -763:
+      return 'Location 타입 불일치: 이 Location은 Cartesian(Type 0)이라 Angle(i)가 없다. X/Y/Z/Yaw/Pitch/Roll을 조회할 것.';
     case -729:
       return '그 프레임 스코프에 없는 이름이거나 객체 멤버 점 표기 식이다(-eval은 프레임별 스코프가 엄격히 분리됨). ' +
         '로컬/파라미터는 show_stack으로 정확한 프레임 인덱스를 확인해 그 프레임에서 읽고, ' +
@@ -170,9 +177,11 @@ export function statusHint(code) {
 }
 
 /**
- * `Show Thread -web` 파이프 포맷 또는 일반 포맷의 스레드 목록 파싱(best-effort).
- * 컬럼 수가 부족한 헤더/구분줄/짧은 줄은 건너뛴다.
- * @returns {{ threads: Array<{name:string, raw:string, fields:string[]}>, rawLines:string[] }}
+ * `Show Thread -web` 파이프 포맷 스레드 목록 파싱(best-effort). 열 순서는 확장 responseParser.parseThreadList와 동일:
+ *   name| state| code| "msg"| project| func| procLine| file| fileLine
+ * 종전엔 fields[]+raw만 줘서 AI가 열 의미를 추측해야 했고 응답이 3중으로 커졌다(GitHub #24) — 이름 있는 키로 매핑하고
+ * raw/fields는 verbose 표시용으로만 남긴다(compactThread로 제거).
+ * @returns {{ threads: Array<{name,state,statusCode,statusMessage,project,procedure,procLine,file,line,fields,raw}>, rawLines:string[] }}
  */
 export function parseThreadList(raw) {
   const body = extractData(raw);
@@ -185,7 +194,122 @@ export function parseThreadList(raw) {
     const first = fields[0] || '';
     if (!first || /^[-=\s]+$/.test(first) || /^(thread|name)$/i.test(first)) continue;
     if (fields.length < 2) continue;
-    threads.push({ name: first, fields, raw: line });
+    threads.push({
+      name: first,
+      state: normalizeThreadState(fields[1] ?? ''),
+      statusCode: parseInt(fields[2], 10) || 0,
+      statusMessage: (fields[3] ?? '').replace(/^"([\s\S]*)"$/, '$1'),
+      project: fields[4] ?? '',
+      procedure: fields[5] ?? '',
+      procLine: parseInt(fields[6], 10) || 0,
+      file: fields[7] ?? '',
+      line: parseInt(fields[8], 10) || 0,
+      fields,
+      raw: line,
+    });
   }
   return { threads, rawLines: lines };
+}
+
+/** 스레드 한 건을 AI 소비용 최소 필드로 줄인다(빈 값·0·raw·fields 생략). 스레드 15개 기준 ~6.5KB → ~1.2KB. */
+export function compactThread(t) {
+  const out = { name: t.name, state: t.state };
+  if (t.statusCode) out.statusCode = t.statusCode;
+  if (t.statusMessage) out.statusMessage = t.statusMessage;
+  if (t.project) out.project = t.project;
+  if (t.procedure) out.procedure = t.procedure;
+  if (t.file) out.file = t.file;
+  if (t.line) out.line = t.line;
+  if (t.procLine) out.procLine = t.procLine;
+  return out;
+}
+
+/** 스레드 목록 요약: 상태별 개수 + 정지(Paused/Break/Error) 스레드의 위치. 폴링용 controller_status의 본체. */
+export function summarizeThreads(threads) {
+  const count = (pred) => threads.filter(pred).length;
+  return {
+    total: threads.length,
+    running: count((t) => t.state === 'Running'),
+    paused: count((t) => t.state === 'Paused' || t.state === 'Break'),
+    error: count((t) => t.state === 'Error'),
+    idle: count((t) => t.state === 'Idle'),
+    stopped: count((t) => t.state === 'Stopped' || t.state === 'Stopping'),
+    pausedThreads: threads.filter((t) => PAUSED_STATES.has(t.state)).map((t) => {
+      const o = { name: t.name, state: t.state };
+      if (t.file) o.file = t.file;
+      if (t.line) o.line = t.line;
+      if (t.procedure) o.procedure = t.procedure;
+      return o;
+    }),
+  };
+}
+
+// ── Show Variable 응답 파싱(확장 showVariableParser.ts 규칙 이식) ────────────
+
+/** 쉼표 분할 시 괄호 안의 쉼표(`arr(0,1)`, `Double(,)`)는 무시하고, maxParts 이후는 마지막 칸에 합친다. */
+export function splitVarLine(line, maxParts) {
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of line) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0 && parts.length < maxParts - 1) {
+      parts.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim().length > 0 || parts.length > 0) parts.push(current.trim());
+  return parts;
+}
+
+/**
+ * `name, X` 2열 줄의 두 번째 칸이 타입 토큰인지. 시스템 Location 덤프의 멤버 줄은 `name, value` 2열(+주석 값
+ * `0 = Cartesian`)로 오므로(실측 2026-08-25, GitHub #27) 2열을 무조건 헤더로 보면 값이 사라진다.
+ */
+export function isTypeToken(s) {
+  const t = String(s).trim();
+  if (!t || /^[-+.\d"']/.test(t)) return false;
+  if (/^(Integer|Double|Single|Boolean|Byte|Short|Long|String|Decimal|Date|Char)\s*(\([^)]*\))?$/i.test(t)) return true;
+  if (/^Object\b/i.test(t)) return true;
+  return /^[A-Za-z_]\w*\s*\([^)]*\)\s*\S*$/.test(t);
+}
+
+function classifyVarKind(e, hasMembers) {
+  if (!e.value && /\([^)]*\)\s*$/.test(e.type)) return 'array';
+  const t = e.type.trim();
+  const objParen = t.match(/^object\s*\([^)]*\)\s*(\S*)$/i);
+  if (objParen) {
+    if (hasMembers) return 'object';
+    if (/\)\s*$/.test(e.name) || e.name.includes('.')) return /^null$/i.test(objParen[1] ?? '') ? 'simple' : 'object';
+    return 'array';
+  }
+  if (/^object\b/i.test(t)) return 'object';
+  return 'simple';
+}
+
+/**
+ * `Show Variable -eval` 응답 → `{ name, type, value, kind, members }` (없으면 null).
+ *  - kind: 'simple' | 'object'(members에 필드 덤프) | 'array'(요소는 `arr(i)`로 개별 조회)
+ *  - 2열 멤버 줄(Location 덤프)은 type '' + value, `Null`은 'null'로 통일.
+ * AI가 `curHand, Integer, 1` 원문을 재파싱하지 않게 한다(GitHub #24 ③).
+ */
+export function parseShowVariable(raw) {
+  const body = extractData(raw);
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return null;
+  const parseLine = (line) => {
+    const parts = splitVarLine(line, 3);
+    if (parts.length >= 3) return { name: parts[0], type: parts[1], value: parts[2] };
+    if (parts.length === 2) {
+      return isTypeToken(parts[1])
+        ? { name: parts[0], type: parts[1], value: '' }
+        : { name: parts[0], type: '', value: /^null$/i.test(parts[1]) ? 'null' : parts[1] };
+    }
+    return { name: '', type: '', value: line };
+  };
+  const [head, ...members] = lines.map(parseLine);
+  return { ...head, kind: classifyVarKind(head, members.length > 0), members };
 }

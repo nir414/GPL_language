@@ -2,6 +2,24 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.8.19] - 2026-08-25
+
+### Fixed
+
+- **디버거 Variables/Watch에서 시스템 `Location`을 펼치면 값이 비어 보이던 문제(#27)를 수정했습니다.** 제어기의 Location 덤프는 멤버 줄이 `name, value` 2열(+주석 값 `0 = Cartesian`)로 오는데 3열을 전제한 파서가 값을 타입 칸에 넣었습니다. 이제 값이 제대로 보이고, Location 노드 자체에 한 줄 요약(`(636, 0, 0 | 0, 90, -180) cfg=1` / `Angles(0, 0, 0, 0, 0.196)`)이 표시되며, `ZClearance` 1E+32는 `(미설정)`으로 주석됩니다. `-762/-763`(Location 타입 불일치)과 `-712`(평가기 구문 불가) 오류에 안내 문구를 추가했습니다.
+- **CI(태그 push)로 빌드한 VSIX에 제어기 대시보드 HTML(`media/dashboard.html`)이 빠져 "media/dashboard.html을 로드하지 못했습니다" 폴백만 뜨던 문제를 수정했습니다.** `.gitignore`가 `media/` 전체를 무시해 파일이 저장소에 없었습니다(로컬 `npm run package`에는 포함돼 이 PC에서만 정상으로 보였음). 이제 추적합니다.
+- **Export AI Agent Setup의 globalStorage MCP 서버 사본이 확장 업데이트 후 갱신되지 않던 문제(#23)를 수정했습니다.** 확장 활성화 시 사본이 동봉 번들과 다르면(sha256) 자동으로 갱신하고 Claude Code `/mcp` 재연결 안내를 띄웁니다(`gpl.ai.autoRefreshMcpBundle`, 기본 켜짐 — Export를 실행한 적 없는 PC에는 영향 없음). MCP 번들에 빌드 스탬프(확장 버전·빌드 시각·git sha)가 박혀 서버 시작 stderr·`get_session_log`·`controller_status.server`로 어느 번들이 돌고 있는지 바로 알 수 있습니다.
+
+### Added
+
+- **디버거가 클래스 Property 값을 보여줍니다(#26).** 제어기 콘솔은 식의 마지막 요소가 사용자 프로퍼티면 `-780`으로 거부하므로, 파서가 Property의 `Get … Return <식>`을 기록해 두고 디버그 어댑터가 백킹 필드(Get 반환식 또는 관례 `m_이름`)로 치환해 평가합니다. 다른 클래스 프레임에서 Private 점 표기가 `-729`면 부모 객체 덤프(프레임 무관, Private 포함)에서 멤버 줄을 추출합니다. hover·Watch 결과에 `← m_armCount (Get 반환식)`처럼 출처를 표시하고, 객체 노드를 펼치면 Property가 읽기 전용 가상 자식으로 나타나며, 해석 가능한 Property 위에서는 디버그 hover가 열립니다. `Me.` 접두는 자동으로 벗기고(제어기에서 `-712`), 반환형이 Location인 프로퍼티는 `.Pos`를 붙여 우회합니다.
+- **`GPL: Check AI Agent Setup`** 명령(#23) — `.mcp.json` 등록 경로, globalStorage 사본/동봉 번들 해시 일치, CLAUDE.md 안내 블록 버전을 한 번에 점검하고 문제가 있으면 Export 재실행 버튼을 제공합니다. CLAUDE.md 자동 생성 블록에 확장 버전 표식이 들어갑니다.
+- **제어기 대시보드 시각화 개선(#18)** — 상단에 연결·고전원·스레드·에러 상태를 색상 배지로 크게 표시(상태가 바뀌면 깜빡임), 스레드 표(상태·위치·프로시저·마지막 STATUS, 변화 행 강조), 축 위치 게이지(관측 범위 자동 조정, 이동 중 표시·Δ), 직교 좌표 XY 미니 플롯(최근 궤적), 새 에러 로그 줄 강조. 폴링 주기 선택과 일시정지 버튼을 탭 안에 넣었고(미구현이던 `setInterval` 메시지 구현), 연결 중에는 상태바에 `$(dashboard)` 바로가기 항목이 표시됩니다.
+
+### Changed
+
+- **MCP 관찰 도구(#24)**: `show_threads`/`debug_snapshot`/`controller_status`의 스레드 응답을 이름 있는 키(`name/state/project/procedure/file/line`)의 compact 형식으로 바꿔 3중 중복(fields+raw+rawLines)을 제거했습니다(`show_threads(verbose:true)`로 원문 유지). `controller_status`가 스레드 상태별 개수·정지 스레드 위치·고전원(`Controller.PowerEnabled`)·배포 잠금·서버 빌드를 돌려주고, 연결 실패 시 ICMP/TCP를 구분해 "재부팅 중 / 서비스 다운 / 완전 무응답"을 판정합니다(`detail:true`면 스레드 전체 목록·최근 ErrorLog 10줄). `eval_expression`과 각 도구의 `evals` 결과가 `{name,type,value,kind,members}`로 구조화되고, `-780`이면 `m_이름` 백킹 필드로 자동 재시도해 `resolvedAs`를 표시합니다(`Me.` 자동 제거). `debug_snapshot(listLocals:true)`로 프레임 변수 전체 덤프(Brooks 문서상 구문, 실기기 미검증)를 요청할 수 있습니다. 시뮬레이션/실기 판별은 근거 명령이 확인되지 않아 `simulation: null`로 둡니다.
+
 ## [0.8.18] - 2026-08-25
 
 ### Fixed

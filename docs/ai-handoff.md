@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-25 (§1-BE: 트리 쓰레드 제어 정비 — 스텝 버튼의 아이콘(Over)/명령(Into) 불일치 수정, Step Into/Out·스택 보기 우클릭 메뉴, Break/Continue/Step `<STATUS>` 판정. 직전: §1-BD 배포 잠금 + UPLOAD ∥ STOP 병행)
+- 최종 갱신: 2026-08-25 (§1-BF: GitHub 이슈 #27·#26·#24·#23·#18 일괄 — Location 2열 덤프 파싱+요약, Property→백킹 필드 치환, MCP 관찰 도구 compact/구조화/도달성, Export 사본 자동 갱신+Check 명령+빌드 스탬프, 대시보드 시각화. 직전: §1-BE 트리 쓰레드 제어 정비)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.18** (§1-BE 변경분 포함 — 2026-08-25 `npm run package`로 VSIX 로컬 빌드(0.8.16 순차 버전 f88cbd6 · 0.8.17 병행 버전 44c9d32+ · 0.8.18 트리 쓰레드 정비). 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
+- 현재 package 버전: **0.8.18** (§1-BF 변경분은 working tree — CHANGELOG에는 **[0.8.19]로 선기재**했으니 다음 `npm run package`(patch bump → 0.8.19)와 맞는다. 0.8.18 VSIX는 2026-08-25 로컬 빌드(§1-BE). 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -2056,6 +2056,46 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 - §3 ①~⑤ 실기기 검증. `Step -out` 실측 STATUS를 런북 "GDE 1402 실측 명령 포맷"에 기록.
 - (선택) 일시정지 쓰레드 인라인에 Stop 추가 여부 — 오조작 위험 때문에 지금은 우클릭에만.
 
+## 1-BF. 2026-08-25 세션(후속 2) — GitHub 이슈 #27·#26·#24·#23·#18 일괄 처리
+
+### 증상 (이슈 5건, 모두 2026-08-25 실측 보고)
+
+- **#27** Variables/Watch에서 시스템 `Location`(`Robot.Where(1)` 등)을 펼치면 값이 비어 보임(`X    (636)`).
+- **#26** 디버그 hover/Watch에서 클래스 Property 값을 볼 수 없음(제어기 -eval `-780`).
+- **#24** MCP 스레드 응답이 fields+raw+rawLines 3중 중복(15스레드 ≈ 6.5KB), `controller_status`가 "연결+스레드 목록"만, eval 결과가 원문 문자열.
+- **#23** `GPL: Export AI Agent Setup`의 globalStorage MCP 사본이 확장 업데이트 후 갱신되지 않아 08-05판 구버전 서버(17도구, connect-per-command)가 계속 실행됨.
+- **#18** 제어기 대시보드가 콘솔 값을 표로 옮긴 수준이라 상태 변화를 즉시 인지하기 어려움.
+
+### 원인
+
+- #27: 실기기 Location 덤프의 멤버 줄이 사용자 객체(`name, type, value` 3열)와 달리 **`name, value` 2열 + 주석 값**(`Type, 0 = Cartesian`, `Config, 1  = Righty`, `RefFrame, Null`)이다. `parseShowVariableMulti`가 2열이면 무조건 헤더(type)로 봐서 `X, 636` → type='636', value=''.
+- #26: -eval은 **식의 마지막 요소가 사용자 Property/Function**이면 `-780`(체인 중간은 실행됨 — `LocationEx.GetCurCartPos().loc.X`는 636). 값 자체는 백킹 필드에 있고 객체 덤프에는 Private 포함 전체 필드가 **프레임 무관**하게 실려 온다. Private 필드 점 표기는 같은 클래스 프레임에서만(`-729` 아니면). `Me.x`는 `-712`. 확장은 `-780`을 안내 문구로만 바꿔 줬고, Property→백킹 필드 해석 단계가 없었다.
+- #24: `parseThreadList`가 `{name, fields[9], raw}`만 만들고 도구가 rawLines를 또 붙임. `controller_status`는 `Show Thread -web` 1회. 연결 실패 시 원인(재부팅 중/서비스 다운/무응답) 구분 불가(#22 사고).
+- #23: `copyBundleToStablePath`가 명령 핸들러 안에서만 호출됨(activate에 검사 없음). 번들 `McpServer version: '0.1.0'` 고정이라 나중에 비교를 넣어도 구별 불가. 사용자에게 알릴 신호 없음.
+- #18: 대시보드 HTML이 숫자 표 위주, `setInterval` 메시지 미구현, 상태바 클릭이 연결 토글에 묶여 대시보드 진입 경로 없음.
+
+### 조치
+
+- **#27** `src/debug/showVariableParser.ts`: `isTypeToken()`으로 2열 줄의 두 번째 칸이 타입 토큰(스칼라/배열/`Object …`/`이름(…)`)인지 판별 — 타입이면 종전대로 헤더, 아니면 **값**(type '')으로. `Null`→`null`. `isLocationType`/`summarizeLocation`(Cartesian `(X, Y, Z | Yaw, Pitch, Roll) cfg=N`, Angles `Angles(a1, …)`, 소수 3자리)/`annotateLocationMember`(`ZClearance` 1E+32 → `(미설정)`). `gplDebugSession._makeVariable`이 `Object Location` 노드 값에 요약을 넣고, REPL 객체 출력은 2열 멤버를 빈 칸 없이 잇는다. `_formatEvalError`에 `-762/-763`(Location 타입 불일치 안내), `-712`(구문 불가) 추가. 테스트 5건(실측 픽스처 REAL_LOCATION_CART/ANGLES).
+- **#26** `src/gplParser.ts`: `GPLSymbol.getterReturnExpr`(Get 본문이 `Return <식>` 한 문장일 때) + `hasGetter`(WriteOnly 구분). `extractSimpleGetterReturn`이 Property 다음 줄부터 `End Property`까지 훑음(Set 블록 제외, 주석 제거). `gplDebugSession._queryVariableStructuredSmart` ②-b: `-780`이면 `_propertyBackingCandidates`(Get 반환식 → 관례 `m_이름`) 순으로 치환 평가 → `-729`고 부모 식이 있으면 부모 덤프(Smart, depth+1)에서 `.m_이름` 멤버 추출 → 반환형 Location이면 `<식>.Pos` 우회. 결과 `via`를 hover/Watch/REPL에 `← m_armCount (Get 반환식)`로 표시. `Me.` 접두 자동 제거. **가상 Property 자식**: `members`/`expand` 스코프에서 헤더 타입(`Object RNDRobot`)의 클래스 Property를 `_propertyChildren`이 덤프 멤버에서 찾아 `presentationHint.kind='property'` 읽기 전용으로 추가(왕복 없음, 해석 불가는 `(프로시저 — 평가 불가)`, WriteOnly 제외). `_propertyIndexCache`(이름별·클래스별)는 `_buildSourceFileMap`에서 무효화. `evaluatableExpressionProvider._isCallable`: 해석 가능한 Property(`getterReturnExpr` 있음 또는 같은 클래스에 `m_이름` 필드)는 hover 허용. 파서 테스트 2건.
+- **#24** `controller-mcp/src/parse.js`: `parseThreadList`가 9열을 이름 키(`state/statusCode/statusMessage/project/procedure/procLine/file/line`)로 매핑(fields/raw는 유지), `compactThread`/`summarizeThreads`/`parseShowVariable`(확장 파서 규칙 이식, 2열 Location 포함)/`isTypeToken`/`splitVarLine`. `statusHint`에 `-712/-762/-763`, `-780` 문구를 "마지막 요소" 규칙·`.Pos` 우회로 갱신. `index.js`: `controller_status(detail?)` = 연결·`summarizeThreads`·`Execute Controller.PowerEnabled`·배포 잠금·`server: BUILD`; 실패 시 `probeReachability`(ECONNREFUSED / ICMP ping(`TTL=` 판정) / 무응답 → verdict 문장); `detail`이면 compact 스레드 목록 + `ErrorLog -web ,10`. `simulation: null`(판별 명령 미확인 — 문서·저장소 어디에도 근거 없음, 사용자 확인 필요로 도구 설명에 명시). `show_threads(verbose?)`, `debug_snapshot`은 compact + `listLocals`(`Show Variable <thread> <frame>` — **문서상 구문, 실기기 미검증**으로 응답에 표기). `evalOne`: `parseShowVariable` 구조화, `Me.` 제거, `-780` → `m_<leaf>` 재시도 → `-729`+부모 → 부모 덤프 추출, `resolvedAs`. `eval_expression`/`evals`가 공유. node:test 23/23(+5).
+- **#23** `scripts/bundle-mcp.js`: `define __GPL_MCP_BUILD_JSON__`(확장 버전·builtAt·git sha)과 사이드카 `out/mcp/gpl-controller-mcp.build.json`, 배너 2줄째에 빌드 표기. `index.js` `BUILD`/`BUILD_LABEL` → McpServer version, stderr ready 줄, 세션 로그 첫 줄, `get_session_log.server`, `controller_status.server`. `src/ai/exportAgentSetup.ts`: `syncStableBundleIfStale`(사본 있고 sha256 다르면 덮어쓰기+사이드카 복사; 사본 없으면 `absent`), `inspectAiAgentSetup`(번들/사본 해시·빌드, `.mcp.json` 등록·경로가 사본을 가리키는지·파일 존재, CLAUDE.md 블록 버전 표식 `<!-- gpl-controller-mcp guide version: x.y.z -->` 비교 → problems[]). CLAUDE 블록에 버전 표식+안내 문장. `extension.ts`: 활성화 시 `gpl.ai.autoRefreshMcpBundle`(기본 true)이면 동기화 → `updated`면 "v이전 → v현재 갱신, /mcp 재연결" 알림(+CLAUDE.md 구버전이면 "Export 재실행" 버튼); 신규 명령 `gpl.ai.checkAgentSetup`(`GPL: Check AI Agent Setup`, view/title `3_diag@5`) — 요약 알림+Output 상세. 대안 ③(런처 방식)은 자동 갱신으로 충분해 채택하지 않음.
+- **#18** `media/dashboard.html` 재작성: 상단 상태 스트립(연결/고전원/스레드/에러 배지, 상태 변화 시 `flash`), 스레드 표(Error→Paused→Running→Idle 정렬, Idle 흐리게, 상태 변화 행 왼쪽 강조, 위치 `file:line`, 프로시저, lastStatus), 축 게이지(중앙 0 양방향 바, 축별 관측 |max|×1.05로 자동 스케일, Δ>0.01이면 "이동 중" 색), 직교 좌표 + XY 미니 SVG 플롯(관측 범위 자동, 최근 40점 궤적), 새 에러 줄 붉은 강조, 주기 `<select>`(0.5/1/1.5/3/5s)·일시정지·새로고침. `controllerDashboardPanel.ts`: `setInterval`(500~60000 clamp, 탭 열려 있는 동안만)·`pause`(자동 재예약 중단, 수동 새로고침은 1회 허용)·`config` 메시지로 UI 동기화. `connectionStatusBar.ts`: 연결 중 `$(dashboard)` 항목(우선순위 99, `gpl.controller.showDashboard`). 설정 `dashboardPollIntervalMs` 설명 보강.
+- **부수 발견(#18 처리 중)**: `.gitignore`의 `media/`(옛 "Development files (local only)", db4c187) 때문에 `media/dashboard.html`이 **한 번도 커밋되지 않았다** → CI(release.yml, 클린 체크아웃) VSIX에는 대시보드 HTML이 없어 `fallbackHtml`("media/dashboard.html을 로드하지 못했습니다")만 떴을 것. 로컬 `npm run package`는 작업 트리 파일을 싸므로 이 PC에서만 정상. `.gitignore`에서 `media/` 무시를 제거하고 파일을 추적(이번 커밋). 같은 폴더를 참조하는 `extension.ts`의 `media/xmlBestPractices.html`은 파일 자체가 없다(XML 모범 사례 명령 — 별건, §3에 기록).
+- 문서: CHANGELOG [0.8.19] 선기재, controller-mcp README 도구 설명, 런북 부록(-eval 규칙 요약), README 대시보드 한 줄.
+
+### 검증
+
+- `npm run compile` 통과, `npm test` **197/197**(+7: Location 파서 5, Property getter 2), `controller-mcp` `node --test` **23/23**(+5), `npm run bundle:mcp` → 스탬프 `v0.8.18 3d47377` 확인(사이드카 생성). 편집 파일의 기존 줄바꿈 유지(gplDebugSession.ts·connectionStatusBar.ts·CHANGELOG.md는 CRLF, 나머지 LF — Python 바이트 패치로 확인).
+- **실기기 미검증** — §3 항목. 디버거 변경은 읽기 전용(Show Variable)이라 모션 위험 없음. MCP `controller_status`의 `Execute Controller.PowerEnabled`도 읽기.
+
+### 남은 일
+
+- §3 체크리스트(§1-BF) 실기기 검증. `debug_snapshot(listLocals)`의 `Show Variable <thread> <frame>` 응답 형식 실측 후 런북 "GDE 1402 실측 명령 포맷"에 기록.
+- 시뮬레이션/실기 판별 명령 조사(Brooks 문서에서 근거 확인 후 `controller_status.simulation` 채우기) — 안전 게이트 자동 판단에 필요.
+- (선택) 대시보드 축 게이지에 축 한계값(로봇 파라미터 DataID) 반영 — 현재는 세션 관측 범위 자동 스케일.
+- **`media/xmlBestPractices.html` 부재**: `extension.ts`가 참조하지만 저장소·작업 트리 어디에도 없음(옛 media/ 무시 규칙의 희생물로 추정). XML 모범 사례 명령이 폴백/오류를 내는지 확인하고, 파일을 복원하거나 명령을 정리할 것.
+
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
 - **`ProtocolModule.gpl` 478·480의 `-760 Invalid assignment`**: `isOrgCompleted`는 `RobotModule.gpl:828`에 **`Public ReadOnly Property ... As Boolean`**(읽기 전용)으로 정의됨. 거기에 값을 대입해서 나는 에러. 해결책(택1, 사용자 결정 대기): setter 메서드 추가 / `ReadOnly` 제거 후 `Set` 접근자 추가 / backing 필드 직접 대입.
@@ -2063,6 +2103,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-08-25, §1-BF) 이슈 #27·#26·#24·#23·#18 — 실기기 검증(읽기 전용, 모션 무영향)**: ① Variables에서 `Robot.Where(1)`/Location 로컬 펼치기 → 멤버 값 표시·헤더 요약·`ZClearance (미설정)` ② hover/Watch `myRobot(0).armCount`(RNDRobot 프레임·StationManager 프레임 둘 다) → `1 (Integer) ← m_armCount (Get 반환식)`; 객체 노드 펼치면 가상 Property 자식; `Me.m_armCount` 자동 처리; `LocationEx.GetCurCartPos().loc` → `.Pos` 우회 ③ MCP `controller_status`(연결/차단/재부팅 중 3케이스 reachable verdict, powerEnabled), `show_threads` 크기 비교, `eval_expression("myRobot(0).armCount")` → resolvedAs, `debug_snapshot(listLocals:true)` 응답 형식 실측 → 런북 기록 ④ 확장 업데이트(0.8.18 → 0.8.19 VSIX 설치) 후 재시작 → "MCP 사본 갱신" 알림 → Claude Code `/mcp` 재연결 → `get_session_log.server.version` = 0.8.19; `GPL: Check AI Agent Setup` 정상/구버전 CLAUDE.md 감지 ⑤ 대시보드: 배지 색·flash, 축 게이지 이동 표시(Jog 중), XY 궤적, 주기 변경·일시정지, 상태바 `$(dashboard)` 진입.
 - [ ] **(2026-08-25, §1-BE) 트리 쓰레드 스텝 정비 — 실기기 검증(저속/시뮬레이션 우선, 하드 규칙 6)**: ① 인라인 스텝이 `Step <t> -over -noerror`를 보내고 호출문을 **넘어가는지**(GPL Traffic·정지 줄) ② 우클릭 Step Into(`-noerror`)가 프로시저 **안으로** 들어가는지 ③ **Step Out(`-out -noerror`) STATUS 최초 실측**(Brooks 문서상 지원, GDE 캡처엔 없음) → 결과를 런북 "GDE 1402 실측 명령 포맷"에 기록 ④ 정지/에러 쓰레드 우클릭 → 스택 보기/현재 위치 보기 ⑤ STATUS≠0 경로(예: Running 쓰레드에 Continue, Idle 쓰레드에 Break) 에러 메시지 문구 확인.
 - [ ] **(2026-08-25, §1-BD) 배포 순서 재배치 + 배포 잠금 — 실기기 검증, 릴리스 전 필수(하드 규칙 6)**:
   ① 전체 Deploy(쓰레드 실행 중): 업로드(FTP)와 `Stop -all`/`Show Thread` 폴링(1402)이 **동시에** 나가는지(GPL Traffic 타임스탬프 vs Output `↑` 라인), 둘 다 끝난 뒤에만 `Compile`이 나가는지. 쓰레드 실행 중 Quick Compile: 업로드가 진행되는 동안 "Stop 후 계속" 모달 → 승인 → Stop → settle → (업로드 완료 확인) → Compile. 총 소요가 이전(순차)보다 줄었는지 체감/로그로 확인
@@ -2123,6 +2164,11 @@ src/controller/deployService.ts          # deploy() = 잠금 획득 → UPLOAD �
 src/controller/deployLock.ts             # 배포 잠금 — 메모리+파일(%TEMP%/gpl-controller/<ip>.lock.json), pid/heartbeat stale 자동 만료, describeDeployLock (§1-BD, 이슈 #15·#17)
 src/controller/ftpClient.ts              # uploadProject onlyFiles, mirrorProject deferDelete + removeRemoteFiles(§1-BD)
 src/controller/responseParser.ts         # parseStatus, parseCompileErrors
+src/debug/showVariableParser.ts          # Show Variable 파싱 — 2열 Location 멤버(isTypeToken)·summarizeLocation·annotateLocationMember(§1-BF)
+src/ai/exportAgentSetup.ts               # Export/Check AI Agent Setup — 사본 sha256 동기화(syncStableBundleIfStale)·inspectAiAgentSetup·CLAUDE.md 블록 버전 표식(§1-BF)
+src/views/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — setInterval/pause/config 메시지(§1-BF); HTML은 media/dashboard.html
+controller-mcp/src/parse.js              # MCP 파서 — parseThreadList(이름 키)·compactThread·summarizeThreads·parseShowVariable(§1-BF)
+scripts/bundle-mcp.js                    # MCP 번들 + 빌드 스탬프(define __GPL_MCP_BUILD_JSON__, 사이드카 .build.json)(§1-BF)
 src/debug/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach(lockOwner 'F5 Deploy'), _waitDeployLockForStart, getDebugDeployDiagnostics
 src/extension.ts                         # runDeploy(잠금 조회 + warnDeployBusy), autoOnSave, 컴파일 필요 상태(compileStaleProjects/confirmStartWhenCompileStale), 트리 쓰레드 제어(sendThreadCommandChecked/runTreeThreadStep — aiBuildStepCommand 공유, §1-BE)
 controller-mcp/src/deployLock.js         # 잠금 파일 읽기 전용 구현(확장과 파일 계약 공유) — Compile/Start/Load/Unload 유한 대기·거부(§1-BD)

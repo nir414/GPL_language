@@ -405,3 +405,20 @@ SoftEStop
 - 로그/캐시/상태 파일을 워크스페이스에 자동 생성하지 않는다.
 - 제어기 포트 역할(1402/1403/21/51417)을 바꾸지 않는다.
 <!-- end-of-runbook -->
+
+## 부록 A. 변수 평가(`Show Variable -eval`) 규칙 요약 — 실측 2026-08-25 (GitHub #26·#27)
+
+확장 디버거와 MCP `eval_expression`이 공통으로 따르는 제어기(GPL 4.2K5) 평가기 규칙. 문서가 아니라 실기기 응답으로 확정된 것만 적는다.
+
+| 식 | 결과 | 확장/MCP 처리 |
+| --- | --- | --- |
+| 로컬/파라미터(정확한 프레임), 모듈 전역, `모듈전역.public필드`, `arr(i)`, 객체명(필드 덤프) | 값/덤프 | 그대로 |
+| 마지막 요소가 사용자 Property/Function (`obj.armCount`, `LocationEx.GetCurCartPos()`) | `-780` | Property면 백킹 필드(Get 반환식 → `m_이름`)로 치환, `-729`면 부모 덤프에서 추출(`← …` 표시 / `resolvedAs`) |
+| 체인 **중간**의 사용자 Property/Function + 마지막 시스템 멤버 (`….loc.X`, `….loc.Pos`) | 실행됨 | Location 반환 Property는 `.Pos` 우회 |
+| 다른 클래스 프레임의 Private 점 표기 (`myRobot(0).m_armCount`) | `-729` | 부모 객체 덤프(프레임 무관, Private 포함)에서 멤버 줄 추출 |
+| `Me.x` | `-712` | `Me.` 접두 자동 제거 |
+| `CStr(x)`, `x + 0` 등 시스템 함수 감싸기·산술 | `-712` / `-780` | 불가 — 안내 문구 |
+| Angles Location에 `.X` / Cartesian Location에 `.Angle(1)` | `-762` / `-763` | Type(0=Cartesian, 1=Angles) 안내 |
+| 시스템 Location 덤프 (`Robot.Where(1)`) | 멤버 줄 **2열** `name, value`(+주석 `0 = Cartesian`), Text/Pos/PosWrtRef 줄 없음, ZClearance 1E+32=미설정 | 2열 값 파싱 + 한 줄 요약 |
+
+getter 프레임 참고: `Return m_x` 줄을 Step 하면 `End Get`에 멈추지 않고 호출자로 복귀, `End Get` 줄 BP는 걸리지 않음, `End Property`는 `-776`. getter 줄 BP는 모든 호출처에서 걸려 값 읽기용으로 부적합 — 백킹 필드 치환이 유일한 범용 경로.

@@ -17,7 +17,7 @@ import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile } from './config';
 
 // Controller integration
-import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride } from './controller/controllerConnection';
+import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride, formatTrafficTimestamp, getTrafficLogOptions, setTrafficResponseBodyEnabled } from './controller/controllerConnection';
 import { exportAiAgentSetup, inspectAiAgentSetup, syncStableBundleIfStale } from './ai/exportAgentSetup';
 import { EditorBreakpointSync } from './controller/breakpointSync';
 import { deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult, DeployResult } from './controller/deployService';
@@ -2831,6 +2831,35 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.showTraffic', () => {
 			trafficChannel.show(true);
+		})
+	);
+
+	// 1402 응답 본문 표시(GPL Traffic ` | ` 라인) 켜기/끄기 — 트리 '1402 통신 모니터' 항목 설명도 갱신
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.toggleTrafficResponseBody', async () => {
+			const next = !getTrafficLogOptions().responseBody;
+			await setTrafficResponseBodyEnabled(next);
+			trafficChannel.appendLine(`[${formatTrafficTimestamp()}] --- 1402 응답 본문 표시: ${next ? 'ON' : 'OFF'}`);
+			controllerTree?.redraw();
+			vscode.window.setStatusBarMessage(`GPL Traffic: 1402 응답 본문 표시 ${next ? '켬' : '끔'}`, 3000);
+		})
+	);
+
+	// GPL Traffic 채널 비우기 (실시간 관찰 시작 전 정리용)
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.clearTraffic', () => {
+			trafficChannel.clear();
+			trafficChannel.appendLine(`[${formatTrafficTimestamp()}] --- (cleared)`);
+		})
+	);
+
+	// 설정 UI에서 바꿔도 트리 항목 설명이 따라오도록
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('gpl.controller.trafficLogResponseBody') ||
+				e.affectsConfiguration('gpl.controller.trafficLogMaxResponseChars')) {
+				controllerTree?.redraw();
+			}
 		})
 	);
 

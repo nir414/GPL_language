@@ -2,6 +2,7 @@ import * as net from 'net';
 import * as vscode from 'vscode';
 import { appendLiveLog } from '../log/liveLogTerminal';
 import { formatConsoleCommandClassification } from './consoleCommandClassifier';
+import { ResponseBodyStreamer } from './trafficResponseBody';
 
 export interface ControllerConfig {
 	ip: string;
@@ -63,12 +64,45 @@ export function getTrafficChannel(): vscode.OutputChannel | null {
 	return _trafficChannel;
 }
 
+/** 1402 응답 본문 표시 상한 기본값(문자). 0 = 무제한. */
+const DEFAULT_TRAFFIC_MAX_RESPONSE_CHARS = 4000;
+
+export interface TrafficLogOptions {
+	/** true면 1402 응답 본문을 GPL Traffic에 줄 단위(` | ` 라인)로 표시. false면 `<<<` STATUS 요약만. */
+	responseBody: boolean;
+	/** 응답 하나당 본문 표시 상한(문자). 0 = 무제한. */
+	maxResponseChars: number;
+}
+
+/** GPL Traffic 표시 옵션 (설정 `gpl.controller.trafficLog*`). 명령마다 읽으므로 변경이 즉시 반영된다. */
+export function getTrafficLogOptions(): TrafficLogOptions {
+	const cfg = vscode.workspace.getConfiguration('gpl.controller');
+	const max = cfg.get<number>('trafficLogMaxResponseChars', DEFAULT_TRAFFIC_MAX_RESPONSE_CHARS);
+	return {
+		responseBody: cfg.get<boolean>('trafficLogResponseBody', true),
+		maxResponseChars: Number.isFinite(max) && max > 0 ? Math.floor(max) : 0,
+	};
+}
+
+/** 응답 본문 표시 설정을 바꾼다. 워크스페이스에 값이 있으면 그곳을, 아니면 사용자 설정을 갱신한다. */
+export async function setTrafficResponseBodyEnabled(enabled: boolean): Promise<void> {
+	const cfg = vscode.workspace.getConfiguration('gpl.controller');
+	const info = cfg.inspect<boolean>('trafficLogResponseBody');
+	const target = info?.workspaceValue !== undefined
+		? vscode.ConfigurationTarget.Workspace
+		: vscode.ConfigurationTarget.Global;
+	await cfg.update('trafficLogResponseBody', enabled, target);
+}
+
 /** 트래픽 로그용 타임스탬프 (`HH:mm:ss.SSS`, ko-KR 24시간제) — 1402/1403 로거 공용. */
 export function formatTrafficTimestamp(now: Date = new Date()): string {
 	return now.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
 }
 
-function logTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
+/**
+ * 방향 표식: `>>>` 송신 명령 / ` | ` 수신 본문 줄(실시간, 설정 on일 때) / `<<<` 수신 완료 요약 / `---` 이벤트·오류.
+ */
+function logTraffic(direction: '>>>' | '<<<' | '---' | ' | ', message: string): void {
 	const ts = formatTrafficTimestamp();
 
 	// 명령 포맷 라벨 추가 (송신 시 자동 판단)
@@ -174,6 +208,13 @@ function sendCommandDetailedInternal(
 	const extraIdleMsOnIncomplete = Math.max(0, options?.extraIdleMsOnIncomplete ?? 0);
 	const waitForStatusClose = options?.waitForStatusClose === true;
 
+	// 응답 본문 실시간 표시(설정 on일 때): chunk 도착 즉시 완성된 줄을 ` | ` 라인으로 흘려보낸다.
+	// 모든 종료 경로(정상/타임아웃/에러/소켓 종료)에서 flush 해 도착한 부분까지는 반드시 보이게 한다.
+	const trafficOpts = getTrafficLogOptions();
+	const bodyLog = trafficOpts.responseBody
+		? new ResponseBodyStreamer(line => logTraffic(' | ', line), { maxChars: trafficOpts.maxResponseChars })
+		: null;
+
 	// 응답 누적 수신: <STATUS> 찾을 때까지 기다리되,
 	// 최소 바이트 수 && idle 조건으로도 완성 응답으로 판단
 	return new Promise<CommandResponse>((resolve, reject) => {
@@ -211,6 +252,7 @@ function sendCommandDetailedInternal(
 				settled = true;
 				if (idleTimer) clearTimeout(idleTimer);
 				socket.destroy();
+				bodyLog?.flush();
 				logTraffic('---', `TIMEOUT (${timeout}ms): ${command}`);
 				reject(new Error(`Command timeout (${timeout}ms): ${command}`));
 			}
@@ -228,6 +270,7 @@ function sendCommandDetailedInternal(
 			const statusMatch = statusMatches.length ? statusMatches[statusMatches.length - 1] : null;
 			const statusStr = statusMatch ? `STATUS ${statusMatch[1]}` : 'OK';
 			const lines = responseBuffer.split(/\r?\n/).filter(l => l.trim() && !l.includes('<STATUS>') && !l.includes('</STATUS>') && !l.includes('<DATA>') && !l.includes('</DATA>')).length;
+			bodyLog?.flush();
 			logTraffic('<<<', `${statusStr}  ${lines} lines  ${elapsed}ms`);
 			gracefulCloseTimer = setTimeout(() => {
 				// 제어기가 FIN을 안 보내 half-open으로 남는 경우 강제 정리 (소켓 누수/잔류 연결 방지).
@@ -252,7 +295,9 @@ function sendCommandDetailedInternal(
 
 		socket.on('data', (data: Buffer) => {
 			lastChunkAtMs = Date.now();
-			responseBuffer += data.toString('ascii').replace(/\0/g, '');
+			const text = data.toString('ascii').replace(/\0/g, '');
+			responseBuffer += text;
+			bodyLog?.push(text);
 
 			// 이전 idle timer 취소
 			if (idleTimer) {
@@ -299,6 +344,7 @@ function sendCommandDetailedInternal(
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
+				bodyLog?.flush();
 				logTraffic('---', `ERROR: ${err.message}`);
 				reject(new Error(`Connection error (${cfg.ip}:${cfg.port}): ${err.message}`));
 			}
@@ -313,6 +359,7 @@ function sendCommandDetailedInternal(
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
+				bodyLog?.flush();
 				if (responseBuffer.length > 0) {
 					const elapsed = Date.now() - startMs;
 					// 부분 버퍼도 반환은 한다(HTTP 교차 응답 감지 등 raw 소비자 유지).

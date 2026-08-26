@@ -131,7 +131,7 @@ Continue(F5), 변수 조회(Variables/Hover/Debug Console), Call Stack·다중 �
 | `GPL: Push/Pull Controller Breakpoints` | 에디터 ↔ 제어기 브레이크포인트 동기화 |
 | `GPL: Start/Stop Runtime Console` | 1403 런타임 콘솔 시작/중지 |
 | `GPL: Start/Stop Live Log Terminal` | 1402/1403 실시간 로그 터미널 |
-| `GPL: Show Traffic Monitor` | TCP 트래픽 모니터 |
+| `GPL: Show Traffic Monitor` | 1402 송신 명령·수신 응답 본문(실시간, 줄 단위)과 1403 트래픽 모니터. 트리 `1402 통신 모니터` 항목에서 본문 표시 켜기/끄기·지우기 |
 | `GPL: Send Command to Controller` | 콘솔 명령 직접 전송 |
 | `GPL: 전역변수 보기/편집` / `DIO 조회/설정` | 전역변수·DIO 조회/변경 |
 | `GPL: Refresh All` | 쓰레드·FTP·시스템 정보 전체 새로고침 |

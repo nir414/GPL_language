@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-25 (§1-BF: GitHub 이슈 #27·#26·#24·#23·#18 일괄 — Location 2열 덤프 파싱+요약, Property→백킹 필드 치환, MCP 관찰 도구 compact/구조화/도달성, Export 사본 자동 갱신+Check 명령+빌드 스탬프, 대시보드 시각화. 직전: §1-BE 트리 쓰레드 제어 정비)
+- 최종 갱신: 2026-08-26 (§1-BH: GitHub 이슈 #20 — F9=Continue·Ctrl+Alt+I 호버 기본 키바인딩 제거, VS Code 표준 디버그 키 복원. 직전: §1-BG GPL Traffic에 1402 응답 본문 실시간 표시)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.18** (§1-BF 변경분은 working tree — CHANGELOG에는 **[0.8.19]로 선기재**했으니 다음 `npm run package`(patch bump → 0.8.19)와 맞는다. 0.8.18 VSIX는 2026-08-25 로컬 빌드(§1-BE). 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
+- 현재 package 버전: **0.8.18** (§1-BF는 커밋됨(f239f5d), §1-BG는 working tree — 둘 다 CHANGELOG **[0.8.19]로 선기재**했으니 다음 `npm run package`(patch bump → 0.8.19)와 맞는다. 0.8.18 VSIX는 2026-08-25 로컬 빌드(§1-BE). 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -2096,6 +2096,67 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 - (선택) 대시보드 축 게이지에 축 한계값(로봇 파라미터 DataID) 반영 — 현재는 세션 관측 범위 자동 스케일.
 - **`media/xmlBestPractices.html` 부재**: `extension.ts`가 참조하지만 저장소·작업 트리 어디에도 없음(옛 media/ 무시 규칙의 희생물로 추정). XML 모범 사례 명령이 폴백/오류를 내는지 확인하고, 파일을 복원하거나 명령을 정리할 것.
 
+## 1-BG. 2026-08-25 세션(후속 3) — GPL Traffic에 1402 응답 본문 실시간 표시 + 트리 "1402 통신 모니터" 항목
+
+### 증상 / 요청
+
+- 사용자: "1402 포트에서 무슨 통신하는지 볼 수 있는 기능" + "서로 뭐 보내는지 실시간으로" + "패널에 1402 포트 메뉴로 하나 추가". 확인해 보니 `GPL Traffic` 채널이 이미 있었지만 **송신(`>>>`)은 전문, 수신은 `<<< STATUS 0  N lines  Nms` 요약만** 기록해 제어기가 실제로 보낸 응답 본문이 전혀 보이지 않았다 — "서로 무엇을 보내는지"의 절반(응답 쪽) 누락. 사용자 질문 "GPL Traffic에서 1402 통신 전부 나오는 거야?"의 답은 **아니오**였다.
+
+### 원인
+
+- `controllerConnection.ts` `completeResponse()`가 STATUS 코드·줄 수·소요 시간만 `logTraffic('<<<', …)`로 남기고 `responseBuffer` 본문은 호출자에게만 돌려주었다.
+
+### 조치
+
+- **`src/controller/trafficResponseBody.ts` (신규, 순수 모듈)**: `ResponseBodyStreamer` — 소켓 chunk를 line-buffering 해 완성된 줄만 즉시 emit(마지막 조각은 다음 chunk/flush까지 보류, CR/LF가 chunk 경계에서 갈라져도 안전), 공백 줄 생략(`<<<` 요약의 줄 수 기준과 동일), `maxChars` 예산 초과 시 이후 줄 생략 + flush 때 생략 요약 1줄(`... 본문 N줄/M자 생략 (표시 상한 K자 — gpl.controller.trafficLogMaxResponseChars)`), 한 줄이 예산을 넘으면 예산만큼 + `…`. `flush()` 멱등(종료 경로가 겹쳐도 중복 출력 없음).
+- **`controllerConnection.ts`**: `sendCommandDetailedInternal`이 명령마다 `getTrafficLogOptions()`를 읽어 on이면 streamer를 만들고 `data` 이벤트마다 `push`, **모든 종료 경로**(정상 `</STATUS>` 완료·idle 완료·타임아웃·error·close)에서 `flush` → 도착한 부분까지는 반드시 보인다. `logTraffic` 방향 표식에 ` | `(수신 본문 줄) 추가. `getTrafficLogOptions()`/`setTrafficResponseBodyEnabled()` export(설정 대상은 워크스페이스 값이 있으면 Workspace, 아니면 Global).
+  - 1402 소켓을 여는 곳은 이 함수 하나뿐이고 디버그 어댑터도 `DebugAdapterInlineImplementation`(같은 확장 호스트)이라, 확장이 보내는 **모든** 1402 명령(디버거·트리 폴링·배포·명령 보내기)이 누락 없이 기록된다. `controller-mcp`는 별도 프로세스라 여기 안 잡힘(자체 `get_session_log`가 담당).
+- **설정 2개**: `gpl.controller.trafficLogResponseBody`(기본 true), `gpl.controller.trafficLogMaxResponseChars`(기본 4000, 0=무제한).
+- **트리 항목**: 연결 섹션 `1402 명령 포트` 아래 **`1402 통신 모니터`**(icon radio-tower, contextValue `trafficMonitorItem`) — 설명에 현재 모드(`명령 + 응답 본문 (≤4000자)` / `명령 + STATUS 요약만`), 클릭 → `gpl.controller.showTraffic`, 인라인 `$(eye)` 토글 + `$(clear-all)` 지우기, 우클릭 메뉴 3개(열기/토글/지우기).
+- **명령 2개**: `gpl.controller.toggleTrafficResponseBody`("GPL: Toggle Traffic Response Body (1402)" — 토글 후 채널에 `--- 1402 응답 본문 표시: ON/OFF` 표식, 트리 `redraw()`), `gpl.controller.clearTraffic`("GPL: Clear Traffic Monitor"). `onDidChangeConfiguration`으로 설정 UI 변경도 트리에 반영. `ControllerTreeProvider.redraw()` 신규(1402 폴링 없이 다시 그리기 — 기존 set* 메서드들이 각자 fire 하던 것을 공용화할 수 있는 자리).
+- 로그 형식 예 (` | ` 라인은 Live Log Terminal에도 `[1402]` 접두로 같이 흐른다 — logTraffic 공용 경로):
+
+  ```
+  [14:02:11.001] >>> [PLAIN][read-only/debug/thread state] 192.168.0.1:1402  Show Thread
+  [14:02:11.034]  |  <DATA>
+  [14:02:11.034]  |  MergeCode.Main    Running   ...
+  [14:02:11.034]  |  </DATA>
+  [14:02:11.034]  |  <STATUS>0,""</STATUS>
+  [14:02:11.035] <<< STATUS 0  1 lines  34ms
+  ```
+
+### 검증
+
+- `npm test` **203/203**(+6 trafficResponseBody: chunk 경계 보류·CR/LF 분할·공백 줄·멱등 flush·절단/생략 요약·무제한·경계값). `package.json` JSON 파싱 OK. 편집 파일 줄바꿈 유지 — `git ls-files --eol` 기준 mixed 없음(CHANGELOG.md·controllerConnection.ts·controllerTreeProvider.ts는 w/crlf, extension.ts·package.json·index.ts·README·ai-handoff는 w/lf; 인덱스는 모두 lf, autocrlf=true).
+- **실기기 미검증** — §3 항목. 읽기 전용 로깅이라 모션 위험 없음. 성능: 줄 단위 `appendLine`, 기본 4000자 상한이므로 5초 폴링 `Show Thread`의 부담은 미미하다고 판단, 대용량 응답(ErrorLog·파일 덤프)은 상한으로 보호.
+
+### 남은 일
+
+- 실기기 확인은 §3 체크리스트(§1-BG) 참조.
+- (선택) 1403 스트림 원문도 같은 ` | ` 규약으로 통일할지 검토 — 현재 1403은 `runtimeConsole.ts` 자체 포맷으로 GPL Traffic에 기록.
+- (선택) Live Log Terminal에 본문 줄이 과다하면 터미널 쪽만 요약으로 두는 옵션 분리.
+
+## 1-BH. 2026-08-26 세션 — GitHub 이슈 #20: VS Code 표준 디버그 키 복원
+
+### 증상 / 판단
+
+- `package.json`이 GPL 디버그 세션에서 `F9`를 `workbench.action.debug.continue`에 강제로 연결해 VS Code 표준 Toggle Breakpoint를 가로챘다. `Ctrl+Alt+I`의 `editor.debug.action.showDebugHover`도 최근 VS Code/Copilot의 Open Chat 기본키와 충돌할 수 있었다.
+- DAP 어댑터는 VS Code 표준 `F5` Continue, `F9` Toggle Breakpoint, `F10/F11/Shift+F11` Step을 별도 기여 없이 지원하므로 두 오버라이드가 필요하지 않다. GDE식 `F9=Continue` 옵트인은 사용자 수요가 확인되지 않아 새 설정으로 남기지 않았다.
+
+### 조치
+
+- `package.json`의 `contributes.keybindings` 두 항목을 제거했다. 확장이 더 이상 디버그 표준 키를 덮어쓰지 않는다.
+- `gpl.debug.showValueOnCursorClick`의 마우스 클릭 즉시 값 표시는 키바인딩과 독립된 기능이라 유지했다. 키보드 호버가 필요하면 VS Code 표준 `Ctrl+K Ctrl+I`를 사용할 수 있다.
+- `CHANGELOG.md` [0.8.19] Changed에 #20을 기록했다. 과거 버전의 F9/Ctrl+Alt+I 추가 기록은 당시 릴리스 이력이라 보존한다.
+
+### 검증
+
+- `package.json` JSON 파싱 OK, `npm test`가 TypeScript 전체 컴파일 후 **203/203 통과**. 첫 샌드박스 실행은 저장소 밖 `out/` 쓰기 권한 때문에 TS5033(EPERM)이 났고, 권한 승인 후 같은 명령이 정상 통과했다(코드 오류 아님). VSIX 설치 후 육안 확인: F9=Toggle Breakpoint, F5=Continue, Ctrl+Alt+I가 확장에 의해 점유되지 않음.
+
+### 남은 일
+
+- VSIX 설치 후 실제 키 동작을 한 번 확인하면 이슈 #20을 종결할 수 있다.
+
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
 - **`ProtocolModule.gpl` 478·480의 `-760 Invalid assignment`**: `isOrgCompleted`는 `RobotModule.gpl:828`에 **`Public ReadOnly Property ... As Boolean`**(읽기 전용)으로 정의됨. 거기에 값을 대입해서 나는 에러. 해결책(택1, 사용자 결정 대기): setter 메서드 추가 / `ReadOnly` 제거 후 `Set` 접근자 추가 / backing 필드 직접 대입.
@@ -2103,6 +2164,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-08-25, §1-BG) GPL Traffic 1402 응답 본문 표시 — 실기기 확인(읽기 전용, 모션 무영향)**: ① `Show Thread` 폴링 응답이 ` | ` 줄로 실시간 표시되고 마지막에 `<<<` 요약 ② `Compile`(waitForStatusClose) pass 사이 침묵 구간에 도착분이 먼저 보이는지 ③ 긴 응답(ErrorLog 다수) 4000자 초과 시 생략 요약 1줄 ④ 트리 `1402 통신 모니터` 인라인 토글/지우기 동작·설명 갱신, OFF면 `<<<` 요약만 ⑤ Live Log Terminal에도 ` | ` 줄이 흐르는데 과다하면 옵션 분리 ⑥ 좁은 사이드바에서 인라인 아이콘 2개 표시 확인.
 - [ ] **(2026-08-25, §1-BF) 이슈 #27·#26·#24·#23·#18 — 실기기 검증(읽기 전용, 모션 무영향)**: ① Variables에서 `Robot.Where(1)`/Location 로컬 펼치기 → 멤버 값 표시·헤더 요약·`ZClearance (미설정)` ② hover/Watch `myRobot(0).armCount`(RNDRobot 프레임·StationManager 프레임 둘 다) → `1 (Integer) ← m_armCount (Get 반환식)`; 객체 노드 펼치면 가상 Property 자식; `Me.m_armCount` 자동 처리; `LocationEx.GetCurCartPos().loc` → `.Pos` 우회 ③ MCP `controller_status`(연결/차단/재부팅 중 3케이스 reachable verdict, powerEnabled), `show_threads` 크기 비교, `eval_expression("myRobot(0).armCount")` → resolvedAs, `debug_snapshot(listLocals:true)` 응답 형식 실측 → 런북 기록 ④ 확장 업데이트(0.8.18 → 0.8.19 VSIX 설치) 후 재시작 → "MCP 사본 갱신" 알림 → Claude Code `/mcp` 재연결 → `get_session_log.server.version` = 0.8.19; `GPL: Check AI Agent Setup` 정상/구버전 CLAUDE.md 감지 ⑤ 대시보드: 배지 색·flash, 축 게이지 이동 표시(Jog 중), XY 궤적, 주기 변경·일시정지, 상태바 `$(dashboard)` 진입.
 - [ ] **(2026-08-25, §1-BE) 트리 쓰레드 스텝 정비 — 실기기 검증(저속/시뮬레이션 우선, 하드 규칙 6)**: ① 인라인 스텝이 `Step <t> -over -noerror`를 보내고 호출문을 **넘어가는지**(GPL Traffic·정지 줄) ② 우클릭 Step Into(`-noerror`)가 프로시저 **안으로** 들어가는지 ③ **Step Out(`-out -noerror`) STATUS 최초 실측**(Brooks 문서상 지원, GDE 캡처엔 없음) → 결과를 런북 "GDE 1402 실측 명령 포맷"에 기록 ④ 정지/에러 쓰레드 우클릭 → 스택 보기/현재 위치 보기 ⑤ STATUS≠0 경로(예: Running 쓰레드에 Continue, Idle 쓰레드에 Break) 에러 메시지 문구 확인.
 - [ ] **(2026-08-25, §1-BD) 배포 순서 재배치 + 배포 잠금 — 실기기 검증, 릴리스 전 필수(하드 규칙 6)**:
@@ -2159,7 +2221,8 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 ## 4. 핵심 파일
 
 ```
-src/controller/controllerConnection.ts   # sendCommandDetailed, waitForStatusClose
+src/controller/controllerConnection.ts   # sendCommandDetailed, waitForStatusClose, logTraffic(>>> / ' | ' / <<< / ---)·getTrafficLogOptions(§1-BG)
+src/controller/trafficResponseBody.ts    # ResponseBodyStreamer — 1402 응답 본문 줄 단위 스트리밍·상한 생략 요약(§1-BG, vscode 무의존 순수 모듈)
 src/controller/deployService.ts          # deploy() = 잠금 획득 → UPLOAD → STOP/THREAD_CHECK(settle 게이트) → COMPILE → ERROR CHECK(§1-BD 재배치), tryCompile, directGpl(§1-G), COMPILE_DEFERRED
 src/controller/deployLock.ts             # 배포 잠금 — 메모리+파일(%TEMP%/gpl-controller/<ip>.lock.json), pid/heartbeat stale 자동 만료, describeDeployLock (§1-BD, 이슈 #15·#17)
 src/controller/ftpClient.ts              # uploadProject onlyFiles, mirrorProject deferDelete + removeRemoteFiles(§1-BD)

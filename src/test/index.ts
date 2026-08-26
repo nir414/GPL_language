@@ -18,6 +18,7 @@ import './showVariableParser.test';
 import './symbolCache.test';
 import './renameCore.test';
 import './deployLock.test';
+import './trafficResponseBody.test';
 import { run } from './harness';
 
 void run();

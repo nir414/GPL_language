@@ -297,6 +297,16 @@
                 "icon": "$(radio-tower)"
             },
             {
+                "command": "gpl.controller.toggleTrafficResponseBody",
+                "title": "GPL: Toggle Traffic Response Body (1402)",
+                "icon": "$(eye)"
+            },
+            {
+                "command": "gpl.controller.clearTraffic",
+                "title": "GPL: Clear Traffic Monitor",
+                "icon": "$(clear-all)"
+            },
+            {
                 "command": "gpl.controller.sendCommand",
                 "title": "GPL: Send Command to Controller",
                 "icon": "$(debug-console)"
@@ -492,18 +502,6 @@
                 "icon": "$(close)"
             }
         ],
-        "keybindings": [
-            {
-                "command": "workbench.action.debug.continue",
-                "key": "f9",
-                "when": "inDebugMode && debugType == 'brooks-gpl'"
-            },
-            {
-                "command": "editor.debug.action.showDebugHover",
-                "key": "ctrl+alt+i",
-                "when": "inDebugMode && editorTextFocus && editorLangId == 'gpl'"
-            }
-        ],
         "viewsContainers": {
             "activitybar": [
                 {
@@ -650,6 +648,31 @@
                     "command": "gpl.controller.showTraffic",
                     "when": "view == gplThreads && viewItem == runtimeConsoleItem",
                     "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.toggleTrafficResponseBody",
+                    "when": "view == gplThreads && viewItem == trafficMonitorItem",
+                    "group": "inline@1"
+                },
+                {
+                    "command": "gpl.controller.clearTraffic",
+                    "when": "view == gplThreads && viewItem == trafficMonitorItem",
+                    "group": "inline@2"
+                },
+                {
+                    "command": "gpl.controller.showTraffic",
+                    "when": "view == gplThreads && viewItem == trafficMonitorItem",
+                    "group": "trafficMonitor@1"
+                },
+                {
+                    "command": "gpl.controller.toggleTrafficResponseBody",
+                    "when": "view == gplThreads && viewItem == trafficMonitorItem",
+                    "group": "trafficMonitor@2"
+                },
+                {
+                    "command": "gpl.controller.clearTraffic",
+                    "when": "view == gplThreads && viewItem == trafficMonitorItem",
+                    "group": "trafficMonitor@3"
                 },
                 {
                     "command": "gpl.console.stop",
@@ -1013,6 +1036,19 @@
                     "type": "number",
                     "default": 10000,
                     "description": "Command timeout in milliseconds."
+                },
+                "gpl.controller.trafficLogResponseBody": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "GPL Traffic 출력 채널에 1402 명령 응답의 본문을 줄 단위(' | ' 라인)로 실시간 표시합니다. 끄면 '<<<' STATUS 요약만 남깁니다. GPL Controller 트리의 '1402 통신 모니터' 항목에서도 켜고 끌 수 있습니다."
+                },
+                "gpl.controller.trafficLogMaxResponseChars": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 4000,
+                    "minimum": 0,
+                    "description": "응답 하나당 GPL Traffic에 표시할 본문 상한(문자 수). 넘치면 이후 줄을 생략하고 생략 요약 한 줄을 남깁니다. 0이면 무제한."
                 },
                 "gpl.controller.requireStartConfirmation": {
                     "scope": "window",

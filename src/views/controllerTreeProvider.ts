@@ -4,7 +4,7 @@
  */
 
 import * as vscode from 'vscode';
-import { trySendCommand, getControllerConfig } from '../controller/controllerConnection';
+import { trySendCommand, getControllerConfig, getTrafficLogOptions } from '../controller/controllerConnection';
 import { formatRuntimeConsoleStateLabel } from '../controller/runtimeConsolePresentation';
 import {
 	parseThreadList,
@@ -182,6 +182,11 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 	getExpectedProjectName(): string {
 		return this.expectedProjectName;
+	}
+
+	/** 데이터 변경 없이 트리만 다시 그린다(설정 변경 등으로 라벨/설명이 바뀔 때). 1402 폴링을 유발하지 않는다. */
+	redraw(): void {
+		this._onDidChangeTreeData.fire(undefined);
 	}
 
 	setRuntimeConsoleStatus(status: RuntimeConsoleStatusSnapshot): void {
@@ -704,12 +709,26 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		// ── 연결 정보 (간소화)
 		const conn = new SectionNode('connection', cfg.ip, 'plug', '연결됨');
 		conn.collapsed = false;
+		const trafficOpts = getTrafficLogOptions();
 		conn.children = [
 			new InfoNode(`1402 명령 포트: ${cfg.port}`, 'server', undefined, {
 				command: 'gpl.controller.pingPort',
 				title: '포트 통신 테스트',
 				arguments: ['command', cfg.ip, cfg.port],
 			}),
+			new InfoNode(
+				'1402 통신 모니터',
+				'radio-tower',
+				trafficOpts.responseBody
+					? `명령 + 응답 본문${trafficOpts.maxResponseChars > 0 ? ` (≤${trafficOpts.maxResponseChars}자)` : ''}`
+					: '명령 + STATUS 요약만',
+				{ command: 'gpl.controller.showTraffic', title: 'GPL Traffic 열기' },
+				'trafficMonitorItem',
+				'확장이 1402로 보내는 모든 명령(>>>)과 제어기 응답( | 본문 줄, <<< STATUS 요약)을 ' +
+				'GPL Traffic 출력 채널에 실시간으로 표시합니다.\n' +
+				'클릭: 채널 열기 · 인라인/우클릭: 응답 본문 표시 켜기/끄기, 채널 지우기\n' +
+				'설정: gpl.controller.trafficLogResponseBody / trafficLogMaxResponseChars',
+			),
 			new InfoNode(
 				'1403 콘솔',
 				getRuntimeConsoleTreeIcon(this.runtimeConsoleStatus),

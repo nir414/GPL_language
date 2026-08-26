@@ -12,12 +12,14 @@
 
 ### Added
 
+- **GPL Traffic 채널이 1402 응답 본문을 실시간으로 보여줍니다.** 이전에는 보내는 명령(`>>>`)은 전문이 찍혔지만 제어기 응답은 `<<< STATUS 0  12 lines  38ms` 요약만 남아 "서로 무엇을 주고받는지"의 절반이 보이지 않았습니다. 이제 응답 본문이 도착하는 대로 줄 단위(` | ` 라인)로 흘러나오고(Compile처럼 pass 사이에 침묵하는 명령도 도착한 부분까지 즉시 표시), 마지막에 기존 `<<<` 요약이 붙습니다. 긴 응답은 `gpl.controller.trafficLogMaxResponseChars`(기본 4000자, 0=무제한)까지만 표시하고 생략 요약 한 줄을 남기며, `gpl.controller.trafficLogResponseBody`를 끄면 예전처럼 요약만 남습니다. GPL Controller 트리의 연결 섹션에 **`1402 통신 모니터`** 항목이 추가되어 클릭으로 채널을 열고, 인라인/우클릭으로 본문 표시 켜기/끄기(`GPL: Toggle Traffic Response Body (1402)`)와 채널 지우기(`GPL: Clear Traffic Monitor`)를 할 수 있습니다. 확장이 1402로 보내는 모든 명령(디버그 어댑터·트리 폴링·배포 포함)이 한 소켓 경로를 지나므로 누락 없이 기록됩니다.
 - **디버거가 클래스 Property 값을 보여줍니다(#26).** 제어기 콘솔은 식의 마지막 요소가 사용자 프로퍼티면 `-780`으로 거부하므로, 파서가 Property의 `Get … Return <식>`을 기록해 두고 디버그 어댑터가 백킹 필드(Get 반환식 또는 관례 `m_이름`)로 치환해 평가합니다. 다른 클래스 프레임에서 Private 점 표기가 `-729`면 부모 객체 덤프(프레임 무관, Private 포함)에서 멤버 줄을 추출합니다. hover·Watch 결과에 `← m_armCount (Get 반환식)`처럼 출처를 표시하고, 객체 노드를 펼치면 Property가 읽기 전용 가상 자식으로 나타나며, 해석 가능한 Property 위에서는 디버그 hover가 열립니다. `Me.` 접두는 자동으로 벗기고(제어기에서 `-712`), 반환형이 Location인 프로퍼티는 `.Pos`를 붙여 우회합니다.
 - **`GPL: Check AI Agent Setup`** 명령(#23) — `.mcp.json` 등록 경로, globalStorage 사본/동봉 번들 해시 일치, CLAUDE.md 안내 블록 버전을 한 번에 점검하고 문제가 있으면 Export 재실행 버튼을 제공합니다. CLAUDE.md 자동 생성 블록에 확장 버전 표식이 들어갑니다.
 - **제어기 대시보드 시각화 개선(#18)** — 상단에 연결·고전원·스레드·에러 상태를 색상 배지로 크게 표시(상태가 바뀌면 깜빡임), 스레드 표(상태·위치·프로시저·마지막 STATUS, 변화 행 강조), 축 위치 게이지(관측 범위 자동 조정, 이동 중 표시·Δ), 직교 좌표 XY 미니 플롯(최근 궤적), 새 에러 로그 줄 강조. 폴링 주기 선택과 일시정지 버튼을 탭 안에 넣었고(미구현이던 `setInterval` 메시지 구현), 연결 중에는 상태바에 `$(dashboard)` 바로가기 항목이 표시됩니다.
 
 ### Changed
 
+- **디버깅 기본 단축키를 VS Code 표준과 호환되게 정리했습니다(#20).** 확장이 덮어쓰던 `F9=Continue`를 제거해 다시 표준 Toggle Breakpoint로 동작하며, `Continue`는 표준 `F5`를 사용합니다. Copilot Chat과 충돌할 수 있던 `Ctrl+Alt+I` 디버그 호버 단축키도 제거했습니다. 마우스 클릭으로 변수 값을 즉시 표시하는 `gpl.debug.showValueOnCursorClick` 기능은 그대로 유지됩니다.
 - **MCP 관찰 도구(#24)**: `show_threads`/`debug_snapshot`/`controller_status`의 스레드 응답을 이름 있는 키(`name/state/project/procedure/file/line`)의 compact 형식으로 바꿔 3중 중복(fields+raw+rawLines)을 제거했습니다(`show_threads(verbose:true)`로 원문 유지). `controller_status`가 스레드 상태별 개수·정지 스레드 위치·고전원(`Controller.PowerEnabled`)·배포 잠금·서버 빌드를 돌려주고, 연결 실패 시 ICMP/TCP를 구분해 "재부팅 중 / 서비스 다운 / 완전 무응답"을 판정합니다(`detail:true`면 스레드 전체 목록·최근 ErrorLog 10줄). `eval_expression`과 각 도구의 `evals` 결과가 `{name,type,value,kind,members}`로 구조화되고, `-780`이면 `m_이름` 백킹 필드로 자동 재시도해 `resolvedAs`를 표시합니다(`Me.` 자동 제거). `debug_snapshot(listLocals:true)`로 프레임 변수 전체 덤프(Brooks 문서상 구문, 실기기 미검증)를 요청할 수 있습니다. 시뮬레이션/실기 판별은 근거 명령이 확인되지 않아 `simulation: null`로 둡니다.
 
 ## [0.8.18] - 2026-08-25

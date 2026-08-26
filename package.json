@@ -67,6 +67,10 @@
         "onCommand:gpl.ai.debug.continueThread",
         "onCommand:gpl.ai.debug.evaluate",
         "onCommand:gpl.ai.debug.loop",
+        "onCommand:gpl.ai.debug.connect",
+        "onCommand:gpl.ai.debug.disconnect",
+        "onCommand:gpl.ai.debug.getConnectionState",
+        "onUri",
         "onCommand:gpl.diagnosticSnapshot",
         "onDebugResolve:brooks-gpl"
     ],
@@ -405,6 +409,22 @@
             {
                 "command": "gpl.ai.debug.loop",
                 "title": "GPL: AI Debug Loop"
+            },
+            {
+                "command": "gpl.ai.debug.connect",
+                "title": "GPL: AI Debug Connect (비대화형 연결)"
+            },
+            {
+                "command": "gpl.ai.debug.disconnect",
+                "title": "GPL: AI Debug Disconnect"
+            },
+            {
+                "command": "gpl.ai.debug.getConnectionState",
+                "title": "GPL: AI Debug Get Connection State"
+            },
+            {
+                "command": "gpl.debug.showSourceStale",
+                "title": "GPL: 소스 변경 상태 보기 (디버그 BP 신뢰성)"
             },
             {
                 "command": "gpl.controller.threadStart",
@@ -945,6 +965,13 @@
                     "default": 15000,
                     "description": "Maximum polling delay for repeated Immediate EOF 1403 sessions."
                 },
+                "gpl.runtimeConsole.batchReconnectDelayMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 250,
+                    "minimum": 50,
+                    "description": "1403 이벤트 배치를 받고 제어기가 세션을 닫은 뒤 다시 연결하기까지 대기(ms). 작을수록 런타임 이벤트 반응이 빠르지만 제어기 TCP 접속 횟수가 늘어납니다(GitHub #22 — 접속 churn). 디버거의 정지 감지는 1402 백업 폴이 보완합니다."
+                },
                 "gpl.runtimeConsole.idleReconnectBaseMs": {
                     "scope": "window",
                     "type": "number",
@@ -1001,6 +1028,12 @@
                     "default": "compact",
                     "description": "Language hover behavior while a brooks-gpl debug session is active."
                 },
+                "gpl.hover.showAfterClick": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "GPL 편집기에서 식별자를 마우스로 클릭한 뒤 마우스를 움직이지 않아도 언어 호버(심볼 정보)를 다시 표시합니다. VS Code는 클릭으로 닫힌 호버를 마우스가 움직이기 전까지 다시 열지 않으므로(GitHub #19), 클릭 직후 커서 위치(=마우스 위치)에 호버를 띄웁니다. 지연은 editor.hover.delay를 따르며, 디버그 세션 중에는 gpl.debug.showValueOnCursorClick(변수 값 호버)이 우선합니다."
+                },
                 "gpl.deploy.jumpToFirstError": {
                     "scope": "window",
                     "type": "boolean",
@@ -1036,6 +1069,19 @@
                     "type": "number",
                     "default": 10000,
                     "description": "Command timeout in milliseconds."
+                },
+                "gpl.controller.keepAlive1402": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "1402 명령 연결을 명령마다 새로 열지 않고 유지(keep-alive)합니다. 트리/상태바 폴링·디버그 백업 폴·BP 동기화가 모두 이 경로를 지나므로 제어기 TCP accept 부하(접속 churn)가 크게 줄어듭니다(GitHub #22). 응답이 </STATUS>로 깨끗하게 끝난 경우에만 연결을 재사용하고, 그 외(타임아웃·불완전 응답·오류)에는 닫고 다시 연결합니다. 문제가 있으면 끄면 종전처럼 명령마다 단명 연결을 사용합니다."
+                },
+                "gpl.controller.keepAliveIdleCloseMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 30000,
+                    "minimum": 1000,
+                    "description": "keep-alive 1402 연결을 명령 없이 유지하는 최대 시간(ms). 지나면 닫고 다음 명령에서 다시 연결합니다."
                 },
                 "gpl.controller.trafficLogResponseBody": {
                     "scope": "window",
@@ -1110,12 +1156,38 @@
                     "default": true,
                     "description": "디버그 중 마우스 클릭으로 커서를 변수 위에 놓으면 디버그 호버(변수 값)를 즉시 표시합니다. 호버 대기시간 없이 바로 값을 확인할 수 있습니다."
                 },
+                "gpl.debug.minStepIntervalMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 0,
+                    "description": "디버그 Step/Continue 명령 사이 최소 간격(ms). 이전 Step/Continue의 정지 확인 전에 들어온 같은 쓰레드 요청은 항상 무시되며(GitHub #28 — 키 자동 반복으로 Step이 30ms 간격 325건 송신되어 제어기가 다운된 사고), 이 값은 정지 확인 후에도 추가로 두는 하한입니다. 0이면 간격 제한 없음(정지 확인 게이트는 유지)."
+                },
+                "gpl.debug.runningBackupPollMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 1000,
+                    "minimum": 250,
+                    "description": "디버그 중 Running 쓰레드가 있을 때 1403 런타임 스트림이 끊겨 있으면 이 간격(ms)으로 Show Thread 백업 폴링을 합니다. 1403이 정상이면 gpl.controller.threadPollIntervalMs(기본 5000)로 완화됩니다(GitHub #22 — 1Hz 백업 폴이 77분간 922회 접속)."
+                },
+                "gpl.keybindings.gdeStyle": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "GDE 손 습관용 단축키를 켭니다: brooks-gpl 디버그 중 F9 = Continue. 끄면(기본) VS Code 표준(F5 Continue / F9 Toggle Breakpoint / F10·F11·Shift+F11 스텝 / F6 Pause)이 그대로 적용됩니다(GitHub #20). 켜면 디버그 중 F9로 브레이크포인트를 토글할 수 없습니다."
+                },
                 "gpl.controller.dashboardPollIntervalMs": {
                     "scope": "window",
                     "type": "number",
                     "default": 1500,
                     "minimum": 500,
                     "description": "제어기 대시보드 실시간 상태 폴링 주기(ms). 최소 500. 대시보드 탭 상단의 주기 선택은 그 탭이 열려 있는 동안만 이 값을 덮어씁니다."
+                },
+                "gpl.controller.dashboardResourceProbes": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "제어기 대시보드 폴링에 자원 지표(Show Memory / Show Network -tcp / Show Network -mbuf — 읽기 전용 3명령)를 포함해 TCP accept 증가율·여유 메모리·mbuf 여유를 표시합니다(GitHub #22 TCP 자원 고갈 가설 관찰용). 파서는 G2400C(GPL 4.2K5) 실기기 응답 원문(2026-08-25 채록) 기준이며, 형식이 다른 항목은 원문으로 표시됩니다."
                 },
                 "gpl.ai.autoRefreshMcpBundle": {
                     "scope": "application",
@@ -1140,7 +1212,14 @@
                     "description": ".gpl 파일을 저장할 때 빠른 컴파일(변경분 업로드 + Compile, STOP/START 생략)을 자동 실행합니다. 제어기에 연결되어 있을 때만 동작하며 600ms 디바운스가 적용됩니다. 업로드 도중 Compile/Start가 겹치면 제어기 이상이 생길 수 있어 배포 잠금(다른 창·MCP 포함)으로 차단하며, 기본값 \"auto\"는 업로드는 항상 하되 Compile은 완전 STOP 상태에서만 수행합니다. (구버전 boolean 값도 인식: true=on, false=off)"
                 }
             }
-        }
+        },
+        "keybindings": [
+            {
+                "command": "workbench.action.debug.continue",
+                "key": "f9",
+                "when": "inDebugMode && debugType == 'brooks-gpl' && config.gpl.keybindings.gdeStyle"
+            }
+        ]
     },
     "scripts": {
         "vscode:prepublish": "npm run compile && npm run bundle:mcp",

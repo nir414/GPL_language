@@ -4,7 +4,7 @@
  */
 
 import * as vscode from 'vscode';
-import { trySendCommand, getControllerConfig, getTrafficLogOptions } from '../controller/controllerConnection';
+import { trySendCommand, getControllerConfig, getTrafficLogOptions, getConnectionStats } from '../controller/controllerConnection';
 import { formatRuntimeConsoleStateLabel } from '../controller/runtimeConsolePresentation';
 import {
 	parseThreadList,
@@ -19,8 +19,9 @@ import {
 	getErrorCodeHint,
 	findKnownErrorChains,
 } from '../controller/responseParser';
-import { FtpEntry, listRemoteDir } from '../controller/ftpClient';
+import { FtpEntry, listRemoteDirs } from '../controller/ftpClient';
 import { onDebugThreadsUpdated } from '../controller/debugBridge';
+import { AUTO_REFRESH_MIN_INTERVAL_MS, decideAutoRefresh, formatLastRefreshTime } from './refreshThrottle';
 import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
 
 export interface SituationDeploySnapshot {
@@ -71,6 +72,7 @@ class SectionNode {
 		public label: string,
 		public iconId: string,
 		public description?: string,
+		public tooltip?: string,
 	) {}
 }
 
@@ -103,6 +105,14 @@ const IDLE_POLL_MULTIPLIER = 3;
 const DETAIL_POLL_MULTIPLIER = 2;
 /** Show Thread 연속 실패 이 횟수면 연결 유실로 판정 */
 const CONNECTION_LOSS_FAILURE_THRESHOLD = 3;
+/**
+ * 연결 확립 시 FTP 목록 자동 재조회 억제 간격(5분). 마지막 성공 조회가 이 시간 이내이고 캐시가 있으면
+ * setConnected(true)에서 재조회하지 않는다(GitHub #22 제안 7 — 연결 플랩마다 /GPL·Flash를 재조회해
+ * 60초에 FTP passive 데이터 연결 66개 관측). 명시적 새로고침(refreshFtp/refreshAll)은 항상 조회한다.
+ */
+const FTP_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
+/** 시스템 정보(Show Memory / Show Flash Free / Show CPU Profile — 1402 왕복 3회)도 같은 규칙으로 억제. */
+const SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
 
 export class ControllerTreeProvider implements vscode.TreeDataProvider<ControllerNode>, vscode.Disposable {
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<ControllerNode | undefined>();
@@ -135,7 +145,21 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private ftpError: string | null = null;
 	private ftpFlashEntries: FtpEntry[] = [];
 	private ftpFlashError: string | null = null;
+	/** 마지막 FTP 목록 조회 성공 시각(epoch ms, 0=없음) — 자동 재조회 억제 판정·설명 표기용 (#22) */
+	private lastFtpRefreshAt = 0;
+	/** FTP 캐시가 어느 제어기/경로의 것인지(`ip|/GPL|flash`). 바뀌면 억제 없이 재조회한다. */
+	private ftpCacheKey = '';
 	private sysInfo: { label: string; value: string; tooltip?: string; iconId?: string }[] = [];
+	/** 마지막 시스템 정보 조회 성공 시각(epoch ms, 0=없음) */
+	private lastSystemInfoRefreshAt = 0;
+	/** 시스템 정보 캐시의 제어기 IP */
+	private systemInfoCacheKey = '';
+	/**
+	 * doRefresh의 연결 유실 판정이 onDidLoseConnection을 발화하는 동안만 true. extension.ts의 핸들러가
+	 * 옵션 없이 setConnected(false)를 부르므로, 이 플래그로 '유실'과 '명시적 disconnect'를 구분해
+	 * 유실일 때는 FTP/시스템 정보 캐시를 보존한다(extension.ts 수정 없이, #22).
+	 */
+	private _lossNotificationInProgress = false;
 	private pollTimer: ReturnType<typeof setTimeout> | null = null;
 	/** 폴링 루프 세대 토큰 — stop/start/디버그 진입 시 증가시켜 낡은 콜백의 재스케줄을 차단 */
 	private pollGeneration = 0;
@@ -201,8 +225,15 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 	/**
 	 * 연결 상태 변경 — 연결 시 즉시 폴링 시작, 해제 시 정리.
+	 *
+	 * - 연결 시 FTP 목록·시스템 정보는 **조건부** 재조회(refreshFtpIfStale/refreshSystemInfoIfStale):
+	 *   유실→재연결 플랩마다 전부 재조회하던 것을, 5분 이내 성공 캐시가 있으면 건너뛴다(GitHub #22 제안 7).
+	 *   쓰레드/에러/BP 폴링(refresh)은 종전대로 즉시 시작한다.
+	 * - 해제 시 `reason`이 'lost'(연결 유실)면 FTP/시스템 정보 캐시를 보존하고, 'disconnect'(명시적 해제,
+	 *   기본값)면 종전처럼 모두 비운다. extension.ts는 옵션 없이 부르므로, 유실 경로는 doRefresh가
+	 *   `_lossNotificationInProgress`로 내부 표시해 구분한다.
 	 */
-	setConnected(connected: boolean, options?: { refresh?: boolean }): void {
+	setConnected(connected: boolean, options?: { refresh?: boolean; reason?: 'disconnect' | 'lost' }): void {
 		this._connected = connected;
 		this.consecutiveFailures = 0;
 		this.lastDetailPollAt = 0;
@@ -211,13 +242,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			this._onDidChangeTreeData.fire(undefined);
 			if (options?.refresh !== false) {
 				this.refresh();
-				this.refreshFtp();
-				this.refreshSystemInfo();
+				this.refreshFtpIfStale();
+				this.refreshSystemInfoIfStale();
 				this.startPolling();
 			}
 		} else {
+			const reason = options?.reason ?? (this._lossNotificationInProgress ? 'lost' : 'disconnect');
 			this.stopPolling();
-			this.clearCachedControllerState();
+			this.clearCachedControllerState({ keepOnDemandCaches: reason === 'lost' });
 			this._onDidChangeTreeData.fire(undefined);
 		}
 	}
@@ -233,7 +265,13 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		folderCtx: string,
 		fileCtx: string,
 	): SectionNode {
-		const sec = new SectionNode(id, title, icon, error ? '조회 실패' : `${entries.length}개`);
+		// 설명에 마지막 조회 시각을 붙여 "연결 플랩 뒤 보존된 캐시"가 낡을 수 있음을 드러낸다(#22).
+		const lastLabel = this.lastFtpRefreshAt > 0 ? formatLastRefreshTime(this.lastFtpRefreshAt) : undefined;
+		const description = error
+			? '조회 실패'
+			: (lastLabel ? `${entries.length}개 · 마지막 조회 ${lastLabel}` : `${entries.length}개`);
+		const sec = new SectionNode(id, title, icon, description,
+			this.buildOnDemandCacheTooltip(this.lastFtpRefreshAt, FTP_AUTO_REFRESH_MIN_INTERVAL_MS));
 		if (error) {
 			sec.children = [new InfoNode(error, 'error')];
 		} else if (entries.length === 0) {
@@ -263,17 +301,39 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		};
 	}
 
-	/** 제어기에서 받아온 캐시 상태 일괄 초기화 (연결 해제/유실 시). */
-	private clearCachedControllerState(): void {
+	/**
+	 * 온디맨드 캐시 섹션(FTP 목록/시스템 정보) 공용 툴팁 — 연결 플랩 시 자동 재조회하지 않음을 알린다(#22).
+	 */
+	private buildOnDemandCacheTooltip(lastRefreshAt: number, minIntervalMs: number): string {
+		const minutes = Math.round(minIntervalMs / 60_000);
+		return [
+			'연결 플랩(유실 → 재연결) 시 자동 재조회하지 않음 — 새로고침 아이콘으로 갱신하세요.',
+			`(마지막 조회가 ${minutes}분 이내이고 캐시가 있으면 재연결 시 캐시를 유지합니다. 배포 후에는 자동 갱신됩니다.)`,
+			lastRefreshAt > 0 ? `마지막 조회: ${formatDate(new Date(lastRefreshAt))}` : '아직 조회하지 않음',
+		].join('\n');
+	}
+
+	/**
+	 * 제어기에서 받아온 캐시 상태 일괄 초기화 (연결 해제/유실 시).
+	 * keepOnDemandCaches=true(연결 유실)면 폴링 데이터(쓰레드/에러/BP)만 비우고, 온디맨드 캐시
+	 * (FTP 목록·시스템 정보·마지막 조회 시각)는 보존한다 — 재연결 시 5분 억제 판정의 근거가 된다(#22).
+	 * 유실 때도 비우면 플랩 뒤 항상 재조회가 돼 억제가 무의미해지므로, 명시적 disconnect에서만 비운다.
+	 */
+	private clearCachedControllerState(options?: { keepOnDemandCaches?: boolean }): void {
 		this.hasReceivedThreadList = false;
 		this.threads = [];
 		this.errors = [];
 		this.breakpoints = [];
+		if (options?.keepOnDemandCaches) { return; }
 		this.ftpEntries = [];
 		this.ftpError = null;
 		this.ftpFlashEntries = [];
 		this.ftpFlashError = null;
+		this.lastFtpRefreshAt = 0;
+		this.ftpCacheKey = '';
 		this.sysInfo = [];
+		this.lastSystemInfoRefreshAt = 0;
+		this.systemInfoCacheKey = '';
 	}
 
 	startPolling(): void {
@@ -390,9 +450,18 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			if (this.consecutiveFailures >= CONNECTION_LOSS_FAILURE_THRESHOLD) {
 				this._connected = false;
 				this.stopPolling();
-				this.clearCachedControllerState();
+				// 유실 시 FTP/시스템 정보 캐시는 보존한다(재연결 시 억제 판정용, #22).
+				// 명시적 disconnect 명령은 setConnected(false)가 종전처럼 비운다.
+				this.clearCachedControllerState({ keepOnDemandCaches: true });
 				this._onDidChangeTreeData.fire(undefined);
-				this._onDidLoseConnection.fire();
+				// 핸들러(extension.ts)가 이 이벤트 안에서 동기적으로 setConnected(false)를 옵션 없이 부른다 —
+				// 그 호출을 '유실'로 해석시켜 캐시 보존을 유지한다.
+				this._lossNotificationInProgress = true;
+				try {
+					this._onDidLoseConnection.fire();
+				} finally {
+					this._lossNotificationInProgress = false;
+				}
 				return;
 			}
 		} else {
@@ -439,7 +508,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	}
 
 	/**
-	 * FTP /GPL 디렉터리 목록 갱신 (수동).
+	 * FTP /GPL·Flash Projects 디렉터리 목록 갱신 (강제 — 사용자 새로고침·배포 후·refreshAll).
+	 * 두 경로를 **한 FTP 세션**(listRemoteDirs)으로 조회한다 — 종전엔 경로마다 세션을 열어
+	 * 제어 연결(로그인) 2회 + 데이터 연결 2개가 들었다(GitHub #22 제안 7).
 	 */
 	async refreshFtp(): Promise<void> {
 		if (!this._connected) { return; }
@@ -447,20 +518,25 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this._refreshFtpInFlight = true;
 		try {
 		const cfg = getControllerConfig();
+		const cacheKey = ControllerTreeProvider.ftpCacheKeyFor(cfg.ip, cfg.ftpBasePath, cfg.ftpFlashProjectsPath);
 		try {
-			this.ftpEntries = await listRemoteDir(cfg.ip, cfg.ftpBasePath);
-			this.ftpError = null;
+			const [gpl, flash] = await listRemoteDirs(cfg.ip, [cfg.ftpBasePath, cfg.ftpFlashProjectsPath]);
+			this.ftpEntries = gpl.entries ?? [];
+			this.ftpError = gpl.error ?? null;
+			this.ftpFlashEntries = flash.entries ?? [];
+			this.ftpFlashError = flash.error ?? null;
 		} catch (err: any) {
+			// 세션 자체(접속/로그인) 실패 — 두 목록 모두 같은 사유로 실패 표시
+			const msg = err?.message ?? String(err);
 			this.ftpEntries = [];
-			this.ftpError = err.message ?? String(err);
-		}
-
-		try {
-			this.ftpFlashEntries = await listRemoteDir(cfg.ip, cfg.ftpFlashProjectsPath);
-			this.ftpFlashError = null;
-		} catch (err: any) {
+			this.ftpError = msg;
 			this.ftpFlashEntries = [];
-			this.ftpFlashError = err.message ?? String(err);
+			this.ftpFlashError = msg;
+		}
+		// '성공 조회' = 세션이 열려 목록을 하나라도 받은 경우. 시각·키는 억제 판정과 설명 표기에 쓴다.
+		if (this.ftpError === null || this.ftpFlashError === null) {
+			this.lastFtpRefreshAt = Date.now();
+			this.ftpCacheKey = cacheKey;
 		}
 		this._onDidChangeTreeData.fire(undefined);
 		} finally {
@@ -469,7 +545,35 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	}
 
 	/**
-	 * 시스템 정보 갱신 (수동).
+	 * 연결 확립 시의 조건부 FTP 재조회(#22). 캐시가 없거나, 다른 제어기/경로의 것이거나, 마지막 성공 조회가
+	 * FTP_AUTO_REFRESH_MIN_INTERVAL_MS 이상 지났을 때만 refreshFtp()를 부른다. 건너뛰면 트리는 보존된
+	 * 캐시를 "마지막 조회 HH:mm"과 함께 보여 준다(툴팁에 새로고침 안내).
+	 */
+	private refreshFtpIfStale(): Promise<void> {
+		const cfg = getControllerConfig();
+		const decision = decideAutoRefresh(
+			{
+				lastSuccessAt: this.lastFtpRefreshAt,
+				hasCache: this.ftpError === null || this.ftpFlashError === null,
+				cacheKey: this.ftpCacheKey,
+			},
+			Date.now(),
+			{
+				minIntervalMs: FTP_AUTO_REFRESH_MIN_INTERVAL_MS,
+				currentKey: ControllerTreeProvider.ftpCacheKeyFor(cfg.ip, cfg.ftpBasePath, cfg.ftpFlashProjectsPath),
+			},
+		);
+		// 건너뛸 때 트리 재그리기는 불필요 — setConnected(true)가 직전에 fire 했고 buildRoot가 보존 캐시를 읽는다.
+		if (!decision.refresh) { return Promise.resolve(); }
+		return this.refreshFtp();
+	}
+
+	private static ftpCacheKeyFor(ip: string, basePath: string, flashPath: string): string {
+		return `${ip}|${basePath}|${flashPath}`;
+	}
+
+	/**
+	 * 시스템 정보 갱신 (강제 — 사용자 새로고침·refreshAll). 연결 확립 시에는 refreshSystemInfoIfStale가 대신 불린다.
 	 */
 	async refreshSystemInfo(): Promise<void> {
 		if (!this._connected) { return; }
@@ -482,6 +586,13 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const memResp = await trySendCommand('Show Memory');
 		const flashResp = await trySendCommand('Show Flash Free');
 		const cpuResp = await trySendCommand('Show CPU Profile');
+
+		// 세 명령 중 하나라도 응답이 왔으면 '성공 조회'로 보고 시각을 기록한다(억제 판정·설명 표기용, #22).
+		// 모두 null(연결 불량)이면 시각을 갱신하지 않아 다음 연결 확립 시 다시 조회된다.
+		if (memResp !== null || flashResp !== null || cpuResp !== null) {
+			this.lastSystemInfoRefreshAt = Date.now();
+			this.systemInfoCacheKey = getControllerConfig().ip;
+		}
 
 		const memRaw = memResp ? this.extractRaw(memResp) : '';
 		const flashRaw = flashResp ? this.extractRaw(flashResp) : '';
@@ -505,6 +616,24 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		} finally {
 			this._refreshSystemInFlight = false;
 		}
+	}
+
+	/**
+	 * 연결 확립 시의 조건부 시스템 정보 재조회(#22) — refreshFtpIfStale와 같은 규칙(5분·캐시·IP 일치).
+	 * Show Memory / Show Flash Free / Show CPU Profile 3회 왕복을 플랩마다 반복하지 않기 위함.
+	 */
+	private refreshSystemInfoIfStale(): Promise<void> {
+		const decision = decideAutoRefresh(
+			{
+				lastSuccessAt: this.lastSystemInfoRefreshAt,
+				hasCache: this.sysInfo.length > 0,
+				cacheKey: this.systemInfoCacheKey,
+			},
+			Date.now(),
+			{ minIntervalMs: SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS, currentKey: getControllerConfig().ip },
+		);
+		if (!decision.refresh) { return Promise.resolve(); }
+		return this.refreshSystemInfo();
 	}
 
 	/** 응답에서 <DATA> 또는 본문 추출 (원시 텍스트) */
@@ -711,7 +840,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		conn.collapsed = false;
 		const trafficOpts = getTrafficLogOptions();
 		conn.children = [
-			new InfoNode(`1402 명령 포트: ${cfg.port}`, 'server', undefined, {
+			new InfoNode(`1402 명령 포트: ${cfg.port}`, 'server', formatConnectionStats(getConnectionStats()), {
 				command: 'gpl.controller.pingPort',
 				title: '포트 통신 테스트',
 				arguments: ['command', cfg.ip, cfg.port],
@@ -813,7 +942,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		// ── 시스템 정보
 		const sysSec = new SectionNode('system', '시스템 정보', 'dashboard',
-			this.sysInfo.length > 0 ? undefined : '조회 안됨');
+			this.sysInfo.length > 0
+				? (this.lastSystemInfoRefreshAt > 0 ? `마지막 조회 ${formatLastRefreshTime(this.lastSystemInfoRefreshAt)}` : undefined)
+				: '조회 안됨',
+			this.buildOnDemandCacheTooltip(this.lastSystemInfoRefreshAt, SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS));
 		sysSec.collapsed = true;
 		if (this.sysInfo.length === 0) {
 			sysSec.children = [
@@ -1058,6 +1190,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		if (this.ftpError) {
 			lines.push(`- ⚠ FTP 조회 실패: ${this.ftpError}`);
 		}
+		if (this.lastFtpRefreshAt > 0) {
+			lines.push(`- 마지막 FTP 조회: ${formatDateTimeFromTs(this.lastFtpRefreshAt)} (연결 플랩 시 자동 재조회 안 함 — 새로고침으로 갱신)`);
+		}
 		lines.push('');
 
 		// ── 시스템 정보
@@ -1290,6 +1425,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const item = new vscode.TreeItem(node.label, state);
 		item.iconPath = new vscode.ThemeIcon(node.iconId);
 		item.description = node.description;
+		if (node.tooltip) { item.tooltip = node.tooltip; }
 		item.contextValue = `section-${node.id}`;
 		return item;
 	}
@@ -1398,6 +1534,17 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			default: return new vscode.ThemeIcon('circle-outline');
 		}
 	}
+}
+
+/**
+ * 1402 keep-alive 연결 통계 한 줄(GitHub #22): `keep-alive 유지 중 · 연결 3회 · 재사용 412회`.
+ * 정상 폴링 중에는 연결 수가 늘지 않고 재사용만 늘어야 한다 — 늘어나면 제어기가 응답 뒤 끊거나 stale 재시도가 잦다는 뜻.
+ */
+function formatConnectionStats(s: ReturnType<typeof getConnectionStats>): string {
+	if (!s) { return ''; }
+	const parts = [s.keepAliveActive ? 'keep-alive 유지 중' : 'keep-alive 대기', `연결 ${s.connects}회`, `재사용 ${s.reuses}회`];
+	if (s.retries > 0) { parts.push(`재시도 ${s.retries}회`); }
+	return parts.join(' · ');
 }
 
 function formatSize(bytes: number): string {

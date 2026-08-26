@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
+import { URLSearchParams } from 'url';
 import { GPLDefinitionProvider } from './providers/definitionProvider';
 import { GPLReferenceProvider } from './providers/referenceProvider';
 import { GPLRenameProvider } from './providers/renameProvider';
@@ -14,14 +16,16 @@ import { GPLHoverProvider } from './providers/hoverProvider';
 import { GPLEvaluatableExpressionProvider } from './providers/evaluatableExpressionProvider';
 import { GPLSignatureHelpProvider } from './providers/signatureHelpProvider';
 import { SymbolCache } from './symbolCache';
-import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile } from './config';
+import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile, EXTENSION_VERSION } from './config';
 
 // Controller integration
-import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride, formatTrafficTimestamp, getTrafficLogOptions, setTrafficResponseBodyEnabled } from './controller/controllerConnection';
+import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride, formatTrafficTimestamp, getTrafficLogOptions, setTrafficResponseBodyEnabled, closeControllerConnection, getConnectionStats, getRecentTraffic, recordTrafficLine, ControllerConfig } from './controller/controllerConnection';
+import { probeReachability } from './controller/reachability';
 import { exportAiAgentSetup, inspectAiAgentSetup, syncStableBundleIfStale } from './ai/exportAgentSetup';
 import { EditorBreakpointSync } from './controller/breakpointSync';
 import { deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult, DeployResult } from './controller/deployService';
-import { getDeployLock, describeDeployLock, DeployLockRecord } from './controller/deployLock';
+import { getDeployLock, describeDeployLock, DeployLockRecord, DEPLOY_LOCK_DIR_NAME } from './controller/deployLock';
+import { attachDeployRecordStore } from './controller/deployRecord';
 import { listRemoteDir, removeRemoteDir, removeRemoteFile, downloadProject, mirrorProject } from './controller/ftpClient';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from './controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from './views/controllerTreeProvider';
@@ -45,7 +49,7 @@ import {
 	pickSourceCandidate,
 } from './controller/responseParser';
 import { startLiveLogTerminal, stopLiveLogTerminal, appendLiveLog, isLiveLogTerminalEnabled } from './log/liveLogTerminal';
-import { fireDebugPollTrigger } from './controller/debugBridge';
+import { fireDebugPollTrigger, setRuntimeConsoleHealthProvider, RuntimeConsoleHealth } from './controller/debugBridge';
 import { formatRuntimeConsoleStateLabel } from './controller/runtimeConsolePresentation';
 import { isBusyStatus } from './controller/controllerStatusCodes';
 
@@ -60,6 +64,9 @@ let deployDiagnostics: vscode.DiagnosticCollection;
 let runtimeConsoleHooksBound = false;
 let lastDeploySnapshot: SituationDeploySnapshot | undefined;
 let isDebugSessionActive = false;
+/** 디버그 어댑터가 gpl.sourceStale 이벤트로 알린 "소스가 제어기 컴파일 코드보다 새로움" 상태(GitHub #21). */
+let lastSourceStale: { projectName: string; files: string[]; compiledAt?: number } | undefined;
+let sourceStaleNotifiedSessionId: string | undefined;
 // 현재는 signature만 중복 알림 억제에 사용된다. mode/timestamp/summary는 향후 진단용 기록.
 const deployOutcomeHistory: Array<{ mode: 'Build' | 'Deploy & Run'; signature: string; timestamp: number; summary: string }> = [];
 // 히스토리 상한 — 장시간 세션에서 무한 증가 방지 (초과 시 오래된 항목부터 제거)
@@ -91,6 +98,53 @@ interface CompileStaleInfo { projectName: string; projectDir?: string; since: nu
 const compileStaleProjects = new Map<string, CompileStaleInfo>();
 // settled(비활성) 쓰레드 상태 집합 — deployService.threadSettled와 동일하게 유지할 것
 const SETTLED_THREAD_STATE = /^(idle|stopped|error)$/i;
+
+/**
+* 연결 유실 사후 스냅샷(GitHub #22 제안 4). 제어기가 죽으면 1402가 닫혀 ErrorLog를 읽을 수 없고 재부팅하면 지워지므로,
+* PC 쪽에 남은 증거 — 마지막 트래픽(1402 >>>/ | /<<< + 1403 라인 링버퍼), 1402 연결 통계, 1403 상태, 배포 잠금,
+* ping TTL/arp MAC 기반 도달성 판정(직결 NIC 임대 상실 시 사무실 게이트웨이가 응답하는 함정 포함) — 를 한 파일로 묶는다.
+* 파일: %TEMP%/gpl-controller/postmortem-<시각>.log. 실패해도 예외를 밖으로 내지 않는다(undefined).
+*/
+async function writeConnectionLostPostmortem(cfg: ControllerConfig, lostAt: Date, log: (line: string) => void): Promise<string | undefined> {
+	try {
+		const recent = getRecentTraffic(400);
+		const stats = getConnectionStats();
+		const rc = currentRuntimeConsoleStatus();
+		const lock = getDeployLock(cfg.ip).current()?.record;
+		const reach = await probeReachability(cfg.ip, cfg.port);
+		const lines: string[] = [
+			`# GPL Controller 연결 유실 사후 스냅샷 — ${lostAt.toISOString()} (local ${lostAt.toLocaleString()})`,
+			`target: ${cfg.ip}:${cfg.port} (1403: ${cfg.consolePort})  extension: v${EXTENSION_VERSION}  pid: ${process.pid}`,
+			'',
+			'## 도달성 (ping TTL / TCP / arp)',
+			`verdict: ${reach.verdict}`,
+			JSON.stringify(reach, null, 1),
+			'',
+			'## 1402 연결 통계 (keep-alive)',
+			JSON.stringify(stats, null, 1),
+			'',
+			'## 1403 런타임 콘솔 상태',
+			JSON.stringify(rc, null, 1),
+			'',
+			`## 배포 잠금: ${lock ? describeDeployLock(lock) : '(없음)'}`,
+			'',
+			`## 최근 트래픽 (마지막 ${recent.length}줄 — 1402 >>>/ | /<<< 및 1403 라인, 오래된 순)`,
+			...recent,
+			'',
+		];
+		const dir = path.join(os.tmpdir(), DEPLOY_LOCK_DIR_NAME);
+		fs.mkdirSync(dir, { recursive: true });
+		const stamp = lostAt.toISOString().replace(/[:.]/g, '-');
+		const file = path.join(dir, `postmortem-${stamp}.log`);
+		fs.writeFileSync(file, lines.join('\n'), 'utf8');
+		log(`[Controller] reachability: ${reach.verdict}`);
+		log(`[Controller] 사후 스냅샷 저장: ${file} (트래픽 ${recent.length}줄, 1402 connects=${stats.connects} reuses=${stats.reuses})`);
+		return file;
+	} catch (err: any) {
+		log(`[Controller] 사후 스냅샷 저장 실패: ${err?.message ?? err}`);
+		return undefined;
+	}
+}
 
 /** 런타임 콘솔 상태 스냅샷 (콘솔 미생성 시 '미연결' idle 스냅샷). */
 function currentRuntimeConsoleStatus(): RuntimeConsoleStatusSnapshot {
@@ -857,6 +911,22 @@ export function activate(context: vscode.ExtensionContext) {
 
 	updateUiContexts(false);
 
+	// 컴파일 스냅샷 레코드(#21) — Deploy/F5 Compile 성공 시 deployService가 기록, 디버그 어댑터가 attach 시 대조.
+	// projectDir 이 워크스페이스 종속이라 globalState 가 아닌 workspaceState 에 둔다.
+	attachDeployRecordStore(context.workspaceState);
+
+	// 1403 건강 상태 공급(#22 제안 2): 디버그 어댑터가 Running 백업 폴 간격을 정할 때 참조한다.
+	// alive = 콘솔이 살아 있는 상태(idle/stopped/실패 상태 아님)이고 최근 60 s 안에 연결 또는 페이로드가 있었음.
+	const RUNTIME_CONSOLE_ALIVE_WINDOW_MS = 60_000;
+	setRuntimeConsoleHealthProvider((): RuntimeConsoleHealth => {
+		const s = currentRuntimeConsoleStatus();
+		const dead = s.state === 'idle' || s.state === 'stopped' || s.state === 'connect-failed' || s.state === 'socket-error';
+		const recent = Math.max(s.lastConnectAt ?? 0, s.lastPayloadAt ?? 0);
+		const alive = !dead && recent > 0 && Date.now() - recent <= RUNTIME_CONSOLE_ALIVE_WINDOW_MS;
+		return { alive, state: s.state, lastConnectAt: s.lastConnectAt, lastPayloadAt: s.lastPayloadAt };
+	});
+	context.subscriptions.push({ dispose: () => setRuntimeConsoleHealthProvider(undefined) });
+
 	controllerTree = new ControllerTreeProvider();
 	controllerTree.setRuntimeConsoleStatus(currentRuntimeConsoleStatus());
 	context.subscriptions.push(
@@ -1213,84 +1283,175 @@ export function activate(context: vscode.ExtensionContext) {
 	// 연결 유실 감지 → 상태바 + 알림 갱신 (구독 해제를 위해 subscriptions에 등록)
 	context.subscriptions.push(
 		controllerTree.onDidLoseConnection(() => {
+			const cfg = getControllerConfig();
+			const lostAt = new Date();
 			stopRuntimeConsoleAndSyncTree();
 			setControllerConnected(false);
+			// keep-alive 1402 소켓도 폐기 — 죽은 제어기에 stale 재시도를 쌓지 않는다(GitHub #22).
+			closeControllerConnection('connection lost');
 			// disconnect 명령과 동일하게 낡은 런타임 에러 컨텍스트를 정리한다.
 			lastRuntimeErrorContext = undefined;
 			controllerTree?.setRuntimeErrorContext(undefined);
-			logOutput('[Controller] Connection lost (3 consecutive failures)');
-			vscode.window.showWarningMessage('GPL Controller 연결이 끊어졌습니다.');
+			logOutput(`[Controller] Connection lost (3 consecutive failures) — ${cfg.ip}:${cfg.port} @ ${lostAt.toLocaleTimeString()}`);
+			// 사후 스냅샷(#22 제안 4): 알림은 스냅샷이 준비된 뒤 한 번만 — 파일 열기 버튼 제공.
+			void writeConnectionLostPostmortem(cfg, lostAt, logOutput).then(file => {
+				const actions = file ? ['사후 스냅샷 열기', '출력 보기'] : ['출력 보기'];
+				void vscode.window.showWarningMessage(
+					`GPL Controller 연결이 끊어졌습니다 (${cfg.ip}). ` + (file ? '마지막 트래픽·도달성 판정을 사후 스냅샷 파일로 남겼습니다.' : ''),
+					...actions,
+				).then(pick => {
+					if (pick === '사후 스냅샷 열기' && file) { void vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false }); }
+					if (pick === '출력 보기') { outputChannel.show(true); }
+				});
+			});
 		})
 	);
 
 	// ── Controller commands ──────────────────────────────────
 
-	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.controller.connect', async () => {
-			const currentCfg = getControllerConfig();
-			const launchInfo = readLaunchControllerInfo();
-			// 기본값 우선순위: launch.json > 현재 cfg(세션 오버라이드 포함) > settings
-			const defaultIp = launchInfo?.ip || currentCfg.ip;
-			const inputIp = await vscode.window.showInputBox({
-				prompt: launchInfo?.ip
-					? `제어기 IP (launch.json 기본값: ${launchInfo.ip})`
-					: '제어기 IP 주소를 입력하세요',
-				value: defaultIp,
-				placeHolder: '192.168.0.1',
-				validateInput: (v) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v) ? null : '올바른 IP 형식이 아닙니다 (예: 192.168.0.1)',
+	// ── 제어기 연결: 대화형 + 비대화형 (GitHub #25) ──────────────────────────
+	// 인자 없이 부르면(트리/상태바/팔레트) 종전과 같은 대화형 흐름(IP 입력 상자 → 저장 여부 QuickPick)이고,
+	// ConnectArgs 객체가 오면 UI 없이 연결을 시도해 결과를 반환값으로 돌려준다(AI 계층·URI 핸들러·다른 확장 진입점용).
+	interface ConnectArgs {
+		/** 생략 시 현재 값(launch.json > 세션 오버라이드 > settings) 그대로 */
+		ip?: string;
+		port?: number;
+		/** 'session'(기본): 세션 오버라이드만 / 'settings': settings.json(Global)에 저장 */
+		save?: 'session' | 'settings';
+		/** true면 알림 팝업 대신 Output 로그만 남긴다 */
+		silent?: boolean;
+	}
+	interface ConnectResult {
+		ok: boolean;
+		ip: string;
+		port: number;
+		connected: boolean;
+		error?: string;
+		/** 'interactive' = 입력 상자 경로, 'args' = 비대화형 */
+		mode: 'interactive' | 'args';
+	}
+	const IPV4_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
+	function isConnectArgs(v: unknown): v is ConnectArgs {
+		if (!v || typeof v !== 'object') { return false; }
+		const a = v as Record<string, unknown>;
+		return 'ip' in a || 'port' in a || 'save' in a || 'silent' in a;
+	}
+
+	/** IP/port 확정 뒤 공통 절차: 프로젝트 컨텍스트 → testConnection(ErrorLog 1회) → 상태 반영 → 1403 자동 시작. */
+	async function finishConnect(mode: ConnectResult['mode'], silent: boolean): Promise<ConnectResult> {
+		const expected = await resolveExpectedProjectName();
+		const projectContext = await detectWorkspaceProjectContext();
+		controllerTree?.setExpectedProjectContext(projectContext.projectName || expected, projectContext.folderName || expected);
+		const cfg = getControllerConfig();
+		logOutput(`[Controller] Connecting to ${cfg.ip}:${cfg.port} …${mode === 'args' ? ' (non-interactive)' : ''}`);
+		try {
+			const ok = await testConnection(cfg);
+			if (ok) {
+				logOutput(`[Controller] Connected: ${cfg.ip}:${cfg.port}`);
+				if (!silent) { vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`); }
+				setControllerConnected(true);
+				// controller 연결 성공 시 1403도 바로 유지 연결한다.
+				try { ensureRuntimeConsole(); } catch (err: any) {
+					logOutput(`[Console] auto-start on connect failed: ${err?.message ?? err}`);
+				}
+				return { ok: true, ip: cfg.ip, port: cfg.port, connected: true, mode };
+			}
+			logOutput(`[Controller] Connection failed: ${cfg.ip}:${cfg.port} (ErrorLog 프로브에 <STATUS> 없음)`);
+			if (!silent) { vscode.window.showErrorMessage(`GPL Controller 연결 실패: ${cfg.ip}`); }
+			setControllerConnected(false);
+			return { ok: false, ip: cfg.ip, port: cfg.port, connected: false, error: 'probe-failed', mode };
+		} catch (err: any) {
+			const detail = err?.message ?? String(err);
+			logOutput(`[Controller] Connection error: ${detail}`);
+			if (!silent) { vscode.window.showErrorMessage(`연결 오류: ${detail}`); }
+			setControllerConnected(false);
+			return { ok: false, ip: cfg.ip, port: cfg.port, connected: false, error: detail, mode };
+		}
+	}
+
+	/** 비대화형 연결(GitHub #25 A). ip 생략 시 launch.json > 세션 오버라이드 > settings 순의 현재 값을 쓴다. */
+	async function connectControllerWithArgs(args: ConnectArgs): Promise<ConnectResult> {
+		const currentCfg = getControllerConfig();
+		const launchInfo = readLaunchControllerInfo();
+		const ip = String(args.ip ?? launchInfo?.ip ?? currentCfg.ip).trim();
+		const port = args.port ?? (args.ip ? currentCfg.port : (launchInfo?.port ?? currentCfg.port));
+		if (!IPV4_RE.test(ip)) {
+			logOutput(`[Controller] connect 거부 — 잘못된 IP: ${ip}`);
+			return { ok: false, ip, port, connected: false, error: 'invalid-ip', mode: 'args' };
+		}
+		if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+			logOutput(`[Controller] connect 거부 — 잘못된 port: ${port}`);
+			return { ok: false, ip, port, connected: false, error: 'invalid-port', mode: 'args' };
+		}
+		if (args.save === 'settings') {
+			const section = vscode.workspace.getConfiguration('gpl.controller');
+			await section.update('ip', ip, vscode.ConfigurationTarget.Global);
+			if (port !== (section.get<number>('port') ?? currentCfg.port)) {
+				await section.update('port', port, vscode.ConfigurationTarget.Global);
+			}
+			clearSessionControllerOverride();
+		} else {
+			// 기본 'session': 디스크에 쓰지 않고 이 세션의 후속 명령에만 적용한다.
+			setSessionControllerOverride(ip, port);
+		}
+		return finishConnect('args', args.silent === true);
+	}
+
+	/** 대화형 연결(종전 동작). 취소하면 { ok: false, error: 'cancelled' }. */
+	async function connectControllerInteractive(): Promise<ConnectResult> {
+		const currentCfg = getControllerConfig();
+		const launchInfo = readLaunchControllerInfo();
+		const cancelled = (): ConnectResult => ({
+			ok: false, ip: currentCfg.ip, port: currentCfg.port,
+			connected: controllerTree?.isConnected ?? false, error: 'cancelled', mode: 'interactive',
+		});
+		// 기본값 우선순위: launch.json > 현재 cfg(세션 오버라이드 포함) > settings
+		const defaultIp = launchInfo?.ip || currentCfg.ip;
+		const inputIp = await vscode.window.showInputBox({
+			prompt: launchInfo?.ip
+				? `제어기 IP (launch.json 기본값: ${launchInfo.ip})`
+				: '제어기 IP 주소를 입력하세요',
+			value: defaultIp,
+			placeHolder: '192.168.0.1',
+			validateInput: (v) => IPV4_RE.test(v) ? null : '올바른 IP 형식이 아닙니다 (예: 192.168.0.1)',
+		});
+		if (!inputIp) { return cancelled(); }
+
+		// IP 변경 시 저장 여부 확인. launch.json IP를 그대로 받아들인 경우는
+		// settings에 굳이 쓰지 않고 세션 오버라이드만 적용한다.
+		if (inputIp !== currentCfg.ip) {
+			const fromLaunch = launchInfo?.ip === inputIp;
+			const choices: vscode.QuickPickItem[] = fromLaunch
+				? [
+					{ label: '이번만 사용', description: 'launch.json 값을 세션 한정으로 사용' },
+					{ label: '저장', description: `settings.json에 ${inputIp} 저장` },
+				]
+				: [
+					{ label: '저장', description: `settings.json에 ${inputIp} 저장` },
+					{ label: '이번만 사용', description: '이 세션 동안만 적용 (재시작 시 초기화)' },
+				];
+			const save = await vscode.window.showQuickPick(choices, {
+				placeHolder: `IP를 ${inputIp}(으)로 변경합니다`,
 			});
-			if (!inputIp) { return; }
-
-			// IP 변경 시 저장 여부 확인. launch.json IP를 그대로 받아들인 경우는
-			// settings에 굳이 쓰지 않고 세션 오버라이드만 적용한다.
-			if (inputIp !== currentCfg.ip) {
-				const fromLaunch = launchInfo?.ip === inputIp;
-				const choices: vscode.QuickPickItem[] = fromLaunch
-					? [
-						{ label: '이번만 사용', description: 'launch.json 값을 세션 한정으로 사용' },
-						{ label: '저장', description: `settings.json에 ${inputIp} 저장` },
-					]
-					: [
-						{ label: '저장', description: `settings.json에 ${inputIp} 저장` },
-						{ label: '이번만 사용', description: '이 세션 동안만 적용 (재시작 시 초기화)' },
-					];
-				const save = await vscode.window.showQuickPick(choices, {
-					placeHolder: `IP를 ${inputIp}(으)로 변경합니다`,
-				});
-				if (!save) { return; }
-				if (save.label === '저장') {
-					await vscode.workspace.getConfiguration('gpl.controller').update('ip', inputIp, vscode.ConfigurationTarget.Global);
-					clearSessionControllerOverride();
-				} else {
-					setSessionControllerOverride(inputIp, launchInfo?.port);
-				}
-			} else if (launchInfo?.port && launchInfo.port !== currentCfg.port) {
-				// IP는 같지만 launch.json이 다른 port를 지정한 경우 세션 오버라이드 적용
-				setSessionControllerOverride(inputIp, launchInfo.port);
+			if (!save) { return cancelled(); }
+			if (save.label === '저장') {
+				await vscode.workspace.getConfiguration('gpl.controller').update('ip', inputIp, vscode.ConfigurationTarget.Global);
+				clearSessionControllerOverride();
+			} else {
+				setSessionControllerOverride(inputIp, launchInfo?.port);
 			}
+		} else if (launchInfo?.port && launchInfo.port !== currentCfg.port) {
+			// IP는 같지만 launch.json이 다른 port를 지정한 경우 세션 오버라이드 적용
+			setSessionControllerOverride(inputIp, launchInfo.port);
+		}
+		return finishConnect('interactive', false);
+	}
 
-			const expected = await resolveExpectedProjectName();
-			const projectContext = await detectWorkspaceProjectContext();
-			controllerTree?.setExpectedProjectContext(projectContext.projectName || expected, projectContext.folderName || expected);
-			const cfg = getControllerConfig();
-			logOutput(`[Controller] Connecting to ${cfg.ip}:${cfg.port} …`);
-			try {
-				const ok = await testConnection(cfg);
-				if (ok) {
-					vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`);
-					setControllerConnected(true);
-					// controller 연결 성공 시 1403도 바로 유지 연결한다.
-					try { ensureRuntimeConsole(); } catch (err: any) {
-						logOutput(`[Console] auto-start on connect failed: ${err?.message ?? err}`);
-					}
-				} else {
-					vscode.window.showErrorMessage(`GPL Controller 연결 실패: ${cfg.ip}`);
-					setControllerConnected(false);
-				}
-			} catch (err: any) {
-				vscode.window.showErrorMessage(`연결 오류: ${err.message ?? err}`);
-				setControllerConnected(false);
-			}
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.connect', async (args?: unknown): Promise<ConnectResult> => {
+			// 인자가 ConnectArgs 형태일 때만 비대화형 — 트리/상태바/팔레트 호출(인자 없음)은 종전과 동일한 대화형.
+			return isConnectArgs(args) ? connectControllerWithArgs(args) : connectControllerInteractive();
 		})
 	);
 
@@ -1374,14 +1535,20 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.controller.disconnect', () => {
+		vscode.commands.registerCommand('gpl.controller.disconnect', (args?: unknown) => {
 			// 싱글톤 인스턴스는 보존하고 연결만 끊는다 (v0.5.48 일관성).
+			// 반환값·silent 인자는 AI/URI 진입점용(GitHub #25) — 사람이 누를 때(인자 없음)는 종전과 동일하게 알림을 띄운다.
+			const silent = !!args && typeof args === 'object' && (args as { silent?: boolean }).silent === true;
+			const cfg = getControllerConfig();
 			stopRuntimeConsoleAndSyncTree();
+			closeControllerConnection('disconnect');
 			clearSessionControllerOverride();
 			setControllerConnected(false);
 			lastRuntimeErrorContext = undefined;
 			controllerTree?.setRuntimeErrorContext(undefined);
-			vscode.window.showInformationMessage('GPL Controller 연결 해제');
+			logOutput(`[Controller] Disconnected: ${cfg.ip}:${cfg.port}${silent ? ' (silent)' : ''}`);
+			if (!silent) { vscode.window.showInformationMessage('GPL Controller 연결 해제'); }
+			return { ok: true, connected: false, ip: cfg.ip, port: cfg.port };
 		})
 	);
 
@@ -2653,6 +2820,42 @@ export function activate(context: vscode.ExtensionContext) {
 		};
 	});
 
+	// ── 연결 상태 계층 (GitHub #25 A): AI가 확장의 연결 상태를 만들고 읽을 수 있게 ──
+	registerAiDebugCommand('gpl.ai.debug.connect', async (args?: ConnectArgs) => {
+		// 기본은 silent(팝업 없음). 명시적으로 silent:false 를 주면 사람용 알림도 띄운다.
+		const result = await connectControllerWithArgs({ silent: true, ...(args ?? {}) });
+		return { ...result };
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.disconnect', async () => {
+		const result = await vscode.commands.executeCommand<{ ok: boolean; connected: boolean; ip: string; port: number }>(
+			'gpl.controller.disconnect', { silent: true });
+		return { ...(result ?? {}), ok: true, connected: false };
+	});
+
+	registerAiDebugCommand('gpl.ai.debug.getConnectionState', async () => {
+		const cfg = getControllerConfig();
+		const rc = currentRuntimeConsoleStatus();
+		const session = vscode.debug.activeDebugSession;
+		const lock = currentDeployLockHolder();
+		return {
+			ok: true,
+			timestamp: Date.now(),
+			connected: controllerTree?.isConnected ?? false,
+			ip: cfg.ip,
+			port: cfg.port,
+			consolePort: cfg.consolePort,
+			debugSessionActive: isDebugSessionActive,
+			debugSession: session?.type === 'brooks-gpl'
+				? { name: session.name, projectName: String(session.configuration?.projectName ?? '') || undefined }
+				: undefined,
+			runtimeConsole: { active: rc.connected, state: rc.state, reason: rc.reason, lastPayloadAt: rc.lastPayloadAt },
+			expectedProject: (await resolveExpectedProjectName()) || undefined,
+			deployLock: lock ? { owner: lock.owner, stage: lock.stage, describe: describeDeployLock(lock) } : null,
+			compileStale: [...compileStaleProjects.values()],
+		};
+	});
+
 	registerAiDebugCommand('gpl.ai.debug.loop', async (args?: {
 		threadName?: string;
 		stepMode?: AIDebugStepMode;
@@ -2662,7 +2865,8 @@ export function activate(context: vscode.ExtensionContext) {
 		stepWaitTimeoutMs?: number;
 	}) => {
 		if (!(controllerTree?.isConnected ?? false)) {
-			await vscode.commands.executeCommand('gpl.controller.connect');
+			// AI 자율 루프에서 입력 상자가 뜨면 멈춰 버린다 — 현재 설정으로 비대화형 연결(GitHub #25).
+			await connectControllerWithArgs({ silent: true });
 		}
 		if (!(controllerTree?.isConnected ?? false)) {
 			return { ok: false, error: 'not-connected' };
@@ -2839,7 +3043,9 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('gpl.controller.toggleTrafficResponseBody', async () => {
 			const next = !getTrafficLogOptions().responseBody;
 			await setTrafficResponseBodyEnabled(next);
-			trafficChannel.appendLine(`[${formatTrafficTimestamp()}] --- 1402 응답 본문 표시: ${next ? 'ON' : 'OFF'}`);
+			const marker = `[${formatTrafficTimestamp()}] --- 1402 응답 본문 표시: ${next ? 'ON' : 'OFF'}`;
+			trafficChannel.appendLine(marker);
+			recordTrafficLine(marker);
 			controllerTree?.redraw();
 			vscode.window.setStatusBarMessage(`GPL Traffic: 1402 응답 본문 표시 ${next ? '켬' : '끔'}`, 3000);
 		})
@@ -2849,7 +3055,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.clearTraffic', () => {
 			trafficChannel.clear();
-			trafficChannel.appendLine(`[${formatTrafficTimestamp()}] --- (cleared)`);
+			const marker = `[${formatTrafficTimestamp()}] --- (cleared)`;
+			trafficChannel.appendLine(marker);
+			recordTrafficLine(marker);
 		})
 	);
 
@@ -4103,6 +4311,151 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	// ── 외부 진입점: URI 핸들러 (GitHub #25 B) ──────────────────────────────
+	//   vscode://nir414.gpl-language-support/connect?ip=192.168.0.1&port=1402[&save=settings]
+	//   vscode://nir414.gpl-language-support/disconnect | /getState | /dashboard
+	//   터미널/에이전트: code --open-url "vscode://nir414.gpl-language-support/connect"
+	// 모션을 일으키지 않는 동작만 연다(step/continue/start 는 열지 않는다). 결과는 URI로 돌려줄 수 없으므로
+	// Output([URI]/[AI Debug]) + gpl.ai.debug.getConnectionState 로 확인하는 구조.
+	context.subscriptions.push(
+		vscode.window.registerUriHandler({
+			handleUri: async (uri: vscode.Uri) => {
+				const action = uri.path.replace(/^\/+|\/+$/g, '').toLowerCase();
+				const q = new URLSearchParams(uri.query);
+				logOutput(`[URI] ${uri.scheme}://${uri.authority}${uri.path}${uri.query ? `?${uri.query}` : ''}`);
+				try {
+					switch (action) {
+						case 'connect': {
+							const portRaw = q.get('port');
+							const result = await connectControllerWithArgs({
+								ip: q.get('ip') ?? undefined,
+								port: portRaw ? Number(portRaw) : undefined,
+								save: q.get('save') === 'settings' ? 'settings' : 'session',
+								silent: true,
+							});
+							logOutput(`[URI] connect => ${JSON.stringify(result)}`);
+							vscode.window.setStatusBarMessage(
+								result.ok ? `GPL Controller 연결 성공: ${result.ip}` : `GPL Controller 연결 실패: ${result.ip} (${result.error})`, 5000);
+							return;
+						}
+						case 'disconnect': {
+							const result = await vscode.commands.executeCommand('gpl.controller.disconnect', { silent: true });
+							logOutput(`[URI] disconnect => ${JSON.stringify(result)}`);
+							vscode.window.setStatusBarMessage('GPL Controller 연결 해제', 5000);
+							return;
+						}
+						case 'getstate':
+						case 'getconnectionstate':
+							// 결과는 registerAiDebugCommand 규약에 따라 Output 에 [AI Debug] 로 기록된다.
+							await vscode.commands.executeCommand('gpl.ai.debug.getConnectionState');
+							return;
+						case 'dashboard':
+							await vscode.commands.executeCommand('gpl.controller.showDashboard');
+							return;
+						default:
+							logOutput(`[URI] 알 수 없는 action '${action}' — 지원: connect, disconnect, getState, dashboard`);
+							vscode.window.showWarningMessage(`GPL: 알 수 없는 URI 동작 '${action}' (지원: connect, disconnect, getState, dashboard)`);
+					}
+				} catch (err: any) {
+					logOutput(`[URI] ${action} 실패: ${err?.message ?? err}`);
+				}
+			},
+		})
+	);
+
+	// ── 클릭 후 마우스 정지 시 언어 호버 재표시 (GitHub #19, 옵트인 gpl.hover.showAfterClick) ──
+	// VS Code 코어는 클릭으로 닫힌 호버를 마우스가 움직이기 전까지 다시 열지 않는다. 클릭 직후에는
+	// 커서 위치 = 마우스 위치이므로 editor.action.showHover 를 커서에 띄우면 같은 지점에 호버가 열린다.
+	// 디버그 세션 중에는 아래 debug hover 경로(gpl.debug.showValueOnCursorClick)가 담당하므로 제외.
+	let hoverAfterClickTimer: ReturnType<typeof setTimeout> | undefined;
+	context.subscriptions.push(
+		vscode.window.onDidChangeTextEditorSelection(e => {
+			if (hoverAfterClickTimer) { clearTimeout(hoverAfterClickTimer); hoverAfterClickTimer = undefined; }
+			if (isDebugSessionActive) { return; }
+			if (e.kind !== vscode.TextEditorSelectionChangeKind.Mouse) { return; }
+			const editor = e.textEditor;
+			if (editor.document.languageId !== 'gpl') { return; }
+			if (!vscode.workspace.getConfiguration('gpl.hover').get<boolean>('showAfterClick', false)) { return; }
+			const sel = e.selections[0];
+			// 단일 클릭(빈 선택)만 — 드래그/더블클릭 선택은 제외
+			if (!sel || !sel.isEmpty) { return; }
+			if (!editor.document.getWordRangeAtPosition(sel.active)) { return; }
+			const delay = Math.max(0, vscode.workspace.getConfiguration('editor').get<number>('hover.delay', 300));
+			hoverAfterClickTimer = setTimeout(() => {
+				hoverAfterClickTimer = undefined;
+				if (vscode.window.activeTextEditor !== editor) { return; }
+				if (!editor.selection.active.isEqual(sel.active)) { return; }
+				// focus 인자는 VS Code 1.8x+ 에서 인식(구버전은 무시) — 포커스를 호버 위젯으로 빼앗지 않게 한다.
+				void vscode.commands.executeCommand('editor.action.showHover', { focus: 'noAutoFocus' })
+					.then(undefined, () => undefined);
+			}, delay);
+		}),
+		{ dispose: () => { if (hoverAfterClickTimer) { clearTimeout(hoverAfterClickTimer); hoverAfterClickTimer = undefined; } } },
+	);
+
+	// ── 소스 변경(BP 신뢰 불가) 상태 보기/조치 (GitHub #21) — 상태바 배지 클릭 ──
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.debug.showSourceStale', async () => {
+			const s = lastSourceStale;
+			if (!s || s.files.length === 0) {
+				vscode.window.showInformationMessage('소스 변경(BP 신뢰 불가) 상태가 아닙니다.');
+				return;
+			}
+			const session = vscode.debug.activeDebugSession;
+			type Pick = vscode.QuickPickItem & { action: 'restart' | 'dismiss' | 'open'; file?: string };
+			const restartItem: Pick = {
+				action: 'restart',
+				label: '$(debug-restart) Stop + Upload + Run 으로 재시작',
+				description: '현재 세션을 끊고 deployBeforeAttach·stopAllBeforeAttach 구성으로 다시 시작',
+				detail: `변경된 파일 ${s.files.length}개를 업로드·Compile 한 뒤 attach — 프로그램이 정지·재시작됩니다(저속/시뮬레이션 권장)`,
+			};
+			const dismissItem: Pick = { action: 'dismiss', label: '$(eye-closed) 이 세션 동안 배지 숨기기' };
+			const fileItems: Pick[] = s.files.map(f => ({ action: 'open', label: `$(file-code) ${f}`, description: '열기', file: f }));
+			const pick = await vscode.window.showQuickPick<Pick>([restartItem, ...fileItems, dismissItem], {
+				placeHolder: `${s.projectName}: 제어기 컴파일 코드보다 새로운 소스 ${s.files.length}개 — BP가 실제 코드 줄에 걸리지 않을 수 있습니다` +
+					(s.compiledAt ? ` (마지막 Compile ${new Date(s.compiledAt).toLocaleString()})` : ''),
+			});
+			if (!pick) { return; }
+			if (pick.action === 'dismiss') {
+				statusBar?.setSourceStale(undefined);
+				return;
+			}
+			if (pick.action === 'restart') {
+				if (!session || session.type !== 'brooks-gpl') {
+					vscode.window.showWarningMessage('활성 brooks-gpl 디버그 세션이 없습니다. F5 로 "Stop + Upload + Run" 구성을 직접 시작하세요.');
+					return;
+				}
+				const confirm = await vscode.window.showWarningMessage(
+					'디버그 세션을 끊고 Stop + Upload + Run(재배포) 구성으로 다시 시작할까요?',
+					{
+						modal: true,
+						detail: '실행 중인 쓰레드가 있으면 정지 확인 후 Compile 하고 attach 합니다. 정지·재시작으로 모션 프로그램이 처음부터 다시 실행될 수 있습니다.',
+					},
+					'재시작',
+				);
+				if (confirm !== '재시작') { return; }
+				const folder = session.workspaceFolder;
+				const config = { ...session.configuration, deployBeforeAttach: true, stopAllBeforeAttach: true };
+				await vscode.debug.stopDebugging(session);
+				const started = await vscode.debug.startDebugging(folder, config);
+				logOutput(`[Debug] 소스 변경 → 재배포 재시작(${config.name ?? 'attach'}): ${started ? '시작됨' : '시작 실패'}`);
+				return;
+			}
+			if (pick.file) {
+				// 이벤트의 경로는 프로젝트 폴더 기준 상대 경로 — 워크스페이스에서 끝부분이 일치하는 파일을 찾아 연다.
+				const rel = pick.file.replace(/\\/g, '/');
+				const base = rel.split('/').pop() ?? rel;
+				const found = await vscode.workspace.findFiles(`**/${base}`, '**/node_modules/**', 20);
+				const match = found.find(u => u.fsPath.replace(/\\/g, '/').toLowerCase().endsWith(rel.toLowerCase())) ?? found[0];
+				if (match) {
+					await vscode.window.showTextDocument(match, { preview: false });
+				} else {
+					vscode.window.showWarningMessage(`파일을 찾지 못했습니다: ${pick.file}`);
+				}
+			}
+		})
+	);
+
 	// 디버그 세션 중 사이드바 폴링 일시 중지 (TCP 충돌 방지)
 	context.subscriptions.push(
 		vscode.debug.onDidStartDebugSession(session => {
@@ -4130,12 +4483,34 @@ export function activate(context: vscode.ExtensionContext) {
 				isDebugSessionActive = false;
 				updateUiContexts(controllerTree?.isConnected ?? statusBar?.isConnected ?? false);
 				controllerTree?.exitDebugMode();
+				lastSourceStale = undefined;
+				statusBar?.setSourceStale(undefined);
 				lastRuntimeErrorContext = undefined;
 				controllerTree?.setRuntimeErrorContext(undefined);
 			}
 		}),
 		vscode.debug.onDidReceiveDebugSessionCustomEvent(async event => {
 			if (event.session.type !== 'brooks-gpl') { return; }
+			if (event.event === 'gpl.sourceStale') {
+				// Attach only 디버깅: 제어기 컴파일 코드보다 새로운 소스 파일 목록(빈 목록 = 해소). GitHub #21.
+				const body = (event.body ?? {}) as { projectName?: string; compiledAt?: number; staleFiles?: string[]; trigger?: string };
+				const files = Array.isArray(body.staleFiles) ? body.staleFiles.map(String) : [];
+				lastSourceStale = files.length ? { projectName: String(body.projectName ?? ''), files, compiledAt: body.compiledAt } : undefined;
+				statusBar?.setSourceStale(lastSourceStale);
+				if (files.length) {
+					logOutput(`[Debug] 소스 변경됨 — BP 신뢰 불가 ${files.length}개 (${body.trigger ?? 'attach'}): ${files.join(', ')}`);
+					if (sourceStaleNotifiedSessionId !== event.session.id) {
+						sourceStaleNotifiedSessionId = event.session.id;
+						void vscode.window.showWarningMessage(
+							`소스 변경됨 — 브레이크포인트 신뢰 불가 (${files.length}개 파일이 제어기 컴파일 코드보다 새로움)`,
+							'조치 보기',
+						).then(pick => { if (pick === '조치 보기') { void vscode.commands.executeCommand('gpl.debug.showSourceStale'); } });
+					}
+				} else if (body.trigger === 'recompiled') {
+					logOutput('[Debug] 소스 변경 상태 해소 — 재컴파일로 BP 신뢰성 복원');
+				}
+				return;
+			}
 			if (event.event === 'gpl.controllerConnectionChanged') {
 				const body = (event.body ?? {}) as {
 					connected?: boolean;
@@ -4267,6 +4642,7 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
 	// Controller cleanup — dispose()가 stop()을 포함해 소켓/타이머/EventEmitter까지 해제한다.
 	try { runtimeConsole?.dispose(); } catch { /* noop */ }
+	try { closeControllerConnection('deactivate'); } catch { /* noop */ }
 	controllerTree?.stopPolling();
 	stopLiveLogTerminal();
 

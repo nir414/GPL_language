@@ -20,6 +20,7 @@ import { uploadProject, mirrorProject, listRemoteDir, removeRemoteFiles, RemoteF
 import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus, SHOW_THREAD_LIST_CMD, NO_STATUS_CODE } from './responseParser';
 import { isBusyStatus, isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
+import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord';
 
 export interface DeployOptions {
     projectDir: string;
@@ -106,6 +107,11 @@ export interface DeployResult {
     attemptedProjectNames?: string[];
     /** failedPhase === 'LOCKED'일 때 잠금 보유자(경고 문구용) */
     lockHolder?: DeployLockRecord;
+    /**
+     * Compile 성공 시 기록한 컴파일 스냅샷의 파일 수(GitHub #21, deployRecord.recordCompiled).
+     * 기록에 실패했거나 컴파일까지 가지 못했으면 undefined. 배포 성공/실패 판정과는 무관한 보조 정보.
+     */
+    compiledSnapshotFiles?: number;
     trace: string[];
 }
 
@@ -502,6 +508,17 @@ async function deployLocked(
     lock.setStage(options.skipStop ? 'UPLOAD+THREAD_CHECK' : 'UPLOAD+STOP');
 
     if (token?.isCancellationRequested) { return result; }
+
+    // 컴파일 스냅샷(GitHub #21)은 업로드 *직전*의 로컬 상태를 찍어 둔다 — 실제로 제어기에 올라가는 소스에 가장 가깝다.
+    // 컴파일 성공 시점에 찍으면 업로드~컴파일 사이(수 초)에 편집한 파일이 "컴파일본과 동일"로 오판되어
+    // Attach only BP 신뢰성 판정이 놓친다. 기록 자체는 Compile 성공이 확정된 뒤(아래 Phase 3 끝)에 한다.
+    // 실패해도 배포에는 영향 없음(그 경우 성공 시점에 다시 찍어 폴백).
+    let preUploadSnapshot: Record<string, FileStamp> | undefined;
+    try {
+        preUploadSnapshot = snapshotProjectFiles(options.projectDir);
+    } catch (e: any) {
+        pushTrace(`│ ⚠ 컴파일 스냅샷 수집 실패(무시, 성공 시점에 재시도): ${e?.message ?? e}`);
+    }
 
     const changedFiles = (options.changedFiles ?? []).filter(Boolean);
     const useChangedOnly = changedFiles.length > 0;
@@ -1067,6 +1084,25 @@ async function deployLocked(
             pushTrace(`│ LAST RAW ${rawPreview(lastCompileFailure.raw)}`);
         }
         return result;
+    }
+
+    // ── 컴파일 스냅샷 기록 (GitHub #21) ──────────────
+    // compiled=true가 되는 모든 분기(최초 성공 / after reload / after load)가 여기로 합류하므로 한 곳에서 기록한다.
+    // Attach only 디버깅에서 "제어기 실행 코드보다 로컬 소스가 새로움"을 판정하는 데이터 기반이며,
+    // 기록 실패는 배포 결과(success/failedPhase)에 영향을 주지 않는다.
+    try {
+        const files = preUploadSnapshot ?? snapshotProjectFiles(options.projectDir);
+        recordCompiled({
+            ip: cfg.ip,
+            projectName: result.projectName,
+            projectDir: options.projectDir,
+            compiledAt: Date.now(),
+            files,
+        });
+        result.compiledSnapshotFiles = Object.keys(files).length;
+        pushTrace(`│ ✔ 컴파일 스냅샷 기록 ${result.compiledSnapshotFiles} files (Attach only BP 신뢰성 판정용, GitHub #21)`);
+    } catch (e: any) {
+        pushTrace(`│ ⚠ 컴파일 스냅샷 기록 실패(무시): ${e?.message ?? e}`);
     }
 
     // ── Phase 4: START ────────────────────────────

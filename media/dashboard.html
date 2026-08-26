@@ -151,6 +151,34 @@
 		.log-row { padding: 2px 4px; border-bottom: 1px dashed rgba(127,127,127,0.18); white-space: pre-wrap; word-break: break-all; }
 		.log-row:last-child { border-bottom: none; }
 		.log-row.new { background: rgba(248,81,73,0.12); box-shadow: inset 3px 0 0 var(--err); }
+
+		/* ── 제어기 자원 (GitHub #22 제안 8) ── */
+		.res { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--gap); }
+		.res h3 { margin: 0 0 6px 0; font-size: 0.78em; font-weight: 600; color: var(--idle); letter-spacing: 0.04em; display: flex; gap: 8px; align-items: baseline; }
+		.res h3 code { font-weight: 400; font-family: var(--vscode-editor-font-family, monospace); opacity: 0.8; }
+		.res-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-variant-numeric: tabular-nums; }
+		.res-row .l { color: var(--idle); white-space: nowrap; }
+		.res-row .v { font-weight: 600; text-align: right; }
+		.res-row .v.ok { color: var(--vscode-foreground); }
+		.res-row .v.warn { color: var(--warn); }
+		.res-row .v.err { color: var(--err); }
+		.res-row .v.na { color: var(--idle); font-weight: 400; }
+		.res-row .v.na.clickable { cursor: pointer; text-decoration: underline dotted; }
+		.res-row .v .d { font-size: 0.8em; margin-left: 4px; font-weight: 600; }
+		.res-row .v .d.down { color: var(--warn); }
+		.sparks { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--gap); margin-top: 10px; }
+		.spark-box .cap { display: flex; justify-content: space-between; gap: 8px; font-size: 0.75em; color: var(--idle); margin-bottom: 2px; font-variant-numeric: tabular-nums; }
+		.spark { width: 100%; height: 44px; display: block; border-radius: 6px; background: rgba(127,127,127,0.10); }
+		.spark .line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+		.spark .line.warn { stroke: var(--warn); }
+		.spark .line.err { stroke: var(--err); }
+		.spark .thr { stroke: rgba(210,153,34,0.6); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+		.spark .thr.alert { stroke: rgba(248,81,73,0.6); }
+		.spark .last { fill: var(--accent); }
+		.res-raw { margin-top: 10px; }
+		.res-raw summary { cursor: pointer; color: var(--idle); font-size: 0.85em; }
+		.res-raw pre { margin: 6px 0 0; max-height: 220px; overflow: auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.8em; line-height: 1.4; padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,0.10); white-space: pre-wrap; word-break: break-all; }
+		.res-raw pre b { color: var(--idle); }
 	</style>
 </head>
 <body>
@@ -221,6 +249,49 @@
 		</div>
 
 		<div class="card full">
+			<h2>제어기 자원 <span class="sub" id="resSub">Show Memory · Show Network -tcp / -mbuf</span></h2>
+			<div class="res">
+				<div>
+					<h3>메모리 <code>Show Memory</code></h3>
+					<div class="res-row"><span class="l">Free</span><span class="v na" id="rFree">—</span></div>
+					<div class="res-row"><span class="l">Used</span><span class="v na" id="rUsed">—</span></div>
+					<div class="res-row"><span class="l">Segments</span><span class="v na" id="rSeg">—</span></div>
+					<div class="res-row" id="rFdRow" style="display:none"><span class="l">File descriptors free</span><span class="v na" id="rFd">—</span></div>
+				</div>
+				<div>
+					<h3>TCP <code>Show Network -tcp</code></h3>
+					<div class="res-row"><span class="l">accepted/s</span><span class="v na" id="rAccRate">—</span></div>
+					<div class="res-row"><span class="l">accepted 누적</span><span class="v na" id="rAcc">—</span></div>
+					<div class="res-row"><span class="l">established</span><span class="v na" id="rEst">—</span></div>
+					<div class="res-row"><span class="l">closed 누적 · closed/s</span><span class="v na" id="rClosed">—</span></div>
+					<div class="res-row" title="이 VS Code 확장이 1402에 만든 TCP 연결 수(keep-alive 재사용·stale 재시도 포함). 제어기 accepted 증가율과 대조해 확장 몫을 가른다.">
+						<span class="l">확장 1402 connects · keep-alive</span><span class="v na" id="rExtConn">—</span>
+					</div>
+				</div>
+				<div>
+					<h3>mbuf <code>Show Network -mbuf</code></h3>
+					<div class="res-row"><span class="l">clusters free / total</span><span class="v na" id="rClFree">—</span></div>
+					<div class="res-row"><span class="l">mbufs free / total</span><span class="v na" id="rMbuf">—</span></div>
+					<div class="res-row"><span class="l">drops · waits · drains</span><span class="v na" id="rDwd">—</span></div>
+				</div>
+			</div>
+			<div class="sparks">
+				<div class="spark-box">
+					<div class="cap"><span>accepted/s</span><span id="sparkAccCap"></span></div>
+					<svg id="sparkAcc" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="accepted/s 추이"></svg>
+				</div>
+				<div class="spark-box">
+					<div class="cap"><span>clusters free</span><span id="sparkClCap"></span></div>
+					<svg id="sparkCl" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="clusters free 추이"></svg>
+				</div>
+			</div>
+			<details class="res-raw" id="resRaw">
+				<summary>원문 보기 — 응답 형식 미확정: 파싱이 실패한 항목은 여기 원문으로 확인</summary>
+				<pre id="resRawPre">—</pre>
+			</details>
+		</div>
+
+		<div class="card full">
 			<h2>에러 로그 <span class="sub" id="logSub">ErrorLog 최신 20건 · 새 항목은 붉게</span></h2>
 			<div class="log" id="log"><div class="empty">로그 없음</div></div>
 		</div>
@@ -245,6 +316,7 @@
 			xyBounds: null,             // {minX,maxX,minY,maxY}
 			xyTrail: [],                // 최근 XY 점
 			prevCart: null,
+			prevClustersFree: null,     // 직전 mbuf clusters free (감소 표시용)
 		};
 		const MOVE_EPS = 0.01;
 
@@ -414,12 +486,164 @@
 			state.firstErrors = false;
 		}
 
-		function render(s) {
+		// ── 제어기 자원 (GitHub #22 제안 8 — 사망 가설 1 "TCP 자원 고갈" 검증용 시계열) ──
+		// accepted/s 임계값 근거: 확장 keep-alive 도입 후 기대치는 <1/s. 실측 배경 부하 10~25/s 는 사고(제어기 사망) 조건이었다.
+		const ACCEPT_WARN_PER_SEC = 2;
+		const ACCEPT_ALERT_PER_SEC = 10;
+		const NO_STATUS_CODE = -9999;   // responseParser.NO_STATUS_CODE (STATUS 누락 — 잘린 응답)
+		const NA_TEXT = '—(형식 미확정, 원문 보기)';
+		const RES_SUB_DEFAULT = 'Show Memory · Show Network -tcp / -mbuf';
+
+		function setRes(id, text, cls, title) {
+			const el = $(id);
+			el.textContent = text;
+			el.className = 'v ' + (cls || '');
+			el.onclick = null;
+			if (title !== undefined && title !== null) el.title = title; else el.removeAttribute('title');
+			return el;
+		}
+		// 파싱 실패 항목: 원문을 툴팁에, 클릭하면 아래 "원문 보기"를 펼친다. 명령 자체가 거부됐으면(STATUS≠0) 코드를 보인다.
+		function setResNa(id, raw, status) {
+			let el;
+			if (status !== undefined && status !== 0 && status !== NO_STATUS_CODE) el = setRes(id, '명령 거부 STATUS ' + status, 'na clickable', raw || '');
+			else if (raw) el = setRes(id, NA_TEXT, 'na clickable', '파싱 실패 — 원문:\n' + raw);
+			else return setRes(id, '—', 'na', '응답 없음');
+			el.onclick = () => { const d = $('resRaw'); d.open = true; d.scrollIntoView({ block: 'nearest' }); };
+			return el;
+		}
+		const fmtRate = (v) => (isNum(v) ? (Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(1)) : null);
+		const rateCls = (v) => (!isNum(v) ? 'na' : v > ACCEPT_ALERT_PER_SEC ? 'err' : v > ACCEPT_WARN_PER_SEC ? 'warn' : 'ok');
+		const withDelta = (el, delta, digits) => {
+			if (!isNum(delta) || Math.abs(delta) < Math.pow(10, -digits) / 2) return;
+			const d = document.createElement('span');
+			d.className = 'd' + (delta < 0 ? ' down' : '');
+			d.textContent = (delta < 0 ? '▼ ' : '▲ ') + Math.abs(delta).toFixed(digits);
+			el.appendChild(d);
+		};
+
+		function renderResources(s, history, probesOn) {
+			const sub = $('resSub');
+			if (probesOn === false) {
+				// 마지막 값은 그대로 둔다(끄기 전 상태 참고용) — 부제만 바꿔 비활성임을 알린다.
+				sub.textContent = '비활성 — 설정 gpl.controller.dashboardResourceProbes 를 켜면 폴링마다 조회';
+				return;
+			}
+			const r = s.resources;
+			if (!r) {
+				sub.textContent = RES_SUB_DEFAULT + (s.connected ? ' · 이번 폴링에 수집되지 않음' : ' · 연결 끊김');
+				return;
+			}
+			const raw = r.raw || {}, st = r.status || {}, rates = r.rates || null;
+			const pts = Array.isArray(history) ? history : [];
+			sub.textContent = RES_SUB_DEFAULT + (rates && isNum(rates.elapsedMs) ? ' · 증가율 창 ' + (rates.elapsedMs / 1000).toFixed(1) + 's' : '') +
+				(pts.length > 1 ? ' · 이력 ' + ((pts[pts.length - 1].t - pts[0].t) / 60000).toFixed(1) + '분' : '');
+
+			// 메모리 — 임계값 없음(기준선은 사용자가 재부팅 직후 잡음). Free 는 이력 시작점 대비 증감을 함께 보인다.
+			const m = r.memory;
+			if (m && isNum(m.freeMb)) {
+				const el = setRes('rFree', m.freeMb.toFixed(4) + ' MB', 'ok', '이력 시작점 대비 증감을 오른쪽에 표시');
+				const first = pts.find((p) => isNum(p.freeMb));
+				if (first) withDelta(el, m.freeMb - first.freeMb, 4);
+			} else setResNa('rFree', raw.memory, st.memory);
+			if (m && isNum(m.usedMb)) setRes('rUsed', m.usedMb.toFixed(4) + ' MB', 'ok'); else setResNa('rUsed', raw.memory, st.memory);
+			if (m && isNum(m.segments)) setRes('rSeg', String(m.segments) + (isNum(m.freeSegments) ? ' (free ' + m.freeSegments + ')' : ''), 'ok', 'Used 영역 블록 수(단편화 지표). 괄호는 Free 영역 Segments'); else setResNa('rSeg', raw.memory, st.memory);
+			const fdRow = $('rFdRow');
+			if (m && isNum(m.fileDescriptorsFree)) {
+				fdRow.style.display = '';
+				// 문서상: free descriptor 가 5 이하로 떨어지면 다음 I/O 에서 시스템이 멈출 수 있다.
+				setRes('rFd', m.fileDescriptorsFree + (isNum(m.fileDescriptorsUsed) ? ' (used ' + m.fileDescriptorsUsed + ')' : ''), m.fileDescriptorsFree <= 5 ? 'err' : m.fileDescriptorsFree <= 10 ? 'warn' : 'ok', '문서상 free ≤ 5 이면 다음 I/O 에서 시스템 정지 가능 (Show Memory -all 응답에만 있음)');
+			} else fdRow.style.display = 'none';
+
+			// TCP — accepted/s 가 핵심 지표
+			const t = r.tcp;
+			if (t && isNum(t.accepted)) {
+				if (rates && rates.counterReset) setRes('rAccRate', '카운터 리셋(재부팅?)', 'warn', '누적 카운터가 줄었습니다 — 제어기 재부팅 또는 랩어라운드 의심. 다음 샘플부터 다시 계산');
+				else if (rates && isNum(rates.acceptedPerSec)) setRes('rAccRate', fmtRate(rates.acceptedPerSec) + ' /s', rateCls(rates.acceptedPerSec), '주의 >' + ACCEPT_WARN_PER_SEC + '/s · 경고 >' + ACCEPT_ALERT_PER_SEC + '/s — keep-alive 후 기대치 <1/s, 사고 시 실측 10~25/s');
+				else setRes('rAccRate', '샘플 대기…', 'na', '두 번째 샘플부터 계산');
+				setRes('rAcc', String(t.accepted), 'ok');
+			} else { setResNa('rAccRate', raw.tcp, st.tcp); setResNa('rAcc', raw.tcp, st.tcp); }
+			if (t && isNum(t.established)) setRes('rEst', String(t.established), 'ok'); else setResNa('rEst', raw.tcp, st.tcp);
+			if (t && isNum(t.closed)) setRes('rClosed', t.closed + (rates && isNum(rates.closedPerSec) ? ' · ' + fmtRate(rates.closedPerSec) + ' /s' : ''), 'ok'); else setResNa('rClosed', raw.tcp, st.tcp);
+
+			// mbuf — clusters free 단조 감소, drops/waits/drains ≠ 0 이면 자원 소모 신호
+			const b = r.mbuf;
+			if (b && isNum(b.clustersFree)) {
+				const prev = state.prevClustersFree;
+				const dec = isNum(prev) && b.clustersFree < prev;
+				const el = setRes('rClFree', String(b.clustersFree) + (isNum(b.clusters) ? ' / ' + b.clusters : ''), dec ? 'warn' : 'ok',
+					dec ? '직전 대비 감소 — 단조 감소가 이어지면 접속 churn 이 버퍼를 소모하는 신호' : '직전 대비 유지/증가');
+				if (isNum(prev)) withDelta(el, b.clustersFree - prev, 0);
+				state.prevClustersFree = b.clustersFree;
+			} else setResNa('rClFree', raw.mbuf, st.mbuf);
+			if (b && (isNum(b.free) || isNum(b.total))) setRes('rMbuf', (isNum(b.free) ? b.free : '?') + ' / ' + (isNum(b.total) ? b.total : '?'), 'ok'); else setResNa('rMbuf', raw.mbuf, st.mbuf);
+			if (b && (isNum(b.drops) || isNum(b.waits) || isNum(b.drains))) {
+				const vals = [b.drops, b.waits, b.drains];
+				const bad = vals.some((v) => isNum(v) && v > 0);
+				setRes('rDwd', vals.map((v) => (isNum(v) ? v : '?')).join(' · '), bad ? 'err' : 'ok',
+					bad ? '0 이 아닙니다 — 버퍼 부족 발생(drops=확보 실패, waits=대기, drains=프로토콜 drain)' : '모두 0');
+			} else setResNa('rDwd', raw.mbuf, st.mbuf);
+
+			// 스파크라인 2개 + 원문
+			renderSpark('sparkAcc', 'sparkAccCap', pts, 'acceptedPerSec', { thresholds: [ACCEPT_WARN_PER_SEC, ACCEPT_ALERT_PER_SEC], digits: 2, unit: '/s' });
+			renderSpark('sparkCl', 'sparkClCap', pts, 'clustersFree', { digits: 0 });
+			$('resRawPre').innerHTML = [['Show Memory', raw.memory, st.memory], ['Show Network -tcp', raw.tcp, st.tcp], ['Show Network -mbuf', raw.mbuf, st.mbuf]]
+				.map(([cmd, txt, code]) => '<b>&gt; ' + esc(cmd) + (code !== undefined ? '   (STATUS ' + esc(code) + ')' : '   (응답 없음)') + '</b>\n' + (txt ? esc(txt) : '(없음)'))
+				.join('\n\n');
+		}
+
+		// 작은 SVG 스파크라인: null 구간은 끊어 그리고, 임계선(옵션)과 마지막 점을 표시한다.
+		function renderSpark(svgId, capId, pts, key, opt) {
+			const svg = $(svgId), cap = $(capId);
+			const W = 200, H = 44, PAD = 3;
+			const vals = pts.map((p) => p[key]);
+			const nums = vals.filter(isNum);
+			if (nums.length === 0) { svg.innerHTML = ''; cap.textContent = '데이터 없음'; return; }
+			let lo = Math.min(...nums), hi = Math.max(...nums);
+			if (opt.thresholds) { lo = Math.min(lo, 0); hi = Math.max(hi, opt.thresholds[0] * 1.1); }
+			if (hi - lo < 1e-9) hi = lo + 1;
+			const x = (i) => (pts.length > 1 ? PAD + (i / (pts.length - 1)) * (W - 2 * PAD) : W / 2);
+			const y = (v) => H - PAD - ((v - lo) / (hi - lo)) * (H - 2 * PAD);
+			let d = '', pen = false;
+			vals.forEach((v, i) => {
+				if (!isNum(v)) { pen = false; return; }
+				d += (pen ? ' L' : ' M') + x(i).toFixed(1) + ',' + y(v).toFixed(1);
+				pen = true;
+			});
+			let html = '';
+			if (opt.thresholds) {
+				opt.thresholds.forEach((th, i) => {
+					if (th >= lo && th <= hi) html += '<line class="thr' + (i > 0 ? ' alert' : '') + '" x1="0" x2="' + W + '" y1="' + y(th).toFixed(1) + '" y2="' + y(th).toFixed(1) + '"></line>';
+				});
+			}
+			const last = nums[nums.length - 1];
+			const cls = opt.thresholds ? rateCls(last) : 'ok';
+			html += '<path class="line' + (cls === 'ok' ? '' : ' ' + cls) + '" d="' + d.trim() + '"></path>';
+			let li = vals.length - 1;
+			while (li >= 0 && !isNum(vals[li])) li--;
+			if (li >= 0) html += '<circle class="last" cx="' + x(li).toFixed(1) + '" cy="' + y(vals[li]).toFixed(1) + '" r="2"></circle>';
+			svg.innerHTML = html;
+			const spanMin = pts.length > 1 ? (pts[pts.length - 1].t - pts[0].t) / 60000 : 0;
+			cap.textContent = '최근 ' + last.toFixed(opt.digits) + (opt.unit || '') + ' · 범위 ' + lo.toFixed(opt.digits) + '~' + hi.toFixed(opt.digits) + ' · ' + pts.length + '점 / ' + spanMin.toFixed(1) + '분';
+		}
+
+		// 확장 측 1402 연결 통계(GitHub #22): connects(누적 TCP 연결) / reuses(keep-alive 재사용) / retries(stale 재시도).
+		function renderConnStats(c) {
+			const el = $('rExtConn');
+			if (!el) return;
+			if (!c) { el.textContent = '—'; el.className = 'v na'; return; }
+			const held = c.keepAliveActive && typeof c.heldSinceMs === 'number' ? ' · 유지 ' + Math.round(c.heldSinceMs / 1000) + 's' : '';
+			el.textContent = c.connects + ' (재사용 ' + c.reuses + ' · 재시도 ' + c.retries + ')' + (c.keepAliveActive ? ' · 유지 중' + held : '');
+			el.className = 'v ' + (c.retries > 0 ? 'warn' : 'ok');
+		}
+
+		function render(s, resourceHistory, resourceProbes, connectionStats) {
+			renderConnStats(connectionStats);
 			renderHeader(s);
 			renderBadges(s);
 			renderThreads(s);
 			renderJoints(s);
 			renderCartesian(s);
+			renderResources(s, resourceHistory, resourceProbes);
 			renderLog(s);
 		}
 
@@ -446,7 +670,7 @@
 			const msg = event.data;
 			if (!msg) { return; }
 			if (msg.type === 'status' && msg.snapshot) {
-				render(msg.snapshot);
+				render(msg.snapshot, msg.resourceHistory, msg.resourceProbes, msg.connectionStats);
 			} else if (msg.type === 'config') {
 				applyConfig(msg);
 			} else if (msg.type === 'error') {

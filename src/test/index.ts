@@ -19,6 +19,13 @@ import './symbolCache.test';
 import './renameCore.test';
 import './deployLock.test';
 import './trafficResponseBody.test';
+import './deployRecord.test';
+import './ftpRefreshThrottle.test';
+import './runtimeConsoleGuards.test';
+import './keepAlive1402.test';
+import './reachability.test';
+import './resourceProbes.test';
+import './stepGate.test';
 import { run } from './harness';
 
 void run();

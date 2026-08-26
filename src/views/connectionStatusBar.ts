@@ -20,12 +20,22 @@ export interface StatusBarCompileStale {
     reason: string;
 }
 
+/** 디버그 세션 중 "소스가 제어기 컴파일 코드보다 새로움" 상태(GitHub #21) — files 는 프로젝트 기준 상대 경로. */
+export interface StatusBarSourceStale {
+    projectName: string;
+    files: string[];
+    compiledAt?: number;
+}
+
 export class ConnectionStatusBar implements vscode.Disposable {
     private item: vscode.StatusBarItem;
     /** 대시보드 바로가기(연결 중에만 표시). */
     private dashboardItem: vscode.StatusBarItem;
     private _isConnected = false;
     private compileStale: StatusBarCompileStale | undefined;
+    /** Attach only 디버깅 중 소스 stale 경고(GitHub #21) — 빈 목록이면 숨김. */
+    private staleItem: vscode.StatusBarItem;
+    private sourceStale: StatusBarSourceStale | undefined;
     private disposables: vscode.Disposable[] = [];
 
     get isConnected(): boolean { return this._isConnected; }
@@ -41,6 +51,16 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.updateVisibility();
     }
 
+    /**
+     * "소스 변경됨 — BP 신뢰 불가" 배지(GitHub #21). Attach only 디버깅에서 제어기는 시작 시점에 컴파일된 코드를
+     * 실행하므로, 그 뒤 편집·저장된 파일의 브레이크포인트는 Set Break 가 성공해도 실제 코드 줄과 어긋나 걸리지 않는다.
+     * 디버그 어댑터가 gpl.sourceStale 이벤트로 알려 준 파일 목록을 표시한다. undefined/빈 목록이면 숨김.
+     */
+    setSourceStale(state?: StatusBarSourceStale): void {
+        this.sourceStale = state && state.files.length > 0 ? state : undefined;
+        this.updateStaleItem();
+    }
+
     constructor() {
         this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         this.item.command = 'gpl.controller.connect';
@@ -50,6 +70,10 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.dashboardItem.text = '$(dashboard)';
         this.dashboardItem.command = 'gpl.controller.showDashboard';
         this.dashboardItem.tooltip = '제어기 대시보드 열기 — 연결·고전원·스레드·축 위치·에러를 새 탭에서 시각적으로 확인';
+
+        this.staleItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+        this.staleItem.command = 'gpl.debug.showSourceStale';
+        this.staleItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
 
         this.disposables.push(
             vscode.window.onDidChangeActiveTextEditor(() => this.updateVisibility())
@@ -72,6 +96,23 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.disposables.forEach(d => d.dispose());
         this.item.dispose();
         this.dashboardItem.dispose();
+        this.staleItem.dispose();
+    }
+
+    private updateStaleItem(): void {
+        const s = this.sourceStale;
+        if (!s) {
+            this.staleItem.hide();
+            return;
+        }
+        const shown = s.files.slice(0, 12);
+        this.staleItem.text = `$(warning) 소스 변경됨 ${s.files.length} — BP 신뢰 불가`;
+        this.staleItem.tooltip =
+            `${s.projectName}: 제어기 컴파일 코드보다 새로운 소스 ${s.files.length}개\n` +
+            shown.join('\n') + (s.files.length > shown.length ? `\n… 외 ${s.files.length - shown.length}개` : '') +
+            (s.compiledAt ? `\n마지막 Compile: ${new Date(s.compiledAt).toLocaleString()}` : '') +
+            '\n이 파일들의 브레이크포인트는 옛 코드 줄에 걸려 있거나 걸리지 않습니다.\n클릭: 재배포(Stop + Upload + Run)로 재시작 / 파일 열기';
+        this.staleItem.show();
     }
 
     private updateVisibility(): void {

@@ -8,15 +8,41 @@
  * HTML은 media/dashboard.html에서 로드하며, 데이터는 postMessage로 주입한다.
  * 웹뷰 → 확장 메시지: `ready`/`refresh`(즉시 1회 폴링), `setInterval {ms}`(이 탭이 열려 있는 동안 폴링 주기 덮어쓰기),
  * `pause {paused}`(자동 갱신 일시정지 — 새로고침 버튼은 여전히 1회 폴링). 확장 → 웹뷰: `status {snapshot}`, `config {pollMs, paused}`, `error`.
+ *
+ * 자원 지표(GitHub #22 제안 8): 설정 `gpl.controller.dashboardResourceProbes`(기본 true)가 켜져 있으면 폴링마다
+ * Show Memory / Show Network -tcp / -mbuf 를 함께 조회한다. 패널이 관측 이력(ResourceHistory, 120점 링 ≥ 5분)을
+ * 보관해 `status` 메시지에 `snapshot.resources.rates`(accepted/s·closed/s)와 `resourceHistory`(시계열),
+ * `resourceProbes`(이번 폴링에 프로브가 포함됐는지)를 덧붙인다. 탭을 닫으면 이력은 사라진다.
  */
 
 import * as vscode from 'vscode';
 import { fetchControllerStatus, ControllerStatusSnapshot } from '../controller/controllerStatus';
+import { ResourceHistory, ResourceHistoryPoint, ResourceRates, ResourceSnapshot } from '../controller/resourceProbes';
+import { getConnectionStats, ConnectionStats } from '../controller/controllerConnection';
 
 const VIEW_TYPE = 'gplControllerDashboard';
 const DEFAULT_POLL_MS = 1500;
 const MIN_POLL_MS = 500;
 const MAX_POLL_MS = 60000;
+/** 설정 `gpl.controller.dashboardResourceProbes` 기본값(스키마는 package.json). */
+const DEFAULT_RESOURCE_PROBES = true;
+
+/** 확장 → 웹뷰 `status` 메시지의 스냅샷: 자원 지표에 증가율이 덧붙는다. */
+type DashboardSnapshot = Omit<ControllerStatusSnapshot, 'resources'> & {
+	resources?: ResourceSnapshot & { rates: ResourceRates | null };
+};
+
+interface DashboardMessage {
+	type: 'status' | 'error';
+	snapshot?: DashboardSnapshot;
+	/** 자원 지표 시계열(accepted/s · clustersFree · freeMb). */
+	resourceHistory?: ResourceHistoryPoint[];
+	/** 이번 폴링에 자원 프로브가 포함됐는지(false = 설정으로 꺼짐). */
+	resourceProbes?: boolean;
+	/** 확장 측 1402 keep-alive 연결 통계(connects/reuses/retries) — 제어기 TCP accept 카운터와 대조용(GitHub #22). */
+	connectionStats?: ConnectionStats;
+	message?: string;
+}
 
 export class ControllerDashboardPanel {
 	private static current: ControllerDashboardPanel | undefined;
@@ -33,6 +59,8 @@ export class ControllerDashboardPanel {
 	private pollOverrideMs: number | undefined;
 	/** 자동 갱신 일시정지(수동 새로고침은 계속 동작). */
 	private paused = false;
+	/** 자원 지표 관측 이력(증가율 기준 샘플 + 시계열 링). 패널 수명 동안 유지. */
+	private readonly resourceHistory = new ResourceHistory();
 
 	static show(context: vscode.ExtensionContext, log?: vscode.OutputChannel): void {
 		const column = vscode.ViewColumn.Beside;
@@ -190,8 +218,17 @@ export class ControllerDashboardPanel {
 		}
 		this.pollInFlight = true;
 		try {
-			const snapshot = await fetchControllerStatus();
-			this.post({ type: 'status', snapshot });
+			// 설정은 폴링마다 읽는다 — 탭을 다시 열지 않고도 켜고 끌 수 있게.
+			const includeResources = this.resourceProbesEnabled();
+			const snapshot = await fetchControllerStatus(undefined, { includeResources });
+			const { resources, ...rest } = snapshot;
+			const message: DashboardMessage = { type: 'status', snapshot: rest, resourceProbes: includeResources, connectionStats: getConnectionStats() };
+			if (resources) {
+				const { rates, history } = this.resourceHistory.record(resources);
+				message.snapshot = { ...rest, resources: { ...resources, rates } };
+				message.resourceHistory = history;
+			}
+			this.post(message);
 		} catch (err) {
 			this.log?.appendLine(`[Dashboard] 상태 수집 실패: ${err}`);
 			this.post({ type: 'error', message: String(err) });
@@ -200,7 +237,12 @@ export class ControllerDashboardPanel {
 		}
 	}
 
-	private post(message: { type: string; snapshot?: ControllerStatusSnapshot; message?: string }): void {
+	private resourceProbesEnabled(): boolean {
+		return vscode.workspace.getConfiguration('gpl.controller')
+			.get<boolean>('dashboardResourceProbes', DEFAULT_RESOURCE_PROBES);
+	}
+
+	private post(message: DashboardMessage): void {
 		if (!this.disposed) {
 			void this.panel.webview.postMessage(message);
 		}

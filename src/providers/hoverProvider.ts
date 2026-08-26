@@ -12,6 +12,26 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         private outputChannel?: vscode.OutputChannel
     ) {}
 
+    // GitHub #19: (uri, version) 단위 문서 심볼 캐시. GPLParser.parseDocument 는 내용 기준으로 메모이즈되어
+    // 있어(ai-handoff §1-B E) 재파싱은 이미 없었지만, 호버(마우스 이동)마다 document.getText()로 수천 줄 문자열을
+    // 새로 만들고 캐시 키(전체 내용)를 비교하는 비용이 반복됐다. 문서 버전이 같으면 그 비용까지 건너뛴다.
+    // includeLocals 파싱 결과는 모듈 심볼의 상위 집합이므로 로컬 해석과 폴백 파싱이 같은 결과를 공유한다.
+    private _docSymbolsCache?: { uri: string; version: number; symbols: GPLSymbol[] };
+
+    private getDocumentSymbols(document: vscode.TextDocument): GPLSymbol[] {
+        const uri = document.uri.toString();
+        const cached = this._docSymbolsCache;
+        if (cached && cached.uri === uri && cached.version === document.version) {
+            return cached.symbols;
+        }
+        const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
+            includeLocals: true,
+            includeParameters: true
+        });
+        this._docSymbolsCache = { uri, version: document.version, symbols };
+        return symbols;
+    }
+
     private log(message: string) {
         if (!isTraceVerbose(vscode.workspace)) {
             return;
@@ -109,10 +129,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         atLine: number
     ): GPLSymbol | undefined {
         try {
-            const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
-                includeLocals: true,
-                includeParameters: true
-            });
+            const localSymbols = this.getDocumentSymbols(document);
             const locals = localSymbols.filter(s => ciEq(s.name, name) && s.isLocal);
             if (locals.length === 0) {
                 return undefined;
@@ -243,10 +260,11 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         }
 
         // Fallback: parse current document (works even outside workspace indexing)
+        // includeLocals 캐시를 재사용하되 비-로컬(모듈 레벨) 심볼만 대상으로 해 종전 의미를 유지한다(GitHub #19).
         if (!sym && !token.isCancellationRequested) {
             try {
-                const localSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
-                sym = localSymbols.find(s => ciEq(s.name, lookupName));
+                const docSymbols = this.getDocumentSymbols(document);
+                sym = docSymbols.find(s => !s.isLocal && ciEq(s.name, lookupName));
             } catch (e) {
                 this.log(`[Hover Local Parse Error] ${e}`);
             }

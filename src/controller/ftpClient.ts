@@ -51,6 +51,48 @@ export async function listRemoteDir(host: string, remotePath: string): Promise<F
 	}
 }
 
+/** listRemoteDirs 항목 — 경로별 결과. 성공이면 entries, 실패면 error(둘 중 하나만 채워진다). */
+export interface RemoteDirListing {
+	path: string;
+	entries?: FtpEntry[];
+	error?: string;
+}
+
+/**
+ * 여러 원격 디렉터리를 **한 FTP 세션**으로 순차 조회한다 (GitHub #22 제안 7).
+ * - listRemoteDir를 경로마다 부르면 경로 수만큼 제어 연결(로그인 포함)이 열린다. 트리뷰의 /GPL·Flash처럼
+ *   같은 시점에 함께 보는 목록은 세션 1개 + 경로당 데이터 연결 1개로 끝내는 것이 제어기 부하가 적다.
+ * - 경로 하나가 실패(550 등)해도 나머지는 계속 조회하고 항목별 `error`로 돌려준다. 단, 실패로 클라이언트가
+ *   닫혔으면(타임아웃/소켓 오류 — basic-ftp는 이때 스스로 close) 남은 경로는 시도 없이 같은 오류로 채운다.
+ * - 세션 자체를 열지 못하면(접속/로그인 실패) 예외를 던진다 — 호출자가 "제어기 FTP 불가"로 일괄 처리한다.
+ * 반환 배열은 remotePaths와 같은 순서·길이다.
+ */
+export async function listRemoteDirs(host: string, remotePaths: string[]): Promise<RemoteDirListing[]> {
+	if (remotePaths.length === 0) { return []; }
+	const client = await createClient(host);
+	try {
+		const results: RemoteDirListing[] = [];
+		let sessionError: string | undefined;
+		for (const remotePath of remotePaths) {
+			if (sessionError !== undefined) {
+				results.push({ path: remotePath, error: sessionError });
+				continue;
+			}
+			try {
+				const list = await client.list(remotePath);
+				results.push({ path: remotePath, entries: list.map(toFtpEntry) });
+			} catch (err: any) {
+				const message = err?.message ?? String(err);
+				results.push({ path: remotePath, error: message });
+				if (client.closed) { sessionError = message; }
+			}
+		}
+		return results;
+	} finally {
+		client.close();
+	}
+}
+
 /**
  * 제어기 원격 디렉터리 재귀 삭제.
  */

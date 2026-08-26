@@ -19,12 +19,14 @@ import {
     Source,
     Handles,
     Breakpoint,
+    BreakpointEvent,
     InvalidatedEvent,
     ContinuedEvent,
 } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 
 import {
@@ -52,7 +54,15 @@ import {
 } from '../controller/responseParser';
 import { GPLParser, GPLSymbolKind, GPLSymbol } from '../gplParser';
 import { isReadOnlyConsoleCommand } from '../controller/consoleCommandClassifier';
-import { fireDebugThreadsUpdated, onDebugPollTrigger } from '../controller/debugBridge';
+import { fireDebugThreadsUpdated, onDebugPollTrigger, getRuntimeConsoleHealth } from '../controller/debugBridge';
+import {
+    getCompiledRecord,
+    compareWithLocal,
+    onDidRecordCompiled,
+    formatCompiledAt,
+} from '../controller/deployRecord';
+import type { CompiledRecord, SnapshotDiff } from '../controller/deployRecord';
+import { shouldGateStepRequest, StepGateReason } from './stepGate';
 import {
     ParsedVarEntry,
     parseShowVariableMulti,
@@ -145,15 +155,37 @@ interface GlobalVariableDescriptor {
 
 type PendingAction = 'step' | 'pause' | 'entry' | 'continue' | null;
 
+// ─── Source staleness (GitHub #21) ──────────────────────
+
+/**
+ * "로컬 소스가 제어기 컴파일 코드보다 새로움" 항목. 근거:
+ * - compiled-before-edit: 마지막 Compile 스냅샷(deployRecord)과 파일 내용(sha1)이 다름
+ * - saved-in-session: 이 디버그 세션 중 저장됨(스냅샷이 없어도 확정 가능 — 제어기는 attach 전 코드를 실행 중)
+ */
+interface StaleSourceEntry {
+    /** 프로젝트 폴더 기준 상대 경로('/' 구분) — 이벤트/로그 표기용 */
+    relPath: string;
+    reason: 'compiled-before-edit' | 'saved-in-session';
+    /** 세션 중 저장 시각(ms). 컴파일 기록이 이 시각 이후로 갱신되면(재컴파일) 해제 */
+    savedAt?: number;
+}
+
 // ─── Session ─────────────────────────────────────────────
 
 export class GPLDebugSession extends LoggingDebugSession {
     private static readonly MIN_DEBUG_POLL_INTERVAL_MS = 1000;
     private static readonly MAX_DEBUG_POLL_INTERVAL_MS = 5000;
-    // ⑦ 백업 인터벌 폴 간격(Running 쓰레드 존재 시). 실행 중 BP 히트는 1403 상태
+    // ⑦ 백업 인터벌 폴 간격(Running 쓰레드 존재 + 1403 부재 시). 실행 중 BP 히트는 1403 상태
     //    이벤트 트리거가 주 신호이고, 이 값은 1403 유실/미연결 시의 안전망이다.
-    //    (기존: 항상 사용자 간격(기본 5000ms) → 자유 실행 중 BP 히트 감지가 최대 5초 지연)
-    private static readonly RUNNING_BACKUP_POLL_MS = 1000;
+    //    GitHub #22('5번째 다운' 제안 2): 1403 이 정상인데도 항상 1Hz 로 돌던 이 폴이 부팅 후 77분간
+    //    Show Thread -web 922회를 만들었다. 이제 debugBridge 의 1403 health 가 alive 면 사용자 간격
+    //    (_pollIntervalMs)으로 완화하고, 1403 부재일 때만 이 값(설정 gpl.debug.runningBackupPollMs,
+    //    하한 250ms, attach 시 1회 읽음)을 쓴다. (그 이전: 항상 사용자 간격 → BP 히트 감지 최대 5초 지연)
+    private static readonly DEFAULT_RUNNING_BACKUP_POLL_MS = 1000;
+    private static readonly MIN_RUNNING_BACKUP_POLL_MS = 250;
+    private _runningBackupPollMs = GPLDebugSession.DEFAULT_RUNNING_BACKUP_POLL_MS;
+    // 직전에 적용한 백업 폴 정책 — 바뀔 때만 1회 로그(폴마다 로그하면 소음)
+    private _backupPollPolicy: 'alive' | 'absent' | undefined;
 
     // Thread name ↔ integer ID (DAP requires integer thread IDs)
     private _threadNameToId = new Map<string, number>();
@@ -254,6 +286,19 @@ export class GPLDebugSession extends LoggingDebugSession {
     // 사용자 명령이 폴 뒤에 끼는 지연을 방지한다.
     private _userActionInFlight = false;
 
+    // GitHub #28: Step/Continue 게이트. 2026-08-25 16:23 실측 — F12 홀드(키 자동 반복)로 Step 이 31ms 간격
+    // 325건/22.5초 송신되어 제어기가 다운됐다. _userActionInFlight 는 송신 중(6~12ms)에만 true 라 키 반복을
+    // 막지 못하므로, "이전 step/continue 의 정지 확인 전(_pendingAction 유지 중)" 또는 "최소 간격 미달"이면
+    // 새 요청을 제어기에 보내지 않고 응답만 success 로 돌려준다(에러 응답은 키 반복 중 팝업 폭주를 만든다).
+    // GDE 도 정지 확인 전에는 Step 버튼이 비활성화된다. 판정은 stepGate.ts(순수 함수, 단위 테스트 대상).
+    private static readonly DEFAULT_MIN_STEP_INTERVAL_MS = 100;
+    private _minStepIntervalMs = GPLDebugSession.DEFAULT_MIN_STEP_INTERVAL_MS;
+    // 게이트로 무시한 요청 수 — 첫 건과 이후 50건마다 로그, pending 해소 시 요약 후 0
+    private _stepGateIgnored = 0;
+    private static readonly STEP_GATE_LOG_EVERY = 50;
+    // 이 쓰레드에 pending 이 없는 상태(최소 간격 게이트)에서 무시한 요청의 UI 복귀용 StoppedEvent 재발사 예약(쓰레드별)
+    private _gateResyncTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
     // Stack frame cache — pending step/continue 동안 UI에 반환할 직전 프레임 캐시
     private _cachedFrames = new Map<string, StackFrameInfo[]>();
     // ③ Show Stack 캐시 신선도: 정지 위치별 마지막 조회 시각 + 짧은 TTL.
@@ -282,6 +327,17 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     // Exception breakpoints — whether to break on runtime errors
     private _breakOnErrors = true;
+
+    // GitHub #21: 제어기 컴파일 코드보다 새로운 로컬 소스(basename 소문자 → 항목). 이 파일들의 BP 는
+    // 제어기에는 종전대로 설정하되 verified=false 로 강등한다 — 제어기는 옛 컴파일 코드의 줄 번호로 BP 를
+    // 받아 "성공"을 돌려주지만 실제 코드 줄과 어긋나 절대 걸리지 않을 수 있다.
+    private _staleFiles = new Map<string, StaleSourceEntry>();
+    // 판정에 쓴 컴파일 기록의 시각(BP message/이벤트 표기용). 기록 없음 = undefined
+    private _compiledRecordAt: number | undefined;
+    private _staleNoRecordLogged = false;
+    // DAP breakpoint id(BreakpointEvent 로 verified 상태를 바꾸려면 id 가 필요) — basename 소문자 → (line → id)
+    private _bpIdCounter = 0;
+    private _bpIds = new Map<string, Map<number, number>>();
 
     // Known thread names — for detecting new/exited threads (ThreadEvent)
     private _knownThreadNames = new Set<string>();
@@ -441,6 +497,26 @@ export class GPLDebugSession extends LoggingDebugSession {
             `(fast poll: ${GPLDebugSession.FAST_POLL_DELAYS_MS.join('/')}ms, 1403 trigger: on data)`
         );
 
+        // GitHub #28 / #22: 세션 동안 고정되는 디버그 설정 — attach 시 1회만 읽어 필드에 보관한다.
+        const dbgCfg = vscode.workspace.getConfiguration('gpl.debug');
+        const minStepRaw = dbgCfg.get<number>('minStepIntervalMs', GPLDebugSession.DEFAULT_MIN_STEP_INTERVAL_MS);
+        this._minStepIntervalMs = typeof minStepRaw === 'number' && Number.isFinite(minStepRaw) && minStepRaw > 0
+            ? Math.floor(minStepRaw)
+            : 0;
+        const backupRaw = dbgCfg.get<number>('runningBackupPollMs', GPLDebugSession.DEFAULT_RUNNING_BACKUP_POLL_MS);
+        this._runningBackupPollMs = Math.max(
+            GPLDebugSession.MIN_RUNNING_BACKUP_POLL_MS,
+            typeof backupRaw === 'number' && Number.isFinite(backupRaw)
+                ? Math.floor(backupRaw)
+                : GPLDebugSession.DEFAULT_RUNNING_BACKUP_POLL_MS,
+        );
+        this._backupPollPolicy = undefined;
+        this._stepGateIgnored = 0;
+        this._log(
+            `Step 게이트: 정지 확인 전 요청 무시 + 최소 간격 ${this._minStepIntervalMs > 0 ? `${this._minStepIntervalMs}ms` : '없음'} (GitHub #28) / ` +
+            `Running 백업 폴: 1403 부재 시 ${this._runningBackupPollMs}ms, 1403 정상 시 ${this._pollIntervalMs}ms (GitHub #22)`,
+        );
+
         // Verify controller is reachable
         this._log(`제어기 연결 중: ${this._config.ip}:${this._config.port}`);
         try {
@@ -497,6 +573,15 @@ export class GPLDebugSession extends LoggingDebugSession {
         // Build source file map for path resolution
         this._updateProjectDirs();
         this._buildSourceFileMap();
+
+        // GitHub #21: 로컬 소스가 제어기 컴파일 코드보다 새로운지 판정(Attach only 의 핵심 사용 사례).
+        // deployBeforeAttach 성공 경로는 방금 기록이 갱신됐으므로 stale 이 없는 것이 정상이지만, 그래도
+        // 호출해 빈 목록 이벤트로 상태바 배지를 정리한다. 이후 세션 중 저장·재컴파일에도 반응한다.
+        this._evaluateSourceStaleness('attach');
+        this._disposables.push(
+            vscode.workspace.onDidSaveTextDocument(doc => this._onSourceSavedInSession(doc)),
+            onDidRecordCompiled(rec => this._onRecordCompiled(rec)),
+        );
 
         // If stopOnEntry, start the project with -break to pause at Main's first line
         this._stopOnEntry = !!args.stopOnEntry;
@@ -574,6 +659,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         _args: DebugProtocol.DisconnectArguments,
     ): Promise<void> {
         this._stopPolling();
+        this._cancelGateResync(); // GitHub #28: 세션 종료 — 예약된 UI 복귀 재발사 전부 취소
         this._userActionInFlight = true;
 
         // Clear all breakpoints on the controller — 디버거 종료 후에 옛 BP가 잔존하면
@@ -598,6 +684,12 @@ export class GPLDebugSession extends LoggingDebugSession {
                 this._log('프로젝트 실행 유지 (디버거만 분리)');
             }
         }
+
+        // GitHub #21: 상태바의 소스 변경 배지 정리(빈 목록 이벤트) + 세션 한정 stale/BP id 상태 초기화
+        this._staleFiles.clear();
+        this._bpIds.clear();
+        this._compiledRecordAt = undefined;
+        this._sendSourceStaleEvent('disconnect');
 
         this._breakpoints.clear();
         this._knownThreadNames.clear();
@@ -668,6 +760,14 @@ export class GPLDebugSession extends LoggingDebugSession {
         // Set Break project_name "file_name"line_number  (따옴표와 줄번호 사이 공백 없음)
         const actualBreakpoints: DebugProtocol.Breakpoint[] = [];
         const newLines = new Set<number>();
+        // GitHub #21: 이 파일이 stale(제어기 컴파일 코드보다 새로움)이면 제어기에는 종전대로 Set Break 를 보내되
+        // 응답에서 verified=false 로 강등한다 — 제어기는 옛 코드의 줄 번호로 받아 "성공"해도 실제 코드 줄과
+        // 어긋날 수 있다. 재배포 후 onDidRecordCompiled 가 BreakpointEvent 로 verified=true 를 복원한다.
+        const baseKey = baseName.toLowerCase();
+        const staleEntry = this._staleFiles.get(baseKey);
+        const staleMessage = staleEntry ? this._staleBreakpointMessage() : undefined;
+        // BreakpointEvent('changed') 로 상태를 바꾸려면 id 가 필요 — 파일 단위로 새로 부여(직전 세트는 폐기)
+        const idMap = new Map<number, number>();
 
         for (const line of clientLines) {
             const cmd = this._bpCommand('Break', proj, baseName, line);
@@ -681,13 +781,17 @@ export class GPLDebugSession extends LoggingDebugSession {
                 finalResp = await this._sendCmd(cmd);
             }
             const verified = finalResp !== null && isSuccess(finalResp);
-            const bp = new Breakpoint(verified, line) as DebugProtocol.Breakpoint;
+            const bp = new Breakpoint(verified && !staleEntry, line) as DebugProtocol.Breakpoint;
+            bp.id = ++this._bpIdCounter;
+            idMap.set(line, bp.id);
             if (!verified) {
                 const msg = finalResp
                     ? finalResp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0]
                     : '응답 없음';
                 bp.message = msg;
                 this._log(`⚠ BP 설정 실패: ${cmd} → ${msg}`);
+            } else if (staleMessage) {
+                bp.message = staleMessage;
             }
             actualBreakpoints.push(bp);
             if (verified) {
@@ -695,7 +799,11 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
         }
 
+        this._bpIds.set(baseKey, idMap);
         this._breakpoints.set(baseName, newLines);
+        if (staleEntry && newLines.size > 0) {
+            this._log(`⚠ stale 파일 BP: ${baseName} [${[...newLines].join(', ')}] — 제어기에는 설정했으나 신뢰 불가 (${staleEntry.relPath}, GitHub #21)`);
+        }
 
         // Show Break로 실제 제어기 상태 검증
         const showResp = await this._sendCmd('Show Break');
@@ -1082,6 +1190,15 @@ export class GPLDebugSession extends LoggingDebugSession {
         args: DebugProtocol.ContinueArguments,
     ): Promise<void> {
         const threadName = this._threadIdToName.get(args.threadId);
+        // GitHub #28: 이전 step/continue 의 정지 확인 전(또는 최소 간격 미달)이면 제어기에 보내지 않고
+        // 성공 응답만 — 에러 응답은 키 반복 중 팝업 폭주를 만든다. UI 복귀는 _afterGatedStepRequest 참조.
+        const gate = threadName ? this._gateStepRequest('Continue', args.threadId) : null;
+        if (gate) {
+            response.body = { allThreadsContinued: false };
+            this.sendResponse(response);
+            this._afterGatedStepRequest(args.threadId);
+            return;
+        }
         if (threadName) {
             // Continue 직전 위치를 origin으로 저장 — 폴이 Running 순간을 놓쳐도
             // 위치 변경으로 새 정지(BP 적중)를 확실히 감지하기 위한 기준점.
@@ -1097,6 +1214,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
 
             // Clear stale handles from previous stop
+            this._cancelGateResync(args.threadId); // GitHub #28: 실제 Continue 의 StoppedEvent 가 UI 복귀를 대신한다
             this._clearStaleState();
             this._pendingAction = 'continue';
             this._lastResumeAt = Date.now();
@@ -1131,7 +1249,15 @@ export class GPLDebugSession extends LoggingDebugSession {
         args: DebugProtocol.NextArguments,
     ): Promise<void> {
         const threadName = this._threadIdToName.get(args.threadId);
+        // GitHub #28 게이트 — continueRequest 의 설명 참조
+        const gate = threadName ? this._gateStepRequest('Step', args.threadId) : null;
+        if (gate) {
+            this.sendResponse(response);
+            this._afterGatedStepRequest(args.threadId);
+            return;
+        }
         if (threadName) {
+            this._cancelGateResync(args.threadId); // GitHub #28: 실제 Step 의 StoppedEvent 가 UI 복귀를 대신한다
             this._clearStaleState();
             this._pendingAction = 'step';
             this._lastResumeAt = Date.now();
@@ -1154,7 +1280,15 @@ export class GPLDebugSession extends LoggingDebugSession {
         args: DebugProtocol.StepInArguments,
     ): Promise<void> {
         const threadName = this._threadIdToName.get(args.threadId);
+        // GitHub #28 게이트 — F12(step into) 홀드가 사고의 실제 경로였다. continueRequest 의 설명 참조
+        const gate = threadName ? this._gateStepRequest('Step', args.threadId) : null;
+        if (gate) {
+            this.sendResponse(response);
+            this._afterGatedStepRequest(args.threadId);
+            return;
+        }
         if (threadName) {
+            this._cancelGateResync(args.threadId); // GitHub #28: 실제 Step 의 StoppedEvent 가 UI 복귀를 대신한다
             this._clearStaleState();
             this._pendingAction = 'step';
             this._lastResumeAt = Date.now();
@@ -1177,7 +1311,15 @@ export class GPLDebugSession extends LoggingDebugSession {
         args: DebugProtocol.StepOutArguments,
     ): Promise<void> {
         const threadName = this._threadIdToName.get(args.threadId);
+        // GitHub #28 게이트 — continueRequest 의 설명 참조
+        const gate = threadName ? this._gateStepRequest('Step', args.threadId) : null;
+        if (gate) {
+            this.sendResponse(response);
+            this._afterGatedStepRequest(args.threadId);
+            return;
+        }
         if (threadName) {
+            this._cancelGateResync(args.threadId); // GitHub #28: 실제 Step 의 StoppedEvent 가 UI 복귀를 대신한다
             this._clearStaleState();
             this._pendingAction = 'step';
             this._lastResumeAt = Date.now();
@@ -1213,6 +1355,87 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._fastPoll();
         }
         this.sendResponse(response);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Step/Continue 게이트 (GitHub #28)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * step/continue 요청 게이트 판정(stepGate.shouldGateStepRequest). 게이트되면 사유를 돌려주고 무시 건수를
+     * 기록한다 — 첫 건과 이후 STEP_GATE_LOG_EVERY 건마다 1회 로그, pending 해소 시 _pollThreadStates 가 요약.
+     * pauseRequest(Break)는 게이트하지 않는다 — 폭주한 continue 를 멈추는 수단이어야 하므로.
+     */
+    private _gateStepRequest(kind: 'Step' | 'Continue', threadId: number): StepGateReason | null {
+        const now = Date.now();
+        const reason = shouldGateStepRequest({
+            pendingAction: this._pendingAction,
+            pendingThreadId: this._pendingThreadId,
+            requestThreadId: threadId,
+            lastResumeAt: this._lastResumeAt,
+            now,
+            minIntervalMs: this._minStepIntervalMs,
+        });
+        if (!reason) { return null; }
+        this._stepGateIgnored++;
+        if (this._stepGateIgnored === 1 || this._stepGateIgnored % GPLDebugSession.STEP_GATE_LOG_EVERY === 0) {
+            const why = reason === 'min-interval'
+                ? `마지막 재개 후 ${now - this._lastResumeAt}ms < 최소 간격 ${this._minStepIntervalMs}ms`
+                : `이전 ${this._pendingAction} 정지 확인 대기 중`;
+            const tally = this._stepGateIgnored > 1 ? `, 누적 ${this._stepGateIgnored}건` : '';
+            this._log(`${kind} 요청 무시 — ${why} (GitHub #28 게이트${tally})`);
+        }
+        return reason;
+    }
+
+    /**
+     * 게이트로 무시한 요청의 뒤처리(응답을 보낸 뒤 호출). VS Code 는 next/continue 의 성공 응답을 받으면
+     * 해당 쓰레드를 '실행 중'으로 시뮬레이션하고 다음 StoppedEvent 까지 스텝 버튼을 잠근다.
+     * - pending 이 남아 있으면: 그 pending 이 해소될 때 _pollThreadStates 가 StoppedEvent 를 보내 UI 가 복귀한다
+     *   (stackTraceRequest 는 pending 동안 캐시 프레임을, 해소 뒤에는 _prefetchFramesAfterStop 이 워밍한 프레임을 준다).
+     * - 이 쓰레드에 pending 이 없으면(최소 간격 미달 게이트, 또는 다른 쓰레드의 pending 중): 예정된 StoppedEvent 가
+     *   없어 UI 가 '실행 중'에 갇힌다. 쓰레드는 이미 정지 상태이므로 최소 간격이 지난 뒤(하한 250ms, 키 반복 중
+     *   쓰레드당 1회로 합침) 같은 위치의 StoppedEvent 를 재발사해 UI 를 되돌린다 — 제어기 명령은 없다.
+     *   그 사이 이 쓰레드에 실제 step/continue 가 나가면 그쪽 경로가 예약을 접는다(_cancelGateResync).
+     */
+    private _afterGatedStepRequest(threadId: number): void {
+        if (this._isPendingFor(threadId) || this._gateResyncTimers.has(threadId)) { return; }
+        const remaining = Math.max(0, this._minStepIntervalMs - (Date.now() - this._lastResumeAt));
+        const wait = Math.max(remaining, 250) + 5;
+        this._gateResyncTimers.set(threadId, setTimeout(() => {
+            this._gateResyncTimers.delete(threadId);
+            if (!this._isConnected || !this._configurationDone || this._isPendingFor(threadId)) { return; }
+            const name = this._threadIdToName.get(threadId);
+            const state = name ? this._previousThreadStates.get(name) : undefined;
+            if (state === 'Break' || state === 'Paused' || state === 'Error') {
+                // 원래 정지 reason 은 보관하지 않으므로 gplFocusThread 와 같은 상태 기반 근사치(UI 라벨에만 영향)
+                this.sendEvent(new StoppedEvent(state === 'Error' ? 'exception' : 'breakpoint', threadId));
+                this._log(`Step 게이트: 무시한 요청 뒤 UI 복귀용 StoppedEvent 재발사 (${name}, 제어기 명령 없음)`);
+            }
+        }, wait));
+    }
+
+    /** 이 쓰레드의 정지 확인을 기다리는 pending 이 있는가('entry' 는 모든 쓰레드에 해당). 해소 시 StoppedEvent 가 온다. */
+    private _isPendingFor(threadId: number): boolean {
+        return this._pendingAction === 'entry'
+            || (this._pendingAction !== null && this._pendingThreadId === threadId);
+    }
+
+    /**
+     * UI 복귀 재발사 예약을 접는다 — 그 쓰레드에 실제 step/continue 가 나가면(그쪽 StoppedEvent 가 UI 를 복귀시킴)
+     * 해당 쓰레드만, disconnect 시(인자 없음) 전부.
+     */
+    private _cancelGateResync(threadId?: number): void {
+        if (threadId === undefined) {
+            for (const handle of this._gateResyncTimers.values()) { clearTimeout(handle); }
+            this._gateResyncTimers.clear();
+            return;
+        }
+        const handle = this._gateResyncTimers.get(threadId);
+        if (handle) {
+            clearTimeout(handle);
+            this._gateResyncTimers.delete(threadId);
+        }
     }
 
     // ═══════════════════════════════════════════════════════
@@ -2712,17 +2935,28 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
-     * ⑦ 적응형 백업 폴: Running 쓰레드가 있으면 짧은 간격(RUNNING_BACKUP_POLL_MS)으로,
-     * 모두 정지/Idle이면 사용자 간격(_pollIntervalMs)으로 재관측한다.
-     * 정지 중 상태 변화는 사용자 액션이 시작점이라 _fastPoll이 즉시 커버하므로,
-     * 정지 중 트래픽은 기존과 동일하고 실행 중에만 감지 안전망이 촘촘해진다.
+     * ⑦ 적응형 백업 폴: Running 쓰레드가 있고 1403 이 부재(health 없음/비alive)이면 짧은 간격
+     * (_runningBackupPollMs)으로, 1403 이 정상이거나 모두 정지/Idle이면 사용자 간격(_pollIntervalMs)으로 재관측한다.
+     * GitHub #22: 1403 이 정상이면 정지/BP 히트는 1403 트리거(onDebugPollTrigger)가 먼저 알려주므로 촘촘한
+     * 백업 폴은 트래픽 낭비다(실측 77분간 Show Thread 922회). 정책은 폴마다 재평가하되 로그는 바뀔 때만 남긴다.
+     * 정지 중 상태 변화는 사용자 액션이 시작점이라 _fastPoll이 즉시 커버하므로 정지 중 트래픽은 기존과 동일하다.
      */
     private _scheduleNextIntervalPoll(gen: number): void {
         if (gen !== this._pollTimerGen || !this._isConnected) { return; }
         const anyRunning = (this._lastThreadList ?? []).some(t => t.state === 'Running');
-        const delay = anyRunning
-            ? Math.min(GPLDebugSession.RUNNING_BACKUP_POLL_MS, this._pollIntervalMs)
-            : this._pollIntervalMs;
+        let delay = this._pollIntervalMs;
+        if (anyRunning) {
+            const health = getRuntimeConsoleHealth();
+            const alive = health?.alive === true;
+            delay = alive ? this._pollIntervalMs : Math.min(this._runningBackupPollMs, this._pollIntervalMs);
+            const policy: 'alive' | 'absent' = alive ? 'alive' : 'absent';
+            if (policy !== this._backupPollPolicy) {
+                this._backupPollPolicy = policy;
+                this._log(alive
+                    ? `백업 폴: 1403 정상(${health?.state}) → ${delay}ms (GitHub #22)`
+                    : `백업 폴: 1403 부재(${health ? health.state : '상태 공급자 없음'}) → ${delay}ms (GitHub #22)`);
+            }
+        }
         this._pollTimer = setTimeout(() => {
             this._pollTimer = undefined;
             void (async () => {
@@ -3072,6 +3306,11 @@ export class GPLDebugSession extends LoggingDebugSession {
         } finally {
             this._pollInFlight = false;
             this._lastPollCompletedAt = Date.now();
+            // GitHub #28: pending 이 해소됐으면 게이트로 무시한 요청 수를 1회 요약하고 0 으로
+            if (!this._pendingAction && this._stepGateIgnored > 0) {
+                this._log(`Step 게이트: 정지 확인 대기·최소 간격으로 무시한 요청 ${this._stepGateIgnored}건 (GitHub #28)`);
+                this._stepGateIgnored = 0;
+            }
             // ④ 이번 폴 진행 중 유실된 트리거가 있으면 즉시 1회 재폴 (30ms 뒤, force)
             if (this._pollRetryRequested) {
                 this._pollRetryRequested = false;
@@ -3324,5 +3563,193 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         this._log(`attach preflight: ${projectName} 브레이크포인트 ${cleared}/${controllerBps.length} 정리`);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Source staleness — 제어기 컴파일 코드보다 새로운 소스 감지 + BP 강등 (GitHub #21)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * 컴파일 스냅샷(deployRecord)과 현재 로컬 소스를 비교해 _staleFiles 를 재구성하고 `gpl.sourceStale` 이벤트를
+     * 보낸다(빈 목록 = 해소 → 확장이 상태바 배지를 지운다). 판정 근거는 "우리가 올려서 컴파일한 소스의 스냅샷"이며
+     * 제어기 상태가 아니다(§0 — 제어기 상태는 <STATUS> 로만 판정).
+     * - 기록 없음: 판정 불가 → 1회 로그, 'compiled-before-edit' 항목은 버리고(세션 중 저장 항목은 유지) 이벤트 전송.
+     * - .gpl/.gpo 만 stale 대상. .gpr 변경은 'project-file' 로 로그만(파일 목록/옵션 변경은 BP 줄 번호와 무관).
+     * - 세션 중 저장(saved-in-session) 항목은 기록이 그 저장 이후 갱신된 경우(재컴파일)에만 해제한다.
+     */
+    private _evaluateSourceStaleness(trigger: string): void {
+        const rec = this._config && this._projectName
+            ? getCompiledRecord(this._config.ip, this._projectName)
+            : undefined;
+        if (!rec) {
+            if (!this._staleNoRecordLogged) {
+                this._staleNoRecordLogged = true;
+                this._log(this._projectName
+                    ? '[stale] 배포 기록 없음 — 이 워크스페이스에서 Deploy/F5 로 컴파일한 이력이 없어 BP 신뢰성을 판정할 수 없습니다 (GitHub #21)'
+                    : '[stale] 프로젝트명 미확정 — BP 신뢰성 판정을 생략합니다 (GitHub #21)');
+            }
+            this._compiledRecordAt = undefined;
+            for (const [key, e] of [...this._staleFiles]) {
+                if (e.reason === 'compiled-before-edit') { this._staleFiles.delete(key); }
+            }
+            this._sendSourceStaleEvent(trigger);
+            return;
+        }
+
+        // 비교 기준 폴더: 기록의 projectDir 이 이 세션의 프로젝트 폴더 중 하나면 그것, 아니면 첫 프로젝트 폴더
+        // (워크스페이스에 사본이 있어도 디버그 대상 폴더로 비교), 둘 다 없으면 기록의 폴더.
+        const projectDir = this._projectDirs.find(d => this._isSamePath(d, rec.projectDir))
+            ?? this._projectDirs[0]
+            ?? rec.projectDir;
+        let diff: SnapshotDiff;
+        try {
+            diff = compareWithLocal(rec, projectDir);
+        } catch (err: any) {
+            this._log(`[stale] 스냅샷 비교 실패(무시): ${err?.message ?? err} — ${projectDir}`);
+            return;
+        }
+        this._compiledRecordAt = rec.compiledAt;
+
+        const isSource = (p: string) => /\.(gpl|gpo)$/i.test(p);
+        const next = new Map<string, StaleSourceEntry>();
+        for (const rel of diff.stale) {
+            if (!isSource(rel)) { continue; }
+            next.set(path.posix.basename(rel).toLowerCase(), { relPath: rel, reason: 'compiled-before-edit' });
+        }
+        // 세션 중 저장 항목 이월 — 기록이 저장 이후 갱신됐으면(재컴파일) 해제
+        for (const [key, e] of this._staleFiles) {
+            if (e.reason !== 'saved-in-session' || next.has(key)) { continue; }
+            if (rec.compiledAt > (e.savedAt ?? 0)) { continue; }
+            next.set(key, e);
+        }
+        this._staleFiles = next;
+
+        const when = formatCompiledAt(rec.compiledAt);
+        if (next.size > 0) {
+            const list = [...next.values()].map(e => e.relPath).join(', ');
+            this._log(`[stale] 마지막 Compile(${when}) 이후 변경된 소스 ${next.size}개 (${trigger}): ${list} — 이 파일들의 BP 는 재배포 전까지 신뢰 불가 (GitHub #21)`);
+        } else {
+            this._log(`[stale] 로컬 소스가 마지막 Compile(${when}) 스냅샷과 일치 (${trigger})`);
+        }
+        const gprChanged = diff.stale.filter(p => /\.gpr$/i.test(p));
+        if (gprChanged.length > 0) {
+            this._log(`[stale] project-file 변경: ${gprChanged.join(', ')} — 파일 목록/옵션이 바뀌었을 수 있습니다(BP 판정에는 미반영)`);
+        }
+        const composition = [
+            ...diff.missing.filter(isSource).map(p => `삭제 ${p}`),
+            ...diff.added.filter(isSource).map(p => `추가 ${p}`),
+        ];
+        if (composition.length > 0) {
+            this._log(`[stale] 컴파일 이후 파일 구성 변경: ${composition.join(', ')} (추가된 파일은 제어기에 코드가 없어 BP 가 걸리지 않습니다)`);
+        }
+        this._sendSourceStaleEvent(trigger);
+    }
+
+    /** 확장(extension.ts)이 상태바 배지/알림으로 표시하는 커스텀 이벤트. staleFiles 가 비어 있으면 해소. */
+    private _sendSourceStaleEvent(trigger: string): void {
+        this.sendEvent(new Event('gpl.sourceStale', {
+            projectName: this._projectName,
+            compiledAt: this._compiledRecordAt,
+            staleFiles: [...this._staleFiles.values()].map(e => e.relPath),
+            trigger,
+        }));
+    }
+
+    /** stale 파일 BP 의 DAP message(BREAKPOINTS 뷰 툴팁). 기록이 없으면 세션 중 저장 근거로 표기. */
+    private _staleBreakpointMessage(): string {
+        const since = this._compiledRecordAt !== undefined
+            ? `마지막 Compile ${formatCompiledAt(this._compiledRecordAt)} 이후 수정`
+            : '이 디버그 세션 중 저장됨';
+        return `소스가 제어기 컴파일 코드보다 새로움(${since}) — Stop + Upload + Run 으로 재배포해야 BP 가 실제 코드 줄에 걸립니다`;
+    }
+
+    /**
+     * 세션 중 .gpl/.gpo 저장 감지(디버그 대상 프로젝트 폴더 아래만). 저장 내용이 컴파일 스냅샷과 같으면
+     * (무변경 저장·되돌리기) stale 이 아니며 오히려 기존 stale 을 해제한다 — 기록이 있을 때만 판정 가능.
+     * 그 외에는 'saved-in-session' 으로 표시하고 그 파일의 BP 를 BreakpointEvent 로 강등한다.
+     */
+    private _onSourceSavedInSession(doc: vscode.TextDocument): void {
+        if (!this._isConnected || doc.uri.scheme !== 'file') { return; }
+        const fsPath = doc.uri.fsPath;
+        if (!/\.(gpl|gpo)$/i.test(fsPath)) { return; }
+        const dir = this._projectDirs.find(d => this._isPathUnder(fsPath, d));
+        if (!dir) { return; } // 다른 프로젝트/사본 폴더의 파일은 이 세션과 무관
+        const relPath = path.relative(dir, fsPath).replace(/\\/g, '/');
+        const key = path.basename(fsPath).toLowerCase();
+
+        const rec = this._config ? getCompiledRecord(this._config.ip, this._projectName) : undefined;
+        if (rec && this._matchesCompiledSnapshot(rec, relPath, fsPath)) {
+            if (this._staleFiles.delete(key)) {
+                this._log(`[stale] ${relPath} 저장 내용이 컴파일 스냅샷과 일치 — stale 해제, BP 신뢰성 복원 (GitHub #21)`);
+                this._emitBreakpointStateForFile(key, true);
+                this._sendSourceStaleEvent('saved');
+            }
+            return;
+        }
+
+        const existing = this._staleFiles.get(key);
+        const savedAt = Date.now();
+        this._staleFiles.set(key, existing
+            ? { ...existing, savedAt }
+            : { relPath, reason: 'saved-in-session', savedAt });
+        if (existing) { return; } // 이미 stale — BP 는 강등돼 있고 배지도 표시 중(중복 이벤트/로그 방지)
+        this._log(`[stale] 세션 중 저장 감지: ${relPath} — 제어기는 옛 컴파일 코드를 실행 중이므로 이 파일의 BP 는 재배포 전까지 신뢰 불가 (GitHub #21)`);
+        this._emitBreakpointStateForFile(key, false, this._staleBreakpointMessage());
+        this._sendSourceStaleEvent('saved');
+    }
+
+    /** 컴파일 성공 기록이 갱신되면(같은 제어기·프로젝트) stale 을 재평가하고 풀린/새로 생긴 파일의 BP 상태를 갱신한다. */
+    private _onRecordCompiled(rec: CompiledRecord): void {
+        if (!this._isConnected || !this._config) { return; }
+        if (rec.ip.trim().toLowerCase() !== this._config.ip.trim().toLowerCase()) { return; }
+        if (rec.projectName.trim().toLowerCase() !== this._projectName.trim().toLowerCase()) { return; }
+        const before = new Set(this._staleFiles.keys());
+        this._evaluateSourceStaleness('recompiled');
+        for (const key of before) {
+            if (!this._staleFiles.has(key)) { this._emitBreakpointStateForFile(key, true); }
+        }
+        const message = this._staleBreakpointMessage();
+        for (const key of this._staleFiles.keys()) {
+            if (!before.has(key)) { this._emitBreakpointStateForFile(key, false, message); }
+        }
+    }
+
+    /** 저장된 파일의 sha1 이 기록의 스냅샷과 같은가(경로는 '/'·대소문자 무시 비교). 스탬프/sha1 없으면 false. */
+    private _matchesCompiledSnapshot(rec: CompiledRecord, relPath: string, fsPath: string): boolean {
+        const want = relPath.toLowerCase();
+        const stampKey = Object.keys(rec.files).find(k => k.replace(/\\/g, '/').toLowerCase() === want);
+        const stamp = stampKey ? rec.files[stampKey] : undefined;
+        if (!stamp?.sha1) { return false; }
+        try {
+            return crypto.createHash('sha1').update(fs.readFileSync(fsPath)).digest('hex') === stamp.sha1;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * 파일의 BP 들에 BreakpointEvent('changed') 로 verified/message 를 갱신한다. 제어기가 실제로 받아준 줄
+     * (_breakpoints)만 대상 — STATUS 실패로 verified=false 였던 BP 를 true 로 올리지 않는다.
+     */
+    private _emitBreakpointStateForFile(key: string, verified: boolean, message?: string): void {
+        const idMap = this._bpIds.get(key);
+        if (!idMap || idMap.size === 0) { return; }
+        const acceptedEntry = [...this._breakpoints.entries()].find(([file]) => file.toLowerCase() === key);
+        const accepted = acceptedEntry?.[1] ?? new Set<number>();
+        for (const [line, id] of idMap) {
+            if (!accepted.has(line)) { continue; }
+            const bp: DebugProtocol.Breakpoint = { id, verified, line };
+            if (!verified && message) { bp.message = message; }
+            this.sendEvent(new BreakpointEvent('changed', bp));
+        }
+    }
+
+    /** 두 경로가 같은 폴더인가(Windows 대소문자 무시 — path.win32.relative 가 처리). */
+    private _isSamePath(a: string, b: string): boolean {
+        try {
+            return path.relative(path.resolve(a), path.resolve(b)) === '';
+        } catch {
+            return false;
+        }
     }
 }

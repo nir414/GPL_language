@@ -30,3 +30,40 @@ export const onDebugPollTrigger: vscode.Event<void> = _onDebugPollTrigger.event;
 export function fireDebugPollTrigger(): void {
     _onDebugPollTrigger.fire();
 }
+
+// ─── 1403 런타임 콘솔 건강 상태 공급 (GitHub #22) ───────────────
+
+/**
+ * 1403 런타임 콘솔의 건강 상태 요약. 디버그 세션이 Running 쓰레드 백업 폴 간격을 정할 때 참조한다:
+ * alive 면 정지/BP 히트는 1403 트리거가 먼저 알려주므로 백업 폴을 사용자 간격(threadPollIntervalMs)으로
+ * 완화하고, 아니면 gpl.debug.runningBackupPollMs 로 촘촘히 폴링한다.
+ * (배경: 1Hz 백업 폴이 부팅 후 77분간 Show Thread -web 922회를 만들었다 — GitHub #22 '5번째 다운' 제안 2)
+ *
+ * alive 판정은 공급자(extension.ts)가 runtimeConsole.getStatusSnapshot() 으로 한다:
+ * state 가 'idle' | 'stopped' | 'connect-failed' | 'socket-error' 가 아니고
+ * (lastConnectAt 또는 lastPayloadAt) 이 60초 이내.
+ */
+export interface RuntimeConsoleHealth {
+    alive: boolean;
+    state: string;
+    lastConnectAt?: number;
+    lastPayloadAt?: number;
+}
+
+let _runtimeConsoleHealthProvider: (() => RuntimeConsoleHealth | undefined) | undefined;
+
+/** extension.ts 가 공급자를 등록한다(undefined 로 해제). 디버그 세션은 매 백업 폴 스케줄 시점에 호출한다. */
+export function setRuntimeConsoleHealthProvider(
+    fn: (() => RuntimeConsoleHealth | undefined) | undefined,
+): void {
+    _runtimeConsoleHealthProvider = fn;
+}
+
+/** 현재 1403 건강 상태. 공급자가 없거나 예외를 내면 undefined(호출측은 '1403 부재'로 취급). */
+export function getRuntimeConsoleHealth(): RuntimeConsoleHealth | undefined {
+    try {
+        return _runtimeConsoleHealthProvider?.();
+    } catch {
+        return undefined;
+    }
+}

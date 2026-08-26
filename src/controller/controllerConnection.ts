@@ -1,8 +1,14 @@
-import * as net from 'net';
 import * as vscode from 'vscode';
 import { appendLiveLog } from '../log/liveLogTerminal';
 import { formatConsoleCommandClassification } from './consoleCommandClassifier';
 import { ResponseBodyStreamer } from './trafficResponseBody';
+import { sendConsoleCommand, recordTrafficLine, TrafficDirection } from './consoleSocket';
+import type { CommandResponse } from './consoleSocket';
+
+// 1402 소켓 계층(consoleSocket.ts, vscode 무의존 — GitHub #22)의 공개 API 재노출.
+// 호출자는 종전처럼 이 모듈만 import 한다.
+export type { CommandResponse, CommandResponseMeta, ConnectionStats } from './consoleSocket';
+export { closeControllerConnection, getConnectionStats, recordTrafficLine, getRecentTraffic, isCleanlyTerminated } from './consoleSocket';
 
 export interface ControllerConfig {
 	ip: string;
@@ -12,22 +18,6 @@ export interface ControllerConfig {
 	ftpBasePath: string;
 	ftpFlashProjectsPath: string;
 	preferIPv4: boolean;
-}
-
-export interface CommandResponseMeta {
-	responseComplete: boolean;
-	bytesReceived: number;
-	lastChunkAt: string;
-	idleTimeoutMs: number;
-	statusTagReceived: boolean;
-	dataTagClosed: boolean;
-	extraIdleApplied: boolean;
-	durationMs: number;
-}
-
-export interface CommandResponse {
-	raw: string;
-	meta: CommandResponseMeta;
 }
 
 export interface SendCommandOptions {
@@ -49,6 +39,32 @@ const DEFAULT_CONSOLE_PORT = 1403;
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_FTP_BASE_PATH = '/GPL';
 const DEFAULT_FTP_FLASH_PROJECTS_PATH = '/flash/projects';
+
+// ── 1402 keep-alive (GitHub #22) ────────────────────────
+// 종전엔 명령마다 새 TCP 연결을 열어 1402만 1~3 conn/s 였다(제어기 TCP 자원 고갈 가설). 기본 on.
+// 끄면 종전과 완전히 동일한 단명 연결 동작(설정 키 스키마는 package.json).
+const DEFAULT_KEEP_ALIVE_1402 = true;
+const DEFAULT_KEEP_ALIVE_IDLE_CLOSE_MS = 30000;
+const MIN_KEEP_ALIVE_IDLE_CLOSE_MS = 1000;
+
+export interface KeepAliveOptions {
+	/** `gpl.controller.keepAlive1402` — false면 명령마다 새 연결(종전 동작). */
+	enabled: boolean;
+	/** `gpl.controller.keepAliveIdleCloseMs` — 유휴 소켓을 닫기까지의 시간(하한 1000). */
+	idleCloseMs: number;
+}
+
+/** 1402 keep-alive 설정. 명령마다 읽으므로 설정 변경이 다음 명령부터 즉시 반영된다. */
+export function getKeepAliveOptions(): KeepAliveOptions {
+	const cfg = vscode.workspace.getConfiguration('gpl.controller');
+	const idle = cfg.get<number>('keepAliveIdleCloseMs', DEFAULT_KEEP_ALIVE_IDLE_CLOSE_MS);
+	return {
+		enabled: cfg.get<boolean>('keepAlive1402', DEFAULT_KEEP_ALIVE_1402),
+		idleCloseMs: Number.isFinite(idle)
+			? Math.max(MIN_KEEP_ALIVE_IDLE_CLOSE_MS, Math.floor(idle))
+			: DEFAULT_KEEP_ALIVE_IDLE_CLOSE_MS,
+	};
+}
 
 // ── Traffic Logger ──────────────────────────────────────
 
@@ -101,8 +117,9 @@ export function formatTrafficTimestamp(now: Date = new Date()): string {
 
 /**
  * 방향 표식: `>>>` 송신 명령 / ` | ` 수신 본문 줄(실시간, 설정 on일 때) / `<<<` 수신 완료 요약 / `---` 이벤트·오류.
+ * 최종 라인은 GPL Traffic 채널·Live Log Terminal에 찍히고, 사후 스냅샷용 링버퍼(recordTrafficLine)에도 남는다.
  */
-function logTraffic(direction: '>>>' | '<<<' | '---' | ' | ', message: string): void {
+function logTraffic(direction: TrafficDirection, message: string): void {
 	const ts = formatTrafficTimestamp();
 
 	// 명령 포맷 라벨 추가 (송신 시 자동 판단)
@@ -115,12 +132,13 @@ function logTraffic(direction: '>>>' | '<<<' | '---' | ' | ', message: string): 
 		const commandClass = isXml ? '' : `[${formatConsoleCommandClassification(commandText)}]`;
 		labeledMsg = `${format}${commandClass} ${message}`;
 	}
-	
+
 	const line = `[${ts}] ${direction} ${labeledMsg}`;
 	if (_trafficChannel) {
 		_trafficChannel.appendLine(line);
 	}
 	appendLiveLog(`[1402] ${line}`);
+	recordTrafficLine(line);
 }
 
 // 세션 한정 controller 오버라이드 (메모리 전용, 디스크 미저장).
@@ -161,7 +179,8 @@ export function getControllerConfig(): ControllerConfig {
 
 /**
  * Send a single command to the controller via TCP and return the raw response.
- * Each call opens a new connection (the controller uses request-response style).
+ * 명령은 직렬 큐로 한 번에 하나씩 나가며, keep-alive(기본 on)면 직전 명령이 깨끗하게 끝난 소켓을 재사용한다.
+ * (종전 "명령마다 새 연결" 동작은 `gpl.controller.keepAlive1402: false` — GitHub #22)
  */
 export function sendCommand(
 	command: string,
@@ -174,8 +193,8 @@ export function sendCommand(
 let controllerCommandQueue: Promise<void> = Promise.resolve();
 
 // 명령 간 최소 idle gap. 제어기는 단일 클라이언트/단일 명령 스트림을 가정하므로
-// 매 명령 connect→write→close 사이에 짧은 휴식 시간을 두어 ECONNRESET/idle EOF를 줄인다.
-// 정상 완료 후: 15ms / 실패 후: 100ms (재시도 시 부담 완화).
+// 명령 사이에 짧은 휴식 시간을 두어 ECONNRESET/idle EOF를 줄인다(keep-alive 재사용 시에도 유지 — 제어기가
+// 직전 응답 뒤처리를 끝낼 여유). 정상 완료 후: 15ms / 실패 후: 100ms (재시도 시 부담 완화).
 const INTER_COMMAND_GAP_MS = 15;
 const INTER_COMMAND_GAP_AFTER_FAIL_MS = 100;
 
@@ -196,17 +215,17 @@ export function sendCommandDetailed(
 	return enqueueControllerCommand(() => sendCommandDetailedInternal(command, config, options));
 }
 
+/**
+ * 소켓 처리 본체는 consoleSocket.ts(vscode 무의존, 테스트 가능)로 옮겼다(GitHub #22).
+ * 여기서는 설정(제어기 주소·타임아웃·keep-alive·트래픽 표시)을 읽어 옵션으로 넘기고 로거를 연결만 한다.
+ */
 function sendCommandDetailedInternal(
 	command: string,
 	config?: Partial<ControllerConfig>,
 	options?: SendCommandOptions,
 ): Promise<CommandResponse> {
 	const cfg = { ...getControllerConfig(), ...config };
-	const timeout = options?.timeoutMs ?? cfg.timeoutMs;
-	const minResponseBytes = Math.max(1, options?.minResponseBytes ?? 10);
-	const idleMs = Math.max(50, options?.idleMs ?? 300);
-	const extraIdleMsOnIncomplete = Math.max(0, options?.extraIdleMsOnIncomplete ?? 0);
-	const waitForStatusClose = options?.waitForStatusClose === true;
+	const keepAlive = getKeepAliveOptions();
 
 	// 응답 본문 실시간 표시(설정 on일 때): chunk 도착 즉시 완성된 줄을 ` | ` 라인으로 흘려보낸다.
 	// 모든 종료 경로(정상/타임아웃/에러/소켓 종료)에서 flush 해 도착한 부분까지는 반드시 보이게 한다.
@@ -215,165 +234,20 @@ function sendCommandDetailedInternal(
 		? new ResponseBodyStreamer(line => logTraffic(' | ', line), { maxChars: trafficOpts.maxResponseChars })
 		: null;
 
-	// 응답 누적 수신: <STATUS> 찾을 때까지 기다리되,
-	// 최소 바이트 수 && idle 조건으로도 완성 응답으로 판단
-	return new Promise<CommandResponse>((resolve, reject) => {
-		const socket = new net.Socket();
-		let responseBuffer = '';
-		let settled = false;
-		let gracefulCloseTimer: ReturnType<typeof setTimeout> | null = null;
-		let idleTimer: ReturnType<typeof setTimeout> | null = null;
-		const startMs = Date.now();
-		let lastChunkAtMs = startMs;
-		let extraIdleApplied = false;
-
-		const buildMeta = (): CommandResponseMeta => {
-			const raw = responseBuffer || '';
-			const statusTagReceived = raw.includes('</STATUS>');
-			const dataTagClosed = raw.includes('</DATA>');
-			return {
-				// 하드 규칙 2: 완전한 응답은 종결자 </STATUS> 수신으로만 판정한다.
-				// (</DATA>만 닫힌 응답은 STATUS 누락 — idle/close 완료 경로에서 잘렸을 수 있음)
-				responseComplete: statusTagReceived,
-				bytesReceived: Buffer.byteLength(raw, 'utf8'),
-				lastChunkAt: new Date(lastChunkAtMs).toISOString(),
-				idleTimeoutMs: idleMs,
-				statusTagReceived,
-				dataTagClosed,
-				extraIdleApplied,
-				durationMs: Date.now() - startMs,
-			};
-		};
-
-		logTraffic('>>>', `${cfg.ip}:${cfg.port}  ${command}`);
-
-		const timer = setTimeout(() => {
-			if (!settled) {
-				settled = true;
-				if (idleTimer) clearTimeout(idleTimer);
-				socket.destroy();
-				bodyLog?.flush();
-				logTraffic('---', `TIMEOUT (${timeout}ms): ${command}`);
-				reject(new Error(`Command timeout (${timeout}ms): ${command}`));
-			}
-		}, timeout);
-
-		const completeResponse = () => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			if (idleTimer) clearTimeout(idleTimer);
-
-			const elapsed = Date.now() - startMs;
-			// DATA 본문에 STATUS 텍스트가 포함될 수 있어 마지막 STATUS 블록을 채택한다(로그 라벨용).
-			const statusMatches = [...responseBuffer.matchAll(/<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/g)];
-			const statusMatch = statusMatches.length ? statusMatches[statusMatches.length - 1] : null;
-			const statusStr = statusMatch ? `STATUS ${statusMatch[1]}` : 'OK';
-			const lines = responseBuffer.split(/\r?\n/).filter(l => l.trim() && !l.includes('<STATUS>') && !l.includes('</STATUS>') && !l.includes('<DATA>') && !l.includes('</DATA>')).length;
-			bodyLog?.flush();
-			logTraffic('<<<', `${statusStr}  ${lines} lines  ${elapsed}ms`);
-			gracefulCloseTimer = setTimeout(() => {
-				// 제어기가 FIN을 안 보내 half-open으로 남는 경우 강제 정리 (소켓 누수/잔류 연결 방지).
-				logTraffic('---', `FIN wait over (${cfg.ip}:${cfg.port}) after STATUS for ${command} — force close`);
-				if (!socket.destroyed) { socket.destroy(); }
-			}, 1000);
-			socket.end();
-			resolve({ raw: responseBuffer.trim(), meta: buildMeta() });
-		};
-
-		const connectOptions = cfg.preferIPv4
-			? { host: cfg.ip, port: cfg.port, family: 4 }
-			: { host: cfg.ip, port: cfg.port };
-
-		socket.connect(connectOptions, () => {
-			// 요청-응답형 짧은 명령이므로 Nagle을 꺼서 command 전송 지연(및 delayed-ACK 상호작용)을 줄인다.
-			// 1403 스트림 소켓과 동일한 정책.
-			socket.setNoDelay(true);
-			const payload = Buffer.from(command + '\r\n', 'ascii');
-			socket.write(payload);
-		});
-
-		socket.on('data', (data: Buffer) => {
-			lastChunkAtMs = Date.now();
-			const text = data.toString('ascii').replace(/\0/g, '');
-			responseBuffer += text;
-			bodyLog?.push(text);
-
-			// 이전 idle timer 취소
-			if (idleTimer) {
-				clearTimeout(idleTimer);
-				idleTimer = null;
-			}
-
-			// 완성 응답 조건 1(terminator-first): 종결자 </STATUS>가 버퍼 끝에 도달.
-			// includes() 판정은 DATA 본문에 STATUS 텍스트가 담긴 응답(로그/파일 덤프 등)에서
-			// 본문 중간을 종결로 오인할 수 있어 "버퍼 끝" 기준으로 판정한다.
-			if (/<\/STATUS>\s*$/.test(responseBuffer)) {
-				completeResponse();
-				return;
-			}
-
-			// 완성 응답 조건 2: 최소 바이트 수 && idle 대기
-			// (부분 수신으로 인한 "무응답" 오해 방지)
-			// waitForStatusClose면 idle 조기 완료를 끄고 오직 </STATUS>/소켓 종료/하드 타임아웃으로만 완료한다.
-			// idle로 완료된 STATUS 없는 응답은 meta.responseComplete=false로 표시된다(하드 규칙 2, B4).
-			if (!waitForStatusClose && responseBuffer.length >= minResponseBytes) {
-				idleTimer = setTimeout(() => {
-					if (!responseBuffer.includes('</STATUS>') && extraIdleMsOnIncomplete > 0 && !extraIdleApplied) {
-						extraIdleApplied = true;
-						idleTimer = setTimeout(() => {
-							if (!settled) {
-								completeResponse();
-							}
-						}, extraIdleMsOnIncomplete);
-						return;
-					}
-					if (!settled) {
-						completeResponse();
-					}
-				}, idleMs);
-			}
-		});
-
-		socket.on('error', (err: Error) => {
-			if (gracefulCloseTimer) {
-				clearTimeout(gracefulCloseTimer);
-				gracefulCloseTimer = null;
-			}
-			if (idleTimer) clearTimeout(idleTimer);
-			if (!settled) {
-				settled = true;
-				clearTimeout(timer);
-				bodyLog?.flush();
-				logTraffic('---', `ERROR: ${err.message}`);
-				reject(new Error(`Connection error (${cfg.ip}:${cfg.port}): ${err.message}`));
-			}
-		});
-
-		socket.on('close', () => {
-			if (gracefulCloseTimer) {
-				clearTimeout(gracefulCloseTimer);
-				gracefulCloseTimer = null;
-			}
-			if (idleTimer) clearTimeout(idleTimer);
-			if (!settled) {
-				settled = true;
-				clearTimeout(timer);
-				bodyLog?.flush();
-				if (responseBuffer.length > 0) {
-					const elapsed = Date.now() - startMs;
-					// 부분 버퍼도 반환은 한다(HTTP 교차 응답 감지 등 raw 소비자 유지).
-					// 단 meta.responseComplete=false로 표시되어 호출자가 절단 응답을 성공으로 오독하지 않는다(B5).
-					const hasStatusClose = responseBuffer.includes('</STATUS>');
-					logTraffic('<<<', `(closed${hasStatusClose ? '' : ', INCOMPLETE — no </STATUS>'}) ${responseBuffer.length} bytes  ${elapsed}ms`);
-					resolve({ raw: responseBuffer.trim(), meta: buildMeta() });
-				} else {
-					logTraffic('---', `CLOSED without response: ${command}`);
-					reject(new Error(`Connection closed without response: ${command}`));
-				}
-			}
-		});
-	});
+	return sendConsoleCommand(
+		command,
+		{ ip: cfg.ip, port: cfg.port, preferIPv4: cfg.preferIPv4 },
+		{
+			timeoutMs: options?.timeoutMs ?? cfg.timeoutMs,
+			idleMs: Math.max(50, options?.idleMs ?? 300),
+			minResponseBytes: Math.max(1, options?.minResponseBytes ?? 10),
+			extraIdleMsOnIncomplete: Math.max(0, options?.extraIdleMsOnIncomplete ?? 0),
+			waitForStatusClose: options?.waitForStatusClose === true,
+			keepAlive: keepAlive.enabled,
+			keepAliveIdleCloseMs: keepAlive.idleCloseMs,
+		},
+		{ log: logTraffic, body: bodyLog },
+	);
 }
 
 /**

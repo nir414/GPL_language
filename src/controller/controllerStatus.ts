@@ -6,6 +6,8 @@
  *   - 고전원(High Power / 서보) ON/OFF
  *   - 각 축 위치(조인트 각도 + 직교 좌표)
  *   - 스레드 요약 / 에러 로그(기존 파서 재사용)
+ *   - (옵션 includeResources) 제어기 자원 지표 — Show Memory / Show Network -tcp / -mbuf
+ *     (GitHub #22 제안 8, 파서는 resourceProbes.ts)
  *
  * 설계 메모:
  *   위치/전원 값은 콘솔 `Execute <expression>` 응답의 <DATA>에서 숫자를 관대하게
@@ -25,6 +27,18 @@ import {
 	SHOW_THREAD_LIST_CMD,
 	ThreadInfo,
 } from './responseParser';
+import {
+	buildResourceSnapshot,
+	extractDataPayload,
+	ResourceSnapshot,
+	PROBE_MEMORY_CMD,
+	PROBE_NET_TCP_CMD,
+	PROBE_NET_MBUF_CMD,
+} from './resourceProbes';
+
+// 자원 프로브 명령/타입은 resourceProbes.ts 가 단일 출처. 기존 호출자 편의로 여기서도 재노출한다.
+export { PROBE_MEMORY_CMD, PROBE_NET_TCP_CMD, PROBE_NET_MBUF_CMD } from './resourceProbes';
+export type { ResourceSnapshot } from './resourceProbes';
 
 // ── 프로브 명령 (실제 제어기에서 echo 형식 확인 후 필요 시 조정) ──────────
 //
@@ -69,15 +83,19 @@ export interface ControllerStatusSnapshot {
 	errors: string[];
 	/** 사람이 읽을 수 있는 마지막 메모(디버그용). */
 	note?: string;
+	/**
+	 * 제어기 자원 지표(Show Memory / Show Network -tcp / -mbuf). `includeResources` 옵션으로 요청했을
+	 * 때만 채워진다(GitHub #22 — TCP 자원 고갈 가설 검증용 시계열 재료). 파싱 실패 항목은 null + raw.
+	 */
+	resources?: ResourceSnapshot;
 }
 
-/** <DATA>...</DATA> 본문을 추출. 없으면 STATUS 태그만 제거한 원문 반환. */
-function extractDataPayload(raw: string): string {
-	const m = raw.match(/<DATA>([\s\S]*?)<\/DATA>/i);
-	if (m) {
-		return m[1];
-	}
-	return raw.replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '');
+export interface FetchStatusOptions {
+	/**
+	 * true 면 자원 프로브 3명령을 추가로 보낸다(읽기 전용, 폴링당 왕복 3회 추가).
+	 * 기본 false — 대시보드만 true 로 호출하므로 진단 스냅샷 등 다른 호출자에는 영향이 없다.
+	 */
+	includeResources?: boolean;
 }
 
 /** 부호 있는 십진수(소수/지수 포함)를 모두 추출. */
@@ -116,6 +134,7 @@ const EMPTY_CART: CartesianPose = {
 /** 한 번의 폴링으로 전체 상태 스냅샷을 수집한다. */
 export async function fetchControllerStatus(
 	config?: Partial<ControllerConfig>,
+	options?: FetchStatusOptions,
 ): Promise<ControllerStatusSnapshot> {
 	const cfg = { ...getControllerConfig(), ...(config ?? {}) };
 	const snapshot: ControllerStatusSnapshot = {
@@ -198,6 +217,21 @@ export async function fetchControllerStatus(
 		} catch {
 			snapshot.errors = [];
 		}
+	}
+
+	// 3) 자원 지표(옵션) — 모두 읽기 전용 Show 명령. 위 배치와 별도로 보내 기존 항목의 지연을 늘리지
+	//    않는다(명령 큐가 직렬화하므로 총 소요는 같지만, 위 값이 먼저 확정된다). 트랜스포트 실패는
+	//    null → 스냅샷에 "응답 없음" 으로 남고, STATUS 오류(예: 미지원 스위치)는 코드+raw 만 남긴다.
+	if (options?.includeResources) {
+		const [memoryResp, tcpResp, mbufResp] = await Promise.all([
+			trySendCommand(PROBE_MEMORY_CMD, cfg, PROBE_TIMEOUT_MS),
+			trySendCommand(PROBE_NET_TCP_CMD, cfg, PROBE_TIMEOUT_MS),
+			trySendCommand(PROBE_NET_MBUF_CMD, cfg, PROBE_TIMEOUT_MS),
+		]);
+		snapshot.resources = buildResourceSnapshot(
+			{ memory: memoryResp, tcp: tcpResp, mbuf: mbufResp },
+			Date.now(),
+		);
 	}
 
 	return snapshot;

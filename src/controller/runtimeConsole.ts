@@ -4,8 +4,11 @@
  *
  * 프로토콜 동작 (현재 구현/테스트 기반 가설):
  *   - 연결 → 제어기가 이벤트 큐를 전달 → FIN (정상 종료)
- *   - FIN 후 즉시 재연결 → 다음 이벤트 배치 대기
+ *   - FIN 후 짧은 지연(`gpl.runtimeConsole.batchReconnectDelayMs`, 기본 250ms) 뒤 재연결 → 다음 배치 대기
  *   - 이벤트 없으면 연결 유지 또는 payload 없이 즉시 FIN (정상 폴링)
+ *
+ * 접속 churn 완화·재연결 워치독·접속 카운터는 GitHub #22 (2026-08-25 제어기 서비스 다운 사고) 대응.
+ * 순수 판정 로직은 ./runtimeConsoleGuards.ts 에 분리되어 있다.
  *
  * ⚠ 소켓 종료 시 반드시 socket.end() 사용 (FIN 전송).
  *   socket.destroy()는 RST를 보내며 제어기 내장 TCP 스택이
@@ -14,12 +17,20 @@
 
 import * as net from 'net';
 import * as vscode from 'vscode';
-import { getControllerConfig, getTrafficChannel, formatTrafficTimestamp } from './controllerConnection';
+import { getControllerConfig, getTrafficChannel, formatTrafficTimestamp, recordTrafficLine } from './controllerConnection';
 import { normalizeConsoleLine } from './responseParser';
 import { appendLiveLog } from '../log/liveLogTerminal';
+import { ConnectReason, ConnectStats, decideWatchdogAction } from './runtimeConsoleGuards';
 
-/** FIN+데이터 후 즉시 재연결 대기 (TCP 정리 여유) */
-const RECONNECT_IMMEDIATE_MS = 100;
+/**
+ * 배치(FIN+데이터) 완료 후 재연결 대기 기본값/하한 — 설정 `gpl.runtimeConsole.batchReconnectDelayMs`.
+ * 100 → 250ms 로 상향(GitHub #22): 1403은 배치마다 서버가 FIN 하므로 프로그램이 출력을 내는 동안
+ * 100ms 즉시 재접속은 30~40 connect/분의 접속 churn 을 만들었다(제어기 TCP 자원 고갈 가설).
+ * 250ms 는 런타임 로그 표시를 배치당 최대 0.15s 늦출 뿐이고, 디버거의 정지 감지는 1402
+ * `Show Thread -web` 백업 폴이 보완하므로 체감 차이가 없다. 하한 50ms 는 TCP 정리 여유.
+ */
+const DEFAULT_BATCH_RECONNECT_DELAY_MS = 250;
+const MIN_BATCH_RECONNECT_DELAY_MS = 50;
 /** 빈 세션 (이벤트 없이 FIN) 후 고정 간격 재연결 */
 const RECONNECT_IDLE_MS = 5_000;
 /** 에러/빈 세션 시 지수 백오프 설정 */
@@ -31,6 +42,15 @@ const GRACEFUL_CLOSE_TIMEOUT_MS = 3_000;
 // 1403 connect 자체 타임아웃: 방화벽 drop 등 블랙홀 대상에서 OS 기본(수십 초)까지
 // 'connecting' 상태로 고착되는 것을 막는다. destroy → close 경로에서 기존 재연결 백오프가 동작.
 const CONNECT_TIMEOUT_MS = 5_000;
+/**
+ * 재연결 워치독 주기 (GitHub #22). 2026-08-25 17:45:05 `CLOSE (empty=2)` 뒤 3분간 RECONNECT/CONNECT
+ * 로그가 전무한 채 1403 폴러가 멈춰 사망 직전 런타임 이벤트를 잃었다(원인 미확정). 워치독은
+ * "소켓 없음 + 재연결 타이머 없음" 같은 정지 상태를 주기적으로 감지해 강제 재연결한다.
+ * 판정 자체는 runtimeConsoleGuards.decideWatchdogAction (순수 함수, 테스트 있음).
+ */
+const WATCHDOG_INTERVAL_MS = 15_000;
+/** 접속 카운터 요약 로그 주기 (누적 N회 접속마다) */
+const CONNECT_SUMMARY_EVERY = 50;
 /** Connected 상태에서 이 시간 동안 데이터가 없으면 idle 힌트 표시 */
 const NO_OUTPUT_HINT_MS = 3_000;
 /** payload 없이 종료된 세션이 이 시간 이상 유지되면 정상 idle timeout으로 분류 */
@@ -51,6 +71,8 @@ const DEFAULT_IDLE_RECONNECT_BASE_MS = RECONNECT_IDLE_MS;
 const DEFAULT_IDLE_RECONNECT_MAX_MS = RECONNECT_MAX_MS;
 
 interface RuntimeConsoleTuning {
+    /** 배치 완료 후 재연결 지연 (하한 MIN_BATCH_RECONNECT_DELAY_MS) */
+    batchReconnectDelayMs: number;
     noPayloadWarnThreshold: number;
     unstableWarnCooldownMs: number;
     emptyNoticeEvery: number;
@@ -83,6 +105,12 @@ export interface RuntimeConsoleStatusSnapshot {
     lastErrorCode?: string;
     reconnectAttempt?: number;
     reconnectDelayMs?: number;
+    /** 누적 connect 시도 수 (connectInternal 이 실제로 소켓을 만든 횟수) — GitHub #22 접속 churn 관측 */
+    connectCount?: number;
+    /** 최근 60초 슬라이딩 윈도우 connect 수 */
+    connectsPerMinute?: number;
+    /** 재연결 워치독이 개입(강제 재연결/지연 타이머 대리 발화/connecting 고착 정리)한 누적 횟수 */
+    watchdogKicks?: number;
 }
 
 export class RuntimeConsole implements vscode.Disposable {
@@ -99,6 +127,19 @@ export class RuntimeConsole implements vscode.Disposable {
     /** 사용자가 명시적으로 stop()을 호출했을 때 true → 자동 재연결 금지 */
     private _explicitStop = false;
     private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    /** _reconnectTimer 의 예정 발화 시각 — 워치독이 "타이머가 있는데 발화하지 않는" 상태를 판정 */
+    private _reconnectDueAt = 0;
+    /** 다음 connect 의 이유 (접속 카운터 이유별 집계). armReconnectTimer 가 기록한다. */
+    private _pendingConnectReason: ConnectReason = 'start';
+    /** 최대 재시도 도달로 자동 재연결이 멈춘 상태 — 사용자 조작(start)으로만 해제, 워치독은 개입하지 않는다 */
+    private _reconnectStopped = false;
+    /** 재연결 워치독 (start()에서 켜고 stop()/dispose()에서 끈다) — GitHub #22 */
+    private _watchdogTimer: ReturnType<typeof setInterval> | null = null;
+    private _watchdogKicks = 0;
+    /** RECONNECT_STOPPED 상태에서 "개입 안 함" 로그를 1회만 남기기 위한 플래그 */
+    private _watchdogStoppedNoticeLogged = false;
+    /** 접속 카운터: 누적 / 최근 60초 / 이유별 — GitHub #22 제안 1 (자원 고갈 가설 검증) */
+    private readonly _connectStats = new ConnectStats(CONNECT_SUMMARY_EVERY);
     private _reconnectAttempt = 0;
     private _lastReconnectDelayMs = 0;
     private _lastError: Error | null = null;
@@ -183,6 +224,9 @@ export class RuntimeConsole implements vscode.Disposable {
             lastErrorCode: this._lastErrorCode || undefined,
             reconnectAttempt: this._reconnectAttempt > 0 ? this._reconnectAttempt : undefined,
             reconnectDelayMs: this._lastReconnectDelayMs > 0 ? this._lastReconnectDelayMs : undefined,
+            connectCount: this._connectStats.total,
+            connectsPerMinute: this._connectStats.perMinute(Date.now()),
+            watchdogKicks: this._watchdogKicks,
         };
     }
 
@@ -273,26 +317,30 @@ export class RuntimeConsole implements vscode.Disposable {
         if (this.socket) { return; }
         const forceImmediateReconnect = options?.forceImmediateReconnect === true;
         this._explicitStop = false;
+        // 워치독은 스트리밍이 살아 있어야 하는 구간(start~stop)에서만 돈다. 여기서 켜야 "아직 시작한
+        // 적 없는" 상태를 멈춤으로 오판해 자동 접속하는 일이 없다.
+        this.ensureWatchdog();
         if (this._reconnectTimer) {
             if (forceImmediateReconnect && delayMs <= 0) {
                 this.cancelReconnect();
                 this.logConsoleTraffic('---', 'RECONNECT timer canceled by forced start()');
-                this.connectInternal();
+                this.connectInternal('start');
             }
             return;
         }
         this._reconnectAttempt = 0;
+        // 최대 재시도 도달(RECONNECT_STOPPED)은 사용자 조작인 start()로만 해제한다 (워치독은 존중).
+        this._reconnectStopped = false;
+        this._watchdogStoppedNoticeLogged = false;
         this._consecutiveEmptySessions = 0;
         this._consecutiveNoPayloadAttempts = 0;
         this._consecutiveImmediateEofSessions = 0;
         this._lastUnstableWarnAt = 0;
         if (delayMs > 0) {
-            this._reconnectTimer = setTimeout(() => {
-                this._reconnectTimer = null;
-                this.connectInternal();
-            }, delayMs);
+            this.logConsoleTraffic('---', `RECONNECT (start-delayed, ${delayMs}ms, streak=0, reason=start(delayMs))`);
+            this.armReconnectTimer(delayMs, 'start');
         } else {
-            this.connectInternal();
+            this.connectInternal('start');
         }
     }
 
@@ -318,7 +366,9 @@ export class RuntimeConsole implements vscode.Disposable {
         this._explicitStop = true;
         this._isConnected = false;
         this.updateStatus('stopped', '사용자 중지', '수동으로 런타임 콘솔 중지');
+        const hadReconnectTimer = this._reconnectTimer !== null;
         this.cancelReconnect();
+        this.stopWatchdog();
         this.clearReadyState(false);
         this.resolvePayloadWaiters(false);
         if (this._noOutputHintTimer) {
@@ -347,6 +397,10 @@ export class RuntimeConsole implements vscode.Disposable {
             }, GRACEFUL_CLOSE_TIMEOUT_MS);
             s.end();   // FIN 전송 (graceful close) — error 핸들러 등록 후 호출
             this.logConsoleTraffic('---', 'STOP (graceful FIN)');
+        } else if (!this.disposed) {
+            // 소켓이 없는 상태의 stop()도 기록한다 (GitHub #22): 종전엔 이 경로가 무기록이어서
+            // 사후 분석에서 "재연결이 조용히 멈춘 것"과 "사용자 중지"를 구분할 수 없었다.
+            this.logConsoleTraffic('---', `STOP (no socket, reconnectTimerCanceled=${hadReconnectTimer})`);
         }
         if (wasConnected) {
             this._onDidDisconnect.fire();
@@ -367,6 +421,7 @@ export class RuntimeConsole implements vscode.Disposable {
     private logConsoleTraffic(direction: '>>>' | '<<<' | '---', message: string): void {
         const ts = formatTrafficTimestamp();
         const line = `[${ts}] [1403] ${direction} ${message}`;
+        recordTrafficLine(line); // 연결 유실 사후 스냅샷 링버퍼(GitHub #22)
         const ch = getTrafficChannel();
         if (ch) {
             ch.appendLine(line);
@@ -379,6 +434,103 @@ export class RuntimeConsole implements vscode.Disposable {
             clearTimeout(this._reconnectTimer);
             this._reconnectTimer = null;
         }
+        this._reconnectDueAt = 0;
+    }
+
+    /**
+     * 재연결 타이머를 한 곳에서 건다 (GitHub #22). 예정 시각(_reconnectDueAt)과 이유를 기록해
+     * 워치독이 "타이머가 있는데 발화하지 않는" 상태를 판정하고, 접속 카운터가 이유별로 집계한다.
+     * 기존 타이머가 있으면 교체한다(종전에는 덮어써서 고아 타이머가 남을 수 있었다).
+     */
+    private armReconnectTimer(delayMs: number, reason: ConnectReason): void {
+        this.cancelReconnect();
+        this._pendingConnectReason = reason;
+        this._reconnectDueAt = Date.now() + delayMs;
+        this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            this._reconnectDueAt = 0;
+            this.connectInternal(reason);
+        }, delayMs);
+    }
+
+    // ── 재연결 워치독 (GitHub #22) ─────────────────────────────────────────────
+
+    private ensureWatchdog(): void {
+        if (this._watchdogTimer || this.disposed) { return; }
+        const timer = setInterval(() => this.runWatchdogTick(), WATCHDOG_INTERVAL_MS);
+        timer.unref?.();   // 확장 호스트 종료를 이 타이머가 붙잡지 않도록
+        this._watchdogTimer = timer;
+    }
+
+    private stopWatchdog(): void {
+        if (this._watchdogTimer) {
+            clearInterval(this._watchdogTimer);
+            this._watchdogTimer = null;
+        }
+    }
+
+    private runWatchdogTick(): void {
+        const now = Date.now();
+        const decision = decideWatchdogAction({
+            now,
+            active: !this.disposed && !this._explicitStop,
+            connected: this._isConnected,
+            hasSocket: this.socket !== null,
+            connectAttemptAt: this._lastConnectAttemptAt,
+            connectTimeoutMs: CONNECT_TIMEOUT_MS,
+            hasReconnectTimer: this._reconnectTimer !== null,
+            reconnectDueAt: this._reconnectDueAt,
+            reconnectStopped: this._reconnectStopped,
+        });
+        switch (decision.action) {
+            case 'none':
+                return;
+            case 'skip-reconnect-stopped':
+                // 최대 재시도 도달 상태는 사용자 조작으로만 재개 (기존 의미 유지). 1회만 기록.
+                if (!this._watchdogStoppedNoticeLogged) {
+                    this._watchdogStoppedNoticeLogged = true;
+                    this.logConsoleTraffic('---', 'WATCHDOG: RECONNECT_STOPPED 상태라 개입 안 함 (재개는 사용자 조작: 콘솔 시작)');
+                }
+                return;
+            case 'force-reconnect':
+                this._watchdogKicks++;
+                this.logConsoleTraffic('---', `WATCHDOG: 재연결 스케줄 부재 감지 → 강제 재연결 (${decision.detail}, kicks=${this._watchdogKicks})`);
+                this.appendStateLine(`[Console][RC1403] EVENT=WATCHDOG_KICK action=${decision.action} kicks=${this._watchdogKicks}`);
+                this.connectInternal('watchdog');
+                return;
+            case 'fire-overdue-timer':
+                this._watchdogKicks++;
+                this.logConsoleTraffic('---', `WATCHDOG: 재연결 타이머 미발화 감지 → 타이머 취소 후 강제 재연결 (${decision.detail}, kicks=${this._watchdogKicks})`);
+                this.appendStateLine(`[Console][RC1403] EVENT=WATCHDOG_KICK action=${decision.action} kicks=${this._watchdogKicks}`);
+                this.cancelReconnect();
+                this.connectInternal('watchdog');
+                return;
+            case 'destroy-stuck-connecting':
+                this._watchdogKicks++;
+                this.logConsoleTraffic('---', `WATCHDOG: connecting 고착 감지 → 소켓 destroy 후 재스케줄 (${decision.detail}, kicks=${this._watchdogKicks})`);
+                this.appendStateLine(`[Console][RC1403] EVENT=WATCHDOG_KICK action=${decision.action} kicks=${this._watchdogKicks}`);
+                this.destroyStuckSocket();
+                // 연결 자체가 안 되는 상황이므로 connect-timeout 경로와 같은 지수 백오프로 재스케줄.
+                this.scheduleReconnect();
+                return;
+        }
+    }
+
+    /**
+     * connect 콜백 없이 'connecting' 이 고착된 소켓을 정리한다. 아직 연결이 성립하지 않은 소켓이므로
+     * FIN 을 보낼 상대가 없고(파일 상단 RST 경고는 성립된 세션에 관한 것), destroy 가 유일한 수단.
+     * close 핸들러가 재스케줄까지 도달하지 못한 상황을 가정하므로 리스너를 떼고 호출자가 직접 재스케줄한다.
+     */
+    private destroyStuckSocket(): void {
+        const s = this.socket;
+        if (!s) { return; }
+        this.socket = null;
+        this._isConnected = false;
+        s.removeAllListeners();
+        s.on('error', () => { /* 정리 중 에러는 무시 — unhandled 'error' 로 확장 호스트가 죽지 않게 */ });
+        s.destroy();
+        this._lastErrorCode = 'WATCHDOG_STUCK_CONNECTING';
+        this.updateStatus('connect-failed', '연결 고착 정리', '워치독이 connect 응답 없는 소켓을 정리했습니다');
     }
 
     private clearReadyState(valueForWaiters: boolean): void {
@@ -424,7 +576,14 @@ export class RuntimeConsole implements vscode.Disposable {
         const immediateMax = Math.max(immediateBase, cfg.get<number>('immediateEofReconnectMaxMs', DEFAULT_IMMEDIATE_EOF_RECONNECT_MAX_MS));
         const idleBase = Math.max(500, cfg.get<number>('idleReconnectBaseMs', DEFAULT_IDLE_RECONNECT_BASE_MS));
         const idleMax = Math.max(idleBase, cfg.get<number>('idleReconnectMaxMs', DEFAULT_IDLE_RECONNECT_MAX_MS));
+        // 설정값이 숫자가 아니면(NaN) setTimeout 이 1ms 로 동작해 churn 이 오히려 심해지므로 기본값으로 되돌린다.
+        const batchRaw = cfg.get<number>('batchReconnectDelayMs', DEFAULT_BATCH_RECONNECT_DELAY_MS);
+        const batchDelay = Math.max(
+            MIN_BATCH_RECONNECT_DELAY_MS,
+            Number.isFinite(batchRaw) ? batchRaw : DEFAULT_BATCH_RECONNECT_DELAY_MS,
+        );
         return {
+            batchReconnectDelayMs: batchDelay,
             noPayloadWarnThreshold: threshold,
             unstableWarnCooldownMs: cooldown,
             emptyNoticeEvery: noticeEvery,
@@ -706,15 +865,14 @@ export class RuntimeConsole implements vscode.Disposable {
         const tuning = this.getTuning();
 
         if (dataReceived && !hadError) {
-            // 이벤트 배치 정상 완료 → 즉시 재연결 (다음 배치 대기)
+            // 이벤트 배치 정상 완료 → 짧은 지연 뒤 재연결 (다음 배치 대기).
+            // 지연은 설정 batchReconnectDelayMs (기본 250ms, 하한 50ms) — 상단 상수 주석 참조 (GitHub #22).
+            const delay = tuning.batchReconnectDelayMs;
             this._reconnectAttempt = 0;
-            this._lastReconnectDelayMs = RECONNECT_IMMEDIATE_MS;
-            this.updateStatus('reconnecting', '재연결 대기', `batch complete 후 ${RECONNECT_IMMEDIATE_MS}ms 뒤 재연결`);
-            this.logConsoleTraffic('---', 'RECONNECT (immediate, batch complete)');
-            this._reconnectTimer = setTimeout(() => {
-                this._reconnectTimer = null;
-                this.connectInternal();
-            }, RECONNECT_IMMEDIATE_MS);
+            this._lastReconnectDelayMs = delay;
+            this.updateStatus('reconnecting', '재연결 대기', `batch complete 후 ${delay}ms 뒤 재연결`);
+            this.logConsoleTraffic('---', `RECONNECT (batch-complete, ${delay}ms, streak=0, reason=batch complete)`);
+            this.armReconnectTimer(delay, 'batch');
             return;
         }
 
@@ -756,18 +914,25 @@ export class RuntimeConsole implements vscode.Disposable {
                 ? `빈 이벤트 배치, ${idleDelay}ms 뒤 폴링`
                 : `${reason} 후 ${idleDelay}ms 뒤 재연결`;
             this.updateStatus('reconnecting', statusReason, statusDetail);
-            if (isIdleTimeout || isEmptyPoll || this.shouldEmitNoPayloadNotice(reconnectStreak, tuning.emptyNoticeEvery)) {
-                const policy = startupPrimeActive
-                    ? 'startup-prime'
-                    : isImmediateEof
-                    ? 'immediate-eof-adaptive'
-                    : (isIdleTimeout ? 'idle-timeout-fixed' : (isEmptyPoll ? 'empty-batch-fixed' : 'idle-adaptive'));
-                this.logConsoleTraffic('---', `RECONNECT (${policy}, ${idleDelay}ms, streak=${reconnectStreak}, reason=${reason})`);
-            }
-            this._reconnectTimer = setTimeout(() => {
-                this._reconnectTimer = null;
-                this.connectInternal();
-            }, idleDelay);
+            const policy = startupPrimeActive
+                ? 'startup-prime'
+                : isImmediateEof
+                ? 'immediate-eof-adaptive'
+                : (isIdleTimeout ? 'idle-timeout-fixed' : (isEmptyPoll ? 'empty-batch-fixed' : 'idle-adaptive'));
+            // 재연결 스케줄 로그는 shouldEmitNoPayloadNotice 게이트 없이 항상 남긴다 (GitHub #22):
+            // 2026-08-25 17:45 1403 침묵 사고에서 이 로그가 억제되어 "스케줄이 없었는지 / 타이머가
+            // 발화하지 않았는지" 를 사후에 구분할 수 없었다. 스팸 억제는 HINT/STATE(상태 채널) 게이트만 유지.
+            this.logConsoleTraffic('---', `RECONNECT (${policy}, ${idleDelay}ms, streak=${reconnectStreak}, reason=${reason})`);
+            const connectReason: ConnectReason = startupPrimeActive
+                ? 'startup-prime'
+                : isImmediateEof
+                ? 'immediate-eof'
+                : isIdleTimeout
+                ? 'idle-timeout'
+                : isEmptyPoll
+                ? 'empty-batch'
+                : 'no-payload';
+            this.armReconnectTimer(idleDelay, connectReason);
             return;
         }
 
@@ -782,7 +947,10 @@ export class RuntimeConsole implements vscode.Disposable {
         if (this.disposed || this._explicitStop) { return; }
         if (this._reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) {
             this._lastReconnectDelayMs = 0;
+            // 자동 재연결 중단. 워치독도 이 상태를 존중한다 (재개는 사용자 조작 start()만) — GitHub #22.
+            this._reconnectStopped = true;
             this.updateStatus('connect-failed', '재연결 중단', `최대 재시도 ${RECONNECT_MAX_ATTEMPTS}회 도달`);
+            this.logConsoleTraffic('---', `RECONNECT (stopped, attempts=${RECONNECT_MAX_ATTEMPTS}/${RECONNECT_MAX_ATTEMPTS}, reason=max attempts reached; 재개는 콘솔 시작)`);
             this.appendStateLine(`[Console][RC1403] STATE=RECONNECT_STOPPED attempts=${RECONNECT_MAX_ATTEMPTS}`);
             return;
         }
@@ -795,15 +963,27 @@ export class RuntimeConsole implements vscode.Disposable {
         this._lastReconnectDelayMs = delay;
 
         this.updateStatus('reconnecting', '재연결 대기', `delay=${delay}ms attempt=${this._reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS}`);
+        this.logConsoleTraffic('---', `RECONNECT (error-backoff, ${delay}ms, attempt=${this._reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS}, reason=${this._lastErrorCode || 'socket error'})`);
         this.appendStateLine(`[Console][RC1403] STATE=RECONNECT_SCHEDULED delayMs=${delay} attempt=${this._reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS}`);
-        this._reconnectTimer = setTimeout(() => {
-            this._reconnectTimer = null;
-            this.connectInternal();
-        }, delay);
+        this.armReconnectTimer(delay, 'error');
     }
 
-    private connectInternal(): void {
-        if (this.disposed || this._explicitStop) { return; }
+    /**
+     * @param reason 이 connect 를 유발한 스케줄 이유 (접속 카운터 집계·CONNECT 로그용).
+     *               생략 시 armReconnectTimer 가 기록한 값.
+     */
+    private connectInternal(reason: ConnectReason = this._pendingConnectReason): void {
+        if (this.disposed) { return; }
+        if (this._explicitStop) {
+            // 타이머/워치독이 stop() 뒤에 발화한 경우 — 재연결하지 않되 기록은 남긴다 (GitHub #22 사후 분석용).
+            this.logConsoleTraffic('---', `CONNECT skipped (explicit stop, reason=${reason})`);
+            return;
+        }
+        if (this.socket) {
+            // 소켓이 이미 있는데 또 connect 하면 소켓이 이중으로 남는다. 워치독/타이머 경합 방어.
+            this.logConsoleTraffic('---', `CONNECT skipped (socket already exists, reason=${reason})`);
+            return;
+        }
 
         const cfg = getControllerConfig();
         const socket = new net.Socket();
@@ -812,9 +992,15 @@ export class RuntimeConsole implements vscode.Disposable {
         this._lastErrorCode = '';
         this._lastConnectAttemptAt = Date.now();
         this._lastReconnectDelayMs = 0;
+        this._pendingConnectReason = 'start';
+        // 접속 카운터 (GitHub #22 제안 1): 누적/분당 접속 수를 50회마다 요약해 자원 고갈 가설을 검증할 수 있게 한다.
+        this._connectStats.record(reason, this._lastConnectAttemptAt);
+        if (this._connectStats.shouldEmitSummary()) {
+            this.logConsoleTraffic('---', this._connectStats.formatSummary(this._lastConnectAttemptAt));
+        }
         this.updateStatus('connecting', '연결 시도 중', `${cfg.ip}:${cfg.consolePort}`);
 
-        this.logConsoleTraffic('>>>', `CONNECT ${cfg.ip}:${cfg.consolePort}`);
+        this.logConsoleTraffic('>>>', `CONNECT ${cfg.ip}:${cfg.consolePort} (#${this._connectStats.total}, ${reason})`);
 
         const connectTimer = setTimeout(() => {
             if (!this._isConnected && this.socket === socket) {
@@ -1006,14 +1192,15 @@ export class RuntimeConsole implements vscode.Disposable {
                     `CLOSE (${elapsed}ms, hadError=${hadError}, data=${dataReceived}, empty=${this._consecutiveEmptySessions}, `
                     + `rxBytes=${this._sessionRxBytes}, rawFrames=${this._sessionFrames}, emittedLines=${this._sessionLinesEmitted}, `
                     + `swallowed=${this._sessionFramesSwallowed}, `
-                    + `lifetimeBytes=${this._lifetimeRxBytes}, lifetimeFrames=${this._lifetimeFrames})`,
+                    + `lifetimeBytes=${this._lifetimeRxBytes}, lifetimeFrames=${this._lifetimeFrames}, `
+                    + `connects=${this._connectStats.total})`,
                 );
                 this._onDidDisconnect.fire();
             } else {
                 // connect 콜백 전에 close 된 경우
                 const errMsg = this._lastError?.message ?? 'unknown';
                 const errCode = (this._lastError as any)?.code as string | undefined;
-                this.logConsoleTraffic('---', `CLOSE (connect failed: ${errMsg})`);
+                this.logConsoleTraffic('---', `CLOSE (connect failed: ${errMsg}, connects=${this._connectStats.total})`);
                 if (errCode === 'ECONNREFUSED') {
                     this.updateStatus('connect-failed', '연결 거부', '1403 포트가 연결을 거부했습니다 (ECONNREFUSED)');
                     this.appendStateLine('[Console][RC1403] STATE=CONNECT_FAILED reason=ECONNREFUSED');

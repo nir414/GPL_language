@@ -1,8 +1,8 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- 최종 갱신: 2026-08-26 (§1-BH: GitHub 이슈 #20 — F9=Continue·Ctrl+Alt+I 호버 기본 키바인딩 제거, VS Code 표준 디버그 키 복원. 직전: §1-BG GPL Traffic에 1402 응답 본문 실시간 표시)
+- 최종 갱신: 2026-08-26 (§1-BI: GitHub 열린 이슈 14건 일괄 처리 — #16·#19·#20(옵트인)·#21·#22(완화책)·#25(A·B)·#28 구현, #15·#17·#18·#23·#24·#26·#27은 이미 구현된 것 종결 코멘트, #22·#25-C는 원인/설계 코멘트. 직전: §1-BH #20 키바인딩 제거(다른 세션), §1-BG GPL Traffic 응답 본문)
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
-- 현재 package 버전: **0.8.18** (§1-BF는 커밋됨(f239f5d), §1-BG는 working tree — 둘 다 CHANGELOG **[0.8.19]로 선기재**했으니 다음 `npm run package`(patch bump → 0.8.19)와 맞는다. 0.8.18 VSIX는 2026-08-25 로컬 빌드(§1-BE). 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
+- 현재 package 버전: **0.8.18** (§1-BF~§1-BI 모두 커밋됨, CHANGELOG **[0.8.19]로 선기재** — 다음 `npm run package`(patch bump → 0.8.19)와 맞는다. §1-BI 변경분은 실기기 미검증이 많으니(§3) 패키징 전 §3 체크리스트 확인 권장. 0.8.18 VSIX는 2026-08-25 로컬 빌드(§1-BE). 태그 push 시 CI(release.yml)가 자동 빌드·패키징·릴리즈. 로컬 `npm run compile`/`npm run pre-release-check`/`npm run package` 검증 권장)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
 
@@ -2141,11 +2141,11 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 ### 증상 / 판단
 
 - `package.json`이 GPL 디버그 세션에서 `F9`를 `workbench.action.debug.continue`에 강제로 연결해 VS Code 표준 Toggle Breakpoint를 가로챘다. `Ctrl+Alt+I`의 `editor.debug.action.showDebugHover`도 최근 VS Code/Copilot의 Open Chat 기본키와 충돌할 수 있었다.
-- DAP 어댑터는 VS Code 표준 `F5` Continue, `F9` Toggle Breakpoint, `F10/F11/Shift+F11` Step을 별도 기여 없이 지원하므로 두 오버라이드가 필요하지 않다. GDE식 `F9=Continue` 옵트인은 사용자 수요가 확인되지 않아 새 설정으로 남기지 않았다.
+- DAP 어댑터는 VS Code 표준 `F5` Continue, `F9` Toggle Breakpoint, `F10/F11/Shift+F11` Step을 별도 기여 없이 지원하므로 두 오버라이드가 필요하지 않다. ~~GDE식 `F9=Continue` 옵트인은 사용자 수요가 확인되지 않아 새 설정으로 남기지 않았다.~~ → **같은 날 후속(§1-BI, 다른 세션)에서 이슈 #20 제안 2대로 옵트인 `gpl.keybindings.gdeStyle`(기본 off, `when: … && config.gpl.keybindings.gdeStyle`)을 추가했다.** 기본 동작(표준 키)은 동일하다.
 
 ### 조치
 
-- `package.json`의 `contributes.keybindings` 두 항목을 제거했다. 확장이 더 이상 디버그 표준 키를 덮어쓰지 않는다.
+- `package.json`의 `contributes.keybindings` 두 항목을 제거했다. 확장이 더 이상 디버그 표준 키를 덮어쓰지 않는다. (§1-BI: `F9 → continue`는 `config.gpl.keybindings.gdeStyle` 조건부로 다시 등록 — 기본 off라 동작은 같다.)
 - `gpl.debug.showValueOnCursorClick`의 마우스 클릭 즉시 값 표시는 키바인딩과 독립된 기능이라 유지했다. 키보드 호버가 필요하면 VS Code 표준 `Ctrl+K Ctrl+I`를 사용할 수 있다.
 - `CHANGELOG.md` [0.8.19] Changed에 #20을 기록했다. 과거 버전의 F9/Ctrl+Alt+I 추가 기록은 당시 릴리스 이력이라 보존한다.
 
@@ -2155,7 +2155,58 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ### 남은 일
 
-- VSIX 설치 후 실제 키 동작을 한 번 확인하면 이슈 #20을 종결할 수 있다.
+- VSIX 설치 후 실제 키 동작을 한 번 확인하면 이슈 #20을 종결할 수 있다. → §1-BI에서 GitHub 코멘트와 함께 종결 처리(2026-08-26).
+- ※ 기록: 이 §1-BH는 §1-BG 커밋(84f0062) 직전에 다른 세션이 작성했고 그 커밋에 함께 들어갔다. 같은 저장소에서 두 세션이 동시에 작업하면 이런 교차가 생긴다 — 커밋 전 `git status`/`git diff`로 의도치 않은 변경이 섞였는지 확인할 것([[git-unlock-tool]] 메모의 codex+Claude 동시 사용 리스크와 같은 뿌리).
+
+## 1-BI. 2026-08-26 세션 — GitHub 열린 이슈 14건 일괄 처리 (#15~#28)
+
+사용자 요청: "깃 이슈 하나씩 전부 해결 — 어려운 건 해결 방향을 댓글로, 바로 되는 건 권장 방식으로, 이전에 해결했는데 표시 안 한 것도 고려". 구현은 파일 단위로 겹치지 않게 나눠 병렬 에이전트(Workflow) 7개로 진행하고, `extension.ts`·`package.json`·문서는 통합자가 담당했다.
+
+### 분류와 결과
+
+| 이슈 | 판정 | 처리 |
+|---|---|---|
+| #15 #17 (배포 잠금·게이트 재배치) | 이미 구현(0.8.17, §1-BD) — 표시만 누락 | 종결 코멘트 + close |
+| #18 #23 #24 #26 #27 | 이미 구현(0.8.19 선기재, §1-BF) | 종결 코멘트 + close (#18·#24는 이번 자원 지표 추가 포함) |
+| #20 (단축키) | §1-BH(다른 세션)가 제거만 함 | 옵트인 `gpl.keybindings.gdeStyle` 추가(제안 2), 제안 3(고유 명령 기본 키)은 보류 사유·스니펫 코멘트, close |
+| #19 (호버) | 구현 | 문제 1: 옵트인 `gpl.hover.showAfterClick` / 문제 2: (uri,version) 심볼 캐시 — 파서 메모이즈는 이미 있었음을 코멘트로 정정, close |
+| #25 (connect 비대화형) | A·B 구현, C는 설계 | ConnectArgs·반환값·AI 명령 3개·URI 핸들러; C(확장↔MCP 브리지)는 브로커 Phase 1 통합 권고 코멘트, close |
+| #16 (MCP 배치) | 구현 | `controller_command(commands[], stopOnError)` + `read_dataids` + `controller_status(detail).resources`, close |
+| #28 (Step 연타) | 구현 | 어댑터 Step 게이트 + 최소 간격, close |
+| #21 (Attach only stale BP) | 구현 | 컴파일 스냅샷 기록 → attach/저장 시 대조 → 상태바 배지·BP unverified·재시작 액션, close |
+| #22 (제어기 다운) | 완화책 구현, 원인 미확정 | 1402 keep-alive·1403 churn/워치독·백업 폴 완화·FTP 스로틀·자원 지표·사후 스냅샷·도달성 판정; 분리 실험 계획 코멘트, **열어 둠** |
+
+### 조치 (파일별 요지 — 상세는 각 모듈 헤더 주석)
+
+- **1402 keep-alive (#22 제안 6)** — `src/controller/consoleSocket.ts`(신규, vscode 무의존)로 소켓 계층 분리, `controllerConnection.ts`는 얇은 래퍼. 모듈 소켓 1개(키 ip:port), **terminator-first(`</STATUS>` 버퍼 끝) 완료만 재사용**, idle/close/TIMEOUT/error 뒤 폐기(잔류 바이트 프레이밍 오염 방지), 재사용 소켓 0바이트 stale → 새 연결 1회 재시도(TIMEOUT은 이중 실행 위험으로 재시도 금지), 유휴 소켓 data/close/error 감시 + idle 타이머(30 s) + `setKeepAlive(10 s)`. 설정 `gpl.controller.keepAlive1402`(기본 true)/`keepAliveIdleCloseMs`. Traffic `--- 1402 CONNECT #n (keep-alive|single-shot)` / `--- 1402 CLOSE (reason)`. export `closeControllerConnection(reason)`(disconnect/연결 유실/deactivate에서 호출), `getConnectionStats()`(트리 `1402 명령 포트` 설명·대시보드 자원 카드에 표시), 트래픽 링버퍼 600줄 `recordTrafficLine`/`getRecentTraffic`(1403 라인도 runtimeConsole.logConsoleTraffic에서 밀어 넣음). 설계 편차: 폐기는 destroy 대신 FIN(end)+1 s 강제, 유휴 소켓 공백 바이트는 drop 대신 유지(로그만). 테스트: 로컬 net 서버 통합 13건 + 헬퍼 4건.
+- **도달성 판정** — `src/controller/reachability.ts`(신규): `pingHost`(TTL= 판정, 한국어 ping 대응)·`tcpProbe`·`arpLookup`(인터페이스별 전부, OUI 00-14-FF=Precise / D8-43-AE=Micro-Star)·`describeReachability`(MCP 4분류 + 응답 장치 정체 힌트 — #22 "사후 진단 함정"). 테스트 24건.
+- **연결 유실 사후 스냅샷 (#22 제안 4)** — `extension.ts writeConnectionLostPostmortem`: `%TEMP%/gpl-controller/postmortem-<ts>.log`에 도달성 verdict·1402 통계·1403 상태·배포 잠금·최근 트래픽 400줄. 알림 [사후 스냅샷 열기]. 유실 시 keep-alive 소켓 즉시 폐기.
+- **1403 (#22 제안 1·5번째 다운 댓글 3)** — `runtimeConsole.ts`: 배치 완료 재접속 100→`gpl.runtimeConsole.batchReconnectDelayMs`(250, 하한 50); RECONNECT 스케줄 로그 **항상** 기록(종전 streak 게이트 억제가 17:45 침묵 판독 불가의 확정 원인); 모든 타이머를 `armReconnectTimer(delay, reason)`로 단일화(`_reconnectDueAt`); **15 s 워치독**(`runtimeConsoleGuards.decideWatchdogAction` 순수 판정: force-reconnect / fire-overdue-timer(+10 s) / destroy-stuck-connecting(connect timeout+10 s) / skip-reconnect-stopped) — start()에서 켜고 stop()/dispose()에서 끔; `ConnectStats`(누적·60 s 슬라이딩·이유별) → 스냅샷 `connectCount/connectsPerMinute/watchdogKicks`, `CONNECT (#N, reason)`, `CLOSE (… connects=N)`, 50회마다 요약. 소켓 없는 stop()·건너뛴 connect도 로그. 테스트 17건.
+- **디버그 어댑터 (#28·#22 제안 2·#21)** — `gplDebugSession.ts`: ① Step 게이트 — `_pendingAction` step/continue(같은 스레드)·entry 중 새 step/continue는 명령 미송신·정상 응답만(`stepGate.shouldGateStepRequest` 순수 판정, `gpl.debug.minStepIntervalMs` 기본 100), 첫 무시 로그 + 50건마다, pending 해소 시 요약; Pause는 게이트 안 함. ② 백업 폴: `debugBridge.setRuntimeConsoleHealthProvider`(extension.ts가 runtimeConsole 스냅샷 공급)로 1403 alive면 `_pollIntervalMs`, 아니면 `gpl.debug.runningBackupPollMs`(1000). ③ stale: attach(`!deployBeforeAttach`)·저장·재컴파일 시 `deployRecord.compareWithLocal` → `_staleFiles` → BP `id` 부여 + `verified:false`+메시지(`BreakpointEvent('changed')`로 갱신) → 커스텀 이벤트 `gpl.sourceStale {projectName, compiledAt, staleFiles, trigger}`(trigger: attach/saved/recompiled/disconnect). 세부: 게이트된 요청은 success 응답만 보내므로 VS Code는 시뮬레이션 continued 상태가 된다 — pending이 있으면 그 해소 StoppedEvent가 UI를 복귀시키고, **pending 없이 최소 간격만으로 무시된 경우**(키를 뗄 때 마지막 반복)는 `_afterGatedStepRequest`가 쓰레드별 타이머(≥250 ms)로 정지 상태를 확인해 같은 위치 StoppedEvent를 재발사(제어기 명령 0회, 실제 step/continue가 나가면 취소). 저장 감지는 파일 sha1이 스냅샷과 같으면(무변경 저장·되돌리기) stale 해제. 복원은 제어기가 받아준 줄(`_breakpoints`)만 verified:true. 미결: Compile 후 제어기 Set Break 잔존 여부(잔존하지 않으면 재-setBreakpoints 유도 필요), 컴파일 뒤 추가된 .gpl의 BP STATUS, 간격 게이트를 '보류 후 1회 실행'으로 바꿀지.
+- **컴파일 스냅샷 (#21 기반)** — `deployRecordCore.ts`(순수: `snapshotProjectFiles` .gpl/.gpo/.gpr sha1+size+mtime, `diffSnapshots` 대소문자·구분자 무시·sha1 우선, `DeployRecordStore` Memento `gpl.deployRecords`) + `deployRecord.ts`(vscode 래퍼, `onDidRecordCompiled`). `deployService.ts`: 스냅샷은 **UPLOAD 직전**에 찍고(업로드~컴파일 사이 편집 오판 방지) Compile 성공 확정 지점에서 `recordCompiled`(실패는 trace만). `extension.ts`: `attachDeployRecordStore(context.workspaceState)`, `gpl.sourceStale` → `statusBar.setSourceStale`(`connectionStatusBar` 3번째 항목) + 알림 1회, 명령 `gpl.debug.showSourceStale`(재시작 = stopDebugging → startDebugging({...configuration, deployBeforeAttach:true, stopAllBeforeAttach:true}) / 파일 열기 / 숨기기). 실측 65파일 스냅샷 7~12 ms. 한계: autoOnSave(changedFiles)는 저장 파일만 올리므로 업로드 안 된 디스크 변경이 "동기화됨"으로 기록될 수 있음.
+- **트리 FTP (#22 제안 7)** — `ftpClient.listRemoteDirs(host, paths[])`(세션 1회, 경로별 error), `controllerTreeProvider`: 연결 확립 시 `refreshFtpIfStale/refreshSystemInfoIfStale`(5분·캐시·`ip|/GPL|flash` 키, `views/refreshThrottle.decideAutoRefresh` 순수), 유실 시 캐시 보존(`_lossNotificationInProgress`로 옵션 없는 `setConnected(false)`를 'lost'로 해석), 명시 disconnect는 비움, 섹션 설명 `마지막 조회 HH:mm`+툴팁. 테스트 11건.
+- **대시보드 자원 카드 (#22 제안 8)** — `resourceProbes.ts`(순수): `Show Memory`/`Show Network -tcp`/`-mbuf` 파서 + `buildResourceSnapshot`/`computeRates`/`ResourceHistory`(120점, 점 간격 ≥2.5 s, 증가율 기준 ≥5 s, 카운터 감소=리셋). **실기기 원문 형식 확정**: MCP 에이전트가 2026-08-25 세션 트랜스크립트에서 채록 — Show Memory `Main Memory:`+Free/Used 2줄(각각 Segments), -tcp BSD `netstat -s` 표(`conn. closed (includes drops)  13836`), -mbuf `mbufs:3072 clusters: 512 free: 223` / `drops waits drains` / `free:2725 data:292 …`. 확장 파서는 처음 요약 표기 기준으로 작성돼 실기기 원문에서 3필드가 틀렸고(established가 앞 줄 값, closed null, mbuf free null — `\s+`가 CR/LF를 넘는 문제·괄호 주석·free 위치) 통합자가 같은 줄 한정 매칭·라벨-뒤 패턴·clusters 줄 분리로 수정, 실기기 픽스처 테스트 3건 추가(25/25). `controllerStatus.fetchControllerStatus(cfg, {includeResources})`(기본 false), 패널 `gpl.controller.dashboardResourceProbes`, 웹뷰 카드(accepted/s 2/10 임계, clusters free ▼, drops/waits/drains 경고, 스파크라인 2개, 원문 details) + 확장 1402 connects 행.
+- **MCP (#16·#22)** — `controller-mcp/src/batch.js`(`runBatch` for-await 순차, throw→`{ok:false,error}`, stopOnError→`stoppedAt/skipped`; `normalizeCommandInput`), `controller_command {command?|commands?(1~50), stopOnError?}`(단건 응답 바이트 동일), `read_dataids(ids 1~100)`(`pd` 읽기 전용, `parseDataIdResponse`: 따옴표 밖 첫 `=`, wrap 흡수, values 원문 토큰), `controller_status(detail).resources`(`parseResourceProbes`, `acceptedPerSec` 서버 메모리 직전 샘플). 도구 20→21. node --test 40/40, 가짜 1402 e2e 23/23. `exportAgentSetup.ts` CLAUDE 가이드: 배치 규칙·자원 관찰·"정지 확인 내장 도구 앞뒤 show_thread 금지"·"같은 스레드 Step 반복 금지(#28)".
+- **connect 비대화형·URI (#25 A·B)** — `extension.ts`: `connectControllerWithArgs(ConnectArgs)`/`connectControllerInteractive()`/`finishConnect()`로 분리, `gpl.controller.connect(args?)`는 `isConnectArgs`일 때만 비대화형(트리/상태바/팔레트 회귀 없음), `ConnectResult{ok,ip,port,connected,error?,mode}`; `gpl.controller.disconnect(args?)` 반환값+silent; AI 계층 `gpl.ai.debug.connect/disconnect/getConnectionState`; `registerUriHandler`(`/connect?ip&port&save`, `/disconnect`, `/getState`, `/dashboard` — 모션 동작 제외), `activationEvents: onUri`; `gpl.ai.debug.loop` 미연결 시 비대화형 연결.
+- **호버 (#19)** — `hoverProvider._docSymbolsCache`(uri,version), 폴백은 비-로컬만; `extension.ts` `gpl.hover.showAfterClick`(기본 false) 리스너: Mouse 단일 클릭·식별자 위·`editor.hover.delay` 뒤 `editor.action.showHover {focus:'noAutoFocus'}`, 디버그 중 제외.
+- **단축키 (#20)** — `package.json` keybindings: `F9 → continue`를 `when: … && config.gpl.keybindings.gdeStyle`로만(기본 off), `Ctrl+Alt+I` 제거(§1-BH). 설정 `gpl.keybindings.gdeStyle`.
+- **문서** — README(디버거 절: 표준 키·Step 게이트·stale 배지 / AI 표: 연결 명령·URI / 호버 옵션), 런북(Command ID·인자 표·URI·BP 해제 규약·§4 Attach stale·§6 Step 게이트·금지 2항), controller-mcp README(§5 배치·read_dataids·resources, §7), CHANGELOG [0.8.19](§1-BH 중복 #20 항목 제거·날짜 08-26), 이 문서.
+
+### 검증
+
+- `npm run compile` 통과, `npm test` **321/321**(+118: deployRecord 13·ftpRefreshThrottle 11·runtimeConsoleGuards 17·keepAlive1402 17·reachability 24·resourceProbes 25·stepGate 11), `controller-mcp` `node --test` **40/40**(+17), `npm run bundle:mcp` 성공, `npm run pre-release-check`는 'working tree clean' 1건만 실패(커밋 전 정상). 줄바꿈: 모든 편집 파일 기존 형식 유지(`git ls-files --eol` mixed 없음; 신규 파일 LF·BOM 없음). CHANGELOG는 종전 4줄이 LF였던 혼재를 CRLF로 정규화됨.
+- **실기기(G2400C) 미검증** — §3 체크리스트(§1-BI). 모션 영향 없음(통신 패턴·읽기 전용 명령·UI). 단, keep-alive는 "제어기가 한 연결에서 연속 명령을 받는가"가 효과의 전제(안 받아도 무해 — CLOSE by peer 후 재연결).
+- 교차 검증: 확장 `resourceProbes.ts`를 MCP 실기기 픽스처로 돌려 3필드 오류를 잡아 수정(위). 동시 세션이 남긴 §1-BH/CHANGELOG #20 중복은 최신 항목만 남기고 정리.
+
+### 남은 일
+
+- §3 체크리스트(§1-BI) 실기기 검증 — 특히 keep-alive 전제(a)(b)(c), Step 게이트 F12 홀드 재현, stale 배지, 자원 카드 값.
+- #22 원인 축 분리 실험(확장 완전 분리 → attach → BP), 시리얼 콘솔 상시 캡처, 직결 NIC 고정 IP.
+- #25 C(확장↔MCP 브리지)는 브로커 Phase 1과 통합 — `docs/development/broker-workbench-architecture.md`에 endpoint 파일 계약·`extension.claim(thread)` 반영 여부 결정.
+- #20 제안 3(GPL 고유 명령 기본 키) — 사용 후 결정. #24 simulation 판별 명령 — 근거 확인 후 채우기.
+- `Show Memory -all`의 File Descriptors(문서상 free ≤5면 I/O 정지 가능)가 가설 1과 직결 — 파서는 대응됨, 프로브 명령 전환은 실기기 확인 후.
+- 대시보드 자원 이력은 패널 메모리에만(탭 닫으면 소멸) — 파일/채널 기록은 후속. FTP 캐시는 플랩 원인이 재부팅이면 최대 5분 낡을 수 있음(수동 새로고침) — 유실 전후 쓰레드 목록 비교로 재부팅 추정 시 강제 재조회 후보.
+- 존재하지 않는 DataID(`pd 99999`) 실제 STATUS 확인 후 MCP `statusHint` 보정.
 
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
@@ -2164,6 +2215,7 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-08-26, §1-BI) 이슈 일괄 처리분 — 실기기 검증(통신 패턴·읽기 전용·UI, 모션 무영향)**: ① **1402 keep-alive**: 연결 후 GPL Traffic에 `--- 1402 CONNECT #1 (keep-alive)` 1회 뒤 `Show Thread` 폴링이 CONNECT 없이 이어지는지(제어기가 응답 뒤 끊으면 매번 `CLOSE (by peer, held 0s)`+CONNECT → 기본값 false 되돌릴지 결정) / GDE·MCP 동시 접속 시 세션 수 제한 유무 / 30 s idle 뒤 `CLOSE (idle 30s)` vs `by peer`(제어기 유휴 타임아웃이 짧으면 `keepAliveIdleCloseMs` 축소) / `Show Network -tcp` accepted/s가 종전 1~3/s에서 ≈0으로 / stale-retry가 Continue·Step 같은 상태 변경 명령에서 발생한 사례 감시(있으면 read-only로 재시도 제한) ② **Step 게이트**: F12 홀드 시 Traffic에 Step이 30 ms 간격으로 나가지 않고 Debug Console에 `Step/Continue 요청 무시` 1회 + 요약; 정지 뒤 다음 Step 정상; 다른 스레드 Step은 허용 ③ **백업 폴**: Running 중 1403 정상이면 `Show Thread -web` 간격 5 s(Traffic), 1403 중지 시 1 s로 복귀, Debug Console `백업 폴:` 전환 로그 ④ **stale BP**: Deploy 후 파일 편집 → Attach only → 상태바 `⚠ 소스 변경됨 1` + 알림 + 그 파일 BP 회색·메시지 / 세션 중 저장 → 즉시 회색 / Quick Compile 성공 → 복원 / 배지 클릭 → 재시작 흐름 / 배포 기록 없는 워크스페이스에서 안내 로그만 ⑤ **1403**: `RECONNECT (…)`가 매 세션 뒤 1줄, 30분 정상 폴링에 `WATCHDOG:` 0건, LAN 분리로 connecting 고착 시 워치독 또는 connect timeout 한쪽만 동작, `batchReconnectDelayMs` 반영 ⑥ **FTP 스로틀**: LAN 단절→복구 플랩 시 5분 이내 재조회 없음(Traffic에 Show Memory/Flash Free/CPU Profile 미발생, FTP passive 연결 0), 명시 Disconnect 후 재연결은 즉시 조회 ⑦ **자원 카드**: Free/Used/Segments·accepted/s·clusters free·drops 값 채워짐(실기기 원문 기준 파서), 재부팅 후 카운터 리셋 표시, `-mbuf` 스위치 거부 시 STATUS 표시 ⑧ **사후 스냅샷**: 제어기 전원 차단으로 유실 유발 → `%TEMP%\gpl-controller\postmortem-*.log` 생성·알림 버튼·verdict(ICMP/TCP/arp, TTL 255·00-14-FF) 확인; 직결 NIC 임대 상실 재현 시 게이트웨이 응답 경고 ⑨ **connect 비대화형**: `code --open-url "vscode://nir414.gpl-language-support/connect"` → 연결·Output `[URI]`; `gpl.ai.debug.getConnectionState` 결과 ⑩ **MCP**: `read_dataids([2703,2704,2705])`, `controller_command(commands:[…])` 50건 소요, 문자열 값 DataID·wrap DataID·`pd 99999` STATUS, `controller_status(detail:true)` 2회 간격 ≥60 s에서 `acceptedPerSec` ⑪ **호버**: `showAfterClick` 켠 뒤 클릭 후 정지 → 호버, 드래그 선택 미표시; 수천 줄 문서에서 체감 ⑫ **단축키**: F9 = Toggle Breakpoint(기본), `gdeStyle` 켜면 F9 = Continue.
 - [ ] **(2026-08-25, §1-BG) GPL Traffic 1402 응답 본문 표시 — 실기기 확인(읽기 전용, 모션 무영향)**: ① `Show Thread` 폴링 응답이 ` | ` 줄로 실시간 표시되고 마지막에 `<<<` 요약 ② `Compile`(waitForStatusClose) pass 사이 침묵 구간에 도착분이 먼저 보이는지 ③ 긴 응답(ErrorLog 다수) 4000자 초과 시 생략 요약 1줄 ④ 트리 `1402 통신 모니터` 인라인 토글/지우기 동작·설명 갱신, OFF면 `<<<` 요약만 ⑤ Live Log Terminal에도 ` | ` 줄이 흐르는데 과다하면 옵션 분리 ⑥ 좁은 사이드바에서 인라인 아이콘 2개 표시 확인.
 - [ ] **(2026-08-25, §1-BF) 이슈 #27·#26·#24·#23·#18 — 실기기 검증(읽기 전용, 모션 무영향)**: ① Variables에서 `Robot.Where(1)`/Location 로컬 펼치기 → 멤버 값 표시·헤더 요약·`ZClearance (미설정)` ② hover/Watch `myRobot(0).armCount`(RNDRobot 프레임·StationManager 프레임 둘 다) → `1 (Integer) ← m_armCount (Get 반환식)`; 객체 노드 펼치면 가상 Property 자식; `Me.m_armCount` 자동 처리; `LocationEx.GetCurCartPos().loc` → `.Pos` 우회 ③ MCP `controller_status`(연결/차단/재부팅 중 3케이스 reachable verdict, powerEnabled), `show_threads` 크기 비교, `eval_expression("myRobot(0).armCount")` → resolvedAs, `debug_snapshot(listLocals:true)` 응답 형식 실측 → 런북 기록 ④ 확장 업데이트(0.8.18 → 0.8.19 VSIX 설치) 후 재시작 → "MCP 사본 갱신" 알림 → Claude Code `/mcp` 재연결 → `get_session_log.server.version` = 0.8.19; `GPL: Check AI Agent Setup` 정상/구버전 CLAUDE.md 감지 ⑤ 대시보드: 배지 색·flash, 축 게이지 이동 표시(Jog 중), XY 궤적, 주기 변경·일시정지, 상태바 `$(dashboard)` 진입.
 - [ ] **(2026-08-25, §1-BE) 트리 쓰레드 스텝 정비 — 실기기 검증(저속/시뮬레이션 우선, 하드 규칙 6)**: ① 인라인 스텝이 `Step <t> -over -noerror`를 보내고 호출문을 **넘어가는지**(GPL Traffic·정지 줄) ② 우클릭 Step Into(`-noerror`)가 프로시저 **안으로** 들어가는지 ③ **Step Out(`-out -noerror`) STATUS 최초 실측**(Brooks 문서상 지원, GDE 캡처엔 없음) → 결과를 런북 "GDE 1402 실측 명령 포맷"에 기록 ④ 정지/에러 쓰레드 우클릭 → 스택 보기/현재 위치 보기 ⑤ STATUS≠0 경로(예: Running 쓰레드에 Continue, Idle 쓰레드에 Break) 에러 메시지 문구 확인.
@@ -2221,7 +2273,17 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 ## 4. 핵심 파일
 
 ```
-src/controller/controllerConnection.ts   # sendCommandDetailed, waitForStatusClose, logTraffic(>>> / ' | ' / <<< / ---)·getTrafficLogOptions(§1-BG)
+src/controller/controllerConnection.ts   # vscode 래퍼 — sendCommandDetailed 옵션(keepAlive1402/idle) 전달, logTraffic(>>> / ' | ' / <<< / ---)·getTrafficLogOptions(§1-BG), closeControllerConnection/getConnectionStats/getRecentTraffic 재노출(§1-BI)
+src/controller/consoleSocket.ts          # 1402 소켓 계층(vscode 무의존) — keep-alive 소켓 1개, terminator-first 재사용 판정, stale 1회 재시도, 트래픽 링버퍼 600줄 (§1-BI, #22)
+src/controller/reachability.ts           # ping TTL·TCP·arp 도달성 판정 + 응답 장치 정체(제어기 vs 게이트웨이) 힌트 (§1-BI, #22)
+src/controller/resourceProbes.ts         # Show Memory / Show Network -tcp / -mbuf 파서(실기기 원문 기준)·증가율·이력 (§1-BI, #22 자원 카드)
+src/controller/runtimeConsoleGuards.ts   # 1403 접속 카운터(슬라이딩 윈도우)·워치독 판정(순수) (§1-BI)
+src/controller/deployRecordCore.ts       # 컴파일 스냅샷(sha1) 기록/대조 순수 로직 + Memento 스토어 (§1-BI, #21)
+src/controller/deployRecord.ts           # deployRecordCore vscode 래퍼 — recordCompiled/getCompiledRecord/onDidRecordCompiled/attachDeployRecordStore (§1-BI)
+src/debug/stepGate.ts                    # Step/Continue 게이트 순수 판정 shouldGateStepRequest(pending-entry/pending-same-thread/min-interval) (§1-BI, #28)
+src/controller/debugBridge.ts            # 디버그 세션 ↔ 확장 이벤트 버스 + RuntimeConsoleHealth 공급자(1403 alive → 백업 폴 완화) (§1-BI)
+src/views/refreshThrottle.ts             # 트리 FTP/시스템 정보 자동 재조회 스로틀 판정(순수) (§1-BI, #22)
+controller-mcp/src/batch.js              # MCP controller_command 배치 runBatch/normalizeCommandInput (§1-BI, #16)
 src/controller/trafficResponseBody.ts    # ResponseBodyStreamer — 1402 응답 본문 줄 단위 스트리밍·상한 생략 요약(§1-BG, vscode 무의존 순수 모듈)
 src/controller/deployService.ts          # deploy() = 잠금 획득 → UPLOAD → STOP/THREAD_CHECK(settle 게이트) → COMPILE → ERROR CHECK(§1-BD 재배치), tryCompile, directGpl(§1-G), COMPILE_DEFERRED
 src/controller/deployLock.ts             # 배포 잠금 — 메모리+파일(%TEMP%/gpl-controller/<ip>.lock.json), pid/heartbeat stale 자동 만료, describeDeployLock (§1-BD, 이슈 #15·#17)

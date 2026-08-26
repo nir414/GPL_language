@@ -67,9 +67,17 @@ Brooks PreciseFlex 제어기에 직접 연결하여 VS Code 안에서 배포·�
 
 ### 디버거 (DAP)
 
-`brooks-gpl` 디버그 어댑터로 Attach 모드 디버깅: 행 브레이크포인트, Step Over/Into(F10/F11),
-Continue(F5), 변수 조회(Variables/Hover/Debug Console), Call Stack·다중 쓰레드 표시.
+`brooks-gpl` 디버그 어댑터로 Attach 모드 디버깅: 행 브레이크포인트, Step Over/Into/Out(F10/F11/Shift+F11),
+Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stack·다중 쓰레드 표시.
 런타임 Error 발생 시 해당 파일/라인을 자동으로 열고 이동합니다.
+
+- 단축키는 VS Code 표준 그대로입니다(F9 = 브레이크포인트 토글). GDE 습관(F9 = Continue)이 필요하면
+  `gpl.keybindings.gdeStyle`을 켭니다.
+- 이전 Step/Continue의 정지가 확인되기 전에 들어온 같은 쓰레드의 Step/Continue 요청은 무시됩니다
+  (키 자동 반복으로 Step이 수백 건 연속 송신되어 제어기가 다운된 사고 방지, `gpl.debug.minStepIntervalMs`).
+- **Attach only(`deployBeforeAttach: false`)** 로 붙을 때 마지막 Compile 이후 편집된 소스가 있으면 상태바에
+  `⚠ 소스 변경됨 N — BP 신뢰 불가` 배지가 뜨고 해당 파일의 브레이크포인트는 회색(unverified)으로 표시됩니다
+  (제어기는 시작 시점 컴파일 코드를 실행하므로 줄 번호가 어긋남). 배지를 클릭해 Stop + Upload + Run 으로 재시작할 수 있습니다.
 
 ```json
 {
@@ -96,7 +104,7 @@ Continue(F5), 변수 조회(Variables/Hover/Debug Console), Call Stack·다중 �
 | Go to Definition | `F12` | 함수, 클래스, 변수 정의로 이동 (`New Thread("Class.Proc",...)` 문자열 참조 포함) |
 | Find All References | `Shift+F12` | 심볼 사용 위치 전체 검색 |
 | IntelliSense | `Ctrl+Space` | GPL 심볼·멤버·로컬 변수 자동완성, Signature Help |
-| Hover Info | 마우스 올리기 | 심볼 타입·파라미터 정보 + 내장 함수 시그니처 |
+| Hover Info | 마우스 올리기 | 심볼 타입·파라미터 정보 + 내장 함수 시그니처. 클릭 뒤 마우스를 멈춰도 다시 표시하려면 `gpl.hover.showAfterClick` |
 | Outline | `Ctrl+Shift+O` | 문서 내 심볼 구조 |
 | Symbol Search | `Ctrl+T` | 워크스페이스 전체 심볼 검색 |
 | Code Folding | — | Module/Class/Sub/Function 블록 접기 |
@@ -144,6 +152,9 @@ Continue(F5), 변수 조회(Variables/Hover/Debug Console), Call Stack·다중 �
 | `GPL: Diagnostic Snapshot` | 진단 스냅샷 |
 | `GPL: AI Debug Assist` | 연결 → 스냅샷 → Build Only → (옵션)콘솔/Attach를 모드별 일괄 실행 |
 | `gpl.ai.debug.*` | Break/Step/Continue/변수평가/상태수집/조건 루프 — AI 자율 디버깅 API |
+| `gpl.ai.debug.connect` / `disconnect` / `getConnectionState` | 비대화형 연결·해제·연결 상태 조회(`{ ok, connected, ip, port, debugSessionActive, runtimeConsole, deployLock, … }`) |
+| `gpl.controller.connect({ ip?, port?, save?, silent? })` | 인자를 주면 입력 상자 없이 연결하고 결과를 반환(인자 없으면 종전 대화형) |
+| URI `vscode://nir414.gpl-language-support/connect?ip=…&port=…` | 외부 진입점(`code --open-url`). `/disconnect`, `/getState`, `/dashboard`도 지원 — 모션을 일으키는 동작은 열지 않음 |
 
 AI 에이전트는 직접 FTP/TCP 자동화로 확장 경로를 우회하지 않고 위 명령과 DAP 세션을
 사용합니다. 전체 Command ID 목록, 권장 실행 순서, STATUS 코드 판단표는

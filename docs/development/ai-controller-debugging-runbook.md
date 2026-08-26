@@ -113,6 +113,9 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 쓰레드 제어 | GPL: AI Debug Break/Step/Continue Thread | `gpl.ai.debug.breakThread` / `gpl.ai.debug.stepThread` / `gpl.ai.debug.continueThread` |
 | 식 평가 | GPL: AI Debug Evaluate | `gpl.ai.debug.evaluate` |
 | 디버그 루프 | GPL: AI Debug Loop | `gpl.ai.debug.loop` |
+| 비대화형 연결/해제 | GPL: AI Debug Connect / Disconnect | `gpl.ai.debug.connect` / `gpl.ai.debug.disconnect` |
+| 연결 상태 조회 | GPL: AI Debug Get Connection State | `gpl.ai.debug.getConnectionState` |
+| 소스 변경(BP 신뢰 불가) 조치 | GPL: 소스 변경 상태 보기 (디버그 BP 신뢰성) | `gpl.debug.showSourceStale` |
 
 인자 예시:
 
@@ -125,6 +128,9 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | `gpl.ai.debug.continueThread` | `{ threadName: "MainThread", noError: false }` |
 | `gpl.ai.debug.evaluate` | `{ threadName: "MainThread", frameIndex: 0, expression: "robotIndex" }` |
 | `gpl.ai.debug.loop` | `{ threadName: "MainThread", stepMode: "over", maxSteps: 10, stepWaitTimeoutMs: 5000, watchExpressions: ["robotIndex"], stopWhen: { expression: "robotIndex", equals: "5" } }` |
+| `gpl.ai.debug.connect` | `{ ip: "192.168.0.1", port: 1402, save: "session", silent: true }` — 모두 선택. `ip` 생략 시 launch.json > 세션 오버라이드 > settings 순의 현재 값 |
+| `gpl.ai.debug.getConnectionState` | 인자 없음 → `{ ok, connected, ip, port, consolePort, debugSessionActive, debugSession, runtimeConsole:{active,state,reason,lastPayloadAt}, expectedProject, deployLock, compileStale[] }` |
+| `gpl.controller.connect` | `{ silent: true }` 처럼 ConnectArgs 객체를 주면 비대화형(`{ ok, ip, port, connected, error?, mode }` 반환). 인자 없으면 대화형 |
 
 공통 규약:
 
@@ -133,6 +139,10 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 - `breakThread`/`stepThread`는 기본(`waitForPause: true`)으로 STATUS 0(접수) 이후 스레드가 실제로 Paused/Break/Error 상태에 들어올 때까지 폴링한 뒤 `ok`를 판정한다. 시간 내 정지하지 않으면 `{ ok: false, error: "pause-timeout", state }`. 접수만 확인하려면 `waitForPause: false`.
 - `loop`는 스텝마다 정지 복귀를 확인하고(`stepWaitTimeoutMs`, 기본 5000ms) 스택 top 위치와 watch 식 값을 수집하며, `stopWhen` 조건이 맞으면 자동 중단한다. 루프 도중 스레드가 Error 상태로 전이하면 `stoppedBy: "thread-error"`로 중단해 `lastStatus`를 돌려준다. `stopWhen` 평가 결과(값/STATUS/매칭 여부)는 실패해도 trace에 기록되며, 잘못된 `stopWhen.matches` 정규식은 루프 진입 전에 `invalid-stopWhen-matches`로 거부된다.
 - 별칭: `gpl.stopAll`은 `gpl.controller.stopAll`과 동일 동작(자동화/에이전트 호출 호환용).
+- **외부 진입점(URI, GitHub #25)**: `vscode://nir414.gpl-language-support/connect?ip=192.168.0.1&port=1402[&save=settings]`,
+  `/disconnect`, `/getState`(결과는 Output `[AI Debug]`), `/dashboard`. 터미널에서는 `code --open-url "vscode://nir414.gpl-language-support/connect"`.
+  결과는 URI로 돌려받을 수 없으므로 Output(`[URI]`)과 `gpl.ai.debug.getConnectionState`로 확인한다. step/continue/start 같은 모션 유발 동작은 URI로 열지 않는다.
+- **VS Code 디버그 세션 종료 시 제어기 브레이크포인트는 전부 해제된다**(`disconnectRequest`가 이 세션이 설정한 BP를 `Set Nobreak`로 정리 — 다음 세션 중복 등록 방지, 의도된 동작). MCP 등 외부 클라이언트와 병행할 때는 세션 종료 후 재설정하거나 세션 없이 `gpl.controller.syncEditorBreakpoints`(에디터 BP → 제어기 실시간 동기화)를 사용한다.
 
 ### 트리 컨텍스트 메뉴 전용 (트리 항목 인자 필요 — 팔레트 단독 실행 부적합)
 
@@ -229,6 +239,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 - F5로 `Attach to GPL Controller`를 실행한다.
 - `deployBeforeAttach: true`이면 attach 전 배포 trace를 함께 본다.
 - `clearProjectBreakpointsOnAttach: true`를 기본으로 둬 이전 세션 BP 잔재를 줄인다.
+- **Attach only(`deployBeforeAttach: false`) 주의(GitHub #21)**: 제어기는 시작 시점에 컴파일된 코드를 실행한다. 마지막 Compile(Deploy/Quick Compile/F5 배포가 기록한 컴파일 스냅샷) 이후 편집된 소스가 있으면 attach 시 상태바에 `⚠ 소스 변경됨 N — BP 신뢰 불가` 배지가 뜨고, 그 파일의 BP는 제어기에 설정되되 **unverified(회색)** 로 보고된다(줄 번호가 옛 코드와 어긋나 걸리지 않을 수 있음). 세션 중 저장해도 같은 처리. 배지 클릭 → `Stop + Upload + Run 으로 재시작` 또는 파일 열기. 배포 기록이 없는 워크스페이스(이 PC에서 배포한 적 없음)에서는 판정하지 않고 Debug Console에 안내만 남긴다.
 
 ### 5. 정지 상태 분석
 
@@ -246,6 +257,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 ### 6. Step/Continue
 
 - Step Over/Into/Out은 Debug UI(F10/F11/Shift+F11) 또는 GPL Controller 트리에서 정지 쓰레드 우클릭 메뉴를 사용한다(인라인 버튼은 Step Over 하나). 트리 경로도 `<STATUS>` 판정 → 정지 복귀 폴링(5초) → 정지 위치 표시 순서로 동작한다(2026-08-25).
+- **Step 게이트(GitHub #28)**: 이전 Step/Continue의 정지가 확인되기 전에 들어온 같은 쓰레드의 Step/Continue 요청은 어댑터가 명령을 보내지 않고 무시한다(응답만 정상 반환, Debug Console에 `Step/Continue 요청 무시 — …` 1회 + 50건마다 요약). 키 자동 반복(F10/F11 홀드)으로 Step이 30 ms 간격 수백 건 나가 제어기가 다운된 사고(2026-08-25 16:23)의 재발 방지. 정지 확인 뒤에도 `gpl.debug.minStepIntervalMs`(기본 100 ms) 하한이 있다. Pause(Break)는 게이트하지 않는다.
 - Continue 후 바로 다시 멈추면 위치, breakpoint hit count, 1403 이벤트를 같이 확인한다.
 - 같은 위치 재정지는 루프 재히트, breakpoint 잔재, Continue 반영 지연을 구분한다.
 - **MCP(gpl-controller) 경로**: `step_thread`/`continue_thread`/`pause_thread`/`run_to_line`은
@@ -404,6 +416,8 @@ SoftEStop
 - `out/` 산출물을 직접 수정하지 않는다.
 - 로그/캐시/상태 파일을 워크스페이스에 자동 생성하지 않는다.
 - 제어기 포트 역할(1402/1403/21/51417)을 바꾸지 않는다.
+- Step/Continue 키를 누른 채 유지(자동 반복)하지 않는다 — 어댑터 게이트가 막아 주지만, 외부 클라이언트(MCP `step_thread` 반복 호출 등)는 스스로 정지 확인 뒤에만 다음 명령을 보낸다(GitHub #28).
+- 제어기에 단명 TCP 연결을 반복해서 만들지 않는다(명령마다 connect/close 금지 — 확장은 1402 keep-alive, 1403 배치 재연결 지연, FTP 세션 1회 조회로 접속 churn을 줄였다. GitHub #22).
 <!-- end-of-runbook -->
 
 ## 부록 A. 변수 평가(`Show Variable -eval`) 규칙 요약 — 실측 2026-08-25 (GitHub #26·#27)

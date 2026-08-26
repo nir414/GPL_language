@@ -84,11 +84,29 @@ claude mcp add gpl-controller \
 ## 5. 제공 도구
 
 **기본**
-- `controller_command(command)` — 임의 콘솔 명령(에스케이프 해치)
+- `controller_command(command)` 또는 `controller_command(commands: string[], stopOnError?)` — 임의 콘솔 명령(에스케이프 해치).
+  **배치(GitHub #16)**: `commands`(1~50개)를 주면 서버가 **순서대로 순차** 실행해 결과 배열을 한 번에 돌려준다 —
+  MCP 호출당 고정 오버헤드(≈1.5 s)가 제어기 왕복(13~85 ms)의 100배라, DataID 30개를 단건 30회로 읽으면 45 s, 배치 1회면 0.5 s.
+  `command`/`commands`는 정확히 하나만 지정(둘 다/둘 다 없음은 에러). 단건 응답은 종전과 동일(`{command,status,ok,data,hint?}`).
+  배치 응답: `{ count, okCount, failCount, stoppedAt?, skipped?, results:[{ index, command, status, ok, data, hint?, error? }] }`.
+  항목마다 기존 `runCommand`를 그대로 쓰므로 **배포 잠금 가드(Compile/Start/Load/Unload 대기·거부)가 항목별로 적용**되고,
+  타임아웃/연결 오류 항목은 `{ok:false, error}`로 기록된다(배치 전체가 죽지 않음). `stopOnError:true`면 첫 실패에서 멈추고 `stoppedAt`(인덱스).
+  ```json
+  { "commands": ["Show Memory", "Show Network -tcp", "pd 2703", "pd 2704"], "stopOnError": false }
+  ```
+- `read_dataids(ids: number[])` — 파라미터 DB(DataID) 다건 읽기(`pd <id>`, **읽기 전용** — 쓰기 `pc`는 제공하지 않음). 1~100개를
+  순차 조회해 항목별 `{ id, ok, status, description, meta, values, raw }`. 실측 `2703, 1, 1, 0, "100% Cartesian accels in (mm or deg)/sec^2" = 1200, 400, 0`
+  → `description` 따옴표 제거, `meta:[1,1,0]`, `values:["1200","400","0"]`(원문 토큰 — 문자열 값은 따옴표 유지, 값 목록의 다중 줄 wrap은 이어 붙임).
+  파싱 실패 시 `raw`만 채워지고 `ok`는 STATUS 기준.
 - `controller_status(detail?)` — 상태 요약 1회: 연결(1402 도달성) · 스레드 상태별 개수와 정지 스레드 위치 ·
   고전원(`Execute Controller.PowerEnabled`) · 배포 잠금 · `server`(빌드 스탬프). **연결 실패 시** ICMP/TCP를 구분해
   "재부팅 중 / 서비스 다운(ECONNREFUSED) / 완전 무응답" verdict를 돌려준다(단명 연결 반복 금지). `detail:true`면
-  스레드 전체 목록(compact)과 최근 `ErrorLog` 10줄. 시뮬레이션/실기 판별 명령은 미확인이라 `simulation`은 항상 `null`.
+  스레드 전체 목록(compact)과 최근 `ErrorLog` 10줄, 그리고 **`resources`**(GitHub #22): 읽기 전용 `Show Memory` / `Show Network -tcp` /
+  `Show Network -mbuf` 3명령을 배치로 보내 `{ memory:{freeMb,usedMb,segments,freeSegments,usedSegments}, tcp:{accepted,established,dropped,closed,
+  acceptedPerSec,sampleIntervalSec}, mbuf:{total,free,data,header,clusters,clustersFree,drops,waits,drains}, raw:{...원문}, sampledAt }`로 구조화한다.
+  `acceptedPerSec`는 서버 메모리의 직전 `detail` 호출 대비 accept 카운터 증가율(첫 호출·재부팅 후 `null`) — 제어기 TCP 접속 churn 관찰(가설 1 검증)용.
+  원문 형식은 GPL 4.2K5 실측(2026-08-25) 1회분 기준이라 다른 펌웨어에선 필드가 `null`일 수 있다 — 그때는 `raw` 참고.
+  시뮬레이션/실기 판별 명령은 미확인이라 `simulation`은 항상 `null`.
 - `get_session_log(tail?)` — 이 세션의 도구 호출/1402 명령 로그(왕복 낭비 분석·공유용).
   같은 내용이 파일(`GPL_MCP_LOG_DIR`, 서버 시작 시 stderr에 경로 출력)에도 기록되며,
   사용자는 `Get-Content "<로그파일>" -Wait`로 AI의 제어기 조작을 실시간 관찰할 수 있다.
@@ -159,6 +177,8 @@ claude mcp add gpl-controller \
 - 완료 판정은 종결자 `</STATUS>` 기준(idle 조기완료로 부분 응답을 성공 오판하지 않음).
 - 1402는 **단일 클라이언트 채널**이라 서버가 명령을 직렬화한다. 같은 제어기에 GDE/디버거가
   동시에 붙어 있으면 충돌할 수 있으니 한 쪽만 사용.
+- **배치(`controller_command(commands)`/`read_dataids`/`resources` 프로브)는 서버 직렬 큐에서 순차 실행한다 — 1402 단일 채널이므로
+  `Promise.all` 병렬 전송은 금지**(`src/batch.js` `runBatch`). 배치 안에서도 항목별로 `runCommand` → 배포 잠금 가드를 그대로 거친다.
 - **keep-alive 연결(v0.2)**: 명령마다 TCP를 새로 열지 않고 연결을 유지한다(유휴
   `GPL_IDLE_CLOSE_MS` 후 종료). 정지 확인 폴링(150ms)과 왕복 지연이 크게 줄어든다.
   죽은 소켓이면 새 연결로 1회 자동 재시도.

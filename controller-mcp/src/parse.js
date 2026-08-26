@@ -313,3 +313,180 @@ export function parseShowVariable(raw) {
   const [head, ...members] = lines.map(parseLine);
   return { ...head, kind: classifyVarKind(head, members.length > 0), members };
 }
+
+// ── DataID(`pd <id>`) 응답 파싱 (GitHub #16 read_dataids) ────────────────────
+
+/**
+ * 따옴표 밖의 구분자로만 분할한다(괄호 깊이도 존중). 따옴표 안의 `""`는 이스케이프된 따옴표로 취급.
+ * DataID 설명 문자열(`"100% Cartesian accels in (mm or deg)/sec^2"`)처럼 콤마·괄호를 품은 값에 견고하다.
+ */
+export function splitOutsideQuotes(text, sep = ',') {
+  const s = String(text);
+  const parts = [];
+  let cur = '';
+  let inQuote = false;
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inQuote) {
+      cur += ch;
+      if (ch === '"') {
+        if (s[i + 1] === '"') { cur += '"'; i++; } else inQuote = false;
+      }
+      continue;
+    }
+    if (ch === '"') { inQuote = true; cur += ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === sep && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim().length > 0 || parts.length > 0) parts.push(cur.trim());
+  return parts;
+}
+
+/** 따옴표 밖에서 처음 나오는 문자의 인덱스(없으면 -1). */
+function indexOfUnquoted(s, target) {
+  let inQuote = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '"') { inQuote = !inQuote; continue; }
+    if (!inQuote && ch === target) return i;
+  }
+  return -1;
+}
+
+/**
+ * `pd <id>` 응답 → `{ id, meta, description, values, raw }` (id를 못 읽으면 null).
+ * 실측 형식(GPL 4.2K5, 2026-08-25, GitHub #16 본문):
+ *   2703, 1, 1, 0, "100% Cartesian accels in (mm or deg)/sec^2" = 1200, 400, 0
+ * → id 2703, meta [1,1,0], description(따옴표 제거), values ["1200","400","0"].
+ *  - 따옴표 안의 콤마/괄호/`=`는 구분자로 보지 않는다.
+ *  - values는 원문 토큰이다(문자열 값은 따옴표를 유지해 숫자와 구분 가능). 값 없음(`= ` 뒤 공백) → [].
+ *  - 값 목록이 여러 줄로 wrap 되어도(.pac 저장 포맷처럼 콤마 뒤 줄바꿈+들여쓰기) 이어 붙인다 — 실기기에서 wrap 여부는 미확인.
+ *  - STATUS 종결자/`<DATA>` 래퍼가 있어도 없어도 동작한다(runCommand의 data 또는 raw 모두 입력 가능).
+ */
+export function parseDataIdResponse(text) {
+  const body = extractData(text).trim();
+  if (!body) return null;
+  const eq = indexOfUnquoted(body, '=');
+  const head = eq >= 0 ? body.slice(0, eq) : body;
+  const tail = eq >= 0 ? body.slice(eq + 1) : '';
+  const headParts = splitOutsideQuotes(head.replace(/\r?\n\s*/g, ' '), ',');
+  if (!/^-?\d+$/.test(headParts[0] ?? '')) return null;
+  const id = parseInt(headParts[0], 10);
+  const meta = [];
+  let description = null;
+  for (const part of headParts.slice(1)) {
+    if (/^"[\s\S]*"$/.test(part)) description = part.slice(1, -1).replace(/""/g, '"');
+    else if (description === null && /^-?\d+(?:\.\d+)?$/.test(part)) meta.push(Number(part));
+  }
+  const values = splitOutsideQuotes(tail.replace(/\r?\n\s*/g, ' ').trim(), ',');
+  while (values.length && values[values.length - 1] === '') values.pop(); // wrap 끝 콤마 등 꼬리 빈 토큰만 제거
+  return { id, meta, description, values, raw: body };
+}
+
+// ── 자원 프로브: Show Memory / Show Network -tcp / -mbuf (GitHub #22 가설 1 검증용) ───────
+// 실측 원문(G2400C, GPL 4.2K5, 2026-08-25 Claude 세션의 도구 응답 원문에서 채록 — 이슈 댓글의 요약 표기와는 다르다):
+//   Show Memory        → "Main Memory:\n  Free: 3.6557 Mb, Segments: 35\n  Used: 7.9903 Mb, Segments: 49939"
+//   Show Network -tcp  → "************ TCP Statistics ************\n  connections accepted  13213\n  connections established  13212\n
+//                         connections dropped  13\n  conn. closed (includes drops)  13836\n  ...(BSD netstat -s 형식 30여 줄)"
+//   Show Network -mbuf → "************ MBUF STATISTICS ************\nmbufs:3072    clusters: 512    free: 223\n
+//                         drops:   0       waits:   0  drains:   0\n      free:2725  data:292  header:55  socket:0 ..."
+// 정규식은 관대하게(대소문자 무시, 단어 사이 임의 비숫자) 두어 이슈 댓글의 요약 표기("Free 3.6557 Mb, Used 7.9903 Mb, Segments 49939",
+// "connections accepted 10, established 10, closed 19", "mbufs 3072 (free 2778, data 292, header 2) clusters 512, free 223")도 같은 값으로 읽힌다.
+// 매칭 실패 필드는 null — 형식이 다른 펌웨어면 raw를 보고 사용자에게 보고할 것.
+
+/** 정규식 1그룹을 숫자로. 천 단위 콤마("3,144") 허용. 실패 시 null. */
+function matchNumber(text, re) {
+  if (text == null) return null;
+  const m = String(text).match(re);
+  if (!m) return null;
+  const n = Number(String(m[1]).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+const INT = '(\\d[\\d,]*)';
+const DEC = '(\\d+(?:\\.\\d+)?)';
+
+/** `Show Memory` → `{ freeMb, usedMb, segments, freeSegments, usedSegments }`. 텍스트 없음 → null. */
+export function parseMemoryProbe(text) {
+  if (text == null || !String(text).trim()) return null;
+  const s = String(text);
+  const freeMb = matchNumber(s, new RegExp(`\\bfree\\W*${DEC}\\s*mb`, 'i'));
+  const usedMb = matchNumber(s, new RegExp(`\\bused\\W*${DEC}\\s*mb`, 'i'));
+  // 실측은 Free/Used 줄에 Segments가 각각 붙는다. 한 줄에 Free·Used가 함께 있는 요약 표기는 어느 쪽인지 알 수 없어 free/used는 null로 둔다.
+  let freeSegments = null;
+  let usedSegments = null;
+  for (const line of s.split(/\r?\n/)) {
+    const seg = matchNumber(line, new RegExp(`segments\\W*${INT}`, 'i'));
+    if (seg === null) continue;
+    const hasFree = /\bfree\b/i.test(line);
+    const hasUsed = /\bused\b/i.test(line);
+    if (hasFree && !hasUsed) freeSegments = seg;
+    else if (hasUsed && !hasFree) usedSegments = seg;
+  }
+  const all = [...s.matchAll(new RegExp(`segments\\W*${INT}`, 'gi'))].map((m) => Number(m[1].replace(/,/g, '')));
+  // segments = 사용 중 세그먼트 수(할당 블록 수 — 누수 관찰 지표; 이슈 댓글 요약 "Segments 49939"가 이 값). 구분 불가면 마지막 값.
+  const segments = usedSegments ?? (all.length ? all[all.length - 1] : null);
+  return { freeMb, usedMb, segments, freeSegments, usedSegments };
+}
+
+/** `Show Network -tcp` → `{ accepted, established, dropped, closed }`. 텍스트 없음 → null. */
+export function parseTcpProbe(text) {
+  if (text == null || !String(text).trim()) return null;
+  const s = String(text);
+  const same = (word) => new RegExp(`${word}[^\\d\\n]*${INT}`, 'i'); // 같은 줄에서 단어 뒤 첫 숫자
+  return {
+    accepted: matchNumber(s, same('accepted')),
+    established: matchNumber(s, same('established')),
+    dropped: matchNumber(s, same('dropped')),
+    closed: matchNumber(s, same('closed')), // "conn. closed (includes drops)  13836" — 괄호 설명을 건너뛴다
+  };
+}
+
+/** `Show Network -mbuf` → `{ total, free, data, header, clusters, clustersFree, drops, waits, drains }`. 텍스트 없음 → null. */
+export function parseMbufProbe(text) {
+  if (text == null || !String(text).trim()) return null;
+  const s = String(text);
+  const after = (word) => new RegExp(`\\b${word}\\W*${INT}`, 'i');
+  return {
+    total: matchNumber(s, after('mbufs')),
+    // mbuf free는 "free:2725 data:292 ..." 줄(요약 표기 "(free 2778, data 292 ...)")의 값 — 같은 줄 뒤에 data가 따라오는 free.
+    free: matchNumber(s, new RegExp(`\\bfree\\W*${INT}[^\\n]*?\\bdata\\b`, 'i')),
+    data: matchNumber(s, after('data')),
+    header: matchNumber(s, after('header')),
+    clusters: matchNumber(s, after('clusters')),
+    // clusters free는 "clusters: 512    free: 223" — clusters 숫자 바로 뒤에 오는 free.
+    clustersFree: matchNumber(s, new RegExp(`\\bclusters\\W*\\d[\\d,]*\\W*free\\W*${INT}`, 'i')),
+    drops: matchNumber(s, after('drops')),
+    waits: matchNumber(s, after('waits')),
+    drains: matchNumber(s, after('drains')),
+  };
+}
+
+/**
+ * 세 프로브 원문 → 구조화. 프로브 텍스트가 없으면(명령 실패/타임아웃) 해당 항목은 null, 필드 매칭 실패는 필드만 null.
+ * @param {{ memory?: string|null, tcp?: string|null, mbuf?: string|null }} probes
+ */
+export function parseResourceProbes({ memory, tcp, mbuf } = {}) {
+  return {
+    memory: parseMemoryProbe(memory),
+    tcp: parseTcpProbe(tcp),
+    mbuf: parseMbufProbe(mbuf),
+    raw: { memory: memory ?? null, tcp: tcp ?? null, mbuf: mbuf ?? null },
+  };
+}
+
+/**
+ * TCP accept 카운터 증가율(건/초, 소수 2자리). prev/cur = `{ accepted, at(ms) }`.
+ * 첫 호출(prev 없음)·경과 0·카운터 감소(제어기 재부팅으로 리셋)면 null — 추정치를 만들어 내지 않는다.
+ */
+export function acceptedRate(prev, cur) {
+  if (!prev || !cur || prev.accepted == null || cur.accepted == null) return null;
+  const dtSec = (cur.at - prev.at) / 1000;
+  if (!(dtSec > 0)) return null;
+  const delta = cur.accepted - prev.accepted;
+  if (delta < 0) return null;
+  return Math.round((delta / dtSec) * 100) / 100;
+}

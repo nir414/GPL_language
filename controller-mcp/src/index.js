@@ -30,11 +30,15 @@ import {
   compactThread,
   summarizeThreads,
   parseShowVariable,
+  parseDataIdResponse,
+  parseResourceProbes,
+  acceptedRate,
   PAUSED_STATES,
   statusHint,
   isSuccess,
 } from './parse.js';
 import { readDeployLock, waitForDeployLockRelease, describeDeployLock, DEPLOY_GUARDED_COMMAND_RE } from './deployLock.js';
+import { runBatch, normalizeCommandInput, BATCH_MAX } from './batch.js';
 
 const HOST = process.env.GPL_HOST || '192.168.0.1';
 const PORT = parseInt(process.env.GPL_PORT || '1402', 10);
@@ -349,10 +353,54 @@ function resetStepStreak() {
 }
 
 // ── 기본/에스케이프 ───────────────────────────────────────────────────────
+// 배치(GitHub #16): commands 배열을 받아 서버 직렬 큐에서 **순차** 실행하고 결과 배열을 한 번에 돌려준다(MCP 왕복 N→1 —
+// 호출당 고정 오버헤드 ≈1.5 s가 제어기 왕복 13~85 ms의 100배라 병목은 호출 횟수였다). 각 항목은 runCommand → sendGuarded를
+// 그대로 거치므로 배포 잠금 가드(Compile/Start/Load/Unload 대기·거부)가 항목별로 적용된다. 단건(command)은 종전 응답과 동일.
 tool('controller_command',
-  '임의의 1402 콘솔 명령을 그대로 전송한다(에스케이프 해치). 구조화 도구로 안 되는 명령에만 사용.',
-  { command: z.string().describe('보낼 콘솔 명령 한 줄') },
-  async ({ command }) => textResult(await runCommand(command)));
+  '임의의 1402 콘솔 명령을 그대로 전송한다(에스케이프 해치). 구조화 도구로 안 되는 명령에만 사용. ' +
+  `단건은 command, 여러 명령은 commands(1~${BATCH_MAX}개) — 둘 중 정확히 하나만 지정. 배치는 서버가 순서대로 순차 실행해(1402 단일 채널, 병렬 없음) ` +
+  '결과 배열 {count, okCount, failCount, stoppedAt?, results:[{index, command, status, ok, data, hint?, error?}]}를 한 번에 돌려준다 — ' +
+  'DataID/상태 항목 여러 개 조회는 호출 1회로 끝낼 것(호출당 고정 오버헤드 ≈1.5 s). 항목별로 기존 안전 규칙(배포 잠금 가드: Compile/Start/Load/Unload 대기·거부)이 ' +
+  '그대로 적용되고, 타임아웃/연결 오류 항목은 {ok:false, error}로 기록된다. stopOnError=true면 첫 실패(ok=false 또는 오류)에서 멈추고 stoppedAt(인덱스)을 준다(기본: 계속). ' +
+  'DataID 조회는 read_dataids가 값을 구조화해 주므로 그쪽을 우선할 것.',
+  {
+    command: z.string().optional().describe('보낼 콘솔 명령 한 줄(단건). commands와 동시 지정 불가'),
+    commands: z.array(z.string()).min(1).max(BATCH_MAX).optional()
+      .describe(`순차 실행할 명령 목록(1~${BATCH_MAX}개, 빈 항목 불가). command와 동시 지정 불가`),
+    stopOnError: z.boolean().optional().describe('배치 전용: true면 첫 실패 항목에서 중단(기본 false=끝까지 계속)'),
+  },
+  async ({ command, commands, stopOnError }) => {
+    const input = normalizeCommandInput({ command, commands });
+    if (input.mode === 'single') return textResult(await runCommand(input.command)); // 종전과 동일한 응답(하위 호환)
+    return textResult(await runBatch(input.commands, (c) => runCommand(c), { stopOnError: !!stopOnError }));
+  });
+
+tool('read_dataids',
+  '파라미터 DB(DataID) 여러 개를 한 번에 읽는다 — `pd <id>`는 파라미터 DB 읽기(읽기 전용, 값 변경 없음; 쓰기 `pc`는 제공하지 않음). ' +
+  '각 id를 서버 직렬 큐에서 순차 조회해 {id, ok, status, description, meta, values, raw}로 구조화한다(실측 형식 ' +
+  '`2703, 1, 1, 0, "100% Cartesian accels in (mm or deg)/sec^2" = 1200, 400, 0` → meta [1,1,0], values ["1200","400","0"]; values는 원문 토큰이라 문자열 값은 따옴표 유지). ' +
+  'DataID를 하나씩 controller_command로 읽지 말고 이 도구 1회로 끝낼 것(호출당 고정 오버헤드 ≈1.5 s, GitHub #16). 파싱 실패 시에도 raw는 채워지고 ok는 STATUS 기준.',
+  { ids: z.array(z.number().int().min(0)).min(1).max(100).describe('DataID 목록(1~100개), 예: [2703, 2704, 2705]') },
+  async ({ ids }) => {
+    const batch = await runBatch(ids.map((id) => `pd ${id}`), (c) => runCommand(c));
+    const results = batch.results.map((r, i) => {
+      const id = ids[i];
+      const item = { id, ok: r.ok };
+      if (r.status) item.status = r.status;
+      if (r.error) item.error = r.error;
+      const parsed = r.ok && r.data ? parseDataIdResponse(r.data) : null;
+      if (parsed) {
+        item.description = parsed.description;
+        item.meta = parsed.meta;
+        item.values = parsed.values;
+        if (parsed.id !== id) item.note = `응답의 id(${parsed.id})가 요청(${id})과 다르다 — raw 확인`;
+      }
+      item.raw = r.data ?? null;
+      if (r.hint) item.hint = r.hint;
+      return item;
+    });
+    return textResult({ count: batch.count, okCount: batch.okCount, failCount: batch.failCount, results });
+  });
 
 tool('get_session_log',
   '이 MCP 세션의 도구 호출/1402 명령 로그(타임스탬프·소요시간·STATUS·도구별 왕복 수)를 반환한다. ' +
@@ -365,6 +413,39 @@ tool('get_session_log',
     entries: logRing.slice(-(tail ?? 200)),
   }));
 
+// ── 자원 프로브(GitHub #22 가설 1: TCP 접속 churn → 스택 자원 고갈 관찰) ─────────────────────────
+// 읽기 전용 3명령(Show Memory / Show Network -tcp / -mbuf)을 배치로 보내 parseResourceProbes로 구조화한다(원문 형식은 parse.js 주석 참조 —
+// 2026-08-25 실측 1회분 기준, 다른 펌웨어는 미확정이라 매칭 실패 필드는 null·raw 동봉). 직전 tcp 샘플(accepted, 시각)을 서버 메모리에
+// 보관해 acceptedPerSec(접속 churn 증가율)를 계산한다 — 첫 호출·재부팅(카운터 감소)·서버 재시작 직후는 null.
+const RESOURCE_PROBE_COMMANDS = { memory: 'Show Memory', tcp: 'Show Network -tcp', mbuf: 'Show Network -mbuf' };
+let lastTcpSample = null;
+async function probeResources() {
+  const keys = Object.keys(RESOURCE_PROBE_COMMANDS);
+  const batch = await runBatch(
+    keys.map((k) => RESOURCE_PROBE_COMMANDS[k]),
+    (c) => runCommand(c, { timeoutMs: Math.min(TIMEOUT, 5000) }), // 실측 5~60 ms — 상태 요약이 프로브 때문에 오래 매달리지 않게
+  );
+  const texts = {};
+  const errors = {};
+  batch.results.forEach((r, i) => {
+    texts[keys[i]] = r.ok ? r.data : null;
+    if (!r.ok) errors[keys[i]] = r.error ?? r.status;
+  });
+  const parsed = parseResourceProbes(texts);
+  const now = Date.now();
+  if (parsed.tcp) {
+    const sample = { accepted: parsed.tcp.accepted, at: now };
+    parsed.tcp.acceptedPerSec = acceptedRate(lastTcpSample, sample);
+    parsed.tcp.sampleIntervalSec = lastTcpSample ? Math.round((now - lastTcpSample.at) / 100) / 10 : null;
+    if (sample.accepted != null) lastTcpSample = sample;
+  }
+  parsed.sampledAt = new Date(now).toISOString();
+  if (Object.keys(errors).length) parsed.errors = errors;
+  parsed.note = '형식은 GPL 4.2K5 실측(2026-08-25) 1회분 기준(다른 펌웨어 미확정) — 필드가 null이면 raw를 참고해 사용자에게 보고. ' +
+    'tcp.acceptedPerSec는 이 서버의 직전 detail 호출 대비 accept 카운터 증가율(첫 호출 null) — 접속 churn 관찰용(GitHub #22 가설 1).';
+  return parsed;
+}
+
 /** 배포 잠금(VS Code 확장이 업로드/배포 중이면 존재) — 있으면 Compile/Start는 대기·거부된다. */
 function deployLockInfo() {
   const lock = readDeployLock(HOST);
@@ -376,8 +457,11 @@ function deployLockInfo() {
 tool('controller_status',
   '제어기 상태 요약 1회: 연결(1402 도달성)·스레드 상태별 개수와 정지 스레드 위치·고전원(Controller.PowerEnabled)·배포 잠금·서버 빌드. ' +
   '연결 실패 시 ICMP/TCP를 구분해 "재부팅 중 / 서비스 다운 / 완전 무응답"을 판정해 준다(단명 연결 반복 금지). ' +
-  'detail=true면 스레드 전체 목록(compact)과 최근 ErrorLog 10줄을 덧붙인다. 시뮬레이션/실기 판별 명령은 실측 확인 전이라 simulation은 항상 null — 사용자에게 확인할 것.',
-  { detail: z.boolean().optional().describe('true면 스레드 전체 목록(compact)과 최근 ErrorLog 10줄 포함') },
+  'detail=true면 스레드 전체 목록(compact)·최근 ErrorLog 10줄·resources(읽기 전용 Show Memory / Show Network -tcp / -mbuf를 구조화: ' +
+  'memory.freeMb/usedMb/segments, tcp.accepted/established/closed + acceptedPerSec, mbuf.total/free/clusters/clustersFree/drops/waits/drains)를 덧붙인다. ' +
+  'acceptedPerSec는 제어기 TCP accept 카운터의 직전 호출 대비 증가율로 접속 churn을 관찰하는 값(GitHub #22 가설 1 검증용) — 첫 호출은 null, ' +
+  '원문 형식은 실측 1회분 기준이라 파싱 실패 필드는 null이며 raw를 참고. 시뮬레이션/실기 판별 명령은 실측 확인 전이라 simulation은 항상 null — 사용자에게 확인할 것.',
+  { detail: z.boolean().optional().describe('true면 스레드 전체 목록(compact)·최근 ErrorLog 10줄·resources(메모리/TCP/mbuf 자원 프로브) 포함') },
   async ({ detail }) => {
     const base = { host: HOST, port: PORT, server: BUILD, deployLock: deployLockInfo() };
     let raw;
@@ -401,6 +485,7 @@ tool('controller_status',
       result.threadList = threads.map(compactThread);
       const log = await runCommand('ErrorLog -web ,10');
       result.errorLog = log.ok ? log.data.split(/\r?\n/).map((l) => l.trim()).filter(Boolean) : log.status;
+      result.resources = await probeResources(); // GitHub #22 — 자원 시계열이 상태 조회마다 자동으로 남게
     }
     return textResult(result);
   });

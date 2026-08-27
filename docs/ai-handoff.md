@@ -2175,6 +2175,8 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 | #28 (Step 연타) | 구현 | 어댑터 Step 게이트 + 최소 간격, close |
 | #21 (Attach only stale BP) | 구현 | 컴파일 스냅샷 기록 → attach/저장 시 대조 → 상태바 배지·BP unverified·재시작 액션, close |
 | #22 (제어기 다운) | 완화책 구현, 원인 미확정 | 1402 keep-alive·1403 churn/워치독·백업 폴 완화·FTP 스로틀·자원 지표·사후 스냅샷·도달성 판정; 분리 실험 계획 코멘트, **열어 둠** |
+| #29 (호버 클릭 후 재표시 — 세션 중 #19에서 분리돼 신규 등록) | #19 처리로 이미 구현 | `gpl.hover.showAfterClick` 옵트인이 수용 기준 3항 모두 충족 — 종결 코멘트 + close |
+| #30 (launch.json JSONC 파싱 실패 — 세션 중 신규 등록) | 구현 | `jsonc-parser` 도입, `src/launchJsonc.ts`(parseJsonc·describeJsoncErrors·detectFormatting·upsertLaunchConfiguration) — 읽기 2곳 통일 + 부분 갱신으로 주석/포맷 보존, close |
 
 ### 조치 (파일별 요지 — 상세는 각 모듈 헤더 주석)
 
@@ -2189,14 +2191,16 @@ Quick Compile 출력 로그가 읽기 어려움: ① settle 게이트가 500ms �
 - **MCP (#16·#22)** — `controller-mcp/src/batch.js`(`runBatch` for-await 순차, throw→`{ok:false,error}`, stopOnError→`stoppedAt/skipped`; `normalizeCommandInput`), `controller_command {command?|commands?(1~50), stopOnError?}`(단건 응답 바이트 동일), `read_dataids(ids 1~100)`(`pd` 읽기 전용, `parseDataIdResponse`: 따옴표 밖 첫 `=`, wrap 흡수, values 원문 토큰), `controller_status(detail).resources`(`parseResourceProbes`, `acceptedPerSec` 서버 메모리 직전 샘플). 도구 20→21. node --test 40/40, 가짜 1402 e2e 23/23. `exportAgentSetup.ts` CLAUDE 가이드: 배치 규칙·자원 관찰·"정지 확인 내장 도구 앞뒤 show_thread 금지"·"같은 스레드 Step 반복 금지(#28)".
 - **connect 비대화형·URI (#25 A·B)** — `extension.ts`: `connectControllerWithArgs(ConnectArgs)`/`connectControllerInteractive()`/`finishConnect()`로 분리, `gpl.controller.connect(args?)`는 `isConnectArgs`일 때만 비대화형(트리/상태바/팔레트 회귀 없음), `ConnectResult{ok,ip,port,connected,error?,mode}`; `gpl.controller.disconnect(args?)` 반환값+silent; AI 계층 `gpl.ai.debug.connect/disconnect/getConnectionState`; `registerUriHandler`(`/connect?ip&port&save`, `/disconnect`, `/getState`, `/dashboard` — 모션 동작 제외), `activationEvents: onUri`; `gpl.ai.debug.loop` 미연결 시 비대화형 연결.
 - **호버 (#19)** — `hoverProvider._docSymbolsCache`(uri,version), 폴백은 비-로컬만; `extension.ts` `gpl.hover.showAfterClick`(기본 false) 리스너: Mouse 단일 클릭·식별자 위·`editor.hover.delay` 뒤 `editor.action.showHover {focus:'noAutoFocus'}`, 디버그 중 제외.
+- **launch.json JSONC (#30)** — 의존성 `jsonc-parser@^3.3.1`(VS Code 자체 설정 파서, 무의존 MIT). `src/launchJsonc.ts`(vscode 무의존): `parseJsonc`(allowTrailingComma), `describeJsoncErrors`(1-based 줄/열), `detectFormatting`(들여쓰기·EOL 감지), `upsertLaunchConfiguration(text, config)` — 빈 파일은 골격 생성, `configurations` 누락은 배열 생성, 같은 `name`은 `modify(['configurations', idx])`로 교체·없으면 `['configurations', -1]` 삽입(`isArrayInsertion`) → `applyEdits`. 교체되는 GPL 항목 내부 주석만 사라지고 나머지(최상위 주석·다른 구성·`${config:…}`·들여쓰기)는 보존. `extension.ts`: `readLaunchControllerInfo`(정규식 주석 제거 폐지)·`createOrUpdateLaunchJson`(전체 `JSON.stringify` 덮어쓰기 폐지, 변경 없으면 쓰지 않음, 오류는 줄/열과 경로 표시) 교체. 테스트 8건(#30 재현 입력·문자열 안 `/*`·오류 위치·포맷 감지·교체/삽입/골격/오류).
 - **단축키 (#20)** — `package.json` keybindings: `F9 → continue`를 `when: … && config.gpl.keybindings.gdeStyle`로만(기본 off), `Ctrl+Alt+I` 제거(§1-BH). 설정 `gpl.keybindings.gdeStyle`.
 - **문서** — README(디버거 절: 표준 키·Step 게이트·stale 배지 / AI 표: 연결 명령·URI / 호버 옵션), 런북(Command ID·인자 표·URI·BP 해제 규약·§4 Attach stale·§6 Step 게이트·금지 2항), controller-mcp README(§5 배치·read_dataids·resources, §7), CHANGELOG [0.8.19](§1-BH 중복 #20 항목 제거·날짜 08-26), 이 문서.
 
 ### 검증
 
-- `npm run compile` 통과, `npm test` **321/321**(+118: deployRecord 13·ftpRefreshThrottle 11·runtimeConsoleGuards 17·keepAlive1402 17·reachability 24·resourceProbes 25·stepGate 11), `controller-mcp` `node --test` **40/40**(+17), `npm run bundle:mcp` 성공, `npm run pre-release-check`는 'working tree clean' 1건만 실패(커밋 전 정상). 줄바꿈: 모든 편집 파일 기존 형식 유지(`git ls-files --eol` mixed 없음; 신규 파일 LF·BOM 없음). CHANGELOG는 종전 4줄이 LF였던 혼재를 CRLF로 정규화됨.
+- `npm run compile` 통과, `npm test` **329/329**(+126: deployRecord 13·ftpRefreshThrottle 11·runtimeConsoleGuards 17·keepAlive1402 17·reachability 24·resourceProbes 25·stepGate 11·launchJsonc 8), `controller-mcp` `node --test` **40/40**(+17), `npm run bundle:mcp` 성공, `npm run pre-release-check`는 'working tree clean' 1건만 실패(커밋 전 정상). 줄바꿈: 모든 편집 파일 기존 형식 유지(`git ls-files --eol` mixed 없음; 신규 파일 LF·BOM 없음). CHANGELOG는 종전 4줄이 LF였던 혼재를 CRLF로 정규화됨.
 - **실기기(G2400C) 미검증** — §3 체크리스트(§1-BI). 모션 영향 없음(통신 패턴·읽기 전용 명령·UI). 단, keep-alive는 "제어기가 한 연결에서 연속 명령을 받는가"가 효과의 전제(안 받아도 무해 — CLOSE by peer 후 재연결).
 - 교차 검증: 확장 `resourceProbes.ts`를 MCP 실기기 픽스처로 돌려 3필드 오류를 잡아 수정(위). 동시 세션이 남긴 §1-BH/CHANGELOG #20 중복은 최신 항목만 남기고 정리.
+- **적대적 리뷰 Workflow(6 영역 → 발견 항목 검증)는 세션 한도로 6개 에이전트가 모두 실패**("session limit · resets 4:40pm")해 실행되지 못했다. 대신 통합자가 핵심 경로를 직접 읽어 검토: consoleSocket 재사용 판정·stale 재시도 범위(0바이트만, TIMEOUT 제외)·generation 가드·idle 소켓 감시, Step 게이트 재발사(정지 상태에서만, 실제 step 시 취소), stale 판정/저장 감지/재컴파일 복원, 워치독의 socket-exists 가드, MCP runBatch 순차성·단건 하위 호환 — 차단 결함 없음. 다음 세션에서 리뷰 Workflow를 다시 돌릴 가치가 있다(특히 gplDebugSession 변경분).
 
 ### 남은 일
 
@@ -2283,6 +2287,7 @@ src/controller/deployRecord.ts           # deployRecordCore vscode 래퍼 — re
 src/debug/stepGate.ts                    # Step/Continue 게이트 순수 판정 shouldGateStepRequest(pending-entry/pending-same-thread/min-interval) (§1-BI, #28)
 src/controller/debugBridge.ts            # 디버그 세션 ↔ 확장 이벤트 버스 + RuntimeConsoleHealth 공급자(1403 alive → 백업 폴 완화) (§1-BI)
 src/views/refreshThrottle.ts             # 트리 FTP/시스템 정보 자동 재조회 스로틀 판정(순수) (§1-BI, #22)
+src/launchJsonc.ts                       # launch.json JSONC 읽기/부분 갱신(jsonc-parser) — 주석·포맷 보존 upsert (§1-BI, #30)
 controller-mcp/src/batch.js              # MCP controller_command 배치 runBatch/normalizeCommandInput (§1-BI, #16)
 src/controller/trafficResponseBody.ts    # ResponseBodyStreamer — 1402 응답 본문 줄 단위 스트리밍·상한 생략 요약(§1-BG, vscode 무의존 순수 모듈)
 src/controller/deployService.ts          # deploy() = 잠금 획득 → UPLOAD → STOP/THREAD_CHECK(settle 게이트) → COMPILE → ERROR CHECK(§1-BD 재배치), tryCompile, directGpl(§1-G), COMPILE_DEFERRED

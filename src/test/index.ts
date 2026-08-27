@@ -26,6 +26,7 @@ import './keepAlive1402.test';
 import './reachability.test';
 import './resourceProbes.test';
 import './stepGate.test';
+import './launchJsonc.test';
 import { run } from './harness';
 
 void run();

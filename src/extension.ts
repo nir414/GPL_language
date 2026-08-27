@@ -21,6 +21,7 @@ import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFil
 // Controller integration
 import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride, formatTrafficTimestamp, getTrafficLogOptions, setTrafficResponseBodyEnabled, closeControllerConnection, getConnectionStats, getRecentTraffic, recordTrafficLine, ControllerConfig } from './controller/controllerConnection';
 import { probeReachability } from './controller/reachability';
+import { parseJsonc, upsertLaunchConfiguration } from './launchJsonc';
 import { exportAiAgentSetup, inspectAiAgentSetup, syncStableBundleIfStale } from './ai/exportAgentSetup';
 import { EditorBreakpointSync } from './controller/breakpointSync';
 import { deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult, DeployResult } from './controller/deployService';
@@ -1132,12 +1133,11 @@ export function activate(context: vscode.ExtensionContext) {
 		if (!fs.existsSync(launchPath)) { return undefined; }
 		try {
 			const text = fs.readFileSync(launchPath, 'utf8');
-			// launch.json은 주석 허용. 간단한 라인/블록 주석 제거 후 JSON.parse.
-			const stripped = text
-				.replace(/\/\*[\s\S]*?\*\//g, '')
-				.replace(/^\s*\/\/.*$/gm, '');
-			const parsed = JSON.parse(stripped);
-			const configs: any[] = Array.isArray(parsed?.configurations) ? parsed.configurations : [];
+			// launch.json은 JSONC(주석·trailing comma 허용). VS Code와 같은 jsonc-parser로 읽는다(GitHub #30 —
+			// 종전 정규식 주석 제거는 줄 끝 주석·문자열 안 '/*'·trailing comma에 취약했다).
+			const { value: parsed, errors } = parseJsonc<{ configurations?: unknown }>(text);
+			if (errors.length > 0) { return undefined; }
+			const configs: any[] = Array.isArray(parsed?.configurations) ? (parsed!.configurations as any[]) : [];
 			const gplCfg = configs.find(c => c?.type === 'brooks-gpl');
 			if (!gplCfg) { return undefined; }
 			const rawIp = typeof gplCfg.controllerIp === 'string' ? gplCfg.controllerIp.trim() : '';
@@ -1244,39 +1244,32 @@ export function activate(context: vscode.ExtensionContext) {
 			stopOnEntry: true,
 		};
 
-		let launchObj: { version: string; configurations: any[] } = {
-			version: '0.2.0',
-			configurations: [],
-		};
-
+		// GitHub #30: launch.json 은 JSONC 다. 종전에는 엄격한 JSON.parse 로 읽어 주석 한 줄에도 "파싱 실패"로 중단했고,
+		// 갱신은 JSON.stringify 로 파일 전체를 다시 써 사용자의 주석·${config:…} 참조·들여쓰기를 지웠다.
+		// 이제 jsonc-parser 로 읽고, 같은 name 의 GPL 구성 항목만 modify/applyEdits 로 부분 갱신해 나머지를 보존한다.
+		let currentText = '';
 		if (fs.existsSync(launchPath)) {
-			try {
-				const currentText = fs.readFileSync(launchPath, 'utf8');
-				const parsed = JSON.parse(currentText);
-				launchObj = {
-					version: typeof parsed?.version === 'string' ? parsed.version : '0.2.0',
-					configurations: Array.isArray(parsed?.configurations) ? parsed.configurations : [],
-				};
-			} catch (err: any) {
-				vscode.window.showErrorMessage(`launch.json 파싱 실패: ${err?.message ?? err}`);
-				return undefined;
-			}
+			currentText = fs.readFileSync(launchPath, 'utf8');
+		}
+		let nextText: string;
+		const actions: string[] = [];
+		try {
+			const first = upsertLaunchConfiguration(currentText, attachConfig);
+			const second = upsertLaunchConfiguration(first.text, stopOnEntryConfig);
+			nextText = second.text;
+			actions.push(`${attachConfig.name}: ${first.action}`, `${stopOnEntryConfig.name}: ${second.action}`);
+		} catch (err: any) {
+			// 메시지에 줄/열이 들어 있다(launchJsonc.describeJsoncErrors). 파일은 건드리지 않는다.
+			vscode.window.showErrorMessage(`${err?.message ?? err} — ${launchPath}`);
+			logOutput(`[launch.json] ${err?.message ?? err}`);
+			return undefined;
 		}
 
-		const upsert = (nextCfg: any) => {
-			const idx = launchObj.configurations.findIndex((c: any) => c?.name === nextCfg.name);
-			if (idx >= 0) {
-				launchObj.configurations[idx] = nextCfg;
-			} else {
-				launchObj.configurations.push(nextCfg);
-			}
-		};
-
-		upsert(attachConfig);
-		upsert(stopOnEntryConfig);
-
 		fs.mkdirSync(vscodeDir, { recursive: true });
-		fs.writeFileSync(launchPath, `${JSON.stringify(launchObj, null, 4)}\n`, 'utf8');
+		if (nextText !== currentText) {
+			fs.writeFileSync(launchPath, nextText, 'utf8');
+		}
+		logOutput(`[launch.json] ${actions.join(' / ')} (${nextText === currentText ? '변경 없음' : '주석·다른 구성 보존, GPL 항목만 갱신'})`);
 		return launchPath;
 	}
 

@@ -105,6 +105,7 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | Find All References | `Shift+F12` | 심볼 사용 위치 전체 검색 |
 | IntelliSense | `Ctrl+Space` | GPL 심볼·멤버·로컬 변수 자동완성, Signature Help |
 | Hover Info | 마우스 올리기 | 심볼 타입·파라미터 정보 + 내장 함수 시그니처. 클릭 뒤 마우스를 멈춰도 다시 표시하려면 `gpl.hover.showAfterClick` |
+| 문서화 주석 | `'''` | 선언 위 `'` 주석에 `# Parameters` / `# Returns` / `# Examples`를 쓰면 호버·자동완성·시그니처 도움말이 구조로 표시. `'''` 입력·전구 메뉴·`GPL: 문서화 주석 생성`으로 골격 생성(있으면 빠진 항목만 보완) |
 | Outline | `Ctrl+Shift+O` | 문서 내 심볼 구조 |
 | Symbol Search | `Ctrl+T` | 워크스페이스 전체 심볼 검색 |
 | Code Folding | — | Module/Class/Sub/Function 블록 접기 |
@@ -113,6 +114,20 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 - `Project.gpr`이 있으면 `ProjectSource`에 등록된 파일만 우선 인덱싱 (대형 워크스페이스 최적화)
 - GPL/VB.NET은 대소문자 무시 언어 — 심볼 비교에 자동 반영
 - `Math.Abs`, `CInt`, `Thread.Sleep`, `Controller.Timer` 등 주요 내장 API에 시그니처·요약·참고 링크 제공
+- 문서화 주석 형식 — 설명은 항상, 나머지는 해당될 때만 씁니다:
+
+  ```gpl
+  ' 값을 지정된 범위로 제한합니다.
+  '
+  ' # Parameters
+  ' - `value`: 제한할 값
+  ' - `min`: 최솟값
+  ' - `max`: 최댓값
+  '
+  ' # Returns
+  ' 범위가 적용된 값
+  Public Function Clamp(value As Number, min As Number, max As Number) As Number
+  ```
 
 ## 명령어
 

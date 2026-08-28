@@ -88,6 +88,25 @@ export function getHoverConfig(workspace: WorkspaceConfigHost): HoverConfig {
     return { enabled, docComment, docCommentMaxLines, duringDebug };
 }
 
+export interface DocCommentConfig {
+    /** `'''` 입력 시 문서화 주석 골격을 자동완성으로 제안할지. */
+    generateOnTripleQuote: boolean;
+    /** 골격 생성 시 `# Examples` 섹션을 함께 넣을지. */
+    includeExamples: boolean;
+}
+
+/**
+ * 문서화 주석 생성 설정 (package.json: gpl.docComment.*).
+ * 잘못된 값은 기본값으로 정규화한다(호출부 방어 코드 불필요).
+ */
+export function getDocCommentConfig(workspace: WorkspaceConfigHost): DocCommentConfig {
+    const cfg = workspace.getConfiguration('gpl');
+    // 명시적 false만 비활성으로 취급 (비-boolean 설정값은 기본값 유지).
+    const generateOnTripleQuote = cfg.get<boolean>('docComment.generateOnTripleQuote', true) !== false;
+    const includeExamples = cfg.get<boolean>('docComment.includeExamples', false) === true;
+    return { generateOnTripleQuote, includeExamples };
+}
+
 /**
  * GPL/VB 식별자 대소문자 무시 비교.
  * GPL은 VB.NET 기반이므로 식별자(함수명, 변수명 등)가 대소문자를 구분하지 않는다.

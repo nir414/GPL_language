@@ -34,6 +34,7 @@
         "onLanguage:gpl",
         "onView:gplThreads",
         "onCommand:gpl.refreshSymbols",
+        "onCommand:gpl.insertDocComment",
         "onCommand:gpl.debugSymbolCache",
         "onCommand:gpl.showXmlBestPractices",
         "onCommand:gpl.analyzeXmlEncoding",
@@ -207,6 +208,10 @@
             {
                 "command": "gpl.refreshSymbols",
                 "title": "GPL: Refresh Symbols"
+            },
+            {
+                "command": "gpl.insertDocComment",
+                "title": "GPL: 문서화 주석 생성 (Insert Documentation Comment)"
             },
             {
                 "command": "gpl.debugSymbolCache",
@@ -999,18 +1004,30 @@
                         "off"
                     ],
                     "enumDescriptions": [
-                        "First paragraph only, capped by gpl.hover.docCommentMaxLines (like TypeScript/Pylance).",
-                        "Entire doc-comment block (still capped by gpl.hover.docCommentMaxLines unless 0).",
+                        "Description: first paragraph only, capped by gpl.hover.docCommentMaxLines (like TypeScript/Pylance).",
+                        "Description: entire text (still capped by gpl.hover.docCommentMaxLines unless 0).",
                         "Hide doc comments in hover."
                     ],
                     "default": "summary",
-                    "description": "How much of a symbol's leading ' doc-comment block to show in hover."
+                    "description": "How much of a symbol's leading ' doc-comment block to show in hover. Structured sections (# Parameters / # Returns / # Examples) are always shown unless 'off'."
                 },
                 "gpl.hover.docCommentMaxLines": {
                     "scope": "window",
                     "type": "number",
                     "default": 6,
-                    "description": "Max doc-comment lines shown in hover (0 = unlimited). Truncation is marked with '…'."
+                    "description": "Max description lines shown in hover (0 = unlimited). Truncation is marked with '…'. Structured sections are not capped."
+                },
+                "gpl.docComment.generateOnTripleQuote": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Suggest a documentation-comment skeleton when typing ''' directly above a declaration (like JSDoc's /**)."
+                },
+                "gpl.docComment.includeExamples": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Include a '# Examples' section when generating a documentation comment."
                 },
                 "gpl.hover.duringDebug": {
                     "scope": "window",

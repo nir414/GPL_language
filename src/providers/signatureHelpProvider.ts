@@ -3,6 +3,7 @@ import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
 import { findGplBuiltin, GPLBuiltinEntry } from '../gplBuiltins';
 import { splitParameters } from '../language/cursorExpression';
+import { extractParamName, getParamDoc, ParsedDocComment, parseDocComment, renderDocCommentMarkdown } from '../language/docComment';
 import { ciEq } from '../config';
 
 /**
@@ -171,14 +172,21 @@ export class GPLSignatureHelpProvider implements vscode.SignatureHelpProvider {
             : `Sub ${sym.name}(${paramList})`;
 
         const info = new vscode.SignatureInformation(label);
-        info.parameters = this.makeParameters(label, params);
+        // 문서화 주석의 `# Parameters` 항목은 해당 파라미터에 붙여, 활성 파라미터 설명으로 뜨게 한다.
+        const parsedDoc = sym.docComment ? parseDocComment(sym.docComment) : undefined;
+        info.parameters = this.makeParameters(label, params, parsedDoc);
 
-        if (sym.docComment) {
-            const doc = new vscode.MarkdownString(
-                sym.docComment.split('\n').map(l => l.trimEnd()).join('  \n')
-            );
-            doc.isTrusted = false;
-            info.documentation = doc;
+        if (parsedDoc) {
+            // 파라미터 설명은 파라미터별로 이미 붙였으므로 시그니처 본문에서는 뺀다(중복 방지).
+            const text = renderDocCommentMarkdown(parsedDoc, {
+                descriptionMode: 'full',
+                includeKinds: ['returns', 'examples', 'remarks', 'other'],
+            });
+            if (text) {
+                const doc = new vscode.MarkdownString(text);
+                doc.isTrusted = false;
+                info.documentation = doc;
+            }
         }
 
         return { info, paramCount: params.length };
@@ -189,16 +197,29 @@ export class GPLSignatureHelpProvider implements vscode.SignatureHelpProvider {
      * the active parameter highlights precisely (robust against one param name being a
      * substring of another). Falls back to the raw string label if not found.
      */
-    private makeParameters(label: string, params: string[]): vscode.ParameterInformation[] {
+    private makeParameters(
+        label: string,
+        params: string[],
+        doc?: ParsedDocComment
+    ): vscode.ParameterInformation[] {
         const out: vscode.ParameterInformation[] = [];
         let searchFrom = 0;
         for (const p of params) {
+            // 문서화 주석에 ``- `name`: 설명`` 항목이 있으면 파라미터 설명으로 붙인다.
+            const name = doc ? extractParamName(p) : undefined;
+            const text = name && doc ? getParamDoc(doc, name) : undefined;
+            let documentation: vscode.MarkdownString | undefined;
+            if (text) {
+                documentation = new vscode.MarkdownString(text);
+                documentation.isTrusted = false;
+            }
+
             const idx = label.indexOf(p, searchFrom);
             if (idx >= 0) {
-                out.push(new vscode.ParameterInformation([idx, idx + p.length]));
+                out.push(new vscode.ParameterInformation([idx, idx + p.length], documentation));
                 searchFrom = idx + p.length;
             } else {
-                out.push(new vscode.ParameterInformation(p));
+                out.push(new vscode.ParameterInformation(p, documentation));
             }
         }
         return out;

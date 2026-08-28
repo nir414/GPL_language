@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { XmlUtils } from '../xmlUtils';
+import { provideDocCommentCodeActions } from './docCommentProvider';
 
 export class GPLCodeActionProvider implements vscode.CodeActionProvider {
     
@@ -10,6 +11,9 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
         token: vscode.CancellationToken
     ): vscode.ProviderResult<(vscode.CodeAction | vscode.Command)[]> {
         const actions: vscode.CodeAction[] = [];
+
+        // 선언 위에서 문서화 주석 생성/보완 (Sub/Function/Property/Class/Module)
+        actions.push(...provideDocCommentCodeActions(document, range));
 
         // 진단 정보 기반 코드 액션
         for (const diagnostic of context.diagnostics) {

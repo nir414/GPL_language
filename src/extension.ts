@@ -11,6 +11,7 @@ import { GPLDocumentSymbolProvider } from './providers/documentSymbolProvider';
 import { GPLWorkspaceSymbolProvider } from './providers/workspaceSymbolProvider';
 import { GPLDiagnosticProvider } from './providers/diagnosticProvider';
 import { GPLCodeActionProvider } from './providers/codeActionProvider';
+import { GPLDocCommentCompletionProvider, insertDocComment } from './providers/docCommentProvider';
 import { GPLFoldingRangeProvider } from './providers/foldingRangeProvider';
 import { GPLHoverProvider } from './providers/hoverProvider';
 import { GPLEvaluatableExpressionProvider } from './providers/evaluatableExpressionProvider';
@@ -597,6 +598,20 @@ export function activate(context: vscode.ExtensionContext) {
 			// (식별자 입력 시의 기본 IntelliSense는 그대로 동작한다.)
 			'.', '&'
 		)
+	);
+
+	// 문서화 주석 골격: `'''` 입력 시 설명/Parameters/Returns 골격을 제안한다(JSDoc의 `/**`와 같은 흐름).
+	context.subscriptions.push(
+		vscode.languages.registerCompletionItemProvider(
+			gplSelectors,
+			new GPLDocCommentCompletionProvider(),
+			"'"
+		)
+	);
+
+	// 문서화 주석 생성/보완 명령 (코드 액션·명령 팔레트 공용)
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.insertDocComment', insertDocComment)
 	);
 
 	// Document symbol provider (Outline view)

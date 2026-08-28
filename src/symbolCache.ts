@@ -5,6 +5,7 @@ import { isTraceOn, ciEq } from './config';
 import { getParameterArity, argCountMatchesArity } from './language/cursorExpression';
 import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
 import { buildSymbolNameIndex } from './symbolNameIndex';
+import { renderDocCommentMarkdown } from './language/docComment';
 
 // scoreFilePath 점수 체계 — 높을수록 우선 (정의 후보가 여럿일 때 경로 근접도로 선택)
 const SCORE_SAME_FILE = 1000;
@@ -549,7 +550,11 @@ export class SymbolCache {
             md.appendMarkdown(`\`${symbol.name}\` : \`${symbol.returnType}\``);
         }
         if (symbol.docComment) {
-            md.appendMarkdown(`\n\n${symbol.docComment.split('\n').map(l => l.trimEnd()).join('  \n')}`);
+            // 구조화된 문서화 주석(`# Parameters` 등)은 섹션째, 옛 주석은 서술 그대로 렌더링된다.
+            const doc = renderDocCommentMarkdown(symbol.docComment, { descriptionMode: 'full' });
+            if (doc) {
+                md.appendMarkdown(`\n\n${doc}`);
+            }
         }
         md.isTrusted = false;
         return md;

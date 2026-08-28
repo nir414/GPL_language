@@ -3,6 +3,7 @@ import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, isInCommentOrString, getHoverConfig, HoverConfig } from '../config';
 import { findEnclosingProcedureRange } from '../language/cursorExpression';
+import { renderDocCommentMarkdown } from '../language/docComment';
 import { findGplBuiltin, getGplBuiltinReferenceUrl } from '../gplBuiltins';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
@@ -45,42 +46,24 @@ export class GPLHoverProvider implements vscode.HoverProvider {
     }
 
     /**
-     * Render a captured `'` doc-comment block as markdown, preserving line breaks.
+     * Render a captured `'` doc-comment block as markdown.
+     * 구조화된 주석(`# Parameters` / `# Returns` / `# Examples` …)은 섹션째 보여 주고,
+     * 구조가 없는 옛 주석은 종전처럼 서술만 보여 준다(docComment.ts 참조).
+     *
      * 표시량은 gpl.hover.docComment(summary|full|off) + docCommentMaxLines로 조절한다:
-     *  - summary(기본): 첫 문단(빈 줄 전까지)만, maxLines 초과분은 잘라내고 '…' 표시.
-     *  - full: 전체를 표시하되 maxLines(0=무제한)까지만.
+     *  - summary(기본): **설명**은 첫 문단(빈 줄 전까지)만, maxLines 초과분은 잘라내고 '…' 표시.
+     *  - full: 설명 전체를 표시하되 maxLines(0=무제한)까지만.
      *  - off: 호출부에서 표시 자체를 생략.
+     *  섹션은 작성자가 스스로 길이를 정한 구조이므로 두 모드 모두 그대로 표시한다.
      */
     private formatDocComment(doc: string, config: HoverConfig): string | undefined {
         if (config.docComment === 'off') {
             return undefined;
         }
-
-        let lines = doc.split('\n').map(l => l.trimEnd());
-
-        if (config.docComment === 'summary') {
-            const blank = lines.findIndex(l => l.trim() === '');
-            if (blank > 0) {
-                lines = lines.slice(0, blank);
-            }
-        }
-
-        let truncated = false;
-        const max = config.docCommentMaxLines;
-        if (max > 0 && lines.length > max) {
-            lines = lines.slice(0, max);
-            truncated = true;
-        }
-
-        if (lines.length === 0) {
-            return undefined;
-        }
-
-        let text = lines.join('  \n');
-        if (truncated || (config.docComment === 'summary' && doc.split('\n').length > lines.length)) {
-            text += '  \n… *(전체 주석: 정의로 이동 F12)*';
-        }
-        return text;
+        return renderDocCommentMarkdown(doc, {
+            descriptionMode: config.docComment === 'full' ? 'full' : 'summary',
+            maxDescriptionLines: config.docCommentMaxLines,
+        });
     }
 
     /** brooks-gpl 디버그 세션이 활성인지 (duringDebug 모드 적용 대상 판별). */

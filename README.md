@@ -148,11 +148,13 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | Go to Definition | `F12` | 함수, 클래스, 변수 정의로 이동 (`New Thread("Class.Proc",...)` 문자열 참조 포함) |
 | Find All References | `Shift+F12` | 심볼 사용 위치 전체 검색 |
 | IntelliSense | `Ctrl+Space` | GPL 심볼·멤버·로컬 변수 자동완성, Signature Help |
+| 문 스니펫 | 줄 시작에서 키워드 입력 | `Try`·`Select`·`For`·`While`·`Do`·`If` 제어 구조와 `Sub`/`Function`/`Property`/`Module`/`Class`/`Dim`/`Const`/`ReDim`/`Delegate` 선언 골격을 `Tab` 이동 자리와 함께 삽입. 공식 Statement Dictionary 구문을 따르고(`End While`, `Select match_value`, `Set (value As …)`), 그 자리에서 유효한 문만 제안(`Else`는 `If` 안, `Exit For`는 `For` 안) |
+| 키워드 완성 | `Ctrl+Space` | 키워드·원시 타입(`Integer`, `Single` …)·낱말 연산자(`Mod`, `AndAlso`, `Is` …)를 설명과 함께 제안 |
 | Hover Info | 마우스 올리기 | 심볼 타입·파라미터 정보 + 내장 함수 시그니처. 클릭 뒤 마우스를 멈춰도 다시 표시하려면 `gpl.hover.showAfterClick` |
 | 문서화 주석 | `'''` | 선언 위 `'` 주석에 `# Parameters` / `# Returns` / `# Examples`를 쓰면 호버·자동완성·시그니처 도움말이 구조로 표시. `'''` 입력·전구 메뉴·`GPL: 문서화 주석 생성`으로 골격 생성(있으면 빠진 항목만 보완) |
 | Outline | `Ctrl+Shift+O` | 문서 내 심볼 구조 |
 | Symbol Search | `Ctrl+T` | 워크스페이스 전체 심볼 검색 |
-| Code Folding | — | Module/Class/Sub/Function 블록 접기 |
+| Code Folding | — | Module/Class/Sub/Function·If/Select/For/While/Do/Try 블록과 `' #region` 접기 |
 | Quick Fix | `Ctrl+.` | XML 개선·호환성 대안 제안 |
 
 - `Project.gpr`이 있으면 `ProjectSource`에 등록된 파일만 우선 인덱싱 (대형 워크스페이스 최적화)

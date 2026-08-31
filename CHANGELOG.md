@@ -6,6 +6,20 @@
 
 ### Added
 
+- **`Try`·`Select`·`For`·`While`·`Do`·`If` 같은 제어 구조와 `Sub`/`Function`/`Property`/`Module`/
+  `Class`/`Dim`/`Const`/`ReDim`/`Delegate` 선언을 자동완성 스니펫으로 넣을 수 있습니다.** 줄 시작에서
+  키워드를 몇 글자 치면 블록 골격이 통째로 제안되고, `Tab`으로 조건식·변수·타입 자리를 옮겨 다닐 수
+  있습니다(`For` 스니펫은 `Next`의 제어 변수까지 함께 바뀝니다). 키워드·원시 타입(`Integer`, `Single` …)·
+  낱말 연산자(`Mod`, `AndAlso`, `Is` …)도 설명과 함께 완성 목록에 나옵니다.
+  - 구문은 공식 GPL Dictionary(Statement Dictionary)를 그대로 따릅니다. VB.NET과 다른 GPL 고유
+    표기를 반영했습니다 — 반복 종결은 `Wend`가 아니라 **`End While`**, 다중 분기는
+    **`Select match_value`**, Property의 Set 절은 **`Set (value As Integer)`처럼 괄호 절이 필수**입니다.
+    각 항목 설명에서 해당 공식 문서 페이지를 바로 열 수 있습니다.
+  - **그 자리에서 문법적으로 유효한 문만 제안합니다.** 파일 최상위에서는 `Module`/`Class`만,
+    Module/Class 본문에서는 선언문만, 프로시저 안에서는 제어 구조를 제안합니다. `Else`는 `If` 안에서,
+    `Case`는 `Select` 안에서, `Exit For`는 `For` 루프 안에서만 나옵니다. 식 중간(`x = ` 뒤나 인자 목록
+    안)에서는 블록 스니펫이 끼어들지 않습니다.
+
 - **프로젝트 폴더 안에 다른 프로젝트가 들어 있는 구조(중첩 프로젝트 / `ProjectLibrary`)를 지원합니다.**
   GDS로 만든 실제 프로젝트에서 `Project.gpr`에 `ProjectLibrary="MyProject\MyLibrary"`가 있고, 그 라이브러리가
   **메인 프로젝트 폴더 안에 자기 `Project.gpr`를 가진 폴더**로 들어 있는 것을 확인했습니다. 이제 확장은
@@ -35,6 +49,9 @@
   `gpl.runtimeConsole.linePrefix`를 `legacy` / `time+project`(또는 접두사 없이 `none`)로 바꾸면 됩니다.
 
 ### Fixed
+
+- **`While … End While` 블록이 접히지 않던 문제를 고쳤습니다.** 접기 판정이 `Wend`만 종결어로 보고
+  있어서, GPL 정본 표기인 `End While`로 닫은 반복문에 접기 화살표가 생기지 않았습니다.
 
 - **정의 이동(F12)이 이름만 같은 무관한 프로시저로 점프하던 문제를 고쳤습니다.**
   `Move.Loc`, `Console.WriteLine`처럼 GPL 내장 객체의 멤버나, 클래스·모듈 안에서 찾지 못한 멤버에

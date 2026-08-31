@@ -44,6 +44,8 @@ import './agentBridge.test';
 import './projectNameGuard.test';
 import './projectSources.test';
 import './syncManifest.test';
+import './blockContext.test';
+import './gplStatements.test';
 import { run } from './harness';
 
 void run();

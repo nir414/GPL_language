@@ -79,6 +79,9 @@ export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
             { kind: 'if', re: /^\s*End\s+If\b/i },
             { kind: 'select', re: /^\s*End\s+Select\b/i },
             { kind: 'for', re: /^\s*Next\b/i },
+            // GPL의 While 종결어는 `End While`이다(공식 Statement Dictionary).
+            // `Wend`는 정본이 아니지만 이식 코드 관용으로 함께 받아준다.
+            { kind: 'while', re: /^\s*End\s+While\b/i },
             { kind: 'while', re: /^\s*Wend\b/i },
             { kind: 'do', re: /^\s*Loop\b/i },
             { kind: 'with', re: /^\s*End\s+With\b/i },

@@ -4,6 +4,8 @@ import { XmlUtils } from '../xmlUtils';
 import { getAllGplBuiltins, getGplBuiltinReferenceUrl, GPLBuiltinEntry } from '../gplBuiltins';
 import { GPLParser } from '../gplParser';
 import { extractQualifierChainBefore, findEnclosingProcedureRange } from '../language/cursorExpression';
+import { analyzeBlockContext, GplBlockContext } from '../language/blockContext';
+import { getApplicableStatements, GPL_KEYWORDS, GplKeywordKind } from '../gplStatements';
 
 /** 한정자(`obj.`) 타입 해석 결과. */
 type QualifierTarget =
@@ -64,6 +66,12 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
 
         // 현재 프로시저의 로컬 변수/파라미터 — 가장 관련성이 높으므로 최상단 정렬
         completionItems.push(...this.getLocalCompletions(document, position));
+
+        // 문(statement) 스니펫 — 줄 시작에서만, 현재 블록 스코프에서 유효한 것만
+        completionItems.push(...this.getStatementCompletions(document, position, beforeCursor));
+
+        // 키워드/원시 타입/낱말 연산자 — 위치 제약이 없어 항상 제공(우선순위는 낮게)
+        completionItems.push(...GPLCompletionProvider.getKeywordCompletions());
 
         // 워크스페이스 심볼 완성
         completionItems.push(...this.symbolCache.getCompletionItems());
@@ -378,6 +386,96 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
         }
     }
 
+    // ─── 문(statement) 스니펫 · 키워드 ────────────────────────────
+
+    /**
+     * 커서 앞이 "줄 시작 + 낱말 하나"뿐인지 — 문 스니펫을 띄울 위치인지 판별한다.
+     *
+     * `x = ` 뒤나 인자 목록 안에서 `If ... End If` 블록을 제안하면 소음이므로,
+     * 들여쓰기 뒤에 식별자 글자만 있는 상태에서만 문 스니펫을 제공한다.
+     */
+    private static isStatementStart(beforeCursor: string): boolean {
+        return /^[ \t]*[A-Za-z]*$/.test(beforeCursor);
+    }
+
+    // 블록 컨텍스트 분석은 문서 앞부분을 훑으므로 (문서 버전, 줄) 단위로 1회만 계산한다.
+    private static _blockContextCache: { key: string; context: GplBlockContext } | undefined;
+
+    /** 커서 위치의 블록 컨텍스트 (같은 문서 버전·같은 줄이면 캐시 재사용). */
+    private getBlockContext(document: vscode.TextDocument, position: vscode.Position): GplBlockContext {
+        const key = `${document.uri.toString()}|${document.version}|${position.line}`;
+        const cached = GPLCompletionProvider._blockContextCache;
+        if (cached && cached.key === key) {
+            return cached.context;
+        }
+        const context = analyzeBlockContext(
+            line => document.lineAt(line).text, document.lineCount, position.line);
+        GPLCompletionProvider._blockContextCache = { key, context };
+        return context;
+    }
+
+    /**
+     * 제어 구조/선언 문 스니펫 완성 항목.
+     *
+     * 현재 열린 블록 스택으로 스코프를 판정해, 그 위치에서 문법적으로 유효한 문만
+     * 제안한다 (프로시저 밖에서 `If`, 프로시저 안에서 `Sub`를 띄우지 않는다).
+     */
+    private getStatementCompletions(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        beforeCursor: string
+    ): vscode.CompletionItem[] {
+        if (!GPLCompletionProvider.isStatementStart(beforeCursor)) {
+            return [];
+        }
+
+        let context: GplBlockContext;
+        try {
+            context = this.getBlockContext(document, position);
+        } catch {
+            return [];
+        }
+
+        // 스니펫 본문의 들여쓰기(\t)는 VS Code가 에디터 설정에 맞춰 변환하지만,
+        // 삽입 위치의 기존 들여쓰기는 첫 줄에만 적용되므로 그대로 둔다.
+        return getApplicableStatements(context).map(stmt => {
+            const item = new vscode.CompletionItem(stmt.label, vscode.CompletionItemKind.Snippet);
+            item.detail = stmt.detail;
+            const doc = new vscode.MarkdownString(stmt.documentation);
+            if (stmt.sourceUrl) {
+                doc.appendMarkdown(`\n\n[공식 문서 열기](${stmt.sourceUrl})`);
+            }
+            item.documentation = doc;
+            item.insertText = new vscode.SnippetString(stmt.body.join('\n'));
+            item.sortText = `01_stmt_${stmt.label}`;
+            return item;
+        });
+    }
+
+    // 키워드 항목은 런타임 불변이므로 한 번만 만들어 재사용한다.
+    private static _keywordCompletionsCache: vscode.CompletionItem[] | undefined;
+
+    /** 키워드/원시 타입/낱말 연산자 완성 항목. */
+    private static getKeywordCompletions(): vscode.CompletionItem[] {
+        if (GPLCompletionProvider._keywordCompletionsCache) {
+            return GPLCompletionProvider._keywordCompletionsCache;
+        }
+        const kindMap: Record<GplKeywordKind, vscode.CompletionItemKind> = {
+            keyword: vscode.CompletionItemKind.Keyword,
+            operator: vscode.CompletionItemKind.Operator,
+            type: vscode.CompletionItemKind.Class,
+            constant: vscode.CompletionItemKind.Constant
+        };
+        const items = GPL_KEYWORDS.map(kw => {
+            const item = new vscode.CompletionItem(kw.name, kindMap[kw.kind]);
+            item.detail = kw.detail;
+            item.sortText = `02_kw_${kw.name}`;
+            return item;
+        });
+        GPLCompletionProvider._keywordCompletionsCache = items;
+        return items;
+    }
+
     /**
      * XML 관련 컨텍스트인지 확인
      */
@@ -625,10 +723,14 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
         const parts = [
             `**${builtin.name}**`,
             '',
-            `\`${builtin.signature}\``,
+            `\`${builtin.usage ?? builtin.signature}\``,
             '',
             builtin.summary
         ];
+
+        if (builtin.details) {
+            parts.push('', '---', '', builtin.details);
+        }
 
         const refUrl = getGplBuiltinReferenceUrl(builtin);
         const refLabel = builtin.sourceUrl ? 'Reference' : 'GPL Dictionary';

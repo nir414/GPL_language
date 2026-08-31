@@ -224,3 +224,39 @@ export function decideWatchdogAction(input: WatchdogInput): WatchdogDecision {
     }
     return { action: 'force-reconnect', detail: 'no socket, no reconnect timer' };
 }
+
+/**
+ * GPL Console 한 줄 앞에 붙일 접두사 — 설정 `gpl.runtimeConsole.linePrefix`.
+ * 채널 자체가 런타임 전용이라 종전의 `[RT] [<프로젝트>]` 는 매 줄 반복되는 상수였다.
+ * 기본은 시각만 표시하고, 필요할 때만 프로젝트명/종전 형식을 되살린다.
+ */
+export const LINE_PREFIX_MODES = ['time', 'time+project', 'none', 'legacy'] as const;
+export type RuntimeConsoleLinePrefix = typeof LINE_PREFIX_MODES[number];
+export const DEFAULT_LINE_PREFIX: RuntimeConsoleLinePrefix = 'time';
+
+/** 로컬 시각 `HH:mm:ss`. */
+function formatConsoleClock(at: Date): string {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+}
+
+/** 출력 채널에 실제로 기록될 한 줄을 만든다(순수 함수 — 테스트 대상). */
+export function formatRuntimeConsoleLine(
+    message: string,
+    project: string,
+    mode: RuntimeConsoleLinePrefix = DEFAULT_LINE_PREFIX,
+    at: Date = new Date(),
+): string {
+    const tag = project ? `[${project}] ` : '';
+    switch (mode) {
+        case 'none':
+            return message;
+        case 'legacy':
+            return `[RT] ${tag}${message}`;
+        case 'time+project':
+            return `[${formatConsoleClock(at)}] ${tag}${message}`;
+        case 'time':
+        default:
+            return `[${formatConsoleClock(at)}] ${message}`;
+    }
+}

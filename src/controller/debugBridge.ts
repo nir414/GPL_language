@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { ThreadInfo } from './responseParser';
+import type { ProbeOutcome } from './connectionHealth';
 
 const _onDebugThreadsUpdated = new vscode.EventEmitter<ThreadInfo[]>();
 
@@ -14,6 +15,21 @@ export const onDebugThreadsUpdated: vscode.Event<ThreadInfo[]> = _onDebugThreads
 /** GPLDebugSession이 Show Thread 폴링 후 호출한다. */
 export function fireDebugThreadsUpdated(threads: ThreadInfo[]): void {
     _onDebugThreadsUpdated.fire(threads);
+}
+
+// ─── 디버그 어댑터 폴 결과 → 연결 건강 모니터 (2026-08-28) ───────────────
+
+const _onDebugProbeResult = new vscode.EventEmitter<ProbeOutcome>();
+
+/**
+ * 디버그 세션의 Show Thread 폴 결과(성공/실패 종류). extension.ts 가 ConnectionHealthMonitor.reportProbe 로 넘긴다 —
+ * 디버그 중엔 트리 폴링이 꺼져 있어(enterDebugMode) 확장의 유실 판정은 이 경로의 프로브에 의존한다.
+ */
+export const onDebugProbeResult: vscode.Event<ProbeOutcome> = _onDebugProbeResult.event;
+
+/** GPLDebugSession 이 Show Thread 폴마다 호출한다(성공·실패 모두). */
+export function fireDebugProbeResult(outcome: ProbeOutcome): void {
+    _onDebugProbeResult.fire(outcome);
 }
 
 // ─── 1403 이벤트 → 즉시 폴 트리거 ───────────────────────

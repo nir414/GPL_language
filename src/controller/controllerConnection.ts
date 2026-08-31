@@ -4,11 +4,22 @@ import { formatConsoleCommandClassification } from './consoleCommandClassifier';
 import { ResponseBodyStreamer } from './trafficResponseBody';
 import { sendConsoleCommand, recordTrafficLine, TrafficDirection } from './consoleSocket';
 import type { CommandResponse } from './consoleSocket';
+import { classifyCommandFailure, probeOutcomeFromResponse } from './connectionHealth';
+import type { ProbeOutcome } from './connectionHealth';
+import { IdlePingScheduler } from './idlePing';
+import type { IdlePingStats } from './idlePing';
+import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS } from './commandPolicy';
+import type { CommandPolicyOptions } from './commandPolicy';
+import { parseThreadList, SHOW_THREAD_LIST_CMD } from './responseParser';
+
+export { isPolicyError, PolicyError } from './commandPolicy';
+export type { PolicyErrorCode } from './commandPolicy';
 
 // 1402 소켓 계층(consoleSocket.ts, vscode 무의존 — GitHub #22)의 공개 API 재노출.
 // 호출자는 종전처럼 이 모듈만 import 한다.
-export type { CommandResponse, CommandResponseMeta, ConnectionStats } from './consoleSocket';
-export { closeControllerConnection, getConnectionStats, recordTrafficLine, getRecentTraffic, isCleanlyTerminated } from './consoleSocket';
+export type { CommandResponse, CommandResponseMeta, ConnectionStats, HeldSocketEvent } from './consoleSocket';
+export { closeControllerConnection, getConnectionStats, recordTrafficLine, getRecentTraffic, isCleanlyTerminated, setHeldSocketObserver } from './consoleSocket';
+export type { ProbeOutcome, ProbeFailureKind } from './connectionHealth';
 
 export interface ControllerConfig {
 	ip: string;
@@ -64,6 +75,76 @@ export function getKeepAliveOptions(): KeepAliveOptions {
 			? Math.max(MIN_KEEP_ALIVE_IDLE_CLOSE_MS, Math.floor(idle))
 			: DEFAULT_KEEP_ALIVE_IDLE_CLOSE_MS,
 	};
+}
+
+// ── 1402 유휴 ping — GDE 방식 세션 유지 (2026-08-28, docs/ai-handoff.md §1-BM) ─────────
+// GDE는 1402 세션을 끝까지 유지하며 유휴 5 s마다 파라미터 읽기를 보낸다. 제어기는 1402 세션을 쥔 클라이언트에게
+// 1403 런타임 스트림을 계속 열어 두는 것으로 관측되므로(단명 1402 시절 1403이 배치마다 FIN), 연결된 동안
+// 명령 공백이 intervalMs 를 넘으면 읽기 전용 명령 1개를 같은 직렬 큐로 보낸다. 판정 로직은 controller/idlePing.ts.
+const DEFAULT_KEEP_ALIVE_IDLE_PING_MS = 5000;
+const DEFAULT_KEEP_ALIVE_IDLE_PING_COMMAND = 'Show Thread';
+
+export interface IdlePingOptions {
+	/** `gpl.controller.keepAliveIdlePingMs` — 0 이면 끔. keepAlive1402 가 꺼져 있으면 무조건 끔. */
+	intervalMs: number;
+	/** `gpl.controller.keepAliveIdlePingCommand` — 읽기 전용 명령(기본 `Show Thread`, 빈 <DATA></DATA> 응답). */
+	command: string;
+}
+
+export function getIdlePingOptions(): IdlePingOptions {
+	const cfg = vscode.workspace.getConfiguration('gpl.controller');
+	const raw = cfg.get<number>('keepAliveIdlePingMs', DEFAULT_KEEP_ALIVE_IDLE_PING_MS);
+	const cmd = (cfg.get<string>('keepAliveIdlePingCommand', DEFAULT_KEEP_ALIVE_IDLE_PING_COMMAND) ?? '').trim();
+	return {
+		intervalMs: typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.max(1000, Math.floor(raw)) : 0,
+		command: cmd || DEFAULT_KEEP_ALIVE_IDLE_PING_COMMAND,
+	};
+}
+
+let _idlePingObserver: ((outcome: ProbeOutcome) => void) | null = null;
+
+const idlePing = new IdlePingScheduler({
+	intervalMs: () => getIdlePingOptions().intervalMs,
+	enabled: () => getKeepAliveOptions().enabled && getIdlePingOptions().intervalMs > 0,
+	send: async () => {
+		// 프로브와 같은 타임아웃·분류로 보내고 결과를 관찰자(연결 건강 모니터)에 넘긴다 — 유휴 중에도 끊김이 5 s 주기로 드러난다.
+		const outcome = await probeControllerCommand(getIdlePingOptions().command, undefined, getConnectionProbeTimeoutMs());
+		try { _idlePingObserver?.(outcome); } catch { /* 관찰자 예외는 무시 */ }
+		if (!outcome.ok) {
+			throw new Error(`${outcome.kind}${outcome.detail ? ` — ${outcome.detail}` : ''}`);
+		}
+	},
+	log: message => logTraffic('---', message),
+});
+
+/** 제어기 연결 상태 에지에서 호출(extension.ts setControllerConnected). 연결 중에만 유휴 ping 타이머가 돈다. */
+export function setIdlePingActive(active: boolean): void {
+	if (active) {
+		if (!idlePing.running) {
+			const o = getIdlePingOptions();
+			logTraffic('---', getKeepAliveOptions().enabled && o.intervalMs > 0
+				? `1402 idle ping ON (every ${formatIdleMs(o.intervalMs)} idle → ${o.command})`
+				: '1402 idle ping OFF (keepAlive1402 또는 keepAliveIdlePingMs 설정)');
+		}
+		idlePing.start();
+	} else if (idlePing.running) {
+		idlePing.stop();
+		const s = idlePing.getStats();
+		logTraffic('---', `1402 idle ping stopped (pings=${s.pings}, failures=${s.failures})`);
+	}
+}
+
+/** 유휴 ping 결과(ProbeOutcome) 관찰자 — 연결 건강 모니터가 reportProbe 로 받는다. */
+export function setIdlePingObserver(fn: ((outcome: ProbeOutcome) => void) | null): void {
+	_idlePingObserver = fn;
+}
+
+export function getIdlePingStats(): IdlePingStats & { running: boolean } {
+	return { ...idlePing.getStats(), running: idlePing.running };
+}
+
+function formatIdleMs(ms: number): string {
+	return ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`;
 }
 
 // ── Traffic Logger ──────────────────────────────────────
@@ -199,7 +280,10 @@ const INTER_COMMAND_GAP_MS = 15;
 const INTER_COMMAND_GAP_AFTER_FAIL_MS = 100;
 
 function enqueueControllerCommand<T>(task: () => Promise<T>): Promise<T> {
-	const run = controllerCommandQueue.then(task, task);
+	// 유휴 ping 스케줄러에 활동을 알린다 — 명령이 큐를 기다리는 동안도 "진행 중"으로 세어 ping 이 끼어들지 않게 한다.
+	idlePing.noteCommandStart();
+	const tracked = () => task().finally(() => idlePing.noteCommandEnd());
+	const run = controllerCommandQueue.then(tracked, tracked);
 	controllerCommandQueue = run.then(
 		() => new Promise<void>(r => setTimeout(r, INTER_COMMAND_GAP_MS)),
 		() => new Promise<void>(r => setTimeout(r, INTER_COMMAND_GAP_AFTER_FAIL_MS)),
@@ -207,12 +291,66 @@ function enqueueControllerCommand<T>(task: () => Promise<T>): Promise<T> {
 	return run;
 }
 
+// ── 명령 정책 (controller/commandPolicy.ts, 2026-08-28) ─────────────────────
+// 모든 1402 명령이 이 직렬 큐를 지나므로 안전 조건(Step 연타 #28·정지 정착 §0.6·Compile→Start 완충 §0.7)을 경로와 무관하게
+// 한 곳에서 충족시킨다 — AI(MCP·URI·gpl.ai.debug.*)·트리·팔레트·디버그 어댑터 모두 동일. 승인 모달/거부 목록은 두지 않는다
+// (사용자 결정: 접근을 막지 않는다). 정책이 개입하면 GPL Traffic 에 `--- policy: R1/R2/R3 …` 로 남는다.
+const commandPolicy = new ControllerCommandPolicy();
+
+function isCommandPolicyEnabled(): boolean {
+	return vscode.workspace.getConfiguration('gpl.controller').get<boolean>('commandPolicyEnabled', true) !== false;
+}
+
+function readCommandPolicyOptions(): Partial<CommandPolicyOptions> {
+	const ctl = vscode.workspace.getConfiguration('gpl.controller');
+	const dbg = vscode.workspace.getConfiguration('gpl.debug');
+	const num = (v: unknown, fallback: number, min = 0): number =>
+		typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.floor(v)) : fallback;
+	return {
+		minResumeIntervalMs: num(dbg.get<number>('minStepIntervalMs'), DEFAULT_COMMAND_POLICY_OPTIONS.minResumeIntervalMs),
+		settleWaitMs: num(ctl.get<number>('transitionSettleWaitMs'), DEFAULT_COMMAND_POLICY_OPTIONS.settleWaitMs, 500),
+		startAfterCompileGapMs: num(ctl.get<number>('startAfterCompileGapMs'), DEFAULT_COMMAND_POLICY_OPTIONS.startAfterCompileGapMs),
+	};
+}
+
+const sleepMs = (ms: number) => new Promise<void>(r => setTimeout(r, Math.max(0, ms)));
+
+/** 진단용 — 현재 정책 옵션(설정 반영 후). */
+export function getCommandPolicySnapshot(): { enabled: boolean; options: Readonly<CommandPolicyOptions> } {
+	commandPolicy.updateOptions(readCommandPolicyOptions());
+	return { enabled: isCommandPolicyEnabled(), options: commandPolicy.getOptions() };
+}
+
 export function sendCommandDetailed(
 	command: string,
 	config?: Partial<ControllerConfig>,
 	options?: SendCommandOptions,
 ): Promise<CommandResponse> {
-	return enqueueControllerCommand(() => sendCommandDetailedInternal(command, config, options));
+	return enqueueControllerCommand(async () => {
+		const policyOn = isCommandPolicyEnabled();
+		if (policyOn) {
+			commandPolicy.updateOptions(readCommandPolicyOptions());
+			// 정책의 상태 조회는 큐 슬롯을 이미 쥔 채로 보내야 하므로 enqueue 하지 않고 내부 전송을 직접 쓴다(재진입 교착 방지).
+			await commandPolicy.before(command, {
+				now: Date.now,
+				sleep: sleepMs,
+				listThreads: async () => {
+					try {
+						const r = await sendCommandDetailedInternal(SHOW_THREAD_LIST_CMD, config, { timeoutMs: getConnectionProbeTimeoutMs() });
+						return r.meta.statusTagReceived ? parseThreadList(r.raw) : null;
+					} catch {
+						return null;
+					}
+				},
+				log: message => logTraffic('---', `policy: ${message}`),
+			});
+		}
+		const response = await sendCommandDetailedInternal(command, config, options);
+		if (policyOn) {
+			commandPolicy.after(command, response.raw, response.meta.statusTagReceived, Date.now());
+		}
+		return response;
+	});
 }
 
 /**
@@ -263,6 +401,38 @@ export async function trySendCommand(
 		return await sendCommand(command, config, timeoutMs);
 	} catch {
 		return null;
+	}
+}
+
+// ── 연결 건강 프로브 (controller/connectionHealth.ts, 2026-08-28) ──────────
+// 연결 끊김 감지에 쓰는 Show Thread 폴·재프로브의 타임아웃. 명령 timeoutMs(기본 10 s)와 분리해 8 s 로 둔다
+// (사용자 결정 2026-08-28: "5 s 는 짧다, 8 s"). 판정 규칙은 connectionHealth.ts 머리말.
+const DEFAULT_CONNECTION_PROBE_TIMEOUT_MS = 8000;
+const MIN_CONNECTION_PROBE_TIMEOUT_MS = 1000;
+
+/** `gpl.controller.connectionProbeTimeoutMs` — 프로브마다 읽으므로 설정 변경이 다음 프로브부터 반영된다(하한 1000). */
+export function getConnectionProbeTimeoutMs(): number {
+	const raw = vscode.workspace.getConfiguration('gpl.controller').get<number>('connectionProbeTimeoutMs', DEFAULT_CONNECTION_PROBE_TIMEOUT_MS);
+	return typeof raw === 'number' && Number.isFinite(raw)
+		? Math.max(MIN_CONNECTION_PROBE_TIMEOUT_MS, Math.floor(raw))
+		: DEFAULT_CONNECTION_PROBE_TIMEOUT_MS;
+}
+
+/**
+ * 연결 건강 프로브 — 명령을 프로브 타임아웃으로 보내고 결과를 ProbeOutcome 으로 분류한다(예외를 내지 않음).
+ * 성공 = 응답에 `<STATUS>`가 있음. 부분 응답(소켓 종료로 잘림·HTTP 교차 응답)은 'incomplete' 실패로 친다 —
+ * trySendCommand 의 "null 만 실패" 기준과 다르다. 트리 폴·디버그 어댑터 폴·재프로브(ConnectionHealthProber)가 공용으로 쓴다.
+ */
+export async function probeControllerCommand(
+	command: string,
+	config?: Partial<ControllerConfig>,
+	timeoutMs: number = getConnectionProbeTimeoutMs(),
+): Promise<ProbeOutcome> {
+	try {
+		const response = await sendCommandDetailed(command, config, { timeoutMs });
+		return probeOutcomeFromResponse(response.raw);
+	} catch (err) {
+		return { ok: false, ...classifyCommandFailure(err) };
 	}
 }
 

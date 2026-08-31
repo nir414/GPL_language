@@ -1,5 +1,5 @@
 import { ciEq } from './config';
-import { GPL_DICTIONARY_ENTRIES } from './gplDictionaryData';
+import { GPL_DICTIONARY_ENTRIES, GPL_CLASS_DOCS, GPLClassDoc } from './gplDictionaryData';
 
 export type GPLBuiltinKind = 'function' | 'method' | 'property';
 
@@ -9,9 +9,19 @@ export interface GPLBuiltinEntry {
     signature: string;
     summary: string;
     category: string;
+    /**
+     * 공식 문서의 구문(Syntax) 표기. Shared 메서드(`Thread.Sleep(ms)`)와 인스턴스 멤버
+     * (`thread_object.Abort()`), 반환값 대입 형태(`status = ...`)를 그대로 보여준다.
+     * `signature`는 signatureHelp가 매개변수를 파싱하는 정규형이므로 건드리지 않고 별도 필드로 둔다.
+     */
+    usage?: string;
+    /** 값 표·매개변수 범위 등 문서의 추가 설명(마크다운). 호버에서 요약 아래에 표시한다. */
+    details?: string;
     insertSnippet?: string;
     sourceUrl?: string;
 }
+
+export type { GPLClassDoc };
 
 export const GPL_DICTIONARY_ROOT_URL = 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/';
 
@@ -431,24 +441,8 @@ const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
     },
 
     // Frequently-used class methods
-    {
-        name: 'Thread.Sleep',
-        kind: 'method',
-        signature: 'Thread.Sleep(milliseconds)',
-        summary: '현재 스레드를 지정 시간 동안 대기시킵니다.',
-        category: 'Thread Class',
-        insertSnippet: 'Thread.Sleep(${1:milliseconds})',
-        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/sleep.htm'
-    },
-    {
-        name: 'Thread.TestAndSet',
-        kind: 'method',
-        signature: 'Thread.TestAndSet(target, value)',
-        summary: '원자적 테스트/설정으로 동기화에 사용합니다.',
-        category: 'Thread Class',
-        insertSnippet: 'Thread.TestAndSet(${1:target}, ${2:value})',
-        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/testandset.htm'
-    },
+    // (Thread Class 전체는 gplDictionaryData.ts가 단일 출처 — 여기에 중복 등록하지 않는다.
+    //  중복되면 findGplBuiltin이 코어 항목을 먼저 반환해 문서 기반 상세 정보가 가려진다.)
     {
         name: 'Controller.Timer',
         kind: 'method',
@@ -538,4 +532,54 @@ export function findGplBuiltin(name: string): GPLBuiltinEntry | undefined {
     }
 
     return undefined;
+}
+/** 내장(사전) 클래스 이름 집합(소문자). dotted 항목 이름의 접두부에서 1회 구축한다. */
+let _builtinClassNames: Set<string> | undefined;
+export function getGplBuiltinClassNames(): ReadonlySet<string> {
+    if (!_builtinClassNames) {
+        const names = new Set<string>();
+        for (const b of GPL_BUILTINS) {
+            const dot = b.name.indexOf('.');
+            if (dot > 0) {
+                names.add(b.name.slice(0, dot).toLowerCase());
+            }
+        }
+        for (const c of GPL_CLASS_DOCS) {
+            names.add(c.name.toLowerCase());
+        }
+        _builtinClassNames = names;
+    }
+    return _builtinClassNames;
+}
+
+/** 이름이 내장 클래스인지(대소문자 무시). */
+export function isGplBuiltinClassName(name: string): boolean {
+    return getGplBuiltinClassNames().has(normalizeBuiltinName(name));
+}
+
+/** 내장 클래스 자체의 개요 문서(GPL Dictionary 클래스 소개 페이지). 없으면 undefined. */
+export function findGplClassDoc(name: string): GPLClassDoc | undefined {
+    const target = normalizeBuiltinName(name);
+    if (!target) {
+        return undefined;
+    }
+    return GPL_CLASS_DOCS.find(c => normalizeBuiltinName(c.name) === target);
+}
+
+/** 내장 클래스의 멤버 목록(`Class.Member` 항목). 문서 순서를 유지한다. */
+export function getGplClassMembers(className: string): readonly GPLBuiltinEntry[] {
+    const prefix = normalizeBuiltinName(className) + '.';
+    return GPL_BUILTINS.filter(b => normalizeBuiltinName(b.name).startsWith(prefix));
+}
+
+/**
+ * 수신자 타입 이름과 멤버 이름으로 내장 멤버를 찾는다 (`Dim t As Thread` → `t.Abort`).
+ * 내장 클래스가 아니면 undefined를 돌려 호출부가 사용자 심볼 조회로 폴백하게 한다.
+ */
+export function findGplBuiltinMember(typeName: string, memberName: string): GPLBuiltinEntry | undefined {
+    if (!typeName || !memberName || !isGplBuiltinClassName(typeName)) {
+        return undefined;
+    }
+    const full = `${typeName}.${memberName}`;
+    return GPL_BUILTINS.find(b => normalizeBuiltinName(b.name) === normalizeBuiltinName(full));
 }

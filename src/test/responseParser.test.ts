@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { parseStatus, parseCompileErrors, parseThreadList, SHOW_THREAD_LIST_CMD, SHOW_THREAD_LIST_STACK_CMD } from '../controller/responseParser';
+import { parseStatus, parseCompileErrors, parseThreadList, latin1ToUtf8, SHOW_THREAD_LIST_CMD, SHOW_THREAD_LIST_STACK_CMD } from '../controller/responseParser';
 
 test('parseStatus: 성공 코드와 메시지', () => {
     const r = parseStatus('<STATUS>0,"OK"</STATUS>');
@@ -110,4 +110,31 @@ test('normalizeThreadState: Stopped가 Stopping으로 오정규화되지 않는�
     assert.strictEqual(threads[0].state, 'Stopped');
     assert.strictEqual(threads[1].state, 'Stopping');
     assert.strictEqual(threads[2].state, 'Stopped');
+});
+
+// ── latin1ToUtf8 (1403 바이트 보존 디코딩, 2026-08-28) ─────────────────────
+
+test('latin1ToUtf8: ASCII 는 그대로, UTF-8 바이트열(latin1 로 읽힌)은 한글로 복원된다', () => {
+    assert.strictEqual(latin1ToUtf8('[Test_robot] Robot Version: v1.0.0'), '[Test_robot] Robot Version: v1.0.0');
+    // GDE 1403 캡처 실측 줄: "2. DatStore 실제 데이터 저장소" — <L>81</L> (개행 포함 81 바이트)
+    const utf8 = Buffer.from('[06-23-2026 13:29:38] [Test_robot] [MAIN] 2. DatStore 실제 데이터 저장소\n', 'utf8');
+    assert.strictEqual(utf8.length, 81);
+    assert.strictEqual(latin1ToUtf8(utf8.toString('latin1')), '[06-23-2026 13:29:38] [Test_robot] [MAIN] 2. DatStore 실제 데이터 저장소\n');
+});
+
+test('latin1ToUtf8: 128바이트 청크 경계가 다바이트 문자 중간에 걸려도 청크를 이어 붙인 뒤 디코딩하면 온전하다', () => {
+    const text = 'x'.repeat(126) + '한글 테스트\n';   // 126 + 3 → 첫 128바이트 경계가 '한'(3바이트) 중간에 걸린다
+    const bytes = Buffer.from(text, 'utf8');
+    const chunk1 = bytes.subarray(0, 128).toString('latin1');
+    const chunk2 = bytes.subarray(128).toString('latin1');
+    // 청크별 디코딩은 깨진다(ascii/utf8 어느 쪽도 복구 불가)
+    assert.notStrictEqual(latin1ToUtf8(chunk1) + latin1ToUtf8(chunk2), text);
+    // 이어 붙인 뒤 디코딩하면 원문
+    assert.strictEqual(latin1ToUtf8(chunk1 + chunk2), text);
+});
+
+test('latin1ToUtf8: ascii 디코딩은 상위 비트를 버려 복구 불가 — 회귀 방지 근거', () => {
+    const bytes = Buffer.from('저장소', 'utf8');
+    assert.notStrictEqual(Buffer.from(bytes.toString('ascii'), 'latin1').toString('utf8'), '저장소');
+    assert.strictEqual(latin1ToUtf8(bytes.toString('latin1')), '저장소');
 });

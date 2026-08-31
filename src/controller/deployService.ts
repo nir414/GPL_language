@@ -17,10 +17,16 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
 import { uploadProject, mirrorProject, listRemoteDir, removeRemoteFiles, RemoteFileRef } from './ftpClient';
+import { getSyncManifest, mergeSyncManifest, recordSyncManifest } from './syncManifest';
 import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus, SHOW_THREAD_LIST_CMD, NO_STATUS_CODE } from './responseParser';
+import { describeThreadActivity, isSettledState } from './threadActivity';
+import { buildStartCommand } from './startCommand';
 import { isBusyStatus, isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
 import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord';
+import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
+import { isPathUnder } from './projectPickerCore';
+import { resolveProjectLibraryDirs } from '../project/projectSources';
 
 export interface DeployOptions {
     projectDir: string;
@@ -50,6 +56,11 @@ export interface DeployOptions {
      * (autoOnSave처럼 사용자 개입이 부적절한 경로에서는 지정하지 않는다.)
      */
     confirmStopOnActive?: (activeThreadsDesc: string) => Promise<boolean> | boolean;
+    /**
+     * `Start` 에 `-event` 를 붙일지(기본 true — GDE 캡처와 동일하게 쓰레드 상태 변경을 1403 이벤트로 받는다).
+     * false 면 `-noevent`. 호출측이 설정(`gpl.controller.startEventMode`)을 읽어 넘긴다.
+     */
+    startEventMode?: boolean;
     beforeStart?: () => Promise<void> | void;
     /**
      * autoOnSave 자동 게이트 (gpl.quickCompile.autoOnSave = "auto").
@@ -274,6 +285,21 @@ async function deployLocked(
     const projectName = gprInfo.projectName || folderName;
     result.projectName = projectName;
 
+    // 프로젝트명은 Compile/Load/Start/Unload 인자에 그대로 들어간다. 제어기 콘솔은 인자를 공백으로
+    // 구분하고 인용 문법이 없으므로(Brooks 문서 Compile·Load·Start) 공백이 있으면 명령이 끊긴다 —
+    // FTP 업로드나 1402 명령을 하나도 보내기 전에 여기서 막는다(제어기를 건드리지 않음).
+    {
+        const nameCheck = checkProjectName(projectName);
+        if (!nameCheck.ok) {
+            const reason = describeProjectNameProblem(projectName, gprInfo.projectName ? 'project' : 'folder', nameCheck);
+            pushTrace(`✘ ${reason}`);
+            result.failedPhase = 'UPLOAD';
+            result.failedCommand = 'Validate project name';
+            result.failedStatusMessage = reason;
+            return result;
+        }
+    }
+
     // ── Direct /GPL 모드 프로브 ────────────────────
     // Load 문서 Remarks: "an external file-copy utility such as FTP can be used to
     // create the folder and copy the files" — /GPL 직접 쓰기는 공식 허용 경로.
@@ -323,6 +349,20 @@ async function deployLocked(
 
     const directActive = !!directGplDir;
 
+    // 클래식 경로(/flash/projects/<폴더명> 업로드 → Load <경로>)에서는 로컬 폴더명이 Load 인자·Compile 후보로
+    // 쓰인다. 폴더명에 공백이 있으면 그 경로의 명령이 끊기므로 업로드 전에 막는다(Direct /GPL 모드는 폴더명을 쓰지 않음).
+    if (!directActive) {
+        const folderCheck = checkProjectName(folderName);
+        if (!folderCheck.ok) {
+            const reason = describeProjectNameProblem(folderName, 'folder', folderCheck);
+            pushTrace(`✘ ${reason}`);
+            result.failedPhase = 'UPLOAD';
+            result.failedCommand = 'Validate project folder name';
+            result.failedStatusMessage = reason;
+            return result;
+        }
+    }
+
     let ftpProjectDir: string;
     let loadPath = '';
     if (directActive) {
@@ -362,14 +402,40 @@ async function deployLocked(
         pushTrace(`│  Path candidates: ${(result.candidateRemoteProjectPaths ?? []).join(' | ')}`);
     }
     pushTrace(`│  Target: ${cfg.ip}:${cfg.port}`);
+    // ProjectLibrary 참조가 있으면 어디까지 이 배포에 포함되는지 밝힌다. 업로드 대상은 종전과 같이
+    // **프로젝트 폴더 하나**다(제어기 쪽 라이브러리 배치 규칙은 실기기 미검증 — 임의로 넓히지 않는다).
+    // 폴더 안의 중첩 라이브러리는 재귀 업로드에 자연히 포함되고, 폴더 밖 라이브러리는 포함되지 않는다.
+    if (gprInfo.libraries.length > 0) {
+        const resolved = resolveProjectLibraryDirs(
+            path.join(options.projectDir, gprFiles[0]),
+            gprText,
+        );
+        const inside = resolved.dirs.filter(d => isPathUnder(d, options.projectDir));
+        const outside = resolved.dirs.filter(d => !isPathUnder(d, options.projectDir));
+        pushTrace(`│  Library: ${gprInfo.libraries.join(' | ')}`);
+        if (inside.length > 0) {
+            const names = inside.map(d => path.relative(options.projectDir, d));
+            pushTrace(`│    ↳ 폴더 안(함께 업로드됨): ${names.join(', ')}`);
+        }
+        if (outside.length > 0) {
+            pushTrace(`│    ⚠ 폴더 밖 — 이 배포에 포함되지 않습니다: ${outside.join(', ')}`);
+            pushTrace(`│      해당 프로젝트를 따로 Deploy 하세요(제어기가 라이브러리를 못 찾으면 Compile 실패).`);
+        }
+        if (resolved.unresolved.length > 0) {
+            pushTrace(`│    ⚠ 로컬에서 폴더를 찾지 못한 라이브러리: ${resolved.unresolved.join(', ')}`);
+        }
+    }
     pushTrace(`╰──────────────────────────────────────────────────────╯`);
 
     // ── 쓰레드 상태 프로브 (read-only) ─────────────
     // Stop -all의 STATUS 0은 "정지 요청 접수"이지 완전 정지 보장이 아니다.
     // 정지 완료 전에 Compile/Start를 보내면 제어기 이상 현상(메모리 누수 의심,
     // 2026-07-08 사용자 관찰)이 발생할 수 있어, Show Thread로 실제 상태를 확인한다.
-    const threadSettled = (state: string): boolean => /^(idle|stopped|error)$/i.test((state || '').trim());
-    async function probeActiveThreads(): Promise<{ active: ThreadInfo[]; total: number } | null> {
+    // 상태 문자열은 '왜 보류하는지' 설명에만 쓴다 — 활성 판정 자체는 **쓰레드의 존재**로 한다
+    // (사용자 규약 2026-08-28: Stop 의 STATUS 0 은 접수일 뿐이고, `Execute` 는 `_Cmd_<project>`
+    //  라는 별도 쓰레드를 만든다 → 목록에 남아 있으면 아직 동작 중으로 본다. threadActivity.ts)
+    const threadSettled = (state: string): boolean => isSettledState(state);
+    async function probeActiveThreads(): Promise<{ active: ThreadInfo[]; total: number; threads: ThreadInfo[] } | null> {
         // GDE 캡처 실측(runbook): 인자 없는 `Show Thread`는 스레드가 실행 중이어도
         // <DATA></DATA> 빈 응답을 줄 수 있다 → 게이트가 항상 통과하는 false-pass.
         // 전체 열거는 반드시 `Show Thread  -web`(SHOW_THREAD_LIST_CMD)로 한다.
@@ -378,7 +444,7 @@ async function deployLocked(
             // idle/close로 잘린(STATUS 미수신) 응답은 "확인 불가"로 처리한다(하드 규칙 2).
             if (!resp.meta.statusTagReceived) { return null; }
             const threads = parseThreadList(resp.raw);
-            return { active: threads.filter(t => !threadSettled(t.state)), total: threads.length };
+            return { active: threads.filter(t => !threadSettled(t.state)), total: threads.length, threads };
         } catch {
             return null;
         }
@@ -539,8 +605,11 @@ async function deployLocked(
         try {
             if (useMirror) {
                 pushTrace('│ ↑ Mode: mirror sync (변경분만 업로드, 원격 전용 파일 삭제는 정지 확인 뒤, Unload 생략)');
+                const previousManifest = getSyncManifest(cfg.ip, ftpProjectDir);
                 const stats = await mirrorProject(cfg.ip, options.projectDir, ftpProjectDir, {
                     deferDelete: true,
+                    // 크기만 같고 내용이 바뀐 파일을 스킵하지 않도록 직전 업로드 지문(SHA-1)을 함께 본다.
+                    manifest: previousManifest,
                     // 스킵 파일까지 전부 나열하면 파일 수만큼 로그가 쏟아진다 — 실제 전송분만 남긴다.
                     onProgress: (current, total, file, action) => {
                         lock.heartbeat();
@@ -555,12 +624,16 @@ async function deployLocked(
                     totalBytes: stats.totalBytes,
                     deleted: 0,
                 };
-                pushTrace(`│ ✔ Mirror done: ${stats.uploaded} sent, ${stats.skipped} skipped${stats.pendingDeletes.length > 0 ? `, ${stats.pendingDeletes.length} remote-only (정지 확인 뒤 삭제)` : ''}`);
+                // 전체 목록 기준이므로 대체 저장(로컬에서 사라진 파일의 지문도 함께 정리된다).
+                recordSyncManifest(cfg.ip, ftpProjectDir, stats.manifest);
+                const noManifest = Object.keys(previousManifest).length === 0;
+                pushTrace(`│ ✔ Mirror done: ${stats.uploaded} sent, ${stats.skipped} skipped${stats.pendingDeletes.length > 0 ? `, ${stats.pendingDeletes.length} remote-only (정지 확인 뒤 삭제)` : ''}${noManifest ? ' (첫 동기화 — 지문 기록 없음, 전체 업로드)' : ''}`);
                 return { ok: true, pendingDeletes: stats.pendingDeletes };
             }
             const stats = await uploadProject(cfg.ip, options.projectDir, ftpProjectDir, {
                 skipUnchanged: options.skipUnchanged,
                 onlyFiles: useChangedOnly ? changedFiles : undefined,
+                manifest: getSyncManifest(cfg.ip, ftpProjectDir),
                 onProgress: (current, total, file, action) => {
                     lock.heartbeat();
                     if (action === 'uploaded') {
@@ -568,7 +641,13 @@ async function deployLocked(
                     }
                 },
             });
-            result.uploadStats = stats;
+            // 이번에 다룬 파일만 담겨 있으므로 병합(autoOnSave는 저장 파일만 올린다).
+            mergeSyncManifest(cfg.ip, ftpProjectDir, stats.manifest);
+            result.uploadStats = {
+                uploaded: stats.uploaded,
+                skipped: stats.skipped,
+                totalBytes: stats.totalBytes,
+            };
             pushTrace(`│ ✔ Upload done: ${stats.uploaded} sent, ${stats.skipped} skipped`);
             return { ok: true, pendingDeletes: [] };
         } catch (e: any) {
@@ -615,12 +694,13 @@ async function deployLocked(
             pushTrace('│ ⚠ Show Thread 무응답 — 쓰레드 상태 확인 불가(계속 진행)');
             return 'proceed';
         }
-        if (probe.active.length === 0) {
-            pushTrace(`│ ✔ 활성 쓰레드 없음 (총 ${probe.total}개 모두 정지 상태)`);
+        if (probe.total === 0) {
+            pushTrace('│ ✔ 쓰레드 없음(완전 STOP 상태)');
             return 'proceed';
         }
-        const desc = probe.active.map(t => `${t.name}(${t.state})`).join(', ');
-        pushTrace(`│ ⚠ 활성 쓰레드 존재: ${desc}`);
+        // 쓰레드가 남아 있으면 정지 계열 상태여도 동작 중으로 본다(위 주석 — 존재 = 활성).
+        const desc = describeThreadActivity(probe.threads);
+        pushTrace(`│ ⚠ ${desc}`);
         let stopApproved = false;
         if (options.confirmStopOnActive) {
             pushTrace('│ … 사용자에게 Stop -all 실행 여부 확인 중 (업로드는 병행 진행)');
@@ -1142,8 +1222,14 @@ async function deployLocked(
                 return result;
             }
         }
-        pushTrace(`│ CMD Start ${result.projectName}`);
-        const start = await runStatusCommand(`Start ${result.projectName}`);
+        // 문서 구문으로 조립 — 기본값 `-event`(GDE 동일: 쓰레드 상태 변경을 1403 이벤트로 받는다).
+        // `-compile` 은 붙이지 않는다(Start 가 자체 컴파일 — 하드 규칙 7).
+        const startCmd = buildStartCommand({
+            projectName: result.projectName,
+            eventMode: options.startEventMode,
+        });
+        pushTrace(`│ CMD ${startCmd}`);
+        const start = await runStatusCommand(startCmd);
         pushTrace(`│ RAW ${rawPreview(start.raw) || '(empty)'}`);
         if (start.ok) {
             if (isControllerNonBlockingStatus(start.statusCode)) {

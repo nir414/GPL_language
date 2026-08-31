@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.8.18",
+    "version": "0.8.21",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -161,6 +161,22 @@
                                 "type": "boolean",
                                 "description": "Stop the controller program (Stop -all) when the debug session ends/detaches. Default false leaves the program running.",
                                 "default": false
+                            },
+                            "startStackSizeKb": {
+                                "type": "number",
+                                "description": "Start -stack <KB>: procedure stack size for the started thread (controller default 4 KB per Brooks docs). Values outside 1..1024 are ignored.",
+                                "minimum": 1,
+                                "maximum": 1024
+                            },
+                            "startShowInitStatements": {
+                                "type": "boolean",
+                                "description": "Start -init: also show initialization statements while tracing/single-stepping (Brooks docs recommend pairing with -break or -trace).",
+                                "default": false
+                            },
+                            "startTrace": {
+                                "type": "boolean",
+                                "description": "Start -trace: print every executed statement on the console. Brooks docs warn this significantly reduces performance - diagnostics only.",
+                                "default": false
                             }
                         }
                     }
@@ -269,6 +285,16 @@
                 "command": "gpl.debug.attachNow",
                 "title": "GPL: Quick Debug Attach (No launch.json)",
                 "icon": "$(debug-alt)"
+            },
+            {
+                "command": "gpl.debugProject",
+                "title": "GPL: Debug Project (Deploy + Attach)",
+                "icon": "$(debug-alt)"
+            },
+            {
+                "command": "gpl.project.syncSources",
+                "title": "GPL: Project.gpr 소스 목록 동기화 (.gpl 추가/누락 정리)",
+                "icon": "$(list-tree)"
             },
             {
                 "command": "gpl.console.start",
@@ -432,6 +458,20 @@
                 "title": "GPL: 소스 변경 상태 보기 (디버그 BP 신뢰성)"
             },
             {
+                "command": "gpl.debug.lockThread",
+                "title": "GPL: 스레드 실행 잠금 (이 스레드만 Continue/Step)",
+                "icon": "$(lock)"
+            },
+            {
+                "command": "gpl.debug.unlockThread",
+                "title": "GPL: 스레드 실행 잠금 해제",
+                "icon": "$(unlock)"
+            },
+            {
+                "command": "gpl.debug.toggleThreadLock",
+                "title": "GPL: 스레드 실행 잠금 토글"
+            },
+            {
                 "command": "gpl.controller.threadStart",
                 "title": "쓰레드 시작",
                 "icon": "$(play)"
@@ -502,6 +542,11 @@
                 "icon": "$(trash)"
             },
             {
+                "command": "gpl.controller.ftpClearFolder",
+                "title": "GPL: FTP 폴더 비우기 (제어기의 파일 전체 삭제)",
+                "icon": "$(trash)"
+            },
+            {
                 "command": "gpl.controller.stopAll",
                 "title": "GPL: 모든 쓰레드 중지 (Stop -all)",
                 "icon": "$(debug-stop)"
@@ -546,6 +591,64 @@
             ]
         },
         "menus": {
+            "debug/callstack/context": [
+                {
+                    "command": "gpl.debug.lockThread",
+                    "when": "debugType == 'brooks-gpl' && callStackItemType == 'thread'",
+                    "group": "gpl_threadlock@1"
+                },
+                {
+                    "command": "gpl.debug.unlockThread",
+                    "when": "debugType == 'brooks-gpl' && callStackItemType == 'thread'",
+                    "group": "gpl_threadlock@2"
+                }
+            ],
+            "commandPalette": [
+                {
+                    "command": "gpl.debug.lockThread",
+                    "when": "inDebugMode && debugType == 'brooks-gpl'"
+                },
+                {
+                    "command": "gpl.debug.unlockThread",
+                    "when": "inDebugMode && debugType == 'brooks-gpl'"
+                },
+                {
+                    "command": "gpl.debug.toggleThreadLock",
+                    "when": "inDebugMode && debugType == 'brooks-gpl'"
+                }
+            ],
+            "explorer/context": [
+                {
+                    "command": "gpl.deploy",
+                    "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
+                    "group": "gpl_project@1"
+                },
+                {
+                    "command": "gpl.quickCompile",
+                    "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
+                    "group": "gpl_project@2"
+                },
+                {
+                    "command": "gpl.debugProject",
+                    "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
+                    "group": "gpl_project@3"
+                },
+                {
+                    "command": "gpl.start",
+                    "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
+                    "group": "gpl_project@4"
+                },
+                {
+                    "command": "gpl.saveToFlash",
+                    "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
+                    "group": "gpl_project@5"
+                },
+                {
+                    "command": "gpl.project.syncSources",
+                    "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.gpr$/i",
+                    "group": "gpl_project@1"
+                }
+            ],
             "view/title": [
                 {
                     "command": "gpl.controller.connect",
@@ -835,6 +938,16 @@
                     "group": "inline"
                 },
                 {
+                    "command": "gpl.controller.ftpClearFolder",
+                    "when": "view == gplThreads && viewItem == section-ftp",
+                    "group": "inline@9"
+                },
+                {
+                    "command": "gpl.controller.ftpClearFolder",
+                    "when": "view == gplThreads && (viewItem == section-ftp || viewItem == section-ftpFlash)",
+                    "group": "ftpSection@1"
+                },
+                {
                     "command": "gpl.controller.refreshSystemInfo",
                     "when": "view == gplThreads && viewItem == section-system",
                     "group": "inline"
@@ -934,6 +1047,24 @@
                     "default": true,
                     "description": "Auto-start runtime console (port 1403) when a brooks-gpl debug session starts."
                 },
+                "gpl.runtimeConsole.linePrefix": {
+                    "scope": "window",
+                    "type": "string",
+                    "enum": [
+                        "time",
+                        "time+project",
+                        "none",
+                        "legacy"
+                    ],
+                    "default": "time",
+                    "enumDescriptions": [
+                        "[14:23:07] message",
+                        "[14:23:07] [MyProject] message",
+                        "message",
+                        "[RT] [MyProject] message (legacy format)"
+                    ],
+                    "description": "Prefix prepended to each GPL Console (port 1403) output line."
+                },
                 "gpl.runtimeConsole.showStateInOutputChannel": {
                     "scope": "window",
                     "type": "boolean",
@@ -1029,6 +1160,12 @@
                     "default": false,
                     "description": "Include a '# Examples' section when generating a documentation comment."
                 },
+                "gpl.hover.builtinDetails": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show GPL Dictionary reference details (value tables, parameter ranges, usage syntax) in built-in symbol hovers, e.g. Thread.ThreadState state values."
+                },
                 "gpl.hover.duringDebug": {
                     "scope": "window",
                     "type": "string",
@@ -1087,6 +1224,39 @@
                     "default": 10000,
                     "description": "Command timeout in milliseconds."
                 },
+                "gpl.controller.connectionProbeTimeoutMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 8000,
+                    "minimum": 1000,
+                    "description": "연결 끊김 감지용 프로브(Show Thread 폴링·재프로브)의 응답 대기 시간(ms). 명령 타임아웃(timeoutMs)과 별개입니다. 프로브가 연속 3회(연결 거부·도달 불가는 2회) 실패하면 연결 유실로 판정해 연결 상태를 끊습니다(자동 재접속 없음 — 다시 Connect). 첫 실패나 1403 콘솔 오류·keep-alive 소켓 오류·대시보드 프로브 실패 뒤에는 정규 폴링 간격을 기다리지 않고 1초 간격으로 재프로브합니다."
+                },
+                "gpl.agentBridge.enabled": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 1402 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. 끄면 MCP는 제어기에 직접 접속합니다."
+                },
+                "gpl.controller.commandPolicyEnabled": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "제어기 명령 정책 — 어느 경로(명령 팔레트·트리·AI 명령·URI·디버그 어댑터)로 보내든 확장이 안전 조건을 대신 충족시킵니다: ① 같은 쓰레드의 Step/Continue는 직전 명령의 정지 확인 뒤에만 보내고 최소 간격(gpl.debug.minStepIntervalMs)을 둠(GitHub #28) ② Start/Compile/Load/Unload 전에 정지 진행 중(Stopping) 쓰레드가 정착할 때까지 대기 ③ Compile 완료 직후 같은 프로젝트 Start는 완충 시간 뒤 전송. 접근을 막거나 승인을 요구하지 않고 기다려서 충족시키며, 한도(transitionSettleWaitMs) 안에 충족되지 않을 때만 명령을 보내지 않고 오류로 알립니다. 개입 내용은 GPL Traffic에 `--- policy:`로 남습니다. 끄면 종전처럼 즉시 전송합니다(진단용)."
+                },
+                "gpl.controller.transitionSettleWaitMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 8000,
+                    "minimum": 500,
+                    "description": "명령 정책이 상태 전이 정착(Step/Continue 뒤 정지 확인, Stopping 쓰레드의 정지 완료)을 기다리는 상한(ms). 이 시간 안에 `Show Thread -web`으로 정착이 확인되지 않으면 해당 명령은 제어기에 보내지 않고 오류로 알립니다."
+                },
+                "gpl.controller.startAfterCompileGapMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 1500,
+                    "minimum": 0,
+                    "description": "같은 프로젝트의 Compile 응답 완료 뒤 Start를 보내기까지의 완충 시간(ms). PA 제어기의 Start는 자체 컴파일을 수행하므로 Compile 직후 연속 Start(컴파일 중복)를 피합니다(ai-handoff §0.7 — 중복 실행의 안전성은 실기기 미검증이라 거부가 아닌 완충으로 둠). 0이면 완충 없음."
+                },
                 "gpl.controller.keepAlive1402": {
                     "scope": "window",
                     "type": "boolean",
@@ -1098,7 +1268,20 @@
                     "type": "number",
                     "default": 30000,
                     "minimum": 1000,
-                    "description": "keep-alive 1402 연결을 명령 없이 유지하는 최대 시간(ms). 지나면 닫고 다음 명령에서 다시 연결합니다."
+                    "description": "keep-alive 1402 연결을 명령 없이 유지하는 최대 시간(ms). 지나면 닫고 다음 명령에서 다시 연결합니다. 유휴 ping(keepAliveIdlePingMs)이 켜져 있으면 명령 공백이 이 시간에 이르기 전에 ping 이 나가므로 사실상 닫히지 않습니다."
+                },
+                "gpl.controller.keepAliveIdlePingMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 5000,
+                    "minimum": 0,
+                    "description": "제어기에 연결된 동안 1402 명령이 이 시간(ms) 동안 없으면 가벼운 읽기 전용 명령(keepAliveIdlePingCommand)을 보내 1402 세션을 유지합니다. 0이면 끕니다. GDE는 유휴 시 5초마다 파라미터 읽기를 보내는데(2026-06-23 캡처), 제어기는 1402 세션을 쥔 클라이언트에게 1403 런타임 스트림을 계속 열어 두는 것으로 관측되어(단명 1402 시절엔 1403이 배치마다 끊김) 1403 안정성을 위해 GDE와 같은 동작을 따릅니다. keepAlive1402가 꺼져 있으면 동작하지 않습니다."
+                },
+                "gpl.controller.keepAliveIdlePingCommand": {
+                    "scope": "window",
+                    "type": "string",
+                    "default": "Show Thread",
+                    "description": "유휴 ping 으로 보낼 읽기 전용 명령. 기본 `Show Thread`(인자 없음 — 실기기에서 스레드 유무와 무관하게 빈 <DATA></DATA> 응답, GDE도 사용). GDE와 완전히 같은 트래픽을 원하면 `PD 234,-1,0,0` 같은 파라미터 읽기로 바꿀 수 있습니다. 상태를 바꾸는 명령은 넣지 마세요."
                 },
                 "gpl.controller.trafficLogResponseBody": {
                     "scope": "window",
@@ -1180,6 +1363,40 @@
                     "minimum": 0,
                     "description": "디버그 Step/Continue 명령 사이 최소 간격(ms). 이전 Step/Continue의 정지 확인 전에 들어온 같은 쓰레드 요청은 항상 무시되며(GitHub #28 — 키 자동 반복으로 Step이 30ms 간격 325건 송신되어 제어기가 다운된 사고), 이 값은 정지 확인 후에도 추가로 두는 하한입니다. 0이면 간격 제한 없음(정지 확인 게이트는 유지)."
                 },
+                "gpl.controller.startEventMode": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "`Start`에 `-event`를 붙입니다(기본 켜짐). 공식 문서상 `-event`는 쓰레드 상태 변경을 콘솔 메시지가 아니라 **이벤트로** 보내며, GDE도 캡처 2회 모두 `Start <프로젝트> -event`를 사용했습니다(2026-06-23) — 1403 스트림으로 상태 변경을 받아 폴링 의존을 줄이는 표준 방식입니다. 끄면 `-noevent`를 붙여 종전 콘솔 메시지 방식으로 되돌립니다. `-compile`은 어떤 경우에도 붙이지 않습니다(제어기 Start가 자체 컴파일 — ai-handoff §0.7)."
+                },
+                "gpl.debug.jumpToCursor": {
+                    "scope": "window",
+                    "type": "string",
+                    "enum": [
+                        "warn",
+                        "on",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "기능은 켜고 실행 직전에 위험 경고를 확인받습니다(기본).",
+                        "경고 없이 바로 실행합니다.",
+                        "기능을 제공하지 않습니다(메뉴에 나타나지 않음)."
+                    ],
+                    "default": "warn",
+                    "description": "디버그 중 '커서까지 이동'(Jump to Cursor)으로 다음 실행 문장을 옮깁니다 — 제어기 `Set Thread <스레드> -line <줄>`. **건너뛴 문장은 실행되지 않습니다**: 변수 초기화·안전 조건·전원/그리퍼 상태 설정이 빠진 채 진행될 수 있고 그 상태의 모션은 예상과 다르게 움직일 수 있습니다(저속·시뮬레이션에서 먼저 확인). 대상 줄은 문서 규칙대로 현재 줄과 같은 프로시저 안의 실행 가능한 문장이어야 하며, 확장이 로컬 파서로 미리 확인합니다."
+                },
+                "gpl.debug.clientSideBreakpointLogic": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "조건부 브레이크포인트·히트 조건·로그포인트를 확장이 흉내냅니다(기본 꺼짐). 제어기 `Set Break`에는 조건·히트·로그 스위치가 없으므로(공식 문서 확인) BP가 적중할 때마다 확장이 조건을 평가하고 **불일치하면 자동으로 Continue를 보냅니다** — 자동 재개는 모션을 다시 움직이는 행위이므로 기본값을 꺼짐으로 둡니다. 켜면 VS Code의 조건·히트 수·로그 메시지 입력 UI가 나타납니다. 조건 평가에 실패하면 지나치지 않고 정지를 유지합니다. 적중마다 1402 왕복이 늘어납니다."
+                },
+                "gpl.debug.integerHex": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "디버거 변수·Watch의 정수 값에 16진수 표기를 함께 보여 줍니다(`4095 (&HFFF)`). 비트마스크·플래그 DataID를 읽을 때 유용합니다. VS Code는 DAP의 값 포맷 전환(supportsValueFormattingOptions)을 사용하지 않으므로 이 설정으로 제공합니다."
+                },
                 "gpl.debug.runningBackupPollMs": {
                     "scope": "window",
                     "type": "number",
@@ -1227,6 +1444,33 @@
                     ],
                     "default": "auto",
                     "description": ".gpl 파일을 저장할 때 빠른 컴파일(변경분 업로드 + Compile, STOP/START 생략)을 자동 실행합니다. 제어기에 연결되어 있을 때만 동작하며 600ms 디바운스가 적용됩니다. 업로드 도중 Compile/Start가 겹치면 제어기 이상이 생길 수 있어 배포 잠금(다른 창·MCP 포함)으로 차단하며, 기본값 \"auto\"는 업로드는 항상 하되 Compile은 완전 STOP 상태에서만 수행합니다. (구버전 boolean 값도 인식: true=on, false=off)"
+                },
+                "gpl.project.autoSyncSources": {
+                    "scope": "window",
+                    "type": "string",
+                    "enum": [
+                        "prompt",
+                        "auto",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "VS Code 안에서 소스 파일을 새로 만들거나 이름 변경·삭제하면 Project.gpr에 반영할지 물어봅니다(기본).",
+                        "묻지 않고 바로 Project.gpr를 갱신합니다(상태바에 요약 표시).",
+                        "자동 반영을 하지 않습니다. 'GPL: Project.gpr 소스 목록 동기화' 명령(.gpr 우클릭)만 사용합니다."
+                    ],
+                    "default": "prompt",
+                    "description": "프로젝트 폴더 안의 소스 파일 생성/이름 변경/삭제를 Project.gpr의 ProjectSource 목록에 반영하는 방식입니다. 에디터 밖 변경(git checkout 등)에는 반응하지 않습니다."
+                },
+                "gpl.project.sourceExtensions": {
+                    "scope": "window",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [
+                        ".gpl"
+                    ],
+                    "description": "Project.gpr 소스 목록 동기화에서 소스로 취급할 확장자입니다. GDE는 .gpo(컴파일 산출물)를 ProjectSource에 넣지 않으므로 기본은 .gpl만입니다."
                 }
             }
         },
@@ -1249,9 +1493,7 @@
         "package": "node scripts/package.js --bump patch",
         "package:no-bump": "node scripts/package.js",
         "dev:cycle": "npm run package",
-        "dev:install": "node -e \"console.error('dev:install is disabled to prevent opening new VS Code windows. Build VSIX with npm run dev:cycle, then install manually from Extensions > Install from VSIX.'); process.exit(1);\"",
-        "dev:cycle:open": "node -e \"console.error('dev:cycle:open is disabled to prevent opening new VS Code windows. Use npm run dev:install only when explicit reinstall is needed.'); process.exit(1);\"",
-        "dev:host": "node -e \"console.error('dev:host is disabled to prevent opening new VS Code windows.'); process.exit(1);\"",
+        "dev:host": "npm run compile && code --new-window --extensionDevelopmentPath=. --profile=GPL-DevHost samples/hello-project",
         "dev:watch": "npm run watch",
         "docs:serve": "mkdocs serve",
         "docs:build": "mkdocs build --strict"

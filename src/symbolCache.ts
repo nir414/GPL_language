@@ -6,19 +6,30 @@ import { getParameterArity, argCountMatchesArity } from './language/cursorExpres
 import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
 import { buildSymbolNameIndex } from './symbolNameIndex';
 import { renderDocCommentMarkdown } from './language/docComment';
+import { PROJECT_EXCLUDE_GLOB, findWorkspaceGprPaths } from './project/projectFileScope';
+import { collectProjectSourcePaths, pickOwningGprPath } from './project/projectSources';
+import { isPathUnder } from './controller/projectPickerCore';
 
 // scoreFilePath 점수 체계 — 높을수록 우선 (정의 후보가 여럿일 때 경로 근접도로 선택)
 const SCORE_SAME_FILE = 1000;
 const SCORE_SAME_DIRECTORY = 800;
+/** 같은 프로젝트(.gpr 폴더) 하위 — 하위 폴더로 나뉘어 있어도 같은 컴파일 단위다. */
+const SCORE_SAME_PROJECT = 650;
 const SCORE_SAME_TOP_LEVEL_FOLDER = 500;
 const SCORE_UNRELATED = 0;
 
-/** 워크스페이스 파일 검색 공용 제외 글롭 */
-const INDEX_EXCLUDE_GLOB = '{**/node_modules/**,**/bin/**,**/.git/**}';
+/**
+ * 워크스페이스 파일 검색 공용 제외 글롭.
+ * 프로젝트 탐색(`findProjectDirs`·참조 검색 범위)과 같은 목록을 쓴다 — 특히 `.history`
+ * (Local History 확장)의 stale 사본이 인덱스를 오염시키면 정의/참조가 엉뚱한 파일을 가리킨다.
+ */
+const INDEX_EXCLUDE_GLOB = PROJECT_EXCLUDE_GLOB;
 
 export class SymbolCache {
     private symbols: Map<string, GPLSymbol[]> = new Map();
     private nameIndex: Map<string, GPLSymbol[]> = new Map();
+    /** 마지막 인덱싱에서 발견한 워크스페이스 .gpr 경로 — 정의 후보 선택의 "같은 프로젝트" 판정에 쓴다. */
+    private gprPaths: string[] = [];
     private outputChannel?: vscode.OutputChannel;
     /** True while refresh/indexWorkspace is running — suppresses duplicate updates from onDidOpenTextDocument. */
     public isRefreshing = false;
@@ -367,6 +378,14 @@ export class SymbolCache {
             return SCORE_SAME_DIRECTORY;
         }
 
+        // 같은 프로젝트(.gpr 폴더) 하위를 워크스페이스 최상위 폴더보다 우선한다 —
+        // 프로젝트가 하위 폴더로 나뉘어 있으면(`T1\T2\T2.gpl`) 디렉터리는 달라도 같은 컴파일 단위이고,
+        // 반대로 최상위 폴더가 같다는 것만으로는 다른 프로젝트의 동명 파일과 구분되지 않는다.
+        const owningGpr = pickOwningGprPath(preferredFilePath, this.gprPaths);
+        if (owningGpr && isPathUnder(candidateFilePath, path.dirname(owningGpr))) {
+            return SCORE_SAME_PROJECT;
+        }
+
         // Prefer same top-level folder relative to workspace folder
         const ws = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(preferredFilePath));
         if (ws) {
@@ -606,53 +625,53 @@ export class SymbolCache {
     }
 
     /**
-     * Parse Project.gpr files (if present) and return a deduplicated list of source file URIs.
-     * Returns undefined when no Project.gpr exists in the workspace.
+     * 프로젝트(`.gpr`) 단위 소스 목록 — 워크스페이스의 각 `.gpr`마다
+     * **`ProjectSource` 목록 ∪ 프로젝트 폴더 재귀 스캔**을 모아 돌려준다.
+     * 워크스페이스에 `.gpr`가 하나도 없으면 undefined(호출측이 워크스페이스 glob으로 폴백).
+     *
+     * `ProjectSource`는 폴더 기준 상대 경로여서 `T1\T2\T2.gpl`처럼 하위 폴더가 임의 깊이로
+     * 중첩될 수 있다(2026-08-28 실제 파일 확인 — `project/projectSources.ts` 참고).
+     * 폴더 재귀 스캔을 합집합으로 두는 이유는 `.gpr`에 아직 추가하지 않은 새 파일도
+     * 정의 이동·참조 검색·자동완성에 잡히게 하려는 것이다(참조 검색 범위와 같은 규칙).
      */
     private async getProjectSourcesFromGpr(): Promise<vscode.Uri[] | undefined> {
         try {
-            const gprFiles = await vscode.workspace.findFiles(
-                '**/Project.gpr',
-                INDEX_EXCLUDE_GLOB
-            );
-
-            if (!gprFiles || gprFiles.length === 0) {
+            const gprPaths = await findWorkspaceGprPaths();
+            this.gprPaths = gprPaths;
+            if (gprPaths.length === 0) {
                 return undefined;
             }
 
             const sources = new Set<string>();
+            let truncatedProjects = 0;
 
-            for (const gprUri of gprFiles) {
+            for (const gprPath of gprPaths) {
                 try {
-                    const bytes = await vscode.workspace.fs.readFile(gprUri);
+                    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(gprPath));
                     const text = Buffer.from(bytes).toString('utf8');
-
-                    // ProjectSource="file.gpl" (also accept single quotes)
-                    const re = /ProjectSource\s*=\s*["']([^"']+)["']/gi;
-                    let match: RegExpExecArray | null;
-                    while ((match = re.exec(text)) !== null) {
-                        const raw = (match[1] || '').trim();
-                        if (!raw) {
-                            continue;
-                        }
-
-                        const resolved = path.isAbsolute(raw)
-                            ? raw
-                            : path.join(path.dirname(gprUri.fsPath), raw);
-
-                        const lower = resolved.toLowerCase();
-                        if (!lower.endsWith('.gpl') && !lower.endsWith('.gpo')) {
-                            continue;
-                        }
-                        sources.add(resolved);
+                    const collected = collectProjectSourcePaths(gprPath, text, {
+                        extensions: ['.gpl', '.gpo'],
+                    });
+                    if (collected.truncated) {
+                        truncatedProjects++;
+                    }
+                    for (const full of collected.files) {
+                        sources.add(full);
                     }
                 } catch (e) {
-                    this.log(`[SymbolCache] Failed to parse Project.gpr (${gprUri.fsPath}): ${e}`);
+                    this.log(`[SymbolCache] Failed to parse .gpr (${gprPath}): ${e}`);
                 }
             }
 
+            if (truncatedProjects > 0) {
+                this.log(
+                    `[SymbolCache] ⚠ 소스 탐색 상한에 걸린 프로젝트 ${truncatedProjects}개 — `
+                    + '일부 파일이 인덱스에서 빠졌습니다.'
+                );
+            }
+
             if (sources.size === 0) {
-                // Project.gpr exists but had no ProjectSource entries; fall back to glob.
+                // .gpr는 있지만 소스를 하나도 모으지 못했다 → 워크스페이스 glob으로 폴백.
                 return undefined;
             }
 

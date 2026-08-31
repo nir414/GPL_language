@@ -54,6 +54,8 @@ export interface HoverConfig {
     /** 0 = 제한 없음 */
     docCommentMaxLines: number;
     duringDebug: HoverDuringDebugMode;
+    /** GPL Dictionary 내장 항목 호버에 값 표·매개변수 범위 등 상세 설명을 함께 보일지. */
+    builtinDetails: boolean;
 }
 
 // getHoverConfig 기본값 — get() 폴백과 정규화 폴백에 동일하게 사용
@@ -85,7 +87,10 @@ export function getHoverConfig(workspace: WorkspaceConfigHost): HoverConfig {
     const duringDebug: HoverDuringDebugMode =
         dbgRaw === 'off' || dbgRaw === 'normal' ? dbgRaw : HOVER_DURING_DEBUG_DEFAULT;
 
-    return { enabled, docComment, docCommentMaxLines, duringDebug };
+    // 명시적 false만 비활성으로 취급 (비-boolean 설정값은 기본 활성).
+    const builtinDetails = cfg.get<boolean>('hover.builtinDetails', true) !== false;
+
+    return { enabled, docComment, docCommentMaxLines, duringDebug, builtinDetails };
 }
 
 export interface DocCommentConfig {

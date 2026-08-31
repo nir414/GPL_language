@@ -36,6 +36,9 @@ export class ConnectionStatusBar implements vscode.Disposable {
     /** Attach only 디버깅 중 소스 stale 경고(GitHub #21) — 빈 목록이면 숨김. */
     private staleItem: vscode.StatusBarItem;
     private sourceStale: StatusBarSourceStale | undefined;
+    /** 스레드 단일 실행 잠금 표시(디버그 중 잠금이 걸려 있을 때만). */
+    private threadLockItem: vscode.StatusBarItem;
+    private lockedThread: string | undefined;
     private disposables: vscode.Disposable[] = [];
 
     get isConnected(): boolean { return this._isConnected; }
@@ -61,6 +64,16 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.updateStaleItem();
     }
 
+    /**
+     * 스레드 단일 실행 잠금 표시. 잠금 중에는 Continue/Step 이 VS Code 포커스와 무관하게 잠근
+     * 스레드에만 나가므로(다중 스레드에서 의도하지 않은 스레드를 움직이는 사고 방지), 잠긴 상태를
+     * 놓치지 않게 상태바에 표시한다. 클릭하면 해제. undefined면 숨김.
+     */
+    setThreadLock(threadName?: string): void {
+        this.lockedThread = threadName || undefined;
+        this.updateThreadLockItem();
+    }
+
     constructor() {
         this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         this.item.command = 'gpl.controller.connect';
@@ -74,6 +87,10 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.staleItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
         this.staleItem.command = 'gpl.debug.showSourceStale';
         this.staleItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+
+        this.threadLockItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
+        this.threadLockItem.command = 'gpl.debug.unlockThread';
+        this.threadLockItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
 
         this.disposables.push(
             vscode.window.onDidChangeActiveTextEditor(() => this.updateVisibility())
@@ -97,6 +114,21 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.item.dispose();
         this.dashboardItem.dispose();
         this.staleItem.dispose();
+        this.threadLockItem.dispose();
+    }
+
+    private updateThreadLockItem(): void {
+        const name = this.lockedThread;
+        if (!name) {
+            this.threadLockItem.hide();
+            return;
+        }
+        this.threadLockItem.text = `$(lock) 스레드 잠금: ${name}`;
+        this.threadLockItem.tooltip =
+            `스레드 단일 실행 잠금 — Continue/Step(F5·F10·F11·Shift+F11)은 CALL STACK 포커스와 무관하게 ` +
+            `${name} 스레드에만 나갑니다.\n다른 스레드가 정지해도 디버그 포커스를 가져가지 않습니다.\n\n` +
+            '클릭하면 잠금을 해제합니다.';
+        this.threadLockItem.show();
     }
 
     private updateStaleItem(): void {

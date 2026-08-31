@@ -99,18 +99,48 @@ export function buildDocCommentSnippet(symbol: GPLSymbol, includeExamples: boole
 }
 
 /**
+ * `gpl.insertDocComment` 인자.
+ * MCP(`extension_command`)·URI 경로에서는 JSON으로 오므로 `uri`가 문자열일 수 있다.
+ */
+export interface DocCommentCommandArgs {
+    /** 대상 파일. vscode.Uri, URI 문자열(`file:///…`), 또는 로컬 경로. 생략하면 활성 편집기. */
+    uri?: vscode.Uri | string;
+    /** 대상 줄(0-based). 생략하면 커서 위치. */
+    line?: number;
+}
+
+export interface DocCommentCommandResult {
+    ok: boolean;
+    /** inserted = 골격 삽입 / merged = 빠진 항목 보완 / up-to-date = 더할 것 없음 / no-* = 실패 사유 */
+    action: 'inserted' | 'merged' | 'up-to-date' | 'no-editor' | 'no-declaration';
+    file?: string;
+    line?: number;
+    symbol?: string;
+    /** merged일 때 무엇을 덧붙였는지. */
+    added?: string[];
+}
+
+/** vscode.Uri | URI 문자열 | 경로 문자열 → vscode.Uri. */
+function toUri(value: vscode.Uri | string | undefined): vscode.Uri | undefined {
+    if (!value) { return undefined; }
+    if (typeof value !== 'string') { return value; }
+    return /^[a-z][a-z0-9+.-]*:/i.test(value) ? vscode.Uri.parse(value) : vscode.Uri.file(value);
+}
+
+/**
  * `GPL: 문서화 주석 생성` 명령 본체.
  * 주석이 없으면 골격을 스니펫으로 삽입하고, 이미 있으면 빠진 항목(매개변수·Returns)만 덧붙인다.
  */
-export async function insertDocComment(args?: { uri?: vscode.Uri; line?: number }): Promise<void> {
+export async function insertDocComment(args?: DocCommentCommandArgs): Promise<DocCommentCommandResult> {
+    const uri = toUri(args?.uri);
     let editor = vscode.window.activeTextEditor;
-    if (args?.uri && editor?.document.uri.toString() !== args.uri.toString()) {
-        const doc = await vscode.workspace.openTextDocument(args.uri);
+    if (uri && editor?.document.uri.toString() !== uri.toString()) {
+        const doc = await vscode.workspace.openTextDocument(uri);
         editor = await vscode.window.showTextDocument(doc);
     }
     if (!editor) {
         vscode.window.showWarningMessage('GPL: 문서화 주석을 넣을 편집기가 없습니다.');
-        return;
+        return { ok: false, action: 'no-editor' };
     }
 
     const document = editor.document;
@@ -118,17 +148,19 @@ export async function insertDocComment(args?: { uri?: vscode.Uri; line?: number 
     const target = findDocCommentTarget(document, line);
     if (!target) {
         vscode.window.showWarningMessage('GPL: 커서 위치에서 문서화할 선언(Sub/Function/Property 등)을 찾지 못했습니다.');
-        return;
+        return { ok: false, action: 'no-declaration', file: document.uri.fsPath, line };
     }
 
     const { includeExamples } = getDocCommentConfig(vscode.workspace);
     const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
 
+    const where = { file: document.uri.fsPath, line: target.declLine, symbol: target.symbol.name };
+
     // 기존 주석 없음 → 골격 삽입.
     if (target.docStartLine === undefined || !target.docRaw?.trim()) {
         const snippet = buildDocCommentSnippet(target.symbol, includeExamples);
         await editor.insertSnippet(snippet, new vscode.Position(target.declLine, target.indent.length));
-        return;
+        return { ok: true, action: 'inserted', ...where };
     }
 
     // 기존 주석 있음 → 빠진 항목만 보완(기존 서술은 건드리지 않는다).
@@ -136,7 +168,7 @@ export async function insertDocComment(args?: { uri?: vscode.Uri; line?: number 
     const { insertions, added } = mergeDocComment(parsed, toDocTarget(target.symbol));
     if (!insertions.length) {
         vscode.window.showInformationMessage(`GPL: \`${target.symbol.name}\` 문서화 주석에 추가할 항목이 없습니다.`);
-        return;
+        return { ok: true, action: 'up-to-date', ...where };
     }
 
     const edit = new vscode.WorkspaceEdit();
@@ -149,6 +181,7 @@ export async function insertDocComment(args?: { uri?: vscode.Uri; line?: number 
     }
     await vscode.workspace.applyEdit(edit);
     vscode.window.showInformationMessage(`GPL: 문서화 주석 보완 — ${added.join(', ')}`);
+    return { ok: true, action: 'merged', added, ...where };
 }
 
 /**

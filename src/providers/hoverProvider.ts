@@ -2,9 +2,24 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, isInCommentOrString, getHoverConfig, HoverConfig } from '../config';
-import { findEnclosingProcedureRange } from '../language/cursorExpression';
+import { findEnclosingProcedureRange, extractDebugExpressionAt } from '../language/cursorExpression';
+import {
+    buildDocumentReceiverLookup,
+    membersNamed,
+    resolveReceiverHolder,
+    resolveReceiverTypeName,
+    ReceiverSegment,
+} from '../language/receiverType';
 import { renderDocCommentMarkdown } from '../language/docComment';
-import { findGplBuiltin, getGplBuiltinReferenceUrl } from '../gplBuiltins';
+import {
+    findGplBuiltin,
+    findGplBuiltinMember,
+    findGplClassDoc,
+    getGplBuiltinReferenceUrl,
+    getGplClassMembers,
+    GPLBuiltinEntry,
+    GPLClassDoc,
+} from '../gplBuiltins';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
 
@@ -139,6 +154,134 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         }
     }
 
+    /**
+     * GPL Dictionary 내장 항목 호버 카드.
+     * 문서의 구문 표기(`usage`)가 있으면 그것을 보여 Shared/인스턴스 구분과 반환값 형태를 드러내고,
+     * 값 표·매개변수 범위 같은 상세(`details`)는 gpl.hover.builtinDetails가 켜져 있을 때만 덧붙인다.
+     */
+    private buildBuiltinHover(
+        entry: GPLBuiltinEntry,
+        compact: boolean,
+        config: HoverConfig,
+        range: vscode.Range,
+    ): vscode.Hover {
+        const md = new vscode.MarkdownString();
+        if (compact) {
+            // 디버깅 중: 구문 한 줄만.
+            md.appendCodeblock(entry.usage ?? entry.signature, 'gpl');
+        } else {
+            md.appendMarkdown(`**GPL Built-in** · ${entry.category}\n\n`);
+            md.appendCodeblock(entry.usage ?? entry.signature, 'gpl');
+            md.appendMarkdown(`\n${entry.summary}`);
+            if (config.builtinDetails && entry.details) {
+                md.appendMarkdown(`\n\n---\n\n${entry.details}`);
+            }
+            const refUrl = getGplBuiltinReferenceUrl(entry);
+            const refLabel = entry.sourceUrl ? 'Reference' : 'GPL Dictionary';
+            md.appendMarkdown(`\n\n[${refLabel}](${refUrl})`);
+        }
+        md.isTrusted = false;
+        return new vscode.Hover(md, range);
+    }
+
+    /**
+     * 내장 클래스 이름(`Thread`) 자체의 호버 카드 — GPL Dictionary 클래스 소개 페이지 기반.
+     * 생성자 구문(`New Thread(...)`)과 멤버 목록을 함께 보여 준다.
+     */
+    private buildClassDocHover(
+        doc: GPLClassDoc,
+        compact: boolean,
+        config: HoverConfig,
+        range: vscode.Range,
+    ): vscode.Hover {
+        const md = new vscode.MarkdownString();
+        if (compact) {
+            md.appendCodeblock(doc.constructorSignature ?? doc.name, 'gpl');
+        } else {
+            md.appendMarkdown(`**GPL Built-in Class** · ${doc.name}\n\n`);
+            if (doc.constructorSignature) {
+                md.appendCodeblock(doc.constructorSignature, 'gpl');
+            }
+            md.appendMarkdown(`\n${doc.summary}`);
+            if (doc.constructorSummary) {
+                md.appendMarkdown(`\n\n${doc.constructorSummary}`);
+            }
+            if (config.builtinDetails && doc.details) {
+                md.appendMarkdown(`\n\n---\n\n${doc.details}`);
+            }
+            const members = getGplClassMembers(doc.name);
+            if (members.length > 0) {
+                const names = members.map(m => `\`${m.name.slice(doc.name.length + 1)}\``).join(', ');
+                md.appendMarkdown(`\n\n---\n\n**멤버**: ${names}`);
+            }
+            md.appendMarkdown(`\n\n[Reference](${doc.sourceUrl})`);
+        }
+        md.isTrusted = false;
+        return new vscode.Hover(md, range);
+    }
+
+    /**
+     * 내장 클래스 타입 인스턴스의 멤버(`Dim t As Thread` → `t.Abort`)를 GPL Dictionary에서 찾는다.
+     * resolveReceiverHolder는 사용자 클래스/모듈만 해석하므로 내장 타입에는 타입 이름 해석기를 쓴다.
+     */
+    private findBuiltinReceiverMember(
+        document: vscode.TextDocument,
+        atLine: number,
+        receiver: ReceiverSegment[],
+        memberName: string,
+    ): GPLBuiltinEntry | undefined {
+        try {
+            const docSymbols = this.getDocumentSymbols(document);
+            const range = findEnclosingProcedureRange(i => document.lineAt(i).text, document.lineCount, atLine);
+            const lookup = buildDocumentReceiverLookup(docSymbols, range, atLine, n => this.symbolCache.findAllByName(n));
+            const typeName = resolveReceiverTypeName(receiver, lookup);
+            if (!typeName) {
+                return undefined;
+            }
+            const entry = findGplBuiltinMember(typeName, memberName);
+            if (entry) {
+                this.log(`[Hover Receiver] 내장 클래스 ${typeName} → ${entry.name}`);
+            }
+            return entry;
+        } catch (e) {
+            this.log(`[Hover Builtin Receiver Error] ${e}`);
+            return undefined;
+        }
+    }
+
+    /**
+     * 멤버 접근 `receiver.member`의 `member`를 수신자 클래스/모듈에서 찾는다(GitHub #32).
+     * 수신자 타입은 로컬/파라미터 → 클래스·모듈 이름 → 캐시 심볼의 returnType 체이닝으로 해석(receiverType.ts).
+     * 정확한 className 일치(현재 문서 포함)를 우선하고, 없으면 캐시의 findMemberInClass/Module(오버로드 선택 포함).
+     */
+    private findReceiverMember(
+        document: vscode.TextDocument,
+        atLine: number,
+        receiver: ReceiverSegment[],
+        memberName: string,
+    ): GPLSymbol | undefined {
+        try {
+            const docSymbols = this.getDocumentSymbols(document);
+            const range = findEnclosingProcedureRange(i => document.lineAt(i).text, document.lineCount, atLine);
+            const lookup = buildDocumentReceiverLookup(docSymbols, range, atLine, n => this.symbolCache.findAllByName(n));
+            const holder = resolveReceiverHolder(receiver, lookup);
+            const chain = receiver.map(s => (s.args !== undefined ? `${s.name}(${s.args})` : s.name)).join('.');
+            if (!holder) {
+                this.log(`[Hover Receiver] ${chain}.${memberName}: 수신자 타입 해석 실패 → 이름 기반 조회`);
+                return undefined;
+            }
+            const exact = membersNamed(lookup, holder, memberName)[0];
+            const found = exact ?? (holder.kind === 'class'
+                ? this.symbolCache.findMemberInClass(memberName, holder.name, document.uri.fsPath)
+                : this.symbolCache.findMemberInModule(memberName, holder.name, document.uri.fsPath));
+            this.log(`[Hover Receiver] ${chain}.${memberName}: ${holder.kind} ${holder.name} → ${found ? `${found.kind} ${found.name}` : '멤버 없음'}`);
+            return found;
+        } catch (e) {
+            this.log(`[Hover Receiver Error] ${e}`);
+            return undefined;
+        }
+    }
+
     private getIdentifierAtPosition(document: vscode.TextDocument, position: vscode.Position): { text: string; range: vscode.Range } | undefined {
         const line = document.lineAt(position.line).text;
         if (!line) {
@@ -212,30 +355,41 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         // 1) Built-in hover (문서 기반)
         const builtin = findGplBuiltin(word);
         if (builtin) {
-            const md = new vscode.MarkdownString();
-            if (compact) {
-                // 디버깅 중: 시그니처 한 줄만.
-                md.appendCodeblock(builtin.signature, 'gpl');
-            } else {
-                md.appendMarkdown(`**GPL Built-in** · ${builtin.category}\n\n`);
-                md.appendCodeblock(builtin.signature, 'gpl');
-                md.appendMarkdown(`\n${builtin.summary}`);
-                const refUrl = getGplBuiltinReferenceUrl(builtin);
-                const refLabel = builtin.sourceUrl ? 'Reference' : 'GPL Dictionary';
-                md.appendMarkdown(`\n\n[${refLabel}](${refUrl})`);
-            }
-            md.isTrusted = false;
-            return new vscode.Hover(md, wordRange);
+            return this.buildBuiltinHover(builtin, compact, config, wordRange);
         }
 
         const lookupName = word.includes('.') ? word.split('.').pop()! : word;
 
+        // 멤버 접근의 수신자 체인(GitHub #32). `word`는 `[\w.]`만 모으므로 `robotArmList(0).controlAxis`처럼
+        // 괄호가 끼면 `controlAxis`만 남는다 — 커서 식 추출기(괄호 그룹 인식)로 `.` 앞 체인을 되찾는다.
+        const cursorExpr = extractDebugExpressionAt(line, position.character);
+        const receiverSegs = cursorExpr && cursorExpr.segments.length > 1
+            && ciEq(cursorExpr.segments[cursorExpr.cursorSegment].name, lookupName)
+            ? cursorExpr.segments.slice(0, cursorExpr.cursorSegment)
+            : undefined;
+
         // 로컬 변수/파라미터가 동명의 모듈 레벨 캐시 심볼에 가려지지 않도록, 감싸는
         // 프로시저 스코프의 로컬을 먼저 해석한다(definitionProvider와 동일 규칙).
         // 멤버 접근(`obj.Member`)은 로컬 스코프 대상이 아니므로 제외.
-        let sym = !word.includes('.')
+        let sym = !word.includes('.') && !receiverSegs
             ? this.findEnclosingLocalSymbol(document, lookupName, position.line)
             : undefined;
+
+        // 멤버 접근이면 수신자 클래스를 정적으로 해석해 **그 클래스의 멤버**를 먼저 찾는다(GitHub #32).
+        // 종전에는 마지막 이름만으로 findDefinition(현재 파일 우선)해 다른 클래스의 동명 Function 시그니처가 표시됐다.
+        // 해석에 실패하면 종전 이름 기반 조회로 폴백한다.
+        if (!sym && receiverSegs && !token.isCancellationRequested) {
+            sym = this.findReceiverMember(document, position.line, receiverSegs, lookupName);
+        }
+
+        // 수신자 타입이 내장 클래스면 GPL Dictionary 멤버를 보여 준다(`Dim t As Thread` → `t.Abort`).
+        // 이름 기반 findDefinition보다 먼저 봐야 다른 클래스의 동명 멤버가 잘못 표시되지 않는다.
+        if (!sym && receiverSegs && !token.isCancellationRequested) {
+            const builtinMember = this.findBuiltinReceiverMember(document, position.line, receiverSegs, lookupName);
+            if (builtinMember) {
+                return this.buildBuiltinHover(builtinMember, compact, config, wordRange);
+            }
+        }
 
         // Prefer cache definition
         if (!sym) {
@@ -250,6 +404,14 @@ export class GPLHoverProvider implements vscode.HoverProvider {
                 sym = docSymbols.find(s => !s.isLocal && ciEq(s.name, lookupName));
             } catch (e) {
                 this.log(`[Hover Local Parse Error] ${e}`);
+            }
+        }
+
+        // 사용자 심볼이 전혀 없을 때만 내장 클래스 개요를 보여 준다(동명 사용자 심볼이 우선).
+        if (!sym && !word.includes('.')) {
+            const classDoc = findGplClassDoc(word);
+            if (classDoc) {
+                return this.buildClassDocHover(classDoc, compact, config, wordRange);
             }
         }
 

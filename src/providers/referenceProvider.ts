@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose, ciEq, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
+import { resolveProjectFileScope } from '../project/projectFileScope';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
     constructor(
@@ -377,8 +377,8 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const seen = new Set<string>();
         let localHits = 0;
         let workspaceHits = 0;
-        let folderFallbackHits = 0;
-        let folderFallbackRan = false;
+        let scopeFallbackHits = 0;
+        let scopeFallbackRan = false;
 
         const addLocation = (uri: vscode.Uri, range: vscode.Range): boolean => {
             const key = `${uri.toString()}:${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
@@ -397,7 +397,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // doc.offsetAt(...)으로 그대로 복원한다.
         const MAX_SCAN_LINE_LENGTH = 5000; // 비정상적으로 긴(생성·압축) 라인은 스캔에서 제외
         const MAX_SEARCH_RESULTS = 5000; // 워크스페이스 텍스트 검색 결과 상한
-        const MAX_FOLDER_FALLBACK_FILES = 200; // 폴더 폴백에서 스캔할 최대 파일 수
+        const MAX_SCOPE_FALLBACK_FILES = 1000; // 프로젝트 범위 폴백에서 스캔할 최대 파일 수
 
         const shouldSkipAsDeclaration = (uri: vscode.Uri, range: vscode.Range, doc: vscode.TextDocument): boolean => {
             if (context.includeDeclaration) {
@@ -645,8 +645,12 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             // Ignore and fall back to cache-based approach.
         }
 
-        // Folder fallback: if workspace search returned no results outside current document,
-        // try scanning the same directory for sibling .gpl files.
+        // 프로젝트 범위 폴백: 워크스페이스 텍스트 검색이 현재 문서 밖의 결과를 못 냈으면
+        // (`workspace.findTextInFiles`는 제안 API라 정식 VS Code에서는 아예 실행되지 않는다)
+        // 소유 프로젝트(.gpr)의 소스 파일을 직접 스캔한다.
+        //
+        // 종전에는 "정의 파일과 같은 폴더의 형제 파일"만 훑어서, `ProjectSource="T1\T2\T2.gpl"`처럼
+        // 하위 폴더에 있는 소스의 참조를 통째로 놓쳤다(2026-08-28 TEST_GPL 확인).
         try {
             const targetUri = targetFilePath ? vscode.Uri.file(targetFilePath) : document.uri;
             const targetInWorkspace = this.isInWorkspace(targetUri);
@@ -658,34 +662,30 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     `hasNonDocumentLocations=${hasNonDocumentLocations}, target=${targetUri.fsPath}, doc=${document.uri.fsPath}`
             );
             
-            // Run folder fallback if no external references were found yet
+            // Run project-scope fallback if no external references were found yet
             if (!token.isCancellationRequested && !hasNonDocumentLocations) {
-                folderFallbackRan = true;
-                const dirFsPath = path.dirname(targetUri.fsPath);
-                const dirUri = vscode.Uri.file(dirFsPath);
-                const entries = await vscode.workspace.fs.readDirectory(dirUri);
+                scopeFallbackRan = true;
+                // .gpo는 컴파일 산출물(바이너리)이라 텍스트 검색 대상이 아니다 — .gpl만.
+                const scope = await resolveProjectFileScope(targetUri.fsPath, {
+                    extensions: ['.gpl'],
+                    maxFiles: MAX_SCOPE_FALLBACK_FILES,
+                });
+                const gplFiles = scope.files;
 
-                // Limit to avoid accidentally scanning huge directories.
-                const gplFiles = entries
-                    .filter(([name, type]) => {
-                        if (type !== vscode.FileType.File) {
-                            return false;
-                        }
-                        const lower = name.toLowerCase();
-                        // Skip .gpo — binary compiled files, useless for text search
-                        return lower.endsWith('.gpl');
-                    })
-                    .slice(0, MAX_FOLDER_FALLBACK_FILES)
-                    .map(([name]) => vscode.Uri.file(path.join(dirFsPath, name)));
+                this.log(
+                    `[References] No external references yet; running project-scope fallback: origin=${scope.origin}` +
+                        `${scope.projectDir ? ` dir=${scope.projectDir}` : ''} (files=${gplFiles.length})` +
+                        (scope.truncated ? ` ⚠ 상한 ${MAX_SCOPE_FALLBACK_FILES}개 초과 — 일부 파일은 스캔하지 않음` : '')
+                );
 
-                this.log(`[References] No external references yet; running folder fallback in: ${dirFsPath} (files=${gplFiles.length})`);
-
+                // 현재 문서는 이미 스캔했다. Windows 경로는 대소문자가 다를 수 있어(.gpr에서 해석한 경로 vs
+                // 편집기 경로) 무시 비교한다 — 다르게 보면 같은 참조가 두 번 나온다.
+                const currentPathLower = document.uri.fsPath.toLowerCase();
                 for (const uri of gplFiles) {
                     if (token.isCancellationRequested) {
                         break;
                     }
-                    // Avoid re-scanning the current document; it was already scanned.
-                    if (uri.fsPath === document.uri.fsPath) {
+                    if (uri.fsPath.toLowerCase() === currentPathLower) {
                         continue;
                     }
 
@@ -698,27 +698,27 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     }
 
                     if (shouldPreferQualifiedOnly && escapedQualifier) {
-                        folderFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedQualifier), {});
+                        scopeFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedQualifier), {});
                         continue;
                     }
 
                     if (shouldAlsoSearchModuleQualified && escapedModule) {
-                        folderFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedModule), {});
+                        scopeFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedModule), {});
                     }
                     if (shouldAlsoSearchClassQualified && escapedClass) {
-                        folderFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedClass), {});
+                        scopeFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedClass), {});
                     }
                     if (isClassMember) {
-                        folderFallbackHits += scanDocumentText(doc, new RegExp(anyQualifierPattern, 'gi'), {});
+                        scopeFallbackHits += scanDocumentText(doc, new RegExp(anyQualifierPattern, 'gi'), {});
                     }
 
                     // Unqualified scans: follow the same restriction rules.
                     if (shouldRestrictUnqualifiedToDefFile && targetFilePath) {
                         if (doc.uri.fsPath === targetFilePath) {
-                            folderFallbackHits += scanDocumentText(doc, unqualifiedRegex, { unqualifiedOnly: true });
+                            scopeFallbackHits += scanDocumentText(doc, unqualifiedRegex, { unqualifiedOnly: true });
                         }
                     } else if (!isClassMember) {
-                        folderFallbackHits += scanDocumentText(doc, unqualifiedRegex, { unqualifiedOnly: false });
+                        scopeFallbackHits += scanDocumentText(doc, unqualifiedRegex, { unqualifiedOnly: false });
                     }
                 }
             }
@@ -727,8 +727,8 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         }
 
         this.log(
-            `[References] results: local=${localHits}, workspace=${workspaceHits}, folderFallback=${folderFallbackHits}, ` +
-                `folderFallbackRan=${folderFallbackRan}, total=${locations.length}`
+            `[References] results: local=${localHits}, workspace=${workspaceHits}, scopeFallback=${scopeFallbackHits}, ` +
+                `scopeFallbackRan=${scopeFallbackRan}, total=${locations.length}`
         );
 
         // Fallback: if workspace scan yields nothing (or was cancelled), use the existing cache-based approach.

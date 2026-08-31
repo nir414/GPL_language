@@ -7,6 +7,9 @@ import {
     WatchdogInput,
     WATCHDOG_CONNECTING_GRACE_MS,
     WATCHDOG_TIMER_OVERDUE_MS,
+    formatRuntimeConsoleLine,
+    LINE_PREFIX_MODES,
+    DEFAULT_LINE_PREFIX,
 } from '../controller/runtimeConsoleGuards';
 
 // ── SlidingWindowCounter ─────────────────────────────────────────────────────
@@ -184,4 +187,36 @@ test('watchdog: RECONNECT_STOPPED 이어도 소켓/타이머가 있으면 그 �
     // 타이머/소켓이 살아 있으면 개입하지 않아야 한다.
     const d = decideWatchdogAction(base({ reconnectStopped: true, hasReconnectTimer: true, reconnectDueAt: 1_000_000 + 1 }));
     assert.strictEqual(d.action, 'none');
+});
+
+// ── formatRuntimeConsoleLine ─────────────────────────────────────────────────
+
+const AT = new Date(2026, 7, 31, 9, 3, 7);
+
+test('formatRuntimeConsoleLine: 기본(time)은 시각만 붙이고 프로젝트명은 생략한다', () => {
+    assert.strictEqual(
+        formatRuntimeConsoleLine('MyProject start', 'MyProject', 'time', AT),
+        '[09:03:07] MyProject start',
+    );
+    assert.strictEqual(DEFAULT_LINE_PREFIX, 'time');
+});
+
+test('formatRuntimeConsoleLine: time+project / none / legacy', () => {
+    assert.strictEqual(
+        formatRuntimeConsoleLine('msg', 'MyProject', 'time+project', AT),
+        '[09:03:07] [MyProject] msg',
+    );
+    assert.strictEqual(formatRuntimeConsoleLine('msg', 'MyProject', 'none', AT), 'msg');
+    assert.strictEqual(formatRuntimeConsoleLine('msg', 'MyProject', 'legacy', AT), '[RT] [MyProject] msg');
+});
+
+test('formatRuntimeConsoleLine: 프로젝트명이 없으면 빈 대괄호를 남기지 않는다', () => {
+    assert.strictEqual(formatRuntimeConsoleLine('msg', '', 'time+project', AT), '[09:03:07] msg');
+    assert.strictEqual(formatRuntimeConsoleLine('msg', '', 'legacy', AT), '[RT] msg');
+});
+
+test('formatRuntimeConsoleLine: 모드 목록의 모든 값이 메시지 원문을 보존한다', () => {
+    for (const mode of LINE_PREFIX_MODES) {
+        assert.ok(formatRuntimeConsoleLine('payload text', 'P', mode, AT).endsWith('payload text'), mode);
+    }
 });

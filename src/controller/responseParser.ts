@@ -533,6 +533,8 @@ export interface GprInfo {
     projectName: string;
     projectStart: string;
     sources: string[];
+    /** `ProjectLibrary="…"` 값(원문 그대로, 0..N). 경로 해석은 `project/projectSources.ts`. */
+    libraries: string[];
 }
 
 /**
@@ -542,6 +544,7 @@ export function parseGpr(text: string): GprInfo {
     let projectName = '';
     let projectStart = '';
     const sources: string[] = [];
+    const libraries: string[] = [];
 
     const nameMatch = text.match(/ProjectName\s*=\s*"([^"]+)"/i);
     if (nameMatch) { projectName = nameMatch[1]; }
@@ -555,7 +558,13 @@ export function parseGpr(text: string): GprInfo {
         sources.push(m[1].trim());
     }
 
-    return { projectName, projectStart, sources };
+    // ProjectLibrary="MyProject\MyLibrary" — 다른 GPL 프로젝트를 라이브러리로 참조하는 줄(2026-08-31 실측).
+    const libRe = /ProjectLibrary\s*=\s*"([^"]+)"/gi;
+    while ((m = libRe.exec(text)) !== null) {
+        libraries.push(m[1].trim());
+    }
+
+    return { projectName, projectStart, sources, libraries };
 }
 
 // ─── Project 선택 (디버그 대상 projectName 결정) ─────────────
@@ -712,21 +721,34 @@ export interface SourceCandidatePick {
  * 파일명(베이스네임)이 여러 로컬 파일과 충돌한다. 기존에는 스캔 순서상 마지막 파일이
  * 조용히 이겨 정지 시 엉뚱한 폴더의 파일이 열렸다.
  *
- * 우선순위: ① 디버그 대상 프로젝트 폴더(Project.gpr 위치) 하위 → ② 더 얕은 경로
- * (사본은 대개 하위/별도 폴더에 있음) → ③ 경로 사전순(결정적).
+ * 우선순위: ① 대상 프로젝트 `.gpr`의 `ProjectSource` 목록에 실제로 들어 있는 파일 →
+ * ② 대상 프로젝트 폴더(.gpr 위치) 하위 → ③ 더 얕은 경로(사본은 대개 하위/별도 폴더에 있음) →
+ * ④ 경로 사전순(결정적).
+ *
+ * ①이 필요한 이유: 제어기는 파일명(basename)만 준다. 프로젝트가 하위 폴더로 나뉜 구조
+ * (`ProjectSource="T1\T2\T2.gpl"`)에서 같은 이름의 파일이 여러 폴더에 있으면 "얕은 경로 우선"만으로는
+ * 얕은 쪽의 무관한 파일이 이길 수 있다 — 컴파일 집합(.gpr 목록)이 진짜 기준이다.
  */
-export function pickSourceCandidate(candidates: string[], projectDirs: string[]): SourceCandidatePick | undefined {
+export function pickSourceCandidate(
+    candidates: string[],
+    projectDirs: string[],
+    projectSourcePaths: readonly string[] = [],
+): SourceCandidatePick | undefined {
     if (candidates.length === 0) { return undefined; }
     if (candidates.length === 1) { return { path: candidates[0], ambiguous: [] }; }
 
+    const listed = new Set(projectSourcePaths.map(p => path.resolve(p).toLowerCase()));
+    const inGpr = listed.size > 0
+        ? candidates.filter(p => listed.has(path.resolve(p).toLowerCase()))
+        : [];
     const inProject = candidates.filter(p => projectDirs.some(d => isPathUnder(p, d)));
-    const pool = inProject.length > 0 ? inProject : candidates;
+    const pool = inGpr.length > 0 ? inGpr : (inProject.length > 0 ? inProject : candidates);
 
     const depth = (p: string) => path.resolve(p).split(/[\\/]/).length;
     const sorted = [...pool].sort((a, b) => depth(a) - depth(b) || a.localeCompare(b));
     return {
         path: sorted[0],
-        // 프로젝트 폴더로 유일하게 좁혀졌으면 확정적 — 그 외(후보 0개 또는 2개 이상)는 모호.
+        // 하나로 좁혀졌으면 확정적 — 후보가 2개 이상 남으면 모호해서 호출자가 경고를 남긴다.
         ambiguous: pool.length > 1 ? sorted.slice(1) : [],
     };
 }
@@ -934,6 +956,20 @@ export function parseVariable(text: string): VariableInfo[] {
 }
 
 // ─── Runtime Console ─────────────────────────────────────
+
+/**
+ * 1403 수신 바이트를 잃지 않고 문자열로 다루기 위한 규약(2026-08-28, GDE 캡처 판독):
+ * 소켓 chunk 는 `latin1`(바이트 1:1)로 문자열화해 프레임/청크 경계를 찾고, **완성된 메시지 단위**에서만
+ * 이 함수로 UTF-8 디코딩한다. 제어기는 콘솔 텍스트를 UTF-8로 보내며(한글 확인) 128바이트 청크 경계나
+ * TCP 세그먼트 경계가 다바이트 문자 중간에 걸릴 수 있어, 청크를 먼저 이어 붙인 뒤 디코딩해야 한다.
+ * (종전 `toString('ascii')`는 상위 비트를 버려 비ASCII 를 복구 불가능하게 망가뜨렸다.)
+ */
+export function latin1ToUtf8(latin1Text: string): string {
+    if (!latin1Text) { return latin1Text; }
+    // 모두 7비트면 변환 불필요 (빠른 경로)
+    if (!/[-ÿ]/.test(latin1Text)) { return latin1Text; }
+    return Buffer.from(latin1Text, 'latin1').toString('utf8');
+}
 
 /**
  * 포트 1403에서 수신되는 런타임 콘솔 라인 정규화.

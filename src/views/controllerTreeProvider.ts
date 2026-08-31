@@ -4,7 +4,8 @@
  */
 
 import * as vscode from 'vscode';
-import { trySendCommand, getControllerConfig, getTrafficLogOptions, getConnectionStats } from '../controller/controllerConnection';
+import { trySendCommand, getControllerConfig, getTrafficLogOptions, getConnectionStats, probeControllerCommand } from '../controller/controllerConnection';
+import type { ProbeOutcome } from '../controller/controllerConnection';
 import { formatRuntimeConsoleStateLabel } from '../controller/runtimeConsolePresentation';
 import {
 	parseThreadList,
@@ -67,6 +68,8 @@ class SectionNode {
 	readonly type = 'section' as const;
 	children: ControllerNode[] = [];
 	collapsed = false;
+	/** 섹션이 대표하는 원격 경로(FTP 섹션만). 섹션 헤더 명령이 대상 경로를 화면과 동일하게 받도록 노출한다. */
+	remotePath?: string;
 	constructor(
 		public readonly id: string,
 		public label: string,
@@ -103,8 +106,6 @@ const DEFAULT_THREAD_POLL_MS = 5000;
 const IDLE_POLL_MULTIPLIER = 3;
 /** 상세(ErrorLog/Show Break) 폴링 간격 배수 */
 const DETAIL_POLL_MULTIPLIER = 2;
-/** Show Thread 연속 실패 이 횟수면 연결 유실로 판정 */
-const CONNECTION_LOSS_FAILURE_THRESHOLD = 3;
 /**
  * 연결 확립 시 FTP 목록 자동 재조회 억제 간격(5분). 마지막 성공 조회가 이 시간 이내이고 캐시가 있으면
  * setConnected(true)에서 재조회하지 않는다(GitHub #22 제안 7 — 연결 플랩마다 /GPL·Flash를 재조회해
@@ -122,9 +123,13 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private _refreshFtpInFlight = false;
 	private _refreshSystemInFlight = false;
 
-	/** 연결 유실 감지 시 발생 (3회 연속 실패) */
-	private readonly _onDidLoseConnection = new vscode.EventEmitter<void>();
-	readonly onDidLoseConnection = this._onDidLoseConnection.event;
+	/**
+	 * Show Thread 폴(프로브) 결과 — 성공/실패 종류. 유실 판정은 트리가 하지 않고 extension.ts 의
+	 * ConnectionHealthMonitor(controller/connectionHealth.ts)가 한다(2026-08-28: 종전 "3회 연속 실패" 자체 판정을
+	 * 이관 — 디버그 중 트리 폴링이 꺼져도 어댑터 폴·재프로브로 같은 판정이 이어지게).
+	 */
+	private readonly _onDidProbe = new vscode.EventEmitter<ProbeOutcome>();
+	readonly onDidProbe = this._onDidProbe.event;
 
 	/**
 	 * 일반 폴링에서 스레드가 실행→정지(Paused/Break/Error) 전이하거나 정지 상태로 새로
@@ -154,18 +159,11 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private lastSystemInfoRefreshAt = 0;
 	/** 시스템 정보 캐시의 제어기 IP */
 	private systemInfoCacheKey = '';
-	/**
-	 * doRefresh의 연결 유실 판정이 onDidLoseConnection을 발화하는 동안만 true. extension.ts의 핸들러가
-	 * 옵션 없이 setConnected(false)를 부르므로, 이 플래그로 '유실'과 '명시적 disconnect'를 구분해
-	 * 유실일 때는 FTP/시스템 정보 캐시를 보존한다(extension.ts 수정 없이, #22).
-	 */
-	private _lossNotificationInProgress = false;
 	private pollTimer: ReturnType<typeof setTimeout> | null = null;
 	/** 폴링 루프 세대 토큰 — stop/start/디버그 진입 시 증가시켜 낡은 콜백의 재스케줄을 차단 */
 	private pollGeneration = 0;
 	/** 진행 중인 refresh 본문 promise — 강제 갱신이 완료를 기다릴 수 있게 보관 */
 	private _refreshPromise: Promise<void> | null = null;
-	private consecutiveFailures = 0;
 	private lastDetailPollAt = 0;
 	/** 연결 후 Show Thread 목록을 한 번이라도 수신했는지 — 첫 목록은 정지 전이 비교에서 제외 */
 	private hasReceivedThreadList = false;
@@ -229,13 +227,11 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 * - 연결 시 FTP 목록·시스템 정보는 **조건부** 재조회(refreshFtpIfStale/refreshSystemInfoIfStale):
 	 *   유실→재연결 플랩마다 전부 재조회하던 것을, 5분 이내 성공 캐시가 있으면 건너뛴다(GitHub #22 제안 7).
 	 *   쓰레드/에러/BP 폴링(refresh)은 종전대로 즉시 시작한다.
-	 * - 해제 시 `reason`이 'lost'(연결 유실)면 FTP/시스템 정보 캐시를 보존하고, 'disconnect'(명시적 해제,
-	 *   기본값)면 종전처럼 모두 비운다. extension.ts는 옵션 없이 부르므로, 유실 경로는 doRefresh가
-	 *   `_lossNotificationInProgress`로 내부 표시해 구분한다.
+	 * - 해제 시 `reason`이 'lost'(연결 유실 — extension.ts 의 연결 건강 모니터가 확정)면 FTP/시스템 정보 캐시를
+	 *   보존하고, 'disconnect'(명시적 해제, 기본값)면 종전처럼 모두 비운다.
 	 */
 	setConnected(connected: boolean, options?: { refresh?: boolean; reason?: 'disconnect' | 'lost' }): void {
 		this._connected = connected;
-		this.consecutiveFailures = 0;
 		this.lastDetailPollAt = 0;
 		this.hasReceivedThreadList = false; // 새 연결마다 정지 전이 비교 기준을 다시 잡는다
 		if (connected) {
@@ -247,7 +243,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				this.startPolling();
 			}
 		} else {
-			const reason = options?.reason ?? (this._lossNotificationInProgress ? 'lost' : 'disconnect');
+			const reason = options?.reason ?? 'disconnect';
 			this.stopPolling();
 			this.clearCachedControllerState({ keepOnDemandCaches: reason === 'lost' });
 			this._onDidChangeTreeData.fire(undefined);
@@ -272,6 +268,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			: (lastLabel ? `${entries.length}개 · 마지막 조회 ${lastLabel}` : `${entries.length}개`);
 		const sec = new SectionNode(id, title, icon, description,
 			this.buildOnDemandCacheTooltip(this.lastFtpRefreshAt, FTP_AUTO_REFRESH_MIN_INTERVAL_MS));
+		sec.remotePath = basePath;
 		if (error) {
 			sec.children = [new InfoNode(error, 'error')];
 		} else if (entries.length === 0) {
@@ -381,6 +378,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 * 디버그 세션 시작 시 호출. 독립 폴링을 중단하고 debugBridge 이벤트를 구독하여
 	 * 디버그 세션의 Show Thread 결과로 쓰레드 섹션을 실시간 갱신한다.
 	 * TCP 추가 호출 없이 사이드바 쓰레드 뷰가 살아 있게 된다.
+	 * (이 동안 연결 유실 프로브도 어댑터 폴이 대신 공급한다 — debugBridge.onDebugProbeResult.)
 	 */
 	enterDebugMode(): void {
 		this.stopPolling();
@@ -439,42 +437,28 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 		// 경량 주기 폴링: 기본은 경량 Show Thread, 수동 전체 새로고침(forceDetails)일 때만
 		// -stack 상세형으로 thread별 timing까지 받는다(고빈도 폴 페이로드 경량 유지).
-		const threadResp = await trySendCommand(forceDetails ? SHOW_THREAD_LIST_STACK_CMD : SHOW_THREAD_LIST_CMD);
+		// 프로브 타임아웃(gpl.controller.connectionProbeTimeoutMs, 기본 8 s)으로 보내고 결과를 연결 건강 모니터에
+		// 보고한다(onDidProbe). 성공 기준은 `<STATUS>` 존재 — 소켓 종료로 잘린 부분 응답은 실패로 친다.
+		const probe = await probeControllerCommand(forceDetails ? SHOW_THREAD_LIST_STACK_CMD : SHOW_THREAD_LIST_CMD);
 		// 연결 해제(disconnect/유실) 후 도착한 늦은 응답 가드 — 해제 상태에서
 		// this.threads 재할당이나 후속 명령(ErrorLog/Show Break) 전송을 막는다.
 		if (!this._connected) { return; }
 
-		// 연결 유실 감지: 핵심 상태(Show Thread) 3회 연속 실패 시 자동 해제
-		if (threadResp === null) {
-			this.consecutiveFailures++;
-			if (this.consecutiveFailures >= CONNECTION_LOSS_FAILURE_THRESHOLD) {
-				this._connected = false;
-				this.stopPolling();
-				// 유실 시 FTP/시스템 정보 캐시는 보존한다(재연결 시 억제 판정용, #22).
-				// 명시적 disconnect 명령은 setConnected(false)가 종전처럼 비운다.
-				this.clearCachedControllerState({ keepOnDemandCaches: true });
-				this._onDidChangeTreeData.fire(undefined);
-				// 핸들러(extension.ts)가 이 이벤트 안에서 동기적으로 setConnected(false)를 옵션 없이 부른다 —
-				// 그 호출을 '유실'로 해석시켜 캐시 보존을 유지한다.
-				this._lossNotificationInProgress = true;
-				try {
-					this._onDidLoseConnection.fire();
-				} finally {
-					this._lossNotificationInProgress = false;
-				}
-				return;
-			}
-		} else {
-			this.consecutiveFailures = 0;
-			const nextThreads = parseThreadList(threadResp);
-			// 첫 수신 목록은 비교 기준이 없으므로 전이 감지에서 제외한다
-			// (연결 직후 이미 정지돼 있던 스레드로 점프 방지).
-			if (this.hasReceivedThreadList) {
-				this.firePauseTransitions(this.threads, nextThreads);
-			}
-			this.hasReceivedThreadList = true;
-			this.threads = nextThreads;
+		this._onDidProbe.fire(probe);
+		if (!probe.ok) {
+			// 실패하면 상세 폴(ErrorLog/Show Break)을 보내지 않는다 — 종전엔 실패 뒤에도 그대로 보내 응답 없는
+			// 제어기에 타임아웃 2회(각 10 s)를 더 기다렸고 그만큼 유실 감지가 늦어졌다(2026-08-28 검토).
+			// 유실 판정·재프로브는 모니터(extension.ts)가 한다; 폴링은 연결 상태가 바뀔 때까지 정규 간격으로 계속된다.
+			return;
 		}
+		const nextThreads = parseThreadList(probe.raw);
+		// 첫 수신 목록은 비교 기준이 없으므로 전이 감지에서 제외한다
+		// (연결 직후 이미 정지돼 있던 스레드로 점프 방지).
+		if (this.hasReceivedThreadList) {
+			this.firePauseTransitions(this.threads, nextThreads);
+		}
+		this.hasReceivedThreadList = true;
+		this.threads = nextThreads;
 
 		const now = Date.now();
 		const baseInterval = this.baseThreadPollIntervalMs();
@@ -693,7 +677,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this._debugModeSubscription = undefined;
 		this.stopPolling();
 		this._onDidChangeTreeData.dispose();
-		this._onDidLoseConnection.dispose();
+		this._onDidProbe.dispose();
 		this._onDidThreadPause.dispose();
 	}
 
@@ -1427,6 +1411,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		item.description = node.description;
 		if (node.tooltip) { item.tooltip = node.tooltip; }
 		item.contextValue = `section-${node.id}`;
+		// 섹션 헤더 명령(예: FTP 폴더 비우기)이 대상 경로를 인자로 받도록 노드의 원격 경로를 붙여 준다.
+		(item as any).remotePath = node.remotePath;
 		return item;
 	}
 

@@ -1271,11 +1271,22 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/updateerrorcode.htm'
     },
     // ── Thread Class ──
+    // 출처: GPL_Dictionary/Thread/ 디렉터리의 18개 페이지를 전수 확인(2026-08-28).
+    // 클래스 개요와 `New Thread(...)` 생성자는 아래 GPL_CLASS_DOCS의 'Thread' 항목에 있다
+    // (생성자는 `Thread.New` 형태로 호출할 수 없으므로 멤버 목록에 넣지 않는다).
     {
         name: 'Thread.Abort',
         kind: 'method',
         signature: 'Thread.Abort()',
-        summary: '스레드의 실행을 즉시 중지하고 재개할 수 없도록 하며, 처음부터 다시 시작해야 합니다.',
+        usage: 'thread_object.Abort()',
+        summary: '스레드의 실행을 즉시 중지하고 재개할 수 없도록 하며, 다시 실행하려면 Start로 처음부터 시작해야 합니다.',
+        details: [
+            '인스턴스 메서드입니다. 콘솔 `Stop` 명령과 비슷하게 스레드를 종료하고 내부 자원을 해제합니다.',
+            '',
+            '- 중단된 스레드는 재개할 수 없고 `Thread.Start`로만 다시 시작할 수 있습니다.',
+            '- 나중에 재개할 여지를 남기려면 Abort 대신 `Thread.Suspend`를 사용합니다.',
+            '- 스레드가 자기 자신에게 호출하면 정상적인 자원 해제 없이 오류로 종료됩니다.'
+        ].join('\n'),
         category: 'Thread Class',
         insertSnippet: 'Thread.Abort()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/abort.htm'
@@ -1284,7 +1295,14 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.Argument',
         kind: 'property',
         signature: 'Thread.Argument',
+        usage: 'thread_object.Argument = <numeric_value>   /   ... = thread_object.Argument',
         summary: '스레드의 매개변수로 사용할 수 있는 숫자 값을 설정하거나 가져옵니다.',
+        details: [
+            '숫자형 · 읽기/쓰기.',
+            '',
+            '실행 전에 스레드에 숫자 값을 연결해 두면 스레드가 그 값을 매개변수처럼 읽어 쓸 수 있습니다',
+            '(예: 그 스레드가 사용할 데이터를 배열에서 꺼내는 인덱스).'
+        ].join('\n'),
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/argument.htm'
     },
@@ -1292,7 +1310,9 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.CurrentThread',
         kind: 'method',
         signature: 'Thread.CurrentThread()',
+        usage: 'thread_object = Thread.CurrentThread()',
         summary: '현재 실행 중인 스레드에 해당하는 Thread 객체를 반환합니다.',
+        details: 'Shared 메서드입니다. Thread 객체를 미리 확보해 두지 않아도 현재 실행 중인 스레드를 일시 중단하거나 중단할 수 있습니다.',
         category: 'Thread Class',
         insertSnippet: 'Thread.CurrentThread()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/currentthread.htm'
@@ -1301,7 +1321,17 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.Join',
         kind: 'method',
         signature: 'Thread.Join(millisecond_timeout)',
+        usage: 'status = thread_object.Join(millisecond_timeout)',
         summary: '스레드가 유휴 상태가 될 때까지 제한 시간을 두고 대기합니다.',
+        details: [
+            '| 반환값 | 의미 |',
+            '| --- | --- |',
+            '| -1 (True) | 스레드가 유휴 상태이거나 존재하지 않음 |',
+            '| 0 (False) | 제한 시간이 지났음(아직 유휴 상태가 아님) |',
+            '',
+            '`millisecond_timeout`이 0이면 대기 없이 상태만 확인하고, 음수(-1)면 무한정 대기합니다.',
+            '대상 스레드가 일시 중단되거나 오류로 멈춰도 계속 기다리며, 유휴 상태가 되거나 삭제될 때 반환합니다.'
+        ].join('\n'),
         category: 'Thread Class',
         insertSnippet: 'Thread.Join(${1:millisecond_timeout})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/join.htm'
@@ -1310,7 +1340,9 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.Name',
         kind: 'property',
         signature: 'Thread.Name',
+        usage: 'name_string = thread_object.Name',
         summary: 'Thread 객체와 관련된 스레드의 이름을 String 값으로 반환합니다.',
+        details: 'String · 읽기 전용. Thread 객체를 생성할 때 생성자에서 지정한 스레드 이름입니다.',
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/name.htm'
     },
@@ -1318,7 +1350,9 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.Project',
         kind: 'property',
         signature: 'Thread.Project',
+        usage: 'name_string = thread_object.Project',
         summary: 'Thread 객체와 관련된 프로젝트의 이름을 String 값으로 반환합니다.',
+        details: 'String · 읽기 전용. Thread 객체를 생성할 때 생성자에서 지정한 프로젝트 이름입니다.',
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/project.htm'
     },
@@ -1326,7 +1360,13 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.Resume',
         kind: 'method',
         signature: 'Thread.Resume()',
+        usage: 'thread_object.Resume()',
         summary: '이전에 일시 중단된 스레드의 실행을 재개합니다.',
+        details: [
+            '인스턴스 메서드입니다. `Thread.Suspend`, 브레이크포인트, 콘솔 `Break` 명령으로 멈춘 스레드를 다시 실행합니다.',
+            '',
+            '일시 중단 상태가 아니면 아무 일도 하지 않습니다.'
+        ].join('\n'),
         category: 'Thread Class',
         insertSnippet: 'Thread.Resume()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/resume.htm'
@@ -1335,7 +1375,22 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.Schedule',
         kind: 'method',
         signature: 'Thread.Schedule(priority, period, high_priority_time, phase)',
+        usage: 'Thread.Schedule(priority, period, high_priority_time, phase)',
         summary: '현재 스레드의 실행 우선순위와 스레드 스케줄링 알고리즘을 변경합니다.',
+        details: [
+            'Shared 메서드입니다. 특정 Thread 객체가 아니라 **현재 스레드**에 적용되며, POSIX sporadic 스케줄링으로',
+            '주기적 실행의 규칙성을 높입니다. period 간격마다(phase만큼 어긋나서) 우선순위가 high_priority_time 동안',
+            '올라갔다가 원래 우선순위로 돌아옵니다.',
+            '',
+            '| 매개변수 | 형 | 값 |',
+            '| --- | --- | --- |',
+            '| priority | Integer | 0~16. 0이면 일반 사용자 스레드 우선순위(기본 스케줄링), 0 초과면 높은 우선순위와 대체 스케줄링 |',
+            '| period | Double | 반복 주기(ms). 0.125의 2의 거듭제곱 배수이며 0.125보다 커야 함(0.250, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0 …) |',
+            '| high_priority_time | Double | 주기마다 높은 우선순위로 실행할 시간(ms). 0 초과 period 미만, 0.125 단위로 양자화 |',
+            '| phase | Double | 높은 우선순위 구간이 시작되는 위상 오프셋(ms). 0 이상 period 미만, 0.125 단위로 양자화 |',
+            '',
+            'priority가 0이면 나머지 세 매개변수는 무시됩니다.'
+        ].join('\n'),
         category: 'Thread Class',
         insertSnippet: 'Thread.Schedule(${1:priority}, ${2:period}, ${3:high_priority_time}, ${4:phase})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/schedule.htm'
@@ -1344,16 +1399,54 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.SendEvent',
         kind: 'method',
         signature: 'Thread.SendEvent(event_mask)',
+        usage: 'thread_object.SendEvent(event_mask)',
         summary: '특정 스레드에 중요한 전환이 발생했음을 알리는 이벤트를 보냅니다.',
+        details: [
+            '이벤트는 GPL 프로젝트의 스레드 사이에서 쓰는 동기화 메시지입니다. 전역 변수 폴링과 달리 대기 중인',
+            '스레드가 CPU를 거의 쓰지 않고 반응 지연도 낮습니다.',
+            '',
+            '`event_mask`의 각 비트가 이벤트 하나에 대응합니다. 비트 0(마스크 `&H0001`)이 이벤트 1이며,',
+            '이벤트는 최대 16개이므로 `event_mask`의 최대값은 `&HFFFF`입니다. 여러 이벤트를 한 번에 보낼 수 있습니다.'
+        ].join('\n'),
         category: 'Thread Class',
         insertSnippet: 'Thread.SendEvent(${1:event_mask})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/sendevent.htm'
     },
     {
+        name: 'Thread.Sleep',
+        kind: 'method',
+        signature: 'Thread.Sleep(milliseconds)',
+        usage: 'Thread.Sleep(milliseconds)',
+        summary: '현재 스레드를 지정한 시간(밀리초) 동안 대기시킵니다.',
+        details: [
+            'Shared 메서드입니다. Thread 객체를 통해 호출하더라도 그 객체가 가리키는 스레드와 무관하게',
+            '**현재 스레드**가 대기합니다.',
+            '',
+            '- 0이면 다른 스레드에 실행 기회를 주되, 실행 대기 중인 스레드가 없으면 즉시 재개합니다.',
+            '- 음수면 무한정 대기하며 `Thread.Suspend`를 호출한 것과 같습니다.',
+            '- 소수점 값을 쓸 수 있으나 Precise 제어기의 최소 대기 단위인 0.125 ms 배수로 올림됩니다.',
+            '- 우선순위가 높은 시스템 스레드의 영향으로 밀리초 수준의 지터가 생기므로 시간이 엄격한 주기에는',
+            '  적합하지 않습니다. 정밀한 주기 실행에는 `Thread.Schedule`을 사용합니다.',
+            '- 대기 중인 스레드가 일시 중단되었다가 재개되면 대기 시간은 재개 시점부터 다시 시작됩니다.'
+        ].join('\n'),
+        category: 'Thread Class',
+        insertSnippet: 'Thread.Sleep(${1:milliseconds})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/sleep.htm'
+    },
+    {
         name: 'Thread.Start',
         kind: 'method',
         signature: 'Thread.Start()',
+        usage: 'thread_object.Start()',
         summary: '독립적인 스레드의 실행을 시작합니다.',
+        details: [
+            'Thread 객체에 연결된 프로시저를 새 스레드로 실행합니다.',
+            '',
+            '- 이미 실행 중이면 아무 일도 하지 않고 반환합니다.',
+            '- 일시 중단된 스레드를 다시 시작하면 실행 스택을 지운 뒤 프로시저를 처음부터 실행합니다.',
+            '- `Thread.Abort`로 중단된 스레드는 이 메서드로만 다시 시작할 수 있습니다.',
+            '- 연결된 프로젝트나 프로시저가 없거나 컴파일 오류가 있으면 오류가 발생합니다.'
+        ].join('\n'),
         category: 'Thread Class',
         insertSnippet: 'Thread.Start()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/start.htm'
@@ -1362,7 +1455,9 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.StartProcedure',
         kind: 'property',
         signature: 'Thread.StartProcedure',
+        usage: 'name_string = thread_object.StartProcedure',
         summary: 'Thread 객체와 관련된 시작 프로시저의 이름을 String 값으로 반환합니다.',
+        details: 'String · 읽기 전용. Thread 객체를 생성할 때 생성자에서 지정한 시작 프로시저 이름입니다.',
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/startprocedure.htm'
     },
@@ -1370,16 +1465,53 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.Suspend',
         kind: 'method',
         signature: 'Thread.Suspend()',
+        usage: 'thread_object.Suspend()',
         summary: '독립적인 스레드의 실행을 일시 중단합니다.',
+        details: [
+            '현재 실행 중인 GPL 명령이 끝나는 시점에 스레드를 멈춥니다. `Thread.Resume` 또는 콘솔 `Continue`',
+            '명령으로 재개할 수 있습니다.',
+            '',
+            '스레드가 실제로 멈출 때까지 기다리지 않으므로, 정지 여부는 `Thread.ThreadState`로 확인합니다.'
+        ].join('\n'),
         category: 'Thread Class',
         insertSnippet: 'Thread.Suspend()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/suspend.htm'
     },
     {
+        name: 'Thread.TestAndSet',
+        kind: 'method',
+        signature: 'Thread.TestAndSet(variable, new_value)',
+        usage: 'old_value = Thread.TestAndSet(variable, new_value)',
+        summary: '숫자 변수의 값을 원자적으로 읽고 새 값을 써서 스레드 동기화에 사용합니다.',
+        details: [
+            'Shared 메서드입니다. `variable`의 이전 값을 읽고 `new_value`를 쓰는 동작이 **하나의 원자적 연산**으로',
+            '수행되므로, 읽는 시점과 쓰는 시점 사이에 다른 스레드가 값을 바꿀 수 없습니다.',
+            '',
+            '여러 스레드가 공유하는 자료 구조를 한 스레드가 수정하는 동안 다른 스레드가 접근해 값이 깨지는 일을',
+            '막는 세마포어·락 같은 동기화 수단을 만들 때 사용합니다.'
+        ].join('\n'),
+        category: 'Thread Class',
+        insertSnippet: 'Thread.TestAndSet(${1:variable}, ${2:new_value})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/testandset.htm'
+    },
+    {
         name: 'Thread.ThreadState',
         kind: 'property',
         signature: 'Thread.ThreadState',
+        usage: 'state_var = thread_object.ThreadState',
         summary: 'Thread 객체가 지정한 스레드의 실행 상태를 나타내는 숫자 값을 가져옵니다.',
+        details: [
+            '숫자형 · 읽기 전용.',
+            '',
+            '| 값 | 상태 |',
+            '| --- | --- |',
+            '| -1 | 스레드가 존재하지 않음(시작한 적이 없거나 Abort로 정지·삭제됨) |',
+            '| 0 | 정상적으로 실행을 마친 유휴 상태. 재개는 불가하지만 Start로 다시 시작할 수 있음 |',
+            '| 1 | 실행을 정지하는 중(과도 상태) |',
+            '| 2 | 정상적으로 실행 중 |',
+            '| 3 | 오류 없이 일시 중지됨. 재개 가능 |',
+            '| 4 | 오류와 함께 일시 중지됨. 재개하면 오류가 발생한 명령을 다시 시도함 |'
+        ].join('\n'),
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/threadstate.htm'
     },
@@ -1387,7 +1519,20 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Thread.WaitEvent',
         kind: 'method',
         signature: 'Thread.WaitEvent(event_mask, time_out)',
+        usage: 'received_events = Thread.WaitEvent(event_mask, time_out)',
         summary: '현재 스레드가 수신한 이벤트를 대기, 검사 및 삭제하고 수신된 이벤트를 나타내는 마스크를 반환합니다.',
+        details: [
+            'Shared 메서드입니다. **현재 스레드**가 받은 이벤트를 대상으로 하며, 반환값은 수신한 이벤트의',
+            '비트마스크입니다. 비트 0(마스크 `&H0001`)이 이벤트 1이고, 이벤트는 최대 16개이므로 `event_mask`의',
+            '최대값은 `&HFFFF`입니다. `time_out`은 밀리초 단위입니다.',
+            '',
+            '| event_mask | time_out | 동작 |',
+            '| --- | --- | --- |',
+            '| 0 | 무관 | 대기·삭제 없이 그때까지 받은 모든 이벤트의 마스크를 반환 |',
+            '| ≠ 0 | 0 | 대기 없이 일치하는 이벤트를 지우고 마스크를 반환 |',
+            '| ≠ 0 | > 0 | 일치하는 이벤트를 기다렸다가 지우고 마스크를 반환. 제한 시간이 지나면 0을 반환 |',
+            '| ≠ 0 | < 0 | 일치하는 이벤트를 무한정 기다렸다가 지우고 마스크를 반환 |'
+        ].join('\n'),
         category: 'Thread Class',
         insertSnippet: 'Thread.WaitEvent(${1:event_mask}, ${2:time_out})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/waitevent.htm'
@@ -2398,4 +2543,48 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         insertSnippet: 'UdpClient.Close()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/UdpClient/close_udpc.htm'
     },
+];
+/**
+ * 내장 클래스 자체(멤버가 아닌 클래스 이름)에 대한 개요 문서.
+ *
+ * GPL Dictionary의 클래스 소개 페이지(예: Thread/threadintro.htm)에서 확인한 내용으로,
+ * 호버에서 `Thread` 같은 클래스 이름 위에 표시한다. 생성자는 `New Thread(...)` 형태로만
+ * 쓸 수 있어 `Class.Member` 멤버 목록에 넣을 수 없으므로 여기에 둔다.
+ */
+export interface GPLClassDoc {
+    /** 클래스 이름 (GPL_DICTIONARY_ENTRIES의 `Class.Member` 접두부와 같은 이름). */
+    name: string;
+    summary: string;
+    /** 값 표·매개변수 설명 등 추가 설명(마크다운). */
+    details?: string;
+    /** 생성자 구문. 없으면 인스턴스를 만들지 않는 정적 클래스. */
+    constructorSignature?: string;
+    constructorSummary?: string;
+    sourceUrl: string;
+}
+
+export const GPL_CLASS_DOCS: GPLClassDoc[] = [
+    {
+        name: 'Thread',
+        summary: '독립적인 스레드를 시작·정지하고 상태를 감시하는 클래스입니다. GPL 시스템은 각자 실행 스택을 가진 최대 64개의 스레드를 동시에 지원합니다.',
+        details: [
+            '각 스레드는 최대 1밀리초 동안 실행된 뒤 다음 실행 대기 스레드로 제어가 넘어갑니다.',
+            '프로젝트 설정에서 지정한 main 프로시저가 먼저 실행되고, 그 안에서 다른 프로시저를 별도 스레드로 띄울 수 있습니다.',
+            '',
+            '**생성자 매개변수**',
+            '',
+            '| 매개변수 | 필수 | 설명 |',
+            '| --- | --- | --- |',
+            '| procedure_name | 필수 | 스레드가 실행할 프로시저 이름(String). Public이어야 하며, 클래스 안에 있으면 Public Shared여야 하고 `클래스명.프로시저명`으로 씁니다 |',
+            '| project_name | 선택 | 프로시저가 들어 있는 프로젝트 이름(String). 생략하면 현재 프로젝트 |',
+            '| thread_name | 선택 | 생성할 스레드의 이름(String). 생략하면 procedure_name |',
+            '| stack_size | 선택 | 이 스레드에 할당할 스택 크기(KB). 0이거나 생략하면 프로젝트 기본값 |',
+            '',
+            '생성자는 이름만 기록할 뿐 실제 스레드를 만들지 않으므로, 프로시저나 프로젝트가 없어도 이 시점에는',
+            '오류가 나지 않고 `Start`를 실행할 때 드러납니다.'
+        ].join('\n'),
+        constructorSignature: 'New Thread(procedure_name, project_name, thread_name, stack_size)',
+        constructorSummary: '프로시저와 연결된 Thread 객체를 만듭니다. 이름만 기록하며 실제 스레드 생성은 Start에서 이뤄집니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/threadintro.htm'
+    }
 ];

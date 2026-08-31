@@ -4,6 +4,8 @@ import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
 import { extractBaseObjectName, escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix, getStringLiteralContentAt } from '../language/cursorExpression';
 import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
+import { findGplBuiltinMember, isGplBuiltinClassName } from '../gplBuiltins';
+import { ownedByHolder, ReceiverLookup } from '../language/receiverType';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
@@ -204,6 +206,52 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
     /** 로그 표시용 파일명(경로의 마지막 요소). 인덱스 경로가 Windows 구분자 기준이라 '\\'만 사용. */
     private fileNameOf(filePath: string): string {
         return filePath.split('\\').pop() || filePath;
+    }
+
+    /**
+     * 이 이름의 사용자 정의 클래스/모듈이 인덱스에 있는지.
+     *
+     * 내장(GPL Dictionary) 클래스와 이름이 겹칠 때 사용자 정의를 우선하고
+     * (예: 사용자가 직접 만든 `Location` 클래스), 멤버를 못 찾았을 때
+     * "컨테이너가 확실히 존재한다"를 근거로 전역 폴백을 차단하는 데 쓴다.
+     */
+    private hasUserContainerNamed(name: string): boolean {
+        if (!name) {
+            return false;
+        }
+        return this.symbolCache.findAllByName(name).some(s => s.kind === 'class' || s.kind === 'module');
+    }
+
+    /**
+     * 멤버 해석이 실패했을 때의 마지막 단계.
+     *
+     * findMemberCandidatesInModule/Class는 종류(kind)를 좁게 거르므로 모듈 안의 클래스
+     * (`MyModule.MyClass`)·중첩 클래스(`Outer.Inner`)·모듈 수준 Property를 놓친다. 종전에는
+     * 그런 접근이 "한정자를 버리는 전역 이름 폴백" 덕에 우연히 동작했는데, 그 폴백이 동명의
+     * 남의 심볼로 점프하는 원인이기도 했다. 그래서 폴백을 막는 대신 소속을 검사하는
+     * 공용 규칙(receiverType.ownedByHolder)으로 한 번 더 찾고, 그래도 없으면 undefined —
+     * 호출부는 이 결과를 그대로 돌려줘 전역 이름 폴백을 차단한다.
+     */
+    private resolveOwnedMemberOrBlock(
+        memberName: string,
+        containerName: string,
+        containerKind: 'class' | 'module',
+        callCtx?: CallContext
+    ): vscode.Definition | undefined {
+        const lookup: ReceiverLookup = {
+            findLocal: () => undefined,
+            findAllByName: name => this.symbolCache.findAllByName(name)
+        };
+        const owned = ownedByHolder(lookup, { kind: containerKind, name: containerName }, memberName);
+        if (owned.length > 0) {
+            const picked = this.pickLocalMatches(owned, callCtx);
+            this.log(`[Member Found - Owned] ${containerName}.${memberName} → ${this.formatCandidate(picked[0])}`);
+            return this.buildDefinitionResult(picked);
+        }
+        // 컨테이너는 인덱스에 확실히 존재하는데 그 안에 이 이름이 없다 → 전역 이름 폴백으로 흘려보내면
+        // 한정자를 무시한 채 동명의 다른 심볼로 점프한다. 조용히 틀린 곳으로 가느니 "정의 없음"이 안전하다.
+        this.log(`[Member NOT Found] "${memberName}" in ${containerKind} "${containerName}" → 전역 폴백 차단`);
+        return undefined;
     }
 
     private formatCandidate(symbol: GPLSymbol): string {
@@ -497,6 +545,30 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                     objectSymbol = localSymbol ?? cacheSymbol;
                 }
 
+                // 수신자(receiver)의 타입 이름을 확정한다 — 내장 클래스 판정용.
+                //   - 한정자 자체가 사용자 모듈/클래스면 그 이름 (Module.Member, ClassName.StaticMember)
+                //   - 타입이 있는 변수면 그 타입 (Dim t As Thread → "Thread", 배열 접미사 "[]"는 제거)
+                //   - 아무것도 못 찾았으면 표기된 이름 그대로 (Move.Loc 같은 내장 정적 클래스)
+                const userContainerName = objectSymbol && (objectSymbol.kind === 'module' || objectSymbol.kind === 'class')
+                    ? objectSymbol.name
+                    : undefined;
+                const declaredTypeName = objectSymbol?.returnType?.replace(/\[\]$/, '');
+                const receiverTypeName = userContainerName || declaredTypeName || baseObjectName;
+
+                // 내장(GPL Dictionary) 클래스가 수신자면 이동할 소스 정의가 없다
+                // (Move.Loc, Console.WriteLine, Dim t As Thread → t.Start ...).
+                // 여기서 끝내지 않고 아래 전역 이름 폴백으로 흘려보내면 한정자를 버린 채
+                // 이름만 같은 사용자 심볼로 엉뚱하게 점프한다(예: Move.Run → Lib_MoveQueue.Run).
+                // 같은 이름의 사용자 클래스/모듈이 실제로 있으면 사용자 정의를 우선해 차단하지 않는다. (2026-08-31)
+                if (!userContainerName
+                    && isGplBuiltinClassName(receiverTypeName)
+                    && !this.hasUserContainerNamed(receiverTypeName)) {
+                    const builtinMember = findGplBuiltinMember(receiverTypeName, memberName);
+                    const memberDesc = builtinMember ? `내장 ${builtinMember.kind}` : '내장 클래스에 없는 멤버';
+                    this.log(`[Builtin Receiver] "${receiverTypeName}.${memberName}" → ${memberDesc} | 소스 정의 없음 → 전역 폴백 차단`);
+                    return undefined;
+                }
+
                 if (objectSymbol) {
                     this.log(`[Object Found] Name: ${objectSymbol.name} | Type: ${objectSymbol.returnType || 'N/A'} | Kind: ${objectSymbol.kind}`);
 
@@ -516,7 +588,8 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1}`);
                             return this.buildDefinitionResult(memberMatches);
                         } else {
-                            this.log(`[Member NOT Found] "${memberName}" in module "${objectSymbol.name}"`);
+                            // 모듈은 인덱스에 확실히 존재한다 → 소속 확인 조회까지만 하고, 없으면 차단. (2026-08-31)
+                            return this.resolveOwnedMemberOrBlock(memberName, objectSymbol.name, 'module', callCtx);
                         }
                     } else if (objectSymbol.kind === 'class') {
                         // Static access: ClassName.Member
@@ -534,7 +607,8 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
                             return this.buildDefinitionResult(memberMatches);
                         } else {
-                            this.log(`[Member NOT Found] "${memberName}" in class "${objectSymbol.name}"`);
+                            // 클래스가 인덱스에 확실히 존재한다 → 위 모듈 경로와 같은 규칙(중첩 클래스 등도 여기서 잡힌다).
+                            return this.resolveOwnedMemberOrBlock(memberName, objectSymbol.name, 'class', callCtx);
                         }
                     } else if (objectSymbol.returnType) {
                         // Class instance.Member access - search in class
@@ -557,8 +631,13 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
                             this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
                             return this.buildDefinitionResult(memberMatches);
+                        } else if (this.hasUserContainerNamed(resolvedType)) {
+                            // 클래스 정의가 인덱스에 있다 → 소속 확인 조회까지만 하고, 없으면 차단.
+                            return this.resolveOwnedMemberOrBlock(memberName, resolvedType, 'class', callCtx);
                         } else {
-                            this.log(`[Member NOT Found] "${memberName}" in class "${resolvedType}"`);
+                            // 클래스 정의 자체가 인덱스에 없다(캐시 stale·미인덱싱 파일). 예전처럼 전역 폴백에
+                            // 맡긴다 — 여기서 막으면 "파일을 방금 복사해 와 캐시가 낡은" 경우를 못 찾는다.
+                            this.log(`[Member NOT Found] "${memberName}" in class "${resolvedType}" (클래스 정의가 인덱스에 없음 — stale 캐시 가능) → 전역 폴백 허용`);
                         }
                     } else {
                         this.log(`[No Type Info] Object "${baseObjectName}" has no returnType and is not a class/module. Cannot resolve member access.`);

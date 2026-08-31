@@ -7,6 +7,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Client as FtpClient, FileInfo } from 'basic-ftp';
+import {
+	SyncManifestFiles,
+	hashFileSync,
+	isUnchanged,
+	manifestFileKey,
+	nextStamp,
+} from './syncManifest';
 
 const TIMEOUT_MS = 10_000;
 
@@ -117,9 +124,71 @@ export async function removeRemoteFile(host: string, remotePath: string): Promis
 	}
 }
 
+/** `clearRemoteDir` 결과 — 지운 항목 이름과 실패 항목(이름·사유). */
+export interface ClearRemoteDirResult {
+	deleted: string[];
+	failed: { name: string; error: string }[];
+}
+
+/**
+ * 원격 디렉터리의 **내용만** 비운다(폴더 자체는 남긴다).
+ *
+ * - /GPL·/flash/projects처럼 제어기가 고정으로 들고 있는 폴더는 지우지 않고 한 단계 아래 항목
+ *   (파일·하위 폴더)만 지운다 — 폴더 자체가 사라지면 이후 업로드/Load 경로가 달라진다.
+ * - 한 FTP 세션으로 처리하고, 개별 실패는 모아서 돌려준다(하나가 걸려도 나머지는 계속 지운다).
+ *   호출측이 "부분 완료"를 사용자에게 그대로 알릴 수 있도록 성공/실패 목록을 함께 준다.
+ * - 안전장치: 빈 경로·루트('/')는 대상이 될 수 없다(설정 오입력으로 파일시스템 전체를 지우는 사고 방지).
+ */
+export async function clearRemoteDir(
+	host: string,
+	remotePath: string,
+	onDelete?: (name: string, isDirectory: boolean) => void,
+): Promise<ClearRemoteDirResult> {
+	const base = normalizeAbsoluteRemoteDir(remotePath);
+	if (base === '/') {
+		throw new Error(`원격 폴더 비우기 대상이 안전하지 않습니다: "${remotePath}" (빈 경로·루트는 허용하지 않음)`);
+	}
+	const client = await createClient(host);
+	try {
+		const result: ClearRemoteDirResult = { deleted: [], failed: [] };
+		const entries = await client.list(base);
+		for (const entry of entries) {
+			if (entry.name === '.' || entry.name === '..') { continue; }
+			const full = `${base}/${entry.name}`;
+			try {
+				if (entry.isDirectory) {
+					await client.removeDir(full);
+				} else {
+					await client.remove(full);
+				}
+				result.deleted.push(entry.name);
+				onDelete?.(entry.name, entry.isDirectory);
+			} catch (err: any) {
+				result.failed.push({ name: entry.name, error: err?.message ?? String(err) });
+			}
+		}
+		return result;
+	} finally {
+		client.close();
+	}
+}
+
+/**
+ * 원격 경로를 선행 슬래시 1개 + 빈 구간 제거 형태로 정규화한다(`/GPL/`, `//GPL` → `/GPL`).
+ * 빈 문자열·루트는 '/'가 되므로 호출측이 안전장치로 걸러낼 수 있다.
+ */
+export function normalizeAbsoluteRemoteDir(remotePath: string): string {
+	const parts = (remotePath ?? '').split('/').filter(p => p.length > 0 && p !== '.');
+	return `/${parts.join('/')}`;
+}
+
 /**
  * 프로젝트 폴더 전체를 제어기에 업로드.
- * 반환: { uploaded, skipped, totalBytes }
+ * 반환: { uploaded, skipped, totalBytes, manifest }
+ *
+ * `manifest`는 이번에 올리거나 "원격과 같음"으로 확인한 파일들의 지문이다(`syncManifest` 참고).
+ * 호출측이 성공 후 `mergeSyncManifest`로 남겨 두면 다음 동기화의 스킵 판정이 크기뿐 아니라
+ * 내용(SHA-1) 기준으로 이뤄진다. 이번 호출에서 다룬 파일만 담기므로 **병합**해야 한다.
  */
 export async function uploadProject(
 	host: string,
@@ -133,9 +202,15 @@ export async function uploadProject(
 		 * 항상 업로드한다. → 저장 파일만 올리는 빠른 컴파일 경로에서 사용.
 		 */
 		onlyFiles?: string[];
+		/**
+		 * 직전 동기화에서 남긴 파일별 지문(`getSyncManifest`). `skipUnchanged` 스킵 조건이
+		 * "원격 크기 == 로컬 크기 **그리고** 로컬 SHA-1 == 마지막 업로드 SHA-1"이 된다.
+		 * 지문이 없는 파일(첫 동기화 등)은 스킵하지 않고 올린다 — 판정 불가는 항상 업로드 쪽으로 넘어뜨린다.
+		 */
+		manifest?: Readonly<SyncManifestFiles>;
 		onProgress?: (current: number, total: number, file: string, action: 'uploaded' | 'skipped') => void;
 	},
-): Promise<{ uploaded: number; skipped: number; totalBytes: number }> {
+): Promise<{ uploaded: number; skipped: number; totalBytes: number; manifest: SyncManifestFiles }> {
 	const client = await createClient(host);
 
 	try {
@@ -154,6 +229,7 @@ export async function uploadProject(
 		let uploaded = 0;
 		let skipped = 0;
 		let totalBytes = 0;
+		const manifest: SyncManifestFiles = {};
 
 		for (let i = 0; i < files.length; i++) {
 			const file = files[i];
@@ -162,15 +238,22 @@ export async function uploadProject(
 			const stat = fs.statSync(file);
 			totalBytes += stat.size;
 
+			const key = manifestFileKey(relative);
+			const previous = options?.manifest?.[key];
+			// 크기가 같아도 내용이 다를 수 있으므로 로컬 해시로 판정한다(해시 실패 시 크기 비교로 폴백).
+			const local = { size: stat.size, sha1: hashFileSync(file, stat.size) };
+			let remote: { size: number } | undefined;
+
 			let skip = false;
-			// onlyFiles 경로에서는 변경을 확신하므로 크기 비교를 건너뛰고 항상 업로드한다.
+			// onlyFiles 경로에서는 변경을 확신하므로 비교를 건너뛰고 항상 업로드한다.
 			if (!restrictToOnly && options?.skipUnchanged) {
 				try {
-					const remoteSize = await client.size(remotePath);
-					if (remoteSize === stat.size) { skip = true; }
+					remote = { size: await client.size(remotePath) };
 				} catch {
 					// 원격 파일 없음 → 업로드 필요
 				}
+				// SIZE만으로는 원격 mtime을 알 수 없다 → mtime 조건은 자동으로 생략된다.
+				skip = isUnchanged(previous, local, remote);
 			}
 
 			if (skip) {
@@ -179,11 +262,12 @@ export async function uploadProject(
 				await uploadVerified(client, file, remotePath, stat.size);
 				uploaded++;
 			}
+			manifest[key] = nextStamp(local, remote, previous, skip ? 'skipped' : 'uploaded');
 
 			options?.onProgress?.(i + 1, files.length, relative, skip ? 'skipped' : 'uploaded');
 		}
 
-		return { uploaded, skipped, totalBytes };
+		return { uploaded, skipped, totalBytes, manifest };
 	} finally {
 		client.close();
 	}
@@ -191,11 +275,15 @@ export async function uploadProject(
 
 /**
  * 로컬 프로젝트 폴더를 원격 폴더와 미러 동기화한다 (direct /GPL 경로용).
- * - 로컬에 없거나 크기가 다른 파일만 업로드하고, 같은 크기는 스킵한다.
+ * - 원격에 없거나, 크기가 다르거나, **내용(SHA-1)이 마지막으로 올린 것과 다른** 파일만 업로드한다.
  * - 원격에만 있는 파일은 삭제한다 — 로컬에서 지운/이름 바꾼 파일이 원격에 남아
  *   Compile 대상이 되는 것(낡은 소스 오컴파일)을 막기 위한 정확성 조치이기도 하다.
  * - Unload/Load 없이 로드본(/GPL/<name>)을 로컬과 일치시키는 것이 목적.
- * 한계: 크기 비교라서 내용이 달라도 크기가 같으면 놓친다(skipUnchanged와 동일).
+ *
+ * 스킵 판정: `options.manifest`(직전 동기화 지문, `getSyncManifest`)를 주면 크기가 같아도
+ * 내용이 바뀐 파일을 잡아낸다. 지문이 없으면(첫 동기화) 스킵하지 않고 올린다 — 판정 불가는 항상
+ * 업로드 쪽으로 넘어뜨린다. 반환 `manifest`를 성공 후 `recordSyncManifest`로 남기면 다음 회차에 쓰인다.
+ * 한계: 우리 밖에서 원격 파일이 같은 크기로 바뀌고 목록에 mtime도 없으면 여전히 놓칠 수 있다.
  */
 export interface RemoteFileRef {
 	remotePath: string;
@@ -215,21 +303,38 @@ export async function mirrorProject(
 		 * 원격 파일 삭제가 무해한지는 미검증이라 업로드와 분리한다(2026-08-25, 이슈 #17).
 		 */
 		deferDelete?: boolean;
+		/**
+		 * 직전 동기화에서 남긴 파일별 지문(`getSyncManifest`). 스킵 판정에 내용(SHA-1) 비교를 더한다.
+		 * 지문이 없는 파일(첫 동기화 등)은 스킵하지 않고 올린다 — 판정 불가는 항상 업로드 쪽으로 넘어뜨린다.
+		 */
+		manifest?: Readonly<SyncManifestFiles>;
 	},
-): Promise<{ uploaded: number; skipped: number; deleted: number; totalBytes: number; pendingDeletes: RemoteFileRef[] }> {
+): Promise<{
+	uploaded: number;
+	skipped: number;
+	deleted: number;
+	totalBytes: number;
+	pendingDeletes: RemoteFileRef[];
+	/** 이번 동기화 뒤의 파일별 지문. 성공 시 `recordSyncManifest`로 저장한다(전체 목록 기준 → 대체). */
+	manifest: SyncManifestFiles;
+}> {
 	const client = await createClient(host);
 	try {
 		// 1) 원격 파일 목록(재귀). 원격 폴더가 없거나 조회 실패면 빈 목록으로 취급 → 전체 업로드.
-		const remoteFiles: { remotePath: string; relativePath: string; size: number }[] = [];
+		const remoteFiles: RemoteFileEntry[] = [];
 		try {
 			await collectRemoteFiles(client, remoteDir, '', remoteFiles);
 		} catch {
 			// ignore: 원격 폴더 없음 등 — 아래에서 전부 업로드된다.
 		}
 		// 로컬(Windows)은 대소문자 무시 파일시스템이므로 소문자 키로 매칭한다.
-		const remoteByRel = new Map<string, { remotePath: string; size: number }>();
+		const remoteByRel = new Map<string, { remotePath: string; size: number; modifiedAtMs?: number }>();
 		for (const rf of remoteFiles) {
-			remoteByRel.set(rf.relativePath.toLowerCase(), { remotePath: rf.remotePath, size: rf.size });
+			remoteByRel.set(rf.relativePath.toLowerCase(), {
+				remotePath: rf.remotePath,
+				size: rf.size,
+				modifiedAtMs: rf.modifiedAtMs,
+			});
 		}
 
 		const localFiles = getAllFiles(localDir);
@@ -238,6 +343,7 @@ export async function mirrorProject(
 		let skipped = 0;
 		let deleted = 0;
 		let totalBytes = 0;
+		const manifest: SyncManifestFiles = {};
 
 		// 2) 로컬 기준 업로드/스킵
 		for (let i = 0; i < localFiles.length; i++) {
@@ -248,7 +354,11 @@ export async function mirrorProject(
 			totalBytes += stat.size;
 
 			const remote = remoteByRel.get(relative.toLowerCase());
-			const skip = !!remote && remote.size === stat.size;
+			const key = manifestFileKey(relative);
+			const previous = options?.manifest?.[key];
+			// 크기가 같아도 내용이 다를 수 있으므로 로컬 해시를 함께 본다(해시 실패 시 크기 비교로 폴백).
+			const local = { size: stat.size, sha1: hashFileSync(file, stat.size) };
+			const skip = isUnchanged(previous, local, remote);
 			if (skip) {
 				skipped++;
 			} else {
@@ -256,6 +366,7 @@ export async function mirrorProject(
 				await uploadVerified(client, file, remotePath, stat.size);
 				uploaded++;
 			}
+			manifest[key] = nextStamp(local, remote, previous, skip ? 'skipped' : 'uploaded');
 			options?.onProgress?.(i + 1, localFiles.length, relative, skip ? 'skipped' : 'uploaded');
 		}
 
@@ -276,7 +387,7 @@ export async function mirrorProject(
 			}
 		}
 
-		return { uploaded, skipped, deleted, totalBytes, pendingDeletes };
+		return { uploaded, skipped, deleted, totalBytes, pendingDeletes, manifest };
 	} finally {
 		client.close();
 	}
@@ -362,7 +473,7 @@ export async function downloadProject(
 
 	try {
 		// 1) 재귀적으로 원격 파일 목록 수집
-		const remoteFiles: { remotePath: string; relativePath: string; size: number }[] = [];
+		const remoteFiles: RemoteFileEntry[] = [];
 		await collectRemoteFiles(client, remoteDir, '', remoteFiles);
 
 		let downloaded = 0;
@@ -396,6 +507,14 @@ export async function downloadProject(
 	}
 }
 
+/** 재귀 목록 조회로 수집한 원격 파일 하나. `modifiedAtMs`는 서버가 목록에 시각을 주는 경우에만 채워진다. */
+interface RemoteFileEntry {
+	remotePath: string;
+	relativePath: string;
+	size: number;
+	modifiedAtMs?: number;
+}
+
 /**
  * 원격 디렉터리를 재귀 탐색하여 파일 목록을 수집.
  */
@@ -403,7 +522,7 @@ async function collectRemoteFiles(
 	client: FtpClient,
 	baseDir: string,
 	relative: string,
-	results: { remotePath: string; relativePath: string; size: number }[],
+	results: RemoteFileEntry[],
 ): Promise<void> {
 	const currentDir = relative ? `${baseDir}/${relative}` : baseDir;
 	const entries = await client.list(currentDir);
@@ -417,7 +536,9 @@ async function collectRemoteFiles(
 		if (entry.isDirectory) {
 			await collectRemoteFiles(client, baseDir, rel, results);
 		} else {
-			results.push({ remotePath: full, relativePath: rel, size: entry.size });
+			const modifiedAt = toFtpEntry(entry).modifiedAt;
+			const modifiedAtMs = modifiedAt && !Number.isNaN(modifiedAt.getTime()) ? modifiedAt.getTime() : undefined;
+			results.push({ remotePath: full, relativePath: rel, size: entry.size, modifiedAtMs });
 		}
 	}
 }

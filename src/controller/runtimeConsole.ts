@@ -18,9 +18,17 @@
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { getControllerConfig, getTrafficChannel, formatTrafficTimestamp, recordTrafficLine } from './controllerConnection';
-import { normalizeConsoleLine } from './responseParser';
+import { normalizeConsoleLine, latin1ToUtf8 } from './responseParser';
 import { appendLiveLog } from '../log/liveLogTerminal';
-import { ConnectReason, ConnectStats, decideWatchdogAction } from './runtimeConsoleGuards';
+import {
+    ConnectReason,
+    ConnectStats,
+    decideWatchdogAction,
+    DEFAULT_LINE_PREFIX,
+    formatRuntimeConsoleLine,
+    LINE_PREFIX_MODES,
+    RuntimeConsoleLinePrefix,
+} from './runtimeConsoleGuards';
 
 /**
  * 배치(FIN+데이터) 완료 후 재연결 대기 기본값/하한 — 설정 `gpl.runtimeConsole.batchReconnectDelayMs`.
@@ -123,6 +131,8 @@ export class RuntimeConsole implements vscode.Disposable {
     // 개행이 올 때까지 메시지를 이어붙이기 위한 버퍼.
     private _frameMsgBuf = '';
     private _frameMsgProject = '';
+    /** 세션 내 `<L>N</L>` ≠ 실제 청크 바이트 수 건수(프레임 경계 오판 진단용, 첫 1회만 로그). */
+    private _sessionLenMismatch = 0;
     private disposed = false;
     /** 사용자가 명시적으로 stop()을 호출했을 때 true → 자동 재연결 금지 */
     private _explicitStop = false;
@@ -659,7 +669,7 @@ export class RuntimeConsole implements vscode.Disposable {
             this._sessionFrames++;
             this._lifetimeFrames++;
         }
-        const normalized = normalizeConsoleLine(line);
+        const normalized = normalizeConsoleLine(latin1ToUtf8(line));
         if (normalized) {
             this.outputLine(normalized);
         } else if (isFrame) {
@@ -667,12 +677,25 @@ export class RuntimeConsole implements vscode.Disposable {
         }
     }
 
-    /** 정규화가 끝난 한 줄을 출력 채널/리스너로 내보낸다. */
-    private outputLine(normalized: string): void {
+    /** GPL Console 줄 접두사 모드 (설정, 잘못된 값은 기본값으로 폴백). */
+    private getLinePrefixMode(): RuntimeConsoleLinePrefix {
+        const raw = vscode.workspace
+            .getConfiguration('gpl.runtimeConsole')
+            .get<string>('linePrefix', DEFAULT_LINE_PREFIX);
+        return (LINE_PREFIX_MODES as readonly string[]).includes(raw)
+            ? raw as RuntimeConsoleLinePrefix
+            : DEFAULT_LINE_PREFIX;
+    }
+
+    /**
+     * 정규화가 끝난 한 줄을 출력 채널/리스너로 내보낸다.
+     * 접두사(시각/프로젝트)는 출력 채널에만 붙고, 리스너에는 원문 그대로 전달한다.
+     */
+    private outputLine(normalized: string, project = ''): void {
         if (!normalized) { return; }
         this._sessionLinesEmitted++;
         this.recordIterationValue(normalized);
-        this.output.appendLine(`[RT] ${normalized}`);
+        this.output.appendLine(formatRuntimeConsoleLine(normalized, project, this.getLinePrefixMode()));
         this._onDidReceiveLine.fire(normalized);
     }
 
@@ -690,6 +713,15 @@ export class RuntimeConsole implements vscode.Disposable {
             this._lifetimeFrames++;
             const project = m[2].trim();
             const chunk = m[4];
+            // `<L>N</L>` = 청크의 바이트 길이(GDE 캡처 68/68 일치). latin1 문자열이라 length == 바이트 수.
+            // 어긋나면 프레임 경계 판정이 잘못됐다는 신호 — 세션당 첫 1회만 상태 로그에 남긴다.
+            const declaredLen = Number.parseInt(m[3], 10);
+            if (Number.isFinite(declaredLen) && declaredLen !== chunk.length) {
+                this._sessionLenMismatch++;
+                if (this._sessionLenMismatch === 1) {
+                    this.appendStateLine(`[Console][RC1403] WARN=L_MISMATCH declared=${declaredLen} got=${chunk.length}`);
+                }
+            }
             // 프로젝트가 바뀌면(이론상) 진행 중 버퍼를 먼저 비운다.
             if (this._frameMsgBuf && project && this._frameMsgProject && this._frameMsgProject !== project) {
                 this.flushConsoleFrameBuffer();
@@ -716,7 +748,8 @@ export class RuntimeConsole implements vscode.Disposable {
     /** 재조립 중이던 type-3 메시지를 한 줄로 내보낸다. */
     private flushConsoleFrameBuffer(): void {
         if (!this._frameMsgBuf) { return; }
-        const msg = this._frameMsgBuf.replace(/\n+$/, '').trim();
+        // 청크(latin1)를 모두 이어 붙인 뒤에 UTF-8 디코딩 — 128바이트 경계가 글자 중간에 걸려도 온전하다.
+        const msg = latin1ToUtf8(this._frameMsgBuf).replace(/\n+$/, '').trim();
         const project = this._frameMsgProject;
         this._frameMsgBuf = '';
         this._frameMsgProject = '';
@@ -724,7 +757,7 @@ export class RuntimeConsole implements vscode.Disposable {
             this._sessionFramesSwallowed++;
             return;
         }
-        this.outputLine(project ? `[${project}] ${msg}` : msg);
+        this.outputLine(msg, project);
     }
 
     private processConsoleText(raw: string, flush = false): void {
@@ -1023,6 +1056,7 @@ export class RuntimeConsole implements vscode.Disposable {
             this._sessionDataReceived = false;
             this._sessionRxBytes = 0;
             this._sessionFrames = 0;
+            this._sessionLenMismatch = 0;
             this._sessionFramesSwallowed = 0;
             this._sessionLinesEmitted = 0;
             this._sessionIterationValues = [];
@@ -1068,10 +1102,13 @@ export class RuntimeConsole implements vscode.Disposable {
                 clearTimeout(this._noOutputHintTimer);
                 this._noOutputHintTimer = null;
             }
-            const raw = data.toString('ascii');
+            // 바이트 보존(latin1)으로 문자열화 — 프레임/청크 경계는 ASCII 마커라 그대로 찾을 수 있고,
+            // UTF-8 디코딩은 청크를 이어 붙인 완성 메시지 단위에서만 한다(latin1ToUtf8). 종전 'ascii'는
+            // 상위 비트를 버려 한글 콘솔 출력이 복구 불가능하게 깨졌다(2026-08-28 GDE 캡처 판독).
+            const raw = data.toString('latin1');
             this._sessionRxBytes += data.length;
             this._lifetimeRxBytes += data.length;
-            this.logConsoleTraffic('<<<', raw.replace(/[\r\n]+/g, '\\n'));
+            this.logConsoleTraffic('<<<', latin1ToUtf8(raw).replace(/[\r\n]+/g, '\\n'));
             if (wasWaitingPayload) {
                 this.updateStatus('connected', 'Connected', `payload ${data.length} bytes 수신`);
             }

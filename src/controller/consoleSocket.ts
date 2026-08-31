@@ -184,6 +184,34 @@ let _held: HeldSocket | null = null;
 let _generation = 0;
 const _stats = { connects: 0, reuses: 0, retries: 0, lastConnectAt: undefined as number | undefined };
 
+/**
+ * 유휴 보관 소켓이 상대측 종료·에러로 사라졌을 때의 알림(연결 건강 힌트용 — extension.ts 가 구독, 2026-08-28).
+ * by-peer(FIN)는 제어기의 정상 유휴 종료일 수 있고, error(ECONNRESET·keepalive ETIMEDOUT)는 제어기 부재의 조기 신호다.
+ */
+export interface HeldSocketEvent {
+    kind: 'by-peer' | 'error';
+    detail: string;
+    /** 보관 소켓이 연결된 뒤 지난 시간(ms). */
+    heldMs: number;
+    key: string;
+}
+let _heldSocketObserver: ((event: HeldSocketEvent) => void) | null = null;
+
+export function setHeldSocketObserver(fn: ((event: HeldSocketEvent) => void) | null): void {
+    _heldSocketObserver = fn;
+}
+
+function notifyHeldSocket(event: HeldSocketEvent): void {
+    try { _heldSocketObserver?.(event); } catch { /* 관찰자 예외가 소켓 정리를 막지 않게 */ }
+}
+
+/** reject 사유에 errno 스타일 code 를 붙인다 — 호출자(connectionHealth.classifyCommandFailure)가 실패 종류를 가르는 데 쓴다. */
+function codedError(message: string, code: string | undefined): Error {
+    const e = new Error(message) as NodeJS.ErrnoException;
+    if (code) { e.code = code; }
+    return e;
+}
+
 function endpointKey(e: ConsoleEndpoint): string {
     return `${e.ip}:${e.port}`;
 }
@@ -246,12 +274,15 @@ function parkSocket(socket: net.Socket, key: string, connectedAt: number, idleCl
         _held = null;
         if (held.idleTimer) { clearTimeout(held.idleTimer); held.idleTimer = null; }
         log('---', `1402 CLOSE (by peer, held ${heldFor(held)})`);
+        notifyHeldSocket({ kind: 'by-peer', detail: 'closed by peer (FIN)', heldMs: Date.now() - held.connectedAt, key });
     };
     held.onError = (err: Error) => {
         if (_held !== held) { return; }
         _held = null;
         if (held.idleTimer) { clearTimeout(held.idleTimer); held.idleTimer = null; }
         log('---', `1402 CLOSE (error: ${err.message}, held ${heldFor(held)})`);
+        const code = (err as NodeJS.ErrnoException).code;
+        notifyHeldSocket({ kind: 'error', detail: `${err.message}${code ? ` (${code})` : ''}`, heldMs: Date.now() - held.connectedAt, key });
     };
     socket.on('data', held.onData);
     socket.on('close', held.onClose);
@@ -407,7 +438,7 @@ function attempt(
             socket.destroy();
             body?.flush();
             log('---', `TIMEOUT (${timeout}ms): ${command}`);
-            reject(new Error(`Command timeout (${timeout}ms): ${command}`));
+            reject(codedError(`Command timeout (${timeout}ms): ${command}`, 'COMMAND_TIMEOUT'));
         }, timeout);
 
         const completeResponse = () => {
@@ -497,7 +528,7 @@ function attempt(
             closeReason = `error: ${err.message}`;
             body?.flush();
             log('---', `ERROR: ${err.message}`);
-            reject(new Error(`Connection error (${endpoint.ip}:${endpoint.port}): ${err.message}`));
+            reject(codedError(`Connection error (${endpoint.ip}:${endpoint.port}): ${err.message}`, (err as NodeJS.ErrnoException).code));
         };
 
         const onClose = () => {
@@ -519,7 +550,7 @@ function attempt(
                 } else {
                     log('---', `CLOSED without response: ${command}`);
                     log('---', `1402 CLOSE (${closeReason ?? 'by peer'})`);
-                    reject(new Error(`Connection closed without response: ${command}`));
+                    reject(codedError(`Connection closed without response: ${command}`, 'ECONNCLOSED'));
                 }
                 return;
             }

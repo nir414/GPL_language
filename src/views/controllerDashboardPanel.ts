@@ -20,6 +20,17 @@ import { fetchControllerStatus, ControllerStatusSnapshot } from '../controller/c
 import { ResourceHistory, ResourceHistoryPoint, ResourceRates, ResourceSnapshot } from '../controller/resourceProbes';
 import { getConnectionStats, ConnectionStats } from '../controller/controllerConnection';
 
+/**
+ * 대시보드 폴링의 연결 판정(fetchControllerStatus.connected)을 밖으로 알리는 관찰자 — extension.ts 가 연결 건강 모니터
+ * (controller/connectionHealth.ts)의 힌트로 쓴다(2026-08-28). 패널은 판정하지 않고 보고만 한다.
+ */
+export type DashboardConnectionObserver = (connected: boolean, note?: string) => void;
+let _connectionObserver: DashboardConnectionObserver | undefined;
+
+export function setDashboardConnectionObserver(fn?: DashboardConnectionObserver): void {
+	_connectionObserver = fn;
+}
+
 const VIEW_TYPE = 'gplControllerDashboard';
 const DEFAULT_POLL_MS = 1500;
 const MIN_POLL_MS = 500;
@@ -221,6 +232,7 @@ export class ControllerDashboardPanel {
 			// 설정은 폴링마다 읽는다 — 탭을 다시 열지 않고도 켜고 끌 수 있게.
 			const includeResources = this.resourceProbesEnabled();
 			const snapshot = await fetchControllerStatus(undefined, { includeResources });
+			try { _connectionObserver?.(snapshot.connected, snapshot.note); } catch { /* 관찰자 예외가 폴링을 막지 않게 */ }
 			const { resources, ...rest } = snapshot;
 			const message: DashboardMessage = { type: 'status', snapshot: rest, resourceProbes: includeResources, connectionStats: getConnectionStats() };
 			if (resources) {

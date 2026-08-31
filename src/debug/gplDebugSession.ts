@@ -33,8 +33,13 @@ import {
     sendCommand,
     getControllerConfig,
     ControllerConfig,
+    probeControllerCommand,
+    getConnectionProbeTimeoutMs,
 } from '../controller/controllerConnection';
+import type { ProbeOutcome } from '../controller/controllerConnection';
 import { deploy, findProjectDirs, jumpToFirstCompileError } from '../controller/deployService';
+import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
+import { gprPathInDir, resolveGprSourcePaths, resolveProjectLibraryDirs } from '../project/projectSources';
 import { getDeployLock, describeDeployLock } from '../controller/deployLock';
 import {
     parseThreadList,
@@ -54,7 +59,7 @@ import {
 } from '../controller/responseParser';
 import { GPLParser, GPLSymbolKind, GPLSymbol } from '../gplParser';
 import { isReadOnlyConsoleCommand } from '../controller/consoleCommandClassifier';
-import { fireDebugThreadsUpdated, onDebugPollTrigger, getRuntimeConsoleHealth } from '../controller/debugBridge';
+import { fireDebugThreadsUpdated, fireDebugProbeResult, onDebugPollTrigger, getRuntimeConsoleHealth } from '../controller/debugBridge';
 import {
     getCompiledRecord,
     compareWithLocal,
@@ -63,6 +68,20 @@ import {
 } from '../controller/deployRecord';
 import type { CompiledRecord, SnapshotDiff } from '../controller/deployRecord';
 import { shouldGateStepRequest, StepGateReason } from './stepGate';
+import {
+    isAllThreadsResumeRequest,
+    resolveExecutionThread,
+    shouldPreserveFocus,
+} from './threadLock';
+import { buildStartCommand } from '../controller/startCommand';
+import {
+    breakpointCandidateLines,
+    buildProcedureRanges,
+    enclosingProcedure,
+    parseCallTargets,
+    resolveBreakpointLine,
+    ProcedureRange,
+} from './sourceTargets';
 import {
     ParsedVarEntry,
     parseShowVariableMulti,
@@ -112,6 +131,12 @@ interface IAttachRequestArguments extends DebugProtocol.AttachRequestArguments {
     clearProjectBreakpointsOnAttach?: boolean;
     /** true면 디버거 분리(세션 종료) 시 제어기 측 프로그램도 정지한다(Stop -all). 기본 false(실행 유지). */
     stopAllOnDisconnect?: boolean;
+    /** `Start -stack <KB>` — 프로시저 스택 크기(문서 기본 4 KB). 1~1024 범위 밖은 무시. */
+    startStackSizeKb?: number;
+    /** `Start -init` — trace/단일 스텝 중 초기화 문장도 표시(문서: -break/-trace 와 함께 쓴다). */
+    startShowInitStatements?: boolean;
+    /** `Start -trace` — 실행 문장을 콘솔에 표시. 문서가 성능 저하를 경고하므로 진단용으로만. */
+    startTrace?: boolean;
 }
 
 // ─── Scope handle payload ────────────────────────────────
@@ -170,6 +195,30 @@ interface StaleSourceEntry {
     savedAt?: number;
 }
 
+// ─── 조건부 BP / 로그포인트 (클라이언트 측 흉내) ────────────
+
+/**
+ * BP 하나에 붙은 조건 메타. 제어기에는 조건 개념이 없으므로 어댑터가 적중 시점에 판정한다.
+ * `hits`는 이 세션에서 그 줄이 적중한 횟수(히트 조건 판정용).
+ */
+interface BreakpointMeta {
+    condition?: string;
+    hitCondition?: string;
+    logMessage?: string;
+    hits: number;
+}
+
+/** 프로시저 이름 브레이크포인트 한 개. */
+interface FunctionBreakpointEntry {
+    /** 사용자가 입력한 이름(`Class.Proc` 또는 `Proc`) */
+    name: string;
+    /** 해석된 파일 basename */
+    file: string;
+    /** 해석된 1-based 줄(첫 실행 문장) */
+    line: number;
+    id: number;
+}
+
 // ─── Session ─────────────────────────────────────────────
 
 export class GPLDebugSession extends LoggingDebugSession {
@@ -211,6 +260,10 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _sourceFileMap = new Map<string, string[]>();
     // 디버그 대상 프로젝트의 폴더(Project.gpr 위치들) — 동명 소스 경합 시 우선 선택 기준.
     private _projectDirs: string[] = [];
+    /** 대상 프로젝트 .gpr 의 ProjectSource 절대 경로 — 동명 소스 경합 판정의 1순위 기준. */
+    private _projectSourcePaths: string[] = [];
+    /** BP 대상 파일을 프로젝트 기준 상대 경로로 지칭해야 하는 제어기인지(첫 성공에서 학습). */
+    private _bpPreferProjectRelativeFile = false;
     // 경합 경고 로그를 베이스네임당 1회로 제한(소스맵 재구축 시 리셋)
     private _sourceResolveWarned = new Set<string>();
     // 전역 조회 방식 메모(세션 유지, 소스맵 재구축 시 리셋): 정지마다 전역당 최대 3회이던
@@ -299,6 +352,33 @@ export class GPLDebugSession extends LoggingDebugSession {
     // 이 쓰레드에 pending 이 없는 상태(최소 간격 게이트)에서 무시한 요청의 UI 복귀용 StoppedEvent 재발사 예약(쓰레드별)
     private _gateResyncTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
+    // 스레드 단일 실행 잠금(threadLock.ts). 값이 있으면 Continue/Step 은 어느 스레드가 포커스든
+    // 이 스레드에만 나가고, 다른 스레드의 정지는 포커스를 훔치지 않는다(preserveFocusHint).
+    // UI 는 확장 쪽 gpl.debug.lockThread / CALL STACK 메뉴 / 상태바가 제공한다(custom request 로 연동).
+    private _lockedThreadName: string | undefined;
+    // 잠금 때문에 대상을 되돌린 횟수 — 첫 건만 Debug Console 에 남기고 이후는 조용히(키 반복 로그 폭주 방지)
+    private _lockRedirectCount = 0;
+
+    // ── 조건부 BP / 히트 조건 / 로그포인트 (클라이언트 측 흉내, 기본 OFF) ──────────────
+    // 제어기 `Set Break` 에는 조건·히트 조건·로그 스위치가 없다(공식 문서 확인). 그래서 조건은
+    // "적중 → 조건 평가 → 불일치면 자동 Continue" 로 흉내낸다. 자동 재개는 모션을 다시 움직이므로
+    // 설정으로 켤 때만 동작한다. 키: basename 소문자 → 줄 번호 → 메타.
+    private _bpMeta = new Map<string, Map<number, BreakpointMeta>>();
+    // 자동 재개 횟수(세션 누적) — 첫 건과 이후 일정 간격으로만 로그를 남긴다.
+    private _autoResumeCount = 0;
+
+    // ── 프로시저 이름 브레이크포인트 ─────────────────────────────────────────────
+    // VS Code BREAKPOINTS 뷰의 함수 BP. 파서로 `Class.Proc` → 파일·첫 실행 줄을 찾아 Set Break 로 바꾼다.
+    // 소스 BP 와 같은 파일에 있을 수 있으므로 setBreakPointsRequest 의 파일 정리에서 제외해야 한다.
+    private _functionBps: FunctionBreakpointEntry[] = [];
+
+    // ── Jump to Cursor / Step Into Target 의 대상 핸들 ───────────────────────────
+    private _gotoTargetHandles = new Map<number, { file: string; line: number; procedure: string }>();
+    private _stepInTargetHandles = new Map<number, { label: string; file: string; line: number }>();
+    private _targetIdCounter = 0;
+    // Step Into Target 이 심어 둔 임시 BP(정지 후 정리). basename 소문자 → 줄 집합.
+    private _tempBreakpoints = new Map<string, Set<number>>();
+
     // Stack frame cache — pending step/continue 동안 UI에 반환할 직전 프레임 캐시
     private _cachedFrames = new Map<string, StackFrameInfo[]>();
     // ③ Show Stack 캐시 신선도: 정지 위치별 마지막 조회 시각 + 짧은 TTL.
@@ -342,9 +422,13 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Known thread names — for detecting new/exited threads (ThreadEvent)
     private _knownThreadNames = new Set<string>();
 
-    // Consecutive poll failures — auto-terminate after threshold
+    // Consecutive poll failures — auto-terminate after threshold.
+    // 2026-08-28: 5 → 3 으로, 확장의 연결 건강 모니터(controller/connectionHealth.ts failureThreshold=3)와 맞춘다 —
+    // 폴 결과는 debugBridge.fireDebugProbeResult 로도 보고되므로 어댑터의 세션 종료와 확장의 유실 판정이 같은 시점에 난다.
+    // 폴은 명령 timeoutMs(10 s) 대신 프로브 타임아웃(gpl.controller.connectionProbeTimeoutMs, 기본 8 s)을 쓴다.
     private _pollFailures = 0;
-    private static readonly MAX_POLL_FAILURES = 5;
+    private static readonly MAX_POLL_FAILURES = 3;
+    private _probeTimeoutMs = 8000;
 
     // DAP protocol gate — StoppedEvent must not fire before configurationDone
     private _configurationDone = false;
@@ -352,6 +436,10 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _stopOnEntry = false;
     // 디버거 분리 시 제어기 측 프로그램도 정지할지 여부(attach args로 설정).
     private _stopAllOnDisconnect = false;
+    // Start 스위치(launch 구성에서 옴 — 문서 구문은 startCommand.ts 참조)
+    private _startStackSizeKb: number | undefined;
+    private _startShowInitStatements = false;
+    private _startTrace = false;
 
     // Debug pre-deploy 진단은 모듈 공용 컬렉션(getDebugDeployDiagnostics)을 사용한다.
     private _lastControllerCommand = '';
@@ -380,10 +468,46 @@ export class GPLDebugSession extends LoggingDebugSession {
         response.body.supportsTerminateRequest = false;
         // CALL STACK 쓰레드 우클릭 "스레드 종료" 활성화 — terminateThreadsRequest에서 Stop <이름> 전송
         response.body.supportsTerminateThreadsRequest = true;
-        response.body.supportsBreakpointLocationsRequest = false;
+
+        // BP 유효 줄 힌트 — 공식 문서(Set Break): "지정한 명령은 프로시저 안에 있어야 하고, 빈 줄이나
+        // 주석을 지정하면 그 다음 실행 가능한 명령에 BP가 설정된다". 제어기가 조용히 옮기는 줄을
+        // 로컬 파서로 미리 계산해 보여 준다(제어기 명령 없음 — sourceTargets.ts).
+        response.body.supportsBreakpointLocationsRequest = true;
+
+        // 프로시저 이름 브레이크포인트 — 파서로 이름 → 첫 실행 줄을 찾아 Set Break 로 변환한다.
+        response.body.supportsFunctionBreakpoints = true;
+
+        // Step Into Target — 현재 줄에 호출이 여러 개면 어느 호출로 들어갈지 고른다.
+        // 제어기 Step 에는 대상 지정 스위치가 없으므로 정의 위치에 임시 BP + Continue 로 진입한다.
+        response.body.supportsStepInTargetsRequest = true;
+
+        // Jump to Cursor(다음 실행 문장 변경) — 문서상 `Set Thread <thread> -line <n>`.
+        // 건너뛴 초기화 때문에 위험하므로 기본값은 실행 전 경고 확인(gpl.debug.jumpToCursor).
+        response.body.supportsGotoTargetsRequest = this._jumpToCursorMode() !== 'off';
+
+        // 값 전체 복사 — '값 복사'는 context='clipboard' 로 오며 표시용 축약 없이 원문을 준다.
+        response.body.supportsClipboardContext = true;
+
+        // 큰 호출 스택 지연 로딩 — startFrame/levels 를 존중하고 totalFrames 를 돌려준다.
+        response.body.supportsDelayedStackTraceLoading = true;
+
+        // 조건부 BP / 히트 조건 / 로그포인트: 제어기에 대응 명령이 없어 **확장이 흉내낸다**
+        // (적중마다 조건 평가 + 불일치 시 자동 Continue). 자동 재개는 모션을 다시 움직이므로
+        // 기본 OFF(gpl.debug.clientSideBreakpointLogic) — 끄면 관련 UI 자체가 나타나지 않는다.
+        const clientSideBpLogic = this._clientSideBpLogicEnabled();
+        response.body.supportsConditionalBreakpoints = clientSideBpLogic;
+        response.body.supportsHitConditionalBreakpoints = clientSideBpLogic;
+        response.body.supportsLogPoints = clientSideBpLogic;
 
         // Capabilities for step granularity (VS Code 기본 step-over/in/out 모두 지원)
         response.body.supportsSteppingGranularity = false;
+
+        // 스레드 단일 실행: GPL 제어기의 실행 명령은 원래 스레드 단위(`Continue <이름>`)이며
+        // 이 어댑터는 요청받지 않은 스레드를 재개하지 않는다. 다만 VS Code 1.135 본체에는
+        // supportsSingleThreadExecutionRequests / singleThread 문자열이 없어(2026-08-28 확인)
+        // 인자가 오지 않는다 — 실제 잠금 UI 는 확장 쪽 명령·CALL STACK 메뉴·상태바가 제공하고,
+        // 이 선언은 인자를 보내는 다른 DAP 클라이언트를 위한 규약 표시다.
+        response.body.supportsSingleThreadExecutionRequests = true;
 
         // Exception breakpoint filters
         response.body.supportsExceptionInfoRequest = false;
@@ -445,8 +569,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                     `Start 보류 — 다른 배포/업로드가 진행 중입니다. 완료 후 디버그 콘솔에서 >Start ${this._projectName} 를 사용하세요.`,
                 );
             } else if (startApproved) {
-                this._log(`Start ${this._projectName} (auto-start after configurationDone)`);
-                await this._sendCmd(`Start ${this._projectName}`);
+                const startCmd = this._buildStartCommand({});
+                this._log(`${startCmd} (auto-start after configurationDone)`);
+                await this._sendCmd(startCmd);
                 // Start 직후 곧바로 히트하는 BP(진입 부근 정지)를 빠르게 감지한다 (읽기 전용 폴).
                 this._fastPoll();
             } else {
@@ -460,7 +585,7 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         // configurationDone 이전에 큐에 쌓인 StoppedEvent 발사
         for (const ev of this._queuedStoppedEvents) {
-            this.sendEvent(new StoppedEvent(ev.reason, ev.threadId));
+            this.sendEvent(this._stoppedEvent(ev.reason, ev.threadId));
             this._log(`쓰레드 ${ev.threadId} 정지 (${ev.reason}) [지연 발사]`);
         }
         this._queuedStoppedEvents = [];
@@ -492,9 +617,11 @@ export class GPLDebugSession extends LoggingDebugSession {
             GPLDebugSession.MAX_DEBUG_POLL_INTERVAL_MS,
             Math.max(GPLDebugSession.MIN_DEBUG_POLL_INTERVAL_MS, userInterval),
         );
+        this._probeTimeoutMs = getConnectionProbeTimeoutMs();
         this._log(
             `폴링 간격 적용: user=${userInterval}ms, effective=${this._pollIntervalMs}ms ` +
-            `(fast poll: ${GPLDebugSession.FAST_POLL_DELAYS_MS.join('/')}ms, 1403 trigger: on data)`
+            `(fast poll: ${GPLDebugSession.FAST_POLL_DELAYS_MS.join('/')}ms, 1403 trigger: on data, ` +
+            `프로브 타임아웃 ${this._probeTimeoutMs}ms · 연속 ${GPLDebugSession.MAX_POLL_FAILURES}회 실패 시 종료)`
         );
 
         // GitHub #28 / #22: 세션 동안 고정되는 디버그 설정 — attach 시 1회만 읽어 필드에 보관한다.
@@ -559,6 +686,17 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (!this._projectName) {
             this._projectName = await this._detectProjectName();
         }
+        // 프로젝트명은 Start/Break/Show Global 등 모든 디버그 명령의 인자로 들어간다. 제어기 콘솔은 인자를
+        // 공백으로 구분하므로 공백이 든 이름으로는 세션을 열지 않는다(명령이 끊겨 다른 대상을 건드릴 수 있음).
+        if (this._projectName) {
+            const nameCheck = checkProjectName(this._projectName);
+            if (!nameCheck.ok) {
+                const reason = describeProjectNameProblem(this._projectName, 'project', nameCheck);
+                this._log(`✘ ${reason}`);
+                this.sendErrorResponse(response, { id: 1004, format: `디버그 시작 중단 — ${reason}` });
+                return;
+            }
+        }
 
         // Optional preflight: stop all threads and clear existing breakpoints for clean session.
         // clearProjectBreakpointsOnAttach 기본값: true (이전 세션의 잔재 BP로 인한 중복 설정 방지)
@@ -566,6 +704,12 @@ export class GPLDebugSession extends LoggingDebugSession {
         const clearProjectBreakpointsOnAttach = args.clearProjectBreakpointsOnAttach !== false;
         // 세션 종료(disconnect) 시 프로그램 정지 여부를 기억해 둔다.
         this._stopAllOnDisconnect = args.stopAllOnDisconnect === true;
+        this._startStackSizeKb = typeof args.startStackSizeKb === 'number' ? args.startStackSizeKb : undefined;
+        this._startShowInitStatements = args.startShowInitStatements === true;
+        this._startTrace = args.startTrace === true;
+        if (this._startTrace) {
+            this._log('⚠ Start -trace: 실행 문장을 콘솔에 표시합니다 — 공식 문서가 성능 저하를 경고합니다(진단용).');
+        }
         if (stopAllBeforeAttach || clearProjectBreakpointsOnAttach) {
             await this._runAttachPreflight(stopAllBeforeAttach, clearProjectBreakpointsOnAttach);
         }
@@ -592,8 +736,9 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._pendingAction = 'entry';
             // -break 진입 시작은 첫 줄에서 즉시 정지하므로(모션은 사용자가 continue해야 시작)
             // 자동 Start 확인 게이트(gpl.controller.requireStartConfirmation) 대상이 아니다.
-            const startResp = await this._sendCmd(`Start ${this._projectName} -break -bex`);
-            this._log(`Start ${this._projectName} -break -bex (stopOnEntry)`);
+            const entryStartCmd = this._buildStartCommand({ breakOnEntry: true, breakOnException: true });
+            const startResp = await this._sendCmd(entryStartCmd);
+            this._log(`${entryStartCmd} (stopOnEntry)`);
             if (startResp) {
                 const cleaned = startResp.replace(/<[^>]+>/g, '').trim();
                 if (cleaned) { this._log(`  Start 응답: ${cleaned.split(/\r?\n/)[0]}`); }
@@ -667,7 +812,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (this._isConnected && this._projectName) {
             for (const [file, lines] of this._breakpoints) {
                 for (const line of lines) {
-                    await this._sendCmd(this._bpCommand('Nobreak', this._projectName, file, line));
+                    await this._sendBpCommandWithFallback('Nobreak', this._projectName, file, line);
                 }
             }
             this._log('모든 브레이크포인트 해제 완료');
@@ -693,6 +838,8 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         this._breakpoints.clear();
         this._knownThreadNames.clear();
+        // 스레드 실행 잠금은 세션 한정 — 해제 이벤트로 확장 상태바까지 내린다.
+        this._setLockedThread(undefined);
         this._isConnected = false;
         this._configurationDone = false;
         this._queuedStoppedEvents = [];
@@ -753,7 +900,11 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
         }
         for (const line of existingLines) {
-            await this._sendCmd(this._bpCommand('Nobreak', proj, baseName, line));
+            // 이 파일의 프로시저 이름 BP(함수 BP)는 별도 목록이 관리한다 — 파일 정리에 휩쓸리지 않게 남긴다.
+            if (this._functionBps.some(f => f.file.toLowerCase() === baseName.toLowerCase() && f.line === line)) {
+                continue;
+            }
+            await this._sendBpCommandWithFallback('Nobreak', proj, baseName, line);
         }
 
         // Set new breakpoints using correct Brooks syntax (GDE 캡처 기준):
@@ -769,7 +920,27 @@ export class GPLDebugSession extends LoggingDebugSession {
         // BreakpointEvent('changed') 로 상태를 바꾸려면 id 가 필요 — 파일 단위로 새로 부여(직전 세트는 폐기)
         const idMap = new Map<number, number>();
 
-        for (const line of clientLines) {
+        // 조건부 BP / 히트 조건 / 로그포인트 메타(설정이 꺼져 있으면 수집하지 않는다 — capability 미선언이라 오지도 않는다)
+        const clientSideBpLogic = this._clientSideBpLogicEnabled();
+        const metaForFile = new Map<number, BreakpointMeta>();
+
+        for (const requestedLine of clientLines) {
+            // 문서 규칙: 빈 줄·주석을 지정하면 제어기가 다음 실행 문장으로 옮긴다.
+            // 어느 줄로 옮겨지는지 미리 계산해 그 줄로 설정하고 응답에도 그 줄을 돌려준다
+            // (그러지 않으면 VS Code 의 BP 표시와 실제 정지 줄이 어긋난다).
+            const adjusted = this._adjustBreakpointLine(baseName, requestedLine);
+            const line = adjusted.line;
+            if (clientSideBpLogic) {
+                const src = (args.breakpoints ?? []).find(b => b.line === requestedLine);
+                if (src && (src.condition || src.hitCondition || src.logMessage)) {
+                    metaForFile.set(line, {
+                        condition: src.condition,
+                        hitCondition: src.hitCondition,
+                        logMessage: src.logMessage,
+                        hits: 0,
+                    });
+                }
+            }
             const cmd = this._bpCommand('Break', proj, baseName, line);
             const resp = await this._sendCmd(cmd);
             // "Duplicate breakpoint" 응답은 컨트롤러에 이미 동일 BP가 있다는 뜻이다.
@@ -777,7 +948,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             let finalResp = resp;
             if (resp !== null && /Duplicate breakpoint/i.test(resp)) {
                 this._log(`⚠ Duplicate BP 감지, 재설정: ${cmd}`);
-                await this._sendCmd(this._bpCommand('Nobreak', proj, baseName, line));
+                await this._sendBpCommandWithFallback('Nobreak', proj, baseName, line);
                 finalResp = await this._sendCmd(cmd);
             }
             const verified = finalResp !== null && isSuccess(finalResp);
@@ -792,6 +963,21 @@ export class GPLDebugSession extends LoggingDebugSession {
                 this._log(`⚠ BP 설정 실패: ${cmd} → ${msg}`);
             } else if (staleMessage) {
                 bp.message = staleMessage;
+            } else if (adjusted.moved) {
+                // 옮겨진 이유를 알려 준다 — 사용자가 지정한 줄과 실제 정지 줄이 달라 보이는 것을 설명.
+                bp.message = `요청한 ${requestedLine}줄은 빈 줄/주석이라 다음 실행 문장(${line}줄)에 설정했습니다(제어기 동작과 동일).`;
+            }
+            if (adjusted.moved) {
+                this._log(`BP 줄 보정: ${baseName}:${requestedLine} → ${line} (빈 줄/주석 — 문서 규칙)`);
+            }
+            const meta = metaForFile.get(line);
+            if (meta) {
+                const kinds = [
+                    meta.condition ? `조건 \`${meta.condition}\`` : undefined,
+                    meta.hitCondition ? `히트 조건 \`${meta.hitCondition}\`` : undefined,
+                    meta.logMessage !== undefined ? '로그포인트' : undefined,
+                ].filter(Boolean).join(', ');
+                this._log(`클라이언트 측 BP 로직: ${baseName}:${line} — ${kinds} (적중 시 평가 후 필요하면 자동 Continue)`);
             }
             actualBreakpoints.push(bp);
             if (verified) {
@@ -801,6 +987,7 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         this._bpIds.set(baseKey, idMap);
         this._breakpoints.set(baseName, newLines);
+        this._bpMeta.set(baseKey, metaForFile);
         if (staleEntry && newLines.size > 0) {
             this._log(`⚠ stale 파일 BP: ${baseName} [${[...newLines].join(', ')}] — 제어기에는 설정했으나 신뢰 불가 (${staleEntry.relPath}, GitHub #21)`);
         }
@@ -819,6 +1006,7 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         response.body = { breakpoints: actualBreakpoints };
         this.sendResponse(response);
+        this._warnIfBreakpointLimitExceeded();
     }
 
     // ═══════════════════════════════════════════════════════
@@ -1189,6 +1377,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         response: DebugProtocol.ContinueResponse,
         args: DebugProtocol.ContinueArguments,
     ): Promise<void> {
+        // 스레드 단일 실행 잠금: 포커스가 다른 스레드로 옮겨갔어도 잠근 스레드에만 보낸다.
+        args.threadId = this._resolveExecutionTarget('Continue', args.threadId, args.singleThread);
         const threadName = this._threadIdToName.get(args.threadId);
         // GitHub #28: 이전 step/continue 의 정지 확인 전(또는 최소 간격 미달)이면 제어기에 보내지 않고
         // 성공 응답만 — 에러 응답은 키 반복 중 팝업 폭주를 만든다. UI 복귀는 _afterGatedStepRequest 참조.
@@ -1248,6 +1438,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         response: DebugProtocol.NextResponse,
         args: DebugProtocol.NextArguments,
     ): Promise<void> {
+        args.threadId = this._resolveExecutionTarget('Step over', args.threadId, args.singleThread);
         const threadName = this._threadIdToName.get(args.threadId);
         // GitHub #28 게이트 — continueRequest 의 설명 참조
         const gate = threadName ? this._gateStepRequest('Step', args.threadId) : null;
@@ -1279,6 +1470,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         response: DebugProtocol.StepInResponse,
         args: DebugProtocol.StepInArguments,
     ): Promise<void> {
+        args.threadId = this._resolveExecutionTarget('Step into', args.threadId, args.singleThread);
         const threadName = this._threadIdToName.get(args.threadId);
         // GitHub #28 게이트 — F12(step into) 홀드가 사고의 실제 경로였다. continueRequest 의 설명 참조
         const gate = threadName ? this._gateStepRequest('Step', args.threadId) : null;
@@ -1295,9 +1487,18 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._pendingThreadId = args.threadId;
             this._userActionInFlight = true;
             try {
-                // GDE 캡처: step into = `Step <proj> -noerror` (-into 플래그 없음)
-                await this._sendCmd(`Step ${threadName} -noerror`);
-                this._log(`Step ${threadName} -noerror (into)`);
+                // Step Into Target: 대상이 지정되면(targetId > 0) 제어기에 대상 지정 스위치가 없으므로
+                // 정의 위치에 임시 BP + Continue 로 진입한다. 실패하면 기본 Step 으로 되돌린다.
+                const viaTarget = args.targetId !== undefined && args.targetId > 0
+                    && await this._stepIntoTargetViaTempBreakpoint(threadName, args.targetId);
+                if (viaTarget) {
+                    // 임시 BP 도달을 기다리는 동안은 continue 상태로 둔다(Step 완료 판정과 구분).
+                    this._pendingAction = 'continue';
+                } else {
+                    // GDE 캡처: step into = `Step <proj> -noerror` (-into 플래그 없음)
+                    await this._sendCmd(`Step ${threadName} -noerror`);
+                    this._log(`Step ${threadName} -noerror (into)`);
+                }
             } finally {
                 this._userActionInFlight = false;
             }
@@ -1310,6 +1511,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         response: DebugProtocol.StepOutResponse,
         args: DebugProtocol.StepOutArguments,
     ): Promise<void> {
+        args.threadId = this._resolveExecutionTarget('Step out', args.threadId, args.singleThread);
         const threadName = this._threadIdToName.get(args.threadId);
         // GitHub #28 게이트 — continueRequest 의 설명 참조
         const gate = threadName ? this._gateStepRequest('Step', args.threadId) : null;
@@ -1409,7 +1611,8 @@ export class GPLDebugSession extends LoggingDebugSession {
             const state = name ? this._previousThreadStates.get(name) : undefined;
             if (state === 'Break' || state === 'Paused' || state === 'Error') {
                 // 원래 정지 reason 은 보관하지 않으므로 gplFocusThread 와 같은 상태 기반 근사치(UI 라벨에만 영향)
-                this.sendEvent(new StoppedEvent(state === 'Error' ? 'exception' : 'breakpoint', threadId));
+                // 잠금 중이면 preserveFocusHint 가 함께 붙어 포커스를 잠근 스레드에 남긴다.
+                this.sendEvent(this._stoppedEvent(state === 'Error' ? 'exception' : 'breakpoint', threadId));
                 this._log(`Step 게이트: 무시한 요청 뒤 UI 복귀용 StoppedEvent 재발사 (${name}, 제어기 명령 없음)`);
             }
         }, wait));
@@ -1439,6 +1642,663 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     // ═══════════════════════════════════════════════════════
+    // 스레드 단일 실행 잠금 (threadLock.ts)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * 실행(Continue/Step) 명령을 보낼 스레드를 확정한다.
+     *
+     * 잠금이 걸려 있으면 VS Code 포커스가 어느 스레드에 있든 잠근 스레드로 되돌린다 — 다른
+     * 스레드가 브레이크포인트에 걸려 포커스를 가져간 상태에서 F5/F10 을 눌러 **의도하지 않은
+     * 스레드를 움직이는 사고**를 막는 것이 목적이다. 잠근 스레드가 종료돼 목록에 없으면 잠금을
+     * 해제하고 요청을 그대로 통과시킨다. 추가 스레드를 재개하는 일은 없다(하드 규칙 6).
+     */
+    private _resolveExecutionTarget(action: string, requestedThreadId: number, singleThread?: boolean): number {
+        if (isAllThreadsResumeRequest(singleThread)) {
+            // DAP 상 '모든 스레드 재개' 요청. 제어기 실행 명령은 스레드 단위이고 여러 스레드를
+            // 자동 재개하면 모션 영향이 커지므로, 요청 스레드만 재개하고 사실을 남긴다.
+            this._log(`${action}: 모든 스레드 재개 요청이지만 스레드 단위로만 보냅니다(요청 스레드 1개).`);
+        }
+
+        const decision = resolveExecutionThread({
+            lockedName: this._lockedThreadName,
+            requestedThreadId,
+            threadNameToId: this._threadNameToId,
+        });
+
+        if (decision.staleLock) {
+            this._log(`스레드 잠금 해제: 잠근 스레드 ${decision.lockedName} 가 목록에 없습니다(종료됨).`);
+            this._setLockedThread(undefined);
+            return decision.targetThreadId;
+        }
+
+        if (decision.redirected) {
+            this._lockRedirectCount++;
+            if (this._lockRedirectCount === 1) {
+                const from = this._threadIdToName.get(requestedThreadId) ?? `#${requestedThreadId}`;
+                this._log(
+                    `스레드 잠금: ${action} 대상을 ${from} → ${decision.lockedName} 로 되돌렸습니다 `
+                    + '(잠금 해제: 상태바 자물쇠 또는 GPL: 스레드 실행 잠금 해제).',
+                );
+            }
+        }
+        return decision.targetThreadId;
+    }
+
+    /**
+     * 잠금 상태 변경 + 되돌림 카운터 리셋. 확장 UI(상태바)가 어댑터 쪽 자동 해제(잠근 스레드 종료 등)를
+     * 따라올 수 있도록 `gpl.threadLockChanged` 이벤트를 함께 보낸다.
+     */
+    private _setLockedThread(name: string | undefined): void {
+        const changed = this._lockedThreadName !== name;
+        this._lockedThreadName = name;
+        this._lockRedirectCount = 0;
+        if (changed) {
+            this.sendEvent(new Event('gpl.threadLockChanged', { threadName: name ?? null }));
+            // CALL STACK 라벨의 자물쇠 표시를 바로 반영 — 목록 캐시를 무효화해 threadsRequest 가
+            // 새 라벨을 만들게 한다(읽기 전용 Show Thread 1왕복, 실행 명령 없음).
+            this._lastThreadListAt = 0;
+            if (this._configurationDone) { this.sendEvent(new InvalidatedEvent(['threads'])); }
+        }
+    }
+
+    /**
+     * StoppedEvent 생성 — 잠금이 걸려 있고 정지한 스레드가 잠근 스레드가 아니면
+     * `preserveFocusHint` 를 붙여 VS Code 가 포커스를 그쪽으로 훔치지 않게 한다
+     * (VS Code 1.135 가 이 힌트를 실제로 존중하는 것을 본체 번들에서 확인 — 2026-08-28).
+     * BREAKPOINTS/CALL STACK 의 정지 표시 자체는 그대로 갱신된다.
+     */
+    private _stoppedEvent(reason: string, threadId: number, opts?: { forceFocus?: boolean }): StoppedEvent {
+        const ev = new StoppedEvent(reason, threadId);
+        const body = ev.body as DebugProtocol.StoppedEvent['body'];
+        // 제어기의 정지는 항상 스레드 단위다 — 전체 정지를 만들지 않으므로 명시적 false.
+        body.allThreadsStopped = false;
+        // forceFocus 는 사용자가 그 스레드를 직접 지목한 전환(gplFocusThread)에만 쓴다.
+        // 다른 곳에서 켜면 잠금이 조용히 무력화된다.
+        if (!opts?.forceFocus
+            && shouldPreserveFocus(this._lockedThreadName, this._threadIdToName.get(threadId))) {
+            body.preserveFocusHint = true;
+        }
+        return ev;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // 소스 분석 기반 기능 (sourceTargets.ts) — BP 유효 줄 / 함수 BP / Step Into Target / Jump to Cursor
+    // ═══════════════════════════════════════════════════════
+
+    /** `gpl.debug.jumpToCursor`: 'warn'(기본, 경고 확인 후 실행) | 'on'(경고 없이) | 'off'(기능 비활성). */
+    private _jumpToCursorMode(): 'warn' | 'on' | 'off' {
+        const v = vscode.workspace.getConfiguration('gpl').get<string>('debug.jumpToCursor', 'warn');
+        return v === 'on' || v === 'off' ? v : 'warn';
+    }
+
+    /** `gpl.debug.clientSideBreakpointLogic`(기본 false): 조건부 BP·히트 조건·로그포인트 흉내. */
+    private _clientSideBpLogicEnabled(): boolean {
+        return vscode.workspace.getConfiguration('gpl').get<boolean>('debug.clientSideBreakpointLogic', false) === true;
+    }
+
+    /** `gpl.debug.integerHex`(기본 false): 정수 값에 16진수 표기를 병기. */
+    private _integerHexEnabled(): boolean {
+        return vscode.workspace.getConfiguration('gpl').get<boolean>('debug.integerHex', false) === true;
+    }
+
+    /**
+     * 디버거가 보내는 `Start` 명령을 문서 구문(startCommand.ts)으로 조립한다.
+     * `-event`(GDE 기본), `-stack`, `-init`, `-trace` 는 설정·launch 구성에서 온다.
+     * `-compile` 은 붙이지 않는다(Start 가 자체 컴파일 — 하드 규칙 7).
+     */
+    private _buildStartCommand(extra: { breakOnEntry?: boolean; breakOnException?: boolean }): string {
+        const cfg = vscode.workspace.getConfiguration('gpl');
+        return buildStartCommand({
+            projectName: this._projectName ?? '',
+            eventMode: cfg.get<boolean>('controller.startEventMode', true),
+            breakOnEntry: extra.breakOnEntry,
+            breakOnException: extra.breakOnException,
+            stackSizeKb: this._startStackSizeKb,
+            showInitStatements: this._startShowInitStatements,
+            trace: this._startTrace,
+        });
+    }
+
+    /** basename → 소스 줄 배열(읽기 실패 시 undefined). 파일 시스템 접근만 — 제어기 명령 없음. */
+    private _readSourceLines(baseName: string): string[] | undefined {
+        try {
+            const filePath = this._resolveSourcePath(baseName);
+            return fs.readFileSync(filePath, 'utf-8').split(/\r?\n/);
+        } catch {
+            return undefined;
+        }
+    }
+
+    /** basename 의 프로시저 범위(파서 + `End Sub` 기준). 소스를 못 읽으면 빈 배열. */
+    private _procedureRangesFor(baseName: string, lines?: string[]): ProcedureRange[] {
+        const src = lines ?? this._readSourceLines(baseName);
+        if (!src) { return []; }
+        let filePath: string;
+        try { filePath = this._resolveSourcePath(baseName); } catch { return []; }
+        const symbols = GPLParser.parseDocument(src.join('\n'), filePath, {
+            includeLocals: false,
+            includeParameters: false,
+        });
+        const procs = symbols
+            .filter(s => s.kind === GPLSymbolKind.Function || s.kind === GPLSymbolKind.Sub)
+            .map(s => ({ name: s.className ? `${s.className}.${s.name}` : s.name, line: s.line + 1 }));
+        return buildProcedureRanges(procs, src.length, src);
+    }
+
+    /**
+     * 제어기가 실제로 BP를 걸 줄로 보정한다(문서 규칙: 빈 줄·주석이면 다음 실행 문장).
+     * 소스를 못 읽으면 요청 줄을 그대로 쓴다(보정은 어디까지나 힌트).
+     */
+    private _adjustBreakpointLine(baseName: string, line: number): { line: number; moved: boolean } {
+        const src = this._readSourceLines(baseName);
+        if (!src) { return { line, moved: false }; }
+        const resolved = resolveBreakpointLine(src, line);
+        if (resolved === undefined || resolved === line) { return { line, moved: false }; }
+        return { line: resolved, moved: true };
+    }
+
+    /**
+     * 프로시저 이름(`Class.Proc` / `Module.Proc` / `Proc`)으로 정의 위치를 찾는다.
+     * 워크스페이스 소스맵을 훑어 Sub/Function 심볼과 이름을 맞춘다(제어기 명령 없음).
+     */
+    private _findProcedureDefinitions(name: string): { file: string; line: number; label: string }[] {
+        const wanted = name.trim().toLowerCase();
+        if (!wanted) { return []; }
+        const wantedTail = wanted.includes('.') ? wanted.split('.').pop()! : wanted;
+        const out: { file: string; line: number; label: string }[] = [];
+
+        for (const [key, candidates] of this._sourceFileMap) {
+            const filePath = this._pickSourcePath(key, candidates);
+            if (this._projectDirs.length > 0
+                && !this._projectDirs.some(d => this._isPathUnder(filePath, d))) { continue; }
+            let content: string;
+            try { content = fs.readFileSync(filePath, 'utf-8'); } catch { continue; }
+            const symbols = GPLParser.parseDocument(content, filePath, {
+                includeLocals: false,
+                includeParameters: false,
+            });
+            const lines = content.split(/\r?\n/);
+            const procs = symbols
+                .filter(s => s.kind === GPLSymbolKind.Function || s.kind === GPLSymbolKind.Sub);
+            const ranges = buildProcedureRanges(
+                procs.map(s => ({ name: s.name, line: s.line + 1 })),
+                lines.length,
+                lines,
+            );
+            for (const s of procs) {
+                const qualified = [
+                    s.className ? `${s.className}.${s.name}` : undefined,
+                    s.module ? `${s.module}.${s.name}` : undefined,
+                    s.name,
+                ].filter(Boolean).map(v => v!.toLowerCase());
+                const matches = qualified.includes(wanted)
+                    || (!wanted.includes('.') && s.name.toLowerCase() === wantedTail);
+                if (!matches) { continue; }
+                const header = s.line + 1;
+                const range = ranges.find(r => r.start === header);
+                // 헤더 다음 줄부터 첫 실행 문장을 찾는다(헤더 자체는 실행 명령이 아니다).
+                const bpLine = resolveBreakpointLine(lines, header + 1, range);
+                if (bpLine === undefined) { continue; }
+                out.push({
+                    file: path.basename(filePath),
+                    line: bpLine,
+                    label: s.className ? `${s.className}.${s.name}` : s.name,
+                });
+            }
+        }
+        return out;
+    }
+
+    /**
+     * BP 유효 줄 힌트 — VS Code 가 이 구간에서 BP를 걸 수 있는 줄을 물어본다.
+     * 제어기 명령을 보내지 않고 로컬 파서로만 답한다.
+     */
+    protected breakpointLocationsRequest(
+        response: DebugProtocol.BreakpointLocationsResponse,
+        args: DebugProtocol.BreakpointLocationsArguments,
+    ): void {
+        const baseName = path.basename(args.source.path || '');
+        const src = baseName ? this._readSourceLines(baseName) : undefined;
+        if (!src) {
+            // 소스를 못 읽으면 요청 구간을 그대로 허용한다(힌트를 못 준다고 BP를 막지는 않는다).
+            const from = args.line;
+            const to = args.endLine ?? args.line;
+            const all: DebugProtocol.BreakpointLocation[] = [];
+            for (let l = from; l <= to; l++) { all.push({ line: l }); }
+            response.body = { breakpoints: all };
+            this.sendResponse(response);
+            return;
+        }
+        const ranges = this._procedureRangesFor(baseName, src);
+        const lines = breakpointCandidateLines(src, ranges, args.line, args.endLine ?? args.line);
+        response.body = { breakpoints: lines.map(l => ({ line: l })) };
+        this.sendResponse(response);
+    }
+
+    /**
+     * 프로시저 이름 브레이크포인트. 이름 → (파일, 첫 실행 줄) 로 바꿔 `Set Break` 를 보낸다.
+     * 소스 BP 와 같은 파일에 있을 수 있으므로 목록을 따로 들고 있고,
+     * `setBreakPointsRequest` 의 파일 단위 정리에서 이 줄들은 건드리지 않는다.
+     */
+    protected async setFunctionBreakPointsRequest(
+        response: DebugProtocol.SetFunctionBreakpointsResponse,
+        args: DebugProtocol.SetFunctionBreakpointsArguments,
+    ): Promise<void> {
+        const proj = this._projectName;
+        const requested = args.breakpoints ?? [];
+
+        if (!proj) {
+            response.body = {
+                breakpoints: requested.map(() => ({
+                    verified: false,
+                    message: '프로젝트를 감지할 수 없습니다. launch.json에 projectName을 지정하세요.',
+                }) as DebugProtocol.Breakpoint),
+            };
+            this.sendResponse(response);
+            return;
+        }
+
+        // 이전 함수 BP 해제 — 같은 줄에 소스 BP 가 있으면 남겨 둔다.
+        for (const prev of this._functionBps) {
+            const sourceLines = this._breakpoints.get(prev.file);
+            if (sourceLines?.has(prev.line)) { continue; }
+            await this._sendBpCommandWithFallback('Nobreak', proj, prev.file, prev.line);
+        }
+        this._functionBps = [];
+
+        const result: DebugProtocol.Breakpoint[] = [];
+        for (const req of requested) {
+            const defs = this._findProcedureDefinitions(req.name);
+            if (defs.length === 0) {
+                result.push({
+                    verified: false,
+                    message: `프로시저 '${req.name}'를 워크스페이스에서 찾지 못했습니다. Class.Proc 형태로 지정해 보세요.`,
+                } as DebugProtocol.Breakpoint);
+                continue;
+            }
+            if (defs.length > 1) {
+                this._log(`함수 BP '${req.name}': 정의 ${defs.length}개 발견 — 첫 번째(${defs[0].file}:${defs[0].line}) 사용`);
+            }
+            const def = defs[0];
+            const resp = await this._sendCmd(this._bpCommand('Break', proj, def.file, def.line));
+            const verified = resp !== null && (isSuccess(resp) || /Duplicate breakpoint/i.test(resp));
+            const bp: DebugProtocol.Breakpoint = {
+                verified,
+                id: ++this._bpIdCounter,
+                line: def.line,
+                source: { name: def.file, path: this._safeResolveSourcePath(def.file) },
+            };
+            if (!verified) {
+                bp.message = resp ? resp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0] : '응답 없음';
+            } else {
+                this._functionBps.push({ name: req.name, file: def.file, line: def.line, id: bp.id! });
+                this._log(`함수 BP: ${def.label} → ${def.file}:${def.line}`);
+            }
+            result.push(bp);
+        }
+
+        response.body = { breakpoints: result };
+        this.sendResponse(response);
+        this._warnIfBreakpointLimitExceeded();
+    }
+
+    /** 소스 경로 해석 실패를 예외 없이 흘려보낸다(BP 응답의 source 표기용). */
+    private _safeResolveSourcePath(baseName: string): string | undefined {
+        try { return this._resolveSourcePath(baseName); } catch { return undefined; }
+    }
+
+    /**
+     * `gpl.debug.integerHex` 가 켜져 있으면 정수 값에 16진수 표기를 병기한다
+     * (`&H` 는 GPL 의 16진수 리터럴 표기 — DataID 마스크·비트 플래그를 읽을 때 유용).
+     * 값이 정수가 아니면 그대로 돌려준다. VS Code 는 DAP `supportsValueFormattingOptions` 를
+     * 소비하지 않으므로(1.135 번들 확인) 표준 hex 토글 대신 이 설정으로 제공한다.
+     */
+    private _withHexHint(value: string): string {
+        if (!this._integerHexEnabled()) { return value; }
+        const text = value.trim();
+        if (!/^-?\d+$/.test(text)) { return value; }
+        const n = Number(text);
+        if (!Number.isSafeInteger(n) || (n > -16 && n < 16)) { return value; }
+        const hex = n < 0
+            ? `-&H${Math.abs(n).toString(16).toUpperCase()}`
+            : `&H${n.toString(16).toUpperCase()}`;
+        return `${value} (${hex})`;
+    }
+
+    /** 문서 제약: 동시 BP는 최대 32개. 넘으면 제어기가 거부할 수 있으므로 알린다. */
+    private _warnIfBreakpointLimitExceeded(): void {
+        let total = this._functionBps.length;
+        for (const lines of this._breakpoints.values()) { total += lines.size; }
+        if (total > 32) {
+            this._log(`⚠ 브레이크포인트 ${total}개 — 공식 문서상 동시 상한은 32개입니다. 초과분은 제어기가 거부할 수 있습니다.`);
+        }
+    }
+
+    /**
+     * Jump to Cursor 후보 — 문서(`Set Thread -line`)상 새 줄은 **현재 줄과 같은 프로시저 안**이어야 하고
+     * 실행 가능한 문장이어야 한다. 두 조건을 로컬에서 확인해 통과할 때만 후보를 돌려준다.
+     */
+    protected gotoTargetsRequest(
+        response: DebugProtocol.GotoTargetsResponse,
+        args: DebugProtocol.GotoTargetsArguments,
+    ): void {
+        response.body = { targets: [] };
+        if (this._jumpToCursorMode() === 'off') {
+            this.sendResponse(response);
+            return;
+        }
+
+        const baseName = path.basename(args.source.path || '');
+        const src = baseName ? this._readSourceLines(baseName) : undefined;
+        const threadName = this._lockedThreadName ?? this._findBreakThread();
+        const frames = threadName ? this._cachedFrames.get(threadName) : undefined;
+        const current = frames?.[0];
+
+        if (!src || !current) {
+            this.sendResponse(response);
+            return;
+        }
+        if (current.file && current.file.toLowerCase() !== baseName.toLowerCase()) {
+            // 다른 파일 — 문서상 같은 프로시저여야 하므로 대상이 될 수 없다.
+            this.sendResponse(response);
+            return;
+        }
+
+        const ranges = this._procedureRangesFor(baseName, src);
+        const currentProc = enclosingProcedure(ranges, current.fileLine);
+        const targetLine = resolveBreakpointLine(src, args.line, currentProc);
+        if (!currentProc || targetLine === undefined) {
+            this.sendResponse(response);
+            return;
+        }
+        if (!enclosingProcedure(ranges, targetLine) || enclosingProcedure(ranges, targetLine)!.start !== currentProc.start) {
+            this.sendResponse(response);
+            return;
+        }
+
+        const id = ++this._targetIdCounter;
+        this._gotoTargetHandles.set(id, { file: baseName, line: targetLine, procedure: currentProc.name });
+        response.body = {
+            targets: [{
+                id,
+                label: `${currentProc.name}:${targetLine} 로 이동 (건너뛴 문장은 실행되지 않습니다)`,
+                line: targetLine,
+            }],
+        };
+        this.sendResponse(response);
+    }
+
+    /**
+     * Jump to Cursor 실행 — `Set Thread <thread> -line <n>`.
+     *
+     * 위험: 지정 줄까지의 문장이 실행되지 않으므로 초기화·안전 조건을 건너뛴 상태로 진행할 수 있다
+     * (모션 영향 가능 — §0 하드 규칙 6). 그래서 기본값(`gpl.debug.jumpToCursor: "warn"`)에서는
+     * 실행 전에 모달로 확인을 받는다. 기능 자체를 막지는 않는다(사용자 결정 2026-08-28).
+     */
+    protected async gotoRequest(
+        response: DebugProtocol.GotoResponse,
+        args: DebugProtocol.GotoArguments,
+    ): Promise<void> {
+        const mode = this._jumpToCursorMode();
+        const target = this._gotoTargetHandles.get(args.targetId);
+        const threadName = this._threadIdToName.get(args.threadId);
+
+        if (mode === 'off') {
+            this.sendErrorResponse(response, 1201, 'Jump to Cursor 가 비활성화되어 있습니다(gpl.debug.jumpToCursor).');
+            return;
+        }
+        if (!target || !threadName) {
+            this.sendErrorResponse(response, 1202, '이동 대상을 확인할 수 없습니다. 정지된 쓰레드에서 다시 시도하세요.');
+            return;
+        }
+
+        if (mode === 'warn') {
+            const pick = await vscode.window.showWarningMessage(
+                `다음 실행 문장을 ${target.file}:${target.line} (${target.procedure})로 옮깁니다.`,
+                {
+                    modal: true,
+                    detail: '건너뛴 문장은 실행되지 않습니다 — 변수 초기화·안전 조건·전원/그리퍼 상태 설정이 빠진 채 진행될 수 있고, '
+                        + '그 상태로 모션 명령이 실행되면 예상과 다르게 움직일 수 있습니다.\n\n'
+                        + '저속·시뮬레이션에서 먼저 확인하세요. 이 확인창은 gpl.debug.jumpToCursor 를 "on"으로 두면 생략됩니다.',
+                },
+                '이동',
+            );
+            if (pick !== '이동') {
+                this.sendErrorResponse(response, 1203, 'Jump to Cursor 취소됨(사용자 확인 없음).');
+                return;
+            }
+        }
+
+        const cmd = `Set Thread ${threadName} -line ${target.line}`;
+        const resp = await this._sendCmd(cmd);
+        if (resp === null || !isSuccess(resp)) {
+            const msg = resp ? resp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0] : '응답 없음';
+            this._log(`⚠ ${cmd} 실패 → ${msg}`);
+            this.sendErrorResponse(response, 1204, `Set Thread -line 실패: ${msg}`);
+            return;
+        }
+        this._log(`${cmd} → 다음 실행 문장을 ${target.file}:${target.line} 로 옮겼습니다(건너뛴 문장 미실행)`);
+
+        this.sendResponse(response);
+        // DAP: goto 응답 뒤 StoppedEvent(reason 'goto')로 새 위치를 알린다.
+        this._clearStaleState();
+        this._prefetchFramesAfterStop(threadName);
+        if (this._configurationDone) {
+            this.sendEvent(this._stoppedEvent('goto', args.threadId, { forceFocus: true }));
+        }
+    }
+
+    /**
+     * Step Into Target 후보 — 현재 줄의 호출 중 정의를 찾을 수 있는 것만 돌려준다.
+     * 첫 항목은 항상 "기본 Step Into"(제어기 `Step -noerror`)로 둬서 종전 동작을 유지한다.
+     */
+    protected stepInTargetsRequest(
+        response: DebugProtocol.StepInTargetsResponse,
+        args: DebugProtocol.StepInTargetsArguments,
+    ): void {
+        response.body = { targets: [] };
+        const info = this._frameIdToInfo.get(args.frameId);
+        const frames = info ? this._cachedFrames.get(info.threadName) : undefined;
+        const frame = frames?.[info?.frameIndex ?? 0];
+        if (!frame?.file || frame.fileLine <= 0) {
+            this.sendResponse(response);
+            return;
+        }
+        const src = this._readSourceLines(frame.file);
+        const lineText = src?.[frame.fileLine - 1];
+        if (!lineText) {
+            this.sendResponse(response);
+            return;
+        }
+
+        const targets: DebugProtocol.StepInTarget[] = [];
+        // id 0 = 기본 Step Into(대상 지정 없음)
+        targets.push({ id: 0, label: '기본 Step Into (제어기가 정한 대상)' });
+
+        for (const call of parseCallTargets(lineText)) {
+            const defs = this._findProcedureDefinitions(call.receiver ? call.name : call.label);
+            if (defs.length === 0) { continue; }
+            const def = defs[0];
+            const id = ++this._targetIdCounter;
+            this._stepInTargetHandles.set(id, { label: call.label, file: def.file, line: def.line });
+            targets.push({
+                id,
+                label: `${call.label} → ${def.file}:${def.line}`,
+                line: frame.fileLine,
+                column: call.column + 1,
+            });
+        }
+
+        response.body = { targets };
+        this.sendResponse(response);
+    }
+
+    /**
+     * Step Into Target 실행 — 제어기 `Step` 에는 대상 지정 스위치가 없으므로
+     * 정의 위치에 **임시 BP** 를 걸고 Continue 한다(MCP `run_to_line` 과 같은 방식).
+     * 임시 BP는 다음 정지 시 정리한다. 대상에 도달하지 못하면 그 스레드는 계속 실행되므로
+     * 실패 시에는 임시 BP를 즉시 걷어내고 기본 Step 으로 되돌린다.
+     *
+     * @returns true = 임시 BP + Continue 로 처리함(호출측은 Step 명령을 보내지 않는다)
+     */
+    private async _stepIntoTargetViaTempBreakpoint(threadName: string, targetId: number): Promise<boolean> {
+        const target = this._stepInTargetHandles.get(targetId);
+        const proj = this._projectName;
+        if (!target || !proj) { return false; }
+
+        const setResp = await this._sendCmd(this._bpCommand('Break', proj, target.file, target.line));
+        const ok = setResp !== null && (isSuccess(setResp) || /Duplicate breakpoint/i.test(setResp));
+        if (!ok) {
+            this._log(`⚠ Step Into Target: 임시 BP 설정 실패(${target.file}:${target.line}) — 기본 Step 으로 진행`);
+            return false;
+        }
+        const existing = this._tempBreakpoints.get(target.file.toLowerCase()) ?? new Set<number>();
+        existing.add(target.line);
+        this._tempBreakpoints.set(target.file.toLowerCase(), existing);
+
+        const contResp = await this._sendCmd(`Continue ${threadName}`);
+        if (contResp === null || !isSuccess(contResp)) {
+            const msg = contResp ? contResp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0] : '응답 없음';
+            this._log(`⚠ Step Into Target: Continue 실패(${msg}) — 임시 BP 를 정리합니다`);
+            await this._clearTempBreakpoints();
+            return false;
+        }
+        this._log(`Step Into Target: ${target.label} → 임시 BP ${target.file}:${target.line} + Continue ${threadName}`);
+        return true;
+    }
+
+    /**
+     * BP 적중 시점의 부수 처리 — ① Step Into Target 임시 BP 정리 ② 조건부 BP/히트 조건/로그포인트 판정.
+     *
+     * @returns true = 이 정지를 사용자에게 알린다(StoppedEvent 발사).
+     *          false = 조건 불일치·로그포인트여서 **자동 Continue** 했다(정지를 알리지 않는다).
+     *
+     * 자동 Continue 는 모션을 다시 움직이는 행위이므로 `gpl.debug.clientSideBreakpointLogic`(기본 false)이
+     * 켜져 있을 때만 일어난다. 조건 평가는 정지한 프레임에서 `Show Variable` 로 하며, 평가에 실패하면
+     * **정지를 유지**한다(조건을 확인하지 못한 채 지나치지 않는다).
+     */
+    private async _handleBreakpointStop(threadName: string, threadId: number): Promise<boolean> {
+        await this._clearTempBreakpoints();
+
+        if (!this._clientSideBpLogicEnabled()) { return true; }
+
+        const frames = await this._getThreadFrames(threadName);
+        const top = frames[0];
+        if (!top?.file || top.fileLine <= 0) { return true; }
+        const meta = this._bpMeta.get(top.file.toLowerCase())?.get(top.fileLine);
+        if (!meta) { return true; }
+
+        meta.hits++;
+
+        // 로그포인트: 메시지의 `{식}` 을 평가해 Debug Console 에 출력한다.
+        if (meta.logMessage !== undefined) {
+            const text = await this._interpolateLogMessage(meta.logMessage, threadName);
+            this._log(`[logpoint] ${top.file}:${top.fileLine} ${text}`);
+        }
+
+        let shouldStop = true;
+        if (meta.condition) {
+            const verdict = await this._evaluateBooleanCondition(meta.condition, threadName);
+            if (verdict === undefined) {
+                this._log(`⚠ 조건 평가 실패(${meta.condition}) — 안전하게 정지를 유지합니다`);
+                return true;
+            }
+            shouldStop = verdict;
+        }
+        if (shouldStop && meta.hitCondition) {
+            shouldStop = this._hitConditionSatisfied(meta.hitCondition, meta.hits);
+        }
+        // 로그포인트(조건 없음)는 정지하지 않고 지나가는 것이 표준 동작이다.
+        if (meta.logMessage !== undefined && !meta.condition && !meta.hitCondition) {
+            shouldStop = false;
+        }
+        if (shouldStop) { return true; }
+
+        // 자동 Continue — 정지 사실을 사용자에게 알리지 않고 실행을 이어 간다.
+        this._autoResumeCount++;
+        if (this._autoResumeCount === 1 || this._autoResumeCount % 20 === 0) {
+            this._log(
+                `조건부 BP: ${top.file}:${top.fileLine} 조건 불일치 → 자동 Continue (누적 ${this._autoResumeCount}회). `
+                + '자동 재개를 원하지 않으면 gpl.debug.clientSideBreakpointLogic 를 끄세요.',
+            );
+        }
+        this._pendingAction = 'continue';
+        this._lastResumeAt = Date.now();
+        this._pendingThreadId = threadId;
+        this._pendingContinueSawRunning = false;
+        this._pendingContinuePausedSeen = 0;
+        await this._sendCmd(`Continue ${threadName}`);
+        this._fastPoll();
+        return false;
+    }
+
+    /** 로그포인트 메시지의 `{식}` 을 정지 프레임에서 평가해 치환한다. 평가 실패는 `<?>`로 남긴다. */
+    private async _interpolateLogMessage(message: string, threadName: string): Promise<string> {
+        const parts = message.split(/(\{[^}]*\})/);
+        let out = '';
+        for (const part of parts) {
+            const m = part.match(/^\{([^}]*)\}$/);
+            if (!m) { out += part; continue; }
+            const expr = m[1].trim();
+            if (!expr) { out += part; continue; }
+            const value = await this._queryVariableStructuredSmart(threadName, 0, expr);
+            out += value?.entry?.value ?? '<?>';
+        }
+        return out;
+    }
+
+    /** 조건식을 정지 프레임에서 평가해 참/거짓으로 해석한다. 판정 불가는 undefined. */
+    private async _evaluateBooleanCondition(condition: string, threadName: string): Promise<boolean | undefined> {
+        const res = await this._queryVariableStructuredSmart(threadName, 0, condition);
+        const raw = (res?.entry?.value ?? '').trim();
+        if (!raw) { return undefined; }
+        if (/^(true|-1)$/i.test(raw)) { return true; }
+        if (/^(false|0)$/i.test(raw)) { return false; }
+        const num = Number(raw);
+        if (!Number.isNaN(num)) { return num !== 0; }
+        return undefined;
+    }
+
+    /**
+     * 히트 조건 판정 — VS Code 표기(`5`, `>5`, `>=5`, `==5`, `%5`)를 지원한다.
+     * 형식을 알 수 없으면 true(정지 유지)로 본다.
+     */
+    private _hitConditionSatisfied(hitCondition: string, hits: number): boolean {
+        const text = hitCondition.trim();
+        const m = text.match(/^(>=|<=|==|=|>|<|%)?\s*(\d+)$/);
+        if (!m) { return true; }
+        const op = m[1] ?? '>=';
+        const n = parseInt(m[2], 10);
+        switch (op) {
+            case '%': return n > 0 && hits % n === 0;
+            case '>': return hits > n;
+            case '<': return hits < n;
+            case '<=': return hits <= n;
+            case '==':
+            case '=': return hits === n;
+            default: return hits >= n;
+        }
+    }
+
+    /** Step Into Target 이 심어 둔 임시 BP 를 모두 해제한다(같은 줄에 사용자 BP 가 있으면 남긴다). */
+    private async _clearTempBreakpoints(): Promise<void> {
+        const proj = this._projectName;
+        if (!proj || this._tempBreakpoints.size === 0) { return; }
+        for (const [fileKey, lines] of this._tempBreakpoints) {
+            for (const line of lines) {
+                const userLines = this._breakpoints.get(fileKey) ?? this._breakpoints.get(fileKey.toLowerCase());
+                const isFunctionBp = this._functionBps.some(
+                    f => f.file.toLowerCase() === fileKey && f.line === line,
+                );
+                if (userLines?.has(line) || isFunctionBp) { continue; }
+                await this._sendBpCommandWithFallback('Nobreak', proj, fileKey, line);
+            }
+        }
+        this._tempBreakpoints.clear();
+    }
+
+    // ═══════════════════════════════════════════════════════
     // Custom requests — 확장 UI(GPL Controller 트리 / CALL STACK 메뉴) ↔ 어댑터 연동
     // ═══════════════════════════════════════════════════════
 
@@ -1452,6 +2312,10 @@ export class GPLDebugSession extends LoggingDebugSession {
      *   CALL STACK에서 Running 쓰레드 클릭 시 확장이 실행 위치를 열기 위한 UI 전용
      *   조회이며 제어기로 명령을 보내지 않는다. `msSinceResume`은 마지막 Continue/Step
      *   이후 경과 ms — 재개 직후 자동 포커스 이벤트를 사용자 클릭과 구분하는 용도.
+     * - `gplLockThread {name|threadId}` / `gplUnlockThread` / `gplLockState`: 스레드 단일 실행
+     *   잠금 설정·해제·조회. 잠금 중에는 Continue/Step 이 포커스와 무관하게 잠근 스레드로만
+     *   나가고, 다른 스레드의 정지는 포커스를 훔치지 않는다. 제어기 명령을 보내지 않는다.
+     * - `gplThreadList`: 잠금 대상 선택(QuickPick)용 스레드 목록 — 마지막 폴 결과 기준, 조회 없음.
      */
     protected customRequest(
         command: string,
@@ -1466,12 +2330,56 @@ export class GPLDebugSession extends LoggingDebugSession {
             const isStopped = state === 'Break' || state === 'Paused' || state === 'Error';
             if (name && id !== undefined && isStopped && this._configurationDone) {
                 // 원래 정지 reason은 보관하지 않으므로 상태 기반 근사치 사용 (UI 라벨에만 영향).
-                this.sendEvent(new StoppedEvent(state === 'Error' ? 'exception' : 'breakpoint', id));
+                // 사용자가 직접 지목한 전환이므로 잠금 중에도 포커스를 준다(forceFocus).
+                this.sendEvent(this._stoppedEvent(state === 'Error' ? 'exception' : 'breakpoint', id, { forceFocus: true }));
                 this._log(`쓰레드 ${name} 포커스 전환 (트리 클릭 연동, StoppedEvent 재발사)`);
                 response.body = { focused: true };
             } else {
                 response.body = { focused: false };
             }
+            this.sendResponse(response);
+            return;
+        }
+        if (command === 'gplLockThread') {
+            // 스레드 단일 실행 잠금 설정. name 또는 threadId 중 하나로 지정한다.
+            const byName: string | undefined = typeof args?.name === 'string' ? args.name : undefined;
+            const byId: number | undefined = typeof args?.threadId === 'number' ? args.threadId : undefined;
+            const name = byName ?? (byId !== undefined ? this._threadIdToName.get(byId) : undefined);
+            if (!name || !this._threadNameToId.has(name)) {
+                response.body = { locked: false, name: null, reason: 'unknown-thread' };
+                this.sendResponse(response);
+                return;
+            }
+            this._setLockedThread(name);
+            this._log(`스레드 실행 잠금: ${name} — Continue/Step 은 포커스와 무관하게 이 스레드에만 나갑니다.`);
+            response.body = { locked: true, name };
+            this.sendResponse(response);
+            return;
+        }
+        if (command === 'gplUnlockThread') {
+            const prev = this._lockedThreadName;
+            this._setLockedThread(undefined);
+            if (prev) { this._log(`스레드 실행 잠금 해제 (${prev}).`); }
+            response.body = { locked: false, name: null, previous: prev ?? null };
+            this.sendResponse(response);
+            return;
+        }
+        if (command === 'gplLockState') {
+            response.body = {
+                name: this._lockedThreadName ?? null,
+                redirects: this._lockRedirectCount,
+            };
+            this.sendResponse(response);
+            return;
+        }
+        if (command === 'gplThreadList') {
+            // 잠금 대상 선택용 목록(UI 전용 — 제어기 명령 없음, 마지막 폴 결과 기준).
+            const threads = [...this._threadNameToId.entries()].map(([name, id]) => ({
+                id,
+                name,
+                state: this._previousThreadStates.get(name) ?? null,
+            }));
+            response.body = { threads, locked: this._lockedThreadName ?? null };
             this.sendResponse(response);
             return;
         }
@@ -1495,6 +2403,14 @@ export class GPLDebugSession extends LoggingDebugSession {
      * 성공/실패는 §0.2대로 각 Stop 명령 자신의 STATUS로만 판정하고, 하나라도 실패하면
      * 에러 응답으로 알린다. 상태 반영은 폴링(_fastPoll)이 수행한다.
      */
+    /** 잠근 스레드가 사라지는 경로(스레드 종료 등)에서 잠금을 정리한다. */
+    private _releaseLockIfThread(name: string): void {
+        if (this._lockedThreadName === name) {
+            this._setLockedThread(undefined);
+            this._log(`스레드 잠금 해제: 잠근 스레드 ${name} 가 종료되었습니다.`);
+        }
+    }
+
     protected async terminateThreadsRequest(
         response: DebugProtocol.TerminateThreadsResponse,
         args: DebugProtocol.TerminateThreadsArguments,
@@ -1513,6 +2429,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     const st = parseStatus(resp ?? '');
                     if (st.code === 0) {
                         this._log(`Stop ${name} (스레드 종료 메뉴) → STATUS 0`);
+                        this._releaseLockIfThread(name);
                     } else {
                         this._log(`⚠ Stop ${name} (스레드 종료 메뉴) 실패 → STATUS ${st.code}${st.message ? `: ${st.message}` : ''}`);
                         failures.push(`${name}: STATUS ${st.code}${st.message ? ` ${st.message}` : ''}`);
@@ -1723,6 +2640,27 @@ export class GPLDebugSession extends LoggingDebugSession {
                 }
                 this._setCachedEvaluate(cacheKey, result || `(${expression} 평가 불가)`, evalRef);
             }
+        } else if (args.context === 'clipboard') {
+            // '값 복사' — 표시용 타입 접미·hex 힌트·백킹 필드 주석 없이 **원문 값만** 준다.
+            // (supportsClipboardContext 를 선언하면 VS Code 가 이 컨텍스트로 다시 물어본다.)
+            const structured = threadName
+                ? await this._queryVariableStructuredSmart(threadName, frameIndex, expression)
+                : null;
+            if (structured) {
+                const kind = classifyVarEntry(structured.entry, structured.members.length > 0);
+                if (kind === 'simple') {
+                    result = structured.entry.value ?? '';
+                } else {
+                    // 배열/객체는 멤버를 `이름 = 값` 줄로 펼쳐서 복사할 수 있게 한다.
+                    result = structured.members.length > 0
+                        ? structured.members.map(m => `${m.name} = ${m.value}`).join('\n')
+                        : (structured.entry.value ?? structured.entry.type ?? '');
+                }
+            }
+            if (!result && this._projectName) {
+                const gResp = await this._sendCmd(`Show Global ${expression}, ${this._projectName}`);
+                if (gResp) { result = this._showGlobalResponseLines(gResp).join('\n'); }
+            }
         } else {
             result = expression;
         }
@@ -1750,10 +2688,13 @@ export class GPLDebugSession extends LoggingDebugSession {
         // 주의가 필요한 상태(정지/에러)는 선두 마커(●)와 대문자 상태로 강조해
         // 실행 중인 다른 쓰레드 사이에서 한눈에 구분되게 한다.
         const attention = state === 'Paused' || state === 'Break' || state === 'Error';
+        // 실행 잠금이 걸린 스레드는 자물쇠를 앞에 붙인다 — Continue/Step 이 포커스와 무관하게
+        // 이 스레드로 간다는 표시(라벨은 표시 전용이며 스레드 식별은 name↔id 맵으로만 한다).
+        const lock = this._lockedThreadName === name ? '🔒 ' : '';
         if (attention) {
-            return `● ${name}  [${icon} ${state.toUpperCase()}]`;
+            return `${lock}● ${name}  [${icon} ${state.toUpperCase()}]`;
         }
-        return `${name}  [${icon} ${state}]`;
+        return `${lock}${name}  [${icon} ${state}]`;
     }
 
     /**
@@ -1848,6 +2789,90 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
+     * 공식 문서 표기(따옴표와 줄번호 사이 **공백 있음**): `Set Break My_project "Testfile.gpl" 30`.
+     * 실기기(GDE 캡처)는 공백 없는 형식이 동작하는 것이 확인됐지만 `Set Nobreak` 는 캡처 근거가 없어,
+     * 무공백 형식이 실패하면 문서 표기로 한 번 더 시도한다(`_sendBpCommandWithFallback`).
+     */
+    private _bpCommandSpaced(kind: 'Break' | 'Nobreak', project: string, file: string, line: number): string {
+        return `Set ${kind} ${project} "${file}" ${line}`;
+    }
+
+    /**
+     * BP 명령에서 파일을 지칭할 후보 표기 — ① 파일명(basename) → ② 프로젝트 기준 상대 경로.
+     *
+     * 프로젝트가 하위 폴더로 나뉘면(`ProjectSource="T1\T2\T2.gpl"`, 2026-08-28 실제 파일 확인)
+     * 제어기가 소스를 파일명으로 아는지 상대 경로로 아는지는 실기기 확인 사항이다(공식 문서 예시는
+     * `Set Break My_project "Testfile.gpl" 30` — 평면 프로젝트만 보여 준다). 평면 프로젝트에서는
+     * 두 표기가 같으므로 후보가 하나뿐이고, 보내는 명령도 종전과 완전히 동일하다.
+     */
+    private _bpFileForms(file: string): string[] {
+        const base = file.replace(/^.*[\\/]/, '');
+        if (this._projectDirs.length === 0) { return [base]; }
+        const local = this._resolveSourcePath(base);
+        const dir = this._projectDirs.find(d => this._isPathUnder(local, d));
+        if (!dir) { return [base]; }
+        const rel = path.relative(dir, local);
+        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) { return [base]; }
+        const gprStyle = rel.replace(/\//g, '\\');
+        return gprStyle.toLowerCase() === base.toLowerCase() ? [base] : [base, gprStyle];
+    }
+
+    /**
+     * BP 설정/해제 전송 — 무공백(실측) 형식으로 먼저 보내고, STATUS 실패면 문서 표기(공백)로 재시도한다.
+     * 문서상 `Set Nobreak` 는 대상이 없어도 에러가 아니므로, 실패 STATUS 는 형식 거부로 볼 수 있다.
+     *
+     * 하위 폴더 소스는 파일명 표기가 거부될 수 있어(`_bpFileForms`) 두 표기를 순서대로 시도하고,
+     * 성공한 표기를 세션에 기억해 다음부터 먼저 보낸다. 평면 프로젝트는 후보가 하나라 종전과 같다.
+     * @returns 성공한 응답 문자열, 모두 실패하면 마지막 응답(또는 null)
+     */
+    private async _sendBpCommandWithFallback(
+        kind: 'Break' | 'Nobreak',
+        project: string,
+        file: string,
+        line: number,
+    ): Promise<string | null> {
+        const forms = this._bpFileForms(file);
+        const ordered = this._bpPreferProjectRelativeFile && forms.length > 1
+            ? [...forms].reverse()
+            : forms;
+
+        let last: string | null = null;
+        for (const form of ordered) {
+            const primary = await this._sendCmd(this._bpCommand(kind, project, form, line));
+            if (primary !== null && (isSuccess(primary) || /Duplicate breakpoint/i.test(primary))) {
+                this._noteBpFileForm(form, file);
+                return primary;
+            }
+            const spacedCmd = this._bpCommandSpaced(kind, project, form, line);
+            this._log(`Set ${kind} 무공백 형식 실패 → 문서 표기로 재시도: ${spacedCmd}`);
+            const fallback = await this._sendCmd(spacedCmd);
+            if (fallback !== null && isSuccess(fallback)) {
+                this._log(`✔ 문서 표기(${kind}, 공백 있음)가 동작했습니다 — 이 제어기는 문서 형식을 요구합니다.`);
+                this._noteBpFileForm(form, file);
+                return fallback;
+            }
+            last = fallback ?? primary;
+            if (ordered.length > 1 && form === ordered[0]) {
+                this._log(`Set ${kind}: 파일 표기 "${form}" 거부 → 다른 표기로 재시도합니다.`);
+            }
+        }
+        return last;
+    }
+
+    /** 성공한 파일 표기가 상대 경로였으면 이 세션에서는 그 표기를 먼저 쓴다(명령 왕복 절감). */
+    private _noteBpFileForm(usedForm: string, requestedFile: string): void {
+        const base = requestedFile.replace(/^.*[\\/]/, '');
+        const isRelative = usedForm.toLowerCase() !== base.toLowerCase();
+        if (isRelative && !this._bpPreferProjectRelativeFile) {
+            this._bpPreferProjectRelativeFile = true;
+            this._log(
+                `✔ 이 제어기는 BP 대상 파일을 프로젝트 기준 상대 경로로 받습니다("${usedForm}") — `
+                + '이후 BP 명령은 이 표기를 먼저 씁니다.',
+            );
+        }
+    }
+
+    /**
      * Resolve a controller filename (basename) to a workspace file path.
      * Uses the pre-built source file map for fast lookup.
      */
@@ -1876,7 +2901,7 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     /** 동명 소스 경합 시 프로젝트 폴더 우선으로 선택하고, 모호하면 베이스네임당 1회 경고를 남긴다. */
     private _pickSourcePath(key: string, candidates: string[]): string {
-        const pick = pickSourceCandidate(candidates, this._projectDirs)!;
+        const pick = pickSourceCandidate(candidates, this._projectDirs, this._projectSourcePaths)!;
         if (pick.ambiguous.length > 0 && !this._sourceResolveWarned.has(key)) {
             this._sourceResolveWarned.add(key);
             this._log(
@@ -1891,23 +2916,66 @@ export class GPLDebugSession extends LoggingDebugSession {
     /**
      * 확정된 _projectName과 이름이 일치하는 Project.gpr 폴더들을 수집한다.
      * 동명 소스 경합(_pickSourcePath)과 Globals 열거 범위 제한의 기준이 된다.
+     *
+     * 폴더와 함께 `ProjectSource` 목록도 절대 경로로 풀어 둔다 — 하위 폴더로 나뉜 프로젝트
+     * (`ProjectSource="T1\T2\T2.gpl"`)에서 제어기가 주는 basename을 어느 파일로 볼지 판정할 때
+     * "컴파일 집합에 들어 있는가"가 폴더 깊이보다 정확한 기준이다.
+     *
+     * `ProjectLibrary`로 참조된 라이브러리 프로젝트의 폴더·소스도 함께 넣는다 — 문서상 라이브러리
+     * 파일은 메인 프로젝트에 논리적으로 포함되어 함께 컴파일되므로, 제어기가 보고하는 파일이
+     * 라이브러리 폴더(중첩이든 형제든)에 있을 수 있다. 넣지 않으면 그 파일의 브레이크포인트가
+     * basename 표기로만 나가고 스택의 소스 열기도 어긋난다.
      */
     private _updateProjectDirs(): void {
         this._projectDirs = [];
+        this._projectSourcePaths = [];
         if (!this._projectName) { return; }
         const want = this._projectName.toLowerCase();
+        const allGprPaths: string[] = [];
         for (const folder of vscode.workspace.workspaceFolders ?? []) {
-            for (const gprPath of this._findFiles(folder.uri.fsPath, 'Project.gpr')) {
-                try {
-                    const info = parseGpr(fs.readFileSync(gprPath, 'utf-8'));
-                    if (info.projectName && info.projectName.toLowerCase() === want) {
-                        this._projectDirs.push(path.dirname(gprPath));
-                    }
-                } catch { /* skip */ }
+            allGprPaths.push(...this._findFiles(folder.uri.fsPath, 'Project.gpr'));
+        }
+
+        // 라이브러리 폴더는 메인 프로젝트 폴더 **뒤에** 붙인다 — `_bpFileForms`가 첫 일치 폴더를 기준으로
+        // 상대 경로 표기를 만들기 때문에, 메인 프로젝트 기준(`MyLibrary\Project.gpl`)이 먼저 나와야 한다.
+        const libraryDirs: string[] = [];
+        for (const gprPath of allGprPaths) {
+            try {
+                const text = fs.readFileSync(gprPath, 'utf-8');
+                const info = parseGpr(text);
+                if (!info.projectName || info.projectName.toLowerCase() !== want) { continue; }
+                this._projectDirs.push(path.dirname(gprPath));
+                this._projectSourcePaths.push(...resolveGprSourcePaths(gprPath, text));
+
+                // 참조된 라이브러리 프로젝트는 문서상 메인 프로젝트에 논리적으로 포함되어 함께
+                // 컴파일된다 → 제어기가 보고하는 소스도 이 폴더들에서 나올 수 있다.
+                const libs = resolveProjectLibraryDirs(gprPath, text, { knownGprPaths: allGprPaths });
+                for (const dir of libs.dirs) {
+                    libraryDirs.push(dir);
+                    const libGpr = gprPathInDir(dir);
+                    if (!libGpr) { continue; }
+                    try {
+                        this._projectSourcePaths.push(...resolveGprSourcePaths(libGpr, fs.readFileSync(libGpr, 'utf-8')));
+                    } catch { /* skip */ }
+                }
+                if (libs.unresolved.length > 0) {
+                    this._log(`⚠ ProjectLibrary 폴더를 찾지 못했습니다: ${libs.unresolved.join(', ')}`
+                        + ' — 그 라이브러리의 소스는 브레이크포인트/스택 매핑에서 빠집니다.');
+                }
+            } catch { /* skip */ }
+        }
+        for (const dir of libraryDirs) {
+            if (!this._projectDirs.some(d => d.toLowerCase() === dir.toLowerCase())) {
+                this._projectDirs.push(dir);
             }
         }
+
         if (this._projectDirs.length > 0) {
-            this._log(`프로젝트 폴더 확정: ${this._projectDirs.join(', ')}`);
+            this._log(
+                `프로젝트 폴더 확정: ${this._projectDirs.join(', ')}`
+                + (libraryDirs.length > 0 ? ` (라이브러리 ${libraryDirs.length}개 포함)` : '')
+                + ` (소스 ${this._projectSourcePaths.length}개)`,
+            );
         }
     }
 
@@ -2081,8 +3149,10 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
         // null 객체 참조(`Object() null`, 값 없음)는 빈 값 대신 'null'로 표시.
         // Location 멤버의 ZClearance 1E+32는 "(미설정)" 주석을 붙인다(GitHub #27).
-        const displayValue = annotateLocationMember(entry.name, entry.value)
-            || (/\bnull\s*$/i.test(entry.type) ? 'null' : '');
+        const displayValue = this._withHexHint(
+            annotateLocationMember(entry.name, entry.value)
+            || (/\bnull\s*$/i.test(entry.type) ? 'null' : ''),
+        );
         return {
             name: displayName,
             value: entry.type ? `${displayValue}  (${entry.type})` : displayValue,
@@ -2178,7 +3248,30 @@ export class GPLDebugSession extends LoggingDebugSession {
         //     같은 클래스 프레임이면 점 표기 치환식이 바로 읽히고, 다른 클래스 프레임에서는 Private 필드 점 표기가
         //     -729라 부모 객체 덤프(프레임 무관, Private 포함 전체 필드)에서 멤버 줄을 추출한다.
         if (depth === 0 && first?.error?.code === -780) {
-            const candidates = this._propertyBackingCandidates(expression);
+            let candidates = this._propertyBackingCandidates(expression);
+            // 부모 객체 덤프는 한 번만 받아 후보 클래스 판별(GitHub #32)과 -729 폴백(#26)에 함께 쓴다.
+            const parentExprOfLeaf = candidates[0]?.parentExpr;
+            let parentDump: Awaited<ReturnType<GPLDebugSession['_queryVariableStructuredSmart']>> | undefined;
+            const getParentDump = async () => {
+                if (parentDump === undefined) {
+                    parentDump = parentExprOfLeaf
+                        ? await this._queryVariableStructuredSmart(threadName, frameIndex, parentExprOfLeaf, depth + 1)
+                        : null;
+                }
+                return parentDump;
+            };
+            // GitHub #32: 동명 Property가 여러 클래스에 있으면 부모 객체의 **런타임 클래스**(덤프 헤더 `Object RobotArm`)로
+            //     후보를 좁힌다 — 남의 클래스 백킹 필드를 먼저 시도하거나 `.Pos` 우회를 잘못 적용하지 않도록.
+            const candidateClasses = new Set(candidates.flatMap(c => c.symbols.map(s => (s.className ?? '').toLowerCase())));
+            if (parentExprOfLeaf && candidateClasses.size > 1) {
+                const parent = await getParentDump();
+                const runtimeClass = this._classNameOfType(parent?.entry.type);
+                const narrowed = runtimeClass ? this._propertyBackingCandidates(expression, runtimeClass) : [];
+                if (narrowed.length > 0) {
+                    this._log(`프로퍼티 후보 클래스 한정(#32): ${expression} → ${runtimeClass} (${candidateClasses.size}개 클래스 중)`);
+                    candidates = narrowed;
+                }
+            }
             for (const cand of candidates) {
                 const r = await this._queryVariableStructured(threadName, frameIndex, cand.expr);
                 if (!miss(r)) {
@@ -2186,7 +3279,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     return { ...r!, resolvedExpression: cand.expr, via: cand.via };
                 }
                 if (cand.parentExpr && r?.error?.code === -729) {
-                    const parent = await this._queryVariableStructuredSmart(threadName, frameIndex, cand.parentExpr, depth + 1);
+                    const parent = await getParentDump();
                     const wanted = `.${cand.backingLeaf.toLowerCase()}`;
                     const m = parent?.members.find(e => e.name.toLowerCase().endsWith(wanted));
                     if (parent && m) {
@@ -2310,8 +3403,9 @@ export class GPLDebugSession extends LoggingDebugSession {
     /**
      * Property 식의 백킹 필드 후보. 식의 마지막 요소가 소스에서 Property로 확인될 때만 만든다(인자 있는 프로퍼티는 제외).
      * 순서: ① Get 본문 `Return <식>`(getterReturnExpr) ② 관례 `m_<이름>`(getter가 있는 프로퍼티만).
+     * @param className 수신자 클래스가 알려지면(GitHub #32) 그 클래스의 Property만 — 그 클래스에 없으면(상속 등) 빈 배열.
      */
-    private _propertyBackingCandidates(expression: string): Array<{
+    private _propertyBackingCandidates(expression: string, className?: string): Array<{
         /** 제어기에 보낼 치환식(부모 식 포함) */ expr: string;
         /** 부모 덤프에서 찾을 멤버 leaf 이름 */ backingLeaf: string;
         /** 표시용 출처 설명 */ via: string;
@@ -2321,8 +3415,11 @@ export class GPLDebugSession extends LoggingDebugSession {
         const lastDot = expression.lastIndexOf('.');
         const leaf = lastDot >= 0 ? expression.slice(lastDot + 1) : expression;
         if (!/^[A-Za-z_]\w*$/.test(leaf)) { return []; }
-        const symbols = this._getPropertyIndex().byName.get(leaf.toLowerCase());
-        if (!symbols || symbols.length === 0) { return []; }
+        const indexed = this._getPropertyIndex().byName.get(leaf.toLowerCase()) ?? [];
+        const symbols = className
+            ? indexed.filter(s => (s.className ?? '').toLowerCase() === className.toLowerCase())
+            : indexed;
+        if (symbols.length === 0) { return []; }
         const parentExpr = lastDot > 0 ? expression.slice(0, lastDot) : undefined;
         const out: ReturnType<GPLDebugSession['_propertyBackingCandidates']> = [];
         const seen = new Set<string>();
@@ -2785,6 +3882,20 @@ export class GPLDebugSession extends LoggingDebugSession {
         return run;
     }
 
+    /**
+     * Show Thread 폴을 연결 건강 프로브로 보낸다(프로브 타임아웃·실패 종류 분류, 예외 없음). 세션이 끊겨 있으면 null.
+     * 결과는 호출측이 debugBridge.fireDebugProbeResult 로 확장에 보고한다 — 디버그 중엔 트리 폴링이 꺼져 있어
+     * 확장의 유실 판정(controller/connectionHealth.ts)은 이 경로에 의존한다(2026-08-28).
+     */
+    private async _probeThreadList(): Promise<ProbeOutcome | null> {
+        if (!this._config || !this._isConnected) { return null; }
+        this._lastControllerCommand = SHOW_THREAD_LIST_CMD;
+        return this._enqueueCommand(async () => {
+            if (!this._config || !this._isConnected) { return null; }
+            return probeControllerCommand(SHOW_THREAD_LIST_CMD, this._config, this._probeTimeoutMs);
+        });
+    }
+
     private async _sendCmd(command: string): Promise<string | null> {
         if (!this._config || !this._isConnected) { return null; }
         this._lastControllerCommand = command;
@@ -3059,21 +4170,31 @@ export class GPLDebugSession extends LoggingDebugSession {
         try {
             this._pollCount++;
 
-            const resp = await this._sendCmd(SHOW_THREAD_LIST_CMD);
-            if (!resp) {
+            const probe = await this._probeThreadList();
+            if (!probe) { return; }  // 세션이 이미 끊긴 뒤(_isConnected=false) — 보고할 것 없음
+            // 확장의 연결 건강 모니터에 보고 — 디버그 중엔 트리 폴링이 꺼져 있어 이 결과가 유실 판정의 프로브다.
+            fireDebugProbeResult(probe);
+            if (!probe.ok) {
                 this._pollFailures++;
-                if (this._pollCount <= GPLDebugSession.DIAG_POLL_COUNT) {
-                    this._log(`[poll #${this._pollCount}] Show Thread → (응답 없음)`);
-                }
+                this._log(`[poll #${this._pollCount}] Show Thread 실패 ${this._pollFailures}/${GPLDebugSession.MAX_POLL_FAILURES}: ${probe.kind} — ${probe.detail}`);
                 if (this._pollFailures >= GPLDebugSession.MAX_POLL_FAILURES) {
                     this._log(`연결 불안정 — ${this._pollFailures}회 연속 실패, 디버거를 종료합니다.`);
                     this._stopPolling();
                     this._isConnected = false;
+                    // 확장에도 알린다(connected:false). 확장은 이를 단정하지 않고 유실 힌트로 받아 자체 프로브로 확정한다 —
+                    // 위 fireDebugProbeResult 로 이미 같은 실패가 보고돼 있으면 대개 이 시점에 유실이 확정된 뒤다.
+                    this.sendEvent(new Event('gpl.controllerConnectionChanged', {
+                        connected: false,
+                        ip: this._config?.ip,
+                        port: this._config?.port,
+                        reason: `poll-failures: Show Thread ${this._pollFailures}회 연속 실패 (${probe.kind})`,
+                    }));
                     this.sendEvent(new TerminatedEvent());
                 }
                 return;
             }
             this._pollFailures = 0;
+            const resp = probe.raw;
 
             const threads = parseThreadList(resp);
             // ⑤ StoppedEvent 직후의 threadsRequest가 재사용할 수 있도록 최신 목록을 캐시
@@ -3189,11 +4310,18 @@ export class GPLDebugSession extends LoggingDebugSession {
                             this._pendingContinuePausedSeen = 0;
                             this._continueOrigin.delete(t.name);
 
+                            // 임시 BP 정리 + 조건부 BP/히트 조건/로그포인트 판정(자동 Continue 가능)
+                            const announce = await this._handleBreakpointStop(t.name, id);
+                            if (!announce) {
+                                this._previousThreadStates.set(t.name, t.state);
+                                if (t.state !== prevState) { threadStateChanged = true; }
+                                continue;
+                            }
                             if (!this._configurationDone) {
                                 this._queuedStoppedEvents.push({ reason: 'breakpoint', threadId: id });
                                 this._log(`쓰레드 ${t.name} Continue 후 정지 감지 → configurationDone 대기 중`);
                             } else {
-                                this.sendEvent(new StoppedEvent('breakpoint', id));
+                                this.sendEvent(this._stoppedEvent('breakpoint', id));
                                 this._log(`쓰레드 ${t.name} 정지 (breakpoint)`);
                             }
                             // ⑧ 곧 도착할 stackTraceRequest를 위해 프레임 선조회(캐시 워밍)
@@ -3218,7 +4346,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         this._queuedStoppedEvents.push({ reason, threadId: id });
                         this._log(`쓰레드 ${t.name} 스텝 완료 감지 (${reason}) → configurationDone 대기 중`);
                     } else {
-                        this.sendEvent(new StoppedEvent(reason, id));
+                        this.sendEvent(this._stoppedEvent(reason, id));
                         this._log(`쓰레드 ${t.name} 정지 (${reason})`);
                     }
 
@@ -3254,12 +4382,22 @@ export class GPLDebugSession extends LoggingDebugSession {
                     this._pendingThreadId = undefined;
                     this._pendingContinueSawRunning = false;
 
+                    // BP 적중으로 판단되는 정지에만 조건 판정을 적용한다(step/pause/entry 는 사용자 조작).
+                    if (reason === 'breakpoint') {
+                        const announce = await this._handleBreakpointStop(t.name, id);
+                        if (!announce) {
+                            this._previousThreadStates.set(t.name, t.state);
+                            if (t.state !== prevState) { threadStateChanged = true; }
+                            continue;
+                        }
+                    }
+
                     // configurationDone 전이면 큐에 보관 (DAP 프로토콜 준수)
                     if (!this._configurationDone) {
                         this._queuedStoppedEvents.push({ reason, threadId: id });
                         this._log(`쓰레드 ${t.name} 정지 감지 (${reason}) → configurationDone 대기 중`);
                     } else {
-                        this.sendEvent(new StoppedEvent(reason, id));
+                        this.sendEvent(this._stoppedEvent(reason, id));
                         this._log(`쓰레드 ${t.name} 정지 (${reason})`);
                     }
                     // ⑧ 곧 도착할 stackTraceRequest를 위해 프레임 선조회(캐시 워밍)
@@ -3279,7 +4417,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                             this._queuedStoppedEvents.push({ reason: 'exception', threadId: id });
                             this._log(`쓰레드 ${t.name} 에러 감지 → configurationDone 대기 중`);
                         } else {
-                            this.sendEvent(new StoppedEvent('exception', id));
+                            this.sendEvent(this._stoppedEvent('exception', id));
                             this._log(`쓰레드 ${t.name} 에러 발생 (exception break)`);
                         }
                     } else {
@@ -3289,11 +4427,15 @@ export class GPLDebugSession extends LoggingDebugSession {
 
                 // 외부 재개 감지: pending 액션 없이 Paused/Break/Error → Running 전이가 보이면
                 // (GDE, REPL >Continue 등) ContinuedEvent로 VS Code의 일시정지 UI를 해제한다.
+                // allThreadsContinued=false 를 **명시**해야 한다: VS Code 는 이 이벤트를
+                // `body.allThreadsContinued !== false` 로 읽어(1.135 번들 확인 — 응답 필드와 기본값
+                // 해석이 반대다) 필드를 생략하면 '전체 재개'로 보고 정지 상태로 남아 있는 다른
+                // 스레드의 CALL STACK/변수까지 지운다.
                 if (t.state === 'Running'
                     && (prevState === 'Break' || prevState === 'Paused' || prevState === 'Error')
                     && !this._pendingAction
                     && this._configurationDone) {
-                    this.sendEvent(new ContinuedEvent(id));
+                    this.sendEvent(new ContinuedEvent(id, false));
                     this._log(`쓰레드 ${t.name} 외부 재개 감지 (continued)`);
                 }
 

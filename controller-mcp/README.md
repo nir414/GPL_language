@@ -37,6 +37,14 @@ npm install
 | `GPL_IDLE_CLOSE_MS` | `30000` | keep-alive 1402 소켓의 유휴 종료 시간(ms) |
 | `GPL_MCP_LOG_DIR` | `%TEMP%\gpl-mcp` | 세션 로그 파일 디렉터리(도구 호출/1402 명령 기록) |
 
+추가 환경변수:
+
+| 변수 | 기본 | 설명 |
+| --- | --- | --- |
+| `GPL_BRIDGE` | `auto` | VS Code 확장 브리지 사용. `auto`=확장이 있으면 확장 세션으로, 없으면 직접 접속 / `only`=브리지 필수(세션 단일화 보장) / `off`=항상 직접 접속 |
+| `GPL_VSCODE_CLI` | `code` | 확장이 비활성일 때 깨우는 데 쓸 VS Code CLI 경로 |
+| `GPL_LOCK_DIR` | `%TEMP%\gpl-controller` | 배포 잠금·브리지 파일 디렉터리(확장과 같은 값이어야 한다) |
+
 ## 3. 단독 실행 확인(선택)
 
 MCP 클라이언트가 보통 자동으로 실행하지만, 수동 점검도 가능하다.
@@ -81,7 +89,51 @@ claude mcp add gpl-controller \
 
 ---
 
-## 5. 제공 도구
+## 5. 연결 시 전달되는 지침 (instructions · 리소스)
+
+서버는 `initialize` 응답의 **`instructions`**로 두 가지를 함께 알린다(`src/guidelines.js`).
+도구 설명과 달리 **도구를 부르기 전에** 읽히므로, 작업을 시작하기 전에 알아야 할 규약만 담는다.
+
+1. **제어기 안전 규칙** — 원시 TCP 소켓 금지, `</STATUS>`까지 읽고 판정, 모션 유발 명령은 사용자 확인,
+   Compile 직후 Start 연속 호출 금지.
+2. **GPL 문서화 주석 규약** — GPL 소스를 쓰거나 고칠 때 선언 바로 위에 남기는 주석 형식.
+   설명은 항상, `# Parameters`는 매개변수가 있을 때, `# Returns`는 반환값이 있을 때,
+   `# Examples`는 도움이 될 때만. VS Code 확장이 이 형식을 호버·자동완성·시그니처 도움말에
+   구조로 표시한다(형식의 단일 출처는 확장의 `src/language/docComment.ts`).
+
+```gpl
+' 값을 지정된 범위로 제한합니다.
+'
+' # Parameters
+' - `value`: 제한할 값
+' - `min`: 최솟값
+' - `max`: 최댓값
+'
+' # Returns
+' 범위가 적용된 값
+Public Function Clamp(value As Number, min As Number, max As Number) As Number
+```
+
+골격은 손으로 쓰지 않아도 된다 — 편집기에서 선언 위에 `'''`를 입력하거나,
+`extension_command('gpl.insertDocComment', { uri, line })`로 만든다(이미 주석이 있으면 **빠진 항목만**
+덧붙고 기존 설명은 보존된다. 결과: `{ ok, action: inserted|merged|up-to-date, added?, file, line, symbol }`).
+
+`instructions`를 쓰지 않는 클라이언트를 위해 같은 내용을 리소스로도 노출한다 —
+`gpl://guidelines/doc-comment` (`resources/list` → `resources/read`).
+
+## 6. 제공 도구
+
+**VS Code 확장 연동 (Agent Bridge)** — MCP가 제어기에 직접 붙는 대신 **확장의 명령을 실제로 실행**하는 통로.
+확장이 실행 중이면 1402 명령이 자동으로 확장 세션으로 나가므로 세션 경쟁("1402를 VS Code가 점유 중")이 없다.
+
+- `extension_status(wake?)` — 확장 실행 여부·버전·pid·연결 상태·디버그 세션과 **지금 명령이 나가는 경로**
+  (`extension-bridge` / `direct-tcp`). *"1402를 VS Code가 점유 중"이라고 추측하지 말고 이 도구로 확인할 것.*
+  `wake:true`면 확장이 비활성일 때 `code --open-url`로 활성화를 시도한다.
+- `extension_command(command, args?, timeoutMs?)` — 확장 명령(`gpl.*`) 실행. 제어기 콘솔 명령이 아니라 **확장 기능**을 쓴다:
+  `gpl.deploy`(/GPL 업로드+Compile) · `gpl.quickCompile` · `gpl.start` · `gpl.controller.pushBreakpoints`/`pullBreakpoints` ·
+  `gpl.ai.debug.getState`/`getConnectionState`/`setBreakpoint`/`evaluate`/`loop` · `gpl.diagnosticSnapshot` ·
+  `gpl.controller.threadBreak({threadName})` 등. 인자 형식은 확장 런북의 Command ID 표를 따른다.
+  Deploy처럼 오래 걸리는 명령은 `timeoutMs`를 크게(예: 180000) 준다.
 
 **기본**
 - `controller_command(command)` 또는 `controller_command(commands: string[], stopOnError?)` — 임의 콘솔 명령(에스케이프 해치).
@@ -98,6 +150,9 @@ claude mcp add gpl-controller \
   순차 조회해 항목별 `{ id, ok, status, description, meta, values, raw }`. 실측 `2703, 1, 1, 0, "100% Cartesian accels in (mm or deg)/sec^2" = 1200, 400, 0`
   → `description` 따옴표 제거, `meta:[1,1,0]`, `values:["1200","400","0"]`(원문 토큰 — 문자열 값은 따옴표 유지, 값 목록의 다중 줄 wrap은 이어 붙임).
   파싱 실패 시 `raw`만 채워지고 `ok`는 STATUS 기준.
+  선택 인자(공식 문서 구문 `Pd dataid, unit, unit2, array_index, node`): `hex:true` → `pdx`로 읽어 **정수를 16진수로**
+  표시(비트마스크 DataID 예: 2003 Axis mask), `unit` / `unit2` / `arrayIndex`(0 = 전체 값) / `node`(서보 네트워크 노드 —
+  문서가 테스트·디버깅 용도로 명시). 뒤 인자만 지정하면 앞 인자를 문서 기본값(unit 1 / unit2 1 / index 0)으로 자동 보완한다.
 - `controller_status(detail?)` — 상태 요약 1회: 연결(1402 도달성) · 스레드 상태별 개수와 정지 스레드 위치 ·
   고전원(`Execute Controller.PowerEnabled`) · 배포 잠금 · `server`(빌드 스탬프). **연결 실패 시** ICMP/TCP를 구분해
   "재부팅 중 / 서비스 다운(ECONNREFUSED) / 완전 무응답" verdict를 돌려준다(단명 연결 반복 금지). `detail:true`면
@@ -157,7 +212,7 @@ claude mcp add gpl-controller \
 -742 컴파일 에러 등)로 실패하면 응답에 `hint`(무엇을 바꿔 재시도할지)가 자동으로 붙는다.
 같은 부류의 재시도를 반복하지 말고 힌트를 따를 것.
 
-## 6. 전형적 디버그 흐름(예)
+## 7. 전형적 디버그 흐름(예)
 
 0. **말하면서 작업한다**: 제어기 조작 전에 한 줄로 "무엇을 왜" 하는지 말하고, 관측
    결과가 오면 즉시 한 줄로 해석을 보고한다. 조용한 연속 도구 호출 금지 — 사용자가
@@ -170,13 +225,24 @@ claude mcp add gpl-controller \
 5. 다음 관측 지점도 `run_to_line`으로 이동. **스텝은 "바로 다음 한 줄의 효과 자체가
    질문일 때"만** `step_thread(thread, "over", evals: [...])`로 사용한다.
 
-## 7. 설계 · 주의
+## 8. 설계 · 주의
 
 - **명령 구문은 확장 소스/GDE 패킷 캡처/공식 콘솔 문서로 검증한 형태만** 사용한다.
   특히 `Set Break`/`Set Nobreak`는 **따옴표와 줄번호 사이에 공백이 없다**(`"file"479`) — GDE 캡처 기준.
 - 완료 판정은 종결자 `</STATUS>` 기준(idle 조기완료로 부분 응답을 성공 오판하지 않음).
-- 1402는 **단일 클라이언트 채널**이라 서버가 명령을 직렬화한다. 같은 제어기에 GDE/디버거가
-  동시에 붙어 있으면 충돌할 수 있으니 한 쪽만 사용.
+- 1402는 **단일 클라이언트 채널**이라 서버가 명령을 직렬화한다. 같은 제어기에 GDE가 동시에 붙어 있으면 충돌할 수 있으니 한 쪽만 사용.
+- **Agent Bridge(2026-08-28)** — VS Code GPL 확장이 실행 중이면 1402 명령을 확장 세션으로 보낸다(`src/extensionBridge.js`).
+  종전에는 확장이 keep-alive 세션을 쥔 채 MCP가 따로 접속해 두 세션이 경쟁했고, AI가 *"제어기는 정상인데 1402를 VS Code가
+  점유 중"*이라고만 보고하며 확장을 통한 테스트로 넘어가지 못했다. 브리지 경로에서는 명령이 확장의 **같은 직렬 큐·keep-alive
+  세션·명령 정책**(Step 연타 방지 / 정지 정착 대기 / Compile→Start 완충)을 그대로 타고 GPL Traffic·Output에도 함께 남는다.
+  - 전송 수단은 `%TEMP%\gpl-controller\`의 요청/응답 파일 한 쌍(배포 잠금과 같은 계약 — 새 포트·서버 없음).
+    확장 상태는 `<ip>.extension.json`(heartbeat 5초, 15초 이상이면 죽은 것으로 판정).
+  - `GPL_BRIDGE=auto`(기본)는 확장이 없으면 직접 접속으로 자동 폴백, `only`는 브리지 필수(세션 단일화 보장), `off`는 종전 동작.
+  - **폴백 규칙**: 브리지가 명령을 *실행하지 않았음이 확실한* 실패(요청 거부·확장 없음)면 직접 전송으로 넘어가고,
+    모호한 실패(타임아웃·확장 내부 오류)는 **조회 명령만** 재전송한다 — 상태 변경 명령의 중복 전송(Step 두 줄 진행, Start 컴파일 중복)을 막는다.
+  - 확장의 명령 정책이 안전 조건을 채우지 못해 보류하면(`policy-hold`) 직접 접속으로 **우회하지 않고** 그대로 알린다.
+  - 요청은 확장에서 **순차 처리**된다. `gpl.deploy`처럼 수 분 걸리는 명령을 브리지로 실행하는 동안 다른 브리지 요청은 뒤에서 기다린다.
+- 확장이 배포/업로드 중이면(`%TEMP%/gpl-controller/<ip>.lock.json`) Compile/Start/Load/Unload는 잠금이 풀릴 때까지 대기 후 진행한다.
 - **배치(`controller_command(commands)`/`read_dataids`/`resources` 프로브)는 서버 직렬 큐에서 순차 실행한다 — 1402 단일 채널이므로
   `Promise.all` 병렬 전송은 금지**(`src/batch.js` `runBatch`). 배치 안에서도 항목별로 `runCommand` → 배포 잠금 가드를 그대로 거친다.
 - **keep-alive 연결(v0.2)**: 명령마다 TCP를 새로 열지 않고 연결을 유지한다(유휴

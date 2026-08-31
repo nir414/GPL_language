@@ -10,6 +10,10 @@
 //   GPL_TIMEOUT_MS 명령 타임아웃(ms)    (기본 15000)
 //   GPL_LOCK_WAIT_MS 배포 잠금 대기 상한(ms) (기본 20000) — VS Code 확장이 FTP 업로드/배포 중이면
 //                  Compile/Start/Load/Unload를 이 시간까지 기다렸다 진행, 초과 시 거부 (src/deployLock.js)
+//   GPL_BRIDGE     확장 브리지 사용     (auto 기본 | only | off) — auto: VS Code GPL 확장이 살아 있으면 1402 명령을
+//                  확장 세션으로 보내고(세션 경쟁 없음·확장의 명령 정책 적용), 없으면 직접 접속. only: 브리지 필수.
+//                  off: 항상 직접 접속(종전 동작). (src/extensionBridge.js)
+//   GPL_VSCODE_CLI 확장을 깨울 때 쓸 VS Code CLI (기본 code)
 //
 // 주의: stdout은 MCP 전송 채널이다. 로그는 반드시 stderr(console.error)로만.
 
@@ -38,7 +42,16 @@ import {
   isSuccess,
 } from './parse.js';
 import { readDeployLock, waitForDeployLockRelease, describeDeployLock, DEPLOY_GUARDED_COMMAND_RE } from './deployLock.js';
+import {
+  resolveBridge,
+  readExtensionPresence,
+  callExtensionCommand,
+  bridgeUnavailableHint,
+  isRetrySafeCommand,
+  BRIDGE_COMMAND_ID_PATTERN,
+} from './extensionBridge.js';
 import { runBatch, normalizeCommandInput, BATCH_MAX } from './batch.js';
+import { SERVER_INSTRUCTIONS, DOC_COMMENT_GUIDE } from './guidelines.js';
 
 const HOST = process.env.GPL_HOST || '192.168.0.1';
 const PORT = parseInt(process.env.GPL_PORT || '1402', 10);
@@ -98,12 +111,30 @@ const consoleClient = new ControllerConsole({
   },
 });
 
-const server = new McpServer({ name: 'gpl-controller-mcp', version: String(BUILD.version) });
+// instructions는 initialize 응답으로 나가 도구 호출 **전에** 읽힌다 — 제어기 안전 규칙과
+// GPL 문서화 주석 규약(코드를 쓰거나 고칠 때)을 여기서 알린다. 본문은 src/guidelines.js.
+const server = new McpServer(
+  { name: 'gpl-controller-mcp', version: String(BUILD.version) },
+  { instructions: SERVER_INSTRUCTIONS },
+);
 
 function textResult(payload) {
   const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
   return { content: [{ type: 'text', text }] };
 }
+
+// instructions를 쓰지 않는 클라이언트에서도 규약을 가져갈 수 있게 리소스로도 노출한다.
+// (도구 목록은 매 요청에 실리므로 참고 문서는 도구가 아니라 리소스로 둔다.)
+server.resource(
+  'gpl-doc-comment-guide',
+  'gpl://guidelines/doc-comment',
+  {
+    title: 'GPL 문서화 주석 규약',
+    description: 'GPL 소스를 쓰거나 고칠 때 선언 위에 남기는 문서화 주석 형식(설명 · # Parameters · # Returns · # Examples)과 골격 생성 방법.',
+    mimeType: 'text/markdown',
+  },
+  async (uri) => ({ contents: [{ uri: uri.href, mimeType: 'text/markdown', text: DOC_COMMENT_GUIDE }] }),
+);
 
 // ── 배포 잠금 가드 ────────────────────────────────────────────────────────
 // VS Code 확장이 FTP 업로드/배포 중이면 %TEMP%/gpl-controller/<ip>.lock.json을 잡고 있다(확장 deployLock.ts와
@@ -127,10 +158,95 @@ async function guardDeployLock(command) {
   );
 }
 
-/** 잠금 가드를 거친 전송(Compile/Start/Load/Unload만 실제로 대기·거부된다). */
+// ── Agent Bridge 라우팅 (2026-08-28) ──────────────────────────────────────
+// VS Code 확장이 살아 있으면 1402 명령을 **확장 세션으로** 보낸다(extensionBridge.js). 확장이 keep-alive 세션을 쥔 채
+// MCP가 따로 접속하면 두 세션이 경쟁해 "제어기는 정상인데 1402를 VS Code가 점유 중"이라는 막다른 결론이 나왔다.
+// 확장 경로로 보내면 같은 직렬 큐·keep-alive 세션·명령 정책(Step 연타/정지 정착/Compile→Start 완충)을 그대로 쓴다.
+// GPL_BRIDGE: auto(기본, 없으면 직접 접속) | only(브리지 필수 — 세션 단일화 보장) | off(항상 직접 접속).
+const BRIDGE_MODE = (process.env.GPL_BRIDGE || 'auto').trim().toLowerCase();
+const BRIDGE_RECHECK_MS = 3000;
+let bridgeState = { available: false, reason: 'unchecked', presence: null, checkedAt: 0 };
+
+async function currentBridge({ force = false, wake = false } = {}) {
+  const now = Date.now();
+  if (!force && now - bridgeState.checkedAt < BRIDGE_RECHECK_MS) return bridgeState;
+  const r = await resolveBridge(HOST, { mode: BRIDGE_MODE, wake });
+  bridgeState = { ...r, checkedAt: now };
+  return bridgeState;
+}
+
+/** 확장 명령 1건 호출(브리지). 결과는 확장 명령의 반환값 그대로. */
+async function callExtension(command, args, { timeoutMs } = {}) {
+  const b = await currentBridge();
+  if (!b.available) {
+    const err = new Error(
+      `확장 브리지를 쓸 수 없다 (${b.reason}). ${bridgeUnavailableHint(b.reason)}`,
+    );
+    err.bridgeReason = b.reason;
+    throw err;
+  }
+  return callExtensionCommand(HOST, command, args, { timeoutMs: timeoutMs ?? 30_000 });
+}
+
+/**
+ * 잠금 가드를 거친 전송. 확장 브리지가 있으면 그쪽으로, 없으면 직접 접속.
+ * 폴백 규칙: 브리지가 **명령을 실행하지 않았음이 확실한** 실패(요청 거부·확장 미존재)면 직접 전송으로 넘어가고,
+ * 모호한 실패(타임아웃·확장 내부 오류)는 조회 명령만 재전송한다 — 상태 변경 명령 중복 전송 금지.
+ */
 async function sendGuarded(command, opts) {
   await guardDeployLock(command);
+  const b = await currentBridge();
+  if (b.available) {
+    const cmdTimeout = opts?.timeoutMs ?? TIMEOUT;
+    const res = await callExtensionCommand(HOST, 'gpl.controller.sendCommand', {
+      command,
+      timeoutMs: cmdTimeout,
+      waitForStatusClose: opts?.waitForStatusClose === true,
+    }, { timeoutMs: cmdTimeout + 20_000 });
+
+    if (res.ok && res.result && typeof res.result.raw === 'string') {
+      cmdSeq++;
+      logLine(`  1402> ${command} | ${res.ms}ms | via extension | STATUS ${parseStatus(res.result.raw).code}`);
+      return res.result.raw;
+    }
+    // 확장의 명령 정책이 안전 조건을 채우지 못해 **보내지 않은** 경우 — 직접 접속으로 우회하지 않는다(정책 무력화 방지).
+    if (res.ok && res.result?.error === 'policy-hold') {
+      logLine(`  1402> ${command} | via extension | policy-hold ${res.result.code}`);
+      throw new Error(
+        `확장 명령 정책이 보류했다(${res.result.code}): ${res.result.detail} ` +
+        '제어기에는 보내지 않았다. 조건이 풀린 뒤(스레드 정지/정착) 다시 시도할 것 — 직접 접속으로 우회하지 말 것.',
+      );
+    }
+    const ambiguous = res.error === 'bridge-timeout' || res.error === 'command-failed' || res.error === 'response-parse-failed';
+    if (ambiguous && !isRetrySafeCommand(command)) {
+      throw new Error(
+        `확장 브리지 전송 결과를 확인하지 못했다(${res.error}: ${res.detail}). '${command}'는 상태 변경 명령이라 ` +
+        '중복 전송 위험이 있어 직접 재전송하지 않는다. show_threads 등으로 현재 상태를 확인한 뒤 판단할 것.',
+      );
+    }
+    if (BRIDGE_MODE === 'only') {
+      throw new Error(`GPL_BRIDGE=only — 확장 브리지 실패(${res.error}: ${res.detail}). 직접 접속으로 폴백하지 않는다.`);
+    }
+    logLine(`  bridge 실패(${res.error}: ${res.detail}) → 직접 접속으로 폴백: ${command}`);
+    bridgeState.checkedAt = 0;   // 다음 호출에서 presence 재확인
+  } else if (BRIDGE_MODE === 'only') {
+    throw new Error(`GPL_BRIDGE=only — 확장 브리지를 쓸 수 없다(${b.reason}). ${bridgeUnavailableHint(b.reason)}`);
+  }
   return consoleClient.send(command, opts);
+}
+
+/** 현재 전송 경로 요약 — 응답에 실어 AI가 "누가 1402를 쓰는지" 추측하지 않게 한다. */
+function transportInfo() {
+  const p = bridgeState.presence;
+  return {
+    mode: BRIDGE_MODE,
+    using: bridgeState.available ? 'extension-bridge' : 'direct-tcp',
+    reason: bridgeState.available ? null : bridgeState.reason,
+    extension: p ? { version: p.extensionVersion, pid: p.pid, connected: p.connected, debugSessionActive: p.debugSessionActive, workspace: p.workspace ?? null } : null,
+    hint: bridgeState.available
+      ? '1402 명령이 확장 세션(직렬 큐·keep-alive·명령 정책)을 통해 나간다 — 세션 경쟁 없음.'
+      : bridgeUnavailableHint(bridgeState.reason),
+  };
 }
 
 async function runCommand(command, opts) {
@@ -168,7 +284,21 @@ function tool(name, description, shape, handler) {
   });
 }
 
-const proj = (p) => (p && p.trim()) || DEFAULT_PROJECT;
+/**
+ * 프로젝트명 인자. 제어기 콘솔 명령(Compile/Load/Start/Unload)은 인자를 공백으로 구분하고 인용 문법이
+ * 없으므로(Brooks 문서) 공백·제어 문자가 든 이름은 명령이 끊긴다 — 보내기 전에 오류로 돌려준다
+ * (확장의 controller/projectNameGuard.ts와 같은 규칙).
+ */
+const proj = (p) => {
+  const name = (p && p.trim()) || DEFAULT_PROJECT;
+  if (/[\s\u0000-\u001F\u007F]/u.test(name)) {
+    throw new Error(
+      `프로젝트명 '${name}'에 공백/제어 문자가 있어 제어기 명령을 보내지 않았습니다 — ` +
+      '제어기 콘솔 명령은 인자를 공백으로 구분하므로 이름이 끊깁니다. Project.gpr의 ProjectName을 공백 없는 이름으로 바꾸세요.',
+    );
+  }
+  return name;
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -189,7 +319,7 @@ async function waitForThreadPause(
   const deadline = start + Math.max(0, timeoutMs);
   let last = null;
   for (;;) {
-    const raw = await consoleClient.send(`Show Thread ${thread}`);
+    const raw = await sendGuarded(`Show Thread ${thread}`);
     const detail = parseThreadDetail(raw);
     if (detail) {
       last = detail;
@@ -209,7 +339,7 @@ async function waitForThreadPause(
 /** 현재 스레드 상세(정지 위치 비교용 스냅샷). 실패해도 null로 계속 진행. */
 async function snapshotThread(thread) {
   try {
-    return parseThreadDetail(await consoleClient.send(`Show Thread ${thread}`));
+    return parseThreadDetail(await sendGuarded(`Show Thread ${thread}`));
   } catch {
     return null;
   }
@@ -280,7 +410,7 @@ async function evalMany(thread, frame, expressions) {
 /** 고전원 상태(Execute Controller.PowerEnabled — 확장 controllerStatus.ts와 같은 프로브). 실패/해석 불가면 null. */
 async function probePowerEnabled() {
   try {
-    const raw = await consoleClient.send('Execute Controller.PowerEnabled', { timeoutMs: 4000 });
+    const raw = await sendGuarded('Execute Controller.PowerEnabled', { timeoutMs: 4000 });
     if (!isSuccess(parseStatus(raw))) return null;
     const payload = extractData(raw);
     if (/\b(true|on|enabled)\b/i.test(payload)) return true;
@@ -380,9 +510,32 @@ tool('read_dataids',
   '각 id를 서버 직렬 큐에서 순차 조회해 {id, ok, status, description, meta, values, raw}로 구조화한다(실측 형식 ' +
   '`2703, 1, 1, 0, "100% Cartesian accels in (mm or deg)/sec^2" = 1200, 400, 0` → meta [1,1,0], values ["1200","400","0"]; values는 원문 토큰이라 문자열 값은 따옴표 유지). ' +
   'DataID를 하나씩 controller_command로 읽지 말고 이 도구 1회로 끝낼 것(호출당 고정 오버헤드 ≈1.5 s, GitHub #16). 파싱 실패 시에도 raw는 채워지고 ok는 STATUS 기준.',
-  { ids: z.array(z.number().int().min(0)).min(1).max(100).describe('DataID 목록(1~100개), 예: [2703, 2704, 2705]') },
-  async ({ ids }) => {
-    const batch = await runBatch(ids.map((id) => `pd ${id}`), (c) => runCommand(c));
+  {
+    ids: z.array(z.number().int().min(0)).min(1).max(100).describe('DataID 목록(1~100개), 예: [2703, 2704, 2705]'),
+    hex: z.boolean().optional()
+      .describe('true면 `pdx`로 읽어 정수를 16진수로 표시한다(공식 문서: Pdx = hexadecimal). 비트마스크 DataID(예: 2003 Axis mask)에 유용'),
+    unit: z.number().int().optional().describe('unit 번호(문서상 생략 시 1). 지정하면 `pd <id>, <unit>` 형태로 보낸다'),
+    unit2: z.number().int().optional().describe('sub unit 번호(문서상 생략 시 1, 거의 쓰이지 않음). unit과 함께 지정할 것'),
+    arrayIndex: z.number().int().optional().describe('배열 인덱스(문서상 생략/0 = 전체 값 표시)'),
+    node: z.number().int().optional()
+      .describe('서보 네트워크 노드 번호 — 문서가 테스트/디버깅 용도로 명시. 지정하면 그 노드에서 명령을 수행한다'),
+  },
+  async ({ ids, hex, unit, unit2, arrayIndex, node }) => {
+    // 공식 문서 구문: `Pd dataid, unit, unit2, array_index, node` (Pdx는 정수를 16진수로 표시).
+    // 뒤쪽 인자를 쓰려면 앞 인자가 필요하므로 지정된 가장 뒤 인자까지 기본값(unit 1 / unit2 1 / index 0)으로 채운다.
+    const verb = hex ? 'pdx' : 'pd';
+    const tail = [];
+    if (node !== undefined) {
+      tail.push(unit ?? 1, unit2 ?? 1, arrayIndex ?? 0, node);
+    } else if (arrayIndex !== undefined) {
+      tail.push(unit ?? 1, unit2 ?? 1, arrayIndex);
+    } else if (unit2 !== undefined) {
+      tail.push(unit ?? 1, unit2);
+    } else if (unit !== undefined) {
+      tail.push(unit);
+    }
+    const suffix = tail.length ? `, ${tail.join(', ')}` : '';
+    const batch = await runBatch(ids.map((id) => `${verb} ${id}${suffix}`), (c) => runCommand(c));
     const results = batch.results.map((r, i) => {
       const id = ids[i];
       const item = { id, ok: r.ok };
@@ -463,15 +616,18 @@ tool('controller_status',
   '원문 형식은 실측 1회분 기준이라 파싱 실패 필드는 null이며 raw를 참고. 시뮬레이션/실기 판별 명령은 실측 확인 전이라 simulation은 항상 null — 사용자에게 확인할 것.',
   { detail: z.boolean().optional().describe('true면 스레드 전체 목록(compact)·최근 ErrorLog 10줄·resources(메모리/TCP/mbuf 자원 프로브) 포함') },
   async ({ detail }) => {
-    const base = { host: HOST, port: PORT, server: BUILD, deployLock: deployLockInfo() };
+    await currentBridge({ force: true });
+    const base = { host: HOST, port: PORT, server: BUILD, deployLock: deployLockInfo(), transport: transportInfo() };
     let raw;
     try {
-      raw = await consoleClient.send('Show Thread -web');
+      raw = await sendGuarded('Show Thread -web');
     } catch (err) {
       const reachable = await probeReachability(err);
       return textResult({
         ...base, ok: false, connected: false, reachable,
-        hint: `${reachable.verdict} 재시도 전에 사용자에게 제어기 상태를 확인할 것.`,
+        hint: `${reachable.verdict} ${base.transport.using === 'extension-bridge'
+          ? '이 조회는 확장 세션을 통해 나갔으므로 "VS Code가 1402를 점유해서 실패"가 아니다 — 제어기/네트워크 문제로 볼 것.'
+          : `현재 직접 접속 경로다(${base.transport.reason}). VS Code에서 확장이 실행 중이면 extension_status로 브리지를 켜 같은 세션을 쓸 수 있다.`} 재시도 전에 사용자에게 제어기 상태를 확인할 것.`,
       });
     }
     const status = parseStatus(raw);
@@ -488,6 +644,50 @@ tool('controller_status',
       result.resources = await probeResources(); // GitHub #22 — 자원 시계열이 상태 조회마다 자동으로 남게
     }
     return textResult(result);
+  });
+
+// ── VS Code 확장 연동 (Agent Bridge) ──────────────────────────────────────
+tool('extension_status',
+  'VS Code GPL 확장과의 브리지 상태: 확장 실행 여부·버전·pid·제어기 연결 상태·디버그 세션 여부와, 지금 1402 명령이 ' +
+  '어느 경로로 나가는지(extension-bridge / direct-tcp). **"1402를 VS Code가 점유 중"이라고 추측하지 말고 이 도구로 확인할 것** — ' +
+  '브리지가 켜져 있으면 MCP 명령이 확장의 같은 세션으로 나가므로 경쟁 자체가 없다. wake=true면 확장이 비활성 상태일 때 ' +
+  'URI(code --open-url)로 활성화를 시도한다.',
+  { wake: z.boolean().optional().describe('확장이 감지되지 않을 때 VS Code URI로 깨우기 시도(기본 false)') },
+  async ({ wake }) => {
+    const b = await currentBridge({ force: true, wake: wake === true });
+    const raw = readExtensionPresence(HOST);
+    return textResult({
+      host: HOST,
+      transport: transportInfo(),
+      bridgeMode: BRIDGE_MODE,
+      presenceFile: raw.presence?.file ?? null,
+      woken: b.woken ?? false,
+      wakeError: b.wakeError ?? null,
+      available: b.available,
+      nextStep: b.available
+        ? 'extension_command로 확장 기능(Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)을 그대로 사용할 수 있다.'
+        : bridgeUnavailableHint(b.reason),
+    });
+  });
+
+tool('extension_command',
+  'VS Code GPL 확장의 명령(gpl.*)을 실행하고 결과를 받는다 — 제어기 콘솔 명령이 아니라 **확장 기능 자체**를 쓰는 도구다. ' +
+  '자주 쓰는 것: gpl.deploy(/GPL 업로드+Compile, Start 없음) · gpl.quickCompile(변경분만) · gpl.start(실행) · ' +
+  'gpl.controller.pushBreakpoints/pullBreakpoints · gpl.ai.debug.getState/getConnectionState/setBreakpoint/evaluate/loop · ' +
+  'gpl.diagnosticSnapshot · gpl.controller.showDashboard · gpl.controller.threadBreak({threadName}) 등. ' +
+  '인자 형식은 확장 런북(Command ID 표)을 따른다. 제어기 안전 조건(Step 연타·정지 정착·Compile→Start 완충)은 확장의 명령 정책이 ' +
+  '자동으로 지키며, 보류되면 result.error="policy-hold"로 돌아온다(제어기에 보내지 않은 상태).',
+  {
+    command: z.string().describe('확장 명령 ID (gpl.* 형식)'),
+    args: z.any().optional().describe('명령 인자(객체/문자열). 생략하면 인자 없이 호출'),
+    timeoutMs: z.number().int().min(1000).max(600000).optional().describe('응답 대기(ms, 기본 30000). Deploy처럼 오래 걸리는 명령은 크게'),
+  },
+  async ({ command, args, timeoutMs }) => {
+    if (!BRIDGE_COMMAND_ID_PATTERN.test(command)) {
+      return textResult({ ok: false, error: 'unsupported-command', hint: `'${command}' — 이 확장의 명령(gpl.*)만 실행할 수 있다.` });
+    }
+    const res = await callExtension(command, args, { timeoutMs });
+    return textResult({ command, ...res, transport: transportInfo() });
   });
 
 // ── 컴파일/실행 ───────────────────────────────────────────────────────────
@@ -705,7 +905,7 @@ tool('debug_snapshot',
       .describe('true면 정지 스레드의 해당 프레임 변수 전체 덤프(`Show Variable <thread> <frame>`, 이름 생략)를 원문으로 포함 — Brooks 문서상 구문, 실기기 미검증. 어떤 이름이 있는지 몰라 evals 이름을 추측하는 왕복을 없애는 용도'),
   },
   async ({ thread, evals, frame, listLocals }) => {
-    const raw = await consoleClient.send('Show Thread -web');
+    const raw = await sendGuarded('Show Thread -web');
     const status = parseStatus(raw);
     const { threads } = parseThreadList(raw);
     const result = { ok: isSuccess(status), status, summary: summarizeThreads(threads), threads: threads.map(compactThread) };
@@ -738,7 +938,7 @@ tool('show_threads',
   'verbose=true일 때만 원문 줄(rawLines)과 열 배열(fields)을 함께 준다(기본은 compact — 토큰 절약).',
   { verbose: z.boolean().optional().describe('원문 줄·fields 포함') },
   async ({ verbose }) => {
-    const raw = await consoleClient.send('Show Thread -web');
+    const raw = await sendGuarded('Show Thread -web');
     const status = parseStatus(raw);
     const { threads, rawLines } = parseThreadList(raw);
     return textResult({
@@ -782,6 +982,12 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`[gpl-controller-mcp] ready — ${BUILD_LABEL} — target ${HOST}:${PORT}, default project "${DEFAULT_PROJECT}"`);
+  // 시작 시 확장 브리지 상태를 한 줄 알린다(깨우지는 않는다 — 사용자가 VS Code를 열지 않았을 수 있으므로).
+  void currentBridge({ force: true }).then((b) => {
+    console.error(b.available
+      ? `[gpl-controller-mcp] extension bridge: ON — v${b.presence.extensionVersion} pid ${b.presence.pid} (1402 명령이 확장 세션으로 나감)`
+      : `[gpl-controller-mcp] extension bridge: OFF (${b.reason}) — 제어기에 직접 접속. GPL_BRIDGE=${BRIDGE_MODE}`);
+  }).catch(() => { /* noop */ });
   if (LOG_FILE) {
     console.error(`[gpl-controller-mcp] session log: ${LOG_FILE}`);
     console.error(`[gpl-controller-mcp] 실시간 관찰: Get-Content "${LOG_FILE}" -Wait`);

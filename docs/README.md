@@ -49,6 +49,7 @@ GPL 언어의 핵심 개념, 문법, 베스트 프랙티스를 다룹니다.
 VS Code 확장 개발·운영을 위한 현행 실무 가이드입니다.
 
 - **[ai-controller-debugging-runbook.md](development/ai-controller-debugging-runbook.md)** - AI 에이전트용 제어기 디버깅 절차, Command ID, STATUS 판단표
+- **[pa-controller-debug-operations.md](development/pa-controller-debug-operations.md)** - PA 제어기에서 가능한 디버깅 조작 전수 조사(명령 구문, 노출 표면, 미사용 조작)
 - **[design-principles.md](development/design-principles.md)** - 설계 원칙, 코딩 우선순위, Quality Gate
 - **[broker-workbench-architecture.md](development/broker-workbench-architecture.md)** - Broker 프로세스 + GPL Workbench 분리 설계 (Draft)
 
@@ -64,6 +65,7 @@ GPL 공식 레퍼런스 및 참고 문서입니다.
 - **[dictionary.md](reference/dictionary.md)** - GPL Dictionary 인덱스 및 Statements 요약
 - **[console-commands.md](reference/console-commands.md)** - 컨트롤러 Console Command 목록 및 디버깅 흐름 요약
 - **[robot-homing-methods.md](reference/robot-homing-methods.md)** - 로봇 Homing Methods(인덱스 사용/미사용, 방법군 개요)
+- **[project-file-gpr.md](reference/project-file-gpr.md)** - Project.gpr 형식(키워드, 라이브러리 프로젝트, 이름 규칙, 확장 대응 상태)
 
 ---
 

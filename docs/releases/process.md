@@ -305,7 +305,9 @@ git push origin vX.Y.Z
 이 저장소 원칙:
 
 - **VSIX 설치는 사용자가 수동으로 한다**
-- 설치 명령(`code --install-extension`, `npm run dev:install`)은 실행하지 않는다
+- 설치 명령(`code --install-extension` 등)은 사용자가 요청하지 않는 한 실행하지 않는다
+- 확장 동작을 확인할 일이 있으면 사용자가 F5(`Run Extension` — 전용 프로필 `GPL-DevHost`)로 개발 호스트를
+  띄운다. `npm run dev:host`도 같은 환경을 별도 창으로 열지만, 사용자가 요청할 때만 실행한다
 
 ## 태그/릴리즈 복구
 

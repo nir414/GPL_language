@@ -139,16 +139,39 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 - `breakThread`/`stepThread`는 기본(`waitForPause: true`)으로 STATUS 0(접수) 이후 스레드가 실제로 Paused/Break/Error 상태에 들어올 때까지 폴링한 뒤 `ok`를 판정한다. 시간 내 정지하지 않으면 `{ ok: false, error: "pause-timeout", state }`. 접수만 확인하려면 `waitForPause: false`.
 - `loop`는 스텝마다 정지 복귀를 확인하고(`stepWaitTimeoutMs`, 기본 5000ms) 스택 top 위치와 watch 식 값을 수집하며, `stopWhen` 조건이 맞으면 자동 중단한다. 루프 도중 스레드가 Error 상태로 전이하면 `stoppedBy: "thread-error"`로 중단해 `lastStatus`를 돌려준다. `stopWhen` 평가 결과(값/STATUS/매칭 여부)는 실패해도 trace에 기록되며, 잘못된 `stopWhen.matches` 정규식은 루프 진입 전에 `invalid-stopWhen-matches`로 거부된다.
 - 별칭: `gpl.stopAll`은 `gpl.controller.stopAll`과 동일 동작(자동화/에이전트 호출 호환용).
-- **외부 진입점(URI, GitHub #25)**: `vscode://nir414.gpl-language-support/connect?ip=192.168.0.1&port=1402[&save=settings]`,
-  `/disconnect`, `/getState`(결과는 Output `[AI Debug]`), `/dashboard`. 터미널에서는 `code --open-url "vscode://nir414.gpl-language-support/connect"`.
-  결과는 URI로 돌려받을 수 없으므로 Output(`[URI]`)과 `gpl.ai.debug.getConnectionState`로 확인한다. step/continue/start 같은 모션 유발 동작은 URI로 열지 않는다.
+- **외부 진입점(URI, GitHub #25 → 2026-08-28 전체 개방)**: 이 확장의 **모든 `gpl.*` 명령**을 URI로 실행할 수 있다.
+  `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>`(인자 1개를 JSON으로), `/<gpl.command.id>?key=value&…`(평면 인자 → 객체 1개,
+  숫자/불리언/JSON 리터럴 자동 변환), `/command?id=<gpl.command.id>&args=…`. 별칭(종전 호환): `/connect?ip=192.168.0.1&port=1402[&save=settings]`,
+  `/disconnect`, `/getState`(결과는 Output `[AI Debug]`), `/dashboard`. 터미널: `code --open-url "vscode://nir414.gpl-language-support/gpl.ai.debug.getState"`.
+  결과는 URI로 돌려받을 수 없으므로 Output(`[URI] <id> => …`)과 `gpl.ai.debug.*`의 `[AI Debug]` 로그로 확인한다. `gpl.*` 밖의 명령은 실행하지
+  않는다(임의 VS Code 명령 프록시 방지 — 범위 한정이지 기능 제한이 아님). 해석 규칙: `src/controller/uriDispatch.ts`.
+- **명령 정책(`src/controller/commandPolicy.ts`, 2026-08-28)** — 모든 1402 명령은 `sendCommandDetailed`의 직렬 큐 한 곳을 지나며, 여기서 확장이
+  안전 조건을 **대신 기다려서** 충족시킨다(승인 모달·거부 목록 없음 — AI 접근을 막지 않는다는 사용자 결정). R1 같은 쓰레드 Step/Continue는 직전
+  명령의 정지 확인 뒤·최소 간격(`gpl.debug.minStepIntervalMs`) 뒤에만 전송(#28), R2 Start/Compile/Load/Unload 전에 `Stopping` 쓰레드 정착 대기(§0.6),
+  R3 Compile 완료 직후 같은 프로젝트 Start는 `gpl.controller.startAfterCompileGapMs`(기본 1.5 s) 완충(§0.7). `gpl.controller.transitionSettleWaitMs`(기본 8 s)
+  안에 충족되지 않으면 제어기에 보내지 않고 `gpl.ai.debug.*`는 `{ ok: false, error: "policy-hold", code, detail, sentToController: false }`를,
+  일반 명령은 오류 메시지를 돌려준다. 개입은 GPL Traffic `--- policy: R1/R2/R3 …` 줄로 남고 `getConnectionState().commandPolicy`에서 옵션을 볼 수 있다.
+  따라서 외부 클라이언트는 이 조건들을 스스로 지킬 필요가 없다.
+- **Agent Bridge — MCP가 확장을 사용하는 통로(2026-08-28, `src/controller/agentBridge.ts` ↔ `controller-mcp/src/extensionBridge.js`)**:
+  MCP 서버는 종전에 제어기 1402에 직접 붙어 확장 세션과 경쟁했고, AI가 "제어기는 정상인데 1402를 VS Code가 점유 중"이라고만 보고하며
+  확장을 통한 테스트로 넘어가지 못했다. 이제 확장이 실행 중이면 MCP의 1402 명령이 **확장의 `gpl.controller.sendCommand`**로 라우팅되어
+  같은 직렬 큐·keep-alive 세션·명령 정책을 그대로 탄다(따라서 MCP 경로에도 R1/R2/R3이 적용된다). 전송은 `%TEMP%\gpl-controller\`의
+  요청/응답 파일(배포 잠금과 같은 계약, 새 포트 없음), 확장 상태는 `<ip>.extension.json`(heartbeat 5 s / stale 15 s).
+  MCP 도구 `extension_status`(경로·확장 상태 확인, `wake:true`로 확장 깨우기)와 `extension_command`(확장의 `gpl.*` 명령 실행 —
+  Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)가 추가됐다. 설정: 확장 `gpl.agentBridge.enabled`, MCP `GPL_BRIDGE=auto|only|off`.
+  브리지가 꺼져 있거나 확장이 없을 때만 MCP가 직접 접속한다(그때는 MCP 자체의 정지 확인만 적용).
 - **VS Code 디버그 세션 종료 시 제어기 브레이크포인트는 전부 해제된다**(`disconnectRequest`가 이 세션이 설정한 BP를 `Set Nobreak`로 정리 — 다음 세션 중복 등록 방지, 의도된 동작). MCP 등 외부 클라이언트와 병행할 때는 세션 종료 후 재설정하거나 세션 없이 `gpl.controller.syncEditorBreakpoints`(에디터 BP → 제어기 실시간 동기화)를 사용한다.
 
-### 트리 컨텍스트 메뉴 전용 (트리 항목 인자 필요 — 팔레트 단독 실행 부적합)
+### 트리 컨텍스트 메뉴 명령 (인자 필요 — 팔레트 단독 실행 부적합, URI/`executeCommand`로는 객체 인자로 호출)
 
-`gpl.controller.threadStart`/`threadStop`/`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`(Step Over)/`threadStepInto`/`threadStepOut`/`threadShowLocation`/`threadShowStack`,
-`gpl.controller.ftpRun`/`ftpStop`/`ftpDownload`/`ftpDelete`/`ftpUnload`,
-`gpl.controller.consoleToggle`/`clearErrors`/`copyError`
+- 쓰레드: `gpl.controller.threadStart`/`threadStop`/`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`(Step Over)/`threadStepInto`/`threadStepOut`/`threadShowLocation`/`threadShowStack`
+  — 인자는 트리 노드 `{ thread: { name, project? } }` 외에 `{ threadName: "MainThread", project?: "MergeCode" }`·`{ name }`·문자열 `"MainThread"`도 받는다(2026-08-28).
+  예: `code --open-url "vscode://nir414.gpl-language-support/gpl.controller.threadBreak?threadName=MainThread"`
+- FTP: `gpl.controller.ftpRun`/`ftpStop`/`ftpDownload`/`ftpDelete`/`ftpUnload` — 인자 `{ projectName: "MergeCode", remotePath: "/flash/projects/MergeCode" }`(`ftpDelete`는 `contextValue: "ftpFolder"|"ftpFile"` 추가).
+- `gpl.controller.consoleToggle`/`clearErrors`/`copyError` — 트리 노드 인자.
+
+모션을 일으킬 수 있는 명령(Start·Continue·Step·Set DIO 등)도 URI/AI 호출을 막지 않는다. 확인 모달은 종전 설정(`gpl.controller.requireStartConfirmation` 등)을 그대로 따르고,
+제어기 안전 조건은 아래 **명령 정책**이 경로와 무관하게 충족시킨다.
 
 ## 권장 launch 구성
 
@@ -351,7 +374,7 @@ SoftEStop
 
 실기(192.168.0.1) GDE/PEdit 디버그 세션 캡처에서 확인한 wire 사실. 확장은 이 포맷을 기준으로 맞춘다.
 
-- **응답 프레이밍**: 모든 1402 응답은 `<DATA>...</DATA>\r\n<STATUS>code,"message"</STATUS>\r\n`. 에러도 DATA+STATUS로 옴(예: `-508`은 `<DATA>(-508): *File not found* <path>/Project.gpr</DATA>`). 명령 송신은 plain text + `\r\n`(CRLF).
+- **응답 프레이밍**: 모든 1402 응답은 `<DATA>...</DATA>\r\n<STATUS>code,"message"</STATUS>\r\n` + **NUL 1바이트** (2026-08-28 캡처 재판독: 178/178 응답이 `\0`으로 끝난다 — 1403과 같은 NUL 프레임 종결 규약이며 종전 기록에 빠져 있었다). 에러도 DATA+STATUS로 옴(예: `-508`은 `<DATA>(-508): *File not found* <path>/Project.gpr</DATA>`). 명령 송신은 plain text + `\r\n`(CRLF).
 - **스레드 목록**: 인자 없는 `Show Thread`는 스레드가 실행 중이어도 `<DATA></DATA>` 빈 응답. 전체 열거는 GDE처럼 **`Show Thread  -web`**(파이프 9컬럼: `name| state| code| "msg"| project| func| procLine| file| fileLine`). 특정 스레드 상세는 `Show Thread <name>`(콤마 형식).
 - **브레이크포인트**: `Set Break <project> "<file>"<line>` — **따옴표와 줄번호 사이 공백 없음**. 목록은 `Show Break`, 해제는 `Set Nobreak <project> "<file>"<line>`.
 - **스텝**: step over = `Step <project> -over -noerror`, step into = `Step <project> -noerror`(`-into` 플래그 없음). 모든 step에 `-noerror`. Brooks 문서상 전체 구문은 `Step thread [-into] [-over] [-out] [-noerror]`(스위치 없음 = `-into`, `-noerror` = 에러를 낸 스텝을 건너뜀) — `-out`은 GDE 캡처에 없어 **실기기 미검증**(2026-08-25 확인, 트리 메뉴·Shift+F11이 사용).
@@ -361,12 +384,18 @@ SoftEStop
 
 ### GDE 1403 실측 런타임 이벤트 (2026-06-23 pktmon 캡처)
 
-- **단방향 push 스트림**: 클라이언트는 연결 후 사실상 송신이 없다(구독 명령 없음, 1바이트 수준). 컨트롤러가 이벤트를 일방적으로 내려보낸다.
+(2026-08-28 프레임 단위 재판독 — `captures/gde_1403.pcapng` 80.6 s, 중복 제거 390 프레임, TCP 스트림 2개. 상세 보고: ai-handoff §1-BM)
+
+- **단방향 push 스트림**: 클라이언트는 구독 명령을 보내지 않는다. 컨트롤러가 이벤트를 일방적으로 내려보내고 **세션 종료(FIN)도 컨트롤러가 결정**한다.
+- **GDE의 1403 송신은 keep-alive NUL만**: 송·수신 어느 쪽도 없이 **5.00 s**가 지나면 `0x00` 1바이트를 보낸다(수신으로도 타이머가 리셋됨). 이것은 죽은 연결 감지용이며 **FIN을 막지 못한다** — NUL을 보내는 세션이 침묵 24.6 s 뒤 FIN을 받았고(S0), NUL 0바이트인 세션은 36.7 s 유지됐다(S1). FIN 뒤 GDE 재접속은 약 1 s.
+- **1403 수명은 1402 세션에 결부된 것으로 관측**(가설·근거 3점): GDE는 1402 단일 세션을 유지하며 `PD 234,-1,0,0`·`PD 601`·`PD 2800`(2회 연속)·`PD 1700` 읽기를 **유휴 조건 없이 ~5.01 s 주기로 무조건** 보낸다(2026-08-28 재판독 정정 — 종전 "유휴 5 s마다"는 부정확: 스텝 연타 중에도 끼어든다) → 1403 연속 수신. 확장이 명령마다 1402를 열고 닫던 시절엔 1403이 배치마다 FIN(#22). 1402 keep-alive 도입 뒤 08-27 로그에선 1403 세션 44.4분 유지(payload 0, FIN 없음). → 확장은 `keepAliveIdlePingMs`(기본 5 s, `Show Thread`)로 같은 동작을 따른다. "1403에 무언가를 보내서 유지"는 기각.
 - **프레임 형식**: `<E>type,payload</E>` 이고 프레임 구분자는 `</E>` + `\n` + **NUL(`\x00`)**.
-  - `<E>1,N</E>` — 숫자 상태 이벤트(예: `1,0`/`1,1`/`1,4`). 로그 아님 → 표시 억제.
-  - `<E>3,<project><L>len</L><message>` — 콘솔 출력. `<L>N</L>`의 N은 **로그 레벨이 아니라 메시지 청크 바이트 길이**.
-- **128바이트 청크 분할**: 한 줄이 길면 128바이트마다 여러 `<E>3,...` 프레임으로 쪼개지고, **마지막 청크만 `\n`으로 끝난다**. 한 줄로 보려면 `\n`으로 끝나는 청크까지 이어붙여 재조립해야 한다(확장 `RuntimeConsole.emitConsoleFrame`이 처리).
-- 분석 시 한 프레임=한 줄로 단정하지 말 것. 긴 WARN/에러 줄이 둘로 갈려 보이면 청크 분할이다.
+  - `<E>1,N</E>` — 숫자 상태 이벤트. 텍스트 11 B와 NUL 1 B가 **항상 별개 TCP 세그먼트**로 온다(79/79) → 파서는 NUL이 다음 read 첫 바이트로 오는 것을 전제해야 한다. **N은 살아 있는 스레드 수로 읽힌다**(가설·근거 강함): 프로그램의 `Thread started … Count: 1/2/3` 출력 9~98 ms 뒤 `1,2 → 1,3 → 1,4`, Stop 시 `1,4 → 1,0`, Start 시 `1,1`. 값 변화는 **100 ms 격자**로 샘플링되며(두 스레드가 100 ms 안에 생기면 중간값 생략), Step마다 Running↔Paused 전환으로 같은 값이 쌍(100 ms 간격)으로 반복된다. 로그 아님 → 표시 억제, 즉시 폴 트리거로만 사용.
+  - `<E>3,<project><L>len</L><message></E>\n\0` — 콘솔 출력, 종결자까지 **한 세그먼트**. `<L>N</L>`의 N은 **로그 레벨이 아니라 메시지 청크 바이트 길이**(68/68 일치). 메시지는 **UTF-8**(한글 줄 확인) — 확장은 latin1로 바이트를 보존해 청크를 이어 붙인 뒤 UTF-8 디코딩한다(`latin1ToUtf8`).
+- **128바이트 청크 분할**: 한 줄이 길면 128바이트마다 여러 `<E>3,...` 프레임으로 쪼개지고, **마지막 청크만 `\n`으로 끝난다**. 한 줄로 보려면 `\n`으로 끝나는 청크까지 이어붙여 재조립해야 한다(확장 `RuntimeConsole.emitConsoleFrame`이 처리). 128 B 경계는 다바이트 문자 중간에 걸릴 수 있으므로 **바이트로 이어 붙인 뒤** 디코딩한다.
+- **TCP 세부**: 컨트롤러 광고 윈도우 17520 고정, Nagle 없이 프레임마다 PSH, 재전송·RST 0. 컨트롤러 로그 타임스탬프는 PC 캡처 시각보다 2.0~2.6 s 늦음(시계 오프셋으로 추정).
+- 분석 시 한 프레임=한 줄로 단정하지 말 것. 긴 WARN/에러 줄이 둘로 갈려 보이면 청크 분할이다. pktmon은 계층별로 같은 패킷을 5~6회 기록하고 일부 세그먼트를 누락(`Previous segment not captured`)하므로 (seq, ack, flags, payload) 기준 중복 제거 후 읽는다.
+- 미확정(1402·1403 동시 캡처 1회로 확정 가능): S0 FIN의 트리거(컨트롤러 송신 idle 타이머 vs 1402 명령 부수효과), `1,N` ↔ `Show Thread -web` 스레드 수 대조, 1404 사용 여부.
 
 캡처 해석 시 주의:
 
@@ -411,13 +440,16 @@ SoftEStop
 
 ## 금지/제약
 
-- 제어기 명령을 병렬 실행하지 않는다.
+- 제어기 명령을 병렬 실행하지 않는다(확장 경로는 `sendCommandDetailed` 직렬 큐가 강제 — raw TCP/MCP 병행 사용 시에만 주의).
 - 직접 FTP 업로드 스크립트로 확장의 Deploy 경로를 우회하지 않는다.
 - `out/` 산출물을 직접 수정하지 않는다.
 - 로그/캐시/상태 파일을 워크스페이스에 자동 생성하지 않는다.
 - 제어기 포트 역할(1402/1403/21/51417)을 바꾸지 않는다.
-- Step/Continue 키를 누른 채 유지(자동 반복)하지 않는다 — 어댑터 게이트가 막아 주지만, 외부 클라이언트(MCP `step_thread` 반복 호출 등)는 스스로 정지 확인 뒤에만 다음 명령을 보낸다(GitHub #28).
-- 제어기에 단명 TCP 연결을 반복해서 만들지 않는다(명령마다 connect/close 금지 — 확장은 1402 keep-alive, 1403 배치 재연결 지연, FTP 세션 1회 조회로 접속 churn을 줄였다. GitHub #22).
+- Step/Continue 연타(정지 확인 전 다음 Step) — 확장 경로는 어댑터 게이트(무시)와 명령 정책 R1(정지 확인까지 대기 후 전송)이 강제하므로 호출자가 따로 지킬 필요가 없다. 확장을 거치지 않는 MCP `step_thread`만 스스로 정지 확인 뒤 다음 명령을 보낸다(GitHub #28).
+- Stop 정착 전 Compile/Start·Compile 직후 Start 연속 — 확장 경로는 명령 정책 R2/R3이 대신 기다린다(§0.6·§0.7). raw TCP/MCP로 직접 보낼 때만 스스로 `Show Thread -web`로 정착을 확인한다.
+- 제어기에 단명 TCP 연결을 반복해서 만들지 않는다(명령마다 connect/close 금지 — 확장은 1402 keep-alive(+유휴 5 s `Show Thread` ping으로 세션 유지 — GDE는 유휴 조건 없는 고정 주기이므로 같은 목적의 의도적 차이), 1403 배치 재연결 지연, FTP 세션 1회 조회로 접속 churn을 줄였다. GitHub #22, ai-handoff §1-BM).
+- 1403 스트림에 데이터를 보내 연결을 "유지"하려 하지 않는다 — GDE의 5 s NUL도 FIN을 막지 못했고(캡처 반례), 1403 수명은 1402 세션에 결부된 것으로 관측됐다(§1-BM). 끊김을 보면 1402 keep-alive/ping 로그를 먼저 본다.
+- **프로젝트명·Load 경로에 공백을 쓰지 않는다** — 1402 콘솔 명령(`Compile <name>`·`Load <path>`·`Start <name>`·`Unload <name>`)은 인자를 공백으로 구분하고 인용 문법이 없다(Brooks 문서상). `My project`는 `Compile My`+옵션 `project`로 읽혀 실패하거나 다른 프로젝트를 건드린다. 확장 경로(Deploy/Start/FTP Run·Unload/F5 attach)와 MCP `proj()`는 `controller/projectNameGuard.ts` 규칙으로 보내기 전에 막고 이름 변경(`My_project`)을 안내하며, 워크스페이스 프로젝트 감지 시에도 세션당 1회 경고한다(ai-handoff §1-BQ). raw TCP로 직접 보낼 때만 스스로 확인한다.
 <!-- end-of-runbook -->
 
 ## 부록 A. 변수 평가(`Show Variable -eval`) 규칙 요약 — 실측 2026-08-25 (GitHub #26·#27)

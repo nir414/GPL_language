@@ -1,4 +1,4 @@
-# CLAUDE.md — AI 작업자 시작 가이드
+# AGENTS.md — AI 작업자 시작 가이드
 
 VS Code 확장 **`nir414.gpl-language-support`** — Brooks/Precise Automation의 GPL(Guidance
 Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)과 PA 제어기 연동
@@ -19,9 +19,6 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 - `npm run package` — patch 버전 bump + VSIX 패키징 (`dist/gpl-language-support-<ver>.vsix`, 실패 시 버전 자동 롤백)
 - `npm run package:no-bump` — 버전 그대로 패키징
 - `npm test` — 컴파일 + 테스트
-- **F5 "Run Extension"** — 전용 프로필 `GPL-DevHost`(기본 설정·다른 확장 없음)로 Extension Development Host를
-  띄워 `samples/hello-project`를 연다. 첫 실행 시 프로필이 자동 생성된다. `npm run dev:host`는 같은 창을
-  디버거 없이 여는 것(사용자가 요청할 때만 실행 — AI가 임의로 창을 열지 않는다).
 
 ## 하드 규칙 요약 (상세: docs/ai-handoff.md §0)
 
@@ -68,3 +65,10 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 - `docs/` — 인계 문서(`ai-handoff.md`), 개발 문서(`development/`), 릴리스 절차(`releases/`).
 - `captures/` — 패킷 캡처 등 분석 자료(VSIX에 미포함).
 - `dist/` — 패키징 산출물 VSIX.
+
+## Imported Claude Cowork project instructions
+
+VScode용 GPL 언어 확장 개발중 입니다
+"C:\Users\Doyun\Documents\GitHub\GPL_language" 에서 작업해 주세요
+
+함부로 편집하지 마세요

@@ -41,7 +41,8 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
    - 결정에는 근거를, 미해결에는 리스크와 다음 액션을 함께 남긴다. 코드 식별자·경로·STATUS·로그 원문은 변형 없이 보존한다.
    - 세션 종료 전 핸드오프가 현재 상태와 일치하는지 확인하고, 완료/미완료를 정확히 표시한다.
 5. 환경 주의: 이 작업 환경에서 방금 수정한 파일이 잘려 읽혀 `tsc`가 가짜 문법 오류를 낼 수 있다. 코드 오류로 단정하지 말고, 검증은 사용자 로컬 `npm run compile`로 확인한다.
-6. **PA 제어기의 `Start`는 자체적으로 Compile을 수행한다**(사용자 실사용 사실 — Brooks 문서의 "사전 컴파일 필요·`-compile` 별도"와 다름). 따라서 **Compile 직후 Start를 연속으로 보내지 않는다(한 번에 하나만)**: 에러 확인은 `Compile`(또는 `GPL: Deploy`), 실행은 `Start`(`GPL: Start`)만. 컴파일 중복의 안전성은 미확인. Brooks 공식 문서는 가설로 다루고 실기기 응답을 사실로 삼는다(`docs/ai-handoff.md` §0.7).
+6. **PA 제어기의 `Start`는 자체적으로 Compile을 수행한다**(사용자 실사용 사실 — Brooks 문서의 "사전 컴파일 필요·`-compile` 별도"와 다름). 따라서 **Compile 직후 Start를 연속으로 보내지 않는다(한 번에 하나만)**: 에러 확인은 `Compile`(또는 `GPL: Deploy`), 실행은 `Start`(`GPL: Start`)만. 컴파일 중복의 안전성은 미확인. Brooks 공식 문서는 가설로 다루고 실기기 응답을 사실로 삼는다(`docs/ai-handoff.md` §0.7). 확장 경로(명령·`gpl.ai.debug.*`·URI)로 보낼 때는 명령 정책(`src/controller/commandPolicy.ts`)이 이 조건과 Step 연타·정지 정착(§0.6)을 대신 기다려 충족시키므로 호출자가 따로 지킬 필요가 없다 — raw TCP/MCP 직접 전송 때만 스스로 지킨다.
+7. **AI의 확장 기능 접근을 지침으로 제한하지 않는다(2026-08-28 사용자 결정).** MCP·`gpl.ai.debug.*`·URI는 AI가 학습하지 않은 GPL 확장을 그대로 써서 테스트·자료 검토·로그 확인을 돕게 만든 것이다. 특정 사고를 막는 조건이 필요하면 지침에 "하지 말 것"을 적는 대신 확장이 기계적으로(대기·간격·정착 확인) 충족시키도록 구현한다. 승인 모달·거부 목록을 AI 경로에 새로 넣지 않는다.
 
 ## 먼저 수집할 증거
 

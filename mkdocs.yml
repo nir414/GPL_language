@@ -83,12 +83,14 @@ nav:
       - 파일 입출력: gpl-language/file-io.md
   - 개발 가이드:
       - 제어기 디버깅 런북: development/ai-controller-debugging-runbook.md
+      - 제어기 디버깅 조작 조사: development/pa-controller-debug-operations.md
       - 설계 원칙: development/design-principles.md
       - Broker/Workbench 아키텍처: development/broker-workbench-architecture.md
   - 레퍼런스:
       - GPL Dictionary: reference/dictionary.md
       - 콘솔 명령: reference/console-commands.md
       - 로봇 호밍 방법: reference/robot-homing-methods.md
+      - Project.gpr 형식: reference/project-file-gpr.md
   - 릴리스:
       - 빠른 가이드: releases/quick-guide.md
       - 상세 프로세스: releases/process.md

@@ -55,7 +55,7 @@ Brooks PreciseFlex 제어기에 직접 연결하여 VS Code 안에서 배포·�
   실행(START)과 flash 저장은 별도 명령으로 분리(Compile과 Start는 한 번에 하나만).
   업로드/배포 중에는 배포 잠금으로 다른 창·MCP의 Compile/Start를 차단(잠금 보유자·단계·경과를 경고에 표시)
 - **사이드바 GPL Controller 패널**: 연결 정보, 쓰레드 실시간 상태/개별 제어(정지·일시정지·재개·
-  Step Over/Into/Out·스택 보기), 제어기 브레이크포인트 목록, FTP 파일 관리(컴파일/실행/다운로드/삭제),
+  Step Over/Into/Out·스택 보기), 제어기 브레이크포인트 목록, FTP 파일 관리(컴파일/실행/다운로드/삭제 · 폴더 통째로 비우기),
   시스템 정보, 에러 로그
 - **실시간 로그 터미널**: 1402/1403 트래픽을 VS Code 터미널에 미러링 (파일 미생성, 메모리 버퍼만 사용)
 - **제어기 대시보드 탭**: 연결·고전원·스레드·에러 상태 배지, 스레드 표, 축 위치 게이지, XY 미니 플롯, 에러 로그를
@@ -73,11 +73,47 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 
 - 단축키는 VS Code 표준 그대로입니다(F9 = 브레이크포인트 토글). GDE 습관(F9 = Continue)이 필요하면
   `gpl.keybindings.gdeStyle`을 켭니다.
+- **스레드 단일 실행 잠금**: CALL STACK에서 스레드 우클릭 → `GPL: 스레드 실행 잠금`(팔레트: `GPL: 스레드 실행 잠금 토글`).
+  잠금 중에는 Continue/Step이 포커스와 무관하게 잠근 스레드에만 나가고, 다른 스레드가 정지해도 디버그 포커스를
+  가져가지 않습니다. 상태바 `$(lock) 스레드 잠금: <이름>`을 클릭하면 해제됩니다. 추가로 재개되는 스레드는 없습니다
+  (제어기 실행 명령은 원래 스레드 단위이며, 잠금은 대상을 좁히기만 합니다).
+- **커서까지 이동(Jump to Cursor)**: 정지 중 편집기 우클릭 → `커서까지 이동`으로 다음 실행 문장을 옮깁니다
+  (제어기 `Set Thread <스레드> -line <줄>`). **건너뛴 문장은 실행되지 않으므로** 초기화·안전 조건이 빠진 채
+  진행될 수 있어 기본값은 실행 직전 경고 확인입니다(`gpl.debug.jumpToCursor`: `warn`/`on`/`off`).
+  대상 줄은 문서 제약대로 같은 프로시저 안의 실행 문장이어야 하며, 확장이 파서로 미리 확인합니다.
+- **Step Into Target**: 한 줄에 호출이 여러 개면 F11 대신 우클릭 → `Step Into Target`으로 들어갈 호출을 고릅니다.
+  제어기 Step에는 대상 지정이 없어 정의 위치에 임시 브레이크포인트를 걸고 Continue한 뒤 정리합니다(실패 시 기본 Step).
+- **프로시저 이름 브레이크포인트**: BREAKPOINTS 뷰의 함수 중단점에 `Class.Proc`을 입력하면 파서가 정의 위치를 찾아
+  그 프로시저 첫 실행 줄에 설정합니다.
+- **브레이크포인트 줄 보정**: 빈 줄·주석에 BP를 찍으면 제어기가 다음 실행 문장으로 옮기는데(공식 문서 규칙),
+  확장이 그 줄을 미리 계산해 같은 위치에 설정하고 이유를 BP 메시지로 알려 줍니다. 동시 BP 상한(문서상 32개)을
+  넘으면 경고합니다.
+- **조건부 BP·히트 조건·로그포인트**(기본 꺼짐, `gpl.debug.clientSideBreakpointLogic`): 제어기에 조건 개념이 없어
+  확장이 적중 시 조건을 평가하고 **불일치하면 자동으로 Continue**합니다. 자동 재개는 모션을 다시 움직이므로
+  기본값을 꺼짐으로 두었고, 켜면 VS Code의 조건·히트 수·로그 메시지 입력이 나타납니다.
+- 변수 값에 16진수를 함께 보려면 `gpl.debug.integerHex`(비트마스크 DataID 읽을 때 유용). VARIABLES/WATCH의
+  '값 복사'는 표시용 접미 없이 원문을 복사합니다.
 - 이전 Step/Continue의 정지가 확인되기 전에 들어온 같은 쓰레드의 Step/Continue 요청은 무시됩니다
   (키 자동 반복으로 Step이 수백 건 연속 송신되어 제어기가 다운된 사고 방지, `gpl.debug.minStepIntervalMs`).
+  디버거 밖(트리·AI 명령·URI)에서 보내는 Step/Continue도 확장의 명령 정책이 정지 확인 뒤에만 보냅니다.
 - **Attach only(`deployBeforeAttach: false`)** 로 붙을 때 마지막 Compile 이후 편집된 소스가 있으면 상태바에
   `⚠ 소스 변경됨 N — BP 신뢰 불가` 배지가 뜨고 해당 파일의 브레이크포인트는 회색(unverified)으로 표시됩니다
   (제어기는 시작 시점 컴파일 코드를 실행하므로 줄 번호가 어긋남). 배지를 클릭해 Stop + Upload + Run 으로 재시작할 수 있습니다.
+
+**디버그 단축키 (VS Code 표준)** — 확장이 표준 키를 덮어쓰지 않습니다.
+
+| 단축키 | 기능 | 이 확장에서의 동작 |
+|---|---|---|
+| `F5` | Start / Continue | 세션 없으면 attach(설정에 따라 Deploy 후), 정지 중이면 `Continue <스레드>` |
+| `F6` | Pause | 대상 스레드에 `Break <스레드>` (전체 정지가 아님) |
+| `F9` | Toggle Breakpoint | `Set Break <프로젝트> "<파일>"<줄>` / 해제는 `Set Nobreak …` (GDE 캡처 구문) |
+| `F10` | Step Over | `Step <스레드> -over -noerror` |
+| `F11` | Step Into | `Step <스레드> -noerror` |
+| `Shift+F11` | Step Out | `Step <스레드> -out -noerror` |
+| `Shift+F5` | Stop | 디버거만 분리하고 제어기 BP를 전부 해제합니다. 프로젝트 실행은 유지 — 함께 정지하려면 launch 구성에 `stopAllOnDisconnect: true`, 개별 스레드 중지는 CALL STACK 우클릭 "스레드 종료"(`Stop <스레드>`) |
+| `Ctrl+Shift+F5` | Restart | 어댑터에 재시작 요청이 없어 VS Code가 종료 후 다시 attach합니다(`deployBeforeAttach: true`면 재배포·재컴파일이 따라옵니다 — 주의) |
+| `Ctrl+F5` | Run Without Debugging | attach 전용 구성이라 의미가 없습니다. 디버거 없는 실행은 `GPL: Start` |
+| `Ctrl+Shift+D` | Run and Debug View | VS Code 표준 |
 
 ```json
 {
@@ -93,9 +129,17 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | 옵션 | 효과 |
 |---|---|
 | `deployBeforeAttach` | F5 시점에 UPLOAD ∥ STOP → COMPILE 후 attach |
-| `projectDir` | 다중 프로젝트 워크스페이스에서 배포 대상 고정 |
+| `projectName` | 제어기 쪽 프로젝트 이름(`Start`/브레이크포인트 명령에 사용). 생략하면 `.gpr`에서 결정 |
+| `projectDir` | 배포 대상 폴더 고정. 생략하고 프로젝트가 여러 개면 F5 시점에 QuickPick으로 묻습니다 |
 | `stopAllBeforeAttach` | attach 직전 `Stop -all`로 다른 프로젝트 쓰레드 간섭 차단 |
 | `clearProjectBreakpointsOnAttach` | attach 직전 대상 프로젝트의 기존 제어기 브레이크포인트 정리 |
+| `startStackSizeKb` | `Start -stack <KB>` — 시작 쓰레드의 프로시저 스택 크기(문서 기본 4 KB, 1~1024) |
+| `startShowInitStatements` | `Start -init` — 스텝/트레이스 중 초기화 문장도 표시 |
+| `startTrace` | `Start -trace` — 실행 문장을 콘솔에 표시(문서가 성능 저하를 경고 — 진단용) |
+
+- `Start`에는 기본으로 `-event`가 붙습니다(`gpl.controller.startEventMode`). 공식 문서상 `-event`는 쓰레드 상태
+  변경을 콘솔 메시지가 아니라 **이벤트로** 보내며, GDE도 항상 이 형태를 사용합니다. `-compile`은 어떤 경우에도
+  붙이지 않습니다(제어기 Start가 자체 컴파일).
 
 ### 언어 기능
 
@@ -142,6 +186,13 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | `GPL: Save to Flash` | `/flash/projects`에 영구 저장만 |
 | `GPL: 모든 쓰레드 중지` | `Stop -all` 전체 정지 |
 
+- 대상 프로젝트는 `.gpr`가 있는 폴더입니다. 워크스페이스에 여러 개면 QuickPick으로 고르고(최근 선택이 맨 위),
+  **탐색기에서 프로젝트 폴더(`.gpr`가 들어 있는 폴더)를 우클릭**하면 선택 없이 그 프로젝트로 Deploy/빠른 컴파일/
+  Debug Project/Start/Save to Flash를 실행할 수 있습니다. 제어기 쪽 프로젝트 이름은 `.gpr`의 `ProjectName`입니다.
+- **`Project.gpr` 우클릭 → `GPL: Project.gpr 소스 목록 동기화`**: 폴더의 `.gpl`과 `ProjectSource` 목록을 대조해
+  누락된 파일 추가·없는 파일 항목 제거를 확인 후 반영합니다(GDE 형식 유지). `.gpl`을 새로 만들거나 이름 변경·삭제하면
+  반영할지 물어봅니다(`gpl.project.autoSyncSources`).
+
 > **FTP 패널의 "업로드된 복사본 컴파일 & 실행" 주의**: 제어기에 **이미 업로드된 복사본만**
 > 대상으로 하며 로컬 변경사항을 업로드하지 않습니다. 최신 로컬 코드 검증은 Deploy를 사용하세요.
 
@@ -150,6 +201,7 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | 명령 | 설명 |
 |---|---|
 | `GPL: Quick Debug Attach (No launch.json)` | launch.json 없이 즉시 Attach |
+| `GPL: Debug Project (Deploy + Attach)` | 프로젝트를 골라(또는 탐색기 우클릭) 배포 후 Attach — launch.json 불필요 |
 | `GPL: Create/Update Debug launch.json` | Attach 구성 자동 생성 |
 | `GPL: Push/Pull Controller Breakpoints` | 에디터 ↔ 제어기 브레이크포인트 동기화 |
 | `GPL: Start/Stop Runtime Console` | 1403 런타임 콘솔 시작/중지 |
@@ -169,7 +221,15 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | `gpl.ai.debug.*` | Break/Step/Continue/변수평가/상태수집/조건 루프 — AI 자율 디버깅 API |
 | `gpl.ai.debug.connect` / `disconnect` / `getConnectionState` | 비대화형 연결·해제·연결 상태 조회(`{ ok, connected, ip, port, debugSessionActive, runtimeConsole, deployLock, … }`) |
 | `gpl.controller.connect({ ip?, port?, save?, silent? })` | 인자를 주면 입력 상자 없이 연결하고 결과를 반환(인자 없으면 종전 대화형) |
-| URI `vscode://nir414.gpl-language-support/connect?ip=…&port=…` | 외부 진입점(`code --open-url`). `/disconnect`, `/getState`, `/dashboard`도 지원 — 모션을 일으키는 동작은 열지 않음 |
+| URI `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>` | 외부 진입점(`code --open-url`) — 이 확장의 **모든 명령**을 실행(`?key=value` 평면 인자, `/command?id=…`도 가능). 별칭 `/connect?ip&port`, `/disconnect`, `/getState`, `/dashboard`. 결과는 Output `[URI]`로 확인 |
+
+**MCP 서버(`controller-mcp`)는 이 확장을 통해 제어기를 다룹니다.** 확장이 실행 중이면 MCP의 1402 명령이 확장 세션으로
+라우팅되어(Agent Bridge, `gpl.agentBridge.enabled`) 세션 경쟁이 없고, MCP 도구 `extension_command`로 Deploy·Quick Compile·
+브레이크포인트 동기화 같은 **확장 기능 자체**를 쓸 수 있습니다. 현재 경로는 `extension_status`로 확인합니다.
+
+접근은 제한하지 않습니다. 제어기 안전 조건(Step/Continue 연타 방지, 정지 정착 전 Compile/Start 금지, Compile 직후
+Start 완충)은 어느 경로로 명령을 보내든 확장의 **명령 정책**이 대신 기다려서 충족시킵니다(`gpl.controller.commandPolicyEnabled`,
+개입 내용은 GPL Traffic `--- policy:` 줄). 한도 안에 충족되지 않으면 명령을 보내지 않고 `{ ok: false, error: "policy-hold" }`로 알립니다.
 
 AI 에이전트는 직접 FTP/TCP 자동화로 확장 경로를 우회하지 않고 위 명령과 DAP 세션을
 사용합니다. 전체 Command ID 목록, 권장 실행 순서, STATUS 코드 판단표는

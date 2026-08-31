@@ -1,4 +1,14 @@
 {
+    // F5 → Extension Development Host.
+    // - `--profile=GPL-DevHost`: 개발 호스트 창에만 적용되는 전용 프로필. 처음 실행 시 VS Code가
+    //   "빈 프로필"(기본 설정·확장 없음)로 자동 생성하므로, 평소 프로필의 설정/확장/UI 상태와 격리된
+    //   기본 환경에서 우리 확장만 올라간 상태를 테스트한다. 테마 등 개인 취향은 그 프로필 안에서 1회만
+    //   설정하면 유지된다 (예: 개발 호스트 창의 Extensions 뷰에서 테마 설치 후 Ctrl+K Ctrl+T).
+    // - 마지막 인자(열 폴더)는 확장 저장소 자체가 아니라 샘플 프로젝트다. `--profile`은 "폴더 ↔ 프로필"
+    //   연결을 기억하므로, 저장소 폴더를 열면 평소 창에서도 그 프로필로 열리게 되어 혼선이 생긴다.
+    //   제어기 연동 시험은 실제 프로젝트 폴더로 바꿔 쓰면 된다.
+    // - 프로필 방식은 VS Code 문서가 권장하는 격리 방법이다. (`--user-data-dir`은 F5 개발 호스트에서
+    //   무시된다 — 개발 호스트는 별도 프로세스가 아니라 현재 VS Code 프로세스 안의 새 창이기 때문.)
     "version": "0.2.0",
     "configurations": [
         {
@@ -8,7 +18,8 @@
             "runtimeExecutable": "${execPath}",
             "args": [
                 "--extensionDevelopmentPath=${workspaceFolder}",
-                "${workspaceFolder}"
+                "--profile=GPL-DevHost",
+                "${workspaceFolder}/samples/hello-project"
             ],
             "outFiles": [
                 "${workspaceFolder}/out/**/*.js"
@@ -26,7 +37,8 @@
             "runtimeExecutable": "${execPath}",
             "args": [
                 "--extensionDevelopmentPath=${workspaceFolder}",
-                "${workspaceFolder}"
+                "--profile=GPL-DevHost",
+                "${workspaceFolder}/samples/hello-project"
             ],
             "outFiles": [
                 "${workspaceFolder}/out/**/*.js"

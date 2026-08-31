@@ -1,0 +1,5 @@
+ProjectBegin
+ProjectName="hello_project"
+ProjectStart="Main"
+ProjectSource="Main.gpl"
+ProjectEnd

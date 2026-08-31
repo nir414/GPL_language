@@ -17,6 +17,7 @@ tsconfig.json
 package-lock.json
 
 # Development-only content that must never ship inside the VSIX
+samples/**
 controller-mcp/**
 captures/**
 dist/**

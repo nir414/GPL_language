@@ -1,0 +1,54 @@
+' hello-project — GPL Language Support 확장 개발 호스트(F5)가 기본으로 여는 샘플 프로젝트.
+' 제어기 없이도 IntelliSense·개요·정의 이동·진단을 확인할 수 있는 최소 코드다.
+' 제어기 연동(Deploy/Start/디버그)을 시험할 때는 실제 프로젝트 폴더를 대신 열거나
+' 이 폴더를 그대로 배포해도 무해하다(모션 없음, 콘솔 출력만).
+
+Module Main
+
+    ' 두 정수를 더해 돌려준다.
+    '
+    ' # Parameters
+    ' - `a`: 첫 번째 값
+    ' - `b`: 두 번째 값
+    '
+    ' # Returns
+    ' 두 값의 합
+    Public Function Add(a As Integer, b As Integer) As Integer
+        Return a + b
+    End Function
+
+    ' 값을 지정된 범위로 제한한다.
+    '
+    ' # Parameters
+    ' - `value`: 제한할 값
+    ' - `min`: 최솟값
+    ' - `max`: 최댓값
+    '
+    ' # Returns
+    ' 범위가 적용된 값
+    '
+    ' # Examples
+    ' ```
+    ' Dim result As Integer
+    ' result = Clamp(120, 0, 100)
+    ' ' result = 100
+    ' ```
+    Public Function Clamp(value As Integer, min As Integer, max As Integer) As Integer
+        If value < min Then
+            Return min
+        End If
+        If value > max Then
+            Return max
+        End If
+        Return value
+    End Function
+
+    ' 프로젝트 시작점(ProjectStart="Main").
+    Public Sub Main()
+        Dim total As Integer
+        total = Add(1, 2)
+        Console.WriteLine("hello-project: 1 + 2 = " & CStr(total))
+        Console.WriteLine("clamped: " & CStr(Clamp(120, 0, 100)))
+    End Sub
+
+End Module

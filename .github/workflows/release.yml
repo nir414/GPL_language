@@ -27,6 +27,14 @@ jobs:
       - name: Compile
         run: npm run compile
 
+      - name: Install MCP server dependencies
+        # bundle:mcp(esbuild)가 controller-mcp의 의존성을 해석해야 단일 파일로 번들된다.
+        # node_modules 자체는 VSIX에 실리지 않으므로(번들 산출물 out/mcp/*.cjs만 포함)
+        # 리눅스 러너에서 설치해도 CLAUDE.md 하드 규칙 5(윈도우 작업본에 유닉스 심링크를
+        # 만들지 않는다)와 무관하다 — 그 규칙은 로컬 Windows 체크아웃에 대한 것이다.
+        working-directory: controller-mcp
+        run: npm ci
+
       - name: Package VSIX
         run: npm run package:no-bump
 

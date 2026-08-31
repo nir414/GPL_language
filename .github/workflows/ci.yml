@@ -33,3 +33,23 @@ jobs:
 
       - name: Compile
         run: npm run compile
+
+      - name: Test
+        run: node ./out/test/index.js
+
+      - name: Install MCP server dependencies
+        # bundle:mcp(esbuild)가 controller-mcp의 의존성을 해석해야 단일 파일로 번들된다.
+        # node_modules 자체는 VSIX에 실리지 않으므로(번들 산출물 out/mcp/*.cjs만 포함)
+        # 리눅스 러너에서 설치해도 CLAUDE.md 하드 규칙 5(윈도우 작업본에 유닉스 심링크를
+        # 만들지 않는다)와 무관하다 — 그 규칙은 로컬 Windows 체크아웃에 대한 것이다.
+        working-directory: controller-mcp
+        run: npm ci
+
+      - name: MCP server tests
+        working-directory: controller-mcp
+        run: npm test
+
+      # 릴리스와 같은 경로를 main에서 미리 밟아 둔다. bundle:mcp 도입 뒤 controller-mcp
+      # 의존성이 CI에 없어 v0.8.22 태그를 밀고 나서야 릴리스가 깨진 것을 알았다.
+      - name: Package VSIX (smoke)
+        run: npm run package:no-bump

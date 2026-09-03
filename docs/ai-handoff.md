@@ -1,13 +1,13 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-09-03** · 현재 package 버전 **0.8.28**(아직 미태그 — 마지막 태그 `v0.8.22`. CI `release.yml`이 빌드·패키징·릴리즈)
-- **직전 세션: §1-CX** — **밀린 작업 트리 일괄 커밋 + `.gitignore` 정리(리팩토링 준비).**
+- **최종 갱신: 2026-09-03** · 현재 package 버전 **0.9.0** (태그 `v0.9.0` — `v0.8.22` 이후 첫 정식 릴리스. CI `release.yml`이 빌드·패키징·릴리즈)
+- **직전 세션: §1-CX** — **밀린 작업 트리 일괄 커밋 + `.gitignore` 정리 + 0.9.0 릴리스.**
   마지막 커밋 `b9a30d5` 이후 세션 20개분(§1-CD ~ §1-CW)이 커밋되지 않은 채 쌓여 있었다(90개 경로,
   +6,412/-4,080). 계층별로 6개 커밋(언어 · 프로젝트 · 제어기/디버깅 · MCP · 빌드/등록 · 문서)으로
-  나눠 올렸고, `.claude/settings.local.json`·문서 빌드 venv·패치 잔여물을 `.gitignore`에 넣었다.
-  커밋 전 `npm test` 763/763. **남은 결정: CHANGELOG 최상단이 `[0.8.27]`인데 `package.json`은
-  0.8.28** — 마지막 `npm run package`가 bump 한 뒤 CHANGELOG 절을 개명하지 않아 §1-CC와 같은
-  어긋남이 다시 생겼다(§3 참조).
+  나눠 올리고, `.claude/settings.local.json`·문서 빌드 venv·패치 잔여물을 `.gitignore`에 넣었다.
+  이어서 **0.9.0 minor 릴리스** — `0.8.23`~`0.8.28`은 태그 없이 로컬 VSIX로만 나갔던 개발 빌드였고,
+  그 내용을 `[0.9.0]` 절로 묶어 `v0.8.22` 이후 첫 정식 릴리스로 냈다(CHANGELOG `[0.8.27]` vs
+  `package.json` 0.8.28 어긋남도 이것으로 해소). `npm test` 763/763, `pre-release-check` 통과.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -83,14 +83,6 @@
 ## 3. 다음에 할 일 (체크리스트)
 
 열린 항목만 둔다. 완료된 항목은 `docs/archive/handoff/2026-08.md` §부록으로 옮겼다(2026-08-31 정리).
-
-- [ ] **(2026-09-03, §1-CX) 릴리스 버전 표기 정리 — 사용자 결정.**
-  `package.json`은 **0.8.28**, `dist/`의 최신 산출물도 `gpl-language-support-0.8.28.vsix`(09-02 18:28)인데
-  `CHANGELOG.md` 최상단은 `[0.8.27] - 2026-09-02`다. 마지막 `npm run package`가 patch 를 올린 뒤
-  CHANGELOG 절 이름을 따라 바꾸지 않아 생긴 어긋남으로, §1-CC 때와 같은 형태다. 선택지는
-  ① `[0.8.27]` 절을 `[0.8.28]`로 개명(0.8.27 vsix 를 아무도 안 썼다면 이쪽이 깔끔)
-  ② `[0.8.28]` 절을 새로 만들고 그 아래에 이번 커밋 정리 내용을 적는다.
-  **어느 vsix 를 실제로 설치해 쓰고 있는지**에 달렸으므로 사용자 확인 후 진행한다.
 
 - [ ] **(2026-09-02, §1-CW) 참조 찾기(Shift+F12) 편집기 실동작 확인 — 제어기 불필요.**
   `GPL_Code`를 Extension Development Host에서 열고 ① `Server.gpl:62`의 `New`에서 실행했을 때
@@ -1560,3 +1552,29 @@ docs/ai-handoff.md, CHANGELOG.md      # 기록 + §1-CM 2026-08 아카이브 이
 docs/ai-handoff.md                # 헤더·§1 인덱스·§3 갱신 + 이 절 신설
 docs/archive/handoff/2026-09.md   # 신규 — §1-CN 이동(본문 최근 10세션 유지 규칙)
 ```
+
+### 후속 (같은 세션) — 0.9.0 정식 릴리스
+
+커밋 정리 직후 사용자가 "0.9.0 버전으로 새로 올려 달라"고 해서 minor 릴리스를 냈다.
+`docs/releases/process.md` §2(공식 MINOR) 절차를 그대로 따랐다 — **`npm run package`를 쓰면 patch가
+한 번 더 올라가므로 `bump-version.js minor` → 문서 정리 → 커밋 → `pre-release-check` →
+`package:no-bump` 순서**다.
+
+**버전 어긋남 해소.** 위 §남은 일에 적어 뒀던 "`package.json` 0.8.28 vs CHANGELOG `[0.8.27]`" 문제는
+0.9.0 릴리스로 자연스럽게 정리됐다. 판단 근거는 **`0.8.23`~`0.8.28`이 태그 없이 로컬 VSIX로만 나간
+개발 빌드**라는 것이다(마지막 태그는 `v0.8.22`). 그래서 과거 절을 개명해 이력을 고치는 대신
+(§1-CC 때는 그렇게 했지만, 그때는 대상이 딱 한 절이었다) **`[0.9.0]` 절에 그 구간 전체를 요약으로 묶고
+"0.8.23~0.8.28은 로컬 빌드였고 그 변경이 모두 이 릴리스에 들어 있다"고 명시**했다. 과거 절은 원문
+그대로 남아 있으니 항목별 상세는 그대로 읽을 수 있다.
+
+- 릴리스 노트는 `scripts/extract-changelog.js`가 **해당 버전 절만** 뽑아 GitHub Release 본문으로 쓰므로,
+  `[0.9.0]` 절은 아래 절을 참조만 하지 않고 **그 자체로 읽히도록** Added/Changed/Fixed를 채웠다.
+- `bump-version.js`는 `package-lock.json`을 건드리지 않는다 — lockfile의 version 필드 2곳을 직접 맞췄다
+  (`npm install`을 돌리면 의존성까지 흔들리므로 하지 않았다).
+- `README.md`는 손대지 않았다. 이 저장소의 README에는 버전·이력 같은 가변 정보를 두지 않는 것이 정책이고
+  `pre-release-check`가 이를 강제한다(`docs/releases/process.md`의 "README 현재 버전 갱신" 항목은
+  그 정책 이전에 쓰인 낡은 서술이다 — 따르지 말 것).
+
+검증: `npm test` 763/763 · `npm run pre-release-check` 통과 · `npm run package:no-bump` →
+`dist/gpl-language-support-0.9.0.vsix` · `mkdocs build --strict` 통과.
+`git push origin main` + `git tag v0.9.0` 푸시로 `release.yml`이 GitHub Release를 만든다.

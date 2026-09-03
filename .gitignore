@@ -44,6 +44,9 @@ desktop.ini
 *.sln.docstates
 *.code-workspace
 
+# AI 도구 로컬 설정 (권한 허용 목록 등 — 사람/머신마다 다르다)
+.claude/settings.local.json
+
 # Build outputs
 bin/
 obj/
@@ -72,3 +75,12 @@ docs/.history/
 
 # MkDocs build output
 site/
+
+# 문서 빌드용 Python 가상환경 (requirements-docs.txt)
+.venv/
+venv/
+__pycache__/
+
+# 패치/머지 잔여물
+*.orig
+*.rej

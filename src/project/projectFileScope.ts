@@ -19,11 +19,17 @@ import {
 } from './projectSources';
 
 /**
- * `.gpr`/소스 탐색에서 제외할 경로 — `.history`(Local History 확장)의 stale 사본이
- * 프로젝트·소스 오인식을 유발하므로 `findProjectDirs`와 같은 목록을 쓴다.
+ * `.gpr`/소스 탐색에서 제외할 경로 — 프로젝트 탐색(`findProjectDirs`)·심볼 인덱싱·참조 검색이 공유한다.
+ *
+ * - `.history`(Local History 확장)의 stale 사본은 프로젝트·소스 오인식을 유발한다.
+ * - `.svn`/`.hg`/`CVS`: `findFiles`에 exclude 를 **명시하면 `files.exclude` 기본값이 적용되지 않는다**
+ *   (VS Code API 규약). 기본값에 있던 버전 관리 메타 폴더가 통째로 스캔 대상이 되므로 여기에 다시 넣는다.
+ *   SVN 작업 사본 안(`C:\SVN\…\projects\GPL_Code`)에서 워크스페이스를 여는 구조에서 특히 중요하다.
+ *   (`.git` 은 종전부터 있었다 — 같은 이유다.)
  */
 export const PROJECT_EXCLUDE_GLOB =
-    '{**/node_modules/**,**/bin/**,**/.git/**,**/.history/**,**/dist/**,**/out/**}';
+    '{**/node_modules/**,**/bin/**,**/.git/**,**/.svn/**,**/.hg/**,**/CVS/**,'
+    + '**/.history/**,**/dist/**,**/out/**}';
 
 /** 워크스페이스의 모든 `.gpr` 경로(제외 규칙 적용). */
 export async function findWorkspaceGprPaths(): Promise<string[]> {

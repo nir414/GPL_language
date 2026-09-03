@@ -55,6 +55,77 @@ export const DEFAULT_EXCLUDED_DIR_NAMES: ReadonlySet<string> = new Set([
     'node_modules', 'bin', 'out', 'dist',
 ]);
 
+/**
+ * 재귀 스캔에서 건너뛸 디렉터리인가 — dot 항목(`.git`/`.svn`/`.history`/`.vscode`)과 빌드/출력 폴더.
+ * 확장 전체가 이 한 규칙을 쓴다(디버그 소스맵·트리 명령·소스 목록).
+ */
+export function isSkippedScanDir(name: string, excludeDirs: ReadonlySet<string> = DEFAULT_EXCLUDED_DIR_NAMES): boolean {
+    return name.startsWith('.') || excludeDirs.has(name.toLowerCase());
+}
+
+export interface WalkTreeOptions {
+    /** 루트 기준 최대 깊이(루트 직속=1). 기본 24. */
+    maxDepth?: number;
+    /** 방문할 최대 디렉터리 수. 기본 20000. */
+    maxDirs?: number;
+    /** 제외할 디렉터리 이름. 기본 `DEFAULT_EXCLUDED_DIR_NAMES`. */
+    excludeDirs?: ReadonlySet<string>;
+}
+
+export interface WalkTreeResult {
+    /** 방문한 디렉터리 수. */
+    dirs: number;
+    /** 깊이/개수 상한에 걸려 일부를 못 봤는가 — 호출측이 **반드시 알려야** 한다(조용한 절단 금지). */
+    truncated: boolean;
+}
+
+/**
+ * 워크스페이스 트리를 재귀 순회하며 파일마다 `onFile`을 부른다.
+ *
+ * 종전에는 디버그 소스맵(`_scanDir`)과 트리 명령(`findWorkspaceFilesByName`)이 **상한 없는**
+ * 동기 재귀를 각자 갖고 있었다. 워크스페이스를 프로젝트가 아니라 저장소 상위 폴더에서 여는 구조
+ * (`C:\SVN\pa	runk\develop\…`)에서는 수만 개 폴더를 확장 호스트 스레드에서 훑어 UI가 멈춘다.
+ * 상한은 정상 사용에서는 걸리지 않을 만큼 넉넉하게 두고, 걸리면 `truncated`로 알린다.
+ *
+ * 심볼릭 링크 디렉터리는 순환 방지를 위해 건너뛴다(`listSourceFilesRecursive`와 같은 규칙).
+ */
+export function walkTree(
+    root: string,
+    onFile: (fullPath: string, name: string) => void,
+    opts: WalkTreeOptions = {},
+): WalkTreeResult {
+    const maxDepth = opts.maxDepth ?? 24;
+    const maxDirs = opts.maxDirs ?? 20000;
+    const excludeDirs = opts.excludeDirs ?? DEFAULT_EXCLUDED_DIR_NAMES;
+    let dirs = 0;
+    let truncated = false;
+
+    const stack: Array<{ dir: string; depth: number }> = [{ dir: path.resolve(root), depth: 1 }];
+    while (stack.length > 0) {
+        const { dir, depth } = stack.pop()!;
+        if (dirs >= maxDirs) { truncated = true; break; }
+        dirs++;
+        let entries: fs.Dirent[];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+            continue; // 권한 없음 등 — 그 하위만 건너뛴다
+        }
+        for (const entry of entries) {
+            if (entry.isSymbolicLink()) { continue; }
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (isSkippedScanDir(entry.name, excludeDirs)) { continue; }
+                if (depth >= maxDepth) { truncated = true; continue; }
+                stack.push({ dir: full, depth: depth + 1 });
+            } else if (entry.isFile()) {
+                onFile(full, entry.name);
+            }
+        }
+    }
+    return { dirs, truncated };
+}
+
 function normalizeExtensions(extensions?: readonly string[]): Set<string> {
     const list = (extensions && extensions.length > 0 ? extensions : DEFAULT_SOURCE_EXTENSIONS);
     return new Set(list.map(e => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
@@ -378,32 +449,86 @@ export interface ResolvedLibraries {
     unresolved: string[];
 }
 
+/** `ProjectLibrary` 한 줄 — 원문 값과 해석된 폴더(해석 실패면 `dir` 없음). */
+export interface LibraryRef {
+    /** 부모 `.gpr`에 적힌 값 그대로 */
+    raw: string;
+    /** 해석된 라이브러리 프로젝트 폴더(절대 경로) */
+    dir?: string;
+}
+
+/** 컴파일 단위 그래프의 노드 하나 = `.gpr` 하나. */
+export interface LibraryGraphNode {
+    /** 프로젝트 폴더(절대 경로) */
+    dir: string;
+    /** 이 프로젝트의 `.gpr` 경로(절대) */
+    gprPath: string;
+    /** `.gpr`의 `ProjectName`(없으면 폴더명) */
+    projectName: string;
+    /** 이 프로젝트가 **직접 선언한** `ProjectSource`의 절대 경로(선언 순서) */
+    sources: string[];
+    /** 이 프로젝트의 `ProjectLibrary` 참조(선언 순서, 중복 제거 없음) */
+    refs: LibraryRef[];
+}
+
 /**
- * `.gpr`가 참조하는 라이브러리 프로젝트 폴더를 **재귀로** 해석한다(라이브러리의 라이브러리 포함).
+ * 컴파일 단위의 **참조 그래프**. `dirs`는 종전 `resolveProjectLibraryDirs`와 같은 값이고,
+ * `nodes`가 추가 정보다 — 어느 참조가 어느 파일을 끌어오는지 알아야 하는 기능
+ * (BP용 소스 승격 계획 — `project/sourcePromotion.ts`)이 쓴다.
+ *
+ * 간선은 노드마다 자기 `refs`로 갖고 있으므로, 중복/순환으로 재방문하지 않은 참조도
+ * 그래프에서는 빠지지 않는다(경로 탐색이 가능하다).
+ */
+export interface LibraryGraph {
+    /** 루트(= 인자로 준 `.gpr`)의 폴더 */
+    rootDir: string;
+    /** `normalizeDirKey(dir)` → 노드. 루트를 포함한다. */
+    nodes: Map<string, LibraryGraphNode>;
+    /** 참조 순서대로의 라이브러리 폴더(루트 제외, 중복 없음) */
+    dirs: string[];
+    /** 어느 후보로도 폴더를 찾지 못한 `ProjectLibrary` 값(원문) */
+    unresolved: string[];
+}
+
+/**
+ * `.gpr`가 참조하는 라이브러리 프로젝트를 **재귀로** 해석해 참조 그래프를 만든다.
  *
  * 문서상 참조된 라이브러리의 모든 파일은 메인 프로젝트에 **논리적으로 포함되어 함께 컴파일**된다.
  * 그래서 "이 프로젝트와 함께 컴파일되는 파일 집합"을 묻는 기능(심볼·참조 검색·소스 매핑)은
- * 자기 폴더만으로는 답이 틀린다. 순환 참조는 방문 집합으로 끊는다.
+ * 자기 폴더만으로는 답이 틀린다. 순환 참조는 방문 집합으로 끊는다(간선은 노드에 남는다).
  */
-export function resolveProjectLibraryDirs(
+export function buildLibraryGraph(
     gprPath: string,
     gprText: string,
     opts: ResolveLibraryOptions = {},
-): ResolvedLibraries {
+): LibraryGraph {
     const readText = opts.readText ?? defaultReadGprText;
     const maxDepth = opts.maxDepth ?? 8;
     const known = opts.knownGprPaths ?? [];
+    const rootGpr = path.resolve(gprPath);
+    const rootDir = path.dirname(rootGpr);
     const dirs: string[] = [];
     const unresolved: string[] = [];
-    const visited = new Set<string>([normalizeDirKey(path.dirname(path.resolve(gprPath)))]);
+    const nodes = new Map<string, LibraryGraphNode>();
+    const visited = new Set<string>([normalizeDirKey(rootDir)]);
 
     const visit = (fromGpr: string, text: string, depth: number, inherited: readonly string[]): void => {
-        if (depth > maxDepth) { return; }
         const projectDir = path.dirname(path.resolve(fromGpr));
+        const parsed = parseGprText(text);
+        const node: LibraryGraphNode = {
+            dir: projectDir,
+            gprPath: path.resolve(fromGpr),
+            projectName: parsed.projectName?.trim() || path.basename(projectDir),
+            sources: resolveGprSourcePaths(fromGpr, text),
+            refs: [],
+        };
+        nodes.set(normalizeDirKey(projectDir), node);
+        if (depth > maxDepth) { return; }
+
         // 자기 폴더 → 자기 부모(projects 루트) → 조상에서 물려받은 기준점 순.
         const bases = extendBases(inherited, projectDir, path.dirname(projectDir));
 
-        for (const entry of parseGprText(text).libraries) {
+        for (const entry of parsed.libraries) {
             const raw = entry.path.trim();
             if (!raw) { continue; }
 
@@ -414,19 +539,34 @@ export function resolveProjectLibraryDirs(
             }
             libGpr = libGpr ?? matchKnownGprByPath(raw, known);
             if (!libGpr) {
+                node.refs.push({ raw });
                 if (!unresolved.includes(raw)) { unresolved.push(raw); }
                 continue;
             }
 
             const libDir = path.dirname(libGpr);
+            node.refs.push({ raw, dir: libDir });
             const key = normalizeDirKey(libDir);
-            if (visited.has(key)) { continue; } // 순환 참조·중복 참조
+            if (visited.has(key)) { continue; } // 순환 참조·중복 참조 — 간선은 위에 남겼다
             visited.add(key);
             dirs.push(libDir);
             visit(libGpr, readText(libGpr), depth + 1, bases);
         }
     };
-    visit(gprPath, gprText, 1, []);
+    visit(rootGpr, gprText, 1, []);
+    return { rootDir, nodes, dirs, unresolved };
+}
+
+/**
+ * `.gpr`가 참조하는 라이브러리 프로젝트 폴더 목록 — `buildLibraryGraph`의 얇은 래퍼.
+ * 참조 관계까지 필요하면 그래프 쪽을 쓴다.
+ */
+export function resolveProjectLibraryDirs(
+    gprPath: string,
+    gprText: string,
+    opts: ResolveLibraryOptions = {},
+): ResolvedLibraries {
+    const { dirs, unresolved } = buildLibraryGraph(gprPath, gprText, opts);
     return { dirs, unresolved };
 }
 

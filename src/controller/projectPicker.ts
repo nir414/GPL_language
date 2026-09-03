@@ -6,6 +6,8 @@
  * - 후보가 1개면 즉시, 2개 이상이면 QuickPick(최근 선택이 맨 위). 선택은 workspaceState에 기억한다.
  * - 저장 트리거(autoOnSave)처럼 UI를 띄우면 안 되는 경로는 이 모듈을 쓰지 않는다
  *   (저장 파일 위치로 결정 — extension.ts resolveProjectDirForFile).
+ * - **자동화(MCP·URI) 경로도 이 모듈의 QuickPick 을 쓰지 않는다** — 대상 결정 규칙은 `projectTarget.ts`,
+ *   후보 수집은 이 파일의 `buildTargetCandidates()`다(2026-08-31). 사람용 UI 경로와 섞지 않는다.
  * - 탐색기 메뉴 표시 조건용으로 감지된 프로젝트 폴더 목록을 context key `gpl.projectDirs`에 올린다.
  */
 
@@ -16,11 +18,13 @@ import { findProjectDirs } from './deployService';
 import { parseGpr } from './responseParser';
 import { gprPathInDir, resolveProjectLibraryDirs } from '../project/projectSources';
 import {
+    disambiguateDirLabels,
     filterDirsByProjectName,
     normalizeDirKey,
     orderProjectDirs,
     projectDirFromResource,
 } from './projectPickerCore';
+import type { TargetCandidate } from './projectTarget';
 
 const LAST_PICK_KEY = 'gpl.projectPicker.lastDir';
 /** when-clause: `explorerResourceIsFolder && resourcePath in gpl.projectDirs` */
@@ -69,6 +73,39 @@ export function mapLibraryDirs(dirs: readonly string[]): Map<string, string> {
         }
     }
     return byLibrary;
+}
+
+/**
+ * `.gpr` 에서 자동화 대상 판정에 필요한 정보. `runnable` 은 `ProjectStart` 유무다 — 있으면 실행 가능한
+ * 메인 프로젝트, 없으면 라이브러리 성격(2026-08-31 개선안 §21). 읽기 실패 시 폴더명 + runnable=false.
+ */
+export function readGprTargetInfo(projectDir: string): { projectName: string; runnable: boolean } {
+    const folderName = path.basename(projectDir);
+    const gprPath = gprPathInDir(projectDir);
+    if (!gprPath) { return { projectName: folderName, runnable: false }; }
+    try {
+        const info = parseGpr(fs.readFileSync(gprPath, 'utf8'));
+        return {
+            projectName: (info.projectName || folderName).trim() || folderName,
+            runnable: !!info.projectStart.trim(),
+        };
+    } catch {
+        return { projectName: folderName, runnable: false };
+    }
+}
+
+/**
+ * 자동화 대상 해석용 후보 목록(`projectTarget.resolveProjectTarget` 의 입력). **UI 를 띄우지 않는다.**
+ * 라이브러리도 목록에 남긴다 — 직접 지정하면 대상이 될 수 있어야 하고, 자동 선택에서만 후순위다.
+ */
+export async function buildTargetCandidates(): Promise<TargetCandidate[]> {
+    const dirs = await findProjectDirs();
+    const libraryOwners = mapLibraryDirs(dirs);
+    return dirs.map(dir => {
+        const { projectName, runnable } = readGprTargetInfo(dir);
+        const owner = libraryOwners.get(normalizeDirKey(dir));
+        return { dir, projectName, runnable, ...(owner ? { referencedAsLibraryBy: owner } : {}) };
+    });
 }
 
 export interface PickProjectDirOptions {
@@ -123,11 +160,17 @@ export async function pickProjectDirDetailed(opts: PickProjectDirOptions): Promi
     const last = workspaceState?.get<string>(LAST_PICK_KEY);
     const lastKey = last ? normalizeDirKey(last) : '';
     const libraryOwners = mapLibraryDirs(candidates);
-    const items = orderProjectDirs(candidates, last).map(dir => {
+    // 동명 프로젝트(과제별 복제)는 라벨이 같아 보인다 → 구분에 필요한 최소 상위 폴더를 description 맨 앞에.
+    // 힌트는 **화면에 실제로 뜨는 목록**(중복 제거·정렬 뒤)에서 계산한다 — 같은 폴더가 다른 표기로
+    // 두 번 들어오면 그 둘은 영원히 구분되지 않아 힌트가 안 붙는다.
+    const ordered = orderProjectDirs(candidates, last);
+    const locationHints = disambiguateDirLabels(ordered);
+    const items = ordered.map(dir => {
         const folderName = path.basename(dir);
         const name = projectNameOf(dir);
         const owner = libraryOwners.get(normalizeDirKey(dir));
         const notes = [
+            locationHints.get(normalizeDirKey(dir)),
             name.toLowerCase() !== folderName.toLowerCase() ? `ProjectName=${name}` : undefined,
             owner ? `라이브러리 · ${owner}에서 참조` : undefined,
             lastKey && normalizeDirKey(dir) === lastKey ? '최근 선택' : undefined,

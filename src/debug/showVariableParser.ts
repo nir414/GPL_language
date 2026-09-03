@@ -189,3 +189,36 @@ export function arrayRank(type: string): number {
     if (!m) { return 1; }
     return (m[1].match(/,/g)?.length ?? 0) + 1;
 }
+
+/**
+ * GPL 타입 이름(+ 원문 값)을 VS Code 디버그 뷰가 **값 색상화**에 쓰는 DAP 표준 타입으로 매핑한다.
+ *
+ * 배경(2026-08-31): VS Code는 Variables/Watch/디버그 호버의 값을 DAP `type`이
+ * `'string' | 'number' | 'boolean'`일 때만 전용 색(`debugTokenExpression.string/number/boolean`,
+ * 불투명)으로 칠하고, 그 외에는 값 문자열 모양(`^(['"]).*\1$` · 숫자 · `true|false`)으로만 추측한다.
+ * 우리 값은 타입 접미(`"MAIN"  (String)`)·hex 힌트·주석이 붙어 그 정규식에 걸리지 않아 전부
+ * 흐린 일반색 `debugTokenExpression.value`(dark `#cccccc99` — 60% 불투명)로 표시됐다.
+ * (VS Code 1.135 workbench 번들에서 `renderValue`의 색상화 분기·기본색 확인.)
+ *
+ * @param gplType 제어기가 보고한 타입 칸(`Integer`, `String`, `Double(,)`, `Object Command`, 빈 문자열)
+ * @param rawValue 표시용 주석·hex 힌트가 붙기 **전** 원문 값 — 타입 칸이 없는 응답의 추정에만 쓴다.
+ * @returns 원시 타입이 아니면 undefined(객체/배열/알 수 없는 타입 → 색상화하지 않는다)
+ */
+export function dapColorizeType(
+    gplType: string,
+    rawValue?: string,
+): 'string' | 'number' | 'boolean' | undefined {
+    const t = gplType.trim();
+    // 배열 헤더(`String()`)·객체(`Object Command`)는 앵커(^…$) 때문에 자연히 걸리지 않는다.
+    if (/^(String|Char)$/i.test(t)) { return 'string'; }
+    if (/^(Integer|Short|Long|Byte|Single|Double|Decimal)$/i.test(t)) { return 'number'; }
+    if (/^Boolean$/i.test(t)) { return 'boolean'; }
+    if (t) { return undefined; }
+    // 타입 칸이 없는 줄(시스템 Location 덤프의 2열 멤버 `X, 636`)은 값 모양으로 추정한다.
+    const v = (rawValue ?? '').trim();
+    if (!v) { return undefined; }
+    if (/^(true|false)$/i.test(v)) { return 'boolean'; }
+    if (/^(['"])[\s\S]*\1$/.test(v)) { return 'string'; }
+    if (!Number.isNaN(Number(v))) { return 'number'; }
+    return undefined;
+}

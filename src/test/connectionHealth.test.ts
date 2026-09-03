@@ -11,7 +11,10 @@ import {
     ProbeOutcome,
     LossSummary,
     RecoveryInfo,
+    RecoveringInfo,
     ProberTimers,
+    describeRecovering,
+    describeDisruptiveOperation,
 } from '../controller/connectionHealth';
 
 // ── 픽스처 ─────────────────────────────────────────────────────────────────
@@ -25,10 +28,16 @@ const OK: ProbeOutcome = { ok: true, raw: '<DATA>\r\n</DATA>\r\n<STATUS>0</STATU
 
 function makeMonitor(policy: ConnectionHealthPolicy = POLICY) {
     const events: string[] = [];
-    const state = { lost: undefined as LossSummary | undefined, recovered: undefined as RecoveryInfo | undefined, now: 1_000_000 };
+    const state = {
+        lost: undefined as LossSummary | undefined,
+        recovered: undefined as RecoveryInfo | undefined,
+        recovering: undefined as RecoveringInfo | undefined,
+        now: 1_000_000,
+    };
     const monitor = new ConnectionHealthMonitor(() => policy, {
         onSuspect: reason => events.push(`suspect:${reason}`),
-        onRecovered: info => { state.recovered = info; events.push(`recovered:${info.failuresBeforeRecovery}`); },
+        onRecovering: info => { state.recovering = info; events.push(`recovering:${info.operation.command}`); },
+        onRecovered: info => { state.recovered = info; events.push(`recovered:${info.fromState}:${info.failuresBeforeRecovery}`); },
         onLost: summary => { state.lost = summary; events.push(`lost:${summary.trigger}`); },
     }, () => state.now);
     return { monitor, events, state, advance: (ms: number) => { state.now += ms; } };
@@ -164,6 +173,7 @@ test('monitor: suspect 중 프로브 성공이면 connected 복구 + onRecovered
     assert.strictEqual(monitor.reportProbe(OK), 'connected');
     assert.strictEqual(monitor.state, 'connected');
     assert.deepStrictEqual(events.map(e => e.split(':')[0]), ['suspect', 'recovered']);
+    assert.strictEqual(state.recovered!.fromState, 'suspect');
     assert.strictEqual(state.recovered!.failuresBeforeRecovery, 2);
     assert.strictEqual(state.recovered!.durationMs, 3000);
     const snap = monitor.snapshot();
@@ -235,7 +245,124 @@ test('describeLoss: 횟수·임계 종류·마지막 실패·의심 경과를 �
     assert.ok(/의심 1\.2 s/.test(line), line);
 });
 
-// ── ConnectionHealthProber ────────────────────────────────────────────────
+
+// -- recovering (채널 교란 뒤 복구 대기, 2026-08-31) -----------------------
+
+const UNLOAD_TIMEOUT = { command: 'Unload GPL_Code', kind: 'timeout' as const, detail: 'Command timeout (15000ms): Unload GPL_Code' };
+
+test('monitor: 채널 교란 명령 타임아웃 → recovering, 그 뒤 거부 2회로는 유실되지 않는다 (2026-08-31 실측 재현)', () => {
+    const { monitor, events, state, advance } = makeMonitor();
+    monitor.setConnected(true);
+    assert.strictEqual(monitor.noteDisruptiveTimeout(UNLOAD_TIMEOUT), 'recovering');
+    assert.strictEqual(monitor.state, 'recovering');
+
+    // 실측 타임라인: 타임아웃 뒤 2 s·6 s·12 s·46 s 에 ECONNREFUSED — 종전에는 두 번째에 definitive-threshold 유실.
+    for (const gap of [2000, 4000, 6000, 34_000]) {
+        advance(gap);
+        assert.strictEqual(monitor.reportProbe(REFUSED), 'recovering');
+    }
+    assert.strictEqual(monitor.state, 'recovering');
+    assert.strictEqual(state.lost, undefined, '유실이 확정되어서는 안 된다');
+    assert.strictEqual(monitor.snapshot().recoveryProbeFailures, 4);
+    assert.strictEqual(monitor.snapshot().consecutiveDefinitiveFailures, 0, '거부를 definitive 카운터에 넣지 않는다');
+    assert.deepStrictEqual(events, ['recovering:Unload GPL_Code']);
+});
+
+test('monitor: recovering 중 프로브 성공 → connected 복구, fromState=recovering + 근거 명령 유지', () => {
+    const { monitor, events, state, advance } = makeMonitor();
+    monitor.setConnected(true);
+    monitor.noteDisruptiveTimeout(UNLOAD_TIMEOUT);
+    advance(3000);
+    monitor.reportProbe(REFUSED);
+    advance(169_000);   // 실측 복구 172 s
+    assert.strictEqual(monitor.reportProbe(OK), 'connected');
+    assert.strictEqual(monitor.state, 'connected');
+    assert.strictEqual(state.recovered!.fromState, 'recovering');
+    assert.strictEqual(state.recovered!.durationMs, 172_000);
+    assert.strictEqual(state.recovered!.failuresBeforeRecovery, 1);
+    assert.strictEqual(state.recovered!.disruptiveOperation?.command, 'Unload GPL_Code');
+    assert.deepStrictEqual(events, ['recovering:Unload GPL_Code', 'recovered:recovering:1']);
+    assert.strictEqual(monitor.snapshot().recoveringSince, undefined);
+});
+
+test('monitor: recoveryWindowMs 초과 → suspect 로 강등하고 그 뒤 일반 임계로 유실 (진짜 다운도 결국 감지)', () => {
+    const { monitor, events, state, advance } = makeMonitor();
+    monitor.setConnected(true);
+    monitor.noteDisruptiveTimeout(UNLOAD_TIMEOUT);
+    advance(POLICY.recoveryWindowMs - 1);
+    assert.strictEqual(monitor.reportProbe(REFUSED), 'recovering');
+    advance(2);   // 창을 넘김
+    // 강등되는 이 프로브가 새 카운터의 1회째 — 확정적 실패 1회이므로 아직 유실 아님.
+    assert.strictEqual(monitor.reportProbe(REFUSED), 'suspect');
+    assert.strictEqual(monitor.state, 'suspect');
+    assert.ok(monitor.snapshot().suspectReason!.startsWith('recovery-window-expired: Unload GPL_Code(timeout) 뒤 '), monitor.snapshot().suspectReason);
+    assert.strictEqual(monitor.snapshot().consecutiveDefinitiveFailures, 1);
+    // 강등 뒤에는 종전 규칙대로 거부 2회면 유실.
+    advance(1000);
+    assert.strictEqual(monitor.reportProbe(REFUSED), 'lost');
+    assert.strictEqual(state.lost!.trigger, 'definitive-threshold');
+    assert.deepStrictEqual(events.map(e => e.split(':')[0]), ['recovering', 'suspect', 'lost']);
+});
+
+test('monitor: suspect 중 교란 명령 타임아웃이 오면 recovering 으로 올라가고 종전 카운터는 폐기된다', () => {
+    const { monitor, state } = makeMonitor();
+    monitor.setConnected(true);
+    monitor.reportProbe(REFUSED);   // definitive 1회
+    assert.strictEqual(monitor.state, 'suspect');
+    assert.strictEqual(monitor.noteDisruptiveTimeout(UNLOAD_TIMEOUT), 'recovering');
+    assert.strictEqual(state.recovering!.fromState, 'suspect');
+    assert.strictEqual(monitor.snapshot().consecutiveDefinitiveFailures, 0);
+    // 종전이라면 이 거부가 2회째로 유실이었을 것.
+    assert.strictEqual(monitor.reportProbe(REFUSED), 'recovering');
+    assert.strictEqual(state.lost, undefined);
+});
+
+test('monitor: disconnected 에서의 교란 통지는 무시한다(끊긴 뒤 잔향)', () => {
+    const { monitor, events } = makeMonitor();
+    assert.strictEqual(monitor.noteDisruptiveTimeout(UNLOAD_TIMEOUT), 'ignored');
+    assert.strictEqual(monitor.state, 'disconnected');
+    assert.deepStrictEqual(events, []);
+});
+
+test('monitor: setConnected 는 recovering 근거 명령까지 지운다', () => {
+    const { monitor } = makeMonitor();
+    monitor.setConnected(true);
+    monitor.noteDisruptiveTimeout(UNLOAD_TIMEOUT);
+    monitor.setConnected(false);
+    assert.strictEqual(monitor.state, 'disconnected');
+    assert.strictEqual(monitor.snapshot().disruptiveOperation, undefined);
+    assert.strictEqual(monitor.snapshot().recoveryProbeFailures, 0);
+});
+
+test('describeRecovering / describeDisruptiveOperation: 관측만 적고 인과를 단정하지 않는다', () => {
+    const line = describeRecovering({ operation: { ...UNLOAD_TIMEOUT, at: 0 }, windowMs: 180_000, fromState: 'connected' });
+    assert.ok(line.includes('Unload GPL_Code 가 응답 없이 끝남(timeout'), line);
+    assert.ok(line.includes('실제 결과는 미확정'), line);
+    assert.ok(line.includes('최대 180 s'), line);
+    // "제어기가 죽었다"/"이 명령이 채널을 닫았다" 같은 확정 서술이 없어야 한다.
+    assert.ok(!/다운|죽|재투입|일으켰/.test(line), line);
+    assert.strictEqual(describeDisruptiveOperation({ ...UNLOAD_TIMEOUT, at: 0 }), 'Unload GPL_Code(timeout)');
+    assert.strictEqual(describeDisruptiveOperation(undefined), '(명령 미확인)');
+});
+
+test('prober: recovering 동안은 recoveryProbeDelayMs 간격으로 프로브한다(거부 포트에 connect 를 쌓지 않음)', async () => {
+    const { monitor, prober, timers, calls } = makeProber([REFUSED, OK]);
+    monitor.setConnected(true);
+    monitor.noteDisruptiveTimeout(UNLOAD_TIMEOUT);
+    prober.start();
+    assert.strictEqual(timers.pending[0].ms, POLICY.recoveryProbeDelayMs);
+    timers.fireNext();
+    await settle();
+    assert.strictEqual(monitor.state, 'recovering');
+    assert.strictEqual(timers.pending[0].ms, POLICY.recoveryProbeDelayMs);
+    timers.fireNext();
+    await settle();
+    assert.strictEqual(monitor.state, 'connected');
+    assert.strictEqual(calls.length, 2);
+    assert.strictEqual(prober.active, false);
+});
+
+// -- ConnectionHealthProber ------------------------------------------------
 
 function makeProber(outcomes: Array<ProbeOutcome | Error>, policy: ConnectionHealthPolicy = POLICY) {
     const timers = new FakeTimers();

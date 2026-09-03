@@ -39,7 +39,7 @@ import {
 import type { ProbeOutcome } from '../controller/controllerConnection';
 import { deploy, findProjectDirs, jumpToFirstCompileError } from '../controller/deployService';
 import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
-import { gprPathInDir, resolveGprSourcePaths, resolveProjectLibraryDirs } from '../project/projectSources';
+import { gprPathInDir, resolveGprSourcePaths, resolveProjectLibraryDirs, walkTree } from '../project/projectSources';
 import { getDeployLock, describeDeployLock } from '../controller/deployLock';
 import {
     parseThreadList,
@@ -68,6 +68,7 @@ import {
 } from '../controller/deployRecord';
 import type { CompiledRecord, SnapshotDiff } from '../controller/deployRecord';
 import { shouldGateStepRequest, StepGateReason } from './stepGate';
+import { SpontaneousPauseTracker } from './spontaneousPause';
 import {
     isAllThreadsResumeRequest,
     resolveExecutionThread,
@@ -90,6 +91,7 @@ import {
     isLocationType,
     summarizeLocation,
     annotateLocationMember,
+    dapColorizeType,
 } from './showVariableParser';
 import {
     extractIndexIdentifierTokens,
@@ -116,6 +118,9 @@ function getDeployOutputChannel(): vscode.OutputChannel {
     }
     return sharedDeployOutput;
 }
+
+/** GPL 콘솔 STATUS -729 "*Undefined symbol*" — 그 실행 컨텍스트에서 이름이 보이지 않음. */
+const UNDEFINED_SYMBOL_STATUS = -729;
 
 // ─── Launch/Attach argument interfaces ───────────────────
 
@@ -174,6 +179,8 @@ type ScopeRef =
 interface GlobalVariableDescriptor {
     displayName: string;
     lookupNames: string[];
+    /** 선언이 `Private`인 모듈 전역 — 값 쓰기 실패의 원인 설명에 쓴다(열거는 종전대로 한다). */
+    isPrivate?: boolean;
 }
 
 // ─── Pending action for StoppedEvent reason ──────────────
@@ -258,10 +265,26 @@ export class GPLDebugSession extends LoggingDebugSession {
     // 기존에는 경로 1개만 저장해 스캔 순서상 마지막 파일이 조용히 이겼고, 워크스페이스에
     // 프로젝트 사본/백업 폴더가 있으면 정지 시 엉뚱한 폴더의 파일이 열렸다.
     private _sourceFileMap = new Map<string, string[]>();
+    /**
+     * 소스맵을 컴파일 단위(`_projectDirs`)로 좁혔는데 못 찾은 파일이 나와 워크스페이스 전체로
+     * 넓혔는가. 한 번 넓히면 세션(정확히는 다음 `_updateProjectDirs`)까지 유지한다 — 재구축마다
+     * 좁혔다 넓혔다 하면 같은 스캔을 반복한다.
+     */
+    private _sourceMapWidened = false;
     // 디버그 대상 프로젝트의 폴더(Project.gpr 위치들) — 동명 소스 경합 시 우선 선택 기준.
     private _projectDirs: string[] = [];
     /** 대상 프로젝트 .gpr 의 ProjectSource 절대 경로 — 동명 소스 경합 판정의 1순위 기준. */
     private _projectSourcePaths: string[] = [];
+    /**
+     * `ProjectLibrary` 로 참조된 하위 프로젝트의 폴더(= `_projectDirs` 중 라이브러리 몫).
+     * 이 폴더 아래 소스는 제어기가 BP 대상 파일로 찾지 못한다 — `_librarySourceBpHint` 참조.
+     */
+    private _libraryDirs: string[] = [];
+    /**
+     * 제어기가 `-508 File not found` 로 거부한 BP 대상 파일(basename 소문자). 같은 파일의 다음
+     * 줄부터는 표기 폴백(최대 4왕복)을 생략하고 1회만 시도한다 — 어차피 표기 문제가 아니다.
+     */
+    private _bpRejectedFiles = new Set<string>();
     /** BP 대상 파일을 프로젝트 기준 상대 경로로 지칭해야 하는 제어기인지(첫 성공에서 학습). */
     private _bpPreferProjectRelativeFile = false;
     // 경합 경고 로그를 베이스네임당 1회로 제한(소스맵 재구축 시 리셋)
@@ -397,13 +420,30 @@ export class GPLDebugSession extends LoggingDebugSession {
     private static readonly EVALUATE_CACHE_TTL_MS = 3000;
     // ref: 배열/객체 결과의 variablesReference — 핸들은 _clearStaleState에서 캐시와 함께
     // 리셋되므로 수명이 일치한다(캐시가 무효 핸들을 돌려줄 일 없음).
-    private _evaluateCache = new Map<string, { value: string; ref: number; timestamp: number }>();
+    private _evaluateCache = new Map<string, { value: string; ref: number; type?: string; timestamp: number }>();
 
     // Session-level disposables — disconnectRequest에서 정리
     private _disposables: vscode.Disposable[] = [];
 
     // Breakpoint tracking — file basename → set of line numbers
     private _breakpoints = new Map<string, Set<number>>();
+
+    // GPL 의 `Paused` 는 디버거 정지 전용 상태가 아니다 — `Thread.Sleep` 등으로 스케줄러가 재운
+    // 쓰레드도 Paused 로 보고된다(실측 2026-08-31: 같은 폴 루프를 도는 쓰레드들이 샘플마다
+    // Running↔Paused 를 오가고, Paused 인 채로 줄 번호가 818→819 로 전진했다. 그 파일에는 BP 가
+    // 하나도 없었다). 사용자 액션 없이 관측된 Paused 를 그대로 정지로 알리면 BP 없는 파일에서
+    // 가짜 브레이크가 뜨므로, 등록된 BP 줄과 일치할 때만 즉시 인정하고 나머지는 아래 관측으로 미룬다.
+    // 판정 규칙과 근거는 debug/spontaneousPause.ts 참조(단위 테스트 있음).
+    // 등록 BP 와 무관한 위치에서 이만큼 연속 관측되면 외부 정지(GDE·MCP `Break` 등)로 보고 인정한다.
+    // 스케줄러 대기는 폴 간격(수백 ms)마다 위치가 바뀌거나 Running 이 섞이므로 이 문턱을 넘지 않는다.
+    private static readonly SPONTANEOUS_PAUSE_CONFIRM_POLLS = 3;
+    // 같은 위치에 머물러야 하는 최소 시간. 1403 트리거로 폴이 POLL_MIN_GAP_MS(250ms)까지 빨라질 수
+    // 있어 횟수만으로는 1초도 안 되는 창에서 확정될 수 있다 — 짧은 Sleep 을 외부 정지로 오인하지 않게 한다.
+    private static readonly SPONTANEOUS_PAUSE_CONFIRM_MS = 1500;
+    private _spontaneousPause = new SpontaneousPauseTracker(
+        GPLDebugSession.SPONTANEOUS_PAUSE_CONFIRM_POLLS,
+        GPLDebugSession.SPONTANEOUS_PAUSE_CONFIRM_MS,
+    );
 
     // Exception breakpoints — whether to break on runtime errors
     private _breakOnErrors = true;
@@ -837,6 +877,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._sendSourceStaleEvent('disconnect');
 
         this._breakpoints.clear();
+        this._spontaneousPause.clear();
+        this._bpRejectedFiles.clear();
         this._knownThreadNames.clear();
         // 스레드 실행 잠금은 세션 한정 — 해제 이벤트로 확장 상태바까지 내린다.
         this._setLockedThread(undefined);
@@ -942,14 +984,20 @@ export class GPLDebugSession extends LoggingDebugSession {
                 }
             }
             const cmd = this._bpCommand('Break', proj, baseName, line);
-            const resp = await this._sendCmd(cmd);
+            // Nobreak 와 같은 폴백을 태운다(무공백/문서 표기 × basename/프로젝트 상대 경로) —
+            // 종전에는 Break 만 basename 무공백 1회여서 표기를 가리는 제어기에서 조용히 실패했다.
+            // 단, 이미 -508 로 거부된 파일은 표기 문제가 아니므로 1회만 시도해 왕복을 아낀다.
+            const sendBreak = () => (this._bpRejectedFiles.has(baseKey)
+                ? this._sendCmd(cmd)
+                : this._sendBpCommandWithFallback('Break', proj, baseName, line));
+            const resp = await sendBreak();
             // "Duplicate breakpoint" 응답은 컨트롤러에 이미 동일 BP가 있다는 뜻이다.
             // Nobreak 정리가 실패했을 수 있으므로 한 번 더 정리 후 재설정하여 단일 BP 보장.
             let finalResp = resp;
             if (resp !== null && /Duplicate breakpoint/i.test(resp)) {
                 this._log(`⚠ Duplicate BP 감지, 재설정: ${cmd}`);
                 await this._sendBpCommandWithFallback('Nobreak', proj, baseName, line);
-                finalResp = await this._sendCmd(cmd);
+                finalResp = await sendBreak();
             }
             const verified = finalResp !== null && isSuccess(finalResp);
             const bp = new Breakpoint(verified && !staleEntry, line) as DebugProtocol.Breakpoint;
@@ -959,8 +1007,19 @@ export class GPLDebugSession extends LoggingDebugSession {
                 const msg = finalResp
                     ? finalResp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0]
                     : '응답 없음';
-                bp.message = msg;
-                this._log(`⚠ BP 설정 실패: ${cmd} → ${msg}`);
+                // -508 File not found 는 원문만으로는 원인을 알 수 없다. 라이브러리 소스면
+                // 왜 안 되는지와 손 쓸 방법을 툴팁에 함께 준다 (파일당 1회만 로그).
+                const notFound = finalResp !== null && parseStatus(finalResp).code === -508;
+                const hint = notFound ? this._librarySourceBpHint(baseName) : undefined;
+                bp.message = hint ? `${msg} — ${hint}` : msg;
+                if (notFound && !this._bpRejectedFiles.has(baseKey)) {
+                    this._bpRejectedFiles.add(baseKey);
+                    this._log(hint
+                        ? `⚠ BP 설정 실패: ${cmd} → ${msg}\n  ${hint}`
+                        : `⚠ BP 설정 실패: ${cmd} → ${msg}`);
+                } else if (!notFound) {
+                    this._log(`⚠ BP 설정 실패: ${cmd} → ${msg}`);
+                }
             } else if (staleMessage) {
                 bp.message = staleMessage;
             } else if (adjusted.moved) {
@@ -1202,7 +1261,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                 if (memo && memo !== 'none' && memo.method === 'global') {
                     const value = await this._readGlobalValueSingle(memo.name);
                     if (value) {
-                        variables.push({ name: g.displayName, value, variablesReference: 0 });
+                        variables.push(this._markGlobalWritability(
+                            { name: g.displayName, value, variablesReference: 0 }, g,
+                        ));
                     } else {
                         // 상황 변화(프로젝트 재시작 등) — 다음 정지에서 전체 사다리 재시도
                         this._globalQueryMemo.delete(memoKey);
@@ -1219,14 +1280,14 @@ export class GPLDebugSession extends LoggingDebugSession {
                     const entry = structured?.entry;
                     if (entry && (classifyVarEntry(entry, structured!.members.length > 0) !== 'simple'
                         || (entry.value && entry.value !== GPLDebugSession.UNDEFINED_VALUE))) {
-                        variables.push(this._makeVariable(
+                        variables.push(this._markGlobalWritability(this._makeVariable(
                             g.displayName,
                             entry,
                             scopeInfo.threadName,
                             scopeInfo.frameIndex,
                             g.lookupNames[0],
                             structured!.members,
-                        ));
+                        ), g));
                         this._globalQueryMemo.set(memoKey, { method: 'eval' });
                         pushed = true;
                     }
@@ -1239,7 +1300,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                     for (const name of g.lookupNames) {
                         const value = await this._readGlobalValueSingle(name);
                         if (value) {
-                            variables.push({ name: g.displayName, value, variablesReference: 0 });
+                            variables.push(this._markGlobalWritability(
+                                { name: g.displayName, value, variablesReference: 0 }, g,
+                            ));
                             this._globalQueryMemo.set(memoKey, { method: 'global', name });
                             found = true;
                             break;
@@ -1343,30 +1406,110 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         // Use Execute to set variable: Execute <expression>, <project>
+        // 전역은 표기 후보가 둘이다(`Mod.Name` / `Name`). 읽기에서 실제로 통했던 표기를 먼저
+        // 쓰고 -729면 나머지 표기로 재시도한다 — 조회는 사다리를 타면서 쓰기는 표시 이름만
+        // 보내 이름이 어긋나던 문제를 막는다.
+        const candidates = scopeInfo.type === 'globals'
+            ? this._globalWriteCandidates(targetName)
+            : [targetName];
         const proj = this._projectName;
-        const setExpr = `${targetName} = ${args.value}`;
-        const cmd = proj
-            ? `Execute ${setExpr}, ${proj}`
-            : `Execute ${setExpr}`;
-        const resp = await this._sendCmd(cmd);
-        this._clearEvaluateCache();
+        let failure: { code: number; message: string } | undefined;
 
-        // 하드 규칙 2: 성공/실패는 해당 명령의 STATUS로 판정한다.
-        // STATUS가 명시적으로 0이 아니면 실패로 보고(값이 안 바뀌었는데 성공 표시 방지).
-        // 응답 유실/무-STATUS(-9999)는 기존 동작(성공 가정) 유지 — 과잉 실패 보고 방지.
-        if (resp) {
+        for (const name of candidates) {
+            const setExpr = `${name} = ${args.value}`;
+            const cmd = proj
+                ? `Execute ${setExpr}, ${proj}`
+                : `Execute ${setExpr}`;
+            const resp = await this._sendCmd(cmd);
+            this._clearEvaluateCache();
+
+            // 하드 규칙 2: 성공/실패는 해당 명령의 STATUS로 판정한다.
+            // STATUS가 명시적으로 0이 아니면 실패로 보고(값이 안 바뀌었는데 성공 표시 방지).
+            // 응답 유실/무-STATUS(-9999)는 기존 동작(성공 가정) 유지 — 과잉 실패 보고 방지.
+            if (!resp) { failure = undefined; break; }
             const st = parseStatus(resp);
-            if (st.code !== 0 && st.code !== NO_STATUS_CODE) {
-                this.sendErrorResponse(response, {
-                    id: 2002,
-                    format: `변수 설정 실패 (STATUS ${st.code}${st.message ? `: ${st.message}` : ''})`,
-                });
-                return;
-            }
+            if (st.code === 0 || st.code === NO_STATUS_CODE) { failure = undefined; break; }
+            failure = st;
+            // 다른 표기를 시도할 가치가 있는 실패는 "이름을 못 찾음"뿐이다.
+            if (st.code !== UNDEFINED_SYMBOL_STATUS) { break; }
+        }
+
+        if (failure) {
+            this.sendErrorResponse(response, {
+                id: 2002,
+                format: this._formatSetVariableError(failure, scopeInfo.type, targetName),
+            });
+            return;
         }
 
         response.body = { value: args.value };
         this.sendResponse(response);
+    }
+
+    /**
+     * 전역 행에 "쓰기 가능한가"를 표시한다.
+     * `Private` 모듈 전역은 표기와 무관하게 쓸 수 없다(실기기 확인 2026-08-31) — 값 편집은
+     * `Execute`로 하는데 그것은 별도 쓰레드 `_Cmd_<project>`의 전역 스코프에서 실행되어
+     * 모듈 밖에서는 이름이 보이지 않기 때문이다. 반면 읽기는 정지한 프레임 컨텍스트라 된다.
+     * 그래서 읽기는 종전대로 보여 주고(디버깅에 필요한 상태는 대개 Private `m_*`에 있다),
+     * 성공할 수 없는 편집 제스처만 DAP `readOnly` 힌트로 막는다.
+     */
+    private _markGlobalWritability(
+        variable: DebugProtocol.Variable,
+        descriptor: GlobalVariableDescriptor,
+    ): DebugProtocol.Variable {
+        if (!descriptor.isPrivate) { return variable; }
+        variable.presentationHint = {
+            ...variable.presentationHint,
+            visibility: 'private',
+            attributes: [...(variable.presentationHint?.attributes ?? []), 'readOnly'],
+        };
+        return variable;
+    }
+
+    /**
+     * 전역 값 쓰기에 시도할 이름 표기 순서.
+     * 조회는 `Mod.Name` → `Name` 사다리를 타고 성공한 표기를 _globalQueryMemo에 남기므로,
+     * 쓰기도 같은 표기를 먼저 쓴다(그 다음 남은 표기를 -729 시 재시도).
+     */
+    private _globalWriteCandidates(displayName: string): string[] {
+        const names: string[] = [];
+        const add = (n: string | undefined) => {
+            if (n && !names.some(x => x.toLowerCase() === n.toLowerCase())) { names.push(n); }
+        };
+        const memo = this._globalQueryMemo.get(displayName.toLowerCase());
+        if (memo && memo !== 'none' && memo.method === 'global') { add(memo.name); }
+        add(displayName);
+        const dot = displayName.lastIndexOf('.');
+        if (dot > 0) { add(displayName.slice(dot + 1)); }
+        return names;
+    }
+
+    /**
+     * 변수 쓰기 실패 STATUS를 사용자 안내 문구로 바꾼다.
+     * 실기기 확인(2026-08-31, GPL 4.2K5 시뮬레이터): `Private` 모듈 전역은 표기(`Mod.Name`·`Name`)와
+     * 무관하게 -729다. 값 읽기는 정지한 쓰레드의 프레임 컨텍스트(모듈 안)에서 하지만,
+     * 쓰기에 쓰는 `Execute`는 별도 쓰레드 `_Cmd_<project>`의 전역 스코프에서 실행돼
+     * 모듈 밖에서는 이름이 보이지 않기 때문이다 — 즉 이 조합은 원리상 읽기만 된다.
+     */
+    private _formatSetVariableError(
+        status: { code: number; message: string },
+        scopeType: string,
+        targetName: string,
+    ): string {
+        const base = `변수 설정 실패 (STATUS ${status.code}${status.message ? `: ${status.message}` : ''})`;
+        if (status.code !== UNDEFINED_SYMBOL_STATUS) { return base; }
+        if (scopeType === 'globals'
+            && this._getGlobalVariableDescriptors().some(
+                g => g.displayName.toLowerCase() === targetName.toLowerCase() && g.isPrivate,
+            )) {
+            return `${base} — \`${targetName}\`은 Private 모듈 전역이라 값을 쓸 수 없습니다.`
+                + ' 쓰기에 쓰는 Execute는 별도 쓰레드(_Cmd_<프로젝트>)의 전역 스코프에서 실행돼'
+                + ' 모듈 밖에서는 이 이름이 보이지 않습니다(읽기는 정지한 프레임 컨텍스트라 가능).'
+                + ' 값을 바꾸려면 선언을 Public으로 바꾸거나, 같은 모듈의 Public Sub/Property를 통해 설정하세요';
+        }
+        return `${base} — 이 실행 컨텍스트에서 \`${targetName}\` 이름을 찾지 못했습니다`
+            + ' (Execute는 별도 쓰레드의 전역 스코프에서 실행되므로 프레임 로컬·Private 모듈 변수는 보이지 않습니다)';
     }
 
     // ═══════════════════════════════════════════════════════
@@ -1921,7 +2064,11 @@ export class GPLDebugSession extends LoggingDebugSession {
                 this._log(`함수 BP '${req.name}': 정의 ${defs.length}개 발견 — 첫 번째(${defs[0].file}:${defs[0].line}) 사용`);
             }
             const def = defs[0];
-            const resp = await this._sendCmd(this._bpCommand('Break', proj, def.file, def.line));
+            // 소스 BP 와 같은 폴백/안내를 쓴다 — 표기를 가리는 제어기와 라이브러리 소스 모두 대응.
+            const defKey = def.file.toLowerCase();
+            const resp = this._bpRejectedFiles.has(defKey)
+                ? await this._sendCmd(this._bpCommand('Break', proj, def.file, def.line))
+                : await this._sendBpCommandWithFallback('Break', proj, def.file, def.line);
             const verified = resp !== null && (isSuccess(resp) || /Duplicate breakpoint/i.test(resp));
             const bp: DebugProtocol.Breakpoint = {
                 verified,
@@ -1930,7 +2077,12 @@ export class GPLDebugSession extends LoggingDebugSession {
                 source: { name: def.file, path: this._safeResolveSourcePath(def.file) },
             };
             if (!verified) {
-                bp.message = resp ? resp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0] : '응답 없음';
+                const msg = resp ? resp.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0] : '응답 없음';
+                const hint = resp !== null && parseStatus(resp).code === -508
+                    ? this._librarySourceBpHint(def.file)
+                    : undefined;
+                if (hint) { this._bpRejectedFiles.add(defKey); }
+                bp.message = hint ? `${msg} — ${hint}` : msg;
             } else {
                 this._functionBps.push({ name: req.name, file: def.file, line: def.line, id: bp.id! });
                 this._log(`함수 BP: ${def.label} → ${def.file}:${def.line}`);
@@ -2474,6 +2626,8 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         let result = '';
         let evalRef = 0; // 배열/객체 결과의 variablesReference (0 = 확장 불가)
+        // 값 색상화용 DAP 표준 타입 — 없으면 VS Code가 흐린 일반색으로 칠한다(dapColorizeType 주석).
+        let evalType: string | undefined;
 
         // Determine thread context from frame or find first break thread
         let threadName: string | undefined;
@@ -2523,6 +2677,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         result = structured.entry.type
                             ? `${structured.entry.value}  (${structured.entry.type})`
                             : structured.entry.value;
+                        evalType = dapColorizeType(structured.entry.type, structured.entry.value);
                     } else if (/\bnull\s*$/i.test(structured.entry.type)) {
                         // null 객체 참조 요소 (`armList(1), Object() null`)
                         result = `null  (${structured.entry.type})`;
@@ -2592,6 +2747,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             if (cached !== undefined) {
                 result = cached.value;
                 evalRef = cached.ref;
+                evalType = cached.type;
             } else {
                 // Show Variable -eval thread frame variable → 배열/객체는 트리로 확장 가능
                 // (변수 인덱스 식 `armList(i)`는 식별자 치환 재시도로 지원)
@@ -2615,6 +2771,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         result = structured.entry.type
                             ? `${structured.entry.value}  (${structured.entry.type})`
                             : structured.entry.value;
+                        evalType = dapColorizeType(structured.entry.type, structured.entry.value);
                     } else if (/\bnull\s*$/i.test(structured.entry.type)) {
                         // null 객체 참조 요소 (`armList(1), Object() null`)
                         result = `null  (${structured.entry.type})`;
@@ -2638,7 +2795,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 if (!result && structured?.error) {
                     result = this._formatEvalError(expression, structured.error);
                 }
-                this._setCachedEvaluate(cacheKey, result || `(${expression} 평가 불가)`, evalRef);
+                this._setCachedEvaluate(cacheKey, result || `(${expression} 평가 불가)`, evalRef, evalType);
             }
         } else if (args.context === 'clipboard') {
             // '값 복사' — 표시용 타입 접미·hex 힌트·백킹 필드 주석 없이 **원문 값만** 준다.
@@ -2665,7 +2822,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             result = expression;
         }
 
-        response.body = { result: result || `(${expression} 평가 불가)`, variablesReference: evalRef };
+        response.body = { result: result || `(${expression} 평가 불가)`, variablesReference: evalRef, type: evalType };
         this.sendResponse(response);
     }
 
@@ -2753,20 +2910,23 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._cachedFrames.clear();
         this._frameCacheGen++; // ⑧ 진행 중이던 프레임 조회의 캐시 기록도 무효화
         this._clearEvaluateCache();
+        // 사용자 액션(step/continue/pause)이 나갔으면 자발적 Paused 추적은 의미가 없다 —
+        // 이후 정지는 pending 경로가 판정한다. 남겨 두면 announced 플래그가 재히트를 가린다.
+        this._spontaneousPause.clear();
     }
 
-    private _getCachedEvaluate(key: string): { value: string; ref: number } | undefined {
+    private _getCachedEvaluate(key: string): { value: string; ref: number; type?: string } | undefined {
         const entry = this._evaluateCache.get(key);
         if (!entry) { return undefined; }
         if (Date.now() - entry.timestamp > GPLDebugSession.EVALUATE_CACHE_TTL_MS) {
             this._evaluateCache.delete(key);
             return undefined;
         }
-        return { value: entry.value, ref: entry.ref };
+        return { value: entry.value, ref: entry.ref, type: entry.type };
     }
 
-    private _setCachedEvaluate(key: string, value: string, ref = 0): void {
-        this._evaluateCache.set(key, { value, ref, timestamp: Date.now() });
+    private _setCachedEvaluate(key: string, value: string, ref = 0, type?: string): void {
+        this._evaluateCache.set(key, { value, ref, type, timestamp: Date.now() });
         if (this._evaluateCache.size > 200) {
             const oldestKey = this._evaluateCache.keys().next().value;
             if (oldestKey !== undefined) {
@@ -2860,6 +3020,40 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /** 성공한 파일 표기가 상대 경로였으면 이 세션에서는 그 표기를 먼저 쓴다(명령 왕복 절감). */
+    /**
+     * BP 대상 파일이 `ProjectLibrary` 로 참조된 하위 프로젝트의 소스면, 사용자가 손 쓸 수 있는
+     * 안내 문구를 돌려준다(아니면 undefined).
+     *
+     * 실측(2026-08-31, 시뮬레이터 192.168.0.1): 제어기는 `Set Break <project> "<file>"<line>` 의
+     * 파일을 **그 프로젝트가 직접 선언한 `ProjectSource`** 안에서만 찾는다. `ProjectLibrary` 로
+     * 접혀 들어온 소스는 코드로는 실행되고 `Show Thread`·`Show Stack` 에도
+     * `GPL_Code\Lib_Net/TcpServer.gpl` 처럼 나오지만 BP 대상 파일로는 잡히지 않아, 어떤 표기를
+     * 써도 `-508` 이다(basename·프로젝트 상대·제어기 보고 문자열 그대로·절대경로·라이브러리
+     * 프로젝트명 조합 등 12종 확인). 같은 시점에 메인 프로젝트 소스는 STATUS 0 으로 성공했다.
+     * 배경과 실험 기록은 `docs/ai-handoff.md` §1-CK(-508 규명)·§1-CT(승격 검증·자동화).
+     */
+    private _librarySourceBpHint(file: string): string | undefined {
+        if (this._libraryDirs.length === 0) { return undefined; }
+        const base = file.replace(/^.*[\\/]/, '');
+        const local = this._resolveSourcePath(base);
+        const libDir = this._libraryDirs.find(d => this._isPathUnder(local, d));
+        if (!libDir) { return undefined; }
+
+        const libName = path.basename(libDir);
+        // 메인 프로젝트 폴더 기준 상대 경로 — Project.gpr 에 그대로 적을 수 있는 형태로 보여 준다.
+        const isLibrary = (d: string) => this._libraryDirs.some(l => l.toLowerCase() === d.toLowerCase());
+        const mainDir = this._projectDirs.find(d => !isLibrary(d) && this._isPathUnder(local, d));
+        const rel = mainDir ? path.relative(mainDir, local).replace(/\//g, '\\') : base;
+        return `${base} 은 ProjectLibrary 로 참조된 하위 프로젝트(${libName})의 소스입니다. `
+            + '제어기는 BP 대상 파일을 그 프로젝트가 직접 선언한 ProjectSource 안에서만 찾으므로, '
+            + '라이브러리 경유 소스에는 그대로는 브레이크포인트를 걸 수 없습니다(-508). '
+            + `메인 프로젝트 Project.gpr 에 ProjectSource="${rel}" 로 직접 등재하면 걸립니다`
+            + '(2026-09-02 실측 확인). 명령 팔레트의 '
+            + '"GPL: 브레이크포인트용 소스 승격"(gpl.project.promoteSourceForBreakpoint)이 '
+            + '그 편집을 계산해 미리보기로 보여 줍니다 — 대상 파일을 끌어오는 ProjectLibrary 참조를 빼고 '
+            + '그 그룹이 제공하던 나머지 라이브러리를 개별 참조로 되살려, 컴파일 집합을 그대로 유지합니다.';
+    }
+
     private _noteBpFileForm(usedForm: string, requestedFile: string): void {
         const base = requestedFile.replace(/^.*[\\/]/, '');
         const isRelative = usedForm.toLowerCase() !== base.toLowerCase();
@@ -2889,6 +3083,21 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._buildSourceFileMap();
         const rebuilt = this._sourceFileMap.get(lower);
         if (rebuilt?.length) { return this._pickSourcePath(lower, rebuilt); }
+
+        // 컴파일 단위로 좁힌 상태였다면 워크스페이스 전체로 한 번 넓혀 본다 —
+        // `.gpr`에 아직 등재되지 않은 파일이나 단위 판정이 어긋난 경우까지 놓치지 않게.
+        if (!this._sourceMapWidened && this._projectDirs.length > 0) {
+            this._sourceMapWidened = true;
+            this._buildSourceFileMap();
+            const wide = this._sourceFileMap.get(lower);
+            if (wide?.length) {
+                this._log(
+                    `ⓘ "${base}" 는 컴파일 단위(${this._projectName}) 밖에서 찾았습니다 — `
+                    + '소스맵을 워크스페이스 전체로 넓혔습니다. 엉뚱한 파일이 열리면 .gpr 등재 상태를 확인하세요.',
+                );
+                return this._pickSourcePath(lower, wide);
+            }
+        }
 
         // 그래도 못 찾으면 원본을 그대로 반환하되, 왜 이동이 안 되는지 진단 로그를 남긴다.
         this._log(
@@ -2929,6 +3138,9 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _updateProjectDirs(): void {
         this._projectDirs = [];
         this._projectSourcePaths = [];
+        this._libraryDirs = [];
+        // 단위가 다시 확정되므로 "넓힌 상태"를 되돌린다 — 새 대상에서는 다시 좁혀서 시작한다.
+        this._sourceMapWidened = false;
         if (!this._projectName) { return; }
         const want = this._projectName.toLowerCase();
         const allGprPaths: string[] = [];
@@ -2965,6 +3177,9 @@ export class GPLDebugSession extends LoggingDebugSession {
             } catch { /* skip */ }
         }
         for (const dir of libraryDirs) {
+            if (!this._libraryDirs.some(d => d.toLowerCase() === dir.toLowerCase())) {
+                this._libraryDirs.push(dir);
+            }
             if (!this._projectDirs.some(d => d.toLowerCase() === dir.toLowerCase())) {
                 this._projectDirs.push(dir);
             }
@@ -3156,7 +3371,9 @@ export class GPLDebugSession extends LoggingDebugSession {
         return {
             name: displayName,
             value: entry.type ? `${displayValue}  (${entry.type})` : displayValue,
-            type: entry.type || undefined,
+            // 원시 타입은 DAP 표준 이름으로 알려 값이 전용색(불투명)으로 칠해지게 한다 —
+            // 정확한 GPL 타입은 값 접미 `(Integer)`로 계속 보인다(dapColorizeType 주석).
+            type: dapColorizeType(entry.type, entry.value) ?? (entry.type || undefined),
             evaluateName: expression,
             variablesReference: 0,
         };
@@ -3278,7 +3495,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     this._log(`프로퍼티 치환 평가: ${expression} → ${cand.expr}`);
                     return { ...r!, resolvedExpression: cand.expr, via: cand.via };
                 }
-                if (cand.parentExpr && r?.error?.code === -729) {
+                if (cand.parentExpr && r?.error?.code === UNDEFINED_SYMBOL_STATUS) {
                     const parent = await getParentDump();
                     const wanted = `.${cand.backingLeaf.toLowerCase()}`;
                     const m = parent?.members.find(e => e.name.toLowerCase().endsWith(wanted));
@@ -3346,7 +3563,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (error.code === -780) {
             return `${base} — 프로퍼티/메서드 참조는 제어기 콘솔이 평가하지 못합니다(필드/로컬만 가능). 소스에서 Property로 확인되면 백킹 필드(Get 반환식·m_이름)로 자동 치환하지만 이 식은 치환할 수 없었습니다. 백킹 필드를 직접 확인하세요 (예: ${expression.split('.')[0] || expression} 객체를 펼쳐 m_* 필드 조회)`;
         }
-        if (error.code === -729) {
+        if (error.code === UNDEFINED_SYMBOL_STATUS) {
             return `${base} — 현재 프레임 스코프에 없는 이름이거나, 점 표기 멤버 접근입니다 (이 제어기의 콘솔 평가는 프레임의 로컬/파라미터 이름만 지원 — 멤버 값은 부모 객체를 조회하세요)`;
         }
         if (error.code === -762 || error.code === -763) {
@@ -3642,14 +3859,30 @@ export class GPLDebugSession extends LoggingDebugSession {
             return fallback;
         }
 
-        const breakpointLines = this._breakpoints.get(path.basename(top.file));
-        if (breakpointLines?.has(top.fileLine)) {
+        if (this._hasBreakpointAt(top.file, top.fileLine)) {
             this._log(`현재 위치가 브레이크포인트와 일치: ${top.file}:${top.fileLine}`);
             return 'breakpoint';
         }
 
         return fallback;
     }
+
+    /**
+     * 이 위치에 우리가 설정한 BP 가 있는가 — 소스 BP(`_breakpoints`) · 함수 BP(`_functionBps`) ·
+     * Step Into Target 임시 BP(`_tempBreakpoints`) 를 모두 본다. 파일은 basename 대소문자 무시 비교.
+     */
+    private _hasBreakpointAt(file: string, line: number): boolean {
+        if (!file || line <= 0) { return false; }
+        const base = path.basename(file);
+        const key = base.toLowerCase();
+
+        for (const [name, lines] of this._breakpoints) {
+            if (name.toLowerCase() === key && lines.has(line)) { return true; }
+        }
+        if (this._tempBreakpoints.get(key)?.has(line)) { return true; }
+        return this._functionBps.some(f => f.file.toLowerCase() === key && f.line === line);
+    }
+
 
     /**
      * Build a map of basename(lowercase) → 동명 후보 전체 경로 배열, for all .gpl/.gpo files in workspace.
@@ -3661,62 +3894,67 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._globalQueryMemo.clear();
         this._globalDescriptorsCache = undefined;
         this._propertyIndexCache = undefined;
-        const folders = vscode.workspace.workspaceFolders;
-        if (!folders) { return; }
+        const roots = this._sourceMapRoots();
+        if (roots.dirs.length === 0) { return; }
 
-        for (const folder of folders) {
-            this._scanDir(folder.uri.fsPath);
+        let truncated = false;
+        for (const dir of roots.dirs) {
+            truncated = this._scanDir(dir) || truncated;
         }
-        this._log(`소스 파일 맵: ${this._sourceFileMap.size}개 파일 인덱싱 완료`);
+        this._log(`소스 파일 맵: ${this._sourceFileMap.size}개 파일 인덱싱 완료 (${roots.label})`);
+        if (truncated) {
+            this._log(
+                '⚠ 소스 탐색이 깊이/개수 상한에 걸렸습니다 — 일부 폴더의 소스는 매핑되지 않습니다. '
+                + '프로젝트 상위 폴더 대신 프로젝트(또는 projects) 폴더를 워크스페이스로 여세요.',
+            );
+        }
     }
 
     /**
-     * 재귀 스캔에서 제외할 디렉터리 판별 (_scanDir/_findFiles 공용 규칙).
-     * dot 디렉터리(.history/.git 등)와 빌드/출력 폴더는 제외 — 특히
-     * .history(Local History 확장)의 stale 사본이 소스맵/프로젝트 인식을 오염시킨다.
+     * 소스맵 스캔 루트 — **컴파일 단위 우선**.
+     *
+     * 워크스페이스를 프로젝트가 아니라 상위 폴더에서 여는 구조(`…\시뮬레이션`)에서는 무관한
+     * 형제 프로젝트의 동명 파일이 소스맵에 함께 들어온다(실측 2026-09-02: `.gpl` 96개 중 basename
+     * 충돌 53건 — `MergeCode`/`MergeCode_Beta`, `Main.gpl` 2곳). 제어기가 보고하는 파일은 정의상
+     * 이 컴파일 단위 안에 있으므로, 스캔 범위를 `_projectDirs`(메인 + `ProjectLibrary` 재귀)로 좁히면
+     * 경합 자체가 사라지고 상위 폴더 워크스페이스에서의 스캔 비용도 줄어든다.
+     *
+     * 단위를 판정할 수 없으면(프로젝트명과 일치하는 `.gpr` 없음) 워크스페이스 전체로 떨어진다 —
+     * 모를 때 좁히면 소스 이동이 아예 안 되는 퇴보가 되므로 **누락 방지를 우선**한다.
      */
-    private static _isSkippedScanDir(name: string): boolean {
-        return name.startsWith('.')
-            || name === 'node_modules'
-            || name === 'out'
-            || name === 'dist'
-            || name === 'bin';
+    private _sourceMapRoots(): { dirs: string[]; label: string } {
+        const workspace = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
+        if (this._sourceMapWidened || this._projectDirs.length === 0) {
+            return { dirs: workspace, label: '워크스페이스 전체' };
+        }
+        // 라이브러리 폴더가 메인 폴더 안에 있으면(이 구조가 그렇다) 중복 스캔이므로 최상위만 남긴다.
+        const tops = this._projectDirs.filter(
+            (d, i) => !this._projectDirs.some((other, j) => j !== i && this._isPathUnder(d, other)),
+        );
+        return { dirs: tops, label: `컴파일 단위 ${tops.length}폴더` };
     }
 
-    private _scanDir(dir: string): void {
-        try {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-            for (const entry of entries) {
-                const full = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                    if (GPLDebugSession._isSkippedScanDir(entry.name)) { continue; }
-                    this._scanDir(full);
-                } else if (/\.gpl$/i.test(entry.name) || /\.gpo$/i.test(entry.name)) {
-                    const key = entry.name.toLowerCase();
-                    const list = this._sourceFileMap.get(key);
-                    if (list) { list.push(full); } else { this._sourceFileMap.set(key, [full]); }
-                }
-            }
-        } catch { /* permission errors etc */ }
+    /** 소스 맵 채우기. 깊이/개수 상한에 걸렸으면 true(호출측이 경고). */
+    private _scanDir(dir: string): boolean {
+        const { truncated } = walkTree(dir, (full, name) => {
+            if (!/\.gpl$/i.test(name) && !/\.gpo$/i.test(name)) { return; }
+            const key = name.toLowerCase();
+            const list = this._sourceFileMap.get(key);
+            if (list) { list.push(full); } else { this._sourceFileMap.set(key, [full]); }
+        });
+        return truncated;
     }
 
     /**
      * Find files matching a name recursively under a directory.
+     * 상한은 walkTree가 관리한다 — 상위 저장소 폴더를 워크스페이스로 열어도 UI가 멈추지 않게.
      */
     private _findFiles(dir: string, targetName: string): string[] {
         const results: string[] = [];
-        try {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-            for (const entry of entries) {
-                const full = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                    if (GPLDebugSession._isSkippedScanDir(entry.name)) { continue; }
-                    results.push(...this._findFiles(full, targetName));
-                } else if (entry.name.toLowerCase() === targetName.toLowerCase()) {
-                    results.push(full);
-                }
-            }
-        } catch { /* skip */ }
+        const wanted = targetName.toLowerCase();
+        walkTree(dir, (full, name) => {
+            if (name.toLowerCase() === wanted) { results.push(full); }
+        });
         return results;
     }
 
@@ -3830,7 +4068,11 @@ export class GPLDebugSession extends LoggingDebugSession {
                     const lower = displayName.toLowerCase();
                     if (!seen.has(lower)) {
                         seen.add(lower);
-                        globals.push({ displayName, lookupNames });
+                        globals.push({
+                            displayName,
+                            lookupNames,
+                            isPrivate: s.accessModifier === 'private',
+                        });
                     }
                 }
             }
@@ -4232,6 +4474,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     this._knownThreadNames.delete(name);
                     this._previousThreadStates.delete(name);
                     this._continueOrigin.delete(name); // 누적 방지
+                    this._spontaneousPause.reset(name);
 
                     if (id !== undefined
                         && this._pendingAction === 'continue'
@@ -4255,6 +4498,9 @@ export class GPLDebugSession extends LoggingDebugSession {
                 const prevState = this._previousThreadStates.get(t.name);
                 const id = this._getOrCreateThreadId(t.name);
                 const isPausedState = t.state === 'Break' || t.state === 'Paused';
+                // 정지 계열을 벗어나면(실행 재개 등) 자발적 Paused 추적을 초기화한다 —
+                // 같은 위치에 다시 정지하는 경우에도 새 정지로 인정하기 위해서다.
+                if (!isPausedState) { this._spontaneousPause.reset(t.name); }
 
                 if (this._pendingAction === 'continue' && this._pendingThreadId === id) {
                     // Continue 정지 감지: 1차 신호는 Running 관측, 2차 신호는 위치 변경.
@@ -4355,18 +4601,58 @@ export class GPLDebugSession extends LoggingDebugSession {
                     continue;
                 }
 
+                // ── 자발적 Paused 판별 (가짜 브레이크 차단) ──
+                // 이 쓰레드를 기다리는 사용자 액션이 없는데 Paused/Break 가 보이는 경우다. GPL 은
+                // Thread.Sleep 으로 자는 쓰레드도 Paused 로 보고하므로, 상태 전이만 보고 알리면
+                // BP 없는 파일에서 가짜 브레이크가 뜬다. 위치를 근거로 걸러 낸다(추가 1402 왕복 없음).
+                if (isPausedState && !this._isPendingFor(id)) {
+                    const verdict = this._spontaneousPause.observe(
+                        t.name, t.file, t.fileLine, (f, l) => this._hasBreakpointAt(f, l));
+                    if (verdict === 'scheduler' || verdict === 'announced') {
+                        this._previousThreadStates.set(t.name, t.state);
+                        if (t.state !== prevState) { threadStateChanged = true; }
+                        continue;
+                    }
+
+                    // 정지로 인정 — 직전 정지의 값이 캐시에 남아 있을 수 있으므로 무효화한다.
+                    this._clearEvaluateCache();
+                    this._cachedFrames.delete(t.name);
+                    this._frameCacheAt.delete(t.name);
+                    this._frameCacheGen++;
+
+                    const where = `${t.file || '?'}:${t.fileLine ?? 0}`;
+                    const reason = verdict === 'breakpoint' ? 'breakpoint' : 'pause';
+                    if (reason === 'breakpoint') {
+                        const announce = await this._handleBreakpointStop(t.name, id);
+                        if (!announce) {
+                            this._previousThreadStates.set(t.name, t.state);
+                            if (t.state !== prevState) { threadStateChanged = true; }
+                            continue;
+                        }
+                    }
+
+                    if (!this._configurationDone) {
+                        this._queuedStoppedEvents.push({ reason, threadId: id });
+                        this._log(`쓰레드 ${t.name} 정지 감지 (${reason}, ${where}) → configurationDone 대기 중`);
+                    } else {
+                        this.sendEvent(this._stoppedEvent(reason, id));
+                        this._log(verdict === 'breakpoint'
+                            ? `쓰레드 ${t.name} 정지 (breakpoint ${where})`
+                            : `쓰레드 ${t.name} 외부 정지 확정 (${where} 에서 ${this._spontaneousPause.confirmPolls}회 연속·`
+                                + `${this._spontaneousPause.confirmMs}ms 이상 Paused — GDE/REPL 등 외부 Break 로 판단)`);
+                    }
+                    this._prefetchFramesAfterStop(t.name);
+
+                    this._previousThreadStates.set(t.name, t.state);
+                    if (t.state !== prevState) { threadStateChanged = true; }
+                    continue;
+                }
+
                 // Detect transition to Paused/Break state
+                // 여기에 오는 것은 이 쓰레드를 기다리는 pending 액션이 있는 경우뿐이다
+                // (그 외 자발적 Paused 는 위 블록이 판별 후 continue 로 처리한다).
                 if (isPausedState &&
                     prevState !== 'Break' && prevState !== 'Paused') {
-
-                    // 사용자 액션 없이 폴이 감지한 정지(자유 실행 BP 히트/외부 정지)는
-                    // 직전 정지의 값이 캐시에 남아 있을 수 있으므로 평가/프레임 캐시를 무효화한다.
-                    if (!this._pendingAction) {
-                        this._clearEvaluateCache();
-                        this._cachedFrames.delete(t.name);
-                        this._frameCacheAt.delete(t.name);
-                        this._frameCacheGen++;
-                    }
 
                     // Determine stop reason based on pending action
                     let reason = 'breakpoint';
@@ -4845,6 +5131,9 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (!this._isConnected || !this._config) { return; }
         if (rec.ip.trim().toLowerCase() !== this._config.ip.trim().toLowerCase()) { return; }
         if (rec.projectName.trim().toLowerCase() !== this._projectName.trim().toLowerCase()) { return; }
+        // 재컴파일로 프로젝트 구성(.gpr 의 ProjectSource/ProjectLibrary)이 바뀌었을 수 있으므로
+        // "제어기가 거부한 파일" 기억을 버린다 — 다음 BP 설정은 폴백까지 다시 시도한다.
+        this._bpRejectedFiles.clear();
         const before = new Set(this._staleFiles.keys());
         this._evaluateSourceStaleness('recompiled');
         for (const key of before) {

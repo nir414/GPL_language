@@ -20,13 +20,15 @@ import {
 	getErrorCodeHint,
 	findKnownErrorChains,
 } from '../controller/responseParser';
+import { breakpointKey, orphanControllerBreakpoints } from '../controller/breakpointReconcile';
+import { editorBreakpointTargets } from '../controller/breakpointSync';
 import { FtpEntry, listRemoteDirs } from '../controller/ftpClient';
 import { onDebugThreadsUpdated } from '../controller/debugBridge';
 import { AUTO_REFRESH_MIN_INTERVAL_MS, decideAutoRefresh, formatLastRefreshTime } from './refreshThrottle';
 import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
 
 export interface SituationDeploySnapshot {
-	mode: 'Build' | 'Deploy & Run';
+	mode: 'Build' | 'Deploy & Run' | 'Upload & Start';
 	success: boolean;
 	// 순서(2026-08-25 재배치): UPLOAD → STOP/THREAD_CHECK → COMPILE → START → ERROR_CHECK
 	lastStage: 'LOCKED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
@@ -897,20 +899,36 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		// ── 브레이크포인트 (제어기 기준 — 0개여도 상시 표시해 상태를 보이게 한다, §1-AR)
 		{
 			const totalHits = this.breakpoints.reduce((s, b) => s + b.hitCount, 0);
+			// 제어기에는 있지만 에디터에 빨간 점이 없는 항목 = 어긋남(§1-CJ). 실행하면 여기서 멈추므로
+			// 눈에 보이게 표시한다 — 이 상태가 "F9로 지웠는데 왜 걸리지?"의 정체다.
+			const orphanKeys = new Set(
+				orphanControllerBreakpoints(this.breakpoints, editorBreakpointTargets())
+					.map(b => breakpointKey({ file: b.file, line: b.fileLine })));
 			const bpSec = new SectionNode('breakpoints',
 				`브레이크포인트 (${this.breakpoints.length})`, 'debug-breakpoint',
-				this.breakpoints.length > 0 ? `${totalHits} hits` : '없음');
+				this.breakpoints.length > 0
+					? `${totalHits} hits${orphanKeys.size > 0 ? ` · ⚠ ${orphanKeys.size} 에디터에 없음` : ''}`
+					: '없음');
 			if (this.breakpoints.length === 0) {
 				bpSec.children = [new InfoNode('제어기에 설정된 브레이크포인트 없음', 'circle-slash')];
 			} else {
 				bpSec.children = this.breakpoints.map(bp => {
 					const loc = `${bp.file}:${bp.fileLine}`;
-					const desc = bp.hitCount > 0 ? `${bp.proc} · ${bp.hitCount} hits` : bp.proc;
-					return new InfoNode(loc, 'debug-breakpoint-data', desc, {
-						command: 'gpl.controller.openBreakpointLocation',
-						title: '위치 열기',
-						arguments: [{ file: bp.file, line: bp.fileLine }],
-					}, 'breakpointItem', `${bp.project} · ${bp.proc} (procLine ${bp.procLine})\n클릭하면 해당 위치를 엽니다 (배포본 기준 줄 번호)`);
+					const orphan = orphanKeys.has(breakpointKey({ file: bp.file, line: bp.fileLine }));
+					const parts = [bp.proc];
+					if (bp.hitCount > 0) { parts.push(`${bp.hitCount} hits`); }
+					if (orphan) { parts.push('⚠ 에디터에 없음'); }
+					const tooltip = `${bp.project} · ${bp.proc} (procLine ${bp.procLine})\n클릭하면 해당 위치를 엽니다 (배포본 기준 줄 번호)`
+						+ (orphan
+							? '\n\n⚠ 에디터에 대응하는 중단점이 없습니다 — 제어기에만 남아 있어 실행하면 이 줄에서 멈춥니다.\n'
+							+ '우클릭 → "제어기에서 이 중단점 해제" 또는 "GPL: Sync Breakpoints"로 정리하세요.'
+							: '');
+					return new InfoNode(loc, orphan ? 'debug-breakpoint-unverified' : 'debug-breakpoint-data',
+						parts.join(' · '), {
+							command: 'gpl.controller.openBreakpointLocation',
+							title: '위치 열기',
+							arguments: [{ file: bp.file, line: bp.fileLine }],
+						}, 'breakpointItem', tooltip);
 				});
 			}
 			sections.push(bpSec);

@@ -9,6 +9,7 @@ import {
     isLocationType,
     summarizeLocation,
     annotateLocationMember,
+    dapColorizeType,
 } from '../debug/showVariableParser';
 
 // ─── 실기기 캡처 픽스처 (GPL 4.x, 2026-07-22, MergeCode/OpCommandRunThread1) ───
@@ -192,4 +193,31 @@ test('splitVarLine: 괄호 안 쉼표 무시 + maxParts 이후 병합', () => {
         splitVarLine('cmd.m_rawArg, String, "7,6"', 3),
         ['cmd.m_rawArg', 'String', '"7,6"'],
     );
+});
+
+test('dapColorizeType: 원시 타입만 DAP 표준 이름으로 — 객체/배열은 undefined', () => {
+    // 표시 값에 타입 접미·hex 힌트가 붙어 VS Code의 값 모양 추측이 실패하므로 타입을 명시한다.
+    assert.strictEqual(dapColorizeType('String', '"MAIN"'), 'string');
+    assert.strictEqual(dapColorizeType('Char', '"A"'), 'string');
+    assert.strictEqual(dapColorizeType('Integer', '5'), 'number');
+    assert.strictEqual(dapColorizeType('Double', '30.5'), 'number');
+    assert.strictEqual(dapColorizeType('single', '1.5'), 'number');
+    assert.strictEqual(dapColorizeType('Boolean', '-1'), 'boolean');
+    // 배열 헤더·객체·null 참조는 색상화 대상이 아니다.
+    assert.strictEqual(dapColorizeType('String()', ''), undefined);
+    assert.strictEqual(dapColorizeType('Double(,)', ''), undefined);
+    assert.strictEqual(dapColorizeType('Object Command', ''), undefined);
+    assert.strictEqual(dapColorizeType('Object() null', ''), undefined);
+});
+
+test('dapColorizeType: 타입 칸이 없는 2열 응답은 값 모양으로 추정', () => {
+    // 시스템 Location 덤프 멤버(`Robot.Where(1).X, 636`)는 타입 칸이 없다.
+    assert.strictEqual(dapColorizeType('', '636'), 'number');
+    assert.strictEqual(dapColorizeType('', '1E+32'), 'number');
+    assert.strictEqual(dapColorizeType('', '"text"'), 'string');
+    assert.strictEqual(dapColorizeType('', 'True'), 'boolean');
+    assert.strictEqual(dapColorizeType('', '0 = Cartesian'), undefined);
+    assert.strictEqual(dapColorizeType('', 'null'), undefined);
+    assert.strictEqual(dapColorizeType('', ''), undefined);
+    assert.strictEqual(dapColorizeType(''), undefined);
 });

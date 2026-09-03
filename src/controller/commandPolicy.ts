@@ -119,6 +119,51 @@ export function classifyPolicyCommand(command: string): PolicyCommandInfo {
     return { kind, target, listsAllThreads: false };
 }
 
+// ── 명령 채널 특성 (2026-08-31) ────────────────────────────────────────────
+// "TCP 연결 실패는 관측값이고, 제어기 장애는 여러 증거를 종합한 판단이다" — 1402 명령이 응답 없이 타임아웃했을 때
+// 그것을 '실패'로 볼지 '결과 미확정 + 채널 복구 대기'로 볼지는 명령의 성격에 달렸다. 2026-08-31 실측: `Unload GPL_Code`
+// 가 15 s 안에 응답하지 않고, 그 뒤 약 2.5분간 1402 새 연결이 ECONNREFUSED 되다가 재부팅 없이 정상 복귀했다
+// (그 사이 Show Thread/Show Memory/ErrorLog 는 모두 STATUS 0). 즉 이 부류의 타임아웃 뒤 거부는 제어기 장애의
+// 증거가 아니라 채널 재구성의 관측일 수 있다 → connectionHealth 가 recovering 으로 흡수한다.
+//
+// mayDisruptChannel 을 켜는 기준은 **실측 근거**다. 넉넉히 켜면 진짜 다운을 늦게 알아차리는 대가가 있으므로
+// 추정으로 켜지 않는다. Stop 은 이번 자료에서 STATUS 0 을 돌려주고 직후 Show Thread 도 정상이었으므로 켜지 않는다
+// (-752 로 오래 걸리는 것과 채널 단절은 별개 — 근거가 생기면 그때 켠다).
+
+export interface CommandChannelTraits {
+    mutability: 'read-only' | 'state-changing';
+    expectedDuration: 'short' | 'long' | 'variable';
+    /** 실행 과정에서 1402 명령 채널 자체가 일시적으로 응답/접속 불가가 될 수 있는가(실측 근거가 있는 명령만 true). */
+    mayDisruptChannel: boolean;
+}
+
+const TRAITS_BY_KIND: Readonly<Record<PolicyCommandKind, CommandChannelTraits>> = {
+    // 프로젝트 로드본을 메모리에서 넣고 빼는 명령 — 2026-08-31 Unload 실측 근거.
+    unload: { mutability: 'state-changing', expectedDuration: 'variable', mayDisruptChannel: true },
+    load: { mutability: 'state-changing', expectedDuration: 'variable', mayDisruptChannel: true },
+    // 컴파일은 pass 사이에 수 초간 침묵하고(§waitForStatusClose), Start 는 자체 컴파일을 수행한다(§0.7).
+    compile: { mutability: 'state-changing', expectedDuration: 'long', mayDisruptChannel: true },
+    start: { mutability: 'state-changing', expectedDuration: 'long', mayDisruptChannel: true },
+    // 정지 계열 — 오래 걸릴 수 있으나(-752) 채널 단절 근거는 없다.
+    stop: { mutability: 'state-changing', expectedDuration: 'variable', mayDisruptChannel: false },
+    break: { mutability: 'state-changing', expectedDuration: 'short', mayDisruptChannel: false },
+    step: { mutability: 'state-changing', expectedDuration: 'short', mayDisruptChannel: false },
+    continue: { mutability: 'state-changing', expectedDuration: 'short', mayDisruptChannel: false },
+    'show-thread': { mutability: 'read-only', expectedDuration: 'short', mayDisruptChannel: false },
+    // 분류되지 않은 명령 — 미확인은 보수적으로 '상태 변경'으로 보되 채널 단절은 가정하지 않는다.
+    other: { mutability: 'state-changing', expectedDuration: 'short', mayDisruptChannel: false },
+};
+
+/** 명령 문자열의 채널 특성. 분류는 classifyPolicyCommand 와 같은 규칙을 쓴다. */
+export function commandChannelTraits(command: string): CommandChannelTraits {
+    return TRAITS_BY_KIND[classifyPolicyCommand(command).kind];
+}
+
+/** 이 명령의 무응답 타임아웃을 "채널 복구 대기"로 흡수해도 되는가(= 결과를 실패로 단정하지 않는다). */
+export function mayDisruptCommandChannel(command: string): boolean {
+    return commandChannelTraits(command).mayDisruptChannel;
+}
+
 /** Load 는 경로(`/flash/projects/X`)를 받으므로 프로젝트 키는 마지막 경로 요소로 맞춘다. */
 function projectKey(target: string | undefined): string | undefined {
     if (!target) { return undefined; }

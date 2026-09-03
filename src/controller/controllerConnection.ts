@@ -5,11 +5,11 @@ import { ResponseBodyStreamer } from './trafficResponseBody';
 import { sendConsoleCommand, recordTrafficLine, TrafficDirection } from './consoleSocket';
 import type { CommandResponse } from './consoleSocket';
 import { classifyCommandFailure, probeOutcomeFromResponse } from './connectionHealth';
-import type { ProbeOutcome } from './connectionHealth';
+import type { ProbeOutcome, ProbeFailureKind } from './connectionHealth';
 import { IdlePingScheduler } from './idlePing';
 import type { IdlePingStats } from './idlePing';
-import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS } from './commandPolicy';
-import type { CommandPolicyOptions } from './commandPolicy';
+import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS, commandChannelTraits } from './commandPolicy';
+import type { CommandPolicyOptions, CommandChannelTraits } from './commandPolicy';
 import { parseThreadList, SHOW_THREAD_LIST_CMD } from './responseParser';
 
 export { isPolicyError, PolicyError } from './commandPolicy';
@@ -20,6 +20,8 @@ export type { PolicyErrorCode } from './commandPolicy';
 export type { CommandResponse, CommandResponseMeta, ConnectionStats, HeldSocketEvent } from './consoleSocket';
 export { closeControllerConnection, getConnectionStats, recordTrafficLine, getRecentTraffic, isCleanlyTerminated, setHeldSocketObserver } from './consoleSocket';
 export type { ProbeOutcome, ProbeFailureKind } from './connectionHealth';
+export { commandChannelTraits, mayDisruptCommandChannel } from './commandPolicy';
+export type { CommandChannelTraits } from './commandPolicy';
 
 export interface ControllerConfig {
 	ip: string;
@@ -345,12 +347,56 @@ export function sendCommandDetailed(
 				log: message => logTraffic('---', `policy: ${message}`),
 			});
 		}
-		const response = await sendCommandDetailedInternal(command, config, options);
+		let response: CommandResponse;
+		try {
+			response = await sendCommandDetailedInternal(command, config, options);
+		} catch (err) {
+			// 채널 교란 가능 명령이 응답 없이 끝났으면 연결 건강 모니터에 알린다 → recovering (2026-08-31).
+			// 정책이 보류한 경우(PolicyError)는 여기 오지 않는다 — 제어기에 아무것도 보내지 않았으므로.
+			notifyDisruptiveFailure(command, err);
+			throw err;
+		}
 		if (policyOn) {
 			commandPolicy.after(command, response.raw, response.meta.statusTagReceived, Date.now());
 		}
 		return response;
 	});
+}
+
+// ── 채널 교란 관찰자 (2026-08-31) ───────────────────────────────────────────
+// 배경(실측 2026-08-31): `Unload GPL_Code` 가 15 s 안에 응답하지 않고, 그 뒤 약 2.5분간 1402 새 연결이 ECONNREFUSED
+// 되다가 재부팅 없이 정상 복귀했다. 종전에는 그 거부 2회가 definitive-threshold 에 걸려 3초 만에 "연결 유실"로
+// 확정됐다. 이 관찰자는 "결과를 모르는 채 끝난 교란 가능 명령"이라는 **관측**만 전달하고, 인과를 확정하지 않는다.
+//
+// 통지 조건: mayDisruptChannel 명령(Unload/Load/Compile/Start) + 실패 종류가 timeout/closed/reset(= 명령이 제어기에
+// 도달해 실행됐을 수 있어 결과가 미확정인 경우)일 때만. refused/unreachable 은 **보내기 전에** 채널이 이미 닫혀
+// 있었다는 뜻이므로 "명령 뒤 교란"이 아니다 — 통지하지 않고 종전 판정에 맡긴다.
+const DISRUPTIVE_OUTCOME_UNKNOWN_KINDS: ReadonlySet<ProbeFailureKind> = new Set<ProbeFailureKind>(['timeout', 'closed', 'reset']);
+
+export interface DisruptiveCommandFailure {
+	command: string;
+	kind: ProbeFailureKind;
+	detail: string;
+	traits: CommandChannelTraits;
+	at: number;
+}
+
+let _disruptiveObserver: ((failure: DisruptiveCommandFailure) => void) | null = null;
+
+/** 채널 교란 가능 명령의 결과 미확정 실패 관찰자 — extension.ts 가 연결 건강 모니터에 연결한다. */
+export function setDisruptiveCommandObserver(fn: ((failure: DisruptiveCommandFailure) => void) | null): void {
+	_disruptiveObserver = fn;
+}
+
+function notifyDisruptiveFailure(command: string, err: unknown): void {
+	const traits = commandChannelTraits(command);
+	if (!traits.mayDisruptChannel) { return; }
+	const { kind, detail } = classifyCommandFailure(err);
+	if (!DISRUPTIVE_OUTCOME_UNKNOWN_KINDS.has(kind)) { return; }
+	logTraffic('---', `channel: ${command} 가 응답 없이 끝남(${kind}) — 명령 결과 미확정. 채널 복구 대기로 처리한다(유실 판정 보류).`);
+	try {
+		_disruptiveObserver?.({ command, kind, detail, traits, at: Date.now() });
+	} catch { /* 관찰자 예외는 무시 */ }
 }
 
 /**
@@ -416,6 +462,18 @@ export function getConnectionProbeTimeoutMs(): number {
 	return typeof raw === 'number' && Number.isFinite(raw)
 		? Math.max(MIN_CONNECTION_PROBE_TIMEOUT_MS, Math.floor(raw))
 		: DEFAULT_CONNECTION_PROBE_TIMEOUT_MS;
+}
+
+// 채널 교란 뒤 복구 대기 상한(connectionHealth.recoveryWindowMs). 0 이면 recovering 을 쓰지 않는다(= 종전 판정 그대로).
+const DEFAULT_CONNECTION_RECOVERY_WINDOW_MS = 180_000;
+const MIN_CONNECTION_RECOVERY_WINDOW_MS = 5000;
+
+/** `gpl.controller.connectionRecoveryWindowMs` — 0 = 끔(종전 판정), 그 외 하한 5000. */
+export function getConnectionRecoveryWindowMs(): number {
+	const raw = vscode.workspace.getConfiguration('gpl.controller').get<number>('connectionRecoveryWindowMs', DEFAULT_CONNECTION_RECOVERY_WINDOW_MS);
+	if (typeof raw !== 'number' || !Number.isFinite(raw)) { return DEFAULT_CONNECTION_RECOVERY_WINDOW_MS; }
+	const v = Math.floor(raw);
+	return v <= 0 ? 0 : Math.max(MIN_CONNECTION_RECOVERY_WINDOW_MS, v);
 }
 
 /**

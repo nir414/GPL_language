@@ -6,6 +6,7 @@ import {
     classifyTcpError,
     identifyResponder,
     describeReachability,
+    assessReachability,
     normalizeMac,
     vendorHintFor,
 } from '../controller/reachability';
@@ -207,16 +208,19 @@ test('identifyResponder: 두 인터페이스 MAC 상이 → unknown + 경로 확
     assert.ok(r.detail.includes('인터페이스별 MAC이 서로 다름'));
 });
 
-test('describeReachability: REFUSED + 제어기 정체 → "서비스 닫힘" 판정, 함정 경고 없음', () => {
+test('describeReachability: REFUSED → 관측(새 연결 거부)만 단정하고 제어기 상태는 미확정으로 남긴다 (2026-08-31)', () => {
     const v = describeReachability({ ip: '192.168.0.1', tcp1402: 'refused', icmp: { alive: true, ttl: 255, ms: 5 }, arp: ARP_PRECISE });
-    assert.ok(v.includes('1402 서비스가 닫혀 있다'), v);
+    assert.ok(v.includes('새 연결이 거부됨(refused)'), v);
+    assert.ok(v.includes('제어기 런타임 상태는 확정할 수 없다'), v);
+    // 종전 문구("제어기 소프트웨어 다운/재시작 중")처럼 원인을 단정하지 않는다.
+    assert.ok(!/소프트웨어 다운\/재시작 중\)/.test(v), v);
     assert.ok(!v.includes('무효일 수 있다'), v);
     assert.ok(v.includes('[응답 장치: 제어기'), v);
 });
 
 test('describeReachability: REFUSED + TTL=64/Micro-Star → 판정 무효 가능 경고 + arp/TTL 확인 안내 (#22 사후 진단 함정)', () => {
     const v = describeReachability({ ip: '192.168.0.1', tcp1402: 'refused', icmp: { alive: true, ttl: 64, ms: 5 }, arp: ARP_GATEWAY });
-    assert.ok(v.includes('1402 서비스가 닫혀 있다'), v);
+    assert.ok(v.includes('새 연결이 거부됨(refused)'), v);
     assert.ok(v.includes('무효일 수 있다'), v);
     assert.ok(v.includes('arp -a 192.168.0.1') && v.includes('TTL'), v);
     assert.ok(v.includes('[응답 장치: 제어기 아님'), v);
@@ -227,9 +231,61 @@ test('describeReachability: ICMP만 응답(TCP timeout) → 부팅 중/소켓 �
     assert.ok(v.startsWith('ICMP는 응답하나 1402 TCP가 실패(timeout)'), v);
 });
 
-test('describeReachability: 전부 무응답 → 전원/네트워크 판정에 ping 세부 포함', () => {
+test('describeReachability: 전부 무응답 → 도달 불가 관측 + ping 세부 포함, 원인은 구분 불가로 남김', () => {
     const v = describeReachability({ ip: '192.168.0.1', tcp1402: 'unreachable', icmp: { alive: false, ms: 1000, detail: 'destination-host-unreachable' }, arp: ARP_NONE });
     assert.ok(v.startsWith('ICMP·TCP 모두 무응답(unreachable, ping: destination-host-unreachable)'), v);
+    assert.ok(v.includes('구분되지 않는다'), v);
+});
+
+// -- assessReachability (구조화 판정: 관측 / 추론 / 확신도) ------------------
+
+test('assessReachability: REFUSED → command-channel-unavailable, controllerHealth 는 unconfirmed (1402 실패만으로 판정 금지)', () => {
+    const a = assessReachability({ ip: '192.168.0.1', tcp1402: 'refused', icmp: { alive: true, ttl: 255, ms: 5 }, arp: ARP_PRECISE });
+    assert.strictEqual(a.assessment.state, 'command-channel-unavailable');
+    assert.strictEqual(a.assessment.confidence, 'high');
+    assert.strictEqual(a.controllerHealth.state, 'unconfirmed');
+    assert.strictEqual(a.observations.icmp, 'reachable');
+    assert.strictEqual(a.observations.tcp1402, 'refused');
+    assert.strictEqual(a.observations.ttl, 255);
+    assert.strictEqual(a.observations.route, 'controller');
+    // 채널 교란 뒤 일시적 사용 불가가 대안 설명으로 반드시 들어간다(2026-08-31 실측).
+    assert.ok(a.assessment.alternativeExplanations.some(e => e.includes('일시적 사용 불가')), JSON.stringify(a.assessment));
+    assert.ok(a.assessment.alternativeExplanations.length >= 3);
+});
+
+test('assessReachability: OPEN 이어도 controllerHealth 는 healthy 가 되지 않는다(STATUS 응답만이 증거)', () => {
+    const a = assessReachability({ ip: '192.168.0.1', tcp1402: 'open', icmp: { alive: true, ttl: 255, ms: 2 }, arp: ARP_PRECISE });
+    assert.strictEqual(a.assessment.state, 'command-channel-open');
+    assert.strictEqual(a.assessment.confidence, 'high');
+    assert.strictEqual(a.controllerHealth.state, 'unconfirmed');
+    assert.ok(a.controllerHealth.reason.includes('<STATUS>'), a.controllerHealth.reason);
+});
+
+test('assessReachability: 인터페이스별 MAC 이 다르면 route=ambiguous 이고 확신도가 낮아진다 (#22 함정)', () => {
+    const a = assessReachability({
+        ip: '192.168.0.1',
+        tcp1402: 'refused',
+        icmp: { alive: true, ttl: 64, ms: 5 },
+        arp: { mac: '00-14-FF-23-19-81', vendorHint: 'Precise Automation', entries: [...ARP_PRECISE.entries, ...ARP_GATEWAY.entries] },
+    });
+    assert.strictEqual(a.observations.route, 'ambiguous');
+    assert.strictEqual(a.assessment.confidence, 'medium');   // high -> medium
+    assert.ok(a.assessment.alternativeExplanations.some(e => e.includes('제어기가 아닐 수 있다')), JSON.stringify(a.assessment));
+});
+
+test('assessReachability: 전부 무응답 → host-unreachable + controllerHealth unreachable', () => {
+    const a = assessReachability({ ip: '192.168.0.1', tcp1402: 'unreachable', icmp: { alive: false, ms: 1000 }, arp: ARP_NONE });
+    assert.strictEqual(a.assessment.state, 'host-unreachable');
+    assert.strictEqual(a.controllerHealth.state, 'unreachable');
+    assert.strictEqual(a.observations.icmp, 'unreachable');
+});
+
+test('assessReachability: ping 판정 불가 → inconclusive, 확신도 low', () => {
+    const a = assessReachability({ ip: '192.168.0.1', tcp1402: 'error', icmp: { alive: null, ms: 1 }, arp: ARP_NONE });
+    assert.strictEqual(a.assessment.state, 'inconclusive');
+    assert.strictEqual(a.assessment.confidence, 'low');
+    assert.strictEqual(a.observations.icmp, 'unknown');
+    assert.strictEqual(a.controllerHealth.state, 'unconfirmed');
 });
 
 test('describeReachability: ping 판정 불가(null) → TCP 실패만 확인', () => {

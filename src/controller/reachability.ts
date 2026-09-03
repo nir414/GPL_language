@@ -10,8 +10,18 @@
  * 이걸 "제어기가 살아 있는데 서비스만 죽었다"로 오판하기 쉽다. 그래서 ping TTL(제어기 255 / 게이트웨이 64)과
  * ARP MAC(00-14-FF = Precise Automation)을 함께 기록하고, 판정 문장에 응답 장치 정체 힌트를 붙인다.
  *
- * 순수 파서(parsePingOutput / parseArpOutput / classifyTcpError / identifyResponder / describeReachability)는
- * 테스트 대상이고, 프로세스를 띄우는 함수(pingHost / arpLookup)와 소켓 함수(tcpProbe)는 얇은 래퍼다.
+ * 순수 파서(parsePingOutput / parseArpOutput / classifyTcpError / identifyResponder / assessReachability /
+ * describeReachability)는 테스트 대상이고, 프로세스를 띄우는 함수(pingHost / arpLookup)와 소켓 함수(tcpProbe)는 얇은 래퍼다.
+ *
+ * 관측과 추론의 분리 (2026-08-31):
+ *  - 종전 판정 문장은 관측과 추론을 한 문장에 섞었다: `'호스트는 살아 있으나 1402 서비스가 닫혀 있다(제어기
+ *    소프트웨어 다운/재시작 중).'` — 앞은 관측이지만 괄호 안은 **여러 설명 중 하나**다. 실측 2026-08-31: 채널
+ *    교란 가능 명령(Unload) 뒤 약 2.5분간 refused 였다가 재부팅 없이 복귀했다. 즉 refused 하나로는 제어기 런타임
+ *    상태를 확정할 수 없다.
+ *  - 그래서 assessReachability() 가 `observations`(측정값) / `assessment`(분류 + 확신도 + 다른 설명들) /
+ *    `controllerHealth`(런타임 상태 — 이 프로브만으로는 절대 'healthy' 가 되지 않는다. STATUS 응답이 있어야 확정)를
+ *    나눠 돌려준다. 사람이 읽는 describeReachability() 도 추론을 "가능한 설명"으로만 적는다.
+ *  - 제어기 다운·전원 재투입 같은 강한 권고는 이 모듈이 만들지 않는다 — 여러 독립 증거를 종합하는 판단이다.
  */
 
 import { execFile } from 'child_process';
@@ -58,7 +68,10 @@ export interface ReachabilityInput {
 
 export interface ReachabilityReport extends ReachabilityInput {
     port: number;
+    /** 사람이 읽는 한 줄(관측 우선). 기계 판정은 `assessment` 를 볼 것. */
     verdict: string;
+    /** 구조화 판정 - 관측 / 분류+확신도 / 런타임 상태(미확정 여부). */
+    assessment: ReachabilityAssessment;
 }
 
 /** OUI(MAC 상위 3바이트) → 벤더 힌트. #22 실측 두 건만 등재(확장 시 여기에 추가). */
@@ -195,9 +208,128 @@ export function identifyResponder(icmp: Pick<PingResult, 'ttl'>, arp: Pick<ArpLo
     return { kind: 'unknown', detail };
 }
 
+// -- 구조화 판정 (관측 / 추론 / 확신도) -------------------------------------
+
+/** 1402 명령 채널의 지금 상태 분류 - 제어기 런타임 상태와 별개다. */
+export type ChannelAssessment =
+    /** 새 연결이 열린다. */
+    | 'command-channel-open'
+    /** 새 연결이 거부된다(refused) - 지금 채널을 열 수 없다는 관측. 원인은 미확정. */
+    | 'command-channel-unavailable'
+    /** 연결이 열리지 않고 응답도 없다(timeout) - 부팅 중·소켓 점유·경로 필터링 등. */
+    | 'command-channel-unresponsive'
+    /** 호스트 자체에 도달하지 못한다(ICMP·TCP 모두 무응답). */
+    | 'host-unreachable'
+    /** 측정만으로 분류할 수 없다(ping 미지원 등). */
+    | 'inconclusive';
+
+/**
+ * 제어기 런타임(GPL) 상태. **이 프로브만으로는 'healthy' 가 되지 않는다** - 살아 있음의 증거는 명령의
+ * `<STATUS>` 응답이고, TCP connect 성공은 그 증거가 아니다(하드 규칙 2의 취지).
+ */
+export type ControllerHealthState = 'unconfirmed' | 'unreachable';
+
+export type AssessmentConfidence = 'high' | 'medium' | 'low';
+
+/** 어느 경로로 측정했는지 - multi-NIC 환경에서 같은 IP가 다른 장치일 수 있다(#22 함정). */
+export type RouteIdentity = 'controller' | 'other-device' | 'ambiguous' | 'unknown';
+
+export interface ReachabilityAssessment {
+    observations: {
+        icmp: 'reachable' | 'unreachable' | 'unknown';
+        tcp1402: TcpProbeResult;
+        /** ping TTL(제어기 255 / 게이트웨이 64). 응답이 없으면 undefined. */
+        ttl?: number;
+        /** ARP 로 본 MAC 목록(정규화). */
+        macs: string[];
+        route: RouteIdentity;
+    };
+    assessment: {
+        state: ChannelAssessment;
+        confidence: AssessmentConfidence;
+        /** 이 관측을 만들 수 있는 다른 설명들 - 하나로 확정하지 않기 위해 함께 싣는다. */
+        alternativeExplanations: string[];
+    };
+    controllerHealth: {
+        state: ControllerHealthState;
+        reason: string;
+    };
+}
+
+/**
+ * 측정값 -> 구조화 판정. 문장을 만들지 않고 필드만 채운다(MCP 응답·사후 스냅샷·대시보드가 각자 표현).
+ * route 가 'other-device'/'ambiguous' 면 확신도를 한 단계 낮춘다 - 다른 장치를 측정했을 수 있다.
+ */
+export function assessReachability(input: ReachabilityInput): ReachabilityAssessment {
+    const { tcp1402, icmp, arp } = input;
+    const who = identifyResponder(icmp, arp);
+    const macs = Array.from(new Set((arp.entries ?? []).map(e => e.mac).concat(arp.mac ? [arp.mac] : [])));
+    const route: RouteIdentity = macs.length > 1
+        ? 'ambiguous'
+        : who.kind === 'controller' ? 'controller' : who.kind === 'other-device' ? 'other-device' : 'unknown';
+
+    let state: ChannelAssessment;
+    let confidence: AssessmentConfidence;
+    let alternativeExplanations: string[];
+    if (tcp1402 === 'open') {
+        state = 'command-channel-open';
+        confidence = 'high';
+        alternativeExplanations = [];
+    } else if (tcp1402 === 'refused') {
+        state = 'command-channel-unavailable';
+        // "지금 새 연결을 만들 수 없다"는 관측 자체는 확실하다(원인이 미확정일 뿐).
+        confidence = 'high';
+        alternativeExplanations = [
+            '채널 교란 가능 명령(Unload/Load/Compile/Start) 뒤의 일시적 사용 불가 - 실측 2026-08-31: 약 2.5분 뒤 재부팅 없이 복귀',
+            '제어기 소프트웨어 재시작/부팅 중(1402 서비스 미기동)',
+            '제어기 DHCP 임대 상실로 같은 IP의 다른 장치(사무실 게이트웨이)가 RST 를 돌려주는 경우',
+        ];
+    } else if (icmp.alive === true) {
+        state = 'command-channel-unresponsive';
+        confidence = 'medium';
+        alternativeExplanations = [
+            '부팅 중(ICMP 스택만 기동)',
+            '1402 소켓이 다른 클라이언트에 점유되어 accept 가 지연',
+            '경로/방화벽이 SYN 을 버림',
+        ];
+    } else if (icmp.alive === false) {
+        state = 'host-unreachable';
+        confidence = 'medium';
+        alternativeExplanations = ['전원 차단', '네트워크/케이블/스위치 단절', '재부팅 초기 단계(스택 미기동)', 'NIC 가 APIPA 로 떨어져 경로가 사라짐'];
+    } else {
+        state = 'inconclusive';
+        confidence = 'low';
+        alternativeExplanations = ['ping 을 실행할 수 없어 호스트 도달성을 측정하지 못함'];
+    }
+
+    // 다른 장치를 봤을 가능성이 있으면 확신도를 낮춘다.
+    if (route === 'other-device' || route === 'ambiguous') {
+        confidence = confidence === 'high' ? 'medium' : 'low';
+        alternativeExplanations = [...alternativeExplanations, `측정 경로가 제어기가 아닐 수 있다(${who.detail || 'route 불명'}) - 판정 자체가 무효일 수 있다`];
+    }
+
+    const controllerHealth: ReachabilityAssessment['controllerHealth'] = state === 'host-unreachable'
+        ? { state: 'unreachable', reason: 'ICMP·TCP 모두 무응답 - 호스트에 도달하지 못했다. 런타임 상태는 측정 불가.' }
+        : { state: 'unconfirmed', reason: '1402 도달성만으로는 GPL 런타임 상태를 판정할 수 없다 - 살아 있음의 증거는 명령의 <STATUS> 응답이다.' };
+
+    return {
+        observations: {
+            icmp: icmp.alive === true ? 'reachable' : icmp.alive === false ? 'unreachable' : 'unknown',
+            tcp1402,
+            ttl: icmp.ttl,
+            macs,
+            route,
+        },
+        assessment: { state, confidence, alternativeExplanations },
+        controllerHealth,
+    };
+}
+
 /**
  * 한국어 판정 문장. 4분류(open / refused / ICMP만 응답 / 전부 무응답 / ICMP 판정 불가) + 응답 장치 정체 힌트.
  * REFUSED·OPEN인데 응답 장치가 제어기가 아닌 것으로 보이면 그 판정을 신뢰하지 말라고 명시한다(#22 함정).
+ *
+ * **관측을 먼저 쓰고 추론은 "가능한 설명"으로만 적는다** - 제어기 다운/전원 재투입 같은 확정 서술은 쓰지 않는다.
  */
 export function describeReachability(input: ReachabilityInput): string {
     const { ip, tcp1402, icmp, arp } = input;
@@ -208,11 +340,13 @@ export function describeReachability(input: ReachabilityInput): string {
     if (tcp1402 === 'open') {
         verdict = `${ip}:1402 도달 가능 — TCP 연결이 열린다.`;
     } else if (tcp1402 === 'refused') {
-        verdict = '호스트는 살아 있으나 1402 서비스가 닫혀 있다(제어기 소프트웨어 다운/재시작 중).';
+        verdict = `${ip}:1402 새 연결이 거부됨(refused) — 호스트의 TCP 스택은 응답하나 지금 명령 채널을 열 수 없다는 관측이다. `
+            + '이것만으로 제어기 런타임 상태는 확정할 수 없다(가능한 설명: 채널 교란 가능 명령 뒤의 일시적 사용 불가 / 소프트웨어 재시작·부팅 중 / 같은 IP의 다른 장치가 응답).';
     } else if (icmp.alive === true) {
-        verdict = `ICMP는 응답하나 1402 TCP가 실패(${tcp1402}) — 부팅 중(서비스 미기동)이거나 소켓 점유/타임아웃.`;
+        verdict = `ICMP는 응답하나 1402 TCP가 실패(${tcp1402}) — 부팅 중(서비스 미기동)이거나 소켓 점유/경로 차단. 런타임 상태 미확정.`;
     } else if (icmp.alive === false) {
-        verdict = `ICMP·TCP 모두 무응답(${tcp1402}${icmp.detail ? `, ping: ${icmp.detail}` : ''}) — 전원/네트워크/재부팅 초기 단계.`;
+        verdict = `ICMP·TCP 모두 무응답(${tcp1402}${icmp.detail ? `, ping: ${icmp.detail}` : ''}) — 호스트에 도달하지 못했다는 관측. `
+            + '전원·네트워크·재부팅 초기 단계 중 어느 것인지는 이 관측만으로 구분되지 않는다.';
     } else {
         verdict = `ICMP 판정 불가(ping 미지원) — TCP 실패(${tcp1402})만 확인됨.`;
     }
@@ -305,5 +439,5 @@ export async function probeReachability(ip: string, port = 1402, timeoutMs = 250
         arpLookup(ip, timeoutMs),
     ]);
     const input: ReachabilityInput = { ip, tcp1402, icmp, arp };
-    return { ...input, port, verdict: describeReachability(input) };
+    return { ...input, port, verdict: describeReachability(input), assessment: assessReachability(input) };
 }

@@ -168,18 +168,30 @@ export interface ApplyGprSyncOptions {
     add: string[];
     /** 제거할 항목의 줄 번호(parseGprText 기준) */
     removeLines?: number[];
+    /**
+     * 추가할 `ProjectLibrary` 값 — 소스 줄보다 **앞에** 넣는다(GDE·수작업 파일의 통상 순서).
+     * 소스 목록 동기화는 이걸 쓰지 않는다. BP용 소스 승격(`project/sourcePromotion.ts`)처럼
+     * 라이브러리 참조를 갈아끼우는 편집이 같은 "다른 줄은 그대로 보존" 규칙을 재사용하기 위한 것이다.
+     */
+    addLibraries?: string[];
+    /** 소스/라이브러리 줄보다 앞에 그대로 넣을 줄(주석 등) — 되돌리기용 원본 기록에 쓴다. */
+    prependLines?: string[];
     /** 지정하면 첫 줄 타임스탬프 주석을 갱신(GDE 저장 시각과 같은 의미). 없으면 그대로 둔다. */
     now?: Date;
 }
 
-/** 동기화 결과 텍스트. 줄바꿈·파일 끝 개행·다른 줄은 원본 유지. */
+/** 편집 결과 텍스트. 줄바꿈·파일 끝 개행·다른 줄은 원본 유지. */
 export function applyGprSync(text: string, opts: ApplyGprSyncOptions): string {
     const parsed = parseGprText(text);
     const remove = new Set(opts.removeLines ?? []);
     const out: string[] = [];
 
     const insertAt = parsed.projectEndLine >= 0 ? parsed.projectEndLine : parsed.lines.length;
-    const addLines = opts.add.map(f => `ProjectSource="${f}"`);
+    const addLines = [
+        ...(opts.prependLines ?? []),
+        ...(opts.addLibraries ?? []).map(l => `ProjectLibrary="${l}"`),
+        ...opts.add.map(f => `ProjectSource="${f}"`),
+    ];
 
     parsed.lines.forEach((raw, i) => {
         if (i === insertAt) { out.push(...addLines); }

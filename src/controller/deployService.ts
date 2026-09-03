@@ -1,6 +1,7 @@
 /**
  * 배포 서비스: UPLOAD ∥ STOP(+정지 완료 게이트) 동시 진행 → COMPILE (→ START) 워크플로.
  * skipStart 옵션으로 Start 단계를 생략하여 디버그 준비용으로 사용 가능.
+ * skipCompile 옵션으로 Compile 단계를 생략하고 곧바로 Start 할 수 있다('업로드 스타트', §1-CD).
  * controller-f5.ps1의 핵심 로직을 TypeScript로 포팅.
  *
  * 2026-08-25(이슈 #17 + 보충 코멘트) 재구성 — 목적은 속도: 사용자 관찰상 "쓰레드 실행 중 FTP 업로드"는 무해하고,
@@ -9,7 +10,8 @@
  * 진짜 위험은 ① 업로드 도중 Compile/Start(제어기 사망) ② 정지 미완료 상태의 Compile/Start(§0.6)다. 두 작업이
  * *모두* 끝난 뒤에만 COMPILE로 가고(②), ①은 deploy() 전체를 감싸는 배포 잠금(deployLock.ts, 프로세스 간 파일)으로 막는다.
  * COMPILE과 START는 한 번에 하나만 보낸다 — PA 제어기의 Start는 자체적으로 Compile을 수행하므로(사용자 실사용 사실,
- * ai-handoff §0.7) Compile 직후 Start는 컴파일 중복이다(연속 실행 안전성은 추후 테스트; Start는 gpl.start가 별도 담당).
+ * ai-handoff §0.7) Compile 직후 Start는 컴파일 중복이다. 그래서 업로드 후 실행이 필요한 경로(gpl.uploadStart)는
+ * skipCompile 로 Compile 을 건너뛰고 Start 만 보내고, 배포 없이 실행만 하는 경로는 gpl.start 가 따로 담당한다.
  */
 
 import * as vscode from 'vscode';
@@ -27,12 +29,24 @@ import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord'
 import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
 import { isPathUnder } from './projectPickerCore';
 import { resolveProjectLibraryDirs } from '../project/projectSources';
+import { PROJECT_EXCLUDE_GLOB } from '../project/projectFileScope';
 
 export interface DeployOptions {
     projectDir: string;
     skipUnchanged?: boolean;
     skipStart?: boolean;
     skipStop?: boolean;
+    /**
+     * COMPILE 단계(Compile 명령)를 생략한다 — '업로드 스타트'(gpl.uploadStart) 경로.
+     * PA 제어기의 `Start`는 자체적으로 Compile을 수행하므로(사용자 실사용 사실, ai-handoff §0.7)
+     * 확장이 `Compile`을 먼저 보내면 같은 컴파일을 두 번 하게 된다. 업로드 직후 곧바로 Start를 보내
+     * 컴파일은 제어기에 맡긴다. 클래식(비 direct) 경로의 Unload/Load 동기화는 그대로 수행한다 —
+     * Start 하려면 제어기에 프로젝트가 로드돼 있어야 하기 때문이다.
+     * 대가: 소스 에러가 Problems(진단)로 오지 않고 Start의 STATUS 실패로만 드러난다.
+     * 에러 위치를 보려면 `gpl.quickCompile`(빠른 컴파일)로 따로 확인한다.
+     * skipStart와 함께 쓰면 제어기에 아무것도 검증하지 않는 "업로드만" 경로가 되므로 조합하지 않는다.
+     */
+    skipCompile?: boolean;
     /**
      * 지정 시 이 파일들(로컬 절대경로)만 업로드한다. 저장 파일만 올리는 빠른 컴파일 경로에서 사용.
      * projectDir 하위 파일만 대상이 되며, 변경을 확신하는 것으로 보고 크기 비교 없이 업로드한다.
@@ -152,6 +166,7 @@ export function makeLockedResult(holder: DeployLockRecord): DeployResult {
 function defaultLockOwner(options: DeployOptions): string {
     if ((options.changedFiles ?? []).length > 0) { return 'autoOnSave Quick Compile'; }
     if (options.skipStop) { return 'Quick Compile'; }
+    if (options.skipCompile && !options.skipStart) { return 'Upload & Start'; }
     return options.skipStart ? 'Deploy' : 'Deploy & Run';
 }
 
@@ -383,7 +398,12 @@ async function deployLocked(
     let phase = 0;
 
     pushTrace(`╭──────────────────────────────────────────────────────╮`);
-    pushTrace(`│  ◆ ${projectName}${options.skipStop ? ' (Quick Compile)' : options.skipStart ? ' (Build Only)' : ''}`);
+    const modeSuffix = options.skipStop
+        ? ' (Quick Compile)'
+        : options.skipCompile && !options.skipStart
+            ? ' (Upload & Start — Compile 생략, Start가 자체 컴파일)'
+            : options.skipStart ? ' (Build Only)' : '';
+    pushTrace(`│  ◆ ${projectName}${modeSuffix}`);
     pushTrace(`├──────────────────────────────────────────────────────┤`);
     pushTrace(`│  Local:  ${options.projectDir}`);
     pushTrace(`│  FTP:    ${ftpProjectDir}`);
@@ -763,7 +783,11 @@ async function deployLocked(
 
     pushTrace('');
     phase++;
-    pushTrace(`━━ [${phase}/${totalPhases}] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    // skipCompile 경로에서도 이 단계는 남는다 — 클래식 경로의 Unload/Load 동기화가 여기서 일어나고
+    // (Start 하려면 프로젝트가 로드돼 있어야 한다), direct /GPL 모드에서는 안내 한 줄만 남는다.
+    pushTrace(options.skipCompile
+        ? `━━ [${phase}/${totalPhases}] PREPARE (Compile 생략 — Start가 자체 컴파일, §0.7) ━━━━━`
+        : `━━ [${phase}/${totalPhases}] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     lock.setStage('COMPILE');
 
     if (token?.isCancellationRequested) { return result; }
@@ -781,7 +805,12 @@ async function deployLocked(
     const transientCompileRetryDelayMs = Math.max(250, Math.floor(cfg.timeoutMs / 20));
     result.attemptedProjectNames = compileCandidates;
     pushTrace(`│ Candidates: ${compileCandidates.join(' -> ')}`);
-    let compiled = false;
+    if (options.skipCompile && directActive && directGplName) {
+        // Compile 루프가 result.projectName을 확정해 주던 것을 대신한다 — Start 인자로 쓰인다.
+        result.projectName = directGplName;
+    }
+    // skipCompile 경로에서는 컴파일 단계를 "통과"로 본다(제어기가 Start에서 컴파일한다).
+    let compiled = options.skipCompile === true;
     let lastCompileFailure: { command: string; code: number; message: string; raw: string } | undefined;
 
     /** Compile 명령 실행 후 응답의 STATUS와 에러를 검사하는 헬퍼. */
@@ -980,7 +1009,7 @@ async function deployLocked(
     // raw 텍스트에서 상태 코드 존재를 확인할 때 부분 문자열 오탐(-745가 -7450에 걸림 등)을 막는다.
     const hasCode = (text: string, code: number): boolean => new RegExp(`(^|\\D)${code}\\b`).test(text);
 
-    for (const candidate of compileCandidates) {
+    for (const candidate of options.skipCompile ? [] : compileCandidates) {
         let recoveryFailureRecorded = false; // 복구 분기(cr2)가 실패를 기록했는지 (§1-L cr 덮어쓰기 방지)
         pushTrace(`│ CMD Compile ${candidate}`);
         let cr = await tryCompile(candidate);
@@ -1167,22 +1196,29 @@ async function deployLocked(
     }
 
     // ── 컴파일 스냅샷 기록 (GitHub #21) ──────────────
-    // compiled=true가 되는 모든 분기(최초 성공 / after reload / after load)가 여기로 합류하므로 한 곳에서 기록한다.
     // Attach only 디버깅에서 "제어기 실행 코드보다 로컬 소스가 새로움"을 판정하는 데이터 기반이며,
     // 기록 실패는 배포 결과(success/failedPhase)에 영향을 주지 않는다.
-    try {
-        const files = preUploadSnapshot ?? snapshotProjectFiles(options.projectDir);
-        recordCompiled({
-            ip: cfg.ip,
-            projectName: result.projectName,
-            projectDir: options.projectDir,
-            compiledAt: Date.now(),
-            files,
-        });
-        result.compiledSnapshotFiles = Object.keys(files).length;
-        pushTrace(`│ ✔ 컴파일 스냅샷 기록 ${result.compiledSnapshotFiles} files (Attach only BP 신뢰성 판정용, GitHub #21)`);
-    } catch (e: any) {
-        pushTrace(`│ ⚠ 컴파일 스냅샷 기록 실패(무시): ${e?.message ?? e}`);
+    function recordCompileSnapshot(): void {
+        try {
+            const files = preUploadSnapshot ?? snapshotProjectFiles(options.projectDir);
+            recordCompiled({
+                ip: cfg.ip,
+                projectName: result.projectName,
+                projectDir: options.projectDir,
+                compiledAt: Date.now(),
+                files,
+            });
+            result.compiledSnapshotFiles = Object.keys(files).length;
+            pushTrace(`│ ✔ 컴파일 스냅샷 기록 ${result.compiledSnapshotFiles} files (Attach only BP 신뢰성 판정용, GitHub #21)`);
+        } catch (e: any) {
+            pushTrace(`│ ⚠ 컴파일 스냅샷 기록 실패(무시): ${e?.message ?? e}`);
+        }
+    }
+
+    // Compile을 실제로 보낸 경로: compiled=true가 되는 모든 분기(최초 성공 / after reload / after load)가
+    // 여기로 합류한다. skipCompile 경로는 아직 컴파일된 것이 아니므로 Start 성공을 확인한 뒤에 기록한다.
+    if (!options.skipCompile) {
+        recordCompileSnapshot();
     }
 
     // ── Phase 4: START ────────────────────────────
@@ -1236,6 +1272,11 @@ async function deployLocked(
                 pushTrace(`│ ⚠ Start STATUS ${start.statusCode} non-blocking (controller environment warning)`);
             }
             pushTrace(`│ ✔ Start success`);
+            if (options.skipCompile) {
+                // Start가 STATUS 0으로 끝났다 = 제어기가 방금 올린 소스를 자체 컴파일해 실행 중이다(§0.7).
+                // 그때서야 "이 소스가 제어기에서 돌고 있다"가 사실이 되므로 여기서 스냅샷을 기록한다.
+                recordCompileSnapshot();
+            }
         } else {
             pushTrace(`│ ✘ Start failed: STATUS ${start.statusCode}: ${start.message || 'Unknown error'}`);
             result.failedPhase = 'START';
@@ -1272,7 +1313,7 @@ async function deployLocked(
 
     result.success = compiled;
 
-    const doneLabel = options.skipStart ? 'Build' : 'Deploy';
+    const doneLabel = options.skipStart ? 'Build' : options.skipCompile ? 'Upload & Start' : 'Deploy';
     pushTrace('');
     pushTrace('══════════════════════════════════════════════════════');
     pushTrace(`${result.success ? '✔' : '✘'} ${doneLabel} ${result.success ? 'complete' : 'failed'}: ${result.projectName}`);
@@ -1388,12 +1429,9 @@ export async function jumpToFirstCompileError(
  * .gpr 파일이 있는 폴더를 찾아 반환한다.
  */
 export async function findProjectDirs(): Promise<string[]> {
-    const gprFiles = await vscode.workspace.findFiles(
-        '**/*.gpr',
-        // .history(Local History 확장)에는 과거 이름의 stale .gpr 사본이 쌓여 프로젝트
-        // 오인식을 유발하므로 dist/out과 함께 제외한다.
-        '{**/node_modules/**,**/bin/**,**/.git/**,**/.history/**,**/dist/**,**/out/**}'
-    );
+    // 제외 목록은 심볼 인덱싱·참조 검색과 같은 단일 출처를 쓴다(PROJECT_EXCLUDE_GLOB) —
+    // 여기만 따로 두면 어떤 기능은 보고 어떤 기능은 못 보는 프로젝트가 생긴다.
+    const gprFiles = await vscode.workspace.findFiles('**/*.gpr', PROJECT_EXCLUDE_GLOB);
 
     // 동일 폴더 내 여러 .gpr가 있어도 폴더는 중복 없이 반환
     return [...new Set(gprFiles.map(uri => path.dirname(uri.fsPath)))];

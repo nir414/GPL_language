@@ -6,6 +6,8 @@ import { extractBaseObjectName, escapeRegExp, findEnclosingProcedureRange, extra
 import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
 import { findGplBuiltinMember, isGplBuiltinClassName } from '../gplBuiltins';
 import { ownedByHolder, ReceiverLookup } from '../language/receiverType';
+import { dedupeSymbolLocations, preferExistingFiles, fileExists } from '../language/symbolLocations';
+import { pickVisibleDeclaration } from '../language/symbolScope';
 
 export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
@@ -107,6 +109,10 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         return findEnclosingProcedureRange(i => document.lineAt(i).text, document.lineCount, atLine);
     }
 
+    /**
+     * 동명 후보 중 커서 스코프에서 실제로 보이는 선언을 고른다.
+     * 판정 규칙은 공용 정본(language/symbolScope)에 있다 — 이름 바꾸기와 같은 규칙을 쓴다.
+     */
     private pickBestScopedCandidate(
         candidates: GPLSymbol[],
         document: vscode.TextDocument,
@@ -115,27 +121,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         if (candidates.length === 0) {
             return undefined;
         }
-
-        const proc = this.getEnclosingProcedureRange(document, atLine);
-        let scoped = candidates;
-
-        if (proc) {
-            const inProc = candidates.filter(c => c.line >= proc.startLine && c.line <= proc.endLine);
-            if (inProc.length > 0) {
-                scoped = inProc;
-            }
-        }
-
-        // Prefer definitions at or above the usage line; otherwise pick the closest below.
-        const above = scoped
-            .filter(c => c.line <= atLine)
-            .sort((a, b) => b.line - a.line);
-        if (above.length > 0) {
-            return above[0];
-        }
-
-        const below = scoped.sort((a, b) => a.line - b.line);
-        return below[0];
+        return pickVisibleDeclaration(candidates, this.getEnclosingProcedureRange(document, atLine), atLine);
     }
 
     private findLocalSymbol(
@@ -203,11 +189,6 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         return undefined;
     }
 
-    /** 로그 표시용 파일명(경로의 마지막 요소). 인덱스 경로가 Windows 구분자 기준이라 '\\'만 사용. */
-    private fileNameOf(filePath: string): string {
-        return filePath.split('\\').pop() || filePath;
-    }
-
     /**
      * 이 이름의 사용자 정의 클래스/모듈이 인덱스에 있는지.
      *
@@ -255,9 +236,8 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
     }
 
     private formatCandidate(symbol: GPLSymbol): string {
-        const fileName = this.fileNameOf(symbol.filePath);
         const paramCount = symbol.parameters ? symbol.parameters.length : 0;
-        return `${symbol.name} [${symbol.kind}] params=${paramCount} file=${fileName} line=${symbol.line + 1} class=${symbol.className || 'N/A'} module=${symbol.module || 'N/A'}`;
+        return `${symbol.name} [${symbol.kind}] params=${paramCount} file=${symbol.filePath} line=${symbol.line + 1} class=${symbol.className || 'N/A'} module=${symbol.module || 'N/A'}`;
     }
 
     /**
@@ -288,16 +268,51 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
      * 랭킹 결과를 vscode.Definition으로 변환한다.
      * 동점 오버로드가 여럿이면 전부 돌려줘 VS Code가 peek 목록을 띄우게 한다
      * (틀린 곳으로 조용히 점프하는 대신 사용자가 고르게 하는 안전망).
+     *
+     * 단, "여럿"은 **서로 다른 선언**일 때만 의미가 있다. 같은 선언이 표기만 다르게 인덱싱됐거나
+     * 이미 사라진 파일의 잔류 항목이면 목록만 지저분해지므로 여기서 걸러낸다
+     * (규칙 정본: `language/symbolLocations.ts`).
      */
     private buildDefinitionResult(symbols: GPLSymbol[]): vscode.Definition {
-        if (symbols.length > 1) {
-            this.log(`[Ambiguous Overload] ${symbols.length} equally-ranked candidates → returning all as peek list`);
-            for (const s of symbols) {
+        const picked = this.narrowToDistinctLocations(symbols);
+
+        if (picked.length > 1) {
+            this.log(`[Ambiguous Overload] ${picked.length} equally-ranked candidates → returning all as peek list`);
+            for (const s of picked) {
                 this.log(`  = ${this.formatCandidate(s)}`);
             }
-            return symbols.map(s => this.buildLocation(s));
+            return picked.map(s => this.buildLocation(s));
         }
-        return this.buildLocation(symbols[0]);
+        return this.buildLocation(picked[0]);
+    }
+
+    /**
+     * peek 목록에 올릴 후보를 "실제로 서로 다른, 열 수 있는 선언"으로 줄인다.
+     * 후보가 하나면 아무것도 하지 않는다(불필요한 동기 I/O 회피).
+     */
+    private narrowToDistinctLocations(symbols: GPLSymbol[]): GPLSymbol[] {
+        if (symbols.length <= 1) {
+            return symbols;
+        }
+
+        const unique = dedupeSymbolLocations(symbols);
+        if (unique.length < symbols.length) {
+            this.log(`[Duplicate Locations] ${symbols.length} → ${unique.length} (같은 파일·줄을 가리키는 항목 병합)`);
+        }
+
+        const alive = preferExistingFiles(unique, fileExists);
+        if (alive.length < unique.length) {
+            this.log(`[Stale Locations] ${unique.length} → ${alive.length} (디스크에 없는 파일 제외 — 캐시 잔류)`);
+            // 여기서만 걸러내면 호버·자동완성·참조 검색은 계속 사라진 파일의 심볼을 본다.
+            // 잔류를 발견한 자리에서 인덱스까지 정리한다(자가 치유 — 워처가 놓친 삭제/이동 대비).
+            const dropped = unique.filter(u => !alive.includes(u)).map(u => u.filePath);
+            const pruned = this.symbolCache.pruneMissingFiles(dropped);
+            if (pruned > 0) {
+                this.log(`[Stale Locations] 인덱스에서 파일 항목 ${pruned}개 제거 (자가 치유)`);
+            }
+        }
+
+        return alive;
     }
 
     private logMemberCandidates(context: string, candidates: GPLSymbol[], argCount?: number): void {
@@ -465,9 +480,8 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
             const ctorSymbol = this.symbolCache.findConstructorInClass(constructorClassName, constructorArgCount, document.uri.fsPath);
             if (ctorSymbol) {
-                const fileName = this.fileNameOf(ctorSymbol.filePath);
                 this.log(`[Constructor Found] New in class ${constructorClassName}`);
-                this.log(`[Location] File: ${fileName} | Line: ${ctorSymbol.line + 1} | ClassName: ${ctorSymbol.className || 'N/A'}`);
+                this.log(`[Location] File: ${ctorSymbol.filePath} | Line: ${ctorSymbol.line + 1} | ClassName: ${ctorSymbol.className || 'N/A'}`);
 
                 return this.buildLocation(ctorSymbol);
             }
@@ -494,8 +508,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                     const classSymbols = GPLParser.parseDocument(classDoc.getText(), classDef.filePath);
                     const fileCtor = classSymbols.find(s => s.name === 'New' && s.className === constructorClassName);
                     if (fileCtor) {
-                        const fileName = this.fileNameOf(fileCtor.filePath);
-                        this.log(`[Constructor Found - ClassFile] New in class ${constructorClassName} @line ${fileCtor.line + 1}`);
+                        this.log(`[Constructor Found - ClassFile] New in class ${constructorClassName} @line ${fileCtor.line + 1} | File: ${fileCtor.filePath}`);
                         const definitionPosition = new vscode.Position(fileCtor.line, Math.max(0, fileCtor.range?.start ?? 0));
                         const definitionRange = new vscode.Range(definitionPosition, definitionPosition);
                         return new vscode.Location(vscode.Uri.file(fileCtor.filePath), definitionRange);
@@ -582,10 +595,9 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
                         if (memberMatches.length > 0) {
                             const memberSymbol = memberMatches[0];
-                            const fileName = this.fileNameOf(memberSymbol.filePath);
                             this.log(`[Member Found] ${memberName} in module ${objectSymbol.name}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1}`);
+                            this.log(`[Location] File: ${memberSymbol.filePath} | Line: ${memberSymbol.line + 1}`);
                             return this.buildDefinitionResult(memberMatches);
                         } else {
                             // 모듈은 인덱스에 확실히 존재한다 → 소속 확인 조회까지만 하고, 없으면 차단. (2026-08-31)
@@ -601,10 +613,9 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                         const memberMatches = this.symbolCache.findMemberInClassMatches(memberName, objectSymbol.name, document.uri.fsPath, callCtx);
                         if (memberMatches.length > 0) {
                             const memberSymbol = memberMatches[0];
-                            const fileName = this.fileNameOf(memberSymbol.filePath);
                             this.log(`[Member Found] ${memberName} in class ${objectSymbol.name}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
+                            this.log(`[Location] File: ${memberSymbol.filePath} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
                             return this.buildDefinitionResult(memberMatches);
                         } else {
                             // 클래스가 인덱스에 확실히 존재한다 → 위 모듈 경로와 같은 규칙(중첩 클래스 등도 여기서 잡힌다).
@@ -626,10 +637,9 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
                         if (memberMatches.length > 0) {
                             const memberSymbol = memberMatches[0];
-                            const fileName = this.fileNameOf(memberSymbol.filePath);
                             this.log(`[Member Found] ${memberName} in class ${resolvedType}`);
                             this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                            this.log(`[Location] File: ${fileName} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
+                            this.log(`[Location] File: ${memberSymbol.filePath} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
                             return this.buildDefinitionResult(memberMatches);
                         } else if (this.hasUserContainerNamed(resolvedType)) {
                             // 클래스 정의가 인덱스에 있다 → 소속 확인 조회까지만 하고, 없으면 차단.
@@ -697,8 +707,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             return this.buildLocation(local);
         }
 
-        const fileName = this.fileNameOf(symbol.filePath);
-        this.log(`[Symbol Found] ${symbol.name} | File: ${fileName} | Line: ${symbol.line + 1} | ClassName: ${symbol.className || 'N/A'}`);
+        this.log(`[Symbol Found] ${symbol.name} | File: ${symbol.filePath} | Line: ${symbol.line + 1} | ClassName: ${symbol.className || 'N/A'}`);
         return this.buildDefinitionResult(matches);
     }
 }

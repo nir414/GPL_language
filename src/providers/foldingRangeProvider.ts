@@ -52,8 +52,12 @@ export class GPLFoldingRangeProvider implements vscode.FoldingRangeProvider {
             { kind: 'sub', re: /^\s*(?:(?:Public|Private|Friend|Shared)\s+)*Sub\b/i },
             { kind: 'function', re: /^\s*(?:(?:Public|Private|Friend|Shared)\s+)*Function\b/i },
             { kind: 'property', re: /^\s*(?:(?:Public|Private|Friend|ReadOnly|WriteOnly)\s+)*Property\b/i },
-            { kind: 'get', re: /^\s*Get\b/i },
-            { kind: 'set', re: /^\s*Set\b/i },
+            // Get/Set 접근자만 — GPL의 Set 절은 `Set (value As Integer)`처럼 괄호가 필수이므로(gplStatements.ts),
+            // `Set obj = other` 대입문을 블록 시작으로 보면 안 된다. 종전 `/^\s*Set\b/i`는 대입문마다 스택에
+            // 항목을 쌓아, 접근자 본문 안의 대입문이 뒤따르는 `End Set`을 가로채 접근자 폴딩을 망가뜨렸다.
+            // 판정 정본은 language/blockContext.ts의 BEGIN_PATTERNS다 (테스트: blockContext.test.ts).
+            { kind: 'get', re: /^\s*Get\s*(?:'.*)?$/i },
+            { kind: 'set', re: /^\s*Set\s*\(/i },
             // Block forms only (single-line If should not fold)
             { kind: 'if', re: /^\s*If\b.*\bThen\s*(?:'.*)?$/i },
             // GPL uses "Select expr" (without Case keyword), e.g. "Select setupOrder(i)"

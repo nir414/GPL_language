@@ -37,6 +37,20 @@ test('statements: 라벨의 첫 낱말이 스니펫 본문의 키워드와 같�
     }
 });
 
+test('statements: 공식 문(Statement)·예외 처리 문을 빠짐없이 담는다', () => {
+    // 출처: GPL Dictionary의 Statements Summary + Exception Handling Summary 표.
+    // End/Loop/Next는 각 블록 스니펫이 함께 넣으므로 단독 항목을 두지 않는다.
+    const REQUIRED = [
+        'Call', 'Case', 'Class', 'Const', 'Delegate', 'Dim', 'Do', 'Else', 'ElseIf',
+        'Exit', 'For', 'Function', 'Get', 'GoTo', 'If', 'Module', 'Property', 'ReDim',
+        'Return', 'Select', 'Set', 'Sub', 'While',
+        'Catch', 'Finally', 'Throw', 'Try',
+    ];
+    const heads = new Set(GPL_STATEMENT_SNIPPETS.map(s => s.label.split(/[\s.(]/)[0].toLowerCase()));
+    const missing = REQUIRED.filter(k => !heads.has(k.toLowerCase()));
+    assert.deepStrictEqual(missing, [], `문 스니펫 누락: ${missing.join(', ')}`);
+});
+
 test('statements: 본문·설명·detail 이 비어 있지 않다', () => {
     for (const s of GPL_STATEMENT_SNIPPETS) {
         assert.ok(s.body.length > 0, `${s.label}: 본문 없음`);

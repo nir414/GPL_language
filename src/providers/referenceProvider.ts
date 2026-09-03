@@ -3,7 +3,8 @@ import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../gplParser';
 import { isTraceVerbose, ciEq, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
-import { resolveProjectFileScope } from '../project/projectFileScope';
+import { buildConstructorUsagePattern, isSymbolicStringReferenceAt } from '../language/referenceSyntax';
+import { PROJECT_EXCLUDE_GLOB, resolveProjectFileScope } from '../project/projectFileScope';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
     constructor(
@@ -261,7 +262,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                         // GPL 프로젝트는 엔트리/라이브러리로 .gpo를 함께 쓰는 경우가 많음.
                         // 참조 검색은 .gpl 뿐 아니라 .gpo도 함께 스캔해야 누락이 줄어든다.
                         include: '{**/*.gpl,**/*.gpo}',
-                        exclude: '{**/bin/**,**/node_modules/**,**/.git/**}',
+                        exclude: PROJECT_EXCLUDE_GLOB,
                         useIgnoreFiles: true,
                         ...opts
                     },
@@ -315,8 +316,30 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             : undefined;
         const isAuthoritativeQualifier = qualifierSymbol?.kind === 'module' || qualifierSymbol?.kind === 'class';
 
-        // If cursor is on a procedure definition, capture its module/class scope.
+        // If cursor is on a definition, capture its module/class scope.
         let defSymbol = this.tryGetDefinitionSymbolAtPosition(document, position, word, wordRange);
+
+        // 사용부에서 실행한 Find References도 선언에서 실행한 것과 같은 target scope를 가져야 한다.
+        // `New ClassName(...)`은 커서 단어(New)만으로는 클래스가 드러나지 않으므로 뒤의 타입을 읽고,
+        // `Class.Member` / `Module.Member`는 권위 있는 한정자의 실제 멤버를 바로 선택한다.
+        if (!defSymbol && ciEq(word, 'New')) {
+            const constructorUse = lineText
+                .substring(wordRange.end.character)
+                .match(/^\s+([A-Za-z_]\w*)\b/);
+            if (constructorUse) {
+                defSymbol = this.symbolCache.findConstructorInClass(
+                    constructorUse[1],
+                    undefined,
+                    document.uri.fsPath,
+                );
+            }
+        }
+        if (!defSymbol && qualifierSymbol?.kind === 'class') {
+            defSymbol = this.symbolCache.findMemberCandidatesInClass(word, qualifierSymbol.name)[0];
+        }
+        if (!defSymbol && qualifierSymbol?.kind === 'module') {
+            defSymbol = this.symbolCache.findMemberCandidatesInModule(word, qualifierSymbol.name)[0];
+        }
 
         // 커서가 정의 라인이 아니라 "호출부"에 있는 경우에도 정의의 스코프(module/class/access)를
         // 캐시에서 복원한다. 이렇게 하면 정의에서 실행하든 호출부에서 실행하든 "참조 찾기" 결과가 일관된다.
@@ -349,6 +372,19 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const escapedModule = targetModule ? escapeRegExp(targetModule) : undefined;
         const escapedClass = targetClass ? escapeRegExp(targetClass) : undefined;
 
+        // 생성자는 선언 이름(`Sub New`)과 사용 문법(`New ClassName(...)`)이 다르다.
+        // 일반 class member의 `.New` 검색으로 보내지 않고 클래스 이름까지 포함한
+        // 전용 패턴을 세 검색 경로가 함께 사용한다.
+        const isConstructorTarget = defSymbol?.kind === 'sub'
+            && ciEq(word, 'New')
+            && !!targetClass;
+        const constructorPattern = isConstructorTarget && targetClass
+            ? buildConstructorUsagePattern(targetClass)
+            : undefined;
+        const constructorRegex = constructorPattern
+            ? () => new RegExp(constructorPattern, 'gi')
+            : undefined;
+
         const qualifiedRegex = (q: string) => new RegExp(this.buildQualifiedMemberPattern(q, escapedWord), 'gi');
         const qualifiedPattern = (q: string) => this.buildQualifiedMemberPattern(q, escapedWord);
         const anyQualifierPattern = this.buildAnyQualifierPattern(escapedWord);
@@ -380,6 +416,13 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         let scopeFallbackHits = 0;
         let scopeFallbackRan = false;
 
+        // 결과를 정의가 속한 컴파일 단위(프로젝트 + ProjectLibrary 관계) 밖으로 흘리지 않는다.
+        // 워크스페이스를 프로젝트 상위 폴더에서 열면(`…/projects/GPL_Code` 여러 벌) 다른 과제
+        // 프로젝트의 동명 심볼이 그대로 참조 결과에 섞인다. 단위를 판정할 수 없으면 걸러내지 않는다.
+        const unitReference = targetFilePath ?? document.uri.fsPath;
+        const inCompileUnit = (fsPath: string): boolean =>
+            fsPath === unitReference || this.symbolCache.isSameCompileUnit(fsPath, unitReference);
+
         const addLocation = (uri: vscode.Uri, range: vscode.Range): boolean => {
             const key = `${uri.toString()}:${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
             if (seen.has(key)) {
@@ -388,6 +431,52 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             seen.add(key);
             locations.push(new vscode.Location(uri, range));
             return true;
+        };
+
+        // 생성자 검색 패턴은 선언 줄(`Sub New`) 자체와 일치하지 않는다.
+        // includeDeclaration 요청일 때만 정확한 파서 range로 선언을 명시적으로 보탠다.
+        if (isConstructorTarget && context.includeDeclaration && defSymbol) {
+            const start = Math.max(0, defSymbol.range?.start ?? 0);
+            const end = Math.max(start + word.length, defSymbol.range?.end ?? start + word.length);
+            const uri = defSymbol.filePath === document.uri.fsPath
+                ? document.uri
+                : vscode.Uri.file(defSymbol.filePath);
+            addLocation(
+                uri,
+                new vscode.Range(
+                    new vscode.Position(defSymbol.line, start),
+                    new vscode.Position(defSymbol.line, end),
+                ),
+            );
+        }
+
+        const isCallableTarget = defSymbol?.kind === 'sub' || defSymbol?.kind === 'function';
+        const symbolicStringContainers = targetClass
+            ? [targetClass]
+            : targetModule
+                ? [targetModule]
+                : [];
+        const shouldAcceptOccurrence = (
+            doc: vscode.TextDocument,
+            line: string,
+            character: number,
+        ): boolean => {
+            if (!isInCommentOrString(line, character)) {
+                return true;
+            }
+            if (!isCallableTarget || isConstructorTarget) {
+                return false;
+            }
+
+            // Class 멤버의 단독 `"Proc"` 표기는 정의 파일 안에서만 허용한다.
+            // `"Class.Proc"` / `"Module.Proc"`는 컨테이너까지 일치해야 한다.
+            const allowUnqualified = !targetClass
+                || (!!targetFilePath && doc.uri.fsPath === targetFilePath);
+            return isSymbolicStringReferenceAt(line, character, {
+                name: word,
+                containerNames: symbolicStringContainers,
+                allowUnqualified,
+            });
         };
 
         // 멤버 접근/식별자 패턴은 모두 단일 라인 기준이므로(파라미터 안에서도 \r\n 제외),
@@ -461,8 +550,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
 
                     const range = new vscode.Range(startPos, doc.positionAt(endIndex));
 
-                    // 주석(')뿐 아니라 문자열("...") 내부의 매치도 참조가 아니다 (config 공용 헬퍼).
-                    if (isInCommentOrString(lineText, range.start.character)) {
+                    // 일반 문자열/주석은 제외하되, `"Class.Proc"`처럼 GPL 런타임이
+                    // 프로시저 이름으로 소비하는 정확한 symbol-valued string은 참조다.
+                    if (!shouldAcceptOccurrence(doc, lineText, range.start.character)) {
                         continue;
                     }
 
@@ -493,7 +583,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 localHits += scanDocumentText(document, re, opts);
             };
 
-            if (shouldPreferQualifiedOnly && escapedQualifier) {
+            if (isConstructorTarget && constructorRegex) {
+                scanLocal(constructorRegex(), {});
+            } else if (shouldPreferQualifiedOnly && escapedQualifier) {
                 scanLocal(qualifiedRegex(escapedQualifier), {});
             } else {
                 if (shouldAlsoSearchModuleQualified && escapedModule) {
@@ -538,6 +630,10 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
 
                 const uri = r.uri;
 
+                if (!inCompileUnit(uri.fsPath)) {
+                    return; // 다른 프로젝트의 동명 심볼
+                }
+
                 // Private/module-local rules: avoid scanning other files for unqualified matches.
                 const isDefFile = targetFilePath && uri.fsPath === targetFilePath;
                 if (
@@ -568,8 +664,8 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 }
 
                 const lineText = doc.lineAt(normalizedRange.start.line).text;
-                // 주석(')뿐 아니라 문자열("...") 내부의 매치도 참조가 아니다 (config 공용 헬퍼).
-                if (isInCommentOrString(lineText, normalizedRange.start.character)) {
+                // local scan과 동일한 문자열 참조 규칙을 workspace 검색에도 적용한다.
+                if (!shouldAcceptOccurrence(doc, lineText, normalizedRange.start.character)) {
                     return;
                 }
 
@@ -613,7 +709,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             // (Local scan above still helps for out-of-workspace files.)
             let anySearchRan = false;
 
-            if (shouldPreferQualifiedOnly && escapedQualifier) {
+            if (isConstructorTarget && constructorPattern) {
+                anySearchRan = (await runQuery(constructorPattern, {})) || anySearchRan;
+            } else if (shouldPreferQualifiedOnly && escapedQualifier) {
                 anySearchRan = (await runQuery(qualifiedPattern(escapedQualifier), {})) || anySearchRan;
             } else {
                 // 1) Scope-aware qualified patterns
@@ -697,6 +795,11 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                         continue;
                     }
 
+                    if (isConstructorTarget && constructorRegex) {
+                        scopeFallbackHits += scanDocumentText(doc, constructorRegex(), {});
+                        continue;
+                    }
+
                     if (shouldPreferQualifiedOnly && escapedQualifier) {
                         scopeFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedQualifier), {});
                         continue;
@@ -733,10 +836,13 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
 
         // Fallback: if workspace scan yields nothing (or was cancelled), use the existing cache-based approach.
         // Note: cache-based approach is less accurate because it is name-only and may include duplicates.
-        if (!token.isCancellationRequested && locations.length === 0) {
+        if (!token.isCancellationRequested && locations.length === 0 && !isConstructorTarget) {
             this.log('[References] Workspace scan returned 0. Falling back to cache-based search.');
             const refs = await this.symbolCache.findReferences(word, token);
             for (const ref of refs) {
+                if (!inCompileUnit(ref.filePath)) {
+                    continue; // 이름만 같은 다른 프로젝트의 심볼 — 캐시는 인덱싱된 전체 파일을 훑는다
+                }
                 const uri = vscode.Uri.file(ref.filePath);
 
                 for (const usage of ref.usages) {

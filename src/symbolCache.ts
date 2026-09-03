@@ -6,15 +6,23 @@ import { getParameterArity, argCountMatchesArity } from './language/cursorExpres
 import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
 import { buildSymbolNameIndex } from './symbolNameIndex';
 import { renderDocCommentMarkdown } from './language/docComment';
+import { isDeclaredIn, ReceiverHolder } from './language/receiverType';
 import { PROJECT_EXCLUDE_GLOB, findWorkspaceGprPaths } from './project/projectFileScope';
 import { collectProjectSourcePaths, pickOwningGprPath } from './project/projectSources';
-import { isPathUnder } from './controller/projectPickerCore';
+import { CompileUnitIndex, narrowToCompileUnit } from './project/compileUnit';
+import { isPathUnder, normalizePathKey } from './controller/projectPickerCore';
+import { isMissingFile } from './language/symbolLocations';
 
 // scoreFilePath 점수 체계 — 높을수록 우선 (정의 후보가 여럿일 때 경로 근접도로 선택)
 const SCORE_SAME_FILE = 1000;
 const SCORE_SAME_DIRECTORY = 800;
 /** 같은 프로젝트(.gpr 폴더) 하위 — 하위 폴더로 나뉘어 있어도 같은 컴파일 단위다. */
 const SCORE_SAME_PROJECT = 650;
+/**
+ * 같은 컴파일 단위의 **다른** 프로젝트 — `ProjectLibrary`로 참조하는/참조받는 프로젝트.
+ * 폴더는 분리돼 있어도 함께 컴파일되므로, 워크스페이스 최상위 폴더가 같을 뿐인 남의 프로젝트보다 앞선다.
+ */
+const SCORE_RELATED_PROJECT = 600;
 const SCORE_SAME_TOP_LEVEL_FOLDER = 500;
 const SCORE_UNRELATED = 0;
 
@@ -25,11 +33,31 @@ const SCORE_UNRELATED = 0;
  */
 const INDEX_EXCLUDE_GLOB = PROJECT_EXCLUDE_GLOB;
 
+/**
+ * 파일 하나의 캐시 항목.
+ *
+ * 키는 `normalizePathKey`로 정규화한 경로이고, 표시·URI 생성에는 여기 담긴 **원본 표기**를 쓴다.
+ * 종전에는 `document.uri.fsPath` 원문을 그대로 Map 키로 썼는데, 같은 파일이 표기만 다르게
+ * 들어오면(`.gpr`의 `ProjectSource=` 표기 ↔ 디스크 표기 등) 항목이 하나 더 생겨
+ * 정의 이동이 같은 선언을 여러 번 띄웠다 (2026-09-02).
+ */
+interface CachedFileSymbols {
+    /** 디스크 표기 그대로의 경로 — Location·참조 결과에 그대로 쓴다. */
+    filePath: string;
+    symbols: GPLSymbol[];
+}
+
 export class SymbolCache {
-    private symbols: Map<string, GPLSymbol[]> = new Map();
+    /** 정규화 경로 키 → 파일 항목. 키 정규화 규칙은 `normalizePathKey` 하나뿐이다. */
+    private symbols: Map<string, CachedFileSymbols> = new Map();
     private nameIndex: Map<string, GPLSymbol[]> = new Map();
     /** 마지막 인덱싱에서 발견한 워크스페이스 .gpr 경로 — 정의 후보 선택의 "같은 프로젝트" 판정에 쓴다. */
     private gprPaths: string[] = [];
+    /**
+     * 컴파일 단위(프로젝트 + ProjectLibrary 관계) 경계 — 정의 후보를 소유 프로젝트 밖으로 새지 않게 한다.
+     * 워크스페이스를 프로젝트 상위 폴더에서 열면 인덱스에 여러 과제의 동명 심볼이 함께 들어오기 때문이다.
+     */
+    private compileUnits = new CompileUnitIndex();
     private outputChannel?: vscode.OutputChannel;
     /** True while refresh/indexWorkspace is running — suppresses duplicate updates from onDidOpenTextDocument. */
     public isRefreshing = false;
@@ -78,11 +106,13 @@ export class SymbolCache {
             return;
         }
 
-        const symbols = GPLParser.parseDocument(text, document.uri.fsPath);
-        this.symbols.set(document.uri.fsPath, symbols);
+        const symbols = GPLParser.parseDocument(text, fsPath);
+        // 키는 정규화 경로 — 같은 파일이 다른 표기로 다시 들어와도 항목은 하나로 유지된다.
+        // 표기가 바뀌었으면 방금 열린 문서의 표기를 정본으로 삼는다(디스크 표기에 더 가깝다).
+        this.symbols.set(normalizePathKey(fsPath), { filePath: fsPath, symbols });
         this.rebuildNameIndex();
-        
-        const fileName = path.basename(document.uri.fsPath);
+
+        const fileName = path.basename(fsPath);
         this.log(`[SymbolCache] Updated ${fileName}: ${symbols.length} symbols`);
     }
 
@@ -100,32 +130,20 @@ export class SymbolCache {
     }
 
     private deleteByFsPath(filePath: string): boolean {
-        if (this.symbols.delete(filePath)) {
-            return true;
-        }
-
-        // Windows paths can differ by casing. If a direct delete fails, try a case-insensitive match.
-        const targetLower = filePath.toLowerCase();
-        for (const key of this.symbols.keys()) {
-            if (key.toLowerCase() === targetLower) {
-                return this.symbols.delete(key);
-            }
-        }
-
-        return false;
+        // 키가 이미 정규화돼 있으므로 대소문자·구분자 차이를 따로 훑을 필요가 없다.
+        return this.symbols.delete(normalizePathKey(filePath));
     }
 
     /**
-     * fsPath 자체이거나 `fsPath + path.sep`로 시작하는 모든 캐시 항목을 제거한다(대소문자 무시).
+     * fsPath 자체이거나 그 하위인 모든 캐시 항목을 제거한다(대소문자·구분자 무시).
      * 폴더 삭제/이름변경 시 하위 파일들의 잔류 심볼을 일괄 정리하는 용도 (extension.ts에서 호출).
      */
     public deleteByFsPathPrefix(fsPath: string): void {
-        const targetLower = fsPath.toLowerCase();
-        const prefixLower = targetLower.endsWith(path.sep) ? targetLower : targetLower + path.sep;
+        const targetKey = normalizePathKey(fsPath);
+        const prefixKey = targetKey + path.sep;
         let removed = false;
         for (const key of Array.from(this.symbols.keys())) {
-            const keyLower = key.toLowerCase();
-            if (keyLower === targetLower || keyLower.startsWith(prefixLower)) {
+            if (key === targetKey || key.startsWith(prefixKey)) {
                 this.symbols.delete(key);
                 removed = true;
             }
@@ -133,6 +151,46 @@ export class SymbolCache {
         if (removed) {
             this.rebuildNameIndex();
         }
+    }
+
+    /**
+     * 디스크에서 사라진 파일의 캐시 항목을 제거하고, 제거한 개수를 돌려준다.
+     *
+     * 파일 삭제·이동은 원래 워처(`onDidDelete`)가 잡지만 놓치는 경로가 있다 — SVN update/switch 같은
+     * 대량 변경, 탐색기에서 폴더째 이동, **워크스페이스 밖** `.gpr`로 인덱싱된 파일(워처는 워크스페이스
+     * 폴더만 본다). 그때 남은 잔류 항목은 정의 이동에서 "열리지 않는 후보"로 나타난다(§1-CQ).
+     * 그래서 잔류를 **발견한 자리에서** 이 메서드로 인덱스까지 정리한다(자가 치유) — 그러지 않으면
+     * 정의 이동만 걸러지고 호버·자동완성·참조 검색은 계속 사라진 파일의 심볼을 본다.
+     *
+     * 지우는 기준은 `isMissingFile` 하나뿐이다 — **`ENOENT`일 때만** 지운다.
+     *
+     * @param filePaths 검사할 경로(생략하면 인덱스 전체). 표기는 무관하다(정규화해서 조회).
+     */
+    public pruneMissingFiles(filePaths?: readonly string[]): number {
+        const keys = filePaths
+            ? Array.from(new Set(filePaths.map(p => normalizePathKey(p))))
+            : Array.from(this.symbols.keys());
+
+        let removed = 0;
+        for (const key of keys) {
+            const entry = this.symbols.get(key);
+            if (!entry || !isMissingFile(entry.filePath)) {
+                continue;
+            }
+            this.symbols.delete(key);
+            removed++;
+            this.log(`[SymbolCache] Pruned missing file: ${entry.filePath}`);
+        }
+
+        if (removed > 0) {
+            this.rebuildNameIndex();
+        }
+        return removed;
+    }
+
+    /** 인덱싱된 파일 목록(원본 표기) — 진단 명령이 경로 단위로 훑는 데 쓴다. */
+    public listIndexedFiles(): string[] {
+        return Array.from(this.symbols.values(), entry => entry.filePath);
     }
 
     /**
@@ -158,11 +216,15 @@ export class SymbolCache {
      * 필요하면 findDefinition을 쓰면 된다.
      */
     public findDefinitionMatches(symbolName: string, currentFilePath?: string, call?: number | CallContext): GPLSymbol[] {
-        const candidates = this.nameIndex.get(symbolName.toLowerCase()) ?? [];
+        const all = this.nameIndex.get(symbolName.toLowerCase()) ?? [];
 
-        if (candidates.length === 0) {
+        if (all.length === 0) {
             return [];
         }
+
+        // 워크스페이스를 프로젝트 상위 폴더에서 열면 여러 과제의 동명 심볼이 한 인덱스에 들어온다.
+        // 같은 컴파일 단위 안에 후보가 있으면 그 밖은 정의가 될 수 없다 — 점수 경쟁 전에 잘라낸다.
+        const candidates = this.narrowToUnit(all, currentFilePath);
 
         // 호출 문맥(Foo(...))이고 호출 가능한 후보가 있으면 arity/타입 기반 오버로드 해석을 시도한다.
         // 이 경로는 파일 우선순위(scoreFilePath)도 함께 고려하므로 현재 파일 내 오버로드가 자연스레 우선된다.
@@ -184,9 +246,9 @@ export class SymbolCache {
         // 기존 동작: 현재 파일에서 먼저 찾고, 없으면 경로 근접도로 최적 후보 선택.
         // (workspace 루트와 Test_robot/ 같은 중복 사본 사이에서 튀는 것을 방지)
         if (currentFilePath) {
-            // Windows 경로는 대소문자가 다를 수 있어 무시 비교(deleteByFsPath와 동일 규칙).
-            const currentLower = currentFilePath.toLowerCase();
-            const inFile = candidates.filter(s => s.filePath.toLowerCase() === currentLower);
+            // 경로 비교는 캐시 키와 같은 규칙(normalizePathKey) — 표기 차이를 같은 파일로 본다.
+            const currentKey = normalizePathKey(currentFilePath);
+            const inFile = candidates.filter(s => normalizePathKey(s.filePath) === currentKey);
             if (inFile.length > 0) {
                 return [inFile[0]];
             }
@@ -214,7 +276,7 @@ export class SymbolCache {
         // If not found, also search in files that contain the class definition
         // This handles cases where the parser might not set className correctly
         const fallbackCandidates: GPLSymbol[] = [];
-        for (const [filePath, fileSymbols] of this.symbols) {
+        for (const { symbols: fileSymbols } of this.symbols.values()) {
             // Find if this file has the class definition
             const classSymbol = fileSymbols.find(s => ciEq(s.name, className) && s.kind === 'class');
             if (classSymbol) {
@@ -295,7 +357,7 @@ export class SymbolCache {
 
     public findMemberCandidatesInModule(memberName: string, moduleName: string): GPLSymbol[] {
         const candidates: GPLSymbol[] = [];
-        for (const [, fileSymbols] of this.symbols) {
+        for (const { symbols: fileSymbols } of this.symbols.values()) {
             for (const s of fileSymbols) {
                 if (
                     ciEq(s.name, memberName) &&
@@ -318,10 +380,13 @@ export class SymbolCache {
      * 적합도·경로 근접도로 랭킹한 "선두 동점 그룹"을 돌려준다.
      * (선택 규칙 상세는 rankOverloadMatches — symbolCache/definitionProvider 공용 정본 — 참조.)
      */
-    private pickCallableMatches(candidates: GPLSymbol[], preferredFilePath: string | undefined, call?: number | CallContext): GPLSymbol[] {
-        if (candidates.length === 0) {
+    private pickCallableMatches(all: GPLSymbol[], preferredFilePath: string | undefined, call?: number | CallContext): GPLSymbol[] {
+        if (all.length === 0) {
             return [];
         }
+
+        // 클래스/모듈 멤버 폴백은 인덱싱된 파일 전체를 훑으므로 여기서도 컴파일 단위로 좁힌다.
+        const candidates = this.narrowToUnit(all, preferredFilePath);
 
         const ctx = toCallContext(call);
         if (!ctx || typeof ctx.argCount !== 'number') {
@@ -366,15 +431,38 @@ export class SymbolCache {
         return scored[0].sym;
     }
 
+    /**
+     * 후보를 기준 파일의 컴파일 단위(프로젝트 + ProjectLibrary 관계) 안으로 좁힌다.
+     * 단위 안 후보가 없거나 단위를 판정할 수 없으면 원본 그대로 — 모를 때 지우지 않는다.
+     */
+    private narrowToUnit(candidates: GPLSymbol[], preferredFilePath?: string): GPLSymbol[] {
+        const narrowed = narrowToCompileUnit(candidates, preferredFilePath, s => s.filePath, this.compileUnits);
+        return narrowed === candidates ? candidates : [...narrowed];
+    }
+
+    /**
+     * 두 파일이 같은 컴파일 단위인가 — 참조 검색·이름 바꾸기가 결과를 프로젝트 밖으로 흘리지 않게
+     * 하는 데 쓴다. 단위를 판정할 수 없으면 true(모를 때 배제하지 않는다).
+     */
+    public isSameCompileUnit(candidateFilePath: string, referenceFilePath: string): boolean {
+        return this.compileUnits.isSameUnit(candidateFilePath, referenceFilePath);
+    }
+
+    /** `.gpr` 내용이 바뀌었을 때 컴파일 단위 해석 캐시를 버린다(파일 감시자에서 호출). */
+    public invalidateProjectRelations(): void {
+        this.compileUnits.invalidate();
+    }
+
     private scoreFilePath(candidateFilePath: string, preferredFilePath: string): number {
-        // Higher is better. Windows 경로는 대소문자가 다를 수 있어 무시 비교(deleteByFsPath와 동일 규칙).
-        const candidateLower = candidateFilePath.toLowerCase();
-        const preferredLower = preferredFilePath.toLowerCase();
-        if (candidateLower === preferredLower) {
+        // Higher is better. 경로 비교는 캐시 키와 같은 규칙(normalizePathKey)을 쓴다 —
+        // 대소문자뿐 아니라 `.`/`..`·구분자 차이도 같은 파일로 본다.
+        const candidateKey = normalizePathKey(candidateFilePath);
+        const preferredKey = normalizePathKey(preferredFilePath);
+        if (candidateKey === preferredKey) {
             return SCORE_SAME_FILE;
         }
 
-        if (path.dirname(candidateLower) === path.dirname(preferredLower)) {
+        if (path.dirname(candidateKey) === path.dirname(preferredKey)) {
             return SCORE_SAME_DIRECTORY;
         }
 
@@ -384,6 +472,15 @@ export class SymbolCache {
         const owningGpr = pickOwningGprPath(preferredFilePath, this.gprPaths);
         if (owningGpr && isPathUnder(candidateFilePath, path.dirname(owningGpr))) {
             return SCORE_SAME_PROJECT;
+        }
+
+        // 라이브러리 관계로 함께 컴파일되는 프로젝트(형제/중첩 폴더)는 남의 프로젝트보다 앞선다.
+        // 이게 없으면 라이브러리의 정의가 SCORE_UNRELATED로 떨어져, 최상위 폴더만 같은
+        // 무관한 프로젝트의 동명 심볼(SCORE_SAME_TOP_LEVEL_FOLDER)에게 진다.
+        // (`isSameUnit`은 "모르면 true"라 점수 매기기에는 못 쓴다 — 여기선 단위가 확정된 경우에만 준다.)
+        const unitDirs = this.compileUnits.unitDirsFor(preferredFilePath);
+        if (unitDirs.length > 0 && this.compileUnits.isInUnitDirs(candidateFilePath, unitDirs)) {
+            return SCORE_RELATED_PROJECT;
         }
 
         // Prefer same top-level folder relative to workspace folder
@@ -415,16 +512,20 @@ export class SymbolCache {
         token?: vscode.CancellationToken
     ): Promise<{ filePath: string; usages: { line: number; character: number }[] }[]> {
         const references: { filePath: string; usages: { line: number; character: number }[] }[] = [];
+        // 읽기에 실패한 경로 — 루프가 끝난 뒤 "확실히 없는" 것만 인덱스에서 정리한다(자가 치유).
+        // 순회 중 Map을 건드리지 않으려고 모았다가 처리한다.
+        const unreadable: string[] = [];
 
-        for (const filePath of this.symbols.keys()) {
+        // 키가 아니라 원본 표기(filePath)로 순회한다 — 결과가 URI·표시에 그대로 쓰이므로.
+        for (const { filePath } of Array.from(this.symbols.values())) {
             if (token?.isCancellationRequested) {
                 break;
             }
 
-            // 열린 문서 우선(편집 중 내용 유지) — 경로는 Windows 대소문자 무시 비교.
-            const fileLower = filePath.toLowerCase();
+            // 열린 문서 우선(편집 중 내용 유지) — 경로는 정규화 키로 비교.
+            const fileKey = normalizePathKey(filePath);
             const document = vscode.workspace.textDocuments.find(
-                (doc: vscode.TextDocument) => doc.uri.fsPath.toLowerCase() === fileLower
+                (doc: vscode.TextDocument) => normalizePathKey(doc.uri.fsPath) === fileKey
             );
 
             let text: string;
@@ -435,13 +536,22 @@ export class SymbolCache {
                     const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
                     text = Buffer.from(bytes).toString('utf8');
                 } catch {
-                    continue; // 삭제/접근 불가 파일은 건너뛴다
+                    // 삭제/접근 불가 파일은 건너뛴다. 원인 판정(ENOENT인지)은 pruneMissingFiles에 맡긴다.
+                    unreadable.push(filePath);
+                    continue;
                 }
             }
 
             const usages = GPLParser.findSymbolUsages(text, symbolName);
             if (usages.length > 0) {
                 references.push({ filePath, usages });
+            }
+        }
+
+        if (unreadable.length > 0) {
+            const pruned = this.pruneMissingFiles(unreadable);
+            if (pruned > 0) {
+                this.log(`[SymbolCache] 참조 검색 중 사라진 파일 ${pruned}개를 인덱스에서 제거했다`);
             }
         }
 
@@ -465,7 +575,7 @@ export class SymbolCache {
 
     public getAllSymbols(): GPLSymbol[] {
         const allSymbols: GPLSymbol[] = [];
-        for (const fileSymbols of this.symbols.values()) {
+        for (const { symbols: fileSymbols } of this.symbols.values()) {
             allSymbols.push(...fileSymbols);
         }
         return allSymbols;
@@ -477,19 +587,15 @@ export class SymbolCache {
     }
 
     /**
-     * className의 멤버 목록(필드/상수/프로퍼티/메서드) — 멤버 자동완성용.
+     * 홀더(클래스/모듈)에 **직접 선언된** 심볼 목록 — 멤버 자동완성용.
+     * 소속 판정은 `isDeclaredIn` 하나로 통일한다(클래스/모듈 심볼의 자기-참조 필드 함정 — receiverType.ts 참조).
      * 이름 중복(오버로드)은 첫 항목만, 생성자(New)는 제외한다.
      */
-    public getClassMembers(className: string): GPLSymbol[] {
-        const target = className.toLowerCase();
+    private collectDeclaredMembers(holder: ReceiverHolder): GPLSymbol[] {
         const seen = new Set<string>();
         const members: GPLSymbol[] = [];
         for (const s of this.getAllSymbols()) {
-            if (s.kind === 'module') { continue; }
-            if (s.kind === 'class') {
-                // 중첩 클래스는 바깥 클래스의 멤버로 노출한다 (예: ZeroPlan. → StepBatch).
-                if (!s.parentClassName || s.parentClassName.toLowerCase() !== target) { continue; }
-            } else if (!s.className || s.className.toLowerCase() !== target) { continue; }
+            if (!isDeclaredIn(s, holder)) { continue; }
             const key = s.name.toLowerCase();
             if (key === 'new' || seen.has(key)) { continue; }
             seen.add(key);
@@ -498,20 +604,21 @@ export class SymbolCache {
         return members;
     }
 
-    /** moduleName 직속(클래스 밖) 멤버 목록 — 모듈 한정자 자동완성용. 클래스 심볼은 포함한다. */
+    /**
+     * className의 멤버 목록(필드/상수/프로퍼티/메서드) — 멤버 자동완성용.
+     * 중첩 클래스 선언도 바깥 클래스의 멤버로 노출한다 (예: `ZeroPlan.` → `StepBatch`).
+     */
+    public getClassMembers(className: string): GPLSymbol[] {
+        return this.collectDeclaredMembers({ kind: 'class', name: className });
+    }
+
+    /**
+     * moduleName 직속(클래스 밖) 멤버 목록 — 모듈 한정자 자동완성용.
+     * 그 모듈의 최상위 클래스 선언도 포함한다 (예: `ZeroModule.` → `ZeroPlan`) — 종전에는
+     * 클래스 심볼의 `className`이 자기 이름이라 "클래스 안에 있는 것"으로 걸러져 빠졌다.
+     */
     public getModuleMembers(moduleName: string): GPLSymbol[] {
-        const target = moduleName.toLowerCase();
-        const seen = new Set<string>();
-        const members: GPLSymbol[] = [];
-        for (const s of this.getAllSymbols()) {
-            if (!s.module || s.module.toLowerCase() !== target) { continue; }
-            if (s.className || s.kind === 'module') { continue; }
-            const key = s.name.toLowerCase();
-            if (seen.has(key)) { continue; }
-            seen.add(key);
-            members.push(s);
-        }
-        return members;
+        return this.collectDeclaredMembers({ kind: 'module', name: moduleName });
     }
 
     public getCompletionItems(): vscode.CompletionItem[] {
@@ -572,7 +679,8 @@ export class SymbolCache {
             // 구조화된 문서화 주석(`# Parameters` 등)은 섹션째, 옛 주석은 서술 그대로 렌더링된다.
             const doc = renderDocCommentMarkdown(symbol.docComment, { descriptionMode: 'full' });
             if (doc) {
-                md.appendMarkdown(`\n\n${doc}`);
+                // Module/Class처럼 앞에 붙일 시그니처·타입 줄이 없는 종류는 구분용 빈 줄을 넣지 않는다.
+                md.appendMarkdown(md.value ? `\n\n${doc}` : doc);
             }
         }
         md.isTrusted = false;
@@ -638,11 +746,15 @@ export class SymbolCache {
         try {
             const gprPaths = await findWorkspaceGprPaths();
             this.gprPaths = gprPaths;
+            this.compileUnits.setGprPaths(gprPaths);
             if (gprPaths.length === 0) {
                 return undefined;
             }
 
-            const sources = new Set<string>();
+            // 정규화 키 → 원본 경로. `.gpr`마다 같은 파일을 다른 표기로 낼 수 있어
+            // (`ProjectSource=` 표기 ↔ 디스크 스캔 표기) 문자열 Set으로는 중복이 걸러지지 않는다.
+            // 먼저 들어온 표기를 정본으로 남긴다 — 프로젝트 폴더 재귀 스캔(디스크 표기)이 앞선다.
+            const sources = new Map<string, string>();
             let truncatedProjects = 0;
 
             for (const gprPath of gprPaths) {
@@ -656,7 +768,10 @@ export class SymbolCache {
                         truncatedProjects++;
                     }
                     for (const full of collected.files) {
-                        sources.add(full);
+                        const key = normalizePathKey(full);
+                        if (!sources.has(key)) {
+                            sources.set(key, full);
+                        }
                     }
                 } catch (e) {
                     this.log(`[SymbolCache] Failed to parse .gpr (${gprPath}): ${e}`);
@@ -675,7 +790,7 @@ export class SymbolCache {
                 return undefined;
             }
 
-            return Array.from(sources).map(p => vscode.Uri.file(p));
+            return Array.from(sources.values()).map(p => vscode.Uri.file(p));
         } catch {
             return undefined;
         }

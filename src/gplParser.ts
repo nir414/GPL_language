@@ -1,4 +1,5 @@
 import { escapeRegExp, splitParameters } from './language/cursorExpression';
+import { Declarator, parseDeclaratorList } from './language/declarationList';
 
 export interface GPLSymbol {
     name: string;
@@ -21,7 +22,9 @@ export interface GPLSymbol {
      * Leading `'` doc-comment block that appears immediately above the declaration
      * (no blank line in between). Lines are joined with '\n' with the leading quote
      * and one space stripped. Consumed by hover / completion / signature help to
-     * describe user-defined Subs, Functions and Properties.
+     * describe user-defined symbols. Collected for **every** declaration kind —
+     * Module, Class, Sub, Function, Property, Variable and Constant (locals
+     * included) — not only for callables.
      */
     docComment?: string;
     /** Initializer value for constants (e.g. "123" from "Const X As Integer = 123"). */
@@ -181,7 +184,8 @@ export class GPLParser {
                     range: { start: startIndex, end: startIndex + moduleMatch[1].length },
                     line: i,
                     filePath,
-                    module: currentModule
+                    module: currentModule,
+                    docComment
                 });
                 continue;
             }
@@ -205,7 +209,8 @@ export class GPLParser {
                     className: currentClass,
                     accessModifier: classMatch[1] ? (classMatch[1].toLowerCase() as 'public' | 'private') : undefined,
                     parentClassName,
-                    isXmlRelated: isXmlRelated
+                    isXmlRelated: isXmlRelated,
+                    docComment
                 });
                 continue;
             }
@@ -321,10 +326,15 @@ export class GPLParser {
                     ? 'public'
                     : (/\bPrivate\b/i.test(propMods) ? 'private' : undefined);
                 const getter = GPLParser.extractSimpleGetterReturn(logicalLines, li + 1);
+                // 이름 컬럼은 `Property` 키워드 뒤에서 찾는다(수식어와 이름이 같아도 어긋나지 않게).
+                // 종전의 `start: 0`(줄 전체)은 이름 바꾸기가 선언 줄 앞부분을 덮어쓰게 만들었다.
+                const propNameStart = Math.max(0, GPLParser.findNameColumn(
+                    line, propertyMatch[2], line.toLowerCase().indexOf('property') + 'property'.length
+                ));
                 symbols.push({
                     name: propertyMatch[2],
                     kind: GPLSymbolKind.Property,
-                    range: { start: 0, end: line.length },
+                    range: { start: propNameStart, end: propNameStart + propertyMatch[2].length },
                     line: i,
                     filePath,
                     module: currentModule,
@@ -361,71 +371,38 @@ export class GPLParser {
                         className: currentClass,
                         returnType: localConstMatch[2],
                         value: localConstValue || undefined,
-                        isLocal: true
+                        isLocal: true,
+                        docComment
                     });
                     continue;
                 }
 
-                // Local Dim/Static with New ("Dim x As New Foo")
-                const localNewVariableMatch = trimmedLine.match(/^(Dim|Static)\s+(\w+)\s+As\s+New\s+(\w+)/i);
-                if (localNewVariableMatch) {
-                    const name = localNewVariableMatch[2];
-                    const startIndex = GPLParser.findNameColumn(line, name);
-                    symbols.push({
-                        name,
-                        kind: GPLSymbolKind.Variable,
-                        range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
-                        line: i,
-                        filePath,
-                        module: currentModule,
-                        className: currentClass,
-                        returnType: localNewVariableMatch[3],
-                        isLocal: true
-                    });
-                    continue;
-                }
-
-                // Local Dim/Static variable or Const with As ("Dim x As Integer", "Static x As Integer")
-                const localVariableMatch = trimmedLine.match(/^(Dim|Static)\s+(Const\s+)?(\w+)\s*(\([^)]*\))?\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
-                if (localVariableMatch) {
-                    const isConstant = !!localVariableMatch[2];
-                    const name = localVariableMatch[3];
-                    const startIndex = GPLParser.findNameColumn(line, name);
-                    const isArray = !!localVariableMatch[4];
-                    const type = localVariableMatch[5] + (isArray ? '[]' : '');
-                    const dimConstValue = isConstant ? localVariableMatch[6]?.trim() : undefined;
-                    symbols.push({
-                        name,
-                        kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
-                        range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
-                        line: i,
-                        filePath,
-                        module: currentModule,
-                        className: currentClass,
-                        returnType: type,
-                        value: dimConstValue || undefined,
-                        isLocal: true
-                    });
-                    continue;
-                }
-
-                // Local array form ("Dim xs(10) As Foo")
-                const localArrayMatch = trimmedLine.match(/^(Dim|Static)\s+(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
-                if (localArrayMatch) {
-                    const name = localArrayMatch[2];
-                    const startIndex = GPLParser.findNameColumn(line, name);
-                    symbols.push({
-                        name,
-                        kind: GPLSymbolKind.Variable,
-                        range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
-                        line: i,
-                        filePath,
-                        module: currentModule,
-                        className: currentClass,
-                        returnType: localArrayMatch[3] + '[]',
-                        isLocal: true
-                    });
-                    continue;
+                // Local Dim/Static 선언 — 콤마 다중 선언(`Dim i, j As Integer`,
+                // `Dim a As Integer, b As String`)까지 declarationList 정본으로 처리한다.
+                // 종전에는 이름을 하나만 잡아 콤마 목록 줄을 통째로 놓쳤고, 그 변수는
+                // 호버·정의 이동·이름 바꾸기에서 "정의 없음"이 됐다.
+                const localDeclPrefix = trimmedLine.match(/^(Dim|Static)\s+(Const\s+)?/i);
+                if (localDeclPrefix) {
+                    const declarators = GPLParser.declaratorsOfLine(line, localDeclPrefix[0].length);
+                    if (declarators) {
+                        const isConstant = !!localDeclPrefix[2];
+                        for (const d of declarators) {
+                            symbols.push({
+                                name: d.name,
+                                kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
+                                range: { start: d.column, end: d.column + d.name.length },
+                                line: i,
+                                filePath,
+                                module: currentModule,
+                                className: currentClass,
+                                returnType: d.type + (d.isArray ? '[]' : ''),
+                                value: isConstant ? d.init : undefined,
+                                isLocal: true,
+                                docComment
+                            });
+                        }
+                        continue;
+                    }
                 }
             }
 
@@ -449,7 +426,8 @@ export class GPLParser {
                     module: currentModule,
                     className: currentClass,
                     returnType: constMatch[2],
-                    value: rawValue || undefined
+                    value: rawValue || undefined,
+                    docComment
                 });
                 continue;
             }
@@ -464,68 +442,46 @@ export class GPLParser {
                 isShared: /\bShared\b/i.test(mods)
             });
 
-            // New 포함 형 (e.g., "Public Shared Dim storeA As New XmlStore", "Dim t As New Thread(...)")
-            // MUST be checked BEFORE regular variable pattern
-            const newVariableMatch = trimmedLine.match(/^((?:(?:Private|Public|Protected|Friend|Shared)\s+)+(?:Dim\s+)?|Dim\s+)(\w+)\s+As\s+New\s+(\w+)/i);
-            if (newVariableMatch) {
-                symbols.push({
-                    name: newVariableMatch[2],
-                    kind: GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
-                    line: i,
-                    filePath,
-                    module: currentModule,
-                    className: currentClass,
-                    ...memberMods(newVariableMatch[1]),
-                    returnType: newVariableMatch[3]
-                });
-                continue;
-            }
-
-            // Variable/Constant (e.g., "Public Shared Dim echoMode As Boolean", "Shared Public Dim t As Thread = New Thread(...)")
-            const variableMatch = trimmedLine.match(/^((?:(?:Private|Public|Protected|Friend|Shared)\s+)+(?:Dim\s+)?|Dim\s+)(Const\s+)?(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
-            if (variableMatch) {
-                const isConstant = !!variableMatch[2];
-                const varConstValue = isConstant ? variableMatch[5]?.trim() : undefined;
-                symbols.push({
-                    name: variableMatch[3],
-                    kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
-                    line: i,
-                    filePath,
-                    module: currentModule,
-                    className: currentClass,
-                    ...memberMods(variableMatch[1]),
-                    returnType: variableMatch[4],
-                    value: varConstValue || undefined
-                });
-                continue;
-            }
-
-            // Array variable (e.g., "Dim kvs(100) As KeyValue", "Public Shared steps() As StepBatch")
-            const arrayMatch = trimmedLine.match(/^((?:(?:Private|Public|Protected|Friend|Shared)\s+)+(?:Dim\s+)?|Dim\s+)(\w+)\s*\([^)]*\)\s+As\s+(\w+)/i);
-            if (arrayMatch) {
-                symbols.push({
-                    name: arrayMatch[2],
-                    kind: GPLSymbolKind.Variable,
-                    range: { start: 0, end: line.length },
-                    line: i,
-                    filePath,
-                    module: currentModule,
-                    className: currentClass,
-                    ...memberMods(arrayMatch[1]),
-                    returnType: arrayMatch[3] + '[]'
-                });
-                continue;
+            // 멤버 변수·상수 (New 포함형·배열·콤마 다중 선언을 한 경로로 처리)
+            //   `Public Shared Dim storeA As New XmlStore`, `Dim kvs(100) As KeyValue`,
+            //   `Public gA, gB As Integer`, `Dim a As Integer, b As String`
+            // 선언자 형태가 아니면(예: `Public Type Foo`) undefined가 와서 아래 해석으로 넘어간다.
+            const memberDeclPrefix = trimmedLine.match(
+                /^((?:(?:Private|Public|Protected|Friend|Shared)\s+)+(?:Dim\s+)?|Dim\s+)(Const\s+)?/i
+            );
+            if (memberDeclPrefix) {
+                const declarators = GPLParser.declaratorsOfLine(line, memberDeclPrefix[0].length);
+                if (declarators) {
+                    const isConstant = !!memberDeclPrefix[2];
+                    for (const d of declarators) {
+                        symbols.push({
+                            name: d.name,
+                            kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
+                            range: { start: d.column, end: d.column + d.name.length },
+                            line: i,
+                            filePath,
+                            module: currentModule,
+                            className: currentClass,
+                            ...memberMods(memberDeclPrefix[1]),
+                            returnType: d.type + (d.isArray ? '[]' : ''),
+                            value: isConstant ? d.init : undefined,
+                            docComment
+                        });
+                    }
+                    continue;
+                }
             }
 
             // Parse Type definition
             const typeMatch = trimmedLine.match(/^(Public\s+)?Type\s+(\w+)/i);
             if (typeMatch) {
+                const typeNameStart = Math.max(0, GPLParser.findNameColumn(
+                    line, typeMatch[2], line.toLowerCase().indexOf('type') + 'type'.length
+                ));
                 symbols.push({
                     name: typeMatch[2],
                     kind: GPLSymbolKind.Class, // Use Class kind for Type definitions
-                    range: { start: 0, end: line.length },
+                    range: { start: typeNameStart, end: typeNameStart + typeMatch[2].length },
                     line: i,
                     filePath,
                     module: currentModule
@@ -634,6 +590,30 @@ export class GPLParser {
         if (type && (typeIsArray || nameIsArray)) { type += '[]'; }
         const name = last.replace(/\(.*\)$/, '').replace(/[^A-Za-z0-9_]/g, '');
         return { name: name || undefined, type };
+    }
+
+    /**
+     * 선언 접두(수식어·Dim·Static·Const) 뒤부터를 선언자 목록으로 해석한다.
+     *
+     * 주석은 잘라내고(stripToCode) 문자열 내부는 구조 판정에서 제외하므로,
+     * `Dim s As String = "a,b"  ' 메모`처럼 콤마·따옴표가 섞인 줄도 안전하다.
+     * 이름 컬럼(column)은 줄 기준 절대값으로 채워 돌려준다.
+     *
+     * @param tailStartInTrimmed trim된 줄에서 접두가 끝나는 위치
+     * @returns 선언자 목록, 선언문이 아니면 undefined
+     */
+    private static declaratorsOfLine(
+        line: string,
+        tailStartInTrimmed: number
+    ): Array<Declarator & { column: number }> | undefined {
+        const indent = line.length - line.trimStart().length;
+        const tailStart = indent + tailStartInTrimmed;
+        const code = GPLParser.stripToCode(line);
+        if (tailStart >= code.length) {
+            return undefined;
+        }
+        const list = parseDeclaratorList(line.slice(tailStart, code.length), code.slice(tailStart));
+        return list?.map(d => ({ ...d, column: tailStart + d.offset }));
     }
 
     private static findNameColumn(line: string, name: string, fromIndex = 0): number {

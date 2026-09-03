@@ -4,11 +4,15 @@ import { GPLSymbol, GPLSymbolKind } from '../gplParser';
 import {
     buildDocumentReceiverLookup,
     elementTypeOf,
+    enclosingClassName,
+    enclosingModuleName,
+    isDeclaredIn,
     membersNamed,
     nestedTypesIn,
     ownedByHolder,
     resolveReceiverHolder,
     resolveReceiverTypeName,
+    ReceiverBuiltins,
     ReceiverLookup,
 } from '../language/receiverType';
 
@@ -237,4 +241,116 @@ test('nestedTypesIn: 클래스 선언만 — 일반 멤버는 걸리지 않는�
     const lookup = lookupInOrg();
     assert.deepStrictEqual(nestedTypesIn(lookup, { kind: 'class', name: 'StepBatch' }, 'count'), []);
     assert.strictEqual(nestedTypesIn(lookup, { kind: 'class', name: 'ZeroPlan' }, 'StepBatch').length, 1);
+});
+
+// ─── 내장 클래스 사전 훅(ReceiverBuiltins) ────────────────────────────────────────────────
+// 배경(2026-08-31): `Thread.CurrentThread.Name`의 `Name`이 내장 Thread 멤버로 해석되지 않아,
+// 워크스페이스의 동명 `Function Name()`이 잡혀 디버그 hover가 차단됐다(값은 제어기에서 정상 조회됨).
+// 사전 훅은 ① 정적 접근의 첫 세그먼트(`Thread.`)와 ② 내장 멤버의 반환 타입 하강을 담당한다.
+
+const FAKE_BUILTINS: ReceiverBuiltins = {
+    isClassName: n => ['thread', 'location'].includes(n.toLowerCase()),
+    memberReturnType: (t, m) =>
+        t.toLowerCase() === 'thread' && m.toLowerCase() === 'currentthread' ? 'Thread' : undefined,
+};
+
+const lookupWithBuiltins = (): ReceiverLookup => buildDocumentReceiverLookup(
+    [...WORKSPACE, ...DOC_LOCALS],
+    { startLine: 110, endLine: 130 },
+    120,
+    findAllByName,
+    FAKE_BUILTINS,
+);
+
+test('내장 클래스 정적 접근과 멤버 반환 타입으로 체인이 하강한다', () => {
+    const lookup = lookupWithBuiltins();
+    assert.strictEqual(resolveReceiverTypeName([{ name: 'Thread' }], lookup), 'Thread');
+    // `Thread.CurrentThread.Name`의 Name 판정을 위한 수신자 — 괄호 유무 모두 Thread여야 한다
+    assert.strictEqual(
+        resolveReceiverTypeName([{ name: 'Thread' }, { name: 'CurrentThread' }], lookup), 'Thread');
+    assert.strictEqual(
+        resolveReceiverTypeName([{ name: 'Thread' }, { name: 'CurrentThread', args: '' }], lookup), 'Thread');
+    // 내장 타입 로컬에서 시작하는 체인도 같은 경로로 하강한다
+    assert.strictEqual(
+        resolveReceiverTypeName([{ name: 'saveThread' }, { name: 'CurrentThread' }], lookup), 'Thread');
+    // 사전에 없는 멤버는 미해석(호출부는 종전 이름 기반 판정으로 폴백)
+    assert.strictEqual(
+        resolveReceiverTypeName([{ name: 'Thread' }, { name: 'NoSuchMember' }], lookup), undefined);
+    // 홀더 해석은 사용자 클래스/모듈 전용 — 내장 타입은 종전처럼 undefined
+    assert.strictEqual(resolveReceiverHolder([{ name: 'Thread' }], lookup), undefined);
+});
+
+test('사전 훅이 없으면 내장 클래스 해석만 빠지고 사용자 심볼 해석은 종전과 같다', () => {
+    const lookup = lookupInOrg();
+    assert.strictEqual(resolveReceiverTypeName([{ name: 'Thread' }], lookup), undefined);
+    assert.strictEqual(
+        resolveReceiverTypeName([{ name: 'Thread' }, { name: 'CurrentThread' }], lookup), undefined);
+    assert.strictEqual(resolveReceiverTypeName([{ name: 'arm' }], lookup), 'RobotArm');
+});
+
+test('동명 사용자 심볼이 내장 클래스 이름을 가린다', () => {
+    // 사용자 모듈 `Thread`가 있으면 정적 접근은 그 모듈로 해석돼야 한다(내장은 폴백일 뿐).
+    const userThread = sym({ name: 'Thread', kind: GPLSymbolKind.Module, line: 0, filePath: 'UserThread.gpl', module: 'Thread' });
+    const lookup = buildDocumentReceiverLookup(
+        [...WORKSPACE, ...DOC_LOCALS, userThread],
+        { startLine: 110, endLine: 130 },
+        120,
+        name => (name.toLowerCase() === 'thread' ? [userThread] : findAllByName(name)),
+        FAKE_BUILTINS,
+    );
+    assert.deepStrictEqual(resolveReceiverHolder([{ name: 'Thread' }], lookup), { kind: 'module', name: 'Thread' });
+});
+
+// ─── 소속(스코프) 판정: 클래스/모듈 심볼의 자기-참조 필드 함정 ─────────────────────────────
+// 파서는 Class 심볼의 className과 Module 심볼의 module을 **자기 이름**으로 채운다. 이 사실을 모르고
+// 소속을 판정하면 (ㄱ) 클래스가 자기 자신에 속한 것이 되고 (ㄴ) 모듈 직속 멤버 목록에서 클래스가 빠진다.
+
+const pick = (name: string): GPLSymbol => {
+    const hit = WORKSPACE.find(s => s.name === name);
+    assert.ok(hit, `픽스처에 ${name}이 있어야 한다`);
+    return hit!;
+};
+
+test('enclosingClassName: 클래스 심볼은 자기 자신이 아니라 감싸는 클래스를 답한다', () => {
+    // 모듈 최상위 클래스 → 감싸는 클래스 없음 (className이 자기 이름이어도)
+    assert.strictEqual(enclosingClassName(pick('ZeroPlan')), undefined);
+    // 중첩 클래스 → 바깥 클래스
+    assert.strictEqual(enclosingClassName(pick('StepBatch')), 'ZeroPlan');
+    // 일반 멤버는 className 그대로
+    assert.strictEqual(enclosingClassName(pick('count')), 'StepBatch');
+});
+
+test('enclosingModuleName: 모듈 심볼 자신은 undefined, 나머지는 소속 모듈', () => {
+    assert.strictEqual(enclosingModuleName(pick('JogModule')), undefined, '모듈 심볼 자신');
+    assert.strictEqual(enclosingModuleName(pick('jogSpeed')), 'JogModule');
+    assert.strictEqual(enclosingModuleName(pick('ZeroPlan')), 'ZeroModule');
+});
+
+test('isDeclaredIn: 모듈 직속에는 최상위 클래스가 들어오고 중첩 클래스·모듈 자신은 빠진다', () => {
+    const zeroModule = { kind: 'module', name: 'ZeroModule' } as const;
+
+    assert.strictEqual(isDeclaredIn(pick('ZeroPlan'), zeroModule), true, '모듈 최상위 클래스');
+    assert.strictEqual(isDeclaredIn(pick('StepBatch'), zeroModule), false, '중첩 클래스는 바깥 클래스 소속');
+    assert.strictEqual(isDeclaredIn(pick('count'), zeroModule), false, '클래스 멤버는 모듈 직속이 아니다');
+    assert.strictEqual(isDeclaredIn(pick('jogSpeed'), zeroModule), false, '다른 모듈');
+    // 모듈 심볼 자신 (module 필드가 자기 이름이라 종전 판정에서는 자기 멤버가 됐다)
+    assert.strictEqual(isDeclaredIn(pick('JogModule'), { kind: 'module', name: 'JogModule' }), false);
+});
+
+test('isDeclaredIn: 클래스 직속에는 멤버와 중첩 클래스가 들어오고 클래스 자신은 빠진다', () => {
+    const zeroPlan = { kind: 'class', name: 'ZeroPlan' } as const;
+
+    assert.strictEqual(isDeclaredIn(pick('StepBatch'), zeroPlan), true, '중첩 클래스');
+    assert.strictEqual(isDeclaredIn(pick('ZeroPlan'), zeroPlan), false, '클래스는 자기 자신의 멤버가 아니다');
+    assert.strictEqual(isDeclaredIn(pick('count'), { kind: 'class', name: 'StepBatch' }), true, '클래스 멤버');
+    assert.strictEqual(isDeclaredIn(pick('controlAxis'), { kind: 'class', name: 'RobotArm' }), true);
+    assert.strictEqual(isDeclaredIn(pick('controlAxis'), { kind: 'class', name: 'RNDRobot' }), false, '동명 다른 클래스');
+});
+
+test('membersNamed: 클래스 홀더에서도 자기 자신(클래스 선언)은 멤버로 잡히지 않는다', () => {
+    const lookup = lookupInOrg();
+    // 종전에는 className이 자기 이름이라 ZeroPlan.ZeroPlan이 멤버로 잡혔다.
+    assert.deepStrictEqual(membersNamed(lookup, { kind: 'class', name: 'ZeroPlan' }, 'ZeroPlan'), []);
+    // 클래스 선언은 nestedTypesIn/ownedByHolder가 맡는다 — 소속이 맞을 때만.
+    assert.deepStrictEqual(nestedTypesIn(lookup, { kind: 'class', name: 'ZeroPlan' }, 'ZeroPlan'), []);
 });

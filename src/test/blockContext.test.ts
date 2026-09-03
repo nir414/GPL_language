@@ -130,6 +130,31 @@ test('blockContext: GPL 의 Set (value As …) 절을 블록으로 인식한다'
     assert.deepStrictEqual(ctx.openBlocks, ['class', 'property', 'set']);
 });
 
+test('blockContext: Set 대입문은 블록을 열지 않는다 (접근자와 구분 — 괄호 절이 정본)', () => {
+    const ctx = contextAtEnd([
+        'Module Main',
+        '    Public Sub Run()',
+        '        Set obj = other',
+        '        Set arr(0) = other',
+        '        '
+    ].join('\n'));
+    assert.deepStrictEqual(ctx.openBlocks, ['module', 'sub'], 'Set 대입문이 스택에 쌓이면 뒤따르는 End 가 엉뚱한 항목을 닫는다');
+    assert.strictEqual(ctx.accessor, undefined);
+});
+
+test('blockContext: 접근자 본문의 Set 대입문이 End Set 을 가로채지 않는다', () => {
+    const ctx = contextAtEnd([
+        'Public Class Cc',
+        '    Public Property Size As Integer',
+        '        Set (value As Integer)',
+        '            Set m_obj = value',
+        '        End Set',
+        '        '
+    ].join('\n'));
+    assert.deepStrictEqual(ctx.openBlocks, ['class', 'property'], 'End Set 은 접근자를 닫아야 한다');
+    assert.strictEqual(ctx.accessor, undefined);
+});
+
 test('blockContext: 주석과 주석 속 키워드는 무시한다', () => {
     const ctx = contextAtEnd([
         'Module Main',

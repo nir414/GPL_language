@@ -121,6 +121,13 @@ test('usage는 있으면 공백이 아니고 멤버 이름을 포함한다', () 
     }
 });
 
+/**
+ * 멤버가 이 파일이 아니라 `gplBuiltins.ts`의 GPL_CORE_BUILTINS에 등록된 클래스.
+ * 이 테스트는 vscode 비의존이라 그 표(config.ts → vscode를 import)를 읽을 수 없어
+ * "멤버 없는 개요" 검사에서만 예외로 둔다. 멤버가 없는 것이 아니라 표가 다른 것이다.
+ */
+const MEMBERS_IN_CORE_BUILTINS = new Set(['math']);
+
 test('클래스 개요(GPL_CLASS_DOCS)는 필수 필드와 GPL Dictionary 출처를 갖는다', () => {
     const seen = new Set<string>();
     for (const c of GPL_CLASS_DOCS) {
@@ -131,10 +138,12 @@ test('클래스 개요(GPL_CLASS_DOCS)는 필수 필드와 GPL Dictionary 출처
         assert.ok(c.sourceUrl.startsWith(DICTIONARY_HOST), `출처가 GPL Dictionary가 아님: ${c.name}`);
         assert.ok(c.sourceUrl.endsWith('.htm'), `출처가 .htm이 아님: ${c.name}`);
         // 개요만 있고 멤버가 하나도 없는 클래스는 데이터 오류
-        assert.ok(
-            GPL_DICTIONARY_ENTRIES.some(e => e.name.toLowerCase().startsWith(c.name.toLowerCase() + '.')),
-            `멤버가 없는 클래스 개요: ${c.name}`
-        );
+        if (!MEMBERS_IN_CORE_BUILTINS.has(c.name.toLowerCase())) {
+            assert.ok(
+                GPL_DICTIONARY_ENTRIES.some(e => e.name.toLowerCase().startsWith(c.name.toLowerCase() + '.')),
+                `멤버가 없는 클래스 개요: ${c.name}`
+            );
+        }
     }
 });
 
@@ -147,5 +156,77 @@ test('Thread 클래스 개요는 생성자 구문을 담는다', () => {
     );
     for (const p of ['procedure_name', 'project_name', 'thread_name', 'stack_size']) {
         assert.ok(thread!.constructorSignature!.includes(p), `생성자 매개변수 누락: ${p}`);
+    }
+});
+
+// ─── 멤버 체인·디버그 hover용 메타데이터 (2026-08-31) ─────────────────────────────────────
+// returnType은 `Thread.CurrentThread.Name`의 `Name`을 Thread 멤버로 판정하기 위한 전제이고,
+// sideEffectFree는 그 식을 제어기에서 평가(=실행)해도 안전하다는 표시다(evaluatableExpressionProvider).
+
+test('Thread.CurrentThread는 반환 타입과 조회 전용 표시를 갖는다', () => {
+    const byName = (n: string) => GPL_DICTIONARY_ENTRIES.find(e => e.name === n);
+    const cur = byName('Thread.CurrentThread');
+    assert.ok(cur, 'Thread.CurrentThread 항목 없음');
+    assert.strictEqual(cur!.returnType, 'Thread');
+    assert.strictEqual(cur!.sideEffectFree, true);
+    assert.strictEqual(byName('Thread.Name')!.returnType, 'String');
+    assert.strictEqual(byName('Thread.Project')!.returnType, 'String');
+    // 상태를 바꾸는 메서드에는 조회 전용 표시를 붙이지 않는다(붙으면 hover가 그 식을 실행한다)
+    for (const n of ['Thread.Abort', 'Thread.Sleep', 'Thread.Start', 'Thread.Suspend', 'Thread.Resume', 'Thread.SendEvent']) {
+        assert.notStrictEqual(byName(n)?.sideEffectFree, true, `${n}에 sideEffectFree 표시`);
+    }
+});
+
+test('returnType은 있으면 공백이 아닌 타입 이름이다', () => {
+    for (const e of GPL_DICTIONARY_ENTRIES) {
+        if (e.returnType === undefined) { continue; }
+        assert.match(e.returnType, /^[A-Za-z_][A-Za-z0-9_]*(\[\]|\(\s*,*\s*\))?$/, `returnType 형식 위반: ${e.name} -> ${e.returnType}`);
+    }
+});
+
+test('내장 클래스를 가리키는 returnType은 실제로 존재하는 클래스다', () => {
+    // returnType은 수신자 체인 해석(`Latch.Result(1).Location`)의 유일한 근거다.
+    // 오타가 나면 조용히 해석만 실패하므로(오류가 아님) 기계로 잡는다.
+    const primitives = new Set(['boolean', 'byte', 'short', 'integer', 'long', 'single', 'double', 'string', 'object']);
+    const classNames = new Set<string>();
+    for (const c of GPL_CLASS_DOCS) {
+        classNames.add(c.name.toLowerCase());
+    }
+    for (const e of GPL_DICTIONARY_ENTRIES) {
+        const dot = e.name.indexOf('.');
+        if (dot > 0) {
+            classNames.add(e.name.slice(0, dot).toLowerCase());
+        }
+    }
+    for (const e of GPL_DICTIONARY_ENTRIES) {
+        if (!e.returnType) { continue; }
+        const base = e.returnType.replace(/(\[\]|\(\s*,*\s*\))$/, '').toLowerCase();
+        if (primitives.has(base)) { continue; }
+        assert.ok(classNames.has(base), `returnType이 알 수 없는 클래스: ${e.name} -> ${e.returnType}`);
+    }
+});
+
+test('클래스 개요는 GPL Dictionary의 클래스를 빠짐없이 담는다', () => {
+    // 개요가 없으면 클래스 이름 위의 hover가 아무것도 띄우지 않는다.
+    // 사전에 멤버가 등록된 클래스는 반드시 개요도 있어야 한다.
+    const documented = new Set(GPL_CLASS_DOCS.map(c => c.name.toLowerCase()));
+    const withMembers = new Set<string>();
+    for (const e of GPL_DICTIONARY_ENTRIES) {
+        const dot = e.name.indexOf('.');
+        if (dot > 0) {
+            withMembers.add(e.name.slice(0, dot).toLowerCase());
+        }
+    }
+    const missing = [...withMembers].filter(n => !documented.has(n)).sort();
+    assert.deepStrictEqual(missing, [], `클래스 개요 누락: ${missing.join(', ')}`);
+});
+
+test('생성자 구문이 있으면 New <클래스명> 형식이다', () => {
+    for (const c of GPL_CLASS_DOCS) {
+        if (!c.constructorSignature) { continue; }
+        assert.ok(
+            new RegExp(`^New\\s+${c.name}\\b`).test(c.constructorSignature),
+            `생성자 구문이 클래스 이름과 맞지 않음: ${c.name} -> ${c.constructorSignature}`
+        );
     }
 });

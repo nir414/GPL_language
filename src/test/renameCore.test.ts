@@ -6,7 +6,9 @@ import {
     findStringLiteralRenameOccurrences,
     isDotQualifiedAt,
     isRenameReservedWord,
-    isValidGplIdentifier
+    isValidGplIdentifier,
+    isWordAt,
+    resolveDeclarationNameColumn
 } from '../language/renameCore';
 import { isInCommentOrString } from '../language/cursorExpression';
 
@@ -139,6 +141,37 @@ test('renameCore: 문자열 참조 — 주석 안의 문자열은 제외', () =>
         }).length,
         0
     );
+});
+
+// ── 선언 줄 이름 컬럼 확정 / 편집 전 검증 ────────────────────────────────
+
+test('renameCore: isWordAt — 단어 경계까지 확인', () => {
+    const line = '    Public count As Integer';
+    assert.strictEqual(isWordAt(line, 11, 'count'), true);
+    assert.strictEqual(isWordAt(line, 11, 'COUNT'), true, '대소문자 무시');
+    assert.strictEqual(isWordAt(line, 0, 'count'), false, '들여쓰기 공백 자리');
+    assert.strictEqual(isWordAt('counter = 1', 0, 'count'), false, '부분 문자열 거부');
+    assert.strictEqual(isWordAt(line, -1, 'count'), false);
+    assert.strictEqual(isWordAt(line, 200, 'count'), false, '줄 밖');
+});
+
+test('renameCore: 선언 줄 이름 컬럼 — hint가 맞으면 그대로', () => {
+    const line = '    Public count As Integer';
+    assert.strictEqual(resolveDeclarationNameColumn(line, 'count', 11), 11);
+});
+
+test('renameCore: 선언 줄 이름 컬럼 — hint가 틀리면(줄 전체 range 시절 값 0) 실제 위치로 보정', () => {
+    const line = '    Public count As Integer';
+    // 종전 파서는 변수/상수/Property/Type의 range를 "줄 전체(start=0)"로 넣었다.
+    // 그 값을 그대로 쓰면 선언 줄 앞부분("    P")을 덮어써 코드가 깨진다.
+    assert.strictEqual(resolveDeclarationNameColumn(line, 'count', 0), 11);
+    assert.strictEqual(resolveDeclarationNameColumn(line, 'count', -1), 11);
+});
+
+test('renameCore: 선언 줄에 이름이 없으면 -1 (이름 바꾸기 중단 신호)', () => {
+    assert.strictEqual(resolveDeclarationNameColumn('    Public other As Integer', 'count', 0), -1);
+    // 주석 안의 이름은 선언 위치가 아니다
+    assert.strictEqual(resolveDeclarationNameColumn("    ' count 설명", 'count', 0), -1);
 });
 
 // ── isInCommentOrString 이동 회귀 (config → cursorExpression) ─────────────

@@ -112,6 +112,37 @@ const BULLET_RE = /^\s*[-*+]\s+(.*)$/;
 // `value`: 설명 / value - 설명 / value 설명 — 이름 뒤 구분자는 선택.
 const PARAM_ENTRY_RE = /^`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*\(\s*\))?\s*(?:[:—–-]\s*)?(.*)$/;
 
+/**
+ * 장식용 구분선 판별 — 구두점만으로 3자 이상 채운 줄(`========`, `--------`, `* * *`, `////` 등).
+ *
+ * 마크다운은 이런 줄을 바로 위 문단의 setext 머리글 밑줄로 읽어(`===`→h1, `---`→h2) 제목 한 줄이
+ * 거대한 헤딩으로 렌더된다. 옛 주석의 ASCII 박스가 여기에 해당하므로 렌더링 단계에서만 걸러낸다
+ * (원문과 줄 인덱스는 그대로 둔다 — 주석 머지/편집이 줄 번호에 의존한다).
+ *
+ * 대상 문자에 백틱과 물결(`~`)은 넣지 않는다 — 코드 펜스 표기(``` / ~~~)와 구분할 수 없다.
+ * 마침표·콜론도 제외한다(`...`, `:::`는 내용일 수 있다).
+ */
+const DECORATIVE_RULE_RE = /^[=\-_*#+/\\|<>]{3,}$/;
+
+export function isDecorativeRule(line: string): boolean {
+    return DECORATIVE_RULE_RE.test(line.replace(/\s+/g, ''));
+}
+
+/** 장식용 구분선을 제거한다. 코드 펜스 안(예제 속 `-----`는 내용이다)은 손대지 않는다. */
+function stripDecorativeRules(lines: readonly string[]): string[] {
+    const out: string[] = [];
+    let fence = false;
+    for (const line of lines) {
+        if (FENCE_RE.test(line)) {
+            fence = !fence;
+        } else if (!fence && isDecorativeRule(line)) {
+            continue;
+        }
+        out.push(line);
+    }
+    return out;
+}
+
 function classifyHeader(title: string): { kind: DocSectionKind } {
     const key = title.trim().toLowerCase().replace(/\s+/g, ' ');
     for (const entry of SECTION_ALIASES) {
@@ -137,6 +168,8 @@ function parseParamEntries(lines: string[]): DocParamEntry[] {
     for (const raw of lines) {
         if (FENCE_RE.test(raw)) { fence = !fence; continue; }
         if (fence) { continue; }
+        // 장식용 구분선은 직전 항목의 이어지는 설명으로 붙지 않게 버린다.
+        if (isDecorativeRule(raw)) { continue; }
 
         const bullet = raw.match(BULLET_RE);
         if (bullet) {
@@ -192,7 +225,8 @@ export function parseDocComment(raw: string): ParsedDocComment {
             fence = !fence;
         }
 
-        const header = !fence ? line.match(HEADER_RE) : null;
+        // `#####` 같은 장식선은 머리글(`# 제목`)로 보지 않는다 — HEADER_RE에는 걸린다.
+        const header = !fence && !isDecorativeRule(line) ? line.match(HEADER_RE) : null;
         if (header) {
             flush(i);
             const title = header[2];
@@ -210,7 +244,7 @@ export function parseDocComment(raw: string): ParsedDocComment {
 
     const desc = trimBlankEdges(description);
     const firstBlank = desc.findIndex(l => l.trim() === '');
-    const summaryLines = firstBlank > 0 ? desc.slice(0, firstBlank) : desc;
+    const summaryLines = stripDecorativeRules(firstBlank > 0 ? desc.slice(0, firstBlank) : desc);
 
     return {
         description: desc,
@@ -272,17 +306,34 @@ function withFenceLanguage(lines: readonly string[]): string[] {
     });
 }
 
+/**
+ * 여는 코드 펜스만 남았을 때 닫는 펜스를 보태 준다.
+ *
+ * 두 경로에서 생긴다: 작성자가 닫는 펜스를 빼먹은 주석, 그리고 **요약 모드·`maxDescriptionLines`로
+ * 펜스 중간에서 잘린 설명**. 닫히지 않은 펜스는 뒤따르는 안내 문구(`… 전체 주석: 정의로 이동`)나
+ * 다음 섹션까지 코드 블록으로 삼켜 버린다. 원문은 그대로 두고 렌더 결과만 보정한다.
+ */
+function closeUnbalancedFence(lines: readonly string[]): string[] {
+    let open: string | undefined;
+    for (const line of lines) {
+        const m = line.match(/^\s*(```|~~~)/);
+        if (m) { open = open ? undefined : m[1]; }
+    }
+    return open ? [...lines, open] : [...lines];
+}
+
 function renderSectionBody(section: DocSection): string {
     if (section.kind === 'parameters' && section.params.length) {
         return section.params
             .map(p => (p.text ? `- \`${p.name}\` — ${p.text}` : `- \`${p.name}\``))
             .join('\n');
     }
+    const lines = stripDecorativeRules(section.lines);
     // Examples 등은 코드 펜스를 그대로 살려야 하므로 원문 줄바꿈을 유지한다.
-    if (section.kind === 'examples' || section.lines.some(l => FENCE_RE.test(l))) {
-        return withFenceLanguage(section.lines).join('\n');
+    if (section.kind === 'examples' || lines.some(l => FENCE_RE.test(l))) {
+        return closeUnbalancedFence(withFenceLanguage(lines)).join('\n');
     }
-    return joinParagraph(section.lines);
+    return joinParagraph(lines);
 }
 
 /**
@@ -297,7 +348,8 @@ export function renderDocCommentMarkdown(
     const mode = options.descriptionMode ?? 'summary';
     const max = options.maxDescriptionLines ?? 0;
 
-    let desc = doc.description.slice();
+    // 장식용 구분선은 잘라내기(요약/최대 줄 수) 전에 없앤다 — 표시 한도를 장식이 잡아먹지 않게.
+    let desc = stripDecorativeRules(doc.description);
     let truncated = false;
 
     if (mode === 'summary') {
@@ -314,10 +366,14 @@ export function renderDocCommentMarkdown(
     desc = trimBlankEdges(desc);
 
     const parts: string[] = [];
+    const hint = options.truncationHint ?? DEFAULT_TRUNCATION_HINT;
     if (desc.length) {
-        parts.push(joinParagraph(desc) + (truncated ? `  \n${options.truncationHint ?? DEFAULT_TRUNCATION_HINT}` : ''));
+        // 설명 안의 코드 펜스도 섹션과 같이 다룬다 — 언어 표기 보정 후, 잘려서 열린 펜스는 닫아
+        // 뒤의 안내 문구가 코드 블록에 삼켜지지 않게 한다.
+        const body = joinParagraph(closeUnbalancedFence(withFenceLanguage(desc)));
+        parts.push(truncated ? `${body}  \n${hint}` : body);
     } else if (truncated && !doc.sections.length) {
-        parts.push(options.truncationHint ?? DEFAULT_TRUNCATION_HINT);
+        parts.push(hint);
     }
 
     if (options.sections !== false) {

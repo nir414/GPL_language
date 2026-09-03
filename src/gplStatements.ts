@@ -234,6 +234,27 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
         requiresOpen: 'try',
         sourceUrl: EXCEPTION_BASE + 'finally_try.htm'
     },
+    {
+        label: 'Throw ...',
+        detail: 'Throw exception_object',
+        documentation: [
+            '예외를 발생시킨다. Try 블록 안이 아니어도 쓸 수 있고, 그 경우 스레드 실행이 끝나며',
+            '예외 객체의 오류가 작업자에게 보고된다.',
+            '',
+            '`Catch` 블록 안에서 다시 `Throw`하면 그 예외를 상위 `Catch`로 넘기거나 스레드를 멈출 수 있다.',
+            '',
+            '**`ErrorCode`는 반드시 음수여야 한다** — `New Exception`의 기본값은 0이므로 그대로 던지면',
+            '-807 "Invalid exception"이 발생한다. 애플리케이션이 쓰도록 예약된 코드는 두 개다:',
+            '',
+            '| 코드 | 의미 |',
+            '| --- | --- |',
+            '| -786 | *Project generated error* |',
+            '| -1038 | *Project generated robot error* |'
+        ].join('\n'),
+        body: ['Throw ${1:ex}'],
+        scopes: ['procedure'],
+        sourceUrl: EXCEPTION_BASE + 'throw.htm'
+    },
 
     // ── 선언 ────────────────────────────────────────────────────
     {
@@ -444,6 +465,36 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
     },
 
     // ── 흐름 제어 (한 줄) ─────────────────────────────────────────
+    {
+        label: 'Call ...',
+        detail: 'Call procedure_name([argument_list])',
+        documentation: [
+            '프로시저로 제어를 넘기고 반환값은 버린다. 사용자 프로시저와 내장 클래스 메서드 모두 호출할 수 있다',
+            '(`Call class_name.procedure_name(...)`, `Call object_name.procedure_name(...)`).',
+            '',
+            '`Call`은 **생략할 수 있다** — 프로시저 이름을 문장 첫 항목으로 쓰면 같은 뜻이다.',
+            '`Call my_sub(10)`과 `my_sub(10)`은 동일하다.'
+        ].join('\n'),
+        body: ['Call ${1:procedure_name}($0)'],
+        scopes: ['procedure'],
+        sourceUrl: STATEMENT_BASE + 'Call.htm'
+    },
+    {
+        label: 'GoTo ...',
+        detail: 'GoTo label',
+        documentation: [
+            '조건 없이 라벨이 붙은 명령으로 분기한다. 라벨은 **같은 프로시저 안**에 있어야 하고 GoTo보다',
+            '앞이든 뒤든 상관없다. 라벨은 `이름:` 형태로 붙이며, 유효한 변수 이름이나 정수 리터럴을 쓴다.',
+            '',
+            '제어 구조(For…Next, If…Then 등) **밖에서 안으로** 뛰어드는 데 쓰면 안 된다.',
+            '',
+            '문서 권고: GoTo는 코드를 읽고 디버깅하기 어렵게 만들므로 가능하면 다른 제어 구조를 쓴다.',
+            '다만 공식 예제의 재시도 패턴처럼 `Catch` 안에서 라벨로 되돌아가는 용도로는 쓰인다.'
+        ].join('\n'),
+        body: ['GoTo ${1:label}'],
+        scopes: ['procedure'],
+        sourceUrl: STATEMENT_BASE + 'Goto.htm'
+    },
     {
         label: 'Return',
         detail: 'Return [value]',

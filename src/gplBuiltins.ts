@@ -1,5 +1,6 @@
 import { ciEq } from './config';
 import { GPL_DICTIONARY_ENTRIES, GPL_CLASS_DOCS, GPLClassDoc } from './gplDictionaryData';
+import type { ReceiverBuiltins } from './language/receiverType';
 
 export type GPLBuiltinKind = 'function' | 'method' | 'property';
 
@@ -17,6 +18,21 @@ export interface GPLBuiltinEntry {
     usage?: string;
     /** 값 표·매개변수 범위 등 문서의 추가 설명(마크다운). 호버에서 요약 아래에 표시한다. */
     details?: string;
+    /**
+     * 이 멤버가 돌려주는 값의 타입 이름 — 멤버 체인 해석용(receiverType.ts).
+     * `Thread.CurrentThread`에 `'Thread'`가 있어야 `Thread.CurrentThread.Name`의 `Name`을
+     * Thread 클래스의 Property로 판정할 수 있다(그러지 못하면 워크스페이스의 동명 Function이
+     * 먼저 잡혀 디버그 hover가 차단됐다). 클래스 인스턴스를 돌려주는 멤버에 채우면 되고,
+     * 원시 타입은 더 하강할 곳이 없으므로 표시용으로만 쓰인다.
+     */
+    returnType?: string;
+    /**
+     * 제어기에서 **평가해도 상태를 바꾸지 않는** 조회 전용 멤버 표시(기본 false).
+     * 디버그 hover의 `Show Variable -eval`은 식을 제어기에서 실제로 실행하므로, 이 표시가 없는
+     * 메서드는 hover 식에 포함하지 않는다(`t.Abort()` 같은 부작용 방지 — evaluatableExpressionProvider).
+     * Property는 표시 없이도 조회 전용으로 본다.
+     */
+    sideEffectFree?: boolean;
     insertSnippet?: string;
     sourceUrl?: string;
 }
@@ -464,18 +480,45 @@ const GPL_CORE_BUILTINS: GPLBuiltinEntry[] = [
     {
         name: 'XmlDoc.EncodeEntities',
         kind: 'method',
-        signature: 'XmlDoc.EncodeEntities(value)',
-        summary: '문자열을 XML 엔티티로 안전하게 인코딩합니다.',
+        signature: 'XmlDoc.EncodeEntities(input_string)',
+        usage: 'encoded_string = XmlDoc.EncodeEntities(input_string)',
+        summary: '입력 문자열의 특수문자를 XML 엔티티로 인코딩한 String을 반환합니다.',
+        details: [
+            'Shared 메서드입니다. GPL의 XML 메서드는 효율을 위해 특수문자를 자동으로 검사하지 않으므로,',
+            'DOM 트리에 넣기 **전에** 이 메서드로 직접 인코딩해야 합니다(반대 방향은 `XmlDoc.DecodeEntities`).',
+            '',
+            '| 문자 | 인코딩 |',
+            '| --- | --- |',
+            '| `"` | `&quot;` |',
+            '| `&` | `&amp;` |',
+            '| `\'` | `&apos;` |',
+            '| `<` | `&lt;` |',
+            '| `>` | `&gt;` |',
+            '',
+            'UTF-8을 8비트 ASCII(ISO-8859-1 등)로 바꾸지는 않습니다.'
+        ].join('\n'),
         category: 'XML Class',
-        insertSnippet: 'XmlDoc.EncodeEntities(${1:value})'
+        returnType: 'String',
+        insertSnippet: 'XmlDoc.EncodeEntities(${1:input_string})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlDoc/encode_xmldoc.htm'
     },
     {
         name: 'XmlDoc.DecodeEntities',
         kind: 'method',
-        signature: 'XmlDoc.DecodeEntities(value)',
-        summary: 'XML 엔티티를 일반 문자열로 디코딩합니다.',
+        signature: 'XmlDoc.DecodeEntities(input_string)',
+        usage: 'decoded_string = XmlDoc.DecodeEntities(input_string)',
+        summary: 'XML 엔티티로 인코딩된 특수문자를 원래 문자로 디코딩한 String을 반환합니다.',
+        details: [
+            'Shared 메서드입니다. DOM 트리에서 꺼낸 값에 인코딩된 특수문자(`&quot;`·`&amp;`·`&apos;`·`&lt;`·',
+            '`&gt;`)가 들어 있을 수 있으므로, 꺼낸 **뒤에** 이 메서드로 디코딩합니다',
+            '(반대 방향은 `XmlDoc.EncodeEntities`).',
+            '',
+            '8비트 ASCII(ISO-8859-1 등)를 UTF-8로 바꾸지는 않습니다.'
+        ].join('\n'),
         category: 'XML Class',
-        insertSnippet: 'XmlDoc.DecodeEntities(${1:value})'
+        returnType: 'String',
+        insertSnippet: 'XmlDoc.DecodeEntities(${1:input_string})',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlDoc/decode_xmldoc.htm'
     }
 ];
 
@@ -583,3 +626,13 @@ export function findGplBuiltinMember(typeName: string, memberName: string): GPLB
     const full = `${typeName}.${memberName}`;
     return GPL_BUILTINS.find(b => normalizeBuiltinName(b.name) === normalizeBuiltinName(full));
 }
+
+/**
+ * 수신자 타입 해석기(receiverType.ts)에 내장 사전을 물려주는 어댑터.
+ * receiverType는 vscode 무의존 순수 모듈이라 사전을 직접 import하지 않고 이 훅으로 받는다
+ * (`buildDocumentReceiverLookup(..., GPL_BUILTIN_RECEIVERS)`).
+ */
+export const GPL_BUILTIN_RECEIVERS: ReceiverBuiltins = {
+    isClassName: isGplBuiltinClassName,
+    memberReturnType: (typeName, memberName) => findGplBuiltinMember(typeName, memberName)?.returnType,
+};

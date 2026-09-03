@@ -14,9 +14,13 @@ import {
     isDotQualifiedAt,
     isRenameReservedWord,
     isValidGplIdentifier,
+    isWordAt,
+    resolveDeclarationNameColumn,
     StringLiteralRenameTarget
 } from '../language/renameCore';
 import { findGplBuiltin } from '../gplBuiltins';
+import { resolveProjectFileScope } from '../project/projectFileScope';
+import { pickVisibleDeclaration } from '../language/symbolScope';
 
 /** 문자열 리터럴 스캔 파일 수 상한 — referenceProvider 폴더 폴백(200)과 같은 취지의 안전판. */
 const MAX_STRING_SCAN_FILES = 300;
@@ -138,22 +142,20 @@ export class GPLRenameProvider implements vscode.RenameProvider {
         }
 
         // 1) 로컬 변수/파라미터 (한정자 없는 경우만 — `obj.name`의 name은 로컬일 수 없다)
+        //
+        // 커서를 감싸는 프로시저 범위를 먼저 정하고 그 스코프에서 보이는 선언만 고른다.
+        // 종전에는 "동명 후보 중 커서 위쪽에서 가장 가까운 선언"을 골라, 다른 프로시저의
+        // 무관한 로컬을 대상으로 잡고 커서가 있는 프로시저 안에서만 이름을 바꿨다
+        // (모듈 변수의 선언·다른 파일 사용처가 옛 이름으로 남는 원인).
         if (!ident.qualifier) {
-            const local = this.findLocalSymbol(document, word, position.line);
-            if (local?.isLocal) {
-                const procRange = findEnclosingProcedureRange(
-                    (i) => document.lineAt(i).text,
-                    document.lineCount,
-                    position.line
-                ) ?? findEnclosingProcedureRange(
-                    (i) => document.lineAt(i).text,
-                    document.lineCount,
-                    local.line
-                );
-                if (procRange) {
-                    return { target: { scope: 'local', symbol: local, procRange }, ident };
-                }
-                // 프로시저 범위를 못 찾으면 로컬 확신이 없으므로 아래 전역 해석으로 계속
+            const procRange = findEnclosingProcedureRange(
+                (i) => document.lineAt(i).text,
+                document.lineCount,
+                position.line
+            );
+            const local = this.findLocalSymbol(document, word, position.line, procRange);
+            if (local?.isLocal && procRange) {
+                return { target: { scope: 'local', symbol: local, procRange }, ident };
             }
         }
 
@@ -216,11 +218,18 @@ export class GPLRenameProvider implements vscode.RenameProvider {
             .filter(isCallable)[0];
     }
 
-    /** definitionProvider.findLocalSymbol과 동일 취지의 축약판 — 커서 스코프의 로컬/파라미터 해석. */
+    /**
+     * 커서 스코프에서 보이는 선언을 해석한다 — 판정은 공용 정본(language/symbolScope)이 한다.
+     * 정의 이동(definitionProvider.pickBestScopedCandidate)과 같은 규칙을 쓰므로,
+     * F12가 가리키는 선언과 F2가 바꾸는 대상이 어긋나지 않는다.
+     *
+     * @param proc 커서를 감싸는 프로시저 범위 (프로시저 밖이면 undefined)
+     */
     private findLocalSymbol(
         document: vscode.TextDocument,
         symbolName: string,
-        atLine: number
+        atLine: number,
+        proc: { startLine: number; endLine: number } | undefined
     ): GPLSymbol | undefined {
         try {
             const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
@@ -228,23 +237,7 @@ export class GPLRenameProvider implements vscode.RenameProvider {
                 includeParameters: true
             });
             const candidates = symbols.filter(s => ciEq(s.name, symbolName));
-            if (candidates.length === 0) {
-                return undefined;
-            }
-            const proc = findEnclosingProcedureRange(
-                (i) => document.lineAt(i).text,
-                document.lineCount,
-                atLine
-            );
-            let scoped = candidates;
-            if (proc) {
-                const inProc = candidates.filter(c => c.line >= proc.startLine && c.line <= proc.endLine);
-                if (inProc.length > 0) {
-                    scoped = inProc;
-                }
-            }
-            const above = scoped.filter(c => c.line <= atLine).sort((a, b) => b.line - a.line);
-            return above[0] ?? scoped.sort((a, b) => a.line - b.line)[0];
+            return pickVisibleDeclaration(candidates, proc, atLine);
         } catch {
             return undefined;
         }
@@ -257,7 +250,12 @@ export class GPLRenameProvider implements vscode.RenameProvider {
         memberName: string,
         qualifier: string
     ): GPLSymbol | undefined {
-        const baseSym = this.findLocalSymbol(document, qualifier, atLine)
+        const qualifierProc = findEnclosingProcedureRange(
+            (i) => document.lineAt(i).text,
+            document.lineCount,
+            atLine
+        );
+        const baseSym = this.findLocalSymbol(document, qualifier, atLine, qualifierProc)
             ?? this.symbolCache.findDefinition(qualifier, document.uri.fsPath);
         if (!baseSym) {
             return undefined;
@@ -320,6 +318,29 @@ export class GPLRenameProvider implements vscode.RenameProvider {
     // 편집 생성
     // ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * 편집을 추가하되, 그 자리가 실제로 옛 이름일 때만 추가한다.
+     *
+     * 이름 바꾸기는 되돌리기 어려운 다중 파일 편집이므로, 위치 계산이 어디서 틀리더라도
+     * (심볼 range·참조 검색 오프셋·문서 변경) 엉뚱한 텍스트를 덮어쓰지 않게 마지막에 한 번 더 막는다.
+     */
+    private replaceIfWordMatches(
+        edit: vscode.WorkspaceEdit,
+        doc: vscode.TextDocument,
+        line: number,
+        character: number,
+        word: string,
+        newName: string
+    ): boolean {
+        const lineText = line < doc.lineCount ? doc.lineAt(line).text : '';
+        if (!isWordAt(lineText, character, word)) {
+            this.log(`[Rename] ⚠ 건너뜀 — ${doc.uri.fsPath}:${line + 1}:${character + 1}가 "${word}"가 아님`);
+            return false;
+        }
+        edit.replace(doc.uri, new vscode.Range(line, character, line, character + word.length), newName);
+        return true;
+    }
+
     /** 로컬 변수/파라미터: 감싸는 프로시저 범위 안의 비한정 매치만 바꾼다. */
     private buildLocalEdits(
         document: vscode.TextDocument,
@@ -332,12 +353,9 @@ export class GPLRenameProvider implements vscode.RenameProvider {
         for (let lineNo = target.procRange.startLine; lineNo <= target.procRange.endLine; lineNo++) {
             const lineText = document.lineAt(lineNo).text;
             for (const occ of findRenameOccurrencesInLine(lineText, word, { skipQualified: true })) {
-                edit.replace(
-                    document.uri,
-                    new vscode.Range(lineNo, occ.character, lineNo, occ.character + word.length),
-                    newName
-                );
-                count++;
+                if (this.replaceIfWordMatches(edit, document, lineNo, occ.character, word, newName)) {
+                    count++;
+                }
             }
         }
         this.log(`[Rename] local "${word}" → "${newName}": ${count} edits in proc lines ` +
@@ -355,7 +373,20 @@ export class GPLRenameProvider implements vscode.RenameProvider {
     ): Promise<vscode.WorkspaceEdit | undefined> {
         const defUri = vscode.Uri.file(defSymbol.filePath);
         const defDoc = await vscode.workspace.openTextDocument(defUri);
-        const defPos = new vscode.Position(defSymbol.line, Math.max(0, defSymbol.range?.start ?? 0));
+
+        // 선언 줄에서 이름의 실제 컬럼을 확정한다 — 심볼 인덱스의 컬럼을 그대로 쓰면
+        // (일부 선언 종류가 "줄 전체"를 range로 갖던 시절의 값·낡은 캐시) 두 가지가 함께 깨진다:
+        //   ① 참조 수집을 컬럼 0(들여쓰기 공백)에서 시작해 식별자를 못 찾고 0건이 온다 → 대량 누락
+        //   ② 선언 줄의 맨 앞 글자들을 새 이름으로 덮어쓴다 → 코드 파손
+        const defLineText = defSymbol.line < defDoc.lineCount ? defDoc.lineAt(defSymbol.line).text : '';
+        const declStart = resolveDeclarationNameColumn(defLineText, word, defSymbol.range?.start ?? -1);
+        if (declStart < 0) {
+            throw new Error(
+                `"${word}"의 선언 줄(${defSymbol.filePath.split(/[\\/]/).pop()}:${defSymbol.line + 1})에서 ` +
+                '이름을 찾을 수 없어 이름 바꾸기를 중단했습니다. 파일을 저장한 뒤 다시 시도해 주세요.'
+            );
+        }
+        const defPos = new vscode.Position(defSymbol.line, declStart);
 
         // 참조 수집은 항상 "정의 위치"에서 실행한다 — 호출부/정의부 어느 쪽에서
         // F2를 눌러도 결과가 같고, referenceProvider의 스코프 인식 경로를 태운다.
@@ -367,7 +398,6 @@ export class GPLRenameProvider implements vscode.RenameProvider {
         )) ?? [];
 
         // 선언부 이름 범위는 무조건 포함 (참조 검색 경로/패턴과 무관하게 보장)
-        const declStart = Math.max(0, defSymbol.range?.start ?? 0);
         locations.push(new vscode.Location(
             defUri,
             new vscode.Range(defSymbol.line, declStart, defSymbol.line, declStart + word.length)
@@ -437,12 +467,9 @@ export class GPLRenameProvider implements vscode.RenameProvider {
                     }
                 }
 
-                edit.replace(
-                    loc.uri,
-                    new vscode.Range(line, character, line, character + word.length),
-                    newName
-                );
-                kept++;
+                if (this.replaceIfWordMatches(edit, doc, line, character, word, newName)) {
+                    kept++;
+                }
             }
         }
 
@@ -507,19 +534,25 @@ export class GPLRenameProvider implements vscode.RenameProvider {
             return 0; // 변수/상수/프로퍼티는 문자열 참조 관용구가 없다
         }
 
-        // 스캔 대상: 워크스페이스 .gpl + (워크스페이스 밖일 수 있는) 현재/정의 문서
+        // 스캔 대상: **정의가 속한 컴파일 단위**의 .gpl + (워크스페이스 밖일 수 있는) 현재/정의 문서.
+        //
+        // 종전에는 워크스페이스 전체(`**/*.gpl`)를 훑었다. 워크스페이스를 프로젝트 상위 폴더에서 여는
+        // 구조(`…\시뮬레이션\projects\GPL_Code` 여러 벌)에서는 다른 과제 프로젝트의 `"Mod.Proc"`
+        // 문자열까지 함께 바꿔 버린다 — 이름 바꾸기는 되돌리기 어려운 편집이라 범위를 좁히는 쪽이 옳다.
         const uris = new Map<string, vscode.Uri>();
         try {
-            const found = await vscode.workspace.findFiles(
-                '**/*.gpl',
-                '{**/bin/**,**/node_modules/**,**/.git/**}',
-                MAX_STRING_SCAN_FILES
-            );
-            for (const uri of found) {
+            const scope = await resolveProjectFileScope(defDoc.uri.fsPath, {
+                extensions: ['.gpl'],
+                maxFiles: MAX_STRING_SCAN_FILES,
+            });
+            for (const uri of scope.files) {
                 uris.set(uri.toString(), uri);
             }
+            if (scope.truncated) {
+                this.log(`[Rename] ⚠ 문자열 참조 스캔이 상한 ${MAX_STRING_SCAN_FILES}개에 걸렸습니다 — 일부 파일은 검사하지 않았습니다.`);
+            }
         } catch {
-            // findFiles 실패 시에도 아래 열린 문서는 스캔한다
+            // 범위 해석 실패 시에도 아래 열린 문서는 스캔한다
         }
         uris.set(invokingDocument.uri.toString(), invokingDocument.uri);
         uris.set(defDoc.uri.toString(), defDoc.uri);
@@ -546,12 +579,9 @@ export class GPLRenameProvider implements vscode.RenameProvider {
                         continue;
                     }
                     seen.add(dedupeKey);
-                    edit.replace(
-                        uri,
-                        new vscode.Range(lineNo, occ.character, lineNo, occ.character + word.length),
-                        newName
-                    );
-                    added++;
+                    if (this.replaceIfWordMatches(edit, doc, lineNo, occ.character, word, newName)) {
+                        added++;
+                    }
                 }
             }
         }

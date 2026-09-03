@@ -5,6 +5,8 @@ import { isTraceVerbose, EXTENSION_VERSION, ciEq, isInCommentOrString, getHoverC
 import { findEnclosingProcedureRange, extractDebugExpressionAt } from '../language/cursorExpression';
 import {
     buildDocumentReceiverLookup,
+    enclosingClassName,
+    enclosingModuleName,
     membersNamed,
     resolveReceiverHolder,
     resolveReceiverTypeName,
@@ -17,6 +19,7 @@ import {
     findGplClassDoc,
     getGplBuiltinReferenceUrl,
     getGplClassMembers,
+    GPL_BUILTIN_RECEIVERS,
     GPLBuiltinEntry,
     GPLClassDoc,
 } from '../gplBuiltins';
@@ -167,7 +170,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
     ): vscode.Hover {
         const md = new vscode.MarkdownString();
         if (compact) {
-            // 디버깅 중: 구문 한 줄만.
+            // duringDebug=compact: 구문 한 줄만.
             md.appendCodeblock(entry.usage ?? entry.signature, 'gpl');
         } else {
             md.appendMarkdown(`**GPL Built-in** · ${entry.category}\n\n`);
@@ -233,7 +236,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         try {
             const docSymbols = this.getDocumentSymbols(document);
             const range = findEnclosingProcedureRange(i => document.lineAt(i).text, document.lineCount, atLine);
-            const lookup = buildDocumentReceiverLookup(docSymbols, range, atLine, n => this.symbolCache.findAllByName(n));
+            const lookup = buildDocumentReceiverLookup(docSymbols, range, atLine, n => this.symbolCache.findAllByName(n), GPL_BUILTIN_RECEIVERS);
             const typeName = resolveReceiverTypeName(receiver, lookup);
             if (!typeName) {
                 return undefined;
@@ -263,7 +266,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         try {
             const docSymbols = this.getDocumentSymbols(document);
             const range = findEnclosingProcedureRange(i => document.lineAt(i).text, document.lineCount, atLine);
-            const lookup = buildDocumentReceiverLookup(docSymbols, range, atLine, n => this.symbolCache.findAllByName(n));
+            const lookup = buildDocumentReceiverLookup(docSymbols, range, atLine, n => this.symbolCache.findAllByName(n), GPL_BUILTIN_RECEIVERS);
             const holder = resolveReceiverHolder(receiver, lookup);
             const chain = receiver.map(s => (s.args !== undefined ? `${s.name}(${s.args})` : s.name)).join('.');
             if (!holder) {
@@ -328,7 +331,11 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         if (!config.enabled) {
             return undefined;
         }
-        // 디버깅 중에는 변수 값 호버가 주인공이므로 언어 호버를 간소화/억제한다.
+        // 디버깅 중 표시량(gpl.hover.duringDebug) — 기본은 편집 때와 같은 normal이다(2026-09-02 변경).
+        // "값 호버가 주인공이니 언어 호버를 줄인다"는 도입 당시(§1-M) 전제는 지금 성립하지 않는다:
+        // compact가 지우는 대상(Function/Sub·내장 항목)은 evaluatableExpressionProvider의 안전 규칙 0·1이
+        // `-eval` 자체를 막는 자리라 가릴 값이 없고, 팝업 크기는 docComment 축이 따로 맡는다.
+        // 방해될 때 사용자가 compact/off를 고르는 opt-in으로 남긴다.
         const debugActive = this.isGplDebugActive();
         if (debugActive && config.duringDebug === 'off') {
             return undefined;
@@ -358,13 +365,15 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             return this.buildBuiltinHover(builtin, compact, config, wordRange);
         }
 
-        const lookupName = word.includes('.') ? word.split('.').pop()! : word;
-
         // 멤버 접근의 수신자 체인(GitHub #32). `word`는 `[\w.]`만 모으므로 `robotArmList(0).controlAxis`처럼
         // 괄호가 끼면 `controlAxis`만 남는다 — 커서 식 추출기(괄호 그룹 인식)로 `.` 앞 체인을 되찾는다.
         const cursorExpr = extractDebugExpressionAt(line, position.character);
-        const receiverSegs = cursorExpr && cursorExpr.segments.length > 1
-            && ciEq(cursorExpr.segments[cursorExpr.cursorSegment].name, lookupName)
+        // 조회 대상은 **커서가 놓인 세그먼트**의 이름이다(2026-08-31). 종전에는 점 표기 전체의 마지막
+        // 조각을 썼기 때문에 `Thread.CurrentThread.Name`의 `CurrentThread` 위에서도 `Name`을 찾아
+        // 엉뚱한 심볼 카드가 떴다. 커서 식 추출이 실패하면 종전 규칙으로 폴백한다.
+        const cursorName = cursorExpr?.segments[cursorExpr.cursorSegment].name;
+        const lookupName = cursorName ?? (word.includes('.') ? word.split('.').pop()! : word);
+        const receiverSegs = cursorExpr && cursorExpr.cursorSegment > 0
             ? cursorExpr.segments.slice(0, cursorExpr.cursorSegment)
             : undefined;
 
@@ -408,8 +417,10 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         }
 
         // 사용자 심볼이 전혀 없을 때만 내장 클래스 개요를 보여 준다(동명 사용자 심볼이 우선).
-        if (!sym && !word.includes('.')) {
-            const classDoc = findGplClassDoc(word);
+        // 수신자가 있는 멤버 이름에는 띄우지 않는다 — 커서가 체인 첫 세그먼트(`Thread.…`의 Thread)에
+        // 있으면 receiverSegs가 없으므로 점이 있어도 클래스 개요가 맞다.
+        if (!sym && !receiverSegs && (cursorName !== undefined || !word.includes('.'))) {
+            const classDoc = findGplClassDoc(lookupName);
             if (classDoc) {
                 return this.buildClassDocHover(classDoc, compact, config, wordRange);
             }
@@ -425,7 +436,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         const isCallable = sym.kind === GPLSymbolKind.Function || sym.kind === GPLSymbolKind.Sub;
 
         if (compact && isCallable) {
-            // 디버깅 중: 시그니처 한 줄만 (변수 값 호버를 가리지 않게).
+            // duringDebug=compact: 시그니처 한 줄만 (사용자가 명시적으로 고른 경우에만).
             md.appendCodeblock(this.buildCallableSignature(sym), 'gpl');
             md.isTrusted = false;
             return new vscode.Hover(md, wordRange);
@@ -446,15 +457,22 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             md.appendMarkdown(`\n\n값: \`${valueText}\``);
         }
 
-        if (!compact && (sym.module || sym.className)) {
+        if (!compact) {
+            // 스코프에는 **감싸는 것**만 적는다 — Class 심볼의 className / Module 심볼의 module은
+            // 자기 이름이라(파서 표기) 그대로 쓰면 `Class: \`Foo\``처럼 자기를 되풀이한다.
+            // 중첩 클래스는 감싸는 클래스(parentClassName)가 스코프다 (receiverType.ts 참조).
             const scopes: string[] = [];
-            if (sym.module) {
-                scopes.push(`Module: \`${sym.module}\``);
+            const scopeModule = enclosingModuleName(sym);
+            const scopeClass = enclosingClassName(sym);
+            if (scopeModule) {
+                scopes.push(`Module: \`${scopeModule}\``);
             }
-            if (sym.className) {
-                scopes.push(`Class: \`${sym.className}\``);
+            if (scopeClass) {
+                scopes.push(`Class: \`${scopeClass}\``);
             }
-            md.appendMarkdown(`\n\n${scopes.join(' · ')}`);
+            if (scopes.length) {
+                md.appendMarkdown(`\n\n${scopes.join(' · ')}`);
+            }
         }
 
         if (!compact && sym.docComment) {

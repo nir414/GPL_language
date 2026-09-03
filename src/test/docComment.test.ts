@@ -6,6 +6,7 @@ import {
     findCodeLineBelow,
     findSection,
     getParamDoc,
+    isDecorativeRule,
     locateDocCommentBlock,
     mergeDocComment,
     parseDocComment,
@@ -124,6 +125,76 @@ test('renderDocCommentMarkdown: 언어 표기 없는 여는 펜스에 gpl을 붙
     const tagged = renderDocCommentMarkdown('# Examples\n```vb\nx = 1\n```', { descriptionMode: 'full' })!;
     assert.ok(tagged.includes('```vb'), tagged);
     assert.ok(!tagged.includes('```gpl'), tagged);
+});
+
+test('renderDocCommentMarkdown: 펜스 중간에서 잘려도 코드 블록이 열린 채 끝나지 않는다', () => {
+    const raw = ['설명 줄', '```', 'x = 1', 'y = 2', '```', '꼬리'].join('\n');
+    const md = renderDocCommentMarkdown(raw, { descriptionMode: 'full', maxDescriptionLines: 3 })!;
+    const fences = md.match(/^\s*(```|~~~)/gm) ?? [];
+    assert.strictEqual(fences.length % 2, 0, md);
+    // 안내 문구는 코드 블록 밖에 있어야 한다.
+    assert.ok(md.indexOf('…') > md.lastIndexOf('```'), md);
+    // 자르지 않으면 원문 그대로(닫는 펜스를 덧붙이지 않는다).
+    const full = renderDocCommentMarkdown(raw, { descriptionMode: 'full' })!;
+    assert.strictEqual((full.match(/```/g) ?? []).length, 2, full);
+    assert.ok(full.endsWith('꼬리'), full);
+});
+
+test('renderDocCommentMarkdown: 닫는 펜스를 빼먹은 섹션도 보정한다', () => {
+    const md = renderDocCommentMarkdown('# Examples\n```\nx = 1', { descriptionMode: 'full' })!;
+    assert.ok(md.includes('```gpl\nx = 1\n```'), md);
+});
+
+test('isDecorativeRule: 구두점만 있는 줄만 장식선으로 본다', () => {
+    for (const line of ['========', '--------', '***', '* * *', '#####', '//////', '____', '# ====']) {
+        assert.ok(isDecorativeRule(line), line);
+    }
+    for (const line of ['', '--', '# Parameters', '- `s`: 값', '...', ':::', '```', '~~~', '값 = 1']) {
+        assert.ok(!isDecorativeRule(line), line);
+    }
+});
+
+test('renderDocCommentMarkdown: 옛 ASCII 박스 주석이 setext 머리글로 깨지지 않는다', () => {
+    const raw = [
+        '========================================',
+        '[2] SafeTrim - None 안전 Trim',
+        '========================================',
+        '용도: Nothing 체크 + Trim 한 번에',
+    ].join('\n');
+    const doc = parseDocComment(raw);
+    // 파싱 원문은 손실 없이 보존한다(주석 편집이 줄 인덱스에 의존).
+    assert.strictEqual(doc.lines.length, 4);
+    assert.strictEqual(doc.isStructured, false);
+    assert.strictEqual(doc.summary, '[2] SafeTrim - None 안전 Trim 용도: Nothing 체크 + Trim 한 번에');
+
+    const md = renderDocCommentMarkdown(raw, { descriptionMode: 'summary', maxDescriptionLines: 6 })!;
+    assert.ok(!md.includes('==='), md);
+    assert.strictEqual(md, '[2] SafeTrim - None 안전 Trim  \n용도: Nothing 체크 + Trim 한 번에');
+});
+
+test('renderDocCommentMarkdown: 장식선은 섹션 본문·파라미터 항목에서도 걸러진다', () => {
+    const raw = [
+        '설명.',
+        '----------',
+        '# Parameters',
+        '- `s`: 다듬을 문자열',
+        '----------',
+        '# Examples',
+        '```',
+        "' 표 구분선은 예제 안에서는 내용이다",
+        '----------',
+        '```',
+    ].join('\n');
+    const doc = parseDocComment(raw);
+    assert.deepStrictEqual(doc.sections.map(s => s.kind), ['parameters', 'examples']);
+    assert.deepStrictEqual(findSection(doc, 'parameters')!.params, [{ name: 's', text: '다듬을 문자열' }]);
+
+    const md = renderDocCommentMarkdown(raw, { descriptionMode: 'full' })!;
+    assert.ok(md.startsWith('설명.'), md);
+    assert.ok(md.includes('- `s` — 다듬을 문자열'), md);
+    // 펜스 안의 구분선은 그대로 남는다.
+    assert.ok(md.includes('```gpl\n'), md);
+    assert.strictEqual((md.match(/^-{10}$/gm) ?? []).length, 1, md);
 });
 
 test('renderDocCommentMarkdown: includeKinds로 섹션을 걸러낸다', () => {

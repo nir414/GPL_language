@@ -5,6 +5,7 @@
  * `armList(i)` 위에 올려도 `armList`만 평가되어 요소 값을 볼 수 없다.
  *
  * 안전 규칙 (중요 — 제어기 콘솔의 `Show Variable -eval`은 Sub/Function도 "실행"한다):
+ * 0. 커서 이름이 예약어면 차단 — 제어기가 -712(*Invalid syntax*)로 거부해 오류 팝업만 남는다.
  * 1. 커서 이름이 Sub/Function이면 디버그 hover 자체를 차단(undefined) —
  *    기본 동작(단어 전송)이 오히려 파라미터 없는 Sub를 실행할 수 있던 위험도 함께 제거.
  * 2. 괄호 그룹(`name(...)`)은 그 이름이 로컬/파라미터/모듈 변수로 **확인될 때만** 포함 —
@@ -13,6 +14,10 @@
  * 수신자 타입(GitHub #32): 멤버 접근(`obj.member`)의 `member`는 `.` 앞 체인의 클래스를 정적으로 해석해
  * **그 클래스의 멤버만**으로 판정한다(다른 클래스의 동명 Function 때문에 해석 가능한 Property hover가
  * 차단되던 문제). 수신자 해석에 실패하면 종전처럼 이름 전체로 보수 판정한다(규칙 1·2 유지).
+ *
+ * 내장 클래스 수신자(2026-08-31): 체인이 GPL Dictionary 클래스로 해석되면(`Thread.CurrentThread` → Thread)
+ * 판정도 사전으로 한다 — Property는 허용, 메서드는 `sideEffectFree` 표시가 있을 때만 허용. 워크스페이스의
+ * 동명 Sub/Function으로 보수 판정하면 `Thread.CurrentThread.Name`처럼 실제로 값이 나오는 hover가 막힌다.
  */
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
@@ -23,13 +28,20 @@ import {
     findEnclosingProcedureRange,
     DebugExpressionSegment,
 } from '../language/cursorExpression';
+import { isGplReservedWord } from '../language/gplReservedWords';
 import {
     buildDocumentReceiverLookup,
     membersNamed,
     resolveReceiverHolder,
+    resolveReceiverTypeName,
     ReceiverHolder,
     ReceiverLookup,
 } from '../language/receiverType';
+import {
+    GPL_BUILTIN_RECEIVERS,
+    findGplBuiltinMember,
+    isGplBuiltinClassName,
+} from '../gplBuiltins';
 
 type SymbolKindJudgement = 'variable' | 'callable' | 'unknown';
 
@@ -44,6 +56,11 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
         const cand = extractDebugExpressionAt(lineText, position.character);
         if (!cand) { return undefined; }
 
+        // 규칙 0: 예약어(`If`/`Then`/`As`/`Me`/타입명 …) 위에서는 디버그 hover를 띄우지 않는다.
+        // 제어기 -eval은 이런 토큰을 -712(*Invalid syntax*)로 거부하고, 그 오류 팝업이 코드를
+        // 읽는 내내 따라붙었다(사용자 보고 2026-08-31). 문서 파싱보다 앞에 둬서 비용도 없앤다.
+        if (isGplReservedWord(cand.segments[cand.cursorSegment].name)) { return undefined; }
+
         // 현재 문서를 로컬/파라미터 포함으로 파싱 (parseDocument는 내용 기준 메모이즈 —
         // 반복 hover 비용 낮음). 워크스페이스 캐시는 로컬을 인덱싱하지 않아 별도 필요.
         const docSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
@@ -53,17 +70,41 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
         const procRange = findEnclosingProcedureRange(
             i => document.lineAt(i).text, document.lineCount, position.line);
         const lookup = buildDocumentReceiverLookup(
-            docSymbols, procRange, position.line, name => this.symbolCache.findAllByName(name));
+            docSymbols, procRange, position.line, name => this.symbolCache.findAllByName(name),
+            GPL_BUILTIN_RECEIVERS);
 
         // 세그먼트 i의 수신자 홀더(i=0은 수신자 없음). 해석 실패 → undefined(이름 기반 폴백).
         const holderOf = (index: number): ReceiverHolder | undefined =>
             index > 0 ? resolveReceiverHolder(cand.segments.slice(0, index), lookup) : undefined;
 
-        const kindOf = (name: string, holder: ReceiverHolder | undefined): SymbolKindJudgement => {
+        /** 세그먼트 i의 수신자 체인이 **내장 클래스**로 해석되면 그 클래스 이름. */
+        const builtinReceiverOf = (index: number): string | undefined => {
+            if (index === 0) { return undefined; }
+            const t = resolveReceiverTypeName(cand.segments.slice(0, index), lookup);
+            return t && isGplBuiltinClassName(t) ? t : undefined;
+        };
+
+        const kindOf = (name: string, index: number): SymbolKindJudgement => {
+            const holder = holderOf(index);
             const lower = name.toLowerCase();
             const named = docSymbols.filter(s => s.name.toLowerCase() === lower);
             // 수신자 없는 이름: 로컬/파라미터가 있으면 변수 확정(로컬이 동명 프로시저를 가린다)
             if (!holder && named.some(s => this._isVariable(s) && s.isLocal)) { return 'variable'; }
+
+            // 수신자가 내장 클래스로 해석되면 **사전만으로** 판정한다(2026-08-31).
+            // 이 식의 멤버는 제어기가 그 내장 클래스에서 찾으므로 워크스페이스의 동명
+            // Sub/Function은 등장할 수 없다 — 이름 기반 보수 판정을 적용하면 값이 보이는
+            // hover까지 막힌다(`Thread.CurrentThread.Name`이 남의 `Function Name()`에 막혔다).
+            if (!holder) {
+                const builtinClass = builtinReceiverOf(index);
+                if (builtinClass) {
+                    const entry = findGplBuiltinMember(builtinClass, name);
+                    if (!entry) { return 'unknown'; }
+                    // Property는 조회 전용, 메서드는 sideEffectFree 표시가 있을 때만 식에 포함한다
+                    // (`Thread.CurrentThread()` 허용 / `t.Abort()`·`Thread.Sleep()` 차단).
+                    return entry.kind === 'property' || entry.sideEffectFree ? 'variable' : 'callable';
+                }
+            }
             let all: GPLSymbol[] = holder
                 ? membersNamed(lookup, holder, name)
                 : [...named, ...this.symbolCache.findAllByName(name)];
@@ -81,12 +122,12 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
         const cursorSeg = cand.segments[cand.cursorSegment];
 
         // 규칙 1: 커서 이름이 프로시저면 디버그 hover 차단
-        if (kindOf(cursorSeg.name, holderOf(cand.cursorSegment)) === 'callable') { return undefined; }
+        if (kindOf(cursorSeg.name, cand.cursorSegment) === 'callable') { return undefined; }
 
         // 규칙 2: 괄호 세그먼트는 변수 확인된 것만 유지. 하나라도 확인 실패면
         // 체인/괄호 없이 커서 단어만 평가(기존 기본 동작과 동일).
         const allParensSafe = cand.segments.every((s, i) =>
-            s.args === undefined || kindOf(s.name, holderOf(i)) === 'variable');
+            s.args === undefined || kindOf(s.name, i) === 'variable');
 
         const segments: DebugExpressionSegment[] = allParensSafe
             ? cand.segments

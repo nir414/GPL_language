@@ -13,35 +13,16 @@ export interface RenameOccurrence {
     character: number;
 }
 
+import { GPL_RESERVED_WORDS } from './gplReservedWords';
+
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Rename의 원본/새 이름으로 쓸 수 없는 GPL(VB계열) 예약어.
- *
- * config.GPL_CONTROL_KEYWORDS(정의 탐색 조기 차단용)보다 의도적으로 넓다:
- * 정의 탐색은 `New`/타입명 등을 해석 대상으로 남겨야 하지만, 이름 변경은
+ * Rename의 원본/새 이름으로 쓸 수 없는 GPL(VB계열) 예약어 — 정본(gplReservedWords)의 넓은 집합.
+ * 정의 탐색은 `New`/타입명 등을 해석 대상으로 남겨야 하지만(좁은 집합), 이름 변경은
  * 선언 키워드·접근제한자·기본 타입명까지 전부 막아야 코드가 깨지지 않는다.
  */
-export const GPL_RENAME_RESERVED: ReadonlySet<string> = new Set([
-    // 제어문/연산자/리터럴 (config.GPL_CONTROL_KEYWORDS와 동일 집합)
-    'if', 'then', 'else', 'elseif', 'end', 'endif',
-    'for', 'next', 'to', 'step', 'each', 'in',
-    'while', 'wend', 'do', 'loop', 'until',
-    'select', 'case', 'return', 'exit', 'continue', 'goto',
-    'dim', 'as', 'byref', 'byval', 'redim',
-    'and', 'or', 'not', 'xor', 'mod',
-    'true', 'false', 'nothing',
-    'try', 'catch', 'finally', 'throw', 'with',
-    // 선언/접근제한자/객체 참조 키워드
-    'sub', 'function', 'property', 'module', 'class', 'type', 'enum',
-    'get', 'set', 'public', 'private', 'friend', 'shared',
-    'readonly', 'writeonly', 'const', 'static', 'optional', 'paramarray',
-    'new', 'me', 'mybase', 'call', 'delegate', 'event',
-    'inherits', 'implements', 'overloads', 'overrides', 'stop',
-    // 기본 타입명
-    'string', 'integer', 'long', 'short', 'byte', 'single', 'double',
-    'boolean', 'object', 'date',
-]);
+export const GPL_RENAME_RESERVED = GPL_RESERVED_WORDS;
 
 /** GPL 식별자 형식([A-Za-z_][A-Za-z0-9_]*)인지 검사. */
 export function isValidGplIdentifier(name: string): boolean {
@@ -102,6 +83,37 @@ export function findRenameOccurrencesInLine(
         out.push({ character: col });
     }
     return out;
+}
+
+/**
+ * 지정 컬럼이 정확히 그 이름을 가리키는지(단어 경계 포함) 검사.
+ * 이름 바꾸기 편집을 내보내기 전 "그 자리가 실제로 옛 이름인가"를 확인하는 데 쓴다.
+ */
+export function isWordAt(lineText: string, character: number, word: string): boolean {
+    if (character < 0 || character + word.length > lineText.length) {
+        return false;
+    }
+    if (lineText.substr(character, word.length).toLowerCase() !== word.toLowerCase()) {
+        return false;
+    }
+    const before = character > 0 ? lineText[character - 1] : '';
+    const after = lineText[character + word.length] ?? '';
+    return !/\w/.test(before) && !/\w/.test(after);
+}
+
+/**
+ * 선언 줄에서 이름의 실제 컬럼을 확정한다. 못 찾으면 -1.
+ *
+ * 심볼 인덱스의 컬럼(hint)을 그대로 믿지 않는다 — 파서가 선언 종류에 따라
+ * "줄 전체"를 range로 넣던 시절의 값(start=0)이나 낡은 캐시가 오면 이름 바꾸기가
+ * 선언 줄 앞부분을 덮어써 코드를 깨뜨렸다. hint가 실제로 이름을 가리킬 때만 쓰고,
+ * 아니면 주석/문자열 밖의 첫 `\bword\b`를 찾는다.
+ */
+export function resolveDeclarationNameColumn(lineText: string, word: string, hint: number): number {
+    if (isWordAt(lineText, hint, word)) {
+        return hint;
+    }
+    return findRenameOccurrencesInLine(lineText, word)[0]?.character ?? -1;
 }
 
 /**

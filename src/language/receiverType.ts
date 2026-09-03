@@ -14,7 +14,9 @@
  *   `Module.Class`)로 하강.
  * - 인덱싱(`x(0)`)이 붙은 배열 타입 `T[]`/`T()`는 요소 타입 `T`. 인덱싱 없는 배열은 내장 Array라 실패.
  * - 원시 타입·내장 클래스·미해석은 undefined — 호출자는 종전 이름 기반 보수 판정으로 폴백한다(안전 규칙 유지).
- *   내장 클래스 타입(`Dim t As Thread`)이 필요하면 홀더 대신 resolveReceiverTypeName으로 타입 이름을 얻는다.
+ *   내장 클래스 타입(`Dim t As Thread`, 정적 접근 `Thread.…`)이 필요하면 홀더 대신 resolveReceiverTypeName으로
+ *   타입 이름을 얻는다. 내장 멤버의 반환 타입(`Thread.CurrentThread` → Thread)도 ReceiverBuiltins 훅이
+ *   있으면 체인 하강에 쓰인다 — `Thread.CurrentThread.Name`의 `Name`을 Thread 멤버로 판정하기 위한 전제다.
  */
 import { GPLSymbol, GPLSymbolKind } from '../gplParser';
 
@@ -29,6 +31,18 @@ export type ReceiverHolder =
     | { kind: 'class'; name: string }
     | { kind: 'module'; name: string };
 
+/**
+ * 내장(GPL Dictionary) 클래스 정보 훅. 이 모듈은 vscode 무의존을 유지해야 하므로 사전을
+ * 직접 import하지 않고 호출부(providers)가 gplBuiltins 어댑터를 넣어 준다.
+ * 없으면 내장 타입 해석만 빠지고 사용자 심볼 해석은 종전과 같다.
+ */
+export interface ReceiverBuiltins {
+    /** 이름이 내장 클래스인지(대소문자 무시) — 정적 접근 `Thread.…`의 첫 세그먼트 해석용. */
+    isClassName(name: string): boolean;
+    /** 내장 멤버의 반환 타입 이름(`Thread`,`CurrentThread` → `'Thread'`). 사전에 없으면 undefined. */
+    memberReturnType(typeName: string, memberName: string): string | undefined;
+}
+
 export interface ReceiverLookup {
     /** 커서를 감싸는 프로시저 스코프의 로컬/파라미터. 없으면 undefined. */
     findLocal(name: string): GPLSymbol | undefined;
@@ -36,6 +50,8 @@ export interface ReceiverLookup {
     findAllByName(name: string): GPLSymbol[];
     /** 커서를 감싸는 클래스 이름(`Me.` 해석용). */
     enclosingClassName?: string;
+    /** 내장 클래스 사전 훅(선택). */
+    builtins?: ReceiverBuiltins;
 }
 
 /** 멤버 하강 대상이 아닌 원시 타입(completionProvider와 동일 집합 — String은 내장 클래스이므로 제외). */
@@ -79,28 +95,70 @@ function typeNameOfType(typeName: string | undefined, indexed: boolean): string 
     return t;
 }
 
-function holderOfType(typeName: string | undefined, indexed: boolean, lookup: ReceiverLookup): ReceiverHolder | undefined {
-    const t = typeNameOfType(typeName, indexed);
-    return t ? holderNamed(t, lookup) : undefined;
+/**
+ * 타입 이름 `typeName`에서 세그먼트 `seg`로 한 단계 하강해 **타입 이름**을 얻는다.
+ * 사용자 클래스/모듈이면 멤버의 returnType(또는 중첩 타입 선언), 내장 클래스면 사전의 반환 타입.
+ */
+function descendTypeName(lookup: ReceiverLookup, typeName: string, seg: ReceiverSegment): string | undefined {
+    const holder = holderNamed(typeName, lookup);
+    if (holder) {
+        const typed = membersNamed(lookup, holder, seg.name).find(m => m.returnType);
+        if (typed?.returnType) {
+            return typeNameOfType(typed.returnType, seg.args !== undefined);
+        }
+        if (seg.args === undefined) {
+            // 중첩 클래스 하강: Outer.Inner → Inner / Module.Class → Class
+            const nested = nestedTypesIn(lookup, holder, seg.name)[0];
+            if (nested) { return nested.name; }
+        }
+        return undefined;
+    }
+    // 내장 클래스 멤버 하강(`Thread.CurrentThread` → Thread). 훅이 없으면 종전처럼 미해석.
+    return typeNameOfType(lookup.builtins?.memberReturnType(typeName, seg.name), seg.args !== undefined);
 }
 
-/** 홀더의 멤버 중 이름이 `name`인 것 전부(오버로드 포함, 로컬/파라미터 제외). 클래스 홀더는 `className` 정확 일치. */
-export function membersNamed(lookup: ReceiverLookup, holder: ReceiverHolder, name: string): GPLSymbol[] {
-    const all = lookup.findAllByName(name).filter(s => !s.isLocal && !s.isParameter);
-    return holder.kind === 'class'
-        ? all.filter(s => s.className !== undefined && ci(s.className, holder.name))
-        : all.filter(s => !s.className && s.module !== undefined && ci(s.module, holder.name));
+// ─── 소속(스코프) 판정 ──────────────────────────────────────────────────────────────────
+// 파서의 표기 규칙 하나만 알면 되는 순수 판정이라 여기 모아 둔다 — 이 비대칭을 모르고
+// `className`/`module` 유무로 소속을 판정하면 클래스·모듈 심볼이 **자기 자신에 속한 것**이 된다.
+
+/**
+ * 감싸는 클래스 이름. **Class 심볼의 `className`은 자기 이름**이므로(파서: `className: currentClass`)
+ * 그대로 쓰면 자기를 가리킨다 — 중첩 클래스를 감싸는 클래스는 `parentClassName`이고,
+ * 모듈 최상위 클래스는 감싸는 클래스가 없다(undefined).
+ */
+export function enclosingClassName(sym: GPLSymbol): string | undefined {
+    return sym.kind === GPLSymbolKind.Class ? sym.parentClassName : sym.className;
+}
+
+/** 감싸는 모듈 이름. **Module 심볼의 `module`도 자기 이름**이라 모듈 자신은 undefined다. */
+export function enclosingModuleName(sym: GPLSymbol): string | undefined {
+    return sym.kind === GPLSymbolKind.Module ? undefined : sym.module;
 }
 
 /**
- * 홀더 안에 **직접 선언된** 중첩 타입 중 이름이 일치하는 것 (`Outer.Inner`, `Module.Class`).
- * 클래스 심볼의 className은 자기 자신이라 소속은 parentClassName(중첩) / module(모듈 최상위)로 판정한다.
+ * 심볼이 홀더(클래스/모듈)에 **직접** 선언돼 있는지 — 멤버와 중첩 타입 선언을 함께 만족한다.
+ * `membersNamed`(멤버만)·`nestedTypesIn`(클래스 선언만)은 여기에 종류 조건만 덧붙인 것이고,
+ * 둘을 합친 것이 `ownedByHolder`다.
  */
+export function isDeclaredIn(sym: GPLSymbol, holder: ReceiverHolder): boolean {
+    const cls = enclosingClassName(sym);
+    if (holder.kind === 'class') {
+        return cls !== undefined && ci(cls, holder.name);
+    }
+    const mod = enclosingModuleName(sym);
+    return cls === undefined && mod !== undefined && ci(mod, holder.name);
+}
+
+/** 홀더의 멤버 중 이름이 `name`인 것 전부(오버로드 포함, 로컬/파라미터 제외). 클래스 선언은 `nestedTypesIn`이 맡는다. */
+export function membersNamed(lookup: ReceiverLookup, holder: ReceiverHolder, name: string): GPLSymbol[] {
+    return lookup.findAllByName(name)
+        .filter(s => !s.isLocal && !s.isParameter && s.kind !== GPLSymbolKind.Class && isDeclaredIn(s, holder));
+}
+
+/** 홀더 안에 **직접 선언된** 중첩 타입 중 이름이 일치하는 것 (`Outer.Inner`, `Module.Class`). */
 export function nestedTypesIn(lookup: ReceiverLookup, holder: ReceiverHolder, name: string): GPLSymbol[] {
-    return lookup.findAllByName(name).filter(s => s.kind === GPLSymbolKind.Class
-        && (holder.kind === 'class'
-            ? (s.parentClassName !== undefined && ci(s.parentClassName, holder.name))
-            : (!s.parentClassName && s.module !== undefined && ci(s.module, holder.name))));
+    return lookup.findAllByName(name)
+        .filter(s => s.kind === GPLSymbolKind.Class && isDeclaredIn(s, holder));
 }
 
 /**
@@ -117,16 +175,8 @@ export function ownedByHolder(lookup: ReceiverLookup, holder: ReceiverHolder, na
 }
 
 function descend(lookup: ReceiverLookup, holder: ReceiverHolder, seg: ReceiverSegment): ReceiverHolder | undefined {
-    const typed = membersNamed(lookup, holder, seg.name).find(m => m.returnType);
-    if (typed?.returnType) {
-        return holderOfType(typed.returnType, seg.args !== undefined, lookup);
-    }
-    if (seg.args === undefined) {
-        // 중첩 클래스 하강: Outer.Inner → Inner / Module.Class → Class
-        const nested = nestedTypesIn(lookup, holder, seg.name)[0];
-        if (nested) { return { kind: 'class', name: nested.name }; }
-    }
-    return undefined;
+    const t = descendTypeName(lookup, holder.name, seg);
+    return t ? holderNamed(t, lookup) : undefined;
 }
 
 /**
@@ -156,7 +206,13 @@ function firstSegmentTypeName(first: ReceiverSegment, lookup: ReceiverLookup): s
     const score = (s: GPLSymbol): number =>
         (s.className && lookup.enclosingClassName && ci(s.className, lookup.enclosingClassName)) ? 1 : 0;
     const typed = [...named].sort((a, b) => score(b) - score(a))[0];
-    return typeNameOfType(typed?.returnType, indexed);
+    const userType = typeNameOfType(typed?.returnType, indexed);
+    if (userType) { return userType; }
+
+    // 내장 클래스의 정적 접근(`Thread.CurrentThread`, `Robot.Where`) — 동명 사용자 심볼이
+    // 전혀 없을 때만(사용자 심볼 우선 규칙은 hoverProvider와 동일).
+    if (!indexed && lookup.builtins?.isClassName(first.name)) { return first.name; }
+    return undefined;
 }
 
 /**
@@ -181,14 +237,12 @@ export function resolveReceiverHolder(receiver: ReceiverSegment[], lookup: Recei
  */
 export function resolveReceiverTypeName(receiver: ReceiverSegment[], lookup: ReceiverLookup): string | undefined {
     if (receiver.length === 0) { return undefined; }
-    if (receiver.length === 1) { return firstSegmentTypeName(receiver[0], lookup); }
-
-    // 중간 세그먼트는 사용자 심볼로만 하강할 수 있다(내장 멤버의 반환 타입 정보는 사전에 없다).
-    const holder = resolveReceiverHolder(receiver.slice(0, -1), lookup);
-    if (!holder) { return undefined; }
-    const last = receiver[receiver.length - 1];
-    const typed = membersNamed(lookup, holder, last.name).find(m => m.returnType);
-    return typeNameOfType(typed?.returnType, last.args !== undefined);
+    // 타입 이름 단위로 하강한다 — 사용자 클래스/모듈과 내장 클래스(사전 반환 타입)를 섞어 통과할 수 있다.
+    let typeName = firstSegmentTypeName(receiver[0], lookup);
+    for (let i = 1; typeName && i < receiver.length; i++) {
+        typeName = descendTypeName(lookup, typeName, receiver[i]);
+    }
+    return typeName;
 }
 
 /**
@@ -201,6 +255,7 @@ export function buildDocumentReceiverLookup(
     procRange: { startLine: number; endLine: number } | undefined,
     atLine: number,
     cacheFindAllByName: (name: string) => GPLSymbol[],
+    builtins?: ReceiverBuiltins,
 ): ReceiverLookup {
     const inScope = (s: GPLSymbol): boolean =>
         !!procRange && s.line >= procRange.startLine && s.line <= procRange.endLine;
@@ -215,6 +270,7 @@ export function buildDocumentReceiverLookup(
 
     return {
         enclosingClassName: enclosingProc?.className,
+        builtins,
         findLocal(name: string): GPLSymbol | undefined {
             const locals = docSymbols.filter(s => (s.isLocal || s.isParameter) && ci(s.name, name) && inScope(s));
             if (locals.length === 0) { return undefined; }

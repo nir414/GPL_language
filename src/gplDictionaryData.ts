@@ -220,6 +220,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.Base(robot)',
         summary: '로봇 베이스에 대한 직교 좌표 위치 오프셋을 설정하거나 가져옵니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.Base(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/base.htm'
     },
@@ -256,6 +257,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.Dest(robot)',
         summary: '이전에 실행한 동작의 원래 계획된 최종 목적지를 직교 좌표 위치로 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.Dest(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/dest.htm'
     },
@@ -265,6 +267,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.DestAngles(robot)',
         summary: '이전에 실행한 동작의 원래 계획된 최종 목적지를 각도 위치로 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.DestAngles(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/destangles.htm'
     },
@@ -301,6 +304,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.LastProfile(robot)',
         summary: '마지막으로 실행된 동작의 프로파일 정보를 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Profile',
         insertSnippet: 'Robot.LastProfile(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/lastprofile.htm'
     },
@@ -328,6 +332,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.Source(robot)',
         summary: '이전에 실행한 동작의 시작 위치를 직교 좌표 위치로 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.Source(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/origin.htm'
     },
@@ -337,6 +342,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.SourceAngles(robot)',
         summary: '이전에 실행한 동작의 시작 위치를 각도 위치로 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.SourceAngles(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/originangles.htm'
     },
@@ -364,6 +370,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.RestartBase(robot)',
         summary: '컨트롤러 재시작 시 설정되었던 베이스 오프셋을 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.RestartBase(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/restartbase.htm'
     },
@@ -373,6 +380,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.RestartTool(robot)',
         summary: '컨트롤러 재시작 시 설정되었던 툴/그리퍼의 위치 및 방향 오프셋을 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.RestartTool(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/restarttool.htm'
     },
@@ -382,6 +390,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.RealTimeModAcm(robot)',
         summary: '실시간 궤적 수정 모드로 생성된 누적 경로 수정량을 직교 좌표 위치로 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.RealTimeModAcm(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/rtmodaccum.htm'
     },
@@ -399,6 +408,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.SpeedAngles(robot)',
         summary: '로봇 각 축의 속도 정보를 각도 위치 객체로 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.SpeedAngles(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/speedangles.htm'
     },
@@ -408,6 +418,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.Tool(robot)',
         summary: '로봇 툴/그리퍼의 위치 및 방향 오프셋을 설정하거나 가져옵니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.Tool(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/tool.htm'
     },
@@ -426,6 +437,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.Where(robot)',
         summary: '베이스와 툴 오프셋을 반영한 로봇의 현재 위치와 방향을 직교 좌표 위치로 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.Where(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/where.htm'
     },
@@ -435,6 +447,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Robot.WhereAngles(robot)',
         summary: '각 모터의 순간 인코더 값을 읽어 로봇의 현재 축 위치를 각도 위치로 반환합니다.',
         category: 'Robot Class',
+        returnType: 'Location',
         insertSnippet: 'Robot.WhereAngles(${1:robot})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/whereangles.htm'
     },
@@ -464,6 +477,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Location.Clone',
         summary: 'Location 객체의 독립적인 복사본을 생성하여 반환합니다.',
         category: 'Location Class',
+        returnType: 'Location',
         insertSnippet: 'Clone',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/clone.htm'
     },
@@ -517,6 +531,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Location.Inverse',
         summary: '데카르트 위치 객체의 전체 위치 값에 대한 역변환을 반환합니다.',
         category: 'Location Class',
+        returnType: 'Location',
         insertSnippet: 'Inverse',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/inverse.htm'
     },
@@ -526,6 +541,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Location.KineSol(mode, location)',
         summary: '특정 운동학 모델에 대해 Angles 위치 객체와 동등한 데카르트 위치 객체를 반환하거나 그 반대로 변환합니다.',
         category: 'Location Class',
+        returnType: 'Location',
         insertSnippet: 'KineSol(${1:mode}, ${2:location})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/kinesol.htm'
     },
@@ -535,6 +551,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Location.Mul(location2)',
         summary: '한 데카르트 위치 객체의 위치와 방향을 다른 위치 객체와 결합한 변환 결과를 반환합니다.',
         category: 'Location Class',
+        returnType: 'Location',
         insertSnippet: 'Mul(${1:location2})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/mul.htm'
     },
@@ -561,6 +578,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Location.Pos',
         summary: 'Location 객체의 전체 위치 값을 읽거나 설정합니다.',
         category: 'Location Class',
+        returnType: 'Location',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/pos.htm'
     },
     {
@@ -569,6 +587,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Location.PosWrtRef',
         summary: '기준 프레임 데이터를 무시한 채 데카르트 위치 객체의 기준 프레임 기준 위치 값을 읽거나 설정합니다.',
         category: 'Location Class',
+        returnType: 'Location',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/poswrtref.htm'
     },
     {
@@ -577,6 +596,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Location.RefFrame',
         summary: 'Location 객체의 위치와 방향이 정의되는 기준 프레임 객체에 대한 포인터를 읽거나 설정합니다.',
         category: 'Location Class',
+        returnType: 'RefFrame',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/refframe.htm'
     },
     {
@@ -635,6 +655,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Location.XYZValue(x, y, z, yaw, pitch, roll)',
         summary: '지정한 X, Y, Z, Yaw, Pitch, Roll 좌표와 동일한 전체 위치를 가진 데카르트 Location을 반환합니다.',
         category: 'Location Class',
+        returnType: 'Location',
         insertSnippet: 'Location.XYZValue(${1:x}, ${2:y}, ${3:z}, ${4:yaw}, ${5:pitch}, ${6:roll})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/xyzvalue.htm'
     },
@@ -758,6 +779,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Profile.Clone',
         summary: '현재 프로파일 객체의 복사본을 생성하여 반환합니다.',
         category: 'Profile Class',
+        returnType: 'Profile',
         insertSnippet: 'Clone',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Profile_class/profileclone.htm'
     },
@@ -838,6 +860,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'RefFrame.Loc',
         summary: '기준 프레임을 정의하는 직교 좌표 위치 객체를 설정하거나 읽습니다.',
         category: 'Reference Frame Class',
+        returnType: 'Location',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Reference_Frame/rf_loc.htm'
     },
     {
@@ -846,6 +869,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'RefFrame.Pos(location)',
         summary: '주어진 위치를 이 기준 프레임 기준으로 변환한 위치를 반환합니다.',
         category: 'Reference Frame Class',
+        returnType: 'Location',
         insertSnippet: 'Pos(${1:location})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Reference_Frame/rf_pos.htm'
     },
@@ -855,6 +879,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'RefFrame.PosWrtRef(location)',
         summary: '주어진 위치를 이 기준 프레임의 참조 프레임 기준으로 표현한 위치를 반환합니다.',
         category: 'Reference Frame Class',
+        returnType: 'Location',
         insertSnippet: 'PosWrtRef(${1:location})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Reference_Frame/rf_poswrtref.htm'
     },
@@ -917,6 +942,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Latch.Location(type)',
         summary: '래치 발생 시점에 캡처된 로봇 위치를 지정한 형식의 위치 객체로 반환합니다.',
         category: 'Latch Class',
+        returnType: 'Location',
         insertSnippet: 'Location(${1:type})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Latch/lat_location.htm'
     },
@@ -934,6 +960,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Latch.Result(robot, noException)',
         summary: '지정한 로봇의 다음 래치 데이터를 가져와 래치 객체로 반환합니다.',
         category: 'Latch Class',
+        returnType: 'Latch',
         insertSnippet: 'Latch.Result(${1:robot}, ${2:noException})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Latch/lat_result.htm'
     },
@@ -1137,7 +1164,30 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         name: 'Controller.ShowDialog',
         kind: 'method',
         signature: 'Controller.ShowDialog(button_labels, message, button_index)',
-        summary: '웹 인터페이스 Operator Control Panel에 팝업 대화 상자를 표시합니다(기본 모드).',
+        usage: [
+            'Controller.ShowDialog(button_labels, message, button_index)',
+            'Controller.ShowDialog(button_labels, message, button_index, text_field)',
+            'Controller.ShowDialog(mode, button_labels, message, button_index, field_labels, field_values)'
+        ].join('\n'),
+        summary: '웹 인터페이스 Operator Control Panel에 팝업 대화 상자를 표시합니다.',
+        details: [
+            '오버로드된 메서드로 세 가지 형태가 있습니다 — 앞의 두 개는 기본(Basic) 모드, 첫 인자가 `mode`인',
+            '여섯 인자 형태는 고급(Advanced) 모드입니다. 고급 모드의 `mode` 값에 따라 화면이 달라집니다.',
+            '',
+            '| mode | 화면 | field_labels | field_values |',
+            '| --- | --- | --- | --- |',
+            '| 1 | 사용자가 입력하는 데이터 필드를 세로로 나열(버튼은 아래쪽에 최대 4개) | 각 필드 앞 라벨(최대 12개, 원소 수가 필드 수를 결정) | 초기값이 기본값으로 표시되고, 입력한 값을 돌려받음 |',
+            '| 2 | 라벨이 붙은 버튼을 세로로 최대 12개 나열 | 각 버튼의 라벨(원소 수가 버튼 수를 결정) | 사용하지 않음(빈 배열 가능) |',
+            '',
+            'mode = 2에서는 `button_labels`가 무시되므로 `""`로 둡니다. `button_index`는 눌린 버튼의 번호를',
+            '받는 ByRef Integer 변수입니다(첫 버튼이 1).',
+            '',
+            '다른 스레드가 이미 대화 상자를 띄우고 있으면 대기하며, 사용자가 버튼을 누를 때까지 블로킹됩니다.',
+            '대화 상자를 띄운 스레드가 일시 중지·정지되면 즉시 화면에서 내려갑니다.',
+            '',
+            '브라우저 안에 그려지므로 서식은 HTML로 씁니다 — 줄바꿈은 `<BR>`, 좌측 정렬은 `<p align=left>`…`</p>`.',
+            '서식을 포함한 전체 문자열은 약 998바이트까지이며, 문자열에 세로줄(`|`)을 넣을 수 없습니다.'
+        ].join('\n'),
         category: 'Controller Class',
         insertSnippet: 'Controller.ShowDialog(${1:button_labels}, ${2:message}, ${3:button_index})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Controller/showdialog.htm'
@@ -1217,6 +1267,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Exception.Clone()',
         summary: 'Exception 객체의 복사본을 반환합니다.',
         category: 'Exception Class',
+        returnType: 'Exception',
         insertSnippet: 'Exception.Clone()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/exc_clone.htm'
     },
@@ -1303,6 +1354,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
             '실행 전에 스레드에 숫자 값을 연결해 두면 스레드가 그 값을 매개변수처럼 읽어 쓸 수 있습니다',
             '(예: 그 스레드가 사용할 데이터를 배열에서 꺼내는 인덱스).'
         ].join('\n'),
+        returnType: 'Integer',
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/argument.htm'
     },
@@ -1314,6 +1366,10 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         summary: '현재 실행 중인 스레드에 해당하는 Thread 객체를 반환합니다.',
         details: 'Shared 메서드입니다. Thread 객체를 미리 확보해 두지 않아도 현재 실행 중인 스레드를 일시 중단하거나 중단할 수 있습니다.',
         category: 'Thread Class',
+        returnType: 'Thread',
+        // 조회만 하는 Shared 메서드 — 디버그 hover가 `Thread.CurrentThread.Name`을 제어기에서
+        // 평가해도 안전하다(실기기 확인 2026-08-31: 괄호 유무 모두 `String "GPL_Code"` 반환).
+        sideEffectFree: true,
         insertSnippet: 'Thread.CurrentThread()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/currentthread.htm'
     },
@@ -1343,6 +1399,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         usage: 'name_string = thread_object.Name',
         summary: 'Thread 객체와 관련된 스레드의 이름을 String 값으로 반환합니다.',
         details: 'String · 읽기 전용. Thread 객체를 생성할 때 생성자에서 지정한 스레드 이름입니다.',
+        returnType: 'String',
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/name.htm'
     },
@@ -1353,6 +1410,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         usage: 'name_string = thread_object.Project',
         summary: 'Thread 객체와 관련된 프로젝트의 이름을 String 값으로 반환합니다.',
         details: 'String · 읽기 전용. Thread 객체를 생성할 때 생성자에서 지정한 프로젝트 이름입니다.',
+        returnType: 'String',
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/project.htm'
     },
@@ -1458,6 +1516,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         usage: 'name_string = thread_object.StartProcedure',
         summary: 'Thread 객체와 관련된 시작 프로시저의 이름을 String 값으로 반환합니다.',
         details: 'String · 읽기 전용. Thread 객체를 생성할 때 생성자에서 지정한 시작 프로시저 이름입니다.',
+        returnType: 'String',
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/startprocedure.htm'
     },
@@ -1512,6 +1571,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
             '| 3 | 오류 없이 일시 중지됨. 재개 가능 |',
             '| 4 | 오류와 함께 일시 중지됨. 재개하면 오류가 발생한 명령을 다시 시도함 |'
         ].join('\n'),
+        returnType: 'Double',
         category: 'Thread Class',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/threadstate.htm'
     },
@@ -1802,6 +1862,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Vision.Result(vision_tool_name, index, location_object)',
         summary: '비전 도구에서 나온 단일 결과 집합을 담은 VisResult 객체를 반환합니다.',
         category: 'Vision Class',
+        returnType: 'VisResult',
         insertSnippet: 'Vision.Result(${1:vision_tool_name}, ${2:index}, ${3:location_object})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Vision/vs_result.htm'
     },
@@ -1885,6 +1946,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'VisResult.Loc',
         summary: '비전 결과 객체의 위치 및 방향 정보를 담은 Location 객체를 반환합니다.',
         category: 'VisResult Class',
+        returnType: 'Location',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Vision/vsr_loc.htm'
     },
     {
@@ -1910,6 +1972,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlDoc.CreateNode(type, name)',
         summary: 'DOM 트리에 추가할 수 있는 새 노드 객체를 생성하여 반환합니다.',
         category: 'XmlDoc Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlDoc.CreateNode(${1:type}, ${2:name})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlDoc/createnode_xmldoc.htm'
     },
@@ -1919,6 +1982,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlDoc.DocumentElement()',
         summary: 'DOM 문서 트리의 최상위 요소를 XmlNode 객체로 반환합니다.',
         category: 'XmlDoc Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlDoc.DocumentElement()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlDoc/doc_element_xmldoc.htm'
     },
@@ -1936,6 +2000,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlDoc.LoadFile(input_file, options)',
         summary: '파일에서 XML 텍스트 문서를 로드 및 파싱하여 생성된 XmlDoc DOM 트리 객체를 반환합니다.',
         category: 'XmlDoc Class',
+        returnType: 'XmlDoc',
         insertSnippet: 'XmlDoc.LoadFile(${1:input_file}, ${2:options})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlDoc/loadfile_xmldoc.htm'
     },
@@ -1945,6 +2010,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlDoc.LoadString(input_string, options)',
         summary: '문자열에서 XML 텍스트 문서를 파싱하여 생성된 XmlDoc DOM 트리 객체를 반환합니다.',
         category: 'XmlDoc Class',
+        returnType: 'XmlDoc',
         insertSnippet: 'XmlDoc.LoadString(${1:input_string}, ${2:options})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlDoc/loadstring_xmldoc.htm'
     },
@@ -2036,6 +2102,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.AddElementNode(element, value)',
         summary: '새 XML 요소를 자식으로 추가하고, 생성된 요소 노드의 XmlNode 객체를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.AddElementNode(${1:element}, ${2:value})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/addelementnode_xmlnode.htm'
     },
@@ -2062,6 +2129,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.Clone(deep, xmldoc)',
         summary: '현재 노드의 복제본인 새 XML 노드를 생성합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.Clone(${1:deep}, ${2:xmldoc})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/clone_xmlnode.htm'
     },
@@ -2071,6 +2139,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.FirstChild()',
         summary: '현재 노드의 첫 번째 자식 노드를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.FirstChild()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/firstchild_xmlnode.htm'
     },
@@ -2089,6 +2158,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.GetAttributeNode(attribute)',
         summary: '지정한 이름의 속성 노드(현재 노드의 자식)를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.GetAttributeNode(${1:attribute})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/getattributenode_xmlnode.htm'
     },
@@ -2107,6 +2177,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.GetElementNode(element)',
         summary: '지정한 이름의 요소 노드(현재 노드의 자식)를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.GetElementNode(${1:element})',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/getelementnode_xmlnode.htm'
     },
@@ -2160,6 +2231,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.LastChild()',
         summary: '현재 노드의 마지막 자식 노드를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.LastChild()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/lastchild_xmlnode.htm'
     },
@@ -2177,6 +2249,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.NextSibling()',
         summary: '현재 노드의 다음 형제 노드를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.NextSibling()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/nextsibling_xmlnode.htm'
     },
@@ -2186,6 +2259,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.OwnerDocument()',
         summary: '현재 노드가 속한 DOM 트리의 XmlDoc 객체를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlDoc',
         insertSnippet: 'XmlNode.OwnerDocument()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/ownerdoc_xmlnode.htm'
     },
@@ -2195,6 +2269,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.ParentNode()',
         summary: '현재 노드의 부모 노드를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.ParentNode()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/parentnode_xmlnode.htm'
     },
@@ -2204,6 +2279,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'XmlNode.PreviousSibling()',
         summary: '현재 노드의 이전 형제 노드를 반환합니다.',
         category: 'XmlNode Class',
+        returnType: 'XmlNode',
         insertSnippet: 'XmlNode.PreviousSibling()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlNode/previoussibling_xmlnode.htm'
     },
@@ -2432,6 +2508,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'Socket.RemoteEndPoint',
         summary: '활성 TCP 연결의 원격 엔드포인트 정보를 반환합니다.',
         category: 'Socket Class',
+        returnType: 'IPEndPoint',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/Socket/remoteendpoint.htm'
     },
     {
@@ -2467,6 +2544,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'TcpClient.Client()',
         summary: 'TcpClient 객체에 연결된 Socket 객체를 반환합니다.',
         category: 'TcpClient Class',
+        returnType: 'Socket',
         insertSnippet: 'TcpClient.Client()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/TcpClient/client_tcpc.htm'
     },
@@ -2486,6 +2564,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'TcpListener.AcceptSocket()',
         summary: 'TCP 연결을 수락하고, 해당 연결에서 I/O를 수행할 새 Socket 객체를 반환합니다.',
         category: 'TcpListener Class',
+        returnType: 'Socket',
         insertSnippet: 'TcpListener.AcceptSocket()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/TcpListener/accept_tcpl.htm'
     },
@@ -2531,6 +2610,7 @@ export const GPL_DICTIONARY_ENTRIES: GPLBuiltinEntry[] = [
         signature: 'UdpClient.Client()',
         summary: 'UdpClient 객체에 연결된 Socket 객체를 반환합니다.',
         category: 'UdpClient Class',
+        returnType: 'Socket',
         insertSnippet: 'UdpClient.Client()',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/UdpClient/client_udpc.htm'
     },
@@ -2586,5 +2666,362 @@ export const GPL_CLASS_DOCS: GPLClassDoc[] = [
         constructorSignature: 'New Thread(procedure_name, project_name, thread_name, stack_size)',
         constructorSummary: '프로시저와 연결된 Thread 객체를 만듭니다. 이름만 기록하며 실제 스레드 생성은 Start에서 이뤄집니다.',
         sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/threadintro.htm'
+    },
+    // ── 모션/로봇 (정적 클래스) ──────────────────────────────────────────────
+    {
+        name: 'Move',
+        summary: '로봇에 동작 명령을 내리는 정적 클래스입니다. 위치 제어·속도 제어·토크 제어 동작을 지원합니다.',
+        details: [
+            '표준적인 위치 제어 동작은 **목적지**와 **동작 성능 규격** 두 가지를 인자로 받습니다. 보통 목적지는',
+            'Location 객체로, 성능 규격은 Profile 객체로 지정합니다. Location은 목적지를 직교 좌표나 관절 좌표로',
+            '표현하며 일부 Move 메서드가 사용하는 클리어런스 정보도 함께 담습니다. Profile은 직선 보간/관절 보간',
+            '중 어느 경로를 따를지와 얼마나 빠르게 움직일지를 지정합니다.',
+            '',
+            '목적지를 지정하는 방식에 따라 메서드가 나뉩니다 — 목적지로 바로 이동(`Move.Loc`), 목적지의 클리어런스',
+            '위치로 이동(`Move.Approach`), 직전 목적지 기준 상대 이동(`Move.Rel`), 단일 축 이동(`Move.OneAxis`).'
+        ].join('\n'),
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Move/moveintro.htm'
+    },
+    {
+        name: 'Robot',
+        summary: '시스템에 구성된 각 로봇의 기능과 상태(현재 위치, 원점 복귀, 감속 정지, 베이스·툴 오프셋 등)에 접근하는 정적 클래스입니다.',
+        details: [
+            '이 클래스의 가장 중요한 역할은 **특정 로봇을 특정 스레드에 결속하는 것**입니다.',
+            '',
+            '- 읽기 전용 조작(예: 현재 위치 읽기)은 로봇을 명시하지 않으면 `Robot.Selected`로 지정된 로봇을 씁니다.',
+            '- 로봇을 제어하거나 이동시키려면 먼저 `Robot.Attached`로 배타적 접근 권한을 얻어야 합니다.',
+            '',
+            'GPL 관례대로 산술 타입(Integer·Single·Double) 간 변환은 자동으로 이뤄지며, 결과는 대체로 Double로',
+            '만들어진 뒤 필요에 따라 작은 타입으로 자동 변환됩니다(오버플로가 없는 한 오류가 나지 않습니다).'
+        ].join('\n'),
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Robot/robotintro.htm'
+    },
+    {
+        name: 'Signal',
+        summary: '제어기의 디지털·아날로그 입출력(I/O)에 접근하는 정적 클래스입니다. GPL 프로그램이 셀 안의 다른 장비와 동작을 맞추는 통로입니다.',
+        details: [
+            '디지털 I/O로는 피더·가공 장비 같은 다른 설비와 실행을 인터록하는 세마포어를 만들 수 있고,',
+            '아날로그 I/O로는 힘·온도 센서 값을 읽어 실행 흐름을 바꿀 수 있습니다.',
+            '',
+            '멤버는 `Signal.DIO`(디지털)와 `Signal.AIO`(아날로그) 두 개뿐이며, 채널 번호로 읽고 씁니다.'
+        ].join('\n'),
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Signal/signalintro.htm'
+    },
+    {
+        name: 'Controller',
+        summary: '제어기 전반의 기능(고전력 제어, E-Stop 로직, 파라미터 데이터베이스, 콘솔 명령 실행 등)에 접근하는 정적 클래스입니다.',
+        details: [
+            '이 클래스와 그 멤버는 **PreciseFlex 제어기 제품 전용**으로 정의된 것이며 다른 표준을 따르지 않습니다.',
+            '`SleepTick`처럼 Basic 언어의 다른 수단으로도 비슷한 일을 할 수 있는 멤버도 있지만, 사용 편의나',
+            '미묘하게 다른(중요한) 동작 때문에 별도로 제공됩니다.'
+        ].join('\n'),
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Controller/cntrlclassintro.htm'
+    },
+    // ── 위치/자세/동작 데이터 (인스턴스 객체) ───────────────────────────────
+    {
+        name: 'Location',
+        summary: 'GPL에서 로봇과 부품의 위치·방향을 표현하는 기본 수단입니다. 대부분의 Move 메서드가 Location(목적지)과 Profile(성능)을 인자로 받습니다.',
+        details: [
+            '각 Location 객체는 Type 표시자, 위치와 방향, 안전하게 접근하기 위한 클리어런스 정보, 대상 로봇에',
+            '고유한 구성(configuration) 정보를 담습니다.',
+            '',
+            'Type은 두 가지입니다.',
+            '',
+            '| Type | 값 | 저장 내용 |',
+            '| --- | --- | --- |',
+            '| Cartesian | 0 | X·Y·Z 변위와 Euler 각(Yaw·Pitch·Roll), 그리고 참조 프레임 객체를 가리키는 선택적 포인터 |',
+            '| Angles | 1 | 각 축 위치의 배열 |',
+            '',
+            'Cartesian Location에서 X·Y·Z·Yaw·Pitch·Roll은 "참조 프레임에 대한 위치"(`PosWrtRef`)를 정의하며,',
+            '"총 위치(total position)"는 `PosWrtRef`와 지정된 참조 프레임들을 합한 결과입니다. Angles Location에서',
+            '"총 위치"는 축 위치 배열 자체를 뜻합니다.'
+        ].join('\n'),
+        constructorSignature: 'New Location',
+        constructorSummary: '기본값으로 초기화된 Location 객체를 만듭니다(`Dim loc1 As New Location`).',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/locationintro.htm'
+    },
+    {
+        name: 'Profile',
+        summary: '한 번의 동작을 어떻게 수행할지를 지정하는 성능 파라미터(속도·가속·감속·인레인지 기준 등)를 담는 객체입니다.',
+        details: [
+            '기본 동작 명령 `Move.Loc`은 Location과 Profile 두 인자를 받습니다 — Location은 **어디로** 갈지,',
+            'Profile은 **어떻게** 갈지를 정합니다.',
+            '',
+            '`New Profile`로 만들면 `Straight`는 False(관절 보간)로 초기화됩니다.'
+        ].join('\n'),
+        constructorSignature: 'New Profile',
+        constructorSummary: '기본값으로 초기화된 Profile 객체를 만듭니다(`Dim pf1 As New Profile`).',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Profile_class/profileintro.htm'
+    },
+    {
+        name: 'RefFrame',
+        summary: '참조 프레임 객체입니다. Location이 RefFrame을 기준으로 정의돼 있으면, 프레임의 위치·방향을 바꾸는 것만으로 연결된 모든 Location이 함께 조정됩니다.',
+        details: [
+            '주요 용도는 세 가지입니다.',
+            '',
+            '- **기준 평판**: 베이스 플레이트에 대한 상대 위치가 고정된 여러 부품을 집거나 놓을 때. 예를 들어 PCB가',
+            '  장비에 들어오면 비전으로 위치·방향을 확인해 PCB 참조 프레임만 갱신하면, 실장할 모든 부품의 위치가',
+            '  자동으로 보정됩니다.',
+            '- **팔레트**: 격자로 배열된 샘플 트레이 등. 트레이 위치를 잡고 프레임을 갱신하면 `PalletNextPos`로',
+            '  샘플 사이를 간단히 이동할 수 있습니다.',
+            '- **컨베이어**: 움직이는 컨베이어 라인에 상대적인 위치를 지정해 컨베이어 트래킹을 구현합니다.'
+        ].join('\n'),
+        constructorSignature: 'New RefFrame',
+        constructorSummary: '기본값으로 초기화된 RefFrame 객체를 만듭니다(`Dim belt1 As New RefFrame`).',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Reference_Frame/refframeintro.htm'
+    },
+    {
+        name: 'Latch',
+        summary: '래치 입력으로 설정된 디지털 입력이 변할 때 캡처된 로봇·벨트 위치를 GPL 프로시저가 받아 가는 클래스입니다.',
+        details: [
+            '래치가 발생하면 그 시점의 시각과 로봇 축 위치를 담은 Latch 객체가 만들어져 큐에 들어갑니다. 로봇마다',
+            '독립적인 큐가 있고 오래된 것이 앞에 오도록 시간순으로 유지되며, 한 로봇의 모든 축이 동시에 래치되므로',
+            '로봇의 전체 위치와 방향을 얻을 수 있습니다.',
+            '',
+            '벨트는 보통 "encoder only" 로봇으로 구성된 특수한 로봇입니다. 여러 벨트·로봇을 하나의 래치 입력으로',
+            '동시에, 또는 서로 다른 래치 입력으로 독립적으로 래치할 수 있고, 벨트·로봇 하나당 최대 12개의 래치',
+            '입력을 쓸 수 있습니다.',
+            '',
+            '큐 접근용 `Latch.Count`·`Latch.Flush`·`Latch.Result`·`Latch.ThreadEvent`는 Shared 멤버이고,',
+            '`Angle`·`Location`·`Signal`·`Timestamp`·`ErrorCode`는 `Latch.Result`가 돌려준 객체의 인스턴스',
+            '멤버입니다. `Latch.ThreadEvent`로 큐에 스레드 이벤트를 걸어 두면 `Thread.WaitEvent`로 래치를',
+            '효율적으로 기다릴 수 있습니다.'
+        ].join('\n'),
+        constructorSummary: '직접 생성하지 않습니다 — `Latch.Result`가 큐에서 꺼내 돌려주는 객체를 받아 씁니다(큐가 비면 Nothing).',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Latch/latchintro.htm'
+    },
+    // ── 예외 처리 ───────────────────────────────────────────────────────────
+    {
+        name: 'Exception',
+        summary: '실행 예외의 원인 정보를 담는 객체입니다. 예외가 발생하면 정보가 자동으로 저장되고 실행이 Catch 블록으로 분기합니다.',
+        details: [
+            'Exception 객체는 두 가지 형태를 가집니다(`RobotError` 프로퍼티로 구분).',
+            '',
+            '| 형태 | 담는 정보 |',
+            '| --- | --- |',
+            '| 일반(general) | 예외 종류를 나타내는 숫자 코드 + 성격을 추가로 알려 주는 `Qualifier` |',
+            '| 로봇(robot) | 숫자 코드 + 관련된 로봇 번호(`RobotNum`)와 축 비트마스크(`Axis`) |',
+            '',
+            '`Throw`로 직접 예외를 낼 때는 `ErrorCode`를 반드시 음수로 설정해야 합니다(0이면 -807 "Invalid',
+            'exception"이 발생). 애플리케이션 전용 코드로 -786(*Project generated error*)과',
+            '-1038(*Project generated robot error*)이 예약돼 있습니다 — 제어기가 자동으로 내지 않는 코드입니다.'
+        ].join('\n'),
+        constructorSignature: 'New Exception',
+        constructorSummary: '빈 Exception 객체를 만듭니다(`Dim exc1 As New Exception`). `Catch exc1`에 쓸 객체는 미리 만들어 둬야 합니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/exception_intro.htm'
+    },
+    // ── 기본 자료형·유틸리티 ────────────────────────────────────────────────
+    {
+        name: 'String',
+        summary: 'String 변수를 다루는 프로퍼티·메서드 모음입니다. String도 내부적으로는 다른 내장 클래스와 같은 구조로 구현돼 있습니다.',
+        details: [
+            '같은 일을 두 갈래로 할 수 있습니다.',
+            '',
+            '- 고전적인 Basic 함수: `Len`, `Mid`, `InStr`, `LCase`, `UCase`, `Asc`, `Chr`, `Format` 등',
+            '- String 변수의 프로퍼티·메서드: `String.Compare`, `문자열변수.Length`, `문자열변수.Substring` 등',
+            '',
+            'String과 수치값 사이의 변환은 `CStr`·`CDbl`·`CInt`·`Hex` 같은 함수로 합니다(Functions 절 참조).'
+        ].join('\n'),
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/stringintro.htm'
+    },
+    {
+        name: 'Math',
+        summary: 'GPL에 내장된 산술·삼각 연산을 모아 둔 정적 클래스입니다. 편집 중 픽 리스트로 사용 가능한 연산을 한눈에 볼 수 있도록 메서드 형태로 제공됩니다.',
+        details: [
+            '산술 타입(Boolean·Integer·Single·Double) 간 변환은 자동이므로 입력 타입 조합별로 다른 메서드가',
+            '필요하지 않습니다. 결과는 대체로 Double로 만들어지고 필요하면 작은 타입으로 자동 변환됩니다',
+            '(수치 오버플로가 없는 한 오류가 나지 않습니다).'
+        ].join('\n'),
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/mathintro.htm'
+    },
+    {
+        name: 'Array',
+        summary: '모든 타입의 배열 변수(String·Location·Integer 등)가 속하는 내장 클래스입니다. 이 클래스의 프로퍼티로 배열의 형태를 조회합니다.',
+        details: [
+            '**하한(lower bound)은 항상 0**이므로 한 차원의 원소 수는 `GetUpperBound`보다 1 큽니다.',
+            '`Length`는 전체 차원을 통틀은 원소 수, `Rank`는 차원 수입니다.'
+        ].join('\n'),
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Array/arrayintro.htm'
+    },
+    {
+        name: 'Console',
+        summary: 'GPL 콘솔로 간단히 출력하는 정적 클래스입니다. 진단용 출력에 씁니다.',
+        details: [
+            '**출력이 실제로 어디로 가는지는 `Start` 콘솔 명령의 `-event` 스위치에 달려 있습니다.**',
+            '',
+            '| `-event` | 출력 대상 |',
+            '| --- | --- |',
+            '| 없음 | 첫 번째 시리얼 포트 `/dev/com1` |',
+            '| 있음 | GDE의 GPL Output 창 |'
+        ].join('\n'),
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Console/consoleintro.htm'
+    },
+    // ── 파일/시리얼 I/O ─────────────────────────────────────────────────────
+    {
+        name: 'File',
+        summary: '디스크 파일과 디렉터리를 관리하는 정적 클래스입니다. 파일 내용 읽기·쓰기는 StreamReader·StreamWriter가 담당합니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/File_Serial/fileserialintro.htm'
+    },
+    {
+        name: 'StreamReader',
+        summary: '파일이나 시리얼 포트 장치를 열어 읽는 객체입니다. 파일과 시리얼 통신에 모두 적용됩니다.',
+        details: [
+            '`path`에 쓰는 이름 규칙입니다.',
+            '',
+            '| 경로 | 대상 |',
+            '| --- | --- |',
+            '| `/dev/com1`, `/dev/com2`, … | 로컬 시리얼 포트 |',
+            '| `/dev/comrxy` | 원격 시리얼 포트(x=원격 장치 번호, y=그 장치의 포트 번호) |',
+            '| `/ROMDISK/...` | 임시 파일 |',
+            '| `/flash/...` | 영구 파일 |',
+            '',
+            '열기에 실패하면 생성자가 Exception을 던집니다.'
+        ].join('\n'),
+        constructorSignature: 'New StreamReader(path)',
+        constructorSummary: 'StreamReader 객체를 만들면서 파일이나 장치를 읽기용으로 엽니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/File_Serial/StreamReader/construct_sr.htm'
+    },
+    {
+        name: 'StreamWriter',
+        summary: '파일이나 시리얼 포트 장치를 열어 쓰는 객체입니다. 파일과 시리얼 통신에 모두 적용됩니다.',
+        details: [
+            '`path` 규칙은 StreamReader와 같습니다(`/dev/com1`, `/ROMDISK`, `/flash`).',
+            '',
+            '`append`는 선택 인자입니다 — False이면 같은 이름의 기존 파일을 덮어쓰며 항상 새 파일을 만듭니다.',
+            '',
+            '`AutoFlush`는 시리얼 포트와 `/NVRAM` 장치에서 기본 활성, 그 밖의 장치에 있는 파일에서는 기본',
+            '비활성입니다. 열기에 실패하면 Exception을 던집니다.'
+        ].join('\n'),
+        constructorSignature: 'New StreamWriter(path, append)',
+        constructorSummary: 'StreamWriter 객체를 만들면서 파일이나 장치를 쓰기용으로 엽니다(`append`는 생략 가능).',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/File_Serial/StreamWriter/construct_sw.htm'
+    },
+    // ── 네트워킹 ────────────────────────────────────────────────────────────
+    {
+        name: 'IPEndPoint',
+        summary: 'IP 주소와 포트 번호의 조합(엔드포인트)을 담는 객체입니다. 네트워크에서 컴퓨터와 프로세스를 함께 특정합니다.',
+        details: [
+            '두 매개변수 모두 선택입니다.',
+            '',
+            '| 매개변수 | 생략하면 |',
+            '| --- | --- |',
+            '| IP_address (`"nnn.nnn.nnn.nnn"`) | 빈 문자열이나 생략 시 모든 주소와 일치하는 와일드카드 |',
+            '| port_number (0~65536) | 포트 번호를 자동 할당 |'
+        ].join('\n'),
+        constructorSignature: 'New IPEndPoint(IP_address, port_number)',
+        constructorSummary: 'IP 엔드포인트 객체를 만들고 필요하면 주소·포트를 초기화합니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/IPEndPoint/construct_ipe.htm'
+    },
+    {
+        name: 'Socket',
+        summary: '대부분의 네트워크 I/O의 기반이 되는 객체입니다. 기본적인 송수신 메서드를 담고 있습니다.',
+        details: [
+            '`New Socket`으로 직접 만들지 않습니다 — `TcpClient.Client`, `UdpClient.Client`,',
+            '`TcpListener.AcceptSocket`이 돌려주는 Socket 객체를 받아 씁니다.'
+        ].join('\n'),
+        constructorSummary: '직접 생성하지 않습니다 — TcpClient·TcpListener·UdpClient에서 얻습니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/networkintro.htm'
+    },
+    {
+        name: 'TcpClient',
+        summary: 'TCP 클라이언트를 구현하는 객체입니다. 생성 시 하부 Socket도 함께 만들어집니다.',
+        details: [
+            '`endpoint`는 선택 인자입니다. 지정하면 원격 서버로 연결 요청을 즉시 보내고, 생략하면 I/O 전에',
+            '이 클라이언트의 Socket에 대해 `Connect`를 호출해야 합니다.'
+        ].join('\n'),
+        constructorSignature: 'New TcpClient(endpoint)',
+        constructorSummary: 'TcpClient 객체를 만들고, endpoint를 주면 원격 TCP 서버로 연결을 요청합니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/TcpClient/construct_tcpc.htm'
+    },
+    {
+        name: 'TcpListener',
+        summary: 'TCP 서버를 구현하는 객체입니다. 지정한 포트로 들어오는 연결을 받습니다.',
+        details: [
+            '생성만으로는 대기가 시작되지 않습니다 — `Start` 메서드를 호출해야 연결을 듣기 시작합니다.',
+            '',
+            '`endpoint`의 IP 주소는 무시됩니다(제어기의 IP는 하나뿐). 포트 번호만 의미가 있습니다.'
+        ].join('\n'),
+        constructorSignature: 'New TcpListener(endpoint)',
+        constructorSummary: 'TcpListener 객체와 하부 Socket을 만듭니다(대기 시작은 Start).',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/TcpListener/construct_tcpl.htm'
+    },
+    {
+        name: 'UdpClient',
+        summary: 'UDP 통신의 서버·클라이언트 양쪽을 구현하는 객체입니다. 생성 시 하부 Socket도 함께 만들어집니다.',
+        details: [
+            '`endpoint`는 선택 인자이고 그 IP 주소는 무시됩니다(제어기의 IP는 하나뿐). 포트가 0이 아니면 해당',
+            '포트로 온 데이터그램만 받습니다. 생성만으로는 네트워크 I/O가 발생하지 않습니다.'
+        ].join('\n'),
+        constructorSignature: 'New UdpClient(endpoint)',
+        constructorSummary: 'UDP 통신용 UdpClient 객체와 하부 Socket을 만듭니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Network/UdpClient/construct_udpc.htm'
+    },
+    {
+        name: 'Modbus',
+        summary: '로컬 이더넷에 연결된 MODBUS/TCP 슬레이브 장치에 마스터로 접근하는 객체입니다.',
+        details: [
+            'MODBUS/TCP는 산업 현장에서 지능형 장치 사이의 디지털·아날로그 I/O와 레지스터 데이터를 주고받는 데',
+            '널리 쓰이는 사실상의 개방 표준입니다.',
+            '',
+            '슬레이브로의 연결은 필요할 때 자동으로 만들어집니다. 응답 대기 시간은 `Timeout`(밀리초)으로',
+            '조절하며, 시간이 지나면 예외가 발생합니다.'
+        ].join('\n'),
+        constructorSignature: 'New Modbus(endpoint)',
+        constructorSummary: 'MODBUS 연결용 객체를 만들고 대상 주소를 지정합니다(`Dim mb As New Modbus(ep)`, ep는 IPEndPoint).',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Modbus/modbusintro.htm'
+    },
+    // ── 비전 ────────────────────────────────────────────────────────────────
+    {
+        name: 'Vision',
+        summary: 'PreciseVision 머신 비전 시스템과의 통신을 관리하는 객체입니다.',
+        details: [
+            '연결을 위한 별도 메서드는 없습니다 — `Process`·`Result`·`ResultCount`를 실행하면 GPL이 비전',
+            '시스템으로의 연결을 자동으로 맺습니다. 연결을 끊을 때는 `Disconnect`를 씁니다.'
+        ].join('\n'),
+        constructorSignature: 'New Vision',
+        constructorSummary: '빈 Vision 객체를 만듭니다. 이 시점에는 PreciseVision과 통신하지 않습니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Vision/visionintro.htm'
+    },
+    {
+        name: 'VisResult',
+        summary: '비전 툴 하나가 낸 결과 한 건을 담는 객체입니다.',
+        details: [
+            '보통 직접 만들지 않고 `Vision` 객체의 `Result` 메서드가 돌려주는 객체를 받아 씁니다.',
+            '위치·방향은 `Loc`(Location 객체)으로, 수치 정보 배열은 `Info`/`InfoCount`로 읽습니다.'
+        ].join('\n'),
+        constructorSignature: 'New VisResult',
+        constructorSummary: '빈 VisResult 객체를 만듭니다. 보통은 `vision_object.Result`로 얻으므로 직접 만들 일은 드뭅니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Vision/visionintro.htm'
+    },
+    // ── XML ─────────────────────────────────────────────────────────────────
+    {
+        name: 'XmlDoc',
+        summary: 'XML 문서 전체를 담는 DOM 트리의 최상위를 다루는 객체입니다. 문서를 메모리로 읽어들이거나 파일로 저장하는 등 문서 단위 작업을 담당합니다.',
+        details: [
+            'GPL의 XML 클래스는 XML 텍스트 문서를 제어기 메모리 안의 트리 구조로 변환해 다룹니다. 트리는',
+            'DOM(Document Object Model) Core Interfaces의 부분집합으로 구성됩니다.',
+            '',
+            'XML 문서 하나당 XmlDoc 객체는 정확히 하나이며(포인터는 여럿일 수 있음), XmlDoc 객체 없이는 DOM',
+            '트리가 존재할 수 없습니다.',
+            '',
+            '`XmlDoc.LoadFile`·`XmlDoc.LoadString`은 새 문서 트리 객체를 자동으로 만들므로, `New XmlDoc`은',
+            'GPL 안에서 문서를 새로 만들 때만 필요합니다.'
+        ].join('\n'),
+        constructorSignature: 'New XmlDoc(document_name)',
+        constructorSummary: '지정한 이름의 최상위 섹션을 가진 새 XML 문서 트리를 만듭니다(특수문자 불가).',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/XmlDoc/construct_xmldoc.htm'
+    },
+    {
+        name: 'XmlNode',
+        summary: 'DOM 문서 트리의 개별 노드를 가리키는 객체입니다. 노드 데이터·프로퍼티 접근과 트리 구조에서의 노드 추가·삭제를 담당합니다.',
+        details: [
+            'XmlNode 객체는 DOM 노드를 **가리키기만 하고 담고 있지 않습니다.** 따라서 노드가 DOM 트리에 속해',
+            '있는 한, XmlNode 객체를 만들거나 없애도 하부 DOM 노드는 영향을 받지 않습니다.',
+            '',
+            '노드 객체는 `XmlDoc.CreateNode`나 `XmlDoc.DocumentElement`, 그리고 `FirstChild`·`LastChild`·',
+            '`ParentNode`·`NextSibling` 같은 탐색 메서드로 얻습니다.'
+        ].join('\n'),
+        constructorSummary: '직접 생성하지 않습니다 — `XmlDoc.CreateNode`·`XmlDoc.DocumentElement`나 탐색 메서드로 얻습니다.',
+        sourceUrl: 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/XML/xmlintro.htm'
     }
 ];

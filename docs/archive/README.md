@@ -14,6 +14,11 @@
 - `reviews/`  
   시점별 프로젝트 리뷰 기록
 
+- `handoff/`  
+  `docs/ai-handoff.md` §1에서 분리한 **월별 세션 이력**(`2026-06.md` 등). 핸드오프 문서 본문에는
+  최근 10세션만 두고 그 이전을 여기로 옮긴다. 원본과 같은 성격의 저장소 전용 문서라 ai-handoff.md와
+  마찬가지로 MkDocs 사이트에서는 제외된다(`mkdocs.yml`의 `exclude_docs`) — 저장소에서 직접 읽는다.
+
 ## 반출된 문서
 
 - `test-robot/` — 지금은 삭제되고 없는 GPL 로봇 애플리케이션 **Test_robot** 시절의 개발

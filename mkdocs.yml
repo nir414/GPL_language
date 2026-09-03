@@ -7,11 +7,13 @@ edit_uri: edit/main/docs/
 
 docs_dir: docs
 
-# ai-handoff.md 는 AI 작업자용 저장소 전용 문서이므로 사이트에서 제외한다.
+# ai-handoff.md 와 그 월별 아카이브(archive/handoff/)는 AI 작업자용 저장소 전용 문서이므로
+# 사이트에서 제외한다.
 # (exclude_docs 를 정의하면 기본값을 대체하므로 dotfile 제외 패턴 `.*` 를 함께 유지)
 exclude_docs: |
   .*
   /ai-handoff.md
+  /archive/handoff/
 
 theme:
   name: material

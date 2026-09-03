@@ -106,6 +106,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 | 연결 | GPL: Connect to Controller | `gpl.controller.connect` | 설정 IP/포트 확인 |
 | 연결 해제 | GPL: Disconnect Controller | `gpl.controller.disconnect` | 1403도 함께 정리 |
 | Build Only | GPL: Deploy (/GPL 업로드 + Compile, Start 없음) | `gpl.deploy` | 최신 로컬 코드 검증 기본 경로, /GPL 직접 업로드 |
+| 업로드 후 실행 | GPL: 업로드 스타트 (/GPL 업로드 + Start, Compile은 제어기가 수행) | `gpl.uploadStart` | 실행 상태 변경. `Compile`을 보내지 않는다(§0.7) — 소스 에러는 Start STATUS로만 드러남 |
 | 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` | 실행 상태 변경 (구 `gpl.deployRun`에서 분리) |
 | flash 저장 | GPL: Save to Flash | `gpl.saveToFlash` | /flash/projects에 FTP 미러 저장만 (Load/Compile 없음) |
 | launch 생성 | GPL: Create/Update Debug launch.json | `gpl.debug.generateLaunch` | Attach 구성 생성 |
@@ -123,6 +124,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 아래 명령은 실행 전 대상과 의도를 확인한다.
 
 - `gpl.start`
+- `gpl.uploadStart`
 - `gpl.controller.stopAll`
 - `gpl.controller.threadStart`
 - `gpl.controller.threadStop`

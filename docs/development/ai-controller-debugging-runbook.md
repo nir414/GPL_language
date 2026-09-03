@@ -73,10 +73,19 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 목적 | 제목 | Command ID |
 | --- | --- | --- |
 | Build Only(배포) | GPL: Deploy (/GPL 업로드 + Compile, Start 없음) | `gpl.deploy` |
+| 업로드 후 실행 | GPL: 업로드 스타트 (/GPL 업로드 + Start, Compile은 제어기가 수행) | `gpl.uploadStart` |
 | 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` |
 | Flash 저장 | GPL: Save to Flash (/flash/projects에 저장만) | `gpl.saveToFlash` |
 | 빠른 컴파일 | GPL: 빠른 컴파일 (변경분만 /GPL 직접 업로드, STOP/START 생략) | `gpl.quickCompile` |
 | 전체 정지 | GPL: 모든 쓰레드 중지 (Stop -all) | `gpl.controller.stopAll` (별칭 `gpl.stopAll`) |
+| 자동화 대상 조회/고정 | (팔레트 미노출 — 자동화 전용) | `gpl.automation.target` |
+
+> **자동화(MCP·URI)로 배포/실행 명령을 부를 때는 대상 프로젝트를 인자로 넘긴다** (2026-08-31, `§1-CM`).
+> `gpl.deploy`·`gpl.uploadStart`·`gpl.quickCompile`·`gpl.start`·`gpl.saveToFlash` 는 인자가
+> `{project|projectDir|projectFile}` 중 하나를 가진 객체면 **비대화형**으로 동작한다 — QuickPick·모달을 띄우지 않고
+> 대상을 정할 수 없으면 `{ok:false, error:"PROJECT_AMBIGUOUS", candidates:[…]}` 를 반환한다.
+> 인자가 없거나 `vscode.Uri`(탐색기 우클릭)면 종전 대화형 경로다(사람용). **active editor 는 자동화 대상 결정에
+> 쓰이지 않는다.** MCP 에서는 `project_target`(대상 고정) → `deploy_project`(mode: build/quick/upload-start)를 쓴다.
 
 ### 디버그/콘솔
 
@@ -109,7 +118,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | AI Agent Setup 내보내기 | GPL: Export AI Agent Setup | `gpl.ai.exportAgentSetup` |
 | AI 디버그 어시스트 | GPL: AI Debug Assist | `gpl.ai.debugAssist` |
 | 상태 조회 | GPL: AI Debug Get State | `gpl.ai.debug.getState` |
-| 중단점 설정/해제 | GPL: AI Debug Set/Clear Breakpoint | `gpl.ai.debug.setBreakpoint` / `gpl.ai.debug.clearBreakpoint` |
+| 중단점 설정/해제 | GPL: AI Debug Set/Clear Breakpoint | `gpl.ai.debug.setBreakpoint` / `gpl.ai.debug.clearBreakpoint` (성공하면 에디터 중단점에도 반영 — `mirror: false`로 제외) |
 | 쓰레드 제어 | GPL: AI Debug Break/Step/Continue Thread | `gpl.ai.debug.breakThread` / `gpl.ai.debug.stepThread` / `gpl.ai.debug.continueThread` |
 | 식 평가 | GPL: AI Debug Evaluate | `gpl.ai.debug.evaluate` |
 | 디버그 루프 | GPL: AI Debug Loop | `gpl.ai.debug.loop` |
@@ -131,6 +140,10 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | `gpl.ai.debug.connect` | `{ ip: "192.168.0.1", port: 1402, save: "session", silent: true }` — 모두 선택. `ip` 생략 시 launch.json > 세션 오버라이드 > settings 순의 현재 값 |
 | `gpl.ai.debug.getConnectionState` | 인자 없음 → `{ ok, connected, ip, port, consolePort, debugSessionActive, debugSession, runtimeConsole:{active,state,reason,lastPayloadAt}, expectedProject, deployLock, compileStale[] }` |
 | `gpl.controller.connect` | `{ silent: true }` 처럼 ConnectArgs 객체를 주면 비대화형(`{ ok, ip, port, connected, error?, mode }` 반환). 인자 없으면 대화형 |
+| `gpl.automation.target` | `{}` → 현재 상태(`{ ok, target, configuredDefault, candidates:[{project,dir,runnable,referencedAsLibraryBy?}], hint }`) · `{ project: "GPL_Code" }` → 세션 대상 고정 · `{ clear: true }` → 해제 |
+| `gpl.deploy` / `gpl.quickCompile` | `{ project: "GPL_Code" }` 또는 `{ projectDir: "…/projects/GPL_Code" }` / `{ projectFile: "…/Main.gpl" }`. 선택: `saveDirty: true`(미저장 문서 저장 후 계속 — 기본은 `UNSAVED_FILES` 로 중단) |
+| `gpl.uploadStart` / `gpl.start` | 위와 같고 **Start 를 보내므로** `confirmStart: true` 가 필요하다(사용자 확인을 받았음을 단언 — 없으면 `INTERACTIVE_UI_REQUIRED`). 설정 `gpl.controller.requireStartConfirmation: false` 면 불필요. 선택: `ignoreCompileStale: true`(기본은 `COMPILE_UNVERIFIED` 로 중단) |
+| `gpl.saveToFlash` | `{ project }`/`{ projectDir }`/`{ projectFile }` + 선택 `saveDirty` |
 
 공통 규약:
 
@@ -139,6 +152,15 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 - `breakThread`/`stepThread`는 기본(`waitForPause: true`)으로 STATUS 0(접수) 이후 스레드가 실제로 Paused/Break/Error 상태에 들어올 때까지 폴링한 뒤 `ok`를 판정한다. 시간 내 정지하지 않으면 `{ ok: false, error: "pause-timeout", state }`. 접수만 확인하려면 `waitForPause: false`.
 - `loop`는 스텝마다 정지 복귀를 확인하고(`stepWaitTimeoutMs`, 기본 5000ms) 스택 top 위치와 watch 식 값을 수집하며, `stopWhen` 조건이 맞으면 자동 중단한다. 루프 도중 스레드가 Error 상태로 전이하면 `stoppedBy: "thread-error"`로 중단해 `lastStatus`를 돌려준다. `stopWhen` 평가 결과(값/STATUS/매칭 여부)는 실패해도 trace에 기록되며, 잘못된 `stopWhen.matches` 정규식은 루프 진입 전에 `invalid-stopWhen-matches`로 거부된다.
 - 별칭: `gpl.stopAll`은 `gpl.controller.stopAll`과 동일 동작(자동화/에이전트 호출 호환용).
+- **자동화 경로의 오류 코드**(2026-08-31): `NO_GPL_PROJECT`(워크스페이스에 `.gpr` 없음) · `PROJECT_NOT_FOUND`(지정한
+  이름/경로가 프로젝트가 아님) · `PROJECT_AMBIGUOUS`(후보 여럿 — `candidates` 동봉) · `UNSAVED_FILES`(미저장 문서 —
+  `files` 동봉, `saveDirty:true` 로 승인) · `COMPILE_UNVERIFIED`(Compile 미검증 — `ignoreCompileStale:true` 로 진행) ·
+  `INTERACTIVE_UI_REQUIRED`(모션 확인 필요 — `confirmStart:true` 로 단언, 또는 1402 `Start` 직접 전송).
+  **어느 코드든 UI 를 띄우지 않는다** — 사용자에게 QuickPick 을 누르거나 파일을 열어 달라고 요청하는 것은 자동화 결함으로 본다.
+- 자동화 대상 결정 우선순위: ① 인자(`projectDir`/`projectFile` → `project`) ② 세션 대상(`gpl.automation.target` 또는
+  사람이 QuickPick 에서 고른 값) ③ 실행 가능(`.gpr` 에 `ProjectStart`) 프로젝트가 유일할 때 그것 ④ 설정
+  `gpl.controller.defaultProject` ⑤ 후보가 하나뿐이면 그것 ⑥ 그 밖에는 `PROJECT_AMBIGUOUS`.
+  규칙 정본은 `src/controller/projectTarget.ts`(순수 로직, 단위 테스트 `src/test/projectTarget.test.ts`).
 - **외부 진입점(URI, GitHub #25 → 2026-08-28 전체 개방)**: 이 확장의 **모든 `gpl.*` 명령**을 URI로 실행할 수 있다.
   `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>`(인자 1개를 JSON으로), `/<gpl.command.id>?key=value&…`(평면 인자 → 객체 1개,
   숫자/불리언/JSON 리터럴 자동 변환), `/command?id=<gpl.command.id>&args=…`. 별칭(종전 호환): `/connect?ip=192.168.0.1&port=1402[&save=settings]`,
@@ -161,6 +183,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
   Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)가 추가됐다. 설정: 확장 `gpl.agentBridge.enabled`, MCP `GPL_BRIDGE=auto|only|off`.
   브리지가 꺼져 있거나 확장이 없을 때만 MCP가 직접 접속한다(그때는 MCP 자체의 정지 확인만 적용).
 - **VS Code 디버그 세션 종료 시 제어기 브레이크포인트는 전부 해제된다**(`disconnectRequest`가 이 세션이 설정한 BP를 `Set Nobreak`로 정리 — 다음 세션 중복 등록 방지, 의도된 동작). MCP 등 외부 클라이언트와 병행할 때는 세션 종료 후 재설정하거나 세션 없이 `gpl.controller.syncEditorBreakpoints`(에디터 BP → 제어기 실시간 동기화)를 사용한다.
+- **AI(MCP·URI·명령 콘솔)가 건 BP는 에디터 중단점에도 반영된다**(§1-CO, `gpl.controller.mirrorAiBreakpoints`, 기본 켜짐). 빨간 점으로 보이므로 사용자가 F9로 지울 수 있고, 위의 세션 종료 정리·`reconcileAll`·DAP의 파일 단위 재설정이 "에디터에 없는 BP"라며 지워 버리는 일이 없어진다. 반영은 **외부 진입점**(`gpl.controller.sendCommand` 인자 경로, `gpl.ai.debug.setBreakpoint/clearBreakpoint`)에서만 일어난다 — DAP와 에디터 동기화는 in-process 호출이라 대상이 아니다.
 
 ### 트리 컨텍스트 메뉴 명령 (인자 필요 — 팔레트 단독 실행 부적합, URI/`executeCommand`로는 객체 인자로 호출)
 
@@ -376,7 +399,7 @@ SoftEStop
 
 - **응답 프레이밍**: 모든 1402 응답은 `<DATA>...</DATA>\r\n<STATUS>code,"message"</STATUS>\r\n` + **NUL 1바이트** (2026-08-28 캡처 재판독: 178/178 응답이 `\0`으로 끝난다 — 1403과 같은 NUL 프레임 종결 규약이며 종전 기록에 빠져 있었다). 에러도 DATA+STATUS로 옴(예: `-508`은 `<DATA>(-508): *File not found* <path>/Project.gpr</DATA>`). 명령 송신은 plain text + `\r\n`(CRLF).
 - **스레드 목록**: 인자 없는 `Show Thread`는 스레드가 실행 중이어도 `<DATA></DATA>` 빈 응답. 전체 열거는 GDE처럼 **`Show Thread  -web`**(파이프 9컬럼: `name| state| code| "msg"| project| func| procLine| file| fileLine`). 특정 스레드 상세는 `Show Thread <name>`(콤마 형식).
-- **브레이크포인트**: `Set Break <project> "<file>"<line>` — **따옴표와 줄번호 사이 공백 없음**. 목록은 `Show Break`, 해제는 `Set Nobreak <project> "<file>"<line>`.
+- **브레이크포인트**: `Set Break <project> "<file>"<line>` — **따옴표와 줄번호 사이 공백 없음**. 목록은 `Show Break`, 해제는 `Set Nobreak <project> "<file>"<line>`. `Show Break` 응답은 `<STATUS>`가 목록 **앞**에 오므로 "STATUS 이후를 버리는" 방식으로 파싱하면 목록이 통째로 사라진다(§1-CO에서 MCP `list_breakpoints`가 이 때문에 빈 결과를 돌려주고 있었다).
 - **스텝**: step over = `Step <project> -over -noerror`, step into = `Step <project> -noerror`(`-into` 플래그 없음). 모든 step에 `-noerror`. Brooks 문서상 전체 구문은 `Step thread [-into] [-over] [-out] [-noerror]`(스위치 없음 = `-into`, `-noerror` = 에러를 낸 스텝을 건너뜀) — `-out`은 GDE 캡처에 없어 **실기기 미검증**(2026-08-25 확인, 트리 메뉴·Shift+F11이 사용).
 - **실행/중지**: `Start <project> -event`(이벤트 모드), `Continue <project>`, `Stop` 단독은 `-205 Missing argument` → 전체 중지는 `Stop -a`.
 - **플래시/메모리 조회**: 용량은 `dir -f /flash`(→ `used/total`), 메모리는 `memory`. (`Directory <path>`와는 별개 명령.)

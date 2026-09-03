@@ -147,11 +147,12 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 |---|---|---|
 | Go to Definition | `F12` | 함수, 클래스, 변수 정의로 이동 (`New Thread("Class.Proc",...)` 문자열 참조 포함) |
 | Find All References | `Shift+F12` | 심볼 사용 위치 전체 검색 |
+| Rename Symbol | `F2` | 선언과 사용처를 한 번에 바꿉니다. 로컬 변수·파라미터는 감싸는 프로시저 안에서만, 모듈/클래스 심볼은 그 프로젝트와 참조 라이브러리 범위에서 바꾸고, `New Thread("Mod.Proc", …)` 같은 문자열 프로시저 참조와 함수 반환값 대입(`FunctionName = …`)도 함께 반영합니다. **F12로 정의에 갈 수 없는 식별자는 거부**하고(이름만 같은 무관한 코드를 텍스트 치환으로 망가뜨리지 않기 위해), 예약어·내장 심볼·같은 범위의 이름 충돌도 미리 막습니다 |
 | IntelliSense | `Ctrl+Space` | GPL 심볼·멤버·로컬 변수 자동완성, Signature Help |
 | 문 스니펫 | 줄 시작에서 키워드 입력 | `Try`·`Select`·`For`·`While`·`Do`·`If` 제어 구조와 `Sub`/`Function`/`Property`/`Module`/`Class`/`Dim`/`Const`/`ReDim`/`Delegate` 선언 골격을 `Tab` 이동 자리와 함께 삽입. 공식 Statement Dictionary 구문을 따르고(`End While`, `Select match_value`, `Set (value As …)`), 그 자리에서 유효한 문만 제안(`Else`는 `If` 안, `Exit For`는 `For` 안) |
 | 키워드 완성 | `Ctrl+Space` | 키워드·원시 타입(`Integer`, `Single` …)·낱말 연산자(`Mod`, `AndAlso`, `Is` …)를 설명과 함께 제안 |
 | Hover Info | 마우스 올리기 | 심볼 타입·파라미터 정보 + 내장 함수 시그니처. 클릭 뒤 마우스를 멈춰도 다시 표시하려면 `gpl.hover.showAfterClick` |
-| 문서화 주석 | `'''` | 선언 위 `'` 주석에 `# Parameters` / `# Returns` / `# Examples`를 쓰면 호버·자동완성·시그니처 도움말이 구조로 표시. `'''` 입력·전구 메뉴·`GPL: 문서화 주석 생성`으로 골격 생성(있으면 빠진 항목만 보완) |
+| 문서화 주석 | `'''` | 선언 위 `'` 주석에 `# Parameters` / `# Returns` / `# Examples`를 쓰면 호버·자동완성·시그니처 도움말이 구조로 표시. Module·Class·변수·상수 선언도 대상. `'''` 입력·전구 메뉴·`GPL: 문서화 주석 생성`으로 골격 생성(있으면 빠진 항목만 보완) |
 | Outline | `Ctrl+Shift+O` | 문서 내 심볼 구조 |
 | Symbol Search | `Ctrl+T` | 워크스페이스 전체 심볼 검색 |
 | Code Folding | — | Module/Class/Sub/Function·If/Select/For/While/Do/Try 블록과 `' #region` 접기 |
@@ -160,7 +161,8 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 - `Project.gpr`이 있으면 `ProjectSource`에 등록된 파일만 우선 인덱싱 (대형 워크스페이스 최적화)
 - GPL/VB.NET은 대소문자 무시 언어 — 심볼 비교에 자동 반영
 - `Math.Abs`, `CInt`, `Thread.Sleep`, `Controller.Timer` 등 주요 내장 API에 시그니처·요약·참고 링크 제공
-- 문서화 주석 형식 — 설명은 항상, 나머지는 해당될 때만 씁니다:
+- 문서화 주석 형식 — 설명은 항상, 나머지는 해당될 때만 씁니다. Sub/Function/Property뿐 아니라
+  Module·Class·모듈/클래스 멤버 변수·상수 선언 위에 써도 같은 자리(호버·자동완성)에 표시됩니다:
 
   ```gpl
   ' 값을 지정된 범위로 제한합니다.
@@ -184,16 +186,22 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | `GPL: Connect to Controller` / `Disconnect Controller` | 제어기 연결/해제 |
 | `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` | UPLOAD ∥ STOP → COMPILE — 로컬 코드 업로드 후 검증 |
 | `GPL: 빠른 컴파일` | 변경분만 /GPL에 직접 업로드 + Compile (STOP/START 생략) |
+| `GPL: 업로드 스타트` | STOP → /GPL 업로드 → Start. 컴파일은 제어기가 수행 (확장은 `Compile`을 보내지 않음) |
 | `GPL: Start` | 실행만 (배포 없음) |
 | `GPL: Save to Flash` | `/flash/projects`에 영구 저장만 |
 | `GPL: 모든 쓰레드 중지` | `Stop -all` 전체 정지 |
 
 - 대상 프로젝트는 `.gpr`가 있는 폴더입니다. 워크스페이스에 여러 개면 QuickPick으로 고르고(최근 선택이 맨 위),
   **탐색기에서 프로젝트 폴더(`.gpr`가 들어 있는 폴더)를 우클릭**하면 선택 없이 그 프로젝트로 Deploy/빠른 컴파일/
-  Debug Project/Start/Save to Flash를 실행할 수 있습니다. 제어기 쪽 프로젝트 이름은 `.gpr`의 `ProjectName`입니다.
+  Debug Project/업로드 스타트/Start/Save to Flash를 실행할 수 있습니다. 제어기 쪽 프로젝트 이름은 `.gpr`의 `ProjectName`입니다.
 - **`Project.gpr` 우클릭 → `GPL: Project.gpr 소스 목록 동기화`**: 폴더의 `.gpl`과 `ProjectSource` 목록을 대조해
   누락된 파일 추가·없는 파일 항목 제거를 확인 후 반영합니다(GDE 형식 유지). `.gpl`을 새로 만들거나 이름 변경·삭제하면
   반영할지 물어봅니다(`gpl.project.autoSyncSources`).
+
+> **`업로드 스타트`와 `빠른 컴파일`의 차이**: PA 제어기의 `Start`는 자체적으로 컴파일을 수행하므로,
+> 업로드 스타트는 `Compile`을 따로 보내지 않습니다(같은 컴파일을 두 번 하지 않기 위해서입니다).
+> 그 대신 소스에 에러가 있으면 Problems 패널이 아니라 **Start 실패(STATUS)** 로만 드러납니다 —
+> 에러 위치까지 보려면 `빠른 컴파일`로 확인하세요.
 
 > **FTP 패널의 "업로드된 복사본 컴파일 & 실행" 주의**: 제어기에 **이미 업로드된 복사본만**
 > 대상으로 하며 로컬 변경사항을 업로드하지 않습니다. 최신 로컬 코드 검증은 Deploy를 사용하세요.
@@ -206,12 +214,18 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | `GPL: Debug Project (Deploy + Attach)` | 프로젝트를 골라(또는 탐색기 우클릭) 배포 후 Attach — launch.json 불필요 |
 | `GPL: Create/Update Debug launch.json` | Attach 구성 자동 생성 |
 | `GPL: Push/Pull Controller Breakpoints` | 에디터 ↔ 제어기 브레이크포인트 동기화 |
+| `GPL: 브레이크포인트용 소스 승격` | 라이브러리로 딸려 온 소스에 중단점을 걸 수 있게 메인 `.gpr` 의 `ProjectSource` 로 올립니다(`.gpl` 우클릭). 빠지는 파일도 중복 컴파일도 없는지 검증한 뒤 diff 미리보기와 확인을 거쳐서만 저장 |
 | `GPL: Start/Stop Runtime Console` | 1403 런타임 콘솔 시작/중지 |
 | `GPL: Start/Stop Live Log Terminal` | 1402/1403 실시간 로그 터미널 |
 | `GPL: Show Traffic Monitor` | 1402 송신 명령·수신 응답 본문(실시간, 줄 단위)과 1403 트래픽 모니터. 트리 `1402 통신 모니터` 항목에서 본문 표시 켜기/끄기·지우기 |
 | `GPL: Send Command to Controller` | 콘솔 명령 직접 전송 |
 | `GPL: 전역변수 보기/편집` / `DIO 조회/설정` | 전역변수·DIO 조회/변경 |
 | `GPL: Refresh All` | 쓰레드·FTP·시스템 정보 전체 새로고침 |
+
+> **중단점이 회색으로 안 걸릴 때**: 제어기는 중단점 대상 파일을 그 프로젝트가 `.gpr` 에 **직접 적은**
+> `ProjectSource` 안에서만 찾습니다. `ProjectLibrary` 로 참조해 들어온 소스는 어떤 표기를 써도
+> `-508 File not found` 가 되므로, 라이브러리를 겹겹이 참조하는 구조에서는 `GPL: 브레이크포인트용 소스 승격`
+> 으로 그 파일을 메인 `ProjectSource` 로 올린 뒤 재배포하세요.
 
 ### AI 에이전트용
 

@@ -20,21 +20,30 @@ import { SymbolCache } from './symbolCache';
 import { getTraceServerLevel, isTraceOn, isTraceVerbose, isGplDocument, isGplFile, EXTENSION_VERSION } from './config';
 
 // Controller integration
-import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride, formatTrafficTimestamp, getTrafficLogOptions, setTrafficResponseBodyEnabled, closeControllerConnection, getConnectionStats, getRecentTraffic, recordTrafficLine, ControllerConfig, probeControllerCommand, getConnectionProbeTimeoutMs, setHeldSocketObserver, setIdlePingActive, setIdlePingObserver, isPolicyError, getCommandPolicySnapshot } from './controller/controllerConnection';
+import { testConnection, getControllerConfig, sendCommand, sendCommandDetailed, setTrafficChannel, setSessionControllerOverride, clearSessionControllerOverride, formatTrafficTimestamp, getTrafficLogOptions, setTrafficResponseBodyEnabled, closeControllerConnection, getConnectionStats, getRecentTraffic, recordTrafficLine, ControllerConfig, probeControllerCommand, getConnectionProbeTimeoutMs, setHeldSocketObserver, setIdlePingActive, setIdlePingObserver, isPolicyError, getCommandPolicySnapshot, getConnectionRecoveryWindowMs, setDisruptiveCommandObserver } from './controller/controllerConnection';
 import { resolveUriRequest, summarizeUriResult } from './controller/uriDispatch';
 import { AgentBridgeServer } from './controller/agentBridge';
-import { ConnectionHealthMonitor, ConnectionHealthProber, DEFAULT_CONNECTION_HEALTH_POLICY, describeLoss, ConnectionHealthPolicy, LossSummary } from './controller/connectionHealth';
+import { ConnectionHealthMonitor, ConnectionHealthProber, DEFAULT_CONNECTION_HEALTH_POLICY, describeLoss, describeRecovering, ConnectionHealthPolicy, LossSummary, HealthSnapshot } from './controller/connectionHealth';
 import { probeReachability } from './controller/reachability';
 import { parseJsonc, upsertLaunchConfiguration } from './launchJsonc';
 import { exportAiAgentSetup, inspectAiAgentSetup, syncStableBundleIfStale } from './ai/exportAgentSetup';
 import { EditorBreakpointSync } from './controller/breakpointSync';
+import { formatBreakpointCommand, MirrorEchoMemory } from './controller/breakpointCommand';
+import { ControllerBreakpointMirror } from './controller/breakpointMirror';
 import { deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult, DeployResult } from './controller/deployService';
 import { buildStartCommand } from './controller/startCommand';
-import { activateProjectPicker, pickProjectDir, projectNameOf, readGprProjectName } from './controller/projectPicker';
+import { activateProjectPicker, pickProjectDir, projectNameOf, readGprProjectName, buildTargetCandidates } from './controller/projectPicker';
+import { resolveProjectTarget, isProjectTargetRequest, isAutomationInvocation, describeResolution, describeCandidates } from './controller/projectTarget';
+import { normalizeDirKey, normalizePathKey } from './controller/projectPickerCore';
+import { fileExists } from './language/symbolLocations';
+import { walkTree } from './project/projectSources';
+import type { ProjectTargetRequest, TargetCandidateSummary } from './controller/projectTarget';
 import { checkProjectName, checkRemotePath, describeProjectNameProblem } from './controller/projectNameGuard';
 import { activateGprSync } from './controller/gprSyncCommand';
+import { activatePromoteSource } from './project/promoteSourceCommand';
 import { getDeployLock, describeDeployLock, DeployLockRecord, DEPLOY_LOCK_DIR_NAME } from './controller/deployLock';
-import { attachDeployRecordStore } from './controller/deployRecord';
+import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployRecord';
+import { CompileStaleInfo, CompileStaleTracker } from './controller/compileStale';
 import { attachSyncManifestStore, forgetSyncManifest, getSyncManifest, recordSyncManifest } from './controller/syncManifest';
 import { listRemoteDir, removeRemoteDir, removeRemoteFile, clearRemoteDir, normalizeAbsoluteRemoteDir, downloadProject, mirrorProject, FtpEntry } from './controller/ftpClient';
 import { describeThreadActivity } from './controller/threadActivity';
@@ -49,6 +58,7 @@ import {
 	parseThreadDetail,
 	parseGpr,
 	parseStatus,
+	isSuccess,
 	parseThreadList,
 	parseBreakList,
 	SHOW_THREAD_LIST_CMD,
@@ -82,7 +92,7 @@ let isDebugSessionActive = false;
 let lastSourceStale: { projectName: string; files: string[]; compiledAt?: number } | undefined;
 let sourceStaleNotifiedSessionId: string | undefined;
 // 현재는 signature만 중복 알림 억제에 사용된다. mode/timestamp/summary는 향후 진단용 기록.
-const deployOutcomeHistory: Array<{ mode: 'Build' | 'Deploy & Run'; signature: string; timestamp: number; summary: string }> = [];
+const deployOutcomeHistory: Array<{ mode: SituationDeploySnapshot['mode']; signature: string; timestamp: number; summary: string }> = [];
 // 히스토리 상한 — 장시간 세션에서 무한 증가 방지 (초과 시 오래된 항목부터 제거)
 const DEPLOY_OUTCOME_HISTORY_MAX = 50;
 function pushDeployOutcome(entry: (typeof deployOutcomeHistory)[number]): void {
@@ -103,13 +113,11 @@ function currentDeployLockHolder(): DeployLockRecord | undefined {
 	return getDeployLock(getControllerConfig().ip).current()?.record;
 }
 /**
- * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트(소문자 키).
- * PA 제어기의 `Start`는 자체적으로 Compile을 수행하므로(사용자 실사용 사실, ai-handoff §0.7 — Brooks 문서와 다름)
- * 옛 바이너리가 도는 문제는 아니지만, 소스에 에러가 있으면 Start가 실패하고 Problems 연동도 없다 → Start 전 안내.
- * 업로드 후 Compile 보류(autoOnSave/THREAD_CHECK)·Compile 실패 시 set, Compile 성공 시 clear.
+ * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
+ * 상태와 규칙은 `controller/compileStale.ts`(순수 모듈)에 있고, 여기서는 로그·UI 반영만 얹는다.
+ * 해제는 `onDidRecordCompiled` 구독으로도 일어나므로 F5(deployBeforeAttach)·MCP 경로에서도 배지가 남지 않는다.
  */
-interface CompileStaleInfo { projectName: string; projectDir?: string; since: number; reason: string }
-const compileStaleProjects = new Map<string, CompileStaleInfo>();
+const compileStaleProjects = new CompileStaleTracker();
 // settled(비활성) 쓰레드 상태 집합 — deployService.threadSettled와 동일하게 유지할 것
 const SETTLED_THREAD_STATE = /^(idle|stopped|error)$/i;
 
@@ -119,7 +127,7 @@ const SETTLED_THREAD_STATE = /^(idle|stopped|error)$/i;
 * ping TTL/arp MAC 기반 도달성 판정(직결 NIC 임대 상실 시 사무실 게이트웨이가 응답하는 함정 포함) — 를 한 파일로 묶는다.
 * 파일: %TEMP%/gpl-controller/postmortem-<시각>.log. 실패해도 예외를 밖으로 내지 않는다(undefined).
 */
-async function writeConnectionLostPostmortem(cfg: ControllerConfig, lostAt: Date, loss: LossSummary | undefined, log: (line: string) => void): Promise<string | undefined> {
+async function writeConnectionLostPostmortem(cfg: ControllerConfig, lostAt: Date, loss: LossSummary | undefined, log: (line: string) => void, health?: HealthSnapshot): Promise<string | undefined> {
 	try {
 		const recent = getRecentTraffic(400);
 		const stats = getConnectionStats();
@@ -130,11 +138,18 @@ async function writeConnectionLostPostmortem(cfg: ControllerConfig, lostAt: Date
 			`# GPL Controller 연결 유실 사후 스냅샷 — ${lostAt.toISOString()} (local ${lostAt.toLocaleString()})`,
 			`target: ${cfg.ip}:${cfg.port} (1403: ${cfg.consolePort})  extension: v${EXTENSION_VERSION}  pid: ${process.pid}`,
 			'',
-			'## 유실 판정 (connectionHealth)',
+			'## 판정: 1402 명령 채널 유실 (connectionHealth) — 제어기 런타임 상태는 이 파일만으로 확정되지 않는다',
 			loss ? describeLoss(loss) : '(요약 없음)',
 			loss ? JSON.stringify(loss, null, 1) : '',
 			'',
-			'## 도달성 (ping TTL / TCP / arp)',
+			// 채널 교란 가능 명령이 앞섰는지(recovering 을 거쳤는지)는 원인 해석에 결정적이다 — 다만 인과는 미확정.
+			'## 직전 관측: 채널 교란 가능 명령 (있으면. precededBy 이지 causedBy 가 아니다)',
+			health?.disruptiveOperation
+				? `${health.disruptiveOperation.command} (${health.disruptiveOperation.kind}) @ ${new Date(health.disruptiveOperation.at).toISOString()} — 그 명령의 실제 결과는 미확정`
+				: '(없음 — 교란 가능 명령 직후가 아니었다)',
+			health ? JSON.stringify(health, null, 1) : '',
+			'',
+			'## 도달성 (ping TTL / TCP / arp) — observations / assessment / controllerHealth 분리',
 			`verdict: ${reach.verdict}`,
 			JSON.stringify(reach, null, 1),
 			'',
@@ -390,27 +405,24 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	function findCompileStale(projectName: string): CompileStaleInfo | undefined {
-		return compileStaleProjects.get(projectName.trim().toLowerCase());
+		return compileStaleProjects.find(projectName);
 	}
 
 	function markCompileStale(projectName: string, reason: string, projectDir?: string): void {
-		const key = projectName.trim().toLowerCase();
-		if (!key) { return; }
-		const prev = compileStaleProjects.get(key);
-		const info: CompileStaleInfo = { projectName, projectDir: projectDir ?? prev?.projectDir, since: prev?.since ?? Date.now(), reason };
-		compileStaleProjects.set(key, info);
+		const info = compileStaleProjects.mark(projectName, reason, projectDir);
+		if (!info) { return; }
 		logOutput(`[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (Start는 제어기가 자체 컴파일 — 소스 에러가 있으면 Start 실패, 먼저 Quick Compile 권장)`);
 		controllerTree?.setCompileStale(info);
 		statusBar?.setCompileStale(info);
 	}
 
 	function clearCompileStale(projectName: string): void {
-		const key = projectName.trim().toLowerCase();
-		if (!compileStaleProjects.delete(key)) { return; }
+		const done = compileStaleProjects.clear(projectName);
+		// 없던 항목이면 조용히 끝낸다 — 같은 Compile이 직접 호출과 onDidRecordCompiled로 두 번 들어와도 로그가 겹치지 않는다.
+		if (!done) { return; }
 		logOutput(`[Deploy] 컴파일 검증 필요 상태 해제: ${projectName}`);
-		const next = compileStaleProjects.values().next();
-		controllerTree?.setCompileStale(next.done ? undefined : next.value);
-		statusBar?.setCompileStale(next.done ? undefined : next.value);
+		controllerTree?.setCompileStale(done.next);
+		statusBar?.setCompileStale(done.next);
 	}
 
 	function sleep(ms: number): Promise<void> {
@@ -765,30 +777,65 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.debugSymbolCache', () => {
 			const allSymbols = symbolCache.getAllSymbols();
-			outputChannel.appendLine('=== GPL Symbol Cache Debug ===');
-			outputChannel.appendLine(`Total symbols: ${allSymbols.length}`);
-			
-			// Group by file and class
-			const byFile = new Map<string, any[]>();
-			for (const sym of allSymbols) {
-				const fileName = sym.filePath.split('\\').pop() || sym.filePath;
-				if (!byFile.has(fileName)) {
-					byFile.set(fileName, []);
-				}
-				byFile.get(fileName)!.push(sym);
+			const indexedFiles = symbolCache.listIndexedFiles();
+
+			// 종전에는 basename으로 묶어 출력했다. 그래서 같은 파일이 여러 경로로 중복 인덱싱돼도
+			// 한 덩어리로 보여 §1-CQ(정의가 3개로 뜨던 문제)를 이 명령으로 진단할 수 없었다.
+			// 이제 **전체 경로** 단위로 묶고, 동명 파일·사라진 파일을 먼저 요약한다.
+			const byPath = new Map<string, { filePath: string; symbols: typeof allSymbols }>();
+			for (const filePath of indexedFiles) {
+				byPath.set(normalizePathKey(filePath), { filePath, symbols: [] });
 			}
-			
-			for (const [file, symbols] of byFile) {
-				outputChannel.appendLine(`\n${file}:`);
+			for (const sym of allSymbols) {
+				const entry = byPath.get(normalizePathKey(sym.filePath));
+				if (entry) { entry.symbols.push(sym); }
+			}
+
+			const entries = Array.from(byPath.values())
+				.sort((a, b) => a.filePath.localeCompare(b.filePath));
+
+			const byBasename = new Map<string, string[]>();
+			for (const { filePath } of entries) {
+				const key = path.basename(filePath).toLowerCase();
+				const bucket = byBasename.get(key);
+				if (bucket) { bucket.push(filePath); } else { byBasename.set(key, [filePath]); }
+			}
+			const duplicated = Array.from(byBasename.entries()).filter(([, paths]) => paths.length > 1);
+			const missing = entries.filter(e => !fileExists(e.filePath)).map(e => e.filePath);
+
+			outputChannel.appendLine('=== GPL Symbol Cache Debug ===');
+			outputChannel.appendLine(`Files: ${entries.length} | Symbols: ${allSymbols.length}`);
+
+			if (duplicated.length > 0) {
+				outputChannel.appendLine(`\n⚠ 같은 이름의 파일이 여러 경로에 인덱싱돼 있다 (${duplicated.length}건)`);
+				outputChannel.appendLine('  — 다른 프로젝트의 동명 파일이면 정상이다. 경로가 사실상 같은데 표기만 다르면 중복 인덱싱이다.');
+				for (const [name, paths] of duplicated) {
+					outputChannel.appendLine(`  ${name} (${paths.length}곳)`);
+					for (const p of paths) { outputChannel.appendLine(`    - ${p}`); }
+				}
+			}
+			if (missing.length > 0) {
+				outputChannel.appendLine(`\n⚠ 디스크에 없는 파일이 인덱스에 남아 있다 (${missing.length}건) — 정의 이동에서 "열리지 않는 후보"로 나타난다`);
+				for (const p of missing) { outputChannel.appendLine(`    - ${p}`); }
+				outputChannel.appendLine('  → `GPL: Refresh Symbols`로 정리된다(정의 이동·참조 검색이 만나면 자동으로도 지운다).');
+			}
+
+			for (const { filePath, symbols } of entries) {
+				outputChannel.appendLine(`\n${filePath}: (${symbols.length})`);
 				for (const sym of symbols) {
 					const classInfo = sym.className ? ` (in class ${sym.className})` : '';
 					const typeInfo = sym.returnType ? ` : ${sym.returnType}` : '';
 					outputChannel.appendLine(`  [${sym.kind}] ${sym.name}${typeInfo}${classInfo} @line ${sym.line + 1}`);
 				}
 			}
-			
+
 			outputChannel.show();
-			vscode.window.showInformationMessage('Symbol cache debug info written to output channel');
+			const warn = duplicated.length + missing.length;
+			vscode.window.showInformationMessage(
+				warn > 0
+					? `심볼 캐시 진단을 출력 채널에 기록했습니다 — 확인할 항목 ${warn}건`
+					: '심볼 캐시 진단을 출력 채널에 기록했습니다'
+			);
 		})
 	);
 
@@ -953,6 +1000,30 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(gplFileWatcher);
 
+	// .gpr 워처: `.gpr`는 "어떤 파일이 같은 컴파일 단위인가"(ProjectSource·ProjectLibrary)를 정의한다.
+	// 이게 바뀌면 정의 이동·참조 검색의 프로젝트 경계 캐시가 낡은 관계를 계속 쓰게 되므로 버린다.
+	// 소스 목록 자체가 바뀌었을 수 있어 인덱스도 다시 만든다(짧게 디바운스 — 저장·SVN update 연타 대비).
+	const gprWatcher = vscode.workspace.createFileSystemWatcher('**/*.gpr');
+	let gprReindexTimer: ReturnType<typeof setTimeout> | undefined;
+	const onGprChanged = (uri: vscode.Uri): void => {
+		symbolCache.invalidateProjectRelations();
+		if (gprReindexTimer) { clearTimeout(gprReindexTimer); }
+		gprReindexTimer = setTimeout(() => {
+			gprReindexTimer = undefined;
+			outputChannel.appendLine(`[Watcher] .gpr 변경 감지(${path.basename(uri.fsPath)}) — 심볼 인덱스를 다시 만듭니다.`);
+			void symbolCache.refresh().catch((e) => {
+				outputChannel.appendLine(`[Watcher] .gpr 변경 후 재인덱싱 실패: ${e}`);
+			});
+		}, 800);
+	};
+	gprWatcher.onDidCreate(onGprChanged);
+	gprWatcher.onDidChange(onGprChanged);
+	gprWatcher.onDidDelete(onGprChanged);
+	context.subscriptions.push(
+		gprWatcher,
+		{ dispose: () => { if (gprReindexTimer) { clearTimeout(gprReindexTimer); gprReindexTimer = undefined; } } },
+	);
+
 	// ════════════════════════════════════════════════════════════
 	// Controller integration – initialization
 	// ════════════════════════════════════════════════════════════
@@ -1041,6 +1112,11 @@ export function activate(context: vscode.ExtensionContext) {
 	// projectDir 이 워크스페이스 종속이라 globalState 가 아닌 workspaceState 에 둔다.
 	attachDeployRecordStore(context.workspaceState);
 
+	// "컴파일 검증 필요" 배지 해제를 배포 경로와 분리한다(§1-CT 원인 ①). 종전에는 runDeploy 래퍼만 해제해서
+	// F5 의 deployBeforeAttach(deployService.deploy() 직접 호출)나 MCP 경유 배포는 Compile 이 성공해도 배지가 남았다.
+	// recordCompiled 는 Compile 성공 확정 지점과 업로드 스타트의 Start 성공 지점에서만 발화하므로 해제 조건과 일치한다.
+	context.subscriptions.push(onDidRecordCompiled(rec => clearCompileStale(rec.projectName)));
+
 	// 업로드 동기화 지문(syncManifest) — 미러/업로드의 스킵 판정을 크기뿐 아니라 내용(SHA-1) 기준으로 만든다.
 	// 기록 대상이 "그 제어기 경로에 올려 둔 내용"이라 워크스페이스에 매이지 않는다 → globalState.
 	attachSyncManifestStore(context.globalState);
@@ -1063,15 +1139,31 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.registerTreeDataProvider('gplThreads', controllerTree)
 	);
 
+	// 제어기 → 에디터 중단점 미러 (§1-CO). AI(MCP·URI·명령 콘솔)가 건 BP를 그 자리에서 빨간 점으로
+	// 만든다 — 종전에는 제어기에만 존재해 보이지 않았고, reconcile/DAP가 "에디터에 없는 BP"로 보고
+	// 지워 버렸다. 에코 메모리는 미러가 만든 에디터 변경이 다시 제어기로 나가지 않게 막는다.
+	const bpMirrorEcho = new MirrorEchoMemory();
+	const breakpointMirror = new ControllerBreakpointMirror({
+		isEnabled: () => vscode.workspace.getConfiguration('gpl.controller')
+			.get<boolean>('mirrorAiBreakpoints') !== false,
+		resolveFilePath: fileName => resolveGplFilePath(fileName),
+		log: line => logOutput(line),
+		noteMirrored: (kind, file, line) => bpMirrorEcho.note(kind, file, line),
+	});
+
 	// 에디터 중단점 → 제어기 실시간 동기화 (설정 gpl.controller.syncEditorBreakpoints, §1-AP).
-	// VS Code 중단점을 단일 원본으로 삼아, 외부 AI(MCP)는 실행 제어만 담당하게 한다.
+	// VS Code 중단점을 단일 원본으로 삼고, 외부 AI(MCP)가 건 BP도 위 미러를 거쳐 그 원본에 합류시킨다.
 	breakpointSync = new EditorBreakpointSync({
+		mirrorEcho: bpMirrorEcho,
 		isConnected: () => controllerTree?.isConnected ?? false,
 		isDebugSessionActive: () => isDebugSessionActive,
 		resolveProjectName: () => resolveExpectedProjectName(),
 		log: line => logOutput(line),
 		// 동기화 배치 직후 트리의 중단점 섹션을 즉시 갱신 (다음 상세 폴링까지 기다리지 않음)
 		onDidSync: () => { void controllerTree?.refreshBreakpointsNow(); },
+		// 실시간 동기화가 꺼진 채로 중단점을 건드렸다 — 에디터의 빨간 점과 제어기가 어긋나는
+		// 유일한 경로이므로 조용히 넘기지 않고 조치 수단과 함께 알린다 (§1-CJ).
+		onUnsyncedChange: () => { void notifyBreakpointsNotSynced(); },
 	});
 	context.subscriptions.push(breakpointSync);
 
@@ -1157,6 +1249,80 @@ export function activate(context: vscode.ExtensionContext) {
 			return result;
 		})
 	);
+
+	// 제어기를 에디터 상태로 수렴(§1-CJ) — 에디터에 없는 잔재 중단점을 해제하고 빠진 것은 설정한다.
+	// push(추가만)와 달리 "빨간 점은 없는데 제어기는 브레이크를 거는" 상태를 한 번에 없앤다.
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.syncBreakpoints', async () => {
+			const result = await breakpointSync!.reconcileAll();
+			if (!result.ok) {
+				const reason = result.error === 'not-connected' ? '제어기 미연결'
+					: result.error === 'missing-project' ? '프로젝트명 미확정 (Project.gpr 확인)'
+						: 'Show Break 응답 판정 실패';
+				vscode.window.showWarningMessage(`GPL: 중단점을 맞출 수 없습니다 — ${reason}`);
+				return result;
+			}
+			const msg = `중단점 맞추기: 설정 ${result.added}, 해제 ${result.removed}, 유지 ${result.kept}`
+				+ (result.failed > 0 ? `, 실패 ${result.failed}` : '')
+				+ (result.untouched > 0 ? ` (다른 프로젝트 ${result.untouched}개는 손대지 않음)` : '');
+			if (result.failed > 0) {
+				vscode.window.showWarningMessage(`GPL: ${msg} — 자세한 내용은 GPL Output 확인`);
+			} else {
+				vscode.window.showInformationMessage(`GPL: ${msg}`);
+			}
+			return result;
+		})
+	);
+
+	// 트리의 제어기 중단점 항목 우클릭 → 그 중단점만 제어기에서 해제.
+	// 같은 위치에 에디터 중단점이 있으면 미러가 그 빨간 점도 함께 지운다(§1-CO) — 주 용도인
+	// "⚠ 에디터에 없음" 잔재는 지울 점이 없으므로 종전과 동작이 같다.
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.clearBreakpointHere', async (arg?: any) => {
+			// 우클릭 메뉴는 트리 노드를 그대로 넘기고(InfoNode), 명령 팔레트/코드 호출은 {file, line}을 넘긴다.
+			const args: { file?: string; line?: number } =
+				arg && (arg.file || arg.line) ? arg : (arg?.command?.arguments?.[0] ?? {});
+			const file = args.file;
+			const line = args.line ?? 0;
+			if (!file || line <= 0) { return { ok: false, error: 'missing-file-or-line' }; }
+			const result = await vscode.commands.executeCommand<{ ok: boolean; status?: { code: number; message: string } }>(
+				'gpl.ai.debug.clearBreakpoint', { file, line });
+			if (result?.ok) {
+				vscode.window.showInformationMessage(`GPL: 제어기 중단점 해제 — ${file}:${line}`);
+			} else {
+				const st = result?.status;
+				vscode.window.showWarningMessage(
+					`GPL: 중단점 해제 실패 — ${file}:${line}${st ? ` (STATUS ${st.code}${st.message ? `: ${st.message}` : ''})` : ''}`);
+			}
+			await controllerTree?.refreshBreakpointsNow();
+			return result;
+		})
+	);
+
+	// 실시간 동기화 꺼짐 안내 — 세션당 1회, "다시 보지 않기"는 전역 저장.
+	const BP_UNSYNCED_MUTE_KEY = 'gpl.bpUnsyncedNoticeMuted';
+	let bpUnsyncedNoticeShown = false;
+	async function notifyBreakpointsNotSynced(): Promise<void> {
+		if (bpUnsyncedNoticeShown || context.globalState.get<boolean>(BP_UNSYNCED_MUTE_KEY) === true) { return; }
+		bpUnsyncedNoticeShown = true;
+		const turnOn = '실시간 동기화 켜기';
+		const syncNow = '지금 한 번 맞추기';
+		const mute = '다시 보지 않기';
+		const picked = await vscode.window.showWarningMessage(
+			'GPL: 에디터 중단점 변경이 제어기에 반영되지 않았습니다 — 제어기에 이전 중단점이 남아 실행 시 그 자리에서 멈출 수 있습니다.',
+			turnOn, syncNow, mute);
+		if (picked === turnOn) {
+			await vscode.workspace.getConfiguration('gpl.controller')
+				.update('syncEditorBreakpoints', true, vscode.ConfigurationTarget.Global);
+			logOutput('[BP Sync] 실시간 동기화를 켰습니다 (gpl.controller.syncEditorBreakpoints = true).');
+			await vscode.commands.executeCommand('gpl.controller.syncBreakpoints');
+		} else if (picked === syncNow) {
+			await vscode.commands.executeCommand('gpl.controller.syncBreakpoints');
+		} else if (picked === mute) {
+			await context.globalState.update(BP_UNSYNCED_MUTE_KEY, true);
+			logOutput('[BP Sync] 동기화 꺼짐 안내를 더 이상 표시하지 않습니다 (GPL: Sync Breakpoints 명령으로 언제든 맞출 수 있습니다).');
+		}
+	}
 
 	// 외부(MCP AI/GDE)가 세운 스레드 정지를 에디터가 따라간다 (설정 gpl.controller.autoShowPausedLocation).
 	// 디버그 세션 중에는 DAP가 정지 위치를 표시하므로 개입하지 않는다.
@@ -1413,6 +1579,8 @@ export function activate(context: vscode.ExtensionContext) {
 	function handleConnectionLost(summary: LossSummary): void {
 		const cfg = getControllerConfig();
 		const lostAt = new Date(summary.lostAt);
+		// setConnected(false) 가 모니터 상태를 초기화하기 전에 스냅샷을 떠 둔다(교란 명령 관측이 사후 파일에 남게).
+		const healthSnapshotAtLoss = healthMonitor?.snapshot();
 		stopRuntimeConsoleAndSyncTree();
 		// 'lost' 이유를 넘겨 트리가 FTP/시스템 정보 캐시를 보존하게 한다(#22 재연결 플랩 억제).
 		setControllerConnected(false, { reason: 'lost' });
@@ -1421,12 +1589,16 @@ export function activate(context: vscode.ExtensionContext) {
 		// disconnect 명령과 동일하게 낡은 런타임 에러 컨텍스트를 정리한다.
 		lastRuntimeErrorContext = undefined;
 		controllerTree?.setRuntimeErrorContext(undefined);
-		logOutput(`[Controller] Connection lost — ${cfg.ip}:${cfg.port} @ ${lostAt.toLocaleTimeString()} — ${describeLoss(summary)}`);
+		// 문구 원칙(2026-08-31): 확장이 "1402 명령 채널을 놓았다"는 것이 우리가 아는 사실이고, 제어기/런타임이 죽었다는
+		// 것은 여러 독립 증거를 종합해야 하는 판단이다. 알림에서 후자를 단정하지 않는다.
+		logOutput(`[Controller] 1402 명령 채널 유실 — ${cfg.ip}:${cfg.port} @ ${lostAt.toLocaleTimeString()} — ${describeLoss(summary)} (제어기 런타임 상태는 미확정)`);
 		// 사후 스냅샷(#22 제안 4): 알림은 스냅샷이 준비된 뒤 한 번만 — 파일 열기 버튼 제공.
-		void writeConnectionLostPostmortem(cfg, lostAt, summary, logOutput).then(file => {
+		void writeConnectionLostPostmortem(cfg, lostAt, summary, logOutput, healthSnapshotAtLoss).then(file => {
 			const actions = file ? ['사후 스냅샷 열기', '출력 보기'] : ['출력 보기'];
 			void vscode.window.showWarningMessage(
-				`GPL Controller 연결이 끊어졌습니다 (${cfg.ip}) — ${summary.failures}회 연속 무응답. ` + (file ? '마지막 트래픽·도달성 판정을 사후 스냅샷 파일로 남겼습니다.' : ''),
+				`GPL Controller 1402 명령 채널을 놓았습니다 (${cfg.ip}) — ${summary.failures}회 연속 무응답으로 연결 상태를 해제했습니다. `
+				+ '제어기가 다운됐다는 뜻은 아닙니다(런타임 상태 미확정) — 다시 Connect 해 보세요. '
+				+ (file ? '마지막 트래픽·도달성 판정은 사후 스냅샷 파일에 있습니다.' : ''),
 				...actions,
 			).then(pick => {
 				if (pick === '사후 스냅샷 열기' && file) { void vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false }); }
@@ -1438,6 +1610,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const connectionHealthPolicy = (): ConnectionHealthPolicy => ({
 		...DEFAULT_CONNECTION_HEALTH_POLICY,
 		probeTimeoutMs: getConnectionProbeTimeoutMs(),
+		recoveryWindowMs: getConnectionRecoveryWindowMs(),
 	});
 	healthMonitor = new ConnectionHealthMonitor(connectionHealthPolicy, {
 		onSuspect: (reason, snapshot) => {
@@ -1445,8 +1618,17 @@ export function activate(context: vscode.ExtensionContext) {
 			logOutput(`[Health] 연결 의심 — ${reason} → ${p.reprobeDelayMs}ms 뒤부터 Show Thread 재프로브(타임아웃 ${p.probeTimeoutMs}ms; 연속 ${p.failureThreshold}회 또는 거부/도달불가 ${p.definitiveFailureThreshold}회면 유실) · 현재 실패 ${snapshot.consecutiveFailures}회`);
 			healthProber?.start();
 		},
+		onRecovering: (info, snapshot) => {
+			const p = connectionHealthPolicy();
+			logOutput(`[Health] 채널 복구 대기 — ${describeRecovering(info)} `
+				+ `→ ${p.recoveryProbeDelayMs}ms 간격 Show Thread 재프로브(이전 상태: ${info.fromState}, 실패 ${snapshot.consecutiveFailures}회는 폐기)`);
+			healthProber?.start();
+		},
 		onRecovered: info => {
-			logOutput(`[Health] 연결 복구 — ${info.failuresBeforeRecovery}회 실패 뒤 응답 재확인 (${(info.durationMs / 1000).toFixed(1)} s, 사유: ${info.suspectReason})`);
+			const what = info.fromState === 'recovering'
+				? `채널 복구 확인 — ${info.disruptiveOperation?.command ?? '(명령 미확인)'} 뒤 일시적 사용 불가였음(그 명령의 실제 결과는 여전히 미확정)`
+				: '연결 복구';
+			logOutput(`[Health] ${what} — ${info.failuresBeforeRecovery}회 실패 뒤 응답 재확인 (${(info.durationMs / 1000).toFixed(1)} s, 사유: ${info.suspectReason})`);
 		},
 		onLost: summary => handleConnectionLost(summary),
 	});
@@ -1469,6 +1651,13 @@ export function activate(context: vscode.ExtensionContext) {
 	// 1402 유휴 ping(§1-BM) 결과도 프로브다 — 트리/대시보드가 닫혀 폴이 없는 유휴 상태에서도 5 s 주기로 끊김이 드러난다.
 	setIdlePingObserver(outcome => { healthMonitor?.reportProbe(outcome); });
 	context.subscriptions.push({ dispose: () => { setIdlePingObserver(null); setIdlePingActive(false); } });
+	// 채널 교란 가능 명령(Unload/Load/Compile/Start)이 응답 없이 끝나면 recovering 으로 흡수한다(2026-08-31).
+	// 설정 connectionRecoveryWindowMs=0 이면 종전 판정(교란 뒤 거부 2회 → 유실)으로 되돌아간다.
+	setDisruptiveCommandObserver(failure => {
+		if (getConnectionRecoveryWindowMs() <= 0) { return; }
+		healthMonitor?.noteDisruptiveTimeout({ command: failure.command, kind: failure.kind, detail: failure.detail, at: failure.at });
+	});
+	context.subscriptions.push({ dispose: () => setDisruptiveCommandObserver(null) });
 	// 힌트 공급자: keep-alive 보관 소켓 오류 / 대시보드 프로브 실패 (1403 은 ensureRuntimeConsole 의 상태 구독에서)
 	setHeldSocketObserver(event => {
 		// FIN(by-peer)은 제어기의 정상 유휴 종료일 수 있어 힌트로 쓰지 않는다 — error(ECONNRESET·keepalive ETIMEDOUT)만.
@@ -1755,7 +1944,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// --- Deploy helper (공통 로직) ---
-	type QuickDeployOpts = { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string; noStopPrompt?: boolean; autoGate?: boolean };
+	type QuickDeployOpts = { skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[]; overrideProjectDir?: string; noStopPrompt?: boolean; autoGate?: boolean; skipCompile?: boolean; nonInteractive?: boolean };
 
 	/**
 	 * 배포 진입점. 잠금은 deploy() 안에서 — 프로젝트 선택/미저장 확인 UI가 끝난 뒤 — 획득한다(UI 대기 중 잠금 금지, 이슈 #15).
@@ -1767,7 +1956,11 @@ export function activate(context: vscode.ExtensionContext) {
 			if (quickOpts?.changedFiles?.length) {
 				logOutput(`[QuickCompile] autoOnSave 대기 — 배포 잠금 보유 중 (${describeDeployLock(holder)})`);
 			} else {
-				warnDeployBusy(quickOpts?.quick ? 'Quick Compile' : 'Deploy', holder, '완료 후 다시 시도하세요');
+				warnDeployBusy(
+					quickOpts?.quick ? 'Quick Compile' : quickOpts?.skipCompile ? '업로드 스타트' : 'Deploy',
+					holder,
+					'완료 후 다시 시도하세요',
+				);
 			}
 			return makeLockedResult(holder);
 		}
@@ -1807,13 +2000,18 @@ export function activate(context: vscode.ExtensionContext) {
 	 * 반환: ok=false면 사용자가 취소했거나 저장 실패 — 호출측은 업로드를 시작하지 말 것.
 	 * ※ autoOnSave 같은 저장-트리거 경로에서는 호출 금지(저장 경로에서는 UI를 띄우지 않는다).
 	 */
-	async function confirmSaveDirtyProjectDocs(projectDir: string): Promise<{ ok: boolean; savedFiles: string[] }> {
+	/** projectDir 하위의 저장되지 않은 편집기 문서 — 대화형/자동화 경로 공용. */
+	function dirtyDocsUnder(projectDir: string): vscode.TextDocument[] {
 		const root = path.resolve(projectDir);
-		const dirtyDocs = vscode.workspace.textDocuments.filter(doc => {
+		return vscode.workspace.textDocuments.filter(doc => {
 			if (doc.uri.scheme !== 'file' || !doc.isDirty) { return false; }
 			const rel = path.relative(root, path.resolve(doc.uri.fsPath));
 			return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
 		});
+	}
+
+	async function confirmSaveDirtyProjectDocs(projectDir: string): Promise<{ ok: boolean; savedFiles: string[] }> {
+		const dirtyDocs = dirtyDocsUnder(projectDir);
 		if (dirtyDocs.length === 0) { return { ok: true, savedFiles: [] }; }
 
 		const names = dirtyDocs.map(d => path.basename(d.uri.fsPath)).join('\n');
@@ -1837,7 +2035,9 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	async function runDeployCore(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<DeployResult | undefined> {
-		const modeLabel: SituationDeploySnapshot['mode'] = skipStart ? 'Build' : 'Deploy & Run';
+		const modeLabel: SituationDeploySnapshot['mode'] = skipStart
+			? 'Build'
+			: quickOpts?.skipCompile ? 'Upload & Start' : 'Deploy & Run';
 		const uniqueCodes = (values: number[]): number[] => [...new Set(values)];
 		const buildOutcomeSignature = (result: Awaited<ReturnType<typeof deploy>>, controllerSystemCodes: number[]): string => {
 			const compileCodes = uniqueCodes(result.compileErrors.map(e => e.code)).sort((a, b) => a - b);
@@ -1898,7 +2098,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 		// 업로드 전 미저장 파일 확인 — 수동 경로(Deploy/Quick Compile)만.
 		// autoOnSave(changedFiles) 경로는 저장이 트리거라 대상 파일이 방금 저장됐고, 저장 경로에서는 UI를 띄우지 않는다.
-		if (!quickOpts?.changedFiles?.length) {
+		// 자동화 경로(nonInteractive)는 호출측 래퍼가 이미 처리했다(handleDirtyForAutomation) — 여기서 모달을 띄우면
+		// MCP 호출이 응답 없이 멈춘다(개선안 §17·§25).
+		if (!quickOpts?.changedFiles?.length && !quickOpts?.nonInteractive) {
 			const dirty = await confirmSaveDirtyProjectDocs(projectDir);
 			if (!dirty.ok) {
 				logOutput('[Deploy] 미저장 파일 확인에서 취소됨 — 업로드를 시작하지 않음');
@@ -1908,7 +2110,9 @@ export function activate(context: vscode.ExtensionContext) {
 			for (const f of dirty.savedFiles) { quickCompilePendingFiles.delete(f); }
 		}
 
-		const mode = quickOpts?.quick ? 'Quick Compile' : skipStart ? 'Build' : 'Deploy & Run';
+		const mode = quickOpts?.quick
+			? 'Quick Compile'
+			: skipStart ? 'Build' : quickOpts?.skipCompile ? '업로드 스타트' : 'Deploy & Run';
 		logOutput(`[Deploy] Starting ${mode}: ${projectDir} → ${cfg.ip}`);
 		outputChannel.show(true);
 
@@ -1928,11 +2132,15 @@ export function activate(context: vscode.ExtensionContext) {
 				projectDir,
 				skipStart,
 				skipStop: quickOpts?.skipStop,
+				// 업로드 스타트: Compile을 보내지 않는다 — 제어기의 Start가 자체 컴파일하므로(§0.7) 중복이다.
+				skipCompile: quickOpts?.skipCompile,
 				skipUnchanged: quickOpts?.skipUnchanged,
 				changedFiles: quickOpts?.changedFiles,
 				autoGate: quickOpts?.autoGate,
 				// 배포 잠금 레코드의 owner — 다른 창/MCP가 "누가 잡고 있는지" 볼 수 있게 경로별로 구분.
-				lockOwner: quickOpts?.changedFiles?.length ? 'autoOnSave Quick Compile' : (quickOpts?.quick ? 'Quick Compile' : 'Deploy'),
+				lockOwner: quickOpts?.changedFiles?.length
+					? 'autoOnSave Quick Compile'
+					: quickOpts?.quick ? 'Quick Compile' : quickOpts?.skipCompile ? 'Upload & Start' : 'Deploy',
 				// 모든 배포는 /GPL 직접 업로드가 기본 (테스트는 /GPL, flash 저장은 gpl.saveToFlash 담당).
 				// /GPL/<name>이 없으면 FTP로 생성 — 단 changedFiles(autoOnSave) 경로는 클래식 폴백.
 				directGpl: true,
@@ -1940,7 +2148,7 @@ export function activate(context: vscode.ExtensionContext) {
 				startEventMode: vscode.workspace.getConfiguration('gpl').get<boolean>('controller.startEventMode', true),
 				// 활성 쓰레드 감지 시 사용자에게 Stop -all 여부를 모달로 확인.
 				// autoOnSave 경로(noStopPrompt)는 저장마다 팝업이 뜨면 방해되므로 조용히 중단 유지.
-				confirmStopOnActive: quickOpts?.quick && !quickOpts?.noStopPrompt
+				confirmStopOnActive: quickOpts?.quick && !quickOpts?.noStopPrompt && !quickOpts?.nonInteractive
 					? async (activeDesc: string) => {
 						const pick = await vscode.window.showWarningMessage(
 							'실행 중인 쓰레드가 있습니다. Stop -all로 정지한 후 Quick Compile을 계속할까요?',
@@ -2160,7 +2368,15 @@ export function activate(context: vscode.ExtensionContext) {
 				outputChannel.show(true);
 				if (result.uploadStats) {
 					// 업로드는 됐고 Compile이 실패 — 컴파일본은 이전 상태이므로 Start 전 확인 대상.
-					markCompileStale(result.projectName, `${mode} 업로드 후 Compile 실패(${result.failedPhase ?? 'FAIL'})`, projectDir);
+					markCompileStale(
+						result.projectName,
+						quickOpts?.skipCompile && result.failedPhase === 'START'
+							// 업로드 스타트는 Compile을 보내지 않는다 — Start 실패는 제어기 자체 컴파일 실패일 수 있고
+							// 그 경우 에러 위치가 Problems에 오지 않으므로 빠른 컴파일로 확인하도록 남긴다(§0.7).
+							? '업로드 스타트: Start 실패 — 소스 에러 여부는 빠른 컴파일로 확인 필요'
+							: `${mode} 업로드 후 Compile 실패(${result.failedPhase ?? 'FAIL'})`,
+						projectDir,
+					);
 				}
 				const phaseLabel = result.failedPhase ? ` (${result.failedPhase} 단계)` : '';
 				const sysErrors = result.errorLog.filter(e => classifyErrorEntry(e).isControllerSystem);
@@ -2239,13 +2455,206 @@ export function activate(context: vscode.ExtensionContext) {
 	 * 메뉴에서 넘기는 Uri이고 팔레트/트리에서는 undefined 또는 비-Uri일 수 있어 Uri만 인정한다.
 	 */
 	async function pickWorkspaceProjectDir(placeHolder: string, resource?: unknown): Promise<string | undefined> {
-		return pickProjectDir({ placeHolder, resource: resource instanceof vscode.Uri ? resource : undefined });
+		const dir = await pickProjectDir({ placeHolder, resource: resource instanceof vscode.Uri ? resource : undefined });
+		// 사람이 고른 대상을 세션 대상으로도 기억한다 — 뒤이은 자동화 호출이 같은 프로젝트를 다시 묻지 않게(개선안 §19·§26).
+		if (dir) { automationTargetDir = dir; }
+		return dir;
 	}
 
+	// ── 자동화(비대화형) 경로 — 개선안 §15~§27 (규칙: controller/projectTarget.ts) ────────────────
+	// 사람용 명령(팔레트·탐색기 우클릭·트리)은 종전대로 QuickPick/모달을 쓰고, **인자로 대상을 받은 호출**
+	// (MCP 브리지·URI·다른 확장)은 UI 를 절대 띄우지 않고 구조화된 결과를 돌려준다. 두 경로를 섞지 않는다.
+	// active editor 는 자동화 대상 결정에 쓰지 않는다 — 어느 탭을 열어 뒀는지는 사람의 UI 상태다(§22).
+
+	/** 세션 한정 자동화 대상(메모리 전용, 디스크 미저장). 명시 지정·사람의 QuickPick 선택으로 갱신된다. */
+	let automationTargetDir: string | undefined;
+
+	interface AutomationTargetArgs extends ProjectTargetRequest {
+		/** true면 대상 폴더의 미저장 편집분을 저장하고 계속한다. 기본은 UNSAVED_FILES 오류(사람 편집분을 몰래 저장하지 않는다). */
+		saveDirty?: boolean;
+		/** Start 계열 — 모션 확인을 사용자에게 이미 받았음을 호출자가 단언한다(확인 모달을 대신한다, 하드 규칙 6). */
+		confirmStart?: boolean;
+		/** Start 계열 — "컴파일 검증 필요" 상태여도 그대로 Start 한다. */
+		ignoreCompileStale?: boolean;
+	}
+
+	type AutomationErrorCode =
+		| 'NO_GPL_PROJECT' | 'PROJECT_NOT_FOUND' | 'PROJECT_AMBIGUOUS'
+		| 'UNSAVED_FILES' | 'INTERACTIVE_UI_REQUIRED' | 'COMPILE_UNVERIFIED';
+
+	interface AutomationFailure {
+		ok: false;
+		error: AutomationErrorCode;
+		detail: string;
+		candidates?: TargetCandidateSummary[];
+		files?: string[];
+	}
+
+	function isAutomationFailure(v: unknown): v is AutomationFailure {
+		return typeof v === 'object' && v !== null && (v as AutomationFailure).ok === false && typeof (v as AutomationFailure).error === 'string';
+	}
+
+	/** 설정 `gpl.controller.defaultProject` — 프로젝트명 또는 폴더명. 빈 문자열이면 없음. */
+	function getConfiguredDefaultProject(): string | undefined {
+		const v = vscode.workspace.getConfiguration('gpl.controller').get<string>('defaultProject', '');
+		return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+	}
+
+	/**
+	 * 자동화 대상 해석. **UI 를 띄우지 않고 active editor 를 보지 않는다.** 성공하면 세션 대상을 갱신한다.
+	 * 실패는 예외가 아니라 구조화된 결과 — 호출자(AI)가 그대로 읽고 다음에 무엇을 지정할지 알 수 있게.
+	 */
+	async function resolveAutomationTarget(
+		request: ProjectTargetRequest | undefined,
+		label: string,
+	): Promise<{ ok: true; dir: string; projectName: string } | AutomationFailure> {
+		const candidates = await buildTargetCandidates();
+		const r = resolveProjectTarget(request, candidates, {
+			sessionTargetDir: automationTargetDir,
+			configuredDefault: getConfiguredDefaultProject(),
+		});
+		if (!r.ok) {
+			logOutput(`[Automation] ${label}: ${describeResolution(r)} · 후보: ${describeCandidates(r.candidates)}`);
+			return { ok: false, error: r.error, detail: r.detail, candidates: r.candidates };
+		}
+		automationTargetDir = r.dir;
+		logOutput(`[Automation] ${label}: 대상 ${describeResolution(r)}`);
+		return { ok: true, dir: r.dir, projectName: r.projectName };
+	}
+
+	/**
+	 * 자동화 경로의 미저장 파일 처리. 기본은 오류로 알린다 — 업로드는 디스크 내용을 올리므로 사람의 미저장
+	 * 편집분이 있으면 이전 내용이 올라간다. `saveDirty: true`로 호출자가 저장을 승인하면 저장하고 계속한다.
+	 */
+	async function handleDirtyForAutomation(projectDir: string, args: AutomationTargetArgs, label: string): Promise<AutomationFailure | undefined> {
+		const dirty = dirtyDocsUnder(projectDir);
+		if (dirty.length === 0) { return undefined; }
+		const files = dirty.map(d => d.uri.fsPath);
+		if (!args.saveDirty) {
+			logOutput(`[Automation] ${label}: 미저장 파일 ${files.length}개 — 업로드하지 않음 (saveDirty:true 로 저장 승인 가능)`);
+			return {
+				ok: false,
+				error: 'UNSAVED_FILES',
+				detail: `대상 프로젝트에 저장되지 않은 편집기 문서가 ${files.length}개 있습니다. 업로드는 디스크 내용을 올리므로 이전 내용이 올라갑니다. `
+					+ '사용자에게 저장을 요청하거나, 저장해도 된다면 `saveDirty: true` 로 다시 호출하세요.',
+				files,
+			};
+		}
+		for (const doc of dirty) {
+			if (!(await doc.save())) {
+				return { ok: false, error: 'UNSAVED_FILES', detail: `파일 저장 실패: ${path.basename(doc.uri.fsPath)} — 업로드를 중단했습니다.`, files };
+			}
+			quickCompilePendingFiles.delete(doc.uri.fsPath);
+		}
+		logOutput(`[Automation] ${label}: 미저장 파일 ${files.length}개 저장 후 계속 (saveDirty)`);
+		return undefined;
+	}
+
+	/**
+	 * Start 를 보내는 자동화 경로의 모션 확인 게이트(하드 규칙 6). **모달을 띄우지 않는다** — 비대화형 호출에서
+	 * 모달을 열면 호출자가 응답 없이 멈추고 사용자가 대신 눌러야 한다(개선안 §17·§25).
+	 *
+	 * 통과 조건은 둘 중 하나다: ① 사용자가 확인 모달을 스스로 껐다
+	 * (`gpl.controller.requireStartConfirmation: false`) ② 호출자가 `confirmStart: true` 로 **사용자 확인을
+	 * 이미 받았음을 단언**한다. 그 밖에는 INTERACTIVE_UI_REQUIRED 를 돌려주고, 대안(1402 `Start` 직접 전송)을 알린다.
+	 * 접근을 막는 것이 아니라 "무엇을 하면 통과되는지"를 응답에 싣는 방식이다.
+	 */
+	function startMotionGate(label: string, args: AutomationTargetArgs): AutomationFailure | undefined {
+		const required = vscode.workspace.getConfiguration('gpl').get<boolean>('controller.requireStartConfirmation', true);
+		if (required === false) { return undefined; }
+		if (args.confirmStart === true) {
+			logOutput(`[Automation] ${label}: confirmStart:true — 호출자가 사용자 모션 확인을 단언함(확인 모달 생략)`);
+			return undefined;
+		}
+		logOutput(`[Automation] ${label}: 모션 확인 미충족 — INTERACTIVE_UI_REQUIRED (모달을 띄우지 않음)`);
+		return {
+			ok: false,
+			error: 'INTERACTIVE_UI_REQUIRED',
+			detail: '이 명령은 로봇을 움직일 수 있는 Start 를 보내므로 사용자 확인이 필요합니다(설정 '
+				+ '`gpl.controller.requireStartConfirmation`, 기본 켜짐). 비대화형 호출에서는 확인 모달을 띄우지 않습니다 — '
+				+ '사용자에게 실행 여부를 물어 확인을 받은 뒤 `confirmStart: true` 로 다시 호출하거나, 사용자가 VS Code 에서 '
+				+ '직접 실행하게 하세요. 이미 올라간 프로젝트를 그냥 돌리는 것이면 1402 `Start <project>`(MCP `start_project`)를 '
+				+ '쓰는 편이 낫습니다 — 확장 UI 경로를 거치지 않습니다.',
+		};
+	}
+
+	/**
+	 * "컴파일 검증 필요"(업로드했지만 Compile 로 검증되지 않음) 상태의 자동화 게이트. Start 는 제어기가 자체
+	 * 컴파일하므로 소스 에러가 있으면 Start 가 실패하고 Problems 연동도 없다(§0.7) — 그 사실을 오류로 알린다.
+	 */
+	function compileStaleGate(label: string, projectName: string, args: AutomationTargetArgs): AutomationFailure | undefined {
+		const stale = findCompileStale(projectName);
+		if (!stale || args.ignoreCompileStale === true) { return undefined; }
+		logOutput(`[Automation] ${label}: 컴파일 미검증 — COMPILE_UNVERIFIED (${stale.reason})`);
+		return {
+			ok: false,
+			error: 'COMPILE_UNVERIFIED',
+			detail: `'${projectName}' 의 /GPL 소스가 아직 Compile 로 검증되지 않았습니다(사유: ${stale.reason}). `
+				+ 'Start 는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start 가 실패하고 에러 위치가 Problems 에 오지 않습니다. '
+				+ '먼저 `gpl.quickCompile` 로 에러를 확인하거나, 그대로 진행하려면 `ignoreCompileStale: true` 로 다시 호출하세요.',
+		};
+	}
+
+	/** 배포 계열 자동화 진입 공통: 대상 해석 → 미저장 처리 → runDeploy. */
+	async function runDeployForAutomation(
+		label: string,
+		args: AutomationTargetArgs,
+		skipStart: boolean,
+		opts: Omit<QuickDeployOpts, 'overrideProjectDir' | 'nonInteractive'>,
+	): Promise<DeployResult | AutomationFailure | undefined> {
+		const target = await resolveAutomationTarget(args, label);
+		if (isAutomationFailure(target)) { return target; }
+		const dirty = await handleDirtyForAutomation(target.dir, args, label);
+		if (dirty) { return dirty; }
+		return runDeploy(skipStart, { ...opts, overrideProjectDir: target.dir, nonInteractive: true });
+	}
+
+	/**
+	 * `gpl.automation.target` — 세션 자동화 대상 조회/고정/해제 (개선안 §19·§27).
+	 *
+	 * 대상 없이 부르면 현재 상태(고정된 대상·후보 목록·설정 기본값)를 돌려준다 — "왜 이 프로젝트가 올라갔지?"를
+	 * 사후 추론하지 않고 바로 확인하기 위한 것이다. 대상을 주면 해석해 세션에 고정하고, 이후 `gpl.deploy` 등을
+	 * 인자 없이(또는 대상 없는 객체로) 불러도 같은 프로젝트가 쓰인다. `clear: true` 면 고정을 푼다.
+	 */
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.automation.target', async (args?: unknown) => {
+			const a = (typeof args === 'object' && args !== null ? args : {}) as ProjectTargetRequest & { clear?: boolean };
+			if (a.clear === true) {
+				automationTargetDir = undefined;
+				logOutput('[Automation] 세션 대상 해제');
+			} else if (isProjectTargetRequest(a)) {
+				const target = await resolveAutomationTarget(a, 'gpl.automation.target');
+				if (isAutomationFailure(target)) { return target; }
+			}
+			const candidates = await buildTargetCandidates();
+			const current = automationTargetDir
+				? candidates.find(c => normalizeDirKey(c.dir) === normalizeDirKey(automationTargetDir!))
+				: undefined;
+			return {
+				ok: true,
+				target: current ? { project: current.projectName, dir: current.dir, runnable: current.runnable } : null,
+				configuredDefault: getConfiguredDefaultProject() ?? null,
+				candidates: candidates.map(c => ({
+					project: c.projectName,
+					dir: c.dir,
+					runnable: c.runnable,
+					...(c.referencedAsLibraryBy ? { referencedAsLibraryBy: c.referencedAsLibraryBy } : {}),
+				})),
+				hint: current
+					? '이 대상이 인자 없는 자동화 호출에 쓰입니다. 다른 프로젝트를 쓰려면 그 호출에 project/projectDir 를 직접 주세요.'
+					: '고정된 대상이 없습니다 — 자동화 호출은 실행 가능 프로젝트가 유일하거나 설정 기본값이 있을 때만 자동 결정되고, 그 밖에는 PROJECT_AMBIGUOUS 를 돌려줍니다.',
+			};
+		})
+	);
+
 	// gpl.deploy — Stop + /GPL 직접 업로드 + Compile (Start 안 함, 디버그 친화)
-	// 탐색기 우클릭(Uri 인자)에서는 그 프로젝트로 확정하고 QuickPick을 건너뛴다.
+	// 인자에 따라 세 경로: ① 대상 지정 객체({project|projectDir|projectFile}) → **비대화형**(UI 없음, 구조화 결과)
+	// ② Uri(탐색기 우클릭) → 그 프로젝트로 확정 ③ 인자 없음(팔레트·트리) → 종전 대화형 QuickPick.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.deploy', async (resource?: unknown) => {
+			if (isAutomationInvocation(resource)) {
+				return runDeployForAutomation('gpl.deploy', resource as AutomationTargetArgs, true, {});
+			}
 			if (resource instanceof vscode.Uri) {
 				const dir = await pickWorkspaceProjectDir('배포할 프로젝트를 선택하세요', resource);
 				if (!dir) { return undefined; }
@@ -2255,8 +2664,34 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// gpl.start — 배포 없이 Start만 전송. (구 gpl.deployRun의 START 단계를 분리한 것.
-	// Deploy와 Start를 합치지 않는다는 2026-07-24 결정 — 확인 모달은 동일하게 적용, §0.6)
+	// gpl.uploadStart — Stop + /GPL 직접 업로드 + Start. Compile은 보내지 않는다.
+	// PA 제어기의 Start가 자체적으로 Compile을 수행하므로(사용자 실사용 사실, ai-handoff §0.7)
+	// 확장이 Compile을 먼저 보내면 같은 컴파일이 두 번 돈다. 대신 소스 에러는 Problems 대신
+	// Start의 STATUS 실패로만 드러나므로, 에러 위치가 필요하면 '빠른 컴파일'(gpl.quickCompile)을 쓴다.
+	// Start 확인 모달·배포 잠금·프로젝트명 가드는 모두 기존 배포 경로와 동일하게 적용된다.
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.uploadStart', async (resource?: unknown) => {
+			const uploadStart = { skipCompile: true } as const;
+			if (isAutomationInvocation(resource)) {
+				// Start 를 보내는 경로 — 모션 확인 없이 자동으로 실행하지 않는다(하드 규칙 6).
+				const args = resource as AutomationTargetArgs;
+				const gate = startMotionGate('gpl.uploadStart', args);
+				if (gate) { return gate; }
+				return runDeployForAutomation('gpl.uploadStart', args, false, { ...uploadStart });
+			}
+			if (resource instanceof vscode.Uri) {
+				const dir = await pickWorkspaceProjectDir('업로드 후 시작할 프로젝트를 선택하세요', resource);
+				if (!dir) { return undefined; }
+				return runDeploy(false, { ...uploadStart, overrideProjectDir: dir });
+			}
+			return runDeploy(false, { ...uploadStart });
+		})
+	);
+
+	// gpl.start — 배포 없이 Start만 전송. (구 gpl.deployRun의 START 단계를 분리한 것 — 확인 모달은 §0.6대로 적용.)
+	// ※ 2026-07-24의 "Deploy와 Start를 합치지 않는다"는 결정은 2026-08-31 사용자 결정으로 갱신됐다:
+	//   업로드+실행을 한 번에 하는 경로는 gpl.uploadStart가 담당하되 Compile은 보내지 않는다(§0.7, §1-CD).
+	//   이 명령은 "이미 올라간 것을 다시 돌리기"용으로 그대로 남는다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.start', async (resource?: unknown) => {
 			// 업로드/컴파일 도중 Start가 겹치면 제어기 이상(사망)을 유발할 수 있다 — 배포 잠금(다른 창/프로세스 포함)으로 차단.
@@ -2265,27 +2700,55 @@ export function activate(context: vscode.ExtensionContext) {
 				warnDeployBusy('Start', busy, '완료 후 Start를 실행하세요 (업로드 중 Start는 제어기 이상을 유발할 수 있음)');
 				return;
 			}
-			const projectDir = await pickWorkspaceProjectDir('시작할 프로젝트를 선택하세요', resource);
+			// 대상 지정 객체로 불렸으면 비대화형 — QuickPick·모달을 띄우지 않고 구조화된 결과를 돌려준다(개선안 §17·§25).
+			const auto = isAutomationInvocation(resource) ? resource as AutomationTargetArgs : undefined;
+			let projectDir: string | undefined;
+			if (auto) {
+				const target = await resolveAutomationTarget(auto, 'gpl.start');
+				if (isAutomationFailure(target)) { return target; }
+				projectDir = target.dir;
+			} else {
+				projectDir = await pickWorkspaceProjectDir('시작할 프로젝트를 선택하세요', resource);
+			}
 			if (!projectDir) { return; }
 			const gprName = readGprProjectName(projectDir);
 			const projectName = gprName ?? path.basename(projectDir);
 			// `Start <name>`은 공백 구분 명령 — 이름에 공백이 있으면 보내지 않고 이유를 알린다.
-			if (!ensureProjectNameSafe(projectName, gprName ? 'project' : 'folder', 'Start')) { return; }
+			if (auto) {
+				const nameCheck = checkProjectName(projectName);
+				if (!nameCheck.ok) {
+					const reason = describeProjectNameProblem(projectName, gprName ? 'project' : 'folder', nameCheck);
+					logOutput(`[Automation] gpl.start 중단: ${reason}`);
+					return { ok: false, error: 'PROJECT_NOT_FOUND', detail: reason } as AutomationFailure;
+				}
+			} else if (!ensureProjectNameSafe(projectName, gprName ? 'project' : 'folder', 'Start')) {
+				return;
+			}
 			// /GPL 소스가 Compile로 검증되지 않았으면 안내(Start는 제어기가 자체 컴파일 — 소스 에러 시 Start 실패, §0.7).
-			if (!(await confirmStartWhenCompileStale(projectName, projectDir))) { return; }
+			if (auto) {
+				const stale = compileStaleGate('gpl.start', projectName, auto);
+				if (stale) { return stale; }
+			} else if (!(await confirmStartWhenCompileStale(projectName, projectDir))) {
+				return;
+			}
 			// 모달 대기 동안 다른 배포가 시작됐을 수 있으므로 잠금을 다시 확인한다.
 			const busyAfter = currentDeployLockHolder();
 			if (busyAfter) { warnDeployBusy('Start', busyAfter); return; }
 
-			const requireStartConfirm = vscode.workspace.getConfiguration('gpl')
-				.get<boolean>('controller.requireStartConfirmation', true);
-			if (requireStartConfirm) {
-				const pick = await vscode.window.showWarningMessage(
-					`'${projectName}' 프로그램을 시작합니다. 로봇이 움직일 수 있습니다.`,
-					{ modal: true },
-					'Start'
-				);
-				if (pick !== 'Start') { return; }
+			if (auto) {
+				const gate = startMotionGate('gpl.start', auto);
+				if (gate) { return gate; }
+			} else {
+				const requireStartConfirm = vscode.workspace.getConfiguration('gpl')
+					.get<boolean>('controller.requireStartConfirmation', true);
+				if (requireStartConfirm) {
+					const pick = await vscode.window.showWarningMessage(
+						`'${projectName}' 프로그램을 시작합니다. 로봇이 움직일 수 있습니다.`,
+						{ modal: true },
+						'Start'
+					);
+					if (pick !== 'Start') { return; }
+				}
 			}
 
 			// Start 전 런타임 콘솔 준비 (구 Deploy & Run의 beforeStart와 동일 처리)
@@ -2333,13 +2796,23 @@ export function activate(context: vscode.ExtensionContext) {
 				warnDeployBusy('Save to Flash', busy, '완료 후 flash 저장을 실행하세요');
 				return;
 			}
-			const projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요', resource);
-			if (!projectDir) { return; }
-			// 업로드 전 미저장 파일 확인. savedFiles는 pending에서 지우지 않는다 —
-			// flash 업로드는 /GPL을 갱신하지 않으므로 /GPL 동기화는 이후 autoOnSave가 자체 게이트로 처리.
-			if (!(await confirmSaveDirtyProjectDocs(projectDir)).ok) {
-				logOutput('[SaveToFlash] 미저장 파일 확인에서 취소됨 — 업로드를 시작하지 않음');
-				return;
+			const auto = isAutomationInvocation(resource) ? resource as AutomationTargetArgs : undefined;
+			let projectDir: string | undefined;
+			if (auto) {
+				const target = await resolveAutomationTarget(auto, 'gpl.saveToFlash');
+				if (isAutomationFailure(target)) { return target; }
+				const dirty = await handleDirtyForAutomation(target.dir, auto, 'gpl.saveToFlash');
+				if (dirty) { return dirty; }
+				projectDir = target.dir;
+			} else {
+				projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요', resource);
+				if (!projectDir) { return; }
+				// 업로드 전 미저장 파일 확인. savedFiles는 pending에서 지우지 않는다 —
+				// flash 업로드는 /GPL을 갱신하지 않으므로 /GPL 동기화는 이후 autoOnSave가 자체 게이트로 처리.
+				if (!(await confirmSaveDirtyProjectDocs(projectDir)).ok) {
+					logOutput('[SaveToFlash] 미저장 파일 확인에서 취소됨 — 업로드를 시작하지 않음');
+					return;
+				}
 			}
 			const cfg = getControllerConfig();
 			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);
@@ -2381,6 +2854,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.quickCompile', async (resource?: unknown) => {
 			const quick = { skipStop: true, skipUnchanged: true, quick: true } as const;
+			if (isAutomationInvocation(resource)) {
+				return runDeployForAutomation('gpl.quickCompile', resource as AutomationTargetArgs, true, { ...quick });
+			}
 			if (resource instanceof vscode.Uri) {
 				const dir = await pickWorkspaceProjectDir('빠른 컴파일할 프로젝트를 선택하세요', resource);
 				if (!dir) { return undefined; }
@@ -2820,7 +3296,7 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	function aiBreakpointCommand(projectName: string, fileName: string, line: number, clear = false): string {
-		return `${clear ? 'Set Nobreak' : 'Set Break'} ${projectName} "${fileName}"${line}`;
+		return formatBreakpointCommand(clear ? 'Nobreak' : 'Break', projectName, fileName, line);
 	}
 
 	type AIDebugStepMode = 'into' | 'over' | 'out';
@@ -2930,26 +3406,11 @@ export function activate(context: vscode.ExtensionContext) {
 		};
 	});
 
-	registerAiDebugCommand('gpl.ai.debug.setBreakpoint', async (args?: { file: string; line: number; projectName?: string }) => {
-		if (!args?.file || !args?.line) {
-			return { ok: false, error: 'missing-file-or-line' };
-		}
-		const projectName = (args.projectName || await resolveExpectedProjectName() || '').trim();
-		if (!projectName) {
-			return { ok: false, error: 'missing-projectName' };
-		}
-		const fileName = path.basename(args.file);
-		const cmd = aiBreakpointCommand(projectName, fileName, Math.max(1, Math.floor(args.line)), false);
-		const raw = await sendCommand(cmd);
-		const status = parseStatus(raw);
-		return {
-			ok: status.code === 0,
-			command: cmd,
-			status,
-		};
-	});
+	// `mirror: false`를 주면 에디터 반영을 건너뛴다 — 스스로 정리하는 임시 BP(run_to_line 등)가
+	// 빨간 점을 깜빡이게 하거나 사용자가 같은 줄에 찍어 둔 중단점을 지우지 않게 하는 탈출구다.
+	type AiBreakpointArgs = { file: string; line: number; projectName?: string; mirror?: boolean };
 
-	registerAiDebugCommand('gpl.ai.debug.clearBreakpoint', async (args?: { file: string; line: number; projectName?: string }) => {
+	async function aiApplyBreakpoint(args: AiBreakpointArgs | undefined, clear: boolean): Promise<AiDebugResult> {
 		if (!args?.file || !args?.line) {
 			return { ok: false, error: 'missing-file-or-line' };
 		}
@@ -2958,15 +3419,28 @@ export function activate(context: vscode.ExtensionContext) {
 			return { ok: false, error: 'missing-projectName' };
 		}
 		const fileName = path.basename(args.file);
-		const cmd = aiBreakpointCommand(projectName, fileName, Math.max(1, Math.floor(args.line)), true);
+		const line = Math.max(1, Math.floor(args.line));
+		const cmd = aiBreakpointCommand(projectName, fileName, line, clear);
 		const raw = await sendCommand(cmd);
 		const status = parseStatus(raw);
+		const ok = status.code === 0;
+		// 제어기가 받아들였을 때만 에디터에 반영한다 — 실패한 BP를 빨간 점으로 남기면 거짓 표시가 된다.
+		const mirror = ok && args.mirror !== false
+			? breakpointMirror.apply(clear ? 'Nobreak' : 'Break', fileName, line)
+			: undefined;
 		return {
-			ok: status.code === 0,
+			ok,
 			command: cmd,
 			status,
+			...(mirror ? { editorBreakpoint: mirror.mirrored ? 'updated' : mirror.reason } : {}),
 		};
-	});
+	}
+
+	registerAiDebugCommand('gpl.ai.debug.setBreakpoint',
+		(args?: AiBreakpointArgs) => aiApplyBreakpoint(args, false));
+
+	registerAiDebugCommand('gpl.ai.debug.clearBreakpoint',
+		(args?: AiBreakpointArgs) => aiApplyBreakpoint(args, true));
 
 	registerAiDebugCommand('gpl.ai.debug.breakThread', async (args?: { threadName: string; waitForPause?: boolean; waitTimeoutMs?: number }) => {
 		if (!args?.threadName) {
@@ -3075,7 +3549,7 @@ export function activate(context: vscode.ExtensionContext) {
 			commandPolicy: getCommandPolicySnapshot(),
 			expectedProject: (await resolveExpectedProjectName()) || undefined,
 			deployLock: lock ? { owner: lock.owner, stage: lock.stage, describe: describeDeployLock(lock) } : null,
-			compileStale: [...compileStaleProjects.values()],
+			compileStale: compileStaleProjects.list(),
 		};
 	});
 
@@ -3325,12 +3799,22 @@ export function activate(context: vscode.ExtensionContext) {
 					});
 					const status = parseStatus(detailed.raw);
 					outputChannel.appendLine(`[Command] >>> ${command} (agent)`);
+					// 외부(MCP·URI·에이전트)가 원시 명령으로 건 `Set Break`/`Nobreak`를 에디터에도 반영한다
+					// (§1-CO). in-process 호출자(DAP·EditorBreakpointSync)는 이 명령을 거치지 않으므로
+					// 여기서만 미러가 걸린다. 임시 BP는 호출 측이 `mirrorBreakpoints: false`로 제외한다.
+					const mirror = status.code === 0
+						&& (args as { mirrorBreakpoints?: boolean })?.mirrorBreakpoints !== false
+						? breakpointMirror.applyCommand(command)
+						: undefined;
 					return {
 						ok: status.code === 0,
 						command,
 						status,
 						raw: detailed.raw,
 						statusTagReceived: detailed.meta.statusTagReceived,
+						...(mirror && mirror.reason !== 'not-breakpoint-command'
+							? { editorBreakpoint: mirror.mirrored ? 'updated' : mirror.reason }
+							: {}),
 					};
 				} catch (err: any) {
 					return isPolicyError(err)
@@ -3350,6 +3834,9 @@ export function activate(context: vscode.ExtensionContext) {
 				outputChannel.appendLine(`[Command] >>> ${normalizedCommand}`);
 				outputChannel.appendLine(resp);
 				outputChannel.show(true);
+				// 손으로 친 `Set Break`/`Nobreak`도 에디터에 반영한다 — 콘솔로 걸었다는 이유로
+				// 빨간 점 없이 제어기에만 남는 중단점을 만들지 않는다(§1-CO).
+				if (isSuccess(resp)) { breakpointMirror.applyCommand(normalizedCommand); }
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`명령 실패: ${err.message ?? err}`);
 			}
@@ -4319,39 +4806,29 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	/**
-	 * 재귀 스캔에서 제외할 디렉터리 판별 — gplDebugSession._isSkippedScanDir와 같은 규칙.
-	 * dot 디렉터리(.history/.git 등)와 빌드/출력 폴더 제외 — 특히 .history(Local History
-	 * 확장)의 stale 사본이 열리는 문제를 방지한다.
+	 * 워크스페이스에서 이름이 target(대소문자 무시)인 파일 전부를 수집한다.
+	 *
+	 * 제외 규칙과 깊이/개수 상한은 `projectSources.walkTree`(단일 출처, 디버그 소스맵과 동일)가 맡는다.
+	 * 종전에는 상한 없는 동기 재귀라, 저장소 상위 폴더를 워크스페이스로 열면 확장 호스트가 멈췄다.
 	 */
-	function isSkippedScanDir(name: string): boolean {
-		return name.startsWith('.')
-			|| name === 'node_modules'
-			|| name === 'out'
-			|| name === 'dist'
-			|| name === 'bin';
-	}
-
-	/** 워크스페이스에서 이름이 target(대소문자 무시)인 파일 전부를 수집한다. */
 	function findWorkspaceFilesByName(target: string): string[] {
 		const folders = vscode.workspace.workspaceFolders;
 		if (!folders) { return []; }
 		const lower = target.toLowerCase();
 		const results: string[] = [];
-		const scan = (dir: string): void => {
-			try {
-				const entries = fs.readdirSync(dir, { withFileTypes: true });
-				for (const entry of entries) {
-					const full = path.join(dir, entry.name);
-					if (entry.isDirectory()) {
-						if (isSkippedScanDir(entry.name)) { continue; }
-						scan(full);
-					} else if (entry.name.toLowerCase() === lower) {
-						results.push(full);
-					}
-				}
-			} catch { /* skip */ }
-		};
-		for (const folder of folders) { scan(folder.uri.fsPath); }
+		let truncated = false;
+		for (const folder of folders) {
+			const r = walkTree(folder.uri.fsPath, (full, name) => {
+				if (name.toLowerCase() === lower) { results.push(full); }
+			});
+			truncated = truncated || r.truncated;
+		}
+		if (truncated) {
+			logOutput(
+				`⚠ "${target}" 탐색이 깊이/개수 상한에 걸렸습니다 — 워크스페이스가 너무 큽니다. `
+				+ '프로젝트(또는 projects) 폴더를 워크스페이스로 열면 정확해집니다.',
+			);
+		}
 		return results;
 	}
 
@@ -4704,6 +5181,8 @@ export function activate(context: vscode.ExtensionContext) {
 	activateProjectPicker(context);
 	// Project.gpr 소스 목록 동기화(.gpr 우클릭 명령 + .gpl 생성/이름 변경/삭제 시 반영 제안). 목록이 바뀌면 Project.gpr 기반 인덱스를 다시 만든다.
 	activateGprSync(context, { log: logOutput, refreshSymbols: () => symbolCache.refresh() });
+	// 라이브러리 소스 BP 승격 — 제어기가 -508 로 거부하는 ProjectLibrary 소스를 메인 ProjectSource 로 올린다(§1-CK·§1-CT).
+	activatePromoteSource(context, { log: logOutput, refreshSymbols: () => symbolCache.refresh() });
 	activateDebug(context);
 
 	// ── 디버그 중 클릭 즉시 변수 값 표시 ──────────────────────────

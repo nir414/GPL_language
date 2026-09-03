@@ -58,10 +58,22 @@ export interface HoverConfig {
     builtinDetails: boolean;
 }
 
-// getHoverConfig 기본값 — get() 폴백과 정규화 폴백에 동일하게 사용
+// getHoverConfig 기본값/허용값 — get() 폴백과 정규화 폴백에 동일하게 사용.
+// 허용값을 목록 하나로 두면 기본값만 바꿔도 정규화가 따라오므로, 분기를 함께 고치는 걸
+// 잊어 새 기본값이 곧바로 폴백돼 버리는 사고가 구조적으로 생기지 않는다.
+const HOVER_DOC_COMMENT_MODES = ['summary', 'full', 'off'] as const;
 const HOVER_DOC_COMMENT_DEFAULT: HoverDocCommentMode = 'summary';
 const HOVER_DOC_COMMENT_MAX_LINES_DEFAULT = 6;
-const HOVER_DURING_DEBUG_DEFAULT: HoverDuringDebugMode = 'compact';
+const HOVER_DURING_DEBUG_MODES = ['normal', 'compact', 'off'] as const;
+// 기본 normal (2026-09-02, 종전 compact): compact가 문서를 지우는 자리 — Function/Sub 이름과
+// 내장 항목 — 는 evaluatableExpressionProvider의 안전 규칙 0·1이 `-eval`을 원천 차단하는 자리라
+// 애초에 가릴 변수 값 호버가 없다. 팝업 크기는 docComment(summary·6줄) 축이 이미 맡고 있다.
+const HOVER_DURING_DEBUG_DEFAULT: HoverDuringDebugMode = 'normal';
+
+/** 설정 문자열을 허용 목록으로 정규화 — 목록 밖 값·비문자열은 기본값. */
+function pickOption<T extends string>(raw: unknown, allowed: readonly T[], fallback: T): T {
+    return typeof raw === 'string' && (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
+}
 
 /**
  * 호버 표시량 설정 (package.json: gpl.hover.*).
@@ -73,9 +85,10 @@ export function getHoverConfig(workspace: WorkspaceConfigHost): HoverConfig {
     // 명시적 false만 비활성으로 취급 (비-boolean 설정값은 기본 활성).
     const enabled = cfg.get<boolean>('hover.enabled', true) !== false;
 
-    const docRaw = cfg.get<string>('hover.docComment', HOVER_DOC_COMMENT_DEFAULT);
-    const docComment: HoverDocCommentMode =
-        docRaw === 'full' || docRaw === 'off' ? docRaw : HOVER_DOC_COMMENT_DEFAULT;
+    const docComment = pickOption(
+        cfg.get<string>('hover.docComment', HOVER_DOC_COMMENT_DEFAULT),
+        HOVER_DOC_COMMENT_MODES,
+        HOVER_DOC_COMMENT_DEFAULT);
 
     const maxRaw = cfg.get<number>('hover.docCommentMaxLines', HOVER_DOC_COMMENT_MAX_LINES_DEFAULT);
     const docCommentMaxLines =
@@ -83,9 +96,10 @@ export function getHoverConfig(workspace: WorkspaceConfigHost): HoverConfig {
             ? Math.floor(maxRaw)
             : HOVER_DOC_COMMENT_MAX_LINES_DEFAULT;
 
-    const dbgRaw = cfg.get<string>('hover.duringDebug', HOVER_DURING_DEBUG_DEFAULT);
-    const duringDebug: HoverDuringDebugMode =
-        dbgRaw === 'off' || dbgRaw === 'normal' ? dbgRaw : HOVER_DURING_DEBUG_DEFAULT;
+    const duringDebug = pickOption(
+        cfg.get<string>('hover.duringDebug', HOVER_DURING_DEBUG_DEFAULT),
+        HOVER_DURING_DEBUG_MODES,
+        HOVER_DURING_DEBUG_DEFAULT);
 
     // 명시적 false만 비활성으로 취급 (비-boolean 설정값은 기본 활성).
     const builtinDetails = cfg.get<boolean>('hover.builtinDetails', true) !== false;
@@ -197,17 +211,9 @@ export function getQualifiedWordAtPosition(
 export { isInCommentOrString } from './language/cursorExpression';
 
 /**
- * 심볼 해석 대상이 될 수 없는 GPL(VB계열) 예약어 — 제어문/선언 키워드/연산자/리터럴 포함.
- * 정의 요청에서 조기 반환해 멤버 해석/캐시 미스/텍스트 스캔 낭비를 없앤다.
- * 주의: `New`(생성자 점프), `Me`/`MyBase`, 타입명(String 등)은 의도적으로 제외.
+ * 심볼 해석 대상이 될 수 없는 GPL(VB계열) 예약어(제어문/연산자/리터럴) — 정의 요청에서
+ * 조기 반환해 멤버 해석/캐시 미스/텍스트 스캔 낭비를 없앤다.
+ * 정본은 language/gplReservedWords.ts (예약어를 보는 모든 곳이 한 목록을 쓰게 통합) —
+ * 기존 import 경로 호환을 위해 여기서 재노출한다.
  */
-export const GPL_CONTROL_KEYWORDS: ReadonlySet<string> = new Set([
-    'if', 'then', 'else', 'elseif', 'end', 'endif',
-    'for', 'next', 'to', 'step', 'each', 'in',
-    'while', 'wend', 'do', 'loop', 'until',
-    'select', 'case', 'return', 'exit', 'continue', 'goto',
-    'dim', 'as', 'byref', 'byval', 'redim',
-    'and', 'or', 'not', 'xor', 'mod',
-    'true', 'false', 'nothing',
-    'try', 'catch', 'finally', 'throw', 'with',
-]);
+export { GPL_CONTROL_KEYWORDS } from './language/gplReservedWords';

@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.8.22",
+    "version": "0.8.28",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -44,8 +44,10 @@
         "onCommand:gpl.controller.disconnect",
         "onCommand:gpl.deploy",
         "onCommand:gpl.start",
+        "onCommand:gpl.uploadStart",
         "onCommand:gpl.saveToFlash",
         "onCommand:gpl.quickCompile",
+        "onCommand:gpl.project.promoteSourceForBreakpoint",
         "onCommand:gpl.debug.generateLaunch",
         "onCommand:gpl.debug.attachNow",
         "onCommand:gpl.console.start",
@@ -71,6 +73,7 @@
         "onCommand:gpl.ai.debug.connect",
         "onCommand:gpl.ai.debug.disconnect",
         "onCommand:gpl.ai.debug.getConnectionState",
+        "onCommand:gpl.automation.target",
         "onUri",
         "onCommand:gpl.diagnosticSnapshot",
         "onDebugResolve:brooks-gpl"
@@ -262,6 +265,11 @@
                 "icon": "$(cloud-upload)"
             },
             {
+                "command": "gpl.uploadStart",
+                "title": "GPL: 업로드 스타트 (/GPL 업로드 + Start, Compile은 제어기가 수행)",
+                "icon": "$(rocket)"
+            },
+            {
                 "command": "gpl.start",
                 "title": "GPL: Start (실행만, 배포 없음)",
                 "icon": "$(play)"
@@ -295,6 +303,11 @@
                 "command": "gpl.project.syncSources",
                 "title": "GPL: Project.gpr 소스 목록 동기화 (.gpl 추가/누락 정리)",
                 "icon": "$(list-tree)"
+            },
+            {
+                "command": "gpl.project.promoteSourceForBreakpoint",
+                "title": "GPL: 브레이크포인트용 소스 승격 (라이브러리 소스를 메인 ProjectSource로)",
+                "icon": "$(debug-breakpoint-conditional)"
             },
             {
                 "command": "gpl.console.start",
@@ -384,6 +397,15 @@
             {
                 "command": "gpl.controller.pushBreakpoints",
                 "title": "GPL: Push Editor Breakpoints to Controller (에디터 중단점 반영)"
+            },
+            {
+                "command": "gpl.controller.syncBreakpoints",
+                "title": "GPL: Sync Breakpoints (제어기를 에디터 기준으로 맞추기)",
+                "icon": "$(sync)"
+            },
+            {
+                "command": "gpl.controller.clearBreakpointHere",
+                "title": "제어기에서 이 중단점 해제"
             },
             {
                 "command": "gpl.controller.pullBreakpoints",
@@ -634,19 +656,29 @@
                     "group": "gpl_project@3"
                 },
                 {
-                    "command": "gpl.start",
+                    "command": "gpl.uploadStart",
                     "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
                     "group": "gpl_project@4"
                 },
                 {
-                    "command": "gpl.saveToFlash",
+                    "command": "gpl.start",
                     "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
                     "group": "gpl_project@5"
+                },
+                {
+                    "command": "gpl.saveToFlash",
+                    "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
+                    "group": "gpl_project@6"
                 },
                 {
                     "command": "gpl.project.syncSources",
                     "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.gpr$/i",
                     "group": "gpl_project@1"
+                },
+                {
+                    "command": "gpl.project.promoteSourceForBreakpoint",
+                    "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.gpl$/i",
+                    "group": "gpl_project@2"
                 }
             ],
             "view/title": [
@@ -671,9 +703,14 @@
                     "group": "1_deploy@0"
                 },
                 {
-                    "command": "gpl.start",
+                    "command": "gpl.uploadStart",
                     "when": "view == gplThreads && gpl.ui.connected",
                     "group": "navigation@3"
+                },
+                {
+                    "command": "gpl.start",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "1_deploy@2"
                 },
                 {
                     "command": "gpl.quickCompile",
@@ -731,6 +768,11 @@
                     "group": "2_debug@4"
                 },
                 {
+                    "command": "gpl.controller.syncBreakpoints",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "2_debug@5"
+                },
+                {
                     "command": "gpl.console.start",
                     "when": "view == gplThreads && gpl.ui.connected",
                     "group": "3_console@1"
@@ -771,6 +813,16 @@
                     "command": "gpl.controller.refreshBreakpoints",
                     "when": "view == gplThreads && viewItem == section-breakpoints",
                     "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.syncBreakpoints",
+                    "when": "view == gplThreads && viewItem == section-breakpoints && gpl.ui.connected",
+                    "group": "inline"
+                },
+                {
+                    "command": "gpl.controller.clearBreakpointHere",
+                    "when": "view == gplThreads && viewItem == breakpointItem && gpl.ui.connected",
+                    "group": "bp@1"
                 },
                 {
                     "command": "gpl.controller.showTraffic",
@@ -913,19 +965,24 @@
                     "group": "threadSection@1"
                 },
                 {
-                    "command": "gpl.start",
+                    "command": "gpl.uploadStart",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@2"
                 },
                 {
-                    "command": "gpl.saveToFlash",
+                    "command": "gpl.start",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@3"
                 },
                 {
-                    "command": "gpl.diagnosticSnapshot",
+                    "command": "gpl.saveToFlash",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@4"
+                },
+                {
+                    "command": "gpl.diagnosticSnapshot",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "threadSection@5"
                 },
                 {
                     "command": "gpl.controller.refreshFtp",
@@ -1170,17 +1227,17 @@
                     "scope": "window",
                     "type": "string",
                     "enum": [
+                        "normal",
                         "compact",
-                        "off",
-                        "normal"
+                        "off"
                     ],
                     "enumDescriptions": [
-                        "Signature-only one-liner while a brooks-gpl debug session is active (keeps variable-value hover uncluttered).",
-                        "Suppress language hover entirely while debugging.",
-                        "Same hover as when editing."
+                        "Same hover as when editing: signature, scope, and doc comment.",
+                        "Signature-only one-liner while a brooks-gpl debug session is active.",
+                        "Suppress language hover entirely while debugging."
                     ],
-                    "default": "compact",
-                    "description": "Language hover behavior while a brooks-gpl debug session is active."
+                    "default": "normal",
+                    "description": "Language hover behavior while a brooks-gpl debug session is active. The debugger's variable-value hover already takes precedence wherever it is available, so 'compact'/'off' mainly trade away doc comments on procedure names, where no value hover is offered anyway."
                 },
                 "gpl.hover.showAfterClick": {
                     "scope": "window",
@@ -1230,6 +1287,19 @@
                     "default": 8000,
                     "minimum": 1000,
                     "description": "연결 끊김 감지용 프로브(Show Thread 폴링·재프로브)의 응답 대기 시간(ms). 명령 타임아웃(timeoutMs)과 별개입니다. 프로브가 연속 3회(연결 거부·도달 불가는 2회) 실패하면 연결 유실로 판정해 연결 상태를 끊습니다(자동 재접속 없음 — 다시 Connect). 첫 실패나 1403 콘솔 오류·keep-alive 소켓 오류·대시보드 프로브 실패 뒤에는 정규 폴링 간격을 기다리지 않고 1초 간격으로 재프로브합니다."
+                },
+                "gpl.controller.defaultProject": {
+                    "scope": "window",
+                    "type": "string",
+                    "default": "",
+                    "description": "자동화(MCP·URI) 호출의 기본 프로젝트 — 이름(.gpr ProjectName) 또는 폴더명. 워크스페이스에 실행 가능한 GPL 프로젝트(.gpr에 ProjectStart가 있는 것)가 여럿일 때, 대상을 지정하지 않은 자동화 호출이 어느 프로젝트를 쓸지 정합니다. 비워 두면 ① 호출 인자 ② 이 세션에서 이미 확정된 대상 ③ 실행 가능 프로젝트가 유일할 때 그것 순으로 결정하고, 그래도 애매하면 UI를 띄우지 않고 `PROJECT_AMBIGUOUS`와 후보 목록을 돌려줍니다. 사람이 명령 팔레트에서 실행할 때의 프로젝트 선택 목록(QuickPick)에는 영향을 주지 않습니다.",
+                    "markdownDescription": "자동화(MCP·URI) 호출의 기본 프로젝트 — 이름(`.gpr` 의 `ProjectName`) 또는 폴더명.\n\n워크스페이스에 **실행 가능한** GPL 프로젝트(`.gpr` 에 `ProjectStart` 가 있는 것)가 여럿일 때, 대상을 지정하지 않은 자동화 호출이 어느 프로젝트를 쓸지 정합니다. 비워 두면 ① 호출 인자(`project`/`projectDir`/`projectFile`) ② 이 세션에서 이미 확정된 대상 ③ 실행 가능 프로젝트가 유일할 때 그것 순으로 결정하고, 그래도 애매하면 **UI를 띄우지 않고** `PROJECT_AMBIGUOUS` 와 후보 목록을 돌려줍니다.\n\n사람이 명령 팔레트에서 실행할 때의 프로젝트 선택 목록(QuickPick)에는 영향을 주지 않습니다."
+                },
+                "gpl.controller.connectionRecoveryWindowMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 180000,
+                    "description": "채널 교란 뒤 복구 대기 상한(ms). Unload/Load/Compile/Start처럼 실행 중 1402 명령 채널을 일시적으로 못 쓰게 만들 수 있는 명령이 응답 없이 끝나면, 그 뒤의 연결 거부(ECONNREFUSED)를 연결 유실로 세지 않고 이 시간만큼 복구를 기다립니다(5초 간격 Show Thread 재프로브). 실측 2026-08-31: Unload 뒤 약 2.5분간 1402 재접속이 거부되다가 재부팅 없이 정상 복귀했고, 종전 판정에서는 거부 2회로 3초 만에 유실이 확정됐습니다. 이 시간 안에 응답이 오면 연결을 유지하고, 넘기면 종전과 같은 임계 판정(연속 3회·거부 2회)으로 넘어갑니다. 0으로 두면 이 기능을 끄고 종전 판정만 씁니다. 대가: 실제 제어기 다운을 최대 이 시간만큼 늦게 감지합니다."
                 },
                 "gpl.agentBridge.enabled": {
                     "scope": "window",
@@ -1306,7 +1376,13 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": false,
-                    "description": "에디터 중단점 변경(추가/제거/활성 토글)을 연결된 제어기에 즉시 Set Break/Nobreak로 반영합니다. VS Code 중단점이 단일 원본이 됩니다. brooks-gpl 디버그 세션 중에는 DAP가 동기화를 담당하므로 개입하지 않습니다. 외부 AI(MCP)가 실행을 제어하는 워크플로에서 켜면 편리합니다."
+                    "description": "에디터 중단점 변경(추가/제거/활성 토글)을 연결된 제어기에 즉시 Set Break/Nobreak로 반영하고, 연결 시점에 제어기를 에디터 상태로 맞춥니다. VS Code 중단점이 단일 원본이 됩니다. brooks-gpl 디버그 세션 중에는 DAP가 동기화를 담당하므로 개입하지 않습니다. 꺼 두면 제어기의 Set Break가 그대로 남아, F9로 지운 줄에서 실행이 멈출 수 있습니다(그때는 'GPL: Sync Breakpoints'로 맞추세요)."
+                },
+                "gpl.controller.mirrorAiBreakpoints": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "AI(MCP)·URI·명령 콘솔이 제어기에 직접 건 Set Break/Nobreak를 에디터 중단점(빨간 점)에도 반영합니다. 끄면 그런 중단점은 제어기에만 존재해 편집기에 보이지 않고, 제어기 트리의 '⚠ 에디터에 없음' 표시로만 확인할 수 있습니다. brooks-gpl 디버그 세션과 에디터 중단점 동기화가 보내는 명령에는 적용되지 않습니다(그쪽은 이미 에디터가 원본)."
                 },
                 "gpl.controller.autoShowPausedLocation": {
                     "scope": "window",

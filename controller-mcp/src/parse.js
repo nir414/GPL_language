@@ -490,3 +490,40 @@ export function acceptedRate(prev, cur) {
   if (delta < 0) return null;
   return Math.round((delta / dtSec) * 100) / 100;
 }
+
+/**
+ * `Show Break` 응답의 중단점 목록.
+ * 행 형식(실기기 G2400C 캡처): `번호, 프로젝트, 프로시저, 프로시저줄, 파일, 파일줄, 히트수`
+ * 예: `119, GPL_Code, MAIN, 3, Main.gpl, 10, 0`
+ *
+ * 위치를 확정할 수 없는 행(파일/줄 누락)은 버린다 — 없는 위치를 있다고 보고하지 않는다.
+ * `Show Break`는 `<STATUS>`가 목록 **앞**에 오므로 `extractData`(STATUS 이후를 잘라 냄)를 쓰지 않고
+ * 태그만 걷어 낸 뒤 전 줄을 훑는다.
+ * @returns {Array<{number:number, project:string, proc:string, file:string, line:number, hits:number}>}
+ */
+export function parseBreakList(raw) {
+  const out = [];
+  const cleaned = String(raw ?? '').replace(/<[^>]*>/g, '');
+  for (const line of cleaned.split(/\r?\n/)) {
+    const f = line.split(',').map(s => s.trim());
+    if (f.length < 6) continue;
+    if (!Number.isInteger(Number(f[0]))) continue;
+    const fileLine = Number(f[5]);
+    if (!f[4] || !Number.isInteger(fileLine) || fileLine <= 0) continue;
+    out.push({
+      number: Number(f[0]) || 0,
+      project: f[1] ?? '',
+      proc: f[2] ?? '',
+      file: f[4],
+      line: fileLine,
+      hits: Number(f[6]) || 0,
+    });
+  }
+  return out;
+}
+
+/** 같은 파일(대소문자 무시)·같은 줄의 중단점이 목록에 있는지. */
+export function hasBreakpointAt(list, file, line) {
+  const base = String(file).replace(/^.*[\\/]/, '').toLowerCase();
+  return list.some(b => b.file.replace(/^.*[\\/]/, '').toLowerCase() === base && b.line === line);
+}

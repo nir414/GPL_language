@@ -130,7 +130,7 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   (`extension-bridge` / `direct-tcp`). *"1402를 VS Code가 점유 중"이라고 추측하지 말고 이 도구로 확인할 것.*
   `wake:true`면 확장이 비활성일 때 `code --open-url`로 활성화를 시도한다.
 - `extension_command(command, args?, timeoutMs?)` — 확장 명령(`gpl.*`) 실행. 제어기 콘솔 명령이 아니라 **확장 기능**을 쓴다:
-  `gpl.deploy`(/GPL 업로드+Compile) · `gpl.quickCompile` · `gpl.start` · `gpl.controller.pushBreakpoints`/`pullBreakpoints` ·
+  `gpl.deploy`(/GPL 업로드+Compile) · `gpl.quickCompile` · `gpl.uploadStart`(업로드+Start) · `gpl.start` · `gpl.controller.pushBreakpoints`/`pullBreakpoints` ·
   `gpl.ai.debug.getState`/`getConnectionState`/`setBreakpoint`/`evaluate`/`loop` · `gpl.diagnosticSnapshot` ·
   `gpl.controller.threadBreak({threadName})` 등. 인자 형식은 확장 런북의 Command ID 표를 따른다.
   Deploy처럼 오래 걸리는 명령은 `timeoutMs`를 크게(예: 180000) 준다.
@@ -189,7 +189,13 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 **브레이크포인트**
 - `set_breakpoint(file, line, project?)` — `Set Break <proj> "<file>"<line>`
 - `clear_breakpoint(file, line, project?)` — `Set Nobreak ...`
-- `list_breakpoints()` — `Show Break`
+- `list_breakpoints()` — `Show Break`. 프로젝트·파일·줄·히트수를 구조화해 돌려준다.
+
+확장 브리지를 거치면(`GPL_BRIDGE=auto|only`) 설정/해제가 **VS Code 에디터의 중단점(빨간 점)에도
+반영된다** — AI가 무엇을 걸었는지 사용자가 보고 F9로 지울 수 있고, 에디터를 원본으로 삼는
+`gpl.controller.syncEditorBreakpoints`·디버그 세션이 그 중단점을 "에디터에 없는 잔재"로 지우지도 않는다.
+`run_to_line`의 임시 중단점은 반영하지 않으며, 그 줄에 원래 있던 중단점은 지우지 않는다.
+확장 설정 `gpl.controller.mirrorAiBreakpoints`로 끌 수 있다.
 
 **관찰**
 - `debug_snapshot(thread?, evals?, frame?, listLocals?)` — **상황 파악 원샷**: 스레드 목록(compact) + 요약 + 정지

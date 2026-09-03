@@ -84,6 +84,21 @@
 
 열린 항목만 둔다. 완료된 항목은 `docs/archive/handoff/2026-08.md` §부록으로 옮겼다(2026-08-31 정리).
 
+- [ ] **(2026-09-03, §1-CX) GitHub Actions 의 Node 20 지원 종료 — 액션 메이저 버전 올리기.**
+  `v0.9.0` 릴리스 로그의 경고: `actions/checkout@v4` · `actions/setup-node@v4` ·
+  `softprops/action-gh-release@v2` 가 Node 20 을 타깃으로 하는데 러너가 **Node 24 로 강제 실행**하고 있다.
+  지금은 자동 대체로 동작하지만 대체가 끝나면 릴리스 경로가 깨진다. 손볼 곳은 `ci.yml`(2) ·
+  `release.yml`(3) · `docs.yml`(4 — `setup-python@v5` · `upload-pages-artifact@v3` · `deploy-pages@v4` 포함).
+  Node 24 런타임을 쓰는 최신 메이저로 올리고(올릴 시점에 실제 최신 버전을 확인할 것),
+  **태그를 하나 밀어 릴리스 경로 전체를 다시 밟아 확인**한다 — CI 스모크만으로는 `release.yml` 이 검증되지 않는다.
+
+- [ ] **(2026-09-03, §1-CX) VSIX 번들링 검토 — 확장 본체를 esbuild 단일 파일로.**
+  `vsce` 경고: VSIX 187 파일 중 **129 개가 JS** 라 활성화가 느려질 수 있다. `esbuild` 는 이미
+  devDependency 이고 `scripts/bundle-mcp.js` 가 MCP 서버에 같은 패턴을 쓰고 있으니 확장 본체에도
+  적용할 수 있다. 함께 바뀌는 것: `package.json` 의 `main`(`./out/extension.js` → 번들 산출물) ·
+  `vscode:prepublish` · `.vscodeignore` · 테스트 진입점(`out/test/index.js` 는 번들과 별개로 남겨야 한다).
+  **구조 개선과 같이 볼 항목** — 번들은 모듈 경계를 감추므로, 경계를 정리한 뒤에 하는 편이 낫다.
+
 - [ ] **(2026-09-02, §1-CW) 참조 찾기(Shift+F12) 편집기 실동작 확인 — 제어기 불필요.**
   `GPL_Code`를 Extension Development Host에서 열고 ① `Server.gpl:62`의 `New`에서 실행했을 때
   `Main.gpl:45`의 `New TcpServer(PORT_TEST)`가 나오는지 ② `Server.gpl:455`의
@@ -1578,3 +1593,20 @@ docs/archive/handoff/2026-09.md   # 신규 — §1-CN 이동(본문 최근 10세
 검증: `npm test` 763/763 · `npm run pre-release-check` 통과 · `npm run package:no-bump` →
 `dist/gpl-language-support-0.9.0.vsix` · `mkdocs build --strict` 통과.
 `git push origin main` + `git tag v0.9.0` 푸시로 `release.yml`이 GitHub Release를 만든다.
+
+**릴리스 결과.** 워크플로 3개 모두 성공(Release 42 s · CI 35 s · docs 34 s).
+[v0.9.0 릴리스](https://github.com/nir414/GPL_language/releases/tag/v0.9.0) — draft/pre-release 아님,
+`gpl-language-support-0.9.0.vsix`(1,065,820 B) 첨부. CI 가 통과했으므로 리눅스 러너에서도 확장 테스트·
+MCP 테스트·패키징 스모크가 돈 것이다.
+
+### 후속 2 (같은 세션) — 릴리스 로그 경고 반영 + `AGENTS.md` 동기화
+
+- 릴리스 로그에 남은 경고 2건(Actions 의 Node 20 지원 종료 · VSIX 에 JS 129 개)을 **§3 체크리스트에
+  올렸다.** 둘 다 이번 릴리스를 막지는 않지만 방치하면 릴리스 경로가 깨지거나(전자) 활성화가
+  느려지는(후자) 항목이다.
+- **`AGENTS.md` 와 `CLAUDE.md` 가 어긋나 있던 것을 맞췄다.** 두 파일은 같은 문서로 취급되는데
+  (`CLAUDE.md`(=`AGENTS.md`)) `AGENTS.md` 에만 **F5 "Run Extension" 개발 호스트 프로필 설명이
+  빠져 있었다** — Codex 계열은 `AGENTS.md` 만 읽으므로 그쪽만 `GPL-DevHost` 격리 규칙을 모르는
+  상태였다. 이제 **제목 줄과 `AGENTS.md` 끝의 Cowork 블록을 빼면 두 파일이 완전히 동일**하다
+  (Cowork 블록은 사용자가 넣은 것이라 그대로 뒀다). 한쪽만 고치는 실수가 또 나올 수 있으니,
+  이 문서들을 고칠 때는 **양쪽을 함께** 고칠 것.

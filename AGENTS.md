@@ -19,6 +19,9 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 - `npm run package` — patch 버전 bump + VSIX 패키징 (`dist/gpl-language-support-<ver>.vsix`, 실패 시 버전 자동 롤백)
 - `npm run package:no-bump` — 버전 그대로 패키징
 - `npm test` — 컴파일 + 테스트
+- **F5 "Run Extension"** — 전용 프로필 `GPL-DevHost`(기본 설정·다른 확장 없음)로 Extension Development Host를
+  띄워 `samples/hello-project`를 연다. 첫 실행 시 프로필이 자동 생성된다. `npm run dev:host`는 같은 창을
+  디버거 없이 여는 것(사용자가 요청할 때만 실행 — AI가 임의로 창을 열지 않는다).
 
 ## 하드 규칙 요약 (상세: docs/ai-handoff.md §0)
 

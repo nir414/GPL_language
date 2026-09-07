@@ -3,7 +3,6 @@
  */
 
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import { isGplDocument } from '../config';
 import type { ExtensionHost } from './host';
 

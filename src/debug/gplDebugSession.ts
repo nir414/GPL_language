@@ -496,7 +496,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Initialization
     // ═══════════════════════════════════════════════════════
 
-    protected initializeRequest(
+    protected override initializeRequest(
         response: DebugProtocol.InitializeResponse,
         _args: DebugProtocol.InitializeRequestArguments,
     ): void {
@@ -570,7 +570,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Exception Breakpoints
     // ═══════════════════════════════════════════════════════
 
-    protected setExceptionBreakPointsRequest(
+    protected override setExceptionBreakPointsRequest(
         response: DebugProtocol.SetExceptionBreakpointsResponse,
         args: DebugProtocol.SetExceptionBreakpointsArguments,
     ): void {
@@ -580,7 +580,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this.sendResponse(response);
     }
 
-    protected async configurationDoneRequest(
+    protected override async configurationDoneRequest(
         response: DebugProtocol.ConfigurationDoneResponse,
         args: DebugProtocol.ConfigurationDoneArguments,
     ): Promise<void> {
@@ -637,7 +637,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Attach / Disconnect
     // ═══════════════════════════════════════════════════════
 
-    protected async attachRequest(
+    protected override async attachRequest(
         response: DebugProtocol.AttachResponse,
         args: IAttachRequestArguments,
     ): Promise<void> {
@@ -839,7 +839,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this.sendEvent(new InitializedEvent());
     }
 
-    protected async disconnectRequest(
+    protected override async disconnectRequest(
         response: DebugProtocol.DisconnectResponse,
         _args: DebugProtocol.DisconnectArguments,
     ): Promise<void> {
@@ -904,7 +904,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Breakpoints
     // ═══════════════════════════════════════════════════════
 
-    protected async setBreakPointsRequest(
+    protected override async setBreakPointsRequest(
         response: DebugProtocol.SetBreakpointsResponse,
         args: DebugProtocol.SetBreakpointsArguments,
     ): Promise<void> {
@@ -1072,7 +1072,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Threads
     // ═══════════════════════════════════════════════════════
 
-    protected async threadsRequest(
+    protected override async threadsRequest(
         response: DebugProtocol.ThreadsResponse,
     ): Promise<void> {
         // ⑤ 정지 감지 폴이 방금 가져온 목록이 신선하면 재사용 — StoppedEvent 직후
@@ -1113,7 +1113,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Stack Trace
     // ═══════════════════════════════════════════════════════
 
-    protected async stackTraceRequest(
+    protected override async stackTraceRequest(
         response: DebugProtocol.StackTraceResponse,
         args: DebugProtocol.StackTraceArguments,
     ): Promise<void> {
@@ -1161,7 +1161,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Scopes
     // ═══════════════════════════════════════════════════════
 
-    protected scopesRequest(
+    protected override scopesRequest(
         response: DebugProtocol.ScopesResponse,
         args: DebugProtocol.ScopesArguments,
     ): void {
@@ -1190,7 +1190,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Variables
     // ═══════════════════════════════════════════════════════
 
-    protected async variablesRequest(
+    protected override async variablesRequest(
         response: DebugProtocol.VariablesResponse,
         args: DebugProtocol.VariablesArguments,
     ): Promise<void> {
@@ -1374,7 +1374,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Set Variable (Set Global)
     // ═══════════════════════════════════════════════════════
 
-    protected async setVariableRequest(
+    protected override async setVariableRequest(
         response: DebugProtocol.SetVariableResponse,
         args: DebugProtocol.SetVariableArguments,
     ): Promise<void> {
@@ -1516,7 +1516,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Continue / Step / Pause
     // ═══════════════════════════════════════════════════════
 
-    protected async continueRequest(
+    protected override async continueRequest(
         response: DebugProtocol.ContinueResponse,
         args: DebugProtocol.ContinueArguments,
     ): Promise<void> {
@@ -1577,7 +1577,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this.sendResponse(response);
     }
 
-    protected async nextRequest(
+    protected override async nextRequest(
         response: DebugProtocol.NextResponse,
         args: DebugProtocol.NextArguments,
     ): Promise<void> {
@@ -1609,7 +1609,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this.sendResponse(response);
     }
 
-    protected async stepInRequest(
+    protected override async stepInRequest(
         response: DebugProtocol.StepInResponse,
         args: DebugProtocol.StepInArguments,
     ): Promise<void> {
@@ -1650,7 +1650,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this.sendResponse(response);
     }
 
-    protected async stepOutRequest(
+    protected override async stepOutRequest(
         response: DebugProtocol.StepOutResponse,
         args: DebugProtocol.StepOutArguments,
     ): Promise<void> {
@@ -1682,7 +1682,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         this.sendResponse(response);
     }
 
-    protected async pauseRequest(
+    protected override async pauseRequest(
         response: DebugProtocol.PauseResponse,
         args: DebugProtocol.PauseArguments,
     ): Promise<void> {
@@ -1997,7 +1997,7 @@ export class GPLDebugSession extends LoggingDebugSession {
      * BP 유효 줄 힌트 — VS Code 가 이 구간에서 BP를 걸 수 있는 줄을 물어본다.
      * 제어기 명령을 보내지 않고 로컬 파서로만 답한다.
      */
-    protected breakpointLocationsRequest(
+    protected override breakpointLocationsRequest(
         response: DebugProtocol.BreakpointLocationsResponse,
         args: DebugProtocol.BreakpointLocationsArguments,
     ): void {
@@ -2024,7 +2024,7 @@ export class GPLDebugSession extends LoggingDebugSession {
      * 소스 BP 와 같은 파일에 있을 수 있으므로 목록을 따로 들고 있고,
      * `setBreakPointsRequest` 의 파일 단위 정리에서 이 줄들은 건드리지 않는다.
      */
-    protected async setFunctionBreakPointsRequest(
+    protected override async setFunctionBreakPointsRequest(
         response: DebugProtocol.SetFunctionBreakpointsResponse,
         args: DebugProtocol.SetFunctionBreakpointsArguments,
     ): Promise<void> {
@@ -2131,7 +2131,7 @@ export class GPLDebugSession extends LoggingDebugSession {
      * Jump to Cursor 후보 — 문서(`Set Thread -line`)상 새 줄은 **현재 줄과 같은 프로시저 안**이어야 하고
      * 실행 가능한 문장이어야 한다. 두 조건을 로컬에서 확인해 통과할 때만 후보를 돌려준다.
      */
-    protected gotoTargetsRequest(
+    protected override gotoTargetsRequest(
         response: DebugProtocol.GotoTargetsResponse,
         args: DebugProtocol.GotoTargetsArguments,
     ): void {
@@ -2188,7 +2188,7 @@ export class GPLDebugSession extends LoggingDebugSession {
      * (모션 영향 가능 — §0 하드 규칙 6). 그래서 기본값(`gpl.debug.jumpToCursor: "warn"`)에서는
      * 실행 전에 모달로 확인을 받는다. 기능 자체를 막지는 않는다(사용자 결정 2026-08-28).
      */
-    protected async gotoRequest(
+    protected override async gotoRequest(
         response: DebugProtocol.GotoResponse,
         args: DebugProtocol.GotoArguments,
     ): Promise<void> {
@@ -2245,7 +2245,7 @@ export class GPLDebugSession extends LoggingDebugSession {
      * Step Into Target 후보 — 현재 줄의 호출 중 정의를 찾을 수 있는 것만 돌려준다.
      * 첫 항목은 항상 "기본 Step Into"(제어기 `Step -noerror`)로 둬서 종전 동작을 유지한다.
      */
-    protected stepInTargetsRequest(
+    protected override stepInTargetsRequest(
         response: DebugProtocol.StepInTargetsResponse,
         args: DebugProtocol.StepInTargetsArguments,
     ): void {
@@ -2469,7 +2469,7 @@ export class GPLDebugSession extends LoggingDebugSession {
      *   나가고, 다른 스레드의 정지는 포커스를 훔치지 않는다. 제어기 명령을 보내지 않는다.
      * - `gplThreadList`: 잠금 대상 선택(QuickPick)용 스레드 목록 — 마지막 폴 결과 기준, 조회 없음.
      */
-    protected customRequest(
+    protected override customRequest(
         command: string,
         response: DebugProtocol.Response,
         args: any,
@@ -2563,7 +2563,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
     }
 
-    protected async terminateThreadsRequest(
+    protected override async terminateThreadsRequest(
         response: DebugProtocol.TerminateThreadsResponse,
         args: DebugProtocol.TerminateThreadsArguments,
     ): Promise<void> {
@@ -2605,7 +2605,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     // Evaluate (hover / watch / REPL)
     // ═══════════════════════════════════════════════════════
 
-    protected async evaluateRequest(
+    protected override async evaluateRequest(
         response: DebugProtocol.EvaluateResponse,
         args: DebugProtocol.EvaluateArguments,
     ): Promise<void> {

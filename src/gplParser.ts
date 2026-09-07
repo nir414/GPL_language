@@ -805,7 +805,7 @@ export class GPLParser {
     /**
      * XML 함수에서 발생할 수 있는 문제들을 감지
      */
-    static detectXmlFunctionIssues(line: string, functionName: string, lineIndex: number, allLines: string[]): string[] {
+    static detectXmlFunctionIssues(_line: string, functionName: string, lineIndex: number, allLines: string[]): string[] {
         const issues: string[] = [];
         
         // XML 이스케이프 관련 함수인지 확인

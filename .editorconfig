@@ -1,0 +1,20 @@
+# EditorConfig — https://editorconfig.org (VS Code 는 EditorConfig 확장이 있을 때 적용)
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+# .ts 는 파일별로 탭/공백 4칸이 섞여 있다(옮긴 코드의 diff 를 줄이기 위해 원본 스타일 유지 — ai-handoff §1-CZ).
+# 새 파일은 같은 폴더의 이웃 파일 스타일을 따른다. indent_style 을 강제하지 않는다.
+[*.{json,jsonc,yml,yaml}]
+indent_style = space
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.gpr]
+# GDE 가 저장하는 형식 — 줄바꿈·인코딩을 건드리지 않는다(docs/reference/project-file-gpr.md)
+end_of_line = unset
+insert_final_newline = unset

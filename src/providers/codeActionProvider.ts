@@ -8,7 +8,7 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
         document: vscode.TextDocument,
         range: vscode.Range | vscode.Selection,
         context: vscode.CodeActionContext,
-        token: vscode.CancellationToken
+        _token: vscode.CancellationToken
     ): vscode.ProviderResult<(vscode.CodeAction | vscode.Command)[]> {
         const actions: vscode.CodeAction[] = [];
 
@@ -188,7 +188,6 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
      */
     private createEntityOrderFixEdit(document: vscode.TextDocument, range: vscode.Range): vscode.WorkspaceEdit {
         const edit = new vscode.WorkspaceEdit();
-        const line = document.lineAt(range.start.line);
         
         const correctedCode = `' 올바른 엔티티 치환 순서 (& 를 가장 먼저)
         result = Replace(result, "&", "&amp;")      ' 반드시 첫 번째

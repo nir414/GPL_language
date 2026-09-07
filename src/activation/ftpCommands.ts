@@ -50,7 +50,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				{ location: vscode.ProgressLocation.Notification, title: `${name} 다운로드 중...`, cancellable: false },
 				async (progress) => {
 					try {
-						const result = await downloadProject(host, remotePath, localDir, (cur, total, file) => {
+						const result = await downloadProject(host, remotePath, localDir, (_cur, total, file) => {
 							progress.report({ increment: (1 / total) * 100, message: file });
 						});
 						const openChoice = await vscode.window.showInformationMessage(

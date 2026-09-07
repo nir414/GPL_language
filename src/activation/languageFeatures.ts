@@ -22,12 +22,11 @@ import { GPLReferenceProvider } from '../providers/referenceProvider';
 import { GPLRenameProvider } from '../providers/renameProvider';
 import { GPLSignatureHelpProvider } from '../providers/signatureHelpProvider';
 import { GPLWorkspaceSymbolProvider } from '../providers/workspaceSymbolProvider';
-import { SymbolCache } from '../symbolCache';
 import { hasOpenGplDocument } from '../config';
 import type { ExtensionHost } from './host';
 
 export function activateLanguageFeatures(host: ExtensionHost): () => void {
-	const { context, outputChannel, consoleChannel, symbolCache, diagnosticProvider } = host;
+	const { context, outputChannel, symbolCache, diagnosticProvider } = host;
 
 	async function normalizeGplDocumentLanguage(document: vscode.TextDocument, reason: string): Promise<vscode.TextDocument> {
 		if (!isGplFile(document) || document.languageId === 'gpl') {

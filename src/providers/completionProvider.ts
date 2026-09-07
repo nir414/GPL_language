@@ -32,7 +32,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
         document: vscode.TextDocument,
         position: vscode.Position,
         token: vscode.CancellationToken,
-        context: vscode.CompletionContext
+        _context: vscode.CompletionContext
     ): vscode.ProviderResult<vscode.CompletionItem[]> {
         if (token.isCancellationRequested) {
             return undefined;

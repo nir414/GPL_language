@@ -563,6 +563,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			vscode.window.showErrorMessage(`배포 오류: ${err.message ?? err}`);
 			outputChannel.appendLine(`[Deploy] Error: ${err.stack ?? err}`);
 		}
+		return undefined;
 	}
 
 	/**
@@ -817,7 +818,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			const busy = host.currentDeployLockHolder();
 			if (busy) {
 				host.warnDeployBusy('Start', busy, '완료 후 Start를 실행하세요 (업로드 중 Start는 제어기 이상을 유발할 수 있음)');
-				return;
+				return undefined;
 			}
 			// 대상 지정 객체로 불렸으면 비대화형 — QuickPick·모달을 띄우지 않고 구조화된 결과를 돌려준다(개선안 §17·§25).
 			const auto = isAutomationInvocation(resource) ? resource as AutomationTargetArgs : undefined;
@@ -829,7 +830,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			} else {
 				projectDir = await pickWorkspaceProjectDir('시작할 프로젝트를 선택하세요', resource);
 			}
-			if (!projectDir) { return; }
+			if (!projectDir) { return undefined; }
 			const gprName = readGprProjectName(projectDir);
 			const projectName = gprName ?? path.basename(projectDir);
 			// `Start <name>`은 공백 구분 명령 — 이름에 공백이 있으면 보내지 않고 이유를 알린다.
@@ -841,18 +842,18 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 					return { ok: false, error: 'PROJECT_NOT_FOUND', detail: reason } as AutomationFailure;
 				}
 			} else if (!host.ensureProjectNameSafe(projectName, gprName ? 'project' : 'folder', 'Start')) {
-				return;
+				return undefined;
 			}
 			// /GPL 소스가 Compile로 검증되지 않았으면 안내(Start는 제어기가 자체 컴파일 — 소스 에러 시 Start 실패, §0.7).
 			if (auto) {
 				const stale = compileStaleGate('gpl.start', projectName, auto);
 				if (stale) { return stale; }
 			} else if (!(await confirmStartWhenCompileStale(projectName, projectDir))) {
-				return;
+				return undefined;
 			}
 			// 모달 대기 동안 다른 배포가 시작됐을 수 있으므로 잠금을 다시 확인한다.
 			const busyAfter = host.currentDeployLockHolder();
-			if (busyAfter) { host.warnDeployBusy('Start', busyAfter); return; }
+			if (busyAfter) { host.warnDeployBusy('Start', busyAfter); return undefined; }
 
 			if (auto) {
 				const gate = startMotionGate('gpl.start', auto);
@@ -866,7 +867,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						{ modal: true },
 						'Start'
 					);
-					if (pick !== 'Start') { return; }
+					if (pick !== 'Start') { return undefined; }
 				}
 			}
 
@@ -902,6 +903,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`Start 실패: ${err.message ?? err}`);
 			}
+			return undefined;
 		})
 	);
 
@@ -923,15 +925,15 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			const busy = host.currentDeployLockHolder();
 			if (busy) {
 				host.warnDeployBusy('Save to Flash', busy, '완료 후 flash 저장을 실행하세요');
-				return;
+				return undefined;
 			}
 			const projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요', resource);
-			if (!projectDir) { return; }
+			if (!projectDir) { return undefined; }
 			// 업로드 전 미저장 파일 확인. savedFiles는 pending에서 지우지 않는다 —
 			// flash 업로드는 /GPL을 갱신하지 않으므로 /GPL 동기화는 이후 autoOnSave가 자체 게이트로 처리.
 			if (!(await confirmSaveDirtyProjectDocs(projectDir)).ok) {
 				host.log('[SaveToFlash] 미저장 파일 확인에서 취소됨 — 업로드를 시작하지 않음');
-				return;
+				return undefined;
 			}
 			const cfg = getControllerConfig();
 			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);
@@ -943,7 +945,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			const acquired = getDeployLock(cfg.ip).acquire('Save to Flash', 'FTP_MIRROR');
 			if (!acquired.ok) {
 				host.warnDeployBusy('Save to Flash', acquired.holder, '완료 후 flash 저장을 실행하세요');
-				return;
+				return undefined;
 			}
 			try {
 				const stats = await mirrorProject(cfg.ip, projectDir, remoteDir, {
@@ -966,6 +968,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			} finally {
 				acquired.handle.release();
 			}
+			return undefined;
 		})
 	);
 

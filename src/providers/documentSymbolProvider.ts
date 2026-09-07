@@ -4,7 +4,7 @@ import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
 export class GPLDocumentSymbolProvider implements vscode.DocumentSymbolProvider {
     provideDocumentSymbols(
         document: vscode.TextDocument,
-        token: vscode.CancellationToken
+        _token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.DocumentSymbol[]> {
         // 파싱/변환 중 예외가 나면 개요 전체가 사라지므로, 최상위에서 방어한다.
         // (한 파일의 문제로 Outline 기능 전체가 죽는 것을 막는다.)

@@ -231,7 +231,7 @@ export class GPLDocCommentCompletionProvider implements vscode.CompletionItemPro
         item.range = new vscode.Range(position.line, indentMatch[1].length, position.line, position.character);
         item.insertText = new vscode.SnippetString(lines.join('\n'));
         item.preselect = true;
-        item.sortText = ' docComment';
+        item.sortText = '\u0000docComment';
         return [item];
     }
 }

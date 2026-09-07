@@ -7,7 +7,7 @@ export class GPLWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProvide
 
     provideWorkspaceSymbols(
         query: string,
-        token: vscode.CancellationToken
+        _token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.SymbolInformation[]> {
         const allSymbols = this.symbolCache.getAllSymbols();
         const filteredSymbols = query 

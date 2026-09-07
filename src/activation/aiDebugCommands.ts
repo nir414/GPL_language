@@ -15,7 +15,6 @@ import {
 	sendCommand,
 } from '../controller/controllerConnection';
 import { describeDeployLock } from '../controller/deployLock';
-import { deploy } from '../controller/deployService';
 import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThreadList } from '../controller/responseParser';
 import { buildStepCommand } from '../controller/stepCommand';
 import type { StepMode } from '../controller/stepCommand';

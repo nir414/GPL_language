@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { findProjectDirs } from './deployService';
 import { pickProjectDir } from './projectPicker';
-import { isPathUnder, normalizeDirKey } from './projectPickerCore';
+import { isPathUnder, normalizeDirKey } from '../util/pathKey';
 import { GPR_PATH_SEPARATOR, listSourceFilesRecursive } from '../project/projectSources';
 import {
     applyGprSync,
@@ -23,7 +23,7 @@ import {
     parseGprText,
     planGprSync,
     GprSyncPlan,
-} from './gprSync';
+} from '../project/gprSync';
 
 export const GPR_SYNC_COMMAND = 'gpl.project.syncSources';
 

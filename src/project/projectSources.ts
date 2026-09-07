@@ -37,8 +37,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseGprText, sourceKey } from '../controller/gprSync';
-import { isPathUnder, normalizeDirKey } from '../controller/projectPickerCore';
+import { parseGprText, sourceKey } from './gprSync';
+import { isPathUnder, normalizeDirKey } from '../util/pathKey';
 
 /** 소스로 볼 기본 확장자(소문자, 점 포함). */
 export const DEFAULT_SOURCE_EXTENSIONS: readonly string[] = ['.gpl'];

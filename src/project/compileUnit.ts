@@ -22,7 +22,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { isPathUnder, normalizeDirKey } from '../controller/projectPickerCore';
+import { isPathUnder, normalizeDirKey } from '../util/pathKey';
 import { collectRelatedGprPaths, findNearestGprOnDisk, pickOwningGprPath } from './projectSources';
 
 /** 파일→소유 `.gpr` 조회 결과가 "없음"임을 캐시에 남기기 위한 표식. */

@@ -16,7 +16,7 @@ import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, makeLoc
 import { mirrorProject } from '../controller/ftpClient';
 import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
 import { buildTargetCandidates, pickProjectDir, readGprProjectName } from '../controller/projectPicker';
-import { normalizeDirKey } from '../controller/projectPickerCore';
+import { normalizeDirKey } from '../util/pathKey';
 import {
 	describeCandidates,
 	describeResolution,

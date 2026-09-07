@@ -8,7 +8,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { isGplDocument, isGplFile, isTraceOn, isTraceVerbose } from '../config';
-import { normalizePathKey } from '../controller/projectPickerCore';
+import { normalizePathKey } from '../util/pathKey';
 import { fileExists } from '../language/symbolLocations';
 import { GPLCodeActionProvider } from '../providers/codeActionProvider';
 import { GPLCompletionProvider } from '../providers/completionProvider';

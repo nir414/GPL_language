@@ -1,13 +1,8 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import { test } from './harness';
-import {
-    disambiguateDirLabels,
-    normalizeDirKey,
-    orderProjectDirs,
-    projectDirFromResource,
-    filterDirsByProjectName,
-} from '../controller/projectPickerCore';
+import { disambiguateDirLabels, orderProjectDirs, projectDirFromResource, filterDirsByProjectName } from '../controller/projectPickerCore';
+import { normalizeDirKey } from '../util/pathKey';
 
 const ROOT = path.resolve('/ws/projects');
 const A = path.join(ROOT, 'MergeCode');

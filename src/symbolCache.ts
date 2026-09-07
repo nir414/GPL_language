@@ -10,7 +10,7 @@ import { isDeclaredIn, ReceiverHolder } from './language/receiverType';
 import { PROJECT_EXCLUDE_GLOB, findWorkspaceGprPaths } from './project/projectFileScope';
 import { collectProjectSourcePaths, pickOwningGprPath } from './project/projectSources';
 import { CompileUnitIndex, narrowToCompileUnit } from './project/compileUnit';
-import { isPathUnder, normalizePathKey } from './controller/projectPickerCore';
+import { isPathUnder, normalizePathKey } from './util/pathKey';
 import { isMissingFile } from './language/symbolLocations';
 
 // scoreFilePath 점수 체계 — 높을수록 우선 (정의 후보가 여럿일 때 경로 근접도로 선택)

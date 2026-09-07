@@ -7,7 +7,7 @@ import {
     formatGprTimestamp,
     parseGprText,
     planGprSync,
-} from '../controller/gprSync';
+} from '../project/gprSync';
 
 // 실제 GDE 저장 형식(MergeCode Project.gpr, 2026-06-29) 축약 픽스처 — LF, 첫 줄 타임스탬프 주석.
 const FIXTURE = [

@@ -13,7 +13,7 @@ import {
     resolveGprSourcePaths,
     resolveProjectLibraryDirs,
 } from '../project/projectSources';
-import { parseGprText, planGprSync } from '../controller/gprSync';
+import { parseGprText, planGprSync } from '../project/gprSync';
 import { pickSourceCandidate } from '../controller/responseParser';
 
 /**

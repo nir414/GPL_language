@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import { test } from './harness';
 import { dedupeSymbolLocations, preferExistingFiles, isMissingFile, fileExists } from '../language/symbolLocations';
-import { normalizePathKey, normalizeDirKey } from '../controller/projectPickerCore';
+import { normalizePathKey, normalizeDirKey } from '../util/pathKey';
 
 const at = (filePath: string, line: number) => ({ filePath, line } as any);
 

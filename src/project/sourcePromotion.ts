@@ -34,8 +34,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { applyGprSync, parseGprText, sourceKey } from '../controller/gprSync';
-import { normalizeDirKey } from '../controller/projectPickerCore';
+import { applyGprSync, parseGprText, sourceKey } from './gprSync';
+import { normalizeDirKey } from '../util/pathKey';
 import {
     LibraryGraph,
     LibraryGraphNode,

@@ -26,11 +26,8 @@
  */
 
 import * as path from 'path';
-import {
-    normalizeDirKey,
-    projectDirFromResource,
-    filterDirsByProjectName,
-} from './projectPickerCore';
+import { projectDirFromResource, filterDirsByProjectName } from './projectPickerCore';
+import { normalizeDirKey } from '../util/pathKey';
 
 /** 워크스페이스에서 찾은 프로젝트 후보 하나. 확장이 `.gpr` 를 읽어 채운다. */
 export interface TargetCandidate {

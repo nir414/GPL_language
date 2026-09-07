@@ -17,13 +17,8 @@ import * as path from 'path';
 import { findProjectDirs } from './deployService';
 import { parseGpr } from './responseParser';
 import { gprPathInDir, resolveProjectLibraryDirs } from '../project/projectSources';
-import {
-    disambiguateDirLabels,
-    filterDirsByProjectName,
-    normalizeDirKey,
-    orderProjectDirs,
-    projectDirFromResource,
-} from './projectPickerCore';
+import { disambiguateDirLabels, filterDirsByProjectName, orderProjectDirs, projectDirFromResource } from './projectPickerCore';
+import { normalizeDirKey } from '../util/pathKey';
 import type { TargetCandidate } from './projectTarget';
 
 const LAST_PICK_KEY = 'gpl.projectPicker.lastDir';

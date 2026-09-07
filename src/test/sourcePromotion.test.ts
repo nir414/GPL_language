@@ -5,7 +5,7 @@ import * as path from 'path';
 import { test } from './harness';
 import { buildLibraryGraph } from '../project/projectSources';
 import { planSourcePromotion } from '../project/sourcePromotion';
-import { normalizeDirKey } from '../controller/projectPickerCore';
+import { normalizeDirKey } from '../util/pathKey';
 
 /**
  * 실제 구조 픽스처 — `projects/GPL_Code`(2026-09-02 확인)의 형태를 줄인 것.

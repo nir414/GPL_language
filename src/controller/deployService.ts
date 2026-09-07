@@ -27,7 +27,7 @@ import { isBusyStatus, isTransientCompileStatus, isProjectAlreadyLoaded, isProje
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
 import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord';
 import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
-import { isPathUnder } from './projectPickerCore';
+import { isPathUnder } from '../util/pathKey';
 import { resolveProjectLibraryDirs } from '../project/projectSources';
 import { PROJECT_EXCLUDE_GLOB } from '../project/projectFileScope';
 

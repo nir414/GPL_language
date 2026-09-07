@@ -16,7 +16,7 @@
  */
 
 import * as fs from 'fs';
-import { normalizePathKey } from '../controller/projectPickerCore';
+import { normalizePathKey } from '../util/pathKey';
 
 /**
  * "이 경로에 파일이 확실히 없다" — 정의 목록 필터·캐시 잔류 정리가 공유하는 판정.

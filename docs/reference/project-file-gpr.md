@@ -68,7 +68,7 @@ ProjectEnd
 파싱 시 알려진 관용:
 
 - **[실측]** 값은 큰따옴표로 감싼다. 이 저장소의 파서는 작은따옴표도 허용하고 키워드 대소문자를 무시한다
-  (`src/controller/gprSync.ts`의 `SOURCE_RE`).
+  (`src/project/gprSync.ts`의 `SOURCE_RE`).
 - **[문서]** `ProjectStart`가 가리키는 프로시저는 **`Public`으로 선언되어야** 한다.
 - 순서 규칙·중복 허용 여부·주석 문법(첫 줄 외 위치의 `'`)은 **문서화되어 있지 않다**. 확장은 알 수 없는 줄을
   **그대로 보존**하는 방식으로 대응한다(`applyGprSync`).
@@ -162,7 +162,7 @@ graph LR
 
 | 항목 | 상태 | 위치 |
 | --- | --- | --- |
-| `ProjectName`/`ProjectStart`/`ProjectSource` 파싱 | 지원 | `src/controller/gprSync.ts`, `src/controller/responseParser.ts` |
+| `ProjectName`/`ProjectStart`/`ProjectSource` 파싱 | 지원 | `src/project/gprSync.ts`, `src/controller/responseParser.ts` |
 | 하위 폴더 상대 경로(`T1\T2\T2.gpl`) | 지원 | `src/project/projectSources.ts` |
 | 첫 줄 타임스탬프 주석 보존·갱신 | 지원 | `formatGprTimestamp` |
 | 알 수 없는 줄 보존 | 지원 | `applyGprSync` (매칭 안 되는 줄은 그대로 통과) |

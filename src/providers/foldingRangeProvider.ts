@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GPLParser } from '../gplParser';
+import { GPLParser } from '../language/gplParser';
 
 /**
  * Folding provider for GPL files.

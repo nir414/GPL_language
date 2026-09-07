@@ -1,6 +1,6 @@
-import { ciEq } from './config';
+import { ciEq } from '../config';
 import { GPL_DICTIONARY_ENTRIES, GPL_CLASS_DOCS, GPLClassDoc } from './gplDictionaryData';
-import type { ReceiverBuiltins } from './language/receiverType';
+import type { ReceiverBuiltins } from './receiverType';
 
 export type GPLBuiltinKind = 'function' | 'method' | 'property';
 

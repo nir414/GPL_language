@@ -1,4 +1,4 @@
-import { GPLParser } from '../gplParser';
+import { GPLParser } from './gplParser';
 
 /**
  * 커서 위치를 감싸는 GPL 블록 구조 분석 (vscode 비의존 순수 모듈).

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { XmlUtils } from '../xmlUtils';
+import { XmlUtils } from '../language/xmlUtils';
 import { provideDocCommentCodeActions } from './docCommentProvider';
 
 export class GPLCodeActionProvider implements vscode.CodeActionProvider {

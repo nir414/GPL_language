@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { GPLParser, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbolKind } from '../language/gplParser';
 
 // 선언 위의 연속 `'` 주석 블록이 docComment로 수집되는지 회귀 검사.
 // 대상은 Module/Class/Sub/Function/Property/변수/상수 **모든 선언 종류**다

@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser, GPLSymbol } from '../gplParser';
+import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
 import { extractBaseObjectName, escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix, getStringLiteralContentAt } from '../language/cursorExpression';
 import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
-import { findGplBuiltinMember, isGplBuiltinClassName } from '../gplBuiltins';
+import { findGplBuiltinMember, isGplBuiltinClassName } from '../language/gplBuiltins';
 import { ownedByHolder, ReceiverLookup } from '../language/receiverType';
 import { dedupeSymbolLocations, preferExistingFiles, fileExists } from '../language/symbolLocations';
 import { pickVisibleDeclaration } from '../language/symbolScope';

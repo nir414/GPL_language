@@ -12,7 +12,7 @@ import { getControllerConfig } from '../controller/controllerConnection';
 import { findProjectDirs } from '../controller/deployService';
 import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
 import { parseGpr, pickSourceCandidate } from '../controller/responseParser';
-import { parseJsonc, upsertLaunchConfiguration } from '../launchJsonc';
+import { parseJsonc, upsertLaunchConfiguration } from '../debug/launchJsonc';
 import { walkTree } from '../project/projectSources';
 import type { ExtensionHost } from './host';
 

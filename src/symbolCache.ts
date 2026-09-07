@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { GPLParser, GPLSymbol } from './gplParser';
+import { GPLParser, GPLSymbol } from './language/gplParser';
 import { isTraceOn, ciEq } from './config';
 import { getParameterArity, argCountMatchesArity } from './language/cursorExpression';
 import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
-import { buildSymbolNameIndex } from './symbolNameIndex';
+import { buildSymbolNameIndex } from './language/symbolNameIndex';
 import { renderDocCommentMarkdown } from './language/docComment';
 import { isDeclaredIn, ReceiverHolder } from './language/receiverType';
 import { PROJECT_EXCLUDE_GLOB, findWorkspaceGprPaths } from './project/projectFileScope';

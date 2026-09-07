@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { GPL_DICTIONARY_ENTRIES, GPL_CLASS_DOCS } from '../gplDictionaryData';
+import { GPL_DICTIONARY_ENTRIES, GPL_CLASS_DOCS } from '../language/gplDictionaryData';
 
 // gplDictionaryData는 `import type`만 사용하므로 vscode 의존 없이 로드된다.
 // 이 테스트는 GPL Dictionary 데이터의 형식 회귀(누락 필드/중복/잘못된 출처)를 잡는다.

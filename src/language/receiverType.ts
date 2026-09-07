@@ -18,7 +18,7 @@
  *   타입 이름을 얻는다. 내장 멤버의 반환 타입(`Thread.CurrentThread` → Thread)도 ReceiverBuiltins 훅이
  *   있으면 체인 하강에 쓰인다 — `Thread.CurrentThread.Name`의 `Name`을 Thread 멤버로 판정하기 위한 전제다.
  */
-import { GPLSymbol, GPLSymbolKind } from '../gplParser';
+import { GPLSymbol, GPLSymbolKind } from './gplParser';
 
 /** 체인 세그먼트 — cursorExpression.DebugExpressionSegment와 같은 모양(`args`가 있으면 괄호 그룹 동반). */
 export interface ReceiverSegment {

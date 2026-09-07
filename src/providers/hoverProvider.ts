@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, ciEq, isInCommentOrString, getHoverConfig, HoverConfig } from '../config';
 import { findEnclosingProcedureRange, extractDebugExpressionAt } from '../language/cursorExpression';
 import {
@@ -22,7 +22,7 @@ import {
     GPL_BUILTIN_RECEIVERS,
     GPLBuiltinEntry,
     GPLClassDoc,
-} from '../gplBuiltins';
+} from '../language/gplBuiltins';
 
 export class GPLHoverProvider implements vscode.HoverProvider {
 

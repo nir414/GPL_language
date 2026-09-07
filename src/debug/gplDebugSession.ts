@@ -57,7 +57,7 @@ import {
     NO_STATUS_CODE,
     StackFrameInfo,
 } from '../controller/responseParser';
-import { GPLParser, GPLSymbolKind, GPLSymbol } from '../gplParser';
+import { GPLParser, GPLSymbolKind, GPLSymbol } from '../language/gplParser';
 import { isReadOnlyConsoleCommand } from '../controller/consoleCommandClassifier';
 import { fireDebugThreadsUpdated, fireDebugProbeResult, onDebugPollTrigger, getRuntimeConsoleHealth } from '../controller/debugBridge';
 import {

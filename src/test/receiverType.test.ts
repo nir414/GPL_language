@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { GPLSymbol, GPLSymbolKind } from '../gplParser';
+import { GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import {
     buildDocumentReceiverLookup,
     elementTypeOf,

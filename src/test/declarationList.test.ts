@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
 import { parseDeclaratorList } from '../language/declarationList';
-import { GPLParser, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbolKind } from '../language/gplParser';
 
 /**
  * 2026-09-02: 콤마 다중 선언(`Dim i, j As Integer`) 미지원 + 선언 심볼 range가

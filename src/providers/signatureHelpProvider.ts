@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
-import { findGplBuiltin, GPLBuiltinEntry } from '../gplBuiltins';
+import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
+import { findGplBuiltin, GPLBuiltinEntry } from '../language/gplBuiltins';
 import { splitParameters } from '../language/cursorExpression';
 import { extractParamName, getParamDoc, ParsedDocComment, parseDocComment, renderDocCommentMarkdown } from '../language/docComment';
 import { ciEq } from '../config';

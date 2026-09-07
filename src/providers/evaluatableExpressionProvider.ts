@@ -21,7 +21,7 @@
  */
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser, GPLSymbolKind, GPLSymbol } from '../gplParser';
+import { GPLParser, GPLSymbolKind, GPLSymbol } from '../language/gplParser';
 import {
     extractDebugExpressionAt,
     buildDebugExpression,
@@ -41,7 +41,7 @@ import {
     GPL_BUILTIN_RECEIVERS,
     findGplBuiltinMember,
     isGplBuiltinClassName,
-} from '../gplBuiltins';
+} from '../language/gplBuiltins';
 
 type SymbolKindJudgement = 'variable' | 'callable' | 'unknown';
 

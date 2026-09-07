@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { buildSymbolNameIndex } from '../symbolNameIndex';
+import { buildSymbolNameIndex } from '../language/symbolNameIndex';
 
 test('buildSymbolNameIndex: 이름 기준으로 대소문자 무시 인덱싱', () => {
     const symbols = [

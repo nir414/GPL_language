@@ -20,7 +20,7 @@ const OUT = path.join(__dirname, '..', '..', 'out');
 const { SymbolCache } = require(path.join(OUT, 'symbolCache.js'));
 const { GPLHoverProvider } = require(path.join(OUT, 'providers', 'hoverProvider.js'));
 const { GPLCompletionProvider } = require(path.join(OUT, 'providers', 'completionProvider.js'));
-const { GPLParser } = require(path.join(OUT, 'gplParser.js'));
+const { GPLParser } = require(path.join(OUT, 'language', 'gplParser.js'));
 
 const [file, ...rest] = process.argv.slice(2);
 if (!file) { console.error('사용법: node scripts/dev/smoke.js <파일.gpl> [--hover 단어] [--member 한정자.]'); process.exit(2); }

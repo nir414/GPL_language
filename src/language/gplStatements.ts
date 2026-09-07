@@ -1,4 +1,4 @@
-import { GplBlockContext, GplBlockKind, GplScope } from './language/blockContext';
+import { GplBlockContext, GplBlockKind, GplScope } from './blockContext';
 
 /**
  * GPL 문(statement) 스니펫 · 키워드 정본 데이터 (vscode 비의존 순수 모듈).

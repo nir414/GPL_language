@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { GPLParser, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbolKind } from '../language/gplParser';
 import {
     extractCallArgumentsFromSuffix,
     findEnclosingProcedureRange,

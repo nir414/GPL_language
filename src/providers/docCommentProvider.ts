@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import { getDocCommentConfig } from '../config';
 import {
     buildDocCommentBlock,

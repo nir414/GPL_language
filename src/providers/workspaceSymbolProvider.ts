@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLSymbolKind } from '../gplParser';
+import { GPLSymbolKind } from '../language/gplParser';
 
 export class GPLWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProvider {
     constructor(private symbolCache: SymbolCache) {}

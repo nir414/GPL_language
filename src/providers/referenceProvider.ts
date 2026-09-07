@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser, GPLSymbol } from '../gplParser';
+import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, ciEq, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
 import { buildConstructorUsagePattern, isSymbolicStringReferenceAt } from '../language/referenceSyntax';

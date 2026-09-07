@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { describeJsoncErrors, detectFormatting, parseJsonc, upsertLaunchConfiguration } from '../launchJsonc';
+import { describeJsoncErrors, detectFormatting, parseJsonc, upsertLaunchConfiguration } from '../debug/launchJsonc';
 
 const GPL = (name: string, extra: Record<string, unknown> = {}) => ({
     name,

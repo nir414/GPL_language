@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { GPL_STATEMENT_SNIPPETS, GPL_KEYWORDS, getApplicableStatements } from '../gplStatements';
+import { GPL_STATEMENT_SNIPPETS, GPL_KEYWORDS, getApplicableStatements } from '../language/gplStatements';
 import { GplBlockContext, GplBlockKind, GplScope } from '../language/blockContext';
 
 /**

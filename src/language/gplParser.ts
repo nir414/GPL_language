@@ -1,5 +1,5 @@
-import { escapeRegExp, splitParameters } from './language/cursorExpression';
-import { Declarator, parseDeclaratorList } from './language/declarationList';
+import { escapeRegExp, splitParameters } from './cursorExpression';
+import { Declarator, parseDeclaratorList } from './declarationList';
 
 export interface GPLSymbol {
     name: string;

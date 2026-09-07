@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { XmlUtils } from '../xmlUtils';
-import { getAllGplBuiltins, getGplBuiltinReferenceUrl, GPLBuiltinEntry } from '../gplBuiltins';
-import { GPLParser } from '../gplParser';
+import { XmlUtils } from '../language/xmlUtils';
+import { getAllGplBuiltins, getGplBuiltinReferenceUrl, GPLBuiltinEntry } from '../language/gplBuiltins';
+import { GPLParser } from '../language/gplParser';
 import { extractQualifierChainBefore, findEnclosingProcedureRange } from '../language/cursorExpression';
 import { analyzeBlockContext, GplBlockContext } from '../language/blockContext';
-import { getApplicableStatements, GPL_KEYWORDS, GplKeywordKind } from '../gplStatements';
+import { getApplicableStatements, GPL_KEYWORDS, GplKeywordKind } from '../language/gplStatements';
 
 /** 한정자(`obj.`) 타입 해석 결과. */
 type QualifierTarget =
@@ -212,7 +212,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
             if (!member?.returnType) {
                 // 중첩 클래스 한정자 하강: Outer.Inner. → Inner 멤버 / Module.Class. → Class 멤버
                 if (!segHasCall) {
-                    const nested: import('../gplParser').GPLSymbol | undefined = this.symbolCache.findAllByName(segName).find(s => s.kind === 'class'
+                    const nested: import('../language/gplParser').GPLSymbol | undefined = this.symbolCache.findAllByName(segName).find(s => s.kind === 'class'
                         && (holder.kind === 'userClass'
                             ? s.parentClassName?.toLowerCase() === holder.name.toLowerCase()
                             : !s.parentClassName && s.module?.toLowerCase() === holder.name.toLowerCase()));
@@ -326,7 +326,7 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     }
 
     /** 사용자 클래스/모듈 멤버 완성 항목 구성. */
-    private getUserSymbolMemberCompletions(members: readonly import('../gplParser').GPLSymbol[]): vscode.CompletionItem[] {
+    private getUserSymbolMemberCompletions(members: readonly import('../language/gplParser').GPLSymbol[]): vscode.CompletionItem[] {
         const items: vscode.CompletionItem[] = [];
         for (const symbol of members) {
             const item = new vscode.CompletionItem(

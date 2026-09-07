@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GPLParser } from '../gplParser';
+import { GPLParser } from '../language/gplParser';
 import { isGplFile } from '../config';
 
 export class GPLDiagnosticProvider {

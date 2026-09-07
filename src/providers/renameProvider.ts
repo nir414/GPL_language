@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser, GPLSymbol, GPLSymbolKind } from '../gplParser';
+import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import { GPLReferenceProvider } from './referenceProvider';
 import { ciEq, getQualifiedWordAtPosition, isInCommentOrString, isTraceVerbose } from '../config';
 import {
@@ -18,7 +18,7 @@ import {
     resolveDeclarationNameColumn,
     StringLiteralRenameTarget
 } from '../language/renameCore';
-import { findGplBuiltin } from '../gplBuiltins';
+import { findGplBuiltin } from '../language/gplBuiltins';
 import { resolveProjectFileScope } from '../project/projectFileScope';
 import { pickVisibleDeclaration } from '../language/symbolScope';
 

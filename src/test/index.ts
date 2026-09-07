@@ -65,6 +65,8 @@ import './runtimeConsolePresentation.test';
 import './runtimeConsoleTreePresentation.test';
 import './treeFormat.test';
 import './deployOutcome.test';
+import './gplBuiltins.test';
+import './architecture.test';
 import { run } from './harness';
 
 void run();

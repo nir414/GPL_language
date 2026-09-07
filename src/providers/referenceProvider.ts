@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
-import { isTraceVerbose, ciEq, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
+import { isTraceVerbose, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
+import { ciEq } from '../language/identifiers';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
 import { buildConstructorUsagePattern, isSymbolicStringReferenceAt } from '../language/referenceSyntax';
 import { PROJECT_EXCLUDE_GLOB, resolveProjectFileScope } from '../project/projectFileScope';

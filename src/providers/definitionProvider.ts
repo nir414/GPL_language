@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
-import { isTraceVerbose, EXTENSION_VERSION, ciEq, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
+import { ciEq } from '../language/identifiers';
 import { extractBaseObjectName, escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix, getStringLiteralContentAt } from '../language/cursorExpression';
 import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
 import { findGplBuiltinMember, isGplBuiltinClassName } from '../language/gplBuiltins';

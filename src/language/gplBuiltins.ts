@@ -1,4 +1,4 @@
-import { ciEq } from '../config';
+import { ciEq } from './identifiers';
 import { GPL_DICTIONARY_ENTRIES, GPL_CLASS_DOCS, GPLClassDoc } from './gplDictionaryData';
 import type { ReceiverBuiltins } from './receiverType';
 

@@ -127,14 +127,6 @@ export function getDocCommentConfig(workspace: WorkspaceConfigHost): DocCommentC
 }
 
 /**
- * GPL/VB 식별자 대소문자 무시 비교.
- * GPL은 VB.NET 기반이므로 식별자(함수명, 변수명 등)가 대소문자를 구분하지 않는다.
- */
-export function ciEq(a: string, b: string): boolean {
-    return a.toLowerCase() === b.toLowerCase();
-}
-
-/**
  * 식별자 단어 범위를 가져오되, qualified 토큰(`Module.Member`)인 경우
  * 커서 위치의 segment만 반환한다.
  *

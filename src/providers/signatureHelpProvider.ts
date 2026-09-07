@@ -4,7 +4,7 @@ import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import { findGplBuiltin, GPLBuiltinEntry } from '../language/gplBuiltins';
 import { splitParameters } from '../language/cursorExpression';
 import { extractParamName, getParamDoc, ParsedDocComment, parseDocComment, renderDocCommentMarkdown } from '../language/docComment';
-import { ciEq } from '../config';
+import { ciEq } from '../language/identifiers';
 
 /**
  * Signature Help (parameter hints) for GPL.

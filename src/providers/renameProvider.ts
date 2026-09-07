@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import { GPLReferenceProvider } from './referenceProvider';
-import { ciEq, getQualifiedWordAtPosition, isInCommentOrString, isTraceVerbose } from '../config';
+import { getQualifiedWordAtPosition, isInCommentOrString, isTraceVerbose } from '../config';
+import { ciEq } from '../language/identifiers';
 import {
     findEnclosingProcedureRange,
     getStringLiteralContentAt

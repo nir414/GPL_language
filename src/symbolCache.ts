@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { GPLParser, GPLSymbol } from './language/gplParser';
-import { isTraceOn, ciEq } from './config';
+import { isTraceOn } from './config';
+import { ciEq } from './language/identifiers';
 import { getParameterArity, argCountMatchesArity } from './language/cursorExpression';
 import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
 import { buildSymbolNameIndex } from './language/symbolNameIndex';

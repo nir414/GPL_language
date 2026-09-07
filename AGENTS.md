@@ -9,7 +9,8 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 1. **`docs/ai-handoff.md` — 필독.** 하드 규칙(§0), 세션별 변경 이력(무엇을/왜/어떻게),
    미해결 항목(§2, §3)이 모두 여기에 있다. 다음 할 일도 §3 체크리스트에서 고른다.
 2. `.github/instructions/gpl-ai-controller-debugging.instructions.md` — 제어기 디버깅 하드 규칙 상세.
-3. 구조는 이 파일의 §저장소 구조 + `docs/ai-handoff.md` §4(핵심 파일), 릴리스/버전 규칙은
+3. 구조는 `docs/development/architecture.md`(계층 지도·import 규칙 — `npm test` 의 architecture 테스트가 강제) +
+   이 파일의 §저장소 구조 + `docs/ai-handoff.md` §4(핵심 파일), 릴리스/버전 규칙은
    `docs/releases/process.md`, 제어기 디버깅은 `docs/development/ai-controller-debugging-runbook.md`.
    (옛 Test_robot 시절 문서는 저장소 밖 `C:\Users\Doyun\Downloads\test robot\`으로 반출됨 — 2026-08-18, git 이력에는 남아 있음.)
 
@@ -74,7 +75,8 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 
 ## 저장소 구조 (요약)
 
-- `src/` — 확장 소스. 핵심 파일 목록은 `docs/ai-handoff.md` §4 참조.
+- `src/` — 확장 소스. 계층(util → language → project → controller → debug/views → providers/activation)과
+  vscode 의존 허용 목록은 `docs/development/architecture.md`, 핵심 파일 목록은 `docs/ai-handoff.md` §4 참조.
 - `scripts/` — 빌드/패키징 스크립트 (`package.js`: preflight + bump + vsce 실행).
 - `controller-mcp/` — 제어기 구동용 MCP 서버(별도 하위 프로젝트, VSIX에 미포함).
 - `docs/` — 인계 문서(`ai-handoff.md`), 개발 문서(`development/`), 릴리스 절차(`releases/`).

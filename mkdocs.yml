@@ -64,7 +64,12 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      # mermaid 코드 펜스를 다이어그램으로 렌더(Material 기본 지원). 없으면 코드 블록으로만 보인다.
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
 
@@ -87,6 +92,7 @@ nav:
       - 제어기 디버깅 런북: development/ai-controller-debugging-runbook.md
       - 제어기 디버깅 조작 조사: development/pa-controller-debug-operations.md
       - 설계 원칙: development/design-principles.md
+      - 아키텍처(계층 규칙): development/architecture.md
       - Broker/Workbench 아키텍처: development/broker-workbench-architecture.md
   - 레퍼런스:
       - GPL Dictionary: reference/dictionary.md

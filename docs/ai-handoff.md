@@ -1,12 +1,12 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
 - **최종 갱신: 2026-09-07** · 현재 package 버전 **0.9.0** (태그 `v0.9.0` — `v0.8.22` 이후 첫 정식 릴리스. CI `release.yml`이 빌드·패키징·릴리즈)
-- **직전 세션: §1-DA** — **flash 영구 저장(`gpl.saveToFlash`)을 AI/자동화 경로에서만 차단.**
-  `/flash/projects/<project>` 사본을 미러 동기화로 덮어쓰고 로컬에 없는 원격 파일을 지우는 되돌릴 수 없는
-  조작이라 사람이 판단할 몫이라는 사용자 결정(2026-09-07). 차단 목록 정본 `src/controller/aiCommandPolicy.ts`
-  하나를 브리지(`command-blocked`)·URI(경고 후 무시)·명령 자체(`AI_BLOCKED`)가 함께 보고, MCP 서버는 같은
-  목록을 미러링해 왕복 없이 거부하며 instructions 로도 알린다. **사람의 UI 경로(팔레트·컨텍스트 메뉴)는 그대로다.**
-  테스트 `npm test` 784/784 · MCP `node --test` 86/86.
+- **직전 세션: §1-DB** — **구조 기반 정비(리팩터링 5커밋, 동작 동일).** tsconfig 엄격 플래그 5종·죽은 코드 제거 →
+  경로 키(`util/pathKey`)·`.gpr` 순수 로직(`project/gprSync`)으로 language/project → controller 역방향 의존 제거 →
+  루트의 언어 모듈 6개를 `language/`로 → 배포 결과 보고부(`controller/deployOutcome`)·트리 포맷(`views/treeFormat`·
+  `runtimeConsoleTreePresentation`) 순수 분리 → **계층 규칙을 테스트로 고정**(`src/test/architecture.test.ts`: vscode 허용
+  목록·의존 방향·런타임 순환·테스트 등록·package.json↔명령/설정 키). 계층 지도는 `docs/development/architecture.md`.
+  `npm test` 784 → 820/820. 착수 전 다른 세션의 §1-DA 미커밋 작업 트리는 검증 후 그 세션 이름으로 분리 커밋(9b79f1e)했다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -91,6 +91,18 @@
   실패해도 됨)가 실행되는지 ④ 명령 팔레트에서 `GPL:` 명령이 종전과 같은 개수로 나오는지 ⑤ 창을 닫을 때
   deactivate 가 예외 없이 끝나는지(개발 호스트 콘솔) 확인한다. 제어기가 있으면 `Show Thread` 조회·정지 위치
   표시(노란 강조)·디버그 에러 줄(붉은 강조)까지 — 데코레이션은 `ExecutionDecorations` 로 합쳐졌다.
+  **§1-DB(2026-09-07 구조 리팩터링)도 같은 스모크로 확인한다** — 파일 이동·순수 분리는 tsc·테스트 820건으로 검증했지만
+  개발 호스트에서 켜 본 적은 역시 없다. 배포 후 Output 의 `[ErrorLog 분류]`/`[COMPILE 원문 로그]` 섹션과 트리의 1403 콘솔
+  행(라벨·description·툴팁·가설)이 종전과 같은지 함께 본다.
+
+- [ ] **(2026-09-07, §1-DB) 구조 정비 후속 — 저위험 정리 후보(하드웨어 무관, 각각 tsc + `npm test` 로 검증 가능).**
+  ① `config.ts` 에 남은 언어 헬퍼 `getQualifiedWordAtPosition`·`isInCommentOrString`·`GPL_CONTROL_KEYWORDS` → `language/`
+  (vscode 타입을 받는 부분은 접착 쪽에 남기고 순수 부분만) ② `symbolCache.ts` 를 순수 인덱스 + vscode 로더로 나눠 인덱스는
+  `language/` 로 ③ 1403 상태 문구 두 표현(`controller/runtimeConsolePresentation` 알림용 영문 vs
+  `views/runtimeConsoleTreePresentation` 트리용 한국어)의 폴링 판정 정규식 차이 — **실기기에서 1403 reason/detail 문구를
+  캡처해 대조한 뒤** 하나로 합칠지 결정 ④ `controllerTreeProvider.ts`(1,537줄) 섹션별 노드 생성을 순수 함수로
+  ⑤ ESLint 도입 여부 — 지금은 tsconfig 엄격 플래그 5종이 대신한다. 계층 규칙·허용 목록을 바꾸면
+  `docs/development/architecture.md` 와 `architecture.test.ts` 를 같이 고친다.
 
 - [ ] **(2026-09-07, §1-CY) 연결 진단에 Ethernet 카운터(DataID 430/431/432) 얹기 — 계층 분리.**
   `src/controller/resourceProbes.ts`가 지금 `Show Memory`/`Show Network -tcp|-mbuf`만 본다. 여기에
@@ -119,6 +131,7 @@
   적용할 수 있다. 함께 바뀌는 것: `package.json` 의 `main`(`./out/extension.js` → 번들 산출물) ·
   `vscode:prepublish` · `.vscodeignore` · 테스트 진입점(`out/test/index.js` 는 번들과 별개로 남겨야 한다).
   **구조 개선과 같이 볼 항목** — 번들은 모듈 경계를 감추므로, 경계를 정리한 뒤에 하는 편이 낫다.
+  **§1-DB 로 계층 경계가 테스트(`architecture.test.ts`)로 고정됐으므로 이제 착수 가능하다.**
 
 - [ ] **(2026-09-02, §1-CW) 참조 찾기(Shift+F12) 편집기 실동작 확인 — 제어기 불필요.**
   `GPL_Code`를 Extension Development Host에서 열고 ① `Server.gpl:62`의 `New`에서 실행했을 때
@@ -391,15 +404,15 @@
 ## 4. 핵심 파일
 
 ```
+# 계층 규칙·폴더 지도(어디에 무엇을 두는가)는 docs/development/architecture.md — src/test/architecture.test.ts 가 강제한다 (§1-DB)
 .vscode/launch.json                      # F5 개발 호스트 — --profile=GPL-DevHost(기본 설정·확장 없는 격리 창) + samples/hello-project 를 연다 (§1-BP)
 samples/hello-project/                   # 개발 호스트용 최소 GPL 프로젝트(Project.gpr + Main.gpl). 제어기 없이 언어 기능 확인용, VSIX 미포함 (§1-BP)
 src/controller/controllerConnection.ts   # vscode 래퍼 — sendCommandDetailed(직렬 큐 + 명령 정책 before/after 적용, §1-BN) 옵션(keepAlive1402/idle) 전달, logTraffic(>>> / ' | ' / <<< / ---)·getTrafficLogOptions(§1-BG), closeControllerConnection/getConnectionStats/getRecentTraffic 재노출(§1-BI), probeControllerCommand/getConnectionProbeTimeoutMs(§1-BK), getCommandPolicySnapshot·isPolicyError 재노출(§1-BN)
 src/controller/commandPolicy.ts          # 제어기 명령 정책(vscode 무의존) — R1 Step/Continue 정지 확인 대기+최소 간격(#28), R2 Start/Compile/Load/Unload 전 Stopping 정착 대기(§0.6), R3 Compile→Start 완충(§0.7); 승인/거부 없음, 한도 초과 시 PolicyError(미전송) (§1-BN)
-src/gplStatements.ts                     # 문 스니펫·키워드 정본(vscode 무의존) — 공식 Statement Dictionary 구문 + 스코프 규칙(scopes/requiresOpen/forbidsOpen) + getApplicableStatements (§1-CB)
+src/language/gplStatements.ts            # 문 스니펫·키워드 정본(vscode 무의존) — 공식 Statement Dictionary 구문 + 스코프 규칙(scopes/requiresOpen/forbidsOpen) + getApplicableStatements (§1-CB)
 src/language/blockContext.ts             # 커서 시점 열린 블록 스택(vscode 무의존) — analyzeBlockContext: file/type/procedure 스코프, 한 줄 If·Delegate·짝 없는 End 처리 (§1-CB)
-src/gplDictionaryData.ts                 # GPL Dictionary 데이터(vscode 무의존) — Class.Member 항목 + GPL_CLASS_DOCS(클래스 개요·생성자). Thread는 공식 18페이지 전수 (§1-BR)
-src/gplBuiltins.ts                       # 사전 API — usage/details 필드, findGplClassDoc·getGplClassMembers·findGplBuiltinMember(내장 타입 멤버 조회) (§1-BR)
-src/language/receiverType.ts             # 수신자 타입 해석 — resolveReceiverHolder(사용자 클래스/모듈) + resolveReceiverTypeName(내장 포함 타입 이름) (§1-BJ, §1-BR)
+src/language/gplDictionaryData.ts        # GPL Dictionary 데이터(vscode 무의존) — Class.Member 항목 + GPL_CLASS_DOCS(클래스 개요·생성자). Thread는 공식 18페이지 전수 (§1-BR)
+src/language/gplBuiltins.ts              # 사전 API — usage/details 필드, findGplClassDoc·getGplClassMembers·findGplBuiltinMember(내장 타입 멤버 조회) (§1-BR)
 src/controller/agentBridge.ts            # Agent Bridge 서버(vscode 무의존, 실행자 주입) — presence 파일·요청/응답 파일 IPC·gpl.* 범위 한정·순차 실행 (§1-BQ)
 controller-mcp/src/extensionBridge.js    # Agent Bridge 클라이언트 — presence 판정/깨우기(code --open-url)/요청·응답 왕복/재전송 안전 판정 (§1-BQ)
 src/controller/uriDispatch.ts            # 외부 진입점 URI 해석(vscode 무의존) — /<gpl.command.id>?args=JSON | ?key=value | /command?id=…, 별칭 4개, gpl.* 범위 한정 (§1-BN)
@@ -420,7 +433,7 @@ src/debug/stepGate.ts                    # Step/Continue 게이트 순수 판정
 src/debug/spontaneousPause.ts             # 사용자 액션 없이 관측된 Paused 판별(vscode 무의존) — GPL 의 Paused 는 Thread.Sleep 대기도 포함하므로 등록 BP 위치 일치 = 즉시 정지, 그 외 3폴·1500ms 연속 = 외부 정지, 나머지는 무시(가짜 브레이크 차단) (§1-CK)
 src/controller/debugBridge.ts            # 디버그 세션 ↔ 확장 이벤트 버스 + RuntimeConsoleHealth 공급자(1403 alive → 백업 폴 완화) (§1-BI) + onDebugProbeResult(어댑터 폴 결과 → 연결 건강 모니터, §1-BK)
 src/views/refreshThrottle.ts             # 트리 FTP/시스템 정보 자동 재조회 스로틀 판정(순수) (§1-BI, #22)
-src/launchJsonc.ts                       # launch.json JSONC 읽기/부분 갱신(jsonc-parser) — 주석·포맷 보존 upsert (§1-BI, #30)
+src/debug/launchJsonc.ts                 # launch.json JSONC 읽기/부분 갱신(jsonc-parser) — 주석·포맷 보존 upsert (§1-BI, #30)
 controller-mcp/src/batch.js              # MCP controller_command 배치 runBatch/normalizeCommandInput (§1-BI, #16)
 src/controller/trafficResponseBody.ts    # ResponseBodyStreamer — 1402 응답 본문 줄 단위 스트리밍·상한 생략 요약(§1-BG, vscode 무의존 순수 모듈)
 src/controller/deployService.ts          # deploy() = 잠금 획득 → UPLOAD → STOP/THREAD_CHECK(settle 게이트) → COMPILE → ERROR CHECK(§1-BD 재배치), tryCompile, directGpl(§1-G), COMPILE_DEFERRED, findProjectDirs(**/*.gpr)
@@ -444,7 +457,7 @@ scripts/bundle-mcp.js                    # MCP 번들 + 빌드 스탬프(define 
 src/debug/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach(lockOwner 'F5 Deploy'), _waitDeployLockForStart, getDebugDeployDiagnostics
 src/extension.ts                         # activate()/deactivate() — 배선만(195줄). ExtensionHost 생성 → activation/*.ts 의 activateXxx(host) 를 종전 순서로 호출 (§1-CZ)
 src/activation/host.ts                   # ExtensionHost — 클로저가 공유하던 서비스(채널·심볼 캐시)·가변 상태(트리·상태바·런타임 콘솔·건강 모니터·디버그 여부·마지막 스냅샷)·헬퍼(log·배포 잠금·컴파일 검증 상태·런타임 콘솔 싱글톤·연결 상태 반영·Agent Bridge)·하위 API(project/connection/deploy/decorations). **가변 상태는 항상 host.x 로 읽는다** (§1-CZ)
-src/activation/deploy.ts                 # gpl.deploy/uploadStart/start/saveToFlash/quickCompile + autoOnSave + 자동화 대상 해석·게이트 — runDeploy/runDeployCore(1,106줄, 다음 분해 후보) (§1-CZ)
+src/activation/deploy.ts                 # gpl.deploy/uploadStart/start/saveToFlash/quickCompile + autoOnSave + 자동화 대상 해석·게이트 — runDeploy/runDeployCore(969줄 — 결과 보고부는 controller/deployOutcome.ts) (§1-CZ, §1-DB)
 src/activation/connection.ts             # 연결 건강 모니터 배선·유실 처리·사후 스냅샷·connect/disconnect(대화형+비대화형)·launch.json·attachNow·debugProject (§1-CZ)
 src/activation/projectContext.ts         # 기대 프로젝트 감지·launch.json 읽기·GPL 파일명→경로 해석(resolveGplFilePath) — host.project (§1-CZ)
 src/activation/controllerOps.ts          # busy 재시도·정지 확인(§0.6)·SoftEStop 복구·정지 진입 대기(waitForThreadPause) — host 를 첫 인자로 (§1-CZ)
@@ -452,11 +465,18 @@ src/activation/debugDecorations.ts       # ExecutionDecorations — 정지 줄/�
 src/activation/{languageFeatures,xmlCommands,breakpointCommands,consoleCommands,aiAgentSetup,aiDebugCommands,controllerCommands,treeCommands,ftpCommands,debugIntegration,uriHandler}.ts  # 명령 그룹별 activateXxx(host) — 본문은 종전 extension.ts 그대로 (§1-CZ)
 src/controller/threadArgs.ts             # asThreadNode — 쓰레드 명령 인자 정규화(순수) (§1-CZ)
 src/controller/stepCommand.ts            # buildStepCommand — Step 명령 조립 정본(트리·AI API 공용, 순수) (§1-CZ)
+src/util/pathKey.ts                      # 경로 동일성 키 normalizePathKey·normalizeDirKey·isPathUnder(파일·폴더 공용 단일 규칙, vscode 무의존) — controller/projectPickerCore 에서 분리(§1-CQ, §1-DB)
+src/language/identifiers.ts              # ciEq — GPL 식별자 대소문자 무시 비교(vscode 무의존, 종전 config.ts) (§1-DB)
+src/project/gprSync.ts                   # Project.gpr 파싱/소스 목록 동기화 순수 로직(vscode 무의존, 종전 controller/) — 명령 래퍼는 controller/gprSyncCommand.ts (§1-BW, §1-DB)
+src/controller/deployOutcome.ts          # 배포 결과 보고 순수 규칙 — SituationDeploySnapshot 정의·결과 서명/이력·ErrorLog 분류 로그·COMPILE 원문 로그·실패 문구 4분기(vscode 무의존, 종전 activation/deploy.ts 클로저) (§1-DB)
+src/views/treeFormat.ts                  # 트리 표시 포맷(크기·날짜·연결 통계, vscode 무의존) (§1-DB)
+src/views/runtimeConsoleTreePresentation.ts  # 1403 콘솔 트리 행 문구(라벨·description·아이콘·툴팁·불안정 판정·가설, vscode 무의존) — 알림용은 controller/runtimeConsolePresentation.ts (§1-DB)
+src/test/architecture.test.ts            # 구조 회귀 테스트 — vscode 의존 허용 목록·계층 의존 방향·런타임 순환·테스트 등록·package.json↔명령/설정 키 (§1-DB, 규칙 근거는 docs/development/architecture.md)
 src/controller/aiCommandPolicy.ts        # AI/자동화 경로에서 거부할 명령 목록(정본) — 되돌릴 수 없는 명령만. 브리지·URI·명령 자체가 함께 본다 (§1-DA)
 controller-mcp/src/deployLock.js         # 잠금 파일 읽기 전용 구현(확장과 파일 계약 공유) — Compile/Start/Load/Unload 유한 대기·거부(§1-BD)
-src/gplParser.ts                         # Property/Sub/Function 파싱 + parseDocument 메모이즈 캐시(§1-B E) + docComment 수집(§1-J)
-src/gplBuiltins.ts                       # 핵심 빌트인/String 함수 (Trim→메서드, Rnd(seed), Replace 제거, Asc/Chr/… 추가) + Bit 문자열 전역함수(§1-J)
-src/gplDictionaryData.ts                 # Move/Robot/Location/Profile/.../String 클래스 사전 + Controller/Thread/Exception/File/XML/Network 등 +153(§1-J)
+src/language/gplParser.ts                # Property/Sub/Function 파싱 + parseDocument 메모이즈 캐시(§1-B E) + docComment 수집(§1-J)
+src/language/gplBuiltins.ts              # 핵심 빌트인/String 함수 (Trim→메서드, Rnd(seed), Replace 제거, Asc/Chr/… 추가) + Bit 문자열 전역함수(§1-J)
+src/language/gplDictionaryData.ts        # Move/Robot/Location/Profile/.../String 클래스 사전 + Controller/Thread/Exception/File/XML/Network 등 +153(§1-J)
 src/providers/completionProvider.ts      # 정적 항목 캐시, 트리거('.', '&')
 src/providers/definitionProvider.ts      # token 확인 + parseDocument 재사용
 src/providers/hoverProvider.ts           # token 확인 + docComment 표시(§1-J)
@@ -464,7 +484,6 @@ src/providers/signatureHelpProvider.ts   # Signature Help(빌트인+사용자 Su
 src/symbolCache.ts                       # 심볼 캐시 + 완성 문서화(buildSymbolDocumentation, §1-J) — 파일 항목 키는 normalizePathKey(원본 표기는 항목에 보관), .gpr 소스 합집합도 같은 키(§1-CQ)
 src/language/symbolLocations.ts          # 정의 peek 목록 정리(vscode 무의존) — dedupeSymbolLocations(같은 파일·줄 병합)/preferExistingFiles(없는 파일 제외, 전부 없으면 원본 유지) + 존재 판정 정본 isMissingFile(ENOENT만 삭제로 본다)·fileExists(§1-CQ)
 src/language/docComment.ts               # 문서화 주석 정본(vscode 무의존) — parseDocComment(섹션 별칭·펜스 인식)/renderDocCommentMarkdown(호버·완성·시그니처 공용)/buildDocCommentBlock·mergeDocComment(골격·머지). 원문은 손실 없이 보존하고 렌더에만 손보는 원칙: withFenceLanguage(펜스 언어 보정)·stripDecorativeRules(`====` 장식선 제거, §1-CS)
-src/controller/projectPickerCore.ts      # 경로 동일성 키 normalizePathKey(파일·폴더 공용 단일 규칙, normalizeDirKey는 별칭) + 프로젝트 폴더 선택 순수 로직(§1-CQ)
 src/project/projectSources.ts            # "프로젝트에 속한 소스" 단일 출처 — 재귀 목록·ProjectSource 해석·소유 .gpr 선택(§1-BW, vscode 무의존) + 중첩 프로젝트 경계(stopAtNestedProject)·ProjectLibrary 해석(resolveProjectLibraryDirs)·관련 프로젝트 수집(collectRelatedGprPaths)(§1-BX)
 src/project/projectFileScope.ts          # 참조 검색·심볼 인덱싱 공용 파일 범위(resolveProjectFileScope, PROJECT_EXCLUDE_GLOB)(§1-BW) — 라이브러리 양방향 확장(§1-BX)
 src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReDoS 완화) + 프로젝트 범위 폴백(§1-BW — findTextInFiles는 제안 API로 미사용)
@@ -590,7 +609,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CO | 09-02 | AI(MCP)가 건 중단점이 에디터에 안 보이던 문제 — 제어기→에디터 미러(`breakpointMirror.ts`) + `list_breakpoints` 빈 결과 수정 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CP | 09-02 | 디버깅 중 호버에서 문서화 주석이 사라지던 동작 — `gpl.hover.duringDebug` 기본값 `compact` → `normal` + 설정 정규화 단일 출처화 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CQ | 09-02 | 정의 찾기(F12)가 같은 선언을 3번 띄우던 문제 — 심볼 캐시 경로 키 정규화(`normalizePathKey`) + peek 목록 중복/잔류 제거 | [2026-09](archive/handoff/2026-09.md) |
-| §1-CR | 09-02 | 문서화 주석이 `Module`·`Class`·변수·상수 선언에서 표시되지 않던 문제 — 파서의 `docComment` 수집 대상을 모든 선언 종류로 확장 + 소속 판정 단일 출처화(`isDeclaredIn`) | 본문 ↓ |
+| §1-CR | 09-02 | 문서화 주석이 `Module`·`Class`·변수·상수 선언에서 표시되지 않던 문제 — 파서의 `docComment` 수집 대상을 모든 선언 종류로 확장 + 소속 판정 단일 출처화(`isDeclaredIn`) | [2026-09](archive/handoff/2026-09.md) |
 | §1-CS | 09-02 | 옛 주석의 ASCII 장식 구분선(`' ====`)이 호버를 setext 헤딩으로 깨뜨리던 문제 — `isDecorativeRule`/`stripDecorativeRules`(렌더 단계에서만 제거) | 본문 ↓ |
 | §1-CT | 09-02 | 중첩 라이브러리 구조에서 BP 가능하게 — 소스 승격 계획/검증(`sourcePromotion.ts`) + 디버그 소스맵을 컴파일 단위로 좁힘 | 본문 ↓ |
 | §1-CU | 09-02 | 최근 세션들의 미완 코드 항목 마무리 — "컴파일 검증 필요" 배지 해제를 배포 경로와 분리(`compileStale.ts` + `onDidRecordCompiled`) · `clean.js` 비ASCII 경로 크래시 · folding 의 `Set` 대입문 오인 | 본문 ↓ |
@@ -600,137 +619,11 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CY | 09-07 | 네트워크 DataID 조사 + 실기 실측 대조 — 진단에 쓸 항목 골라내기(`reference/network-dataids.md`) | 본문 ↓ |
 | §1-CZ | 09-07 | `extension.ts` activate() 5,300줄을 명령 그룹별 모듈(`src/activation/`)로 분해 — `ExtensionHost` + 순수 로직 4건 분리·테스트 15건 (§3-B 보류 항목 종결) | 본문 ↓ |
 | §1-DA | 09-07 | flash 영구 저장(`gpl.saveToFlash`)을 AI/자동화 경로에서 차단 — 차단 목록 정본 `aiCommandPolicy.ts` + 브리지·URI·명령 3중 게이트, MCP 미러 | 본문 ↓ |
+| §1-DB | 09-07 | 구조 기반 정비 — tsconfig 엄격 플래그·죽은 코드 제거·계층 경계(`util/pathKey`·`project/gprSync`·언어 모듈 `language/` 이동)·순수 분리(`deployOutcome`·`treeFormat`)·**계층 규칙 테스트 고정**(`architecture.test.ts`)·`docs/development/architecture.md` 신설 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-CR ~ §1-DA (2026-09-02 ~ 2026-09-07).** 이 아래부터는 세션 원문이다.
-
-## 1-CR. 2026-09-02 세션 — 문서화 주석이 `Module`·`Class`·변수·상수 선언에서 표시되지 않던 문제
-
-### 증상 (사용자 요청)
-
-"문서화 주석 모듈이나 클래스 등에서도 표기 되게 반영해줘." — Sub/Function/Property 위에 쓴 문서화
-주석은 호버·자동완성·시그니처 도움말에 구조로 나오는데(§1-BT), 똑같은 형식으로 `Module`·`Class`나
-모듈/클래스 멤버 변수·상수 위에 써 둔 주석은 어디에도 나타나지 않았다.
-
-### 원인 — 렌더러가 아니라 **파서의 수집 대상**
-
-문서화 주석 기능은 네 층으로 나뉘어 있다: ① 파서가 선언 위 `'` 블록을 `GPLSymbol.docComment`로 수집 →
-② `language/docComment.ts`가 구조화·렌더링 → ③ 호버/자동완성/시그니처 도움말이 표시 → ④ 골격 생성.
-②③④는 처음부터 종류를 가리지 않았다:
-
-- `isDocumentableKind()`는 `function`·`sub`·`property`·**`class`·`module`·`variable`·`constant`**를 모두 포함한다.
-- `hoverProvider`의 심볼 호버는 `sym.docComment`가 있으면 종류와 무관하게 `---` 아래에 렌더링한다.
-- `symbolCache.buildSymbolDocumentation()`도 종류 분기 없이 `docComment`를 붙인다.
-
-막혀 있던 곳은 ①뿐이었다. `gplParser.ts`의 루프는 주석 줄을 `pendingDoc`에 모아 두고 코드 줄에서
-`const docComment = …`로 꺼내지만, 그 값을 `symbols.push`에 실어 주는 곳이 **Function·Sub·Property
-세 군데뿐**이었다. Module·Class·변수·상수 분기는 같은 줄에서 값을 꺼내 놓고 그냥 버렸다.
-
-그래서 `'''`·전구 메뉴·`GPL: 문서화 주석 생성`으로 클래스 위에 골격은 만들어지는데 정작 호버에는
-아무것도 안 나오는 비대칭이 생겼다(④는 되고 ①만 안 되는 상태).
-
-### 조치
-
-- **`src/gplParser.ts`** — `docComment`를 실어 주는 push를 3곳 → 13곳으로 확장.
-  - Module, Class(중첩 클래스 포함)
-  - 모듈/클래스 멤버: `Const`, `Dim … As New`, 변수/`Dim Const`, 배열 선언
-  - 프로시저 안 지역 선언(`includeLocals`): `Const`, `Dim/Static … As New`, `Dim/Static`, 배열
-  - **수집 규칙 자체는 손대지 않았다** — 연속 `'` 블록, 빈 줄이 끼면 끊김, 코드 줄에서 소비 후 리셋.
-    프로시저 파라미터 심볼은 종전대로 제외(설명은 상위 프로시저의 `# Parameters`가 담는다).
-- **`src/symbolCache.ts`** — `buildSymbolDocumentation()`이 앞에 붙일 시그니처·타입 줄이 없는 종류
-  (Module/Class)에서 선행 빈 줄(`\n\n`)로 시작하지 않게 했다.
-- 문서: `controller-mcp/src/guidelines.js`(MCP `instructions`로 AI에게 나가는 규약)와 `README.md`의
-  대상 범위를 "Module/Class/변수·상수 포함"으로 고쳤다 — 매개변수도 반환값도 없는 선언은 설명
-  (필요하면 `# Remarks`)만 쓴다는 안내를 덧붙였다.
-
-### 검증
-
-- `npm run compile` 0 오류, `npm test` 전수 통과(마지막 확인 **731/731**). 이 세션이 추가한 것은
-  `src/test/gplParserDocComment.test.ts` 7건(Module / Class / 중첩 클래스 / 멤버 변수 3형태 / 상수 /
-  지역 선언 / 구조화 머리글 보존) + `src/test/receiverType.test.ts` 6건(후속 절)이고, 총계의 나머지
-  증가분은 같은 시각 진행된 다른 작업(§1-CS·§1-CT)의 것이다.
-  기존 회귀 4건(빈 줄 차단·주석 누수 방지)도 그대로 통과 — 수집 규칙이 바뀌지 않았음의 근거.
-- `controller-mcp` 테스트 79/79(지침 텍스트 변경 반영).
-- 사용자 로컬 편집기 확인 필요(제어기 무관) → §3.
-
-### 남은 일 / 관찰
-
-- **모듈 파일 머리의 배너 주석이 그대로 모듈 설명이 된다.** `Module Foo` 바로 위에 빈 줄 없이 붙은
-  이력·설명 주석은 이제 모듈 호버에 보인다. 형식상 맞는 동작이고(빈 줄 하나만 넣으면 끊긴다),
-  `' =====` 같은 장식 구분선은 렌더 단계에서 걸러지며(§1-CS의 `stripDecorativeRules`)
-  호버 기본값이 `summary`(첫 문단)라 폭발하지는 않는다. 그래도 실사용
-  파일에서 어떻게 보이는지는 확인이 필요하다.
-- (아래 "후속 조치"에서 처리) 호버 스코프 줄의 자기 되풀이, `Module.` 자동완성에서 클래스 누락.
-
-### 변경 파일
-
-- `src/gplParser.ts` — Module/Class/변수/상수/지역 선언 push에 `docComment` 추가, `GPLSymbol.docComment` 주석 갱신
-- `src/symbolCache.ts` — `buildSymbolDocumentation()` 선행 빈 줄 조건화, `collectDeclaredMembers()` 신설로
-  `getClassMembers`/`getModuleMembers` 통합
-- `src/language/receiverType.ts` — `enclosingClassName`/`enclosingModuleName`/`isDeclaredIn` 신설,
-  `membersNamed`/`nestedTypesIn`를 그 위에 재작성
-- `src/providers/hoverProvider.ts` — 스코프 줄을 감싸는 스코프 기준으로
-- `src/test/gplParserDocComment.test.ts` — 7건 추가, `src/test/receiverType.test.ts` — 6건 추가
-- `controller-mcp/src/guidelines.js` — `DOC_COMMENT_GUIDE` 대상 범위 확장
-- `README.md`, `CHANGELOG.md`(0.8.26)
-
-### 후속 조치 — 같은 표기 함정의 다른 두 곳 (모듈 멤버 자동완성 · 호버 스코프)
-
-문서화 주석을 모든 선언에 붙이고 나서 클래스/모듈 호버를 들여다보니, **같은 원인**의 표시 문제가
-두 군데 더 있었다. 파서의 표기 규칙이 원인이다:
-
-- **Class 심볼의 `className`은 자기 이름**이다(`className: currentClass` — 클래스를 열면서 채운다).
-  감싸는 클래스는 `parentClassName`이다.
-- **Module 심볼의 `module`도 자기 이름**이다.
-
-그래서 `className`/`module` 유무로 소속을 판정하면 클래스·모듈이 **자기 자신에 속한 것**이 된다.
-
-1. `symbolCache.getModuleMembers()`가 `s.className`이 있으면 제외 → 모듈 최상위 클래스가 통째로 빠져
-   `ZeroModule.` 자동완성에 클래스가 나오지 않았다(함수 주석은 "클래스 심볼은 포함한다"고 말하고
-   있었으니 동작이 주석과 어긋난 상태). 반면 `Module.Class.`로 **하강**하는 경로는
-   `receiverType.nestedTypesIn`·completionProvider의 중첩 클래스 분기가 이미 올바르게 처리하고 있어서,
-   "목록에는 안 보이는데 직접 치면 되는" 비대칭이었다.
-2. `hoverProvider`의 스코프 줄이 `sym.className`을 그대로 써서 클래스 호버가 `Class: \`Foo\``로 자기를
-   되풀이했고(모듈도 `Module: \`Foo\``), **중첩 클래스는 감싸는 클래스가 아니라 자기 이름**을 보여 줬다.
-
-조치는 규칙을 한 곳에만 쓰는 것이다:
-
-- **`src/language/receiverType.ts`** — `enclosingClassName(sym)`(Class면 `parentClassName`),
-  `enclosingModuleName(sym)`(Module이면 undefined), `isDeclaredIn(sym, holder)`를 신설했다.
-  이미 이 함정을 알고 있던 `nestedTypesIn`과 `membersNamed`를 이 술어 위에 다시 썼다 —
-  `membersNamed` = `isDeclaredIn` + 클래스 선언 제외, `nestedTypesIn` = `isDeclaredIn` + 클래스만,
-  둘을 합친 것이 종전대로 `ownedByHolder`다. 곁들여 `membersNamed(class Foo, 'Foo')`가 `className`
-  자기 참조 때문에 **클래스 자신을 자기 멤버로** 돌려주던 것도 사라졌다.
-- **`src/symbolCache.ts`** — `collectDeclaredMembers(holder)` 하나로 `getClassMembers`/
-  `getModuleMembers`를 통합(둘의 차이는 홀더 종류뿐). 클래스 멤버 쪽 결과는 종전과 동일하고,
-  모듈 쪽에 최상위 클래스가 더해진다. 생성자(`New`) 제외는 두 홀더에 같이 적용한다(모듈 수준
-  `Sub New`는 유효한 GPL이 아니라 실질 변화가 없다).
-- **`src/providers/hoverProvider.ts`** — 스코프 줄을 `enclosingModuleName`/`enclosingClassName`으로.
-  스코프가 하나도 없으면(모듈 심볼 등) 줄 자체를 넣지 않는다.
-
-실측(파서 → 판정 통과, `Module ZeroModule > Class ZeroPlan > Class StepBatch` 구조):
-
-```text
-ZeroModule. → variable jogSpeed, class ZeroPlan, sub Run      (종전: class ZeroPlan 누락)
-ZeroPlan.   → variable planId, class StepBatch
-호버 스코프  module ZeroModule → (없음)                        (종전: Module: ZeroModule)
-             class StepBatch  → Module: ZeroModule · Class: ZeroPlan  (종전: Class: StepBatch)
-```
-
-`src/test/receiverType.test.ts`에 6건 추가(감싸는 스코프 3종 · 모듈/클래스 직속 판정 · 자기 멤버 차단).
-
-### 같은 함정에 걸려 있지만 **손대지 않은** 곳 (판단 포함)
-
-- **`renameProvider`의 같은-범위 중복 검사**(`ciEq(s.className ?? '', sym.className ?? '')`) — 클래스를
-  이름 바꿀 때 그 클래스의 **멤버** 이름과 충돌한다고 막는다(위 규칙대로면 서로 다른 스코프라 합법).
-  고치면 정확해지지만 **과차단 → 과소차단**으로 바뀌는 변경이라, 소스를 실제로 고쳐 쓰는 기능에서는
-  현행(막고 메시지 보여 주기)이 안전하다고 판단했다. `Module Foo` 안의 `Sub Foo`처럼 GPL이 실제로
-  거부하는 조합을 확인한 뒤 별도로 볼 것.
-- **`workspaceSymbolProvider`의 `containerName`** — 클래스 심볼의 컨테이너가 자기 이름으로 나온다
-  (Ctrl+T 목록의 표시만. `enclosingClassName`으로 한 줄이면 되지만 이번 범위 밖).
-- **`documentSymbolProvider`의 중첩 클래스** — `parentClassName`을 쓰지 않아 개요에서 중첩 클래스가
-  바깥 클래스가 아니라 **모듈 자식**으로 평평해진다(자기 자식이 되지는 않는다).
+**최근 세션 본문 — §1-CS ~ §1-DB (2026-09-02 ~ 2026-09-07).** 이 아래부터는 세션 원문이다.
 
 ## 1-CS. 2026-09-02 세션 — 옛 주석의 ASCII 장식 구분선이 호버 렌더를 깨뜨리던 문제 (setext 머리글 오인)
 
@@ -1217,7 +1110,7 @@ docs/ai-handoff.md, CHANGELOG.md      # 기록(§1-CK 를 2026-08 아카이브�
 src/language/declarationList.ts   # 신규 — 선언자 목록 파서(콤마 다중 선언·배열·New·초기값), vscode 무의존
 src/language/symbolScope.ts       # 신규 — 스코프 가시성 판정 정본(isVisibleFrom/pickVisibleDeclaration)
 src/language/renameCore.ts        # isWordAt / resolveDeclarationNameColumn 추가
-src/gplParser.ts                  # 선언 정규식 6종 → 2경로(declaratorsOfLine) + Property/Type 이름 range
+src/language/gplParser.ts                # 선언 정규식 6종 → 2경로(declaratorsOfLine) + Property/Type 이름 range
 src/providers/renameProvider.ts   # 선언 이름 컬럼 확정(defPos·선언 편집) + 편집 전 텍스트 검증 + 스코프 정본 사용
 src/providers/definitionProvider.ts # pickBestScopedCandidate → symbolScope 정본 위임
 src/test/declarationList.test.ts  # 신규 — 11건(선언자 파싱 6 + 파서 통합 5)
@@ -1641,4 +1534,90 @@ controller-mcp/src/guidelines.js        # instructions 에 flash 저장 금지
 controller-mcp/test/aiPolicy.test.mjs   # 신규 7건 (확장 목록과 대조 포함)
 docs/development/ai-controller-debugging-runbook.md · .github/instructions/gpl-ai-controller-debugging.instructions.md
 docs/ai-handoff.md · docs/archive/handoff/2026-09.md  # 이 절 + §1-CQ 아카이브 이동
+```
+
+## 1-DB. 2026-09-07 세션 — 구조 기반 정비: 계층 경계 정리 + 순수 분리 + 구조 규칙을 테스트로 고정 (리팩터링 5커밋, 동작 동일)
+
+### 요청
+
+"프로젝트를 전체적으로 구조체계들을 검토 후 리팩토링하여 체계적으로 한번 다시 기반틀을 튼튼하게 다지고 가려고 합니다.
+피드백 후 알아서 개선 작업을 이어나가 주세요. 모든 개선 작업 완료 후 보고해 주세요."
+
+### 검토 결론 (착수 근거 — 피드백으로 보고한 내용)
+
+착수 시점: 소스 170파일 52,852줄(테스트 60파일 9,541줄 포함), `npm test` 784/784, MCP 86/86. 직접 import 그래프·
+tsc 엄격 플래그 시험·미사용 심볼·package.json 대조로 본 상태:
+
+- **잘 돼 있던 것**: `language/` 11/11 · `controller/` 31/41 · `debug/` 5/7 이 vscode 무의존이고 순수 모듈엔 테스트가 있다.
+  런타임 import 순환 0(activation 의 host↔그룹 순환은 전부 `import type`). §1-CZ 로 extension.ts 분해 완료.
+- **틀이 무너질 수 있던 곳**: ① 계층 규칙이 문서에만 있고 강제되지 않았다 — 실제로 `language/symbolLocations`·`project/*`·
+  `symbolCache` 가 경로 키 하나 때문에 `controller/projectPickerCore` 를 import 했고(역방향), `language/gplBuiltins` 는 `ciEq`
+  하나 때문에 `config.ts`(vscode) 를 끌어들여 Node 단독 테스트가 불가능했다(테스트가 없어 드러나지 않았다). ② 테스트 등록이
+  수동(`index.ts`)이라 파일을 만들고 등록을 잊으면 조용히 빠진다. ③ tsconfig 가 `strict` 만 — 미사용 import/지역 11건·암묵
+  return 3건·DAP `override` 누락 24건이 쌓여 있었다. ④ 죽은 코드: `controllerDiscovery.ts`(UDP 검색 — import 0, 명령 0, README 는
+  기능으로 광고), `scripts/dev-cycle.js`(참조 0, 산출물 이름도 틀림), 0바이트 잔여 파일. ⑤ 루트 `src/` 에 언어 모듈 6개가 섞여
+  폴더가 계층을 말하지 않았다. ⑥ `docCommentProvider.ts` 의 sortText 에 리터럴 NUL 바이트 — grep 이 바이너리로 오인.
+- **손대지 않은 고위험**(로드맵 그대로): `gplDebugSession.ts` 5,186줄·`deployService.deployLocked` 1,100줄·`runtimeConsole.ts`
+  재연결 상태 머신 — 하드웨어 검증 없이 분해하지 않는다(하드 규칙 6).
+
+### 조치 (커밋 5개 + 문서 1개, 각각 tsc + `npm test` 통과 후 커밋)
+
+① **정리(71dfcea)** — tsconfig 에 `noUnusedLocals`·`noUnusedParameters`·`noImplicitReturns`·`noImplicitOverride`·
+  `noFallthroughCasesInSwitch`. 켜기 전 위반 38건 정리(미사용 매개변수는 `_` 접두, 명령 핸들러 3곳 `return undefined;` 명시,
+  `gplDebugSession` 24곳 `override`). 죽은 코드 2파일 삭제(복구: `git show 9b79f1e:src/controller/controllerDiscovery.ts`),
+  README/런북의 51417 언급 제거. NUL 리터럴 → `\u0000`(같은 값). `.editorconfig` 신설(.ts 들여쓰기는 파일별 혼재라 강제 안 함).
+② **경계(a0dfe2e)** — `util/pathKey.ts`(normalizePathKey·normalizeDirKey·isPathUnder) 신설, 호출부 14곳 갱신, 재노출 없음(thin
+  wrapper 지양). `controller/gprSync.ts` → `project/gprSync.ts`(순수 .gpr 로직). 명령 래퍼 `gprSyncCommand` 는 deployService·
+  projectPicker 를 쓰므로 controller 에 남겨 controller → project 방향만 남겼다.
+③ **배치(e093447)** — `gplParser`·`gplBuiltins`·`gplDictionaryData`·`gplStatements`·`symbolNameIndex`·`xmlUtils` → `language/`,
+  `launchJsonc` → `debug/`. `git mv`(내용 무변경 → 100% rename) + import 42곳을 스크립트로 재계산(파일의 옛/새 위치 기준 상대
+  경로 재산출) → tsc 검증. `scripts/dev/smoke.js` 의 out/ 경로 갱신. 루트에 남은 것: `extension`·`config`·`symbolCache`
+  (vscode 의존이라 순수 계층 `language/` 에 넣지 않음).
+④ **순수 분리(c80d84b)** — `controller/deployOutcome.ts`: runDeployCore 의 결과 보고 클로저 6개(결과 서명·컴파일 요약·스냅샷 조립·
+  ErrorLog 분류 로그·COMPILE 원문 로그·실패 문구 4분기) + 이력 링버퍼 → 순수 함수/클래스. runDeployCore 는 줄을 찍고 알림을
+  띄우는 일만 남는다(1,110 → 969줄). `SituationDeploySnapshot` 타입도 생산자 쪽으로 옮겨 controller/activation → views 타입
+  의존을 views → controller 로 정정. `views/treeFormat.ts`·`views/runtimeConsoleTreePresentation.ts`: 트리 하단 함수 12개 그대로
+  이동(1,718 → 1,537줄). 1403 문구 두 표현의 차이는 통일하지 않고 머리말에 기록. 테스트 23건.
+⑤ **안전망(1331ee6)** — `src/test/architecture.test.ts` 6건: R1 vscode 허용 목록과 **정확히 일치**(빠진 것도 남은 것도 실패) ·
+  R2 계층 의존 방향 · R3 런타임 순환 없음 · R4 테스트 파일 전부 index.ts 등록 · R5 package.json 이 선언·참조하는 명령이 전부
+  `registerCommand` 됨(상수 ID 인식) · R6 코드가 읽는 `gpl.*` 설정 키가 전부 선언됨. 첫 실행이 `gplBuiltins → config` 위반을 잡아
+  `ciEq` 를 `language/identifiers.ts` 로 옮겼다(호출부 7곳). `gplBuiltins` 조회 API 테스트 7건(bare 이름은 최상위 함수만 등).
+⑥ **문서(이 커밋)** — `docs/development/architecture.md`(한 장 요약·계층 규칙 표·vscode 허용 목록과 이유·조립 순서·배치 기준·
+  테스트 전략·부채 표) 신설 + mkdocs nav(+ mermaid custom fence), CLAUDE.md/AGENTS.md 읽기 순서·저장소 구조에 추가, 이 문서
+  §4 경로 갱신(중복 항목 2개 정리), CHANGELOG 0.5.95 섹션 순서 정정, §1-CR 아카이브 이동, 로드맵 메모리 갱신.
+
+방법: 파일 수정은 전부 스크립트(Python/Node) — 작업 트리에 CRLF/LF 파일이 섞여 있어(`core.autocrlf=true`) 파일별 EOL 을
+보존했다. 정리 스크립트가 CRLF 파일에서 한 번 멈췄고(LF 가정), 그 뒤로는 EOL 감지 후 치환했다.
+
+### 검증
+
+- `npm test` 784 → **820/820**(신규 36: deployOutcome 11 · runtimeConsoleTreePresentation 8 · treeFormat 4 · gplBuiltins 7 ·
+  architecture 6). tsc 무오류(엄격 플래그 5종 포함). MCP `node --test` 86/86(변경 없음). `mkdocs build --strict` 통과.
+- 의존성 방향: language/project → controller 역방향 0건, `language/`·`util/` vscode import 0건, 런타임 순환 0 — 이제 테스트가 지킨다.
+- **하지 않은 것**: Extension Development Host 실동작 — §3 의 §1-CZ 스모크 항목에 합쳤다. 실기기 확인은 불필요(제어기 통신
+  코드·명령 문자열 무변경. 바뀐 것은 파일 위치·import·순수 함수 추출·컴파일러 플래그).
+
+### 남은 일 / 다음 작업자에게
+
+- §3 스모크(§1-CZ 항목) — §1-DB 변경도 같이 본다.
+- §3 새 항목 "구조 정비 후속" ①~⑤(config.ts 언어 헬퍼 → language/, symbolCache 분리, 1403 문구 통일 결정, 트리 노드 생성 순수화,
+  ESLint 여부). esbuild 번들 항목은 이제 착수 가능.
+- 고위험(변동 없음): gplDebugSession 분해·deployLocked 단계 분리·runtimeConsole 상태 머신 — `architecture.md` §7 표.
+- **규칙 바꾸는 법**: 계층/허용 목록을 바꾸면 `architecture.test.ts` 의 `ALLOWED_DEPENDENCIES`/`VSCODE_ALLOWED_MODULES` 와
+  `architecture.md` §2/§3 을 같은 커밋에서 고친다. 테스트가 실패하면 "코드를 규칙에 맞출지, 규칙을 바꿀지"를 의식적으로 고른다.
+- 동시 세션 주의: 착수 시 다른 세션(§1-DA)의 미커밋 작업 트리(코드 4 + 문서 4 + 신규 4 + 0바이트 잔여 1)가 있었다. 검증(784/86
+  통과) 후 **그 세션 이름으로 분리 커밋**(9b79f1e)한 뒤 시작했고 잔여 파일은 지웠다 — 이 세션 커밋에 섞이지 않게. push 는 하지
+  않았다(사용자 확인 뒤).
+
+### 변경 파일 (요약 — 87 파일, 커밋 6개)
+
+```txt
+tsconfig.json · .editorconfig(신규) · README.md · docs/development/ai-controller-debugging-runbook.md
+src/util/pathKey.ts(신규) · src/language/identifiers.ts(신규) · src/project/gprSync.ts(← controller/)
+src/language/{gplParser,gplBuiltins,gplDictionaryData,gplStatements,symbolNameIndex,xmlUtils}.ts(← src/) · src/debug/launchJsonc.ts(← src/)
+src/controller/deployOutcome.ts(신규) · src/views/treeFormat.ts(신규) · src/views/runtimeConsoleTreePresentation.ts(신규)
+src/activation/deploy.ts(1,110 → 969) · src/views/controllerTreeProvider.ts(1,718 → 1,537) · src/controller/projectPickerCore.ts · src/config.ts
+src/test/{architecture,gplBuiltins,deployOutcome,treeFormat,runtimeConsoleTreePresentation}.test.ts(신규) · src/test/index.ts
+삭제: src/controller/controllerDiscovery.ts · scripts/dev-cycle.js
+docs/development/architecture.md(신규) · mkdocs.yml · CLAUDE.md · AGENTS.md · docs/ai-handoff.md · docs/archive/handoff/2026-09.md · CHANGELOG.md
 ```

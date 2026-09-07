@@ -24,7 +24,8 @@ import { checkProjectName, checkRemotePath, describeProjectNameProblem } from '.
 import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controller/deployLock';
 import { CompileStaleInfo, CompileStaleTracker } from '../controller/compileStale';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
-import { ControllerTreeProvider, RuntimeErrorContext, SituationDeploySnapshot } from '../views/controllerTreeProvider';
+import { ControllerTreeProvider, RuntimeErrorContext } from '../views/controllerTreeProvider';
+import type { SituationDeploySnapshot } from '../controller/deployOutcome';
 import { ConnectionStatusBar } from '../views/connectionStatusBar';
 import { appendLiveLog } from '../log/liveLogTerminal';
 import { fireDebugPollTrigger } from '../controller/debugBridge';

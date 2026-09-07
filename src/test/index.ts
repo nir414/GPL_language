@@ -62,6 +62,9 @@ import './gplStatements.test';
 import './threadArgs.test';
 import './stepCommand.test';
 import './runtimeConsolePresentation.test';
+import './runtimeConsoleTreePresentation.test';
+import './treeFormat.test';
+import './deployOutcome.test';
 import { run } from './harness';
 
 void run();

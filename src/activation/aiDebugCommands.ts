@@ -20,7 +20,7 @@ import { buildStepCommand } from '../controller/stepCommand';
 import type { StepMode } from '../controller/stepCommand';
 import { AI_PAUSED_STATES, waitForThreadPause } from './controllerOps';
 import { normalizeEvalValue } from '../debug/showVariableParser';
-import { SituationDeploySnapshot } from '../views/controllerTreeProvider';
+import type { SituationDeploySnapshot } from '../controller/deployOutcome';
 import { formatBreakpointCommand } from '../controller/breakpointCommand';
 import type { ConnectArgs } from './connection';
 import type { ExtensionHost } from './host';

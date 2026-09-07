@@ -25,17 +25,23 @@ import {
 	resolveProjectTarget,
 } from '../controller/projectTarget';
 import type { ProjectTargetRequest, TargetCandidateSummary } from '../controller/projectTarget';
-import {
-	classifyErrorEntry,
-	extractErrorCodeFromEntry,
-	getErrorCodeHint,
-	isControllerNonBlockingStatus,
-	parseStatus,
-} from '../controller/responseParser';
+import { isControllerNonBlockingStatus, parseStatus } from '../controller/responseParser';
 import { RuntimeConsole } from '../controller/runtimeConsole';
 import { buildStartCommand } from '../controller/startCommand';
 import { getSyncManifest, recordSyncManifest } from '../controller/syncManifest';
-import { SituationDeploySnapshot } from '../views/controllerTreeProvider';
+import {
+	DeployOutcomeHistory,
+	buildCompileRawSectionLines,
+	buildDeployOutcomeSignature,
+	classifyDeployErrorLog,
+	comparisonNoteFor,
+	controllerSystemErrorEntries,
+	describeDeployFailure,
+	makeDeploySnapshot,
+	parsedErrorCodes,
+	summarizeCompileAttempts,
+} from '../controller/deployOutcome';
+import type { SituationDeploySnapshot } from '../controller/deployOutcome';
 import type { ExtensionHost } from './host';
 
 export interface DeployApi {
@@ -52,16 +58,8 @@ export type QuickDeployOpts = {
 export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	const { context, outputChannel, consoleChannel, deployDiagnostics } = host;
 
-	// 현재는 signature만 중복 알림 억제에 사용된다. mode/timestamp/summary는 향후 진단용 기록.
-	const deployOutcomeHistory: Array<{ mode: SituationDeploySnapshot['mode']; signature: string; timestamp: number; summary: string }> = [];
-	// 히스토리 상한 — 장시간 세션에서 무한 증가 방지 (초과 시 오래된 항목부터 제거)
-	const DEPLOY_OUTCOME_HISTORY_MAX = 50;
-	function pushDeployOutcome(entry: (typeof deployOutcomeHistory)[number]): void {
-		deployOutcomeHistory.push(entry);
-		while (deployOutcomeHistory.length > DEPLOY_OUTCOME_HISTORY_MAX) {
-			deployOutcomeHistory.shift();
-		}
-	}
+	// 배포 결과 이력 — signature 만 중복 알림 억제에 쓴다(상한 50, 규칙은 controller/deployOutcome.ts).
+	const deployOutcomeHistory = new DeployOutcomeHistory(50);
 
 	/**
 	 * 배포 진입점. 잠금은 deploy() 안에서 — 프로젝트 선택/미저장 확인 UI가 끝난 뒤 — 획득한다(UI 대기 중 잠금 금지, 이슈 #15).
@@ -155,52 +153,6 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		const modeLabel: SituationDeploySnapshot['mode'] = skipStart
 			? 'Build'
 			: quickOpts?.skipCompile ? 'Upload & Start' : 'Deploy & Run';
-		const uniqueCodes = (values: number[]): number[] => [...new Set(values)];
-		const buildOutcomeSignature = (result: Awaited<ReturnType<typeof deploy>>, controllerSystemCodes: number[]): string => {
-			const compileCodes = uniqueCodes(result.compileErrors.map(e => e.code)).sort((a, b) => a - b);
-			const systemCodes = uniqueCodes(controllerSystemCodes).sort((a, b) => a - b);
-			const status = typeof result.failedStatusCode === 'number' ? result.failedStatusCode : 'none';
-			return [
-				result.success ? 'success' : 'fail',
-				result.failedPhase ?? 'SUCCESS',
-				result.failedCommand ?? '-',
-				`status:${status}`,
-				`compile:${compileCodes.join(',') || 'none'}`,
-				`system:${systemCodes.join(',') || 'none'}`,
-			].join('|');
-		};
-		const makeRawCompileSummary = (result: Awaited<ReturnType<typeof deploy>>): string[] => {
-			return result.compileAttemptLogs.map(attempt => {
-				const firstLine = attempt.raw.replace(/\r/g, '').split('\n').map(l => l.trim()).find(Boolean) || '(empty)';
-				const incompleteMeta = attempt.responseMeta && !attempt.responseMeta.responseComplete
-					? ` / responseComplete=false bytes=${attempt.responseMeta.bytesReceived} idle=${attempt.responseMeta.idleTimeoutMs}ms`
-					: '';
-				const note = attempt.note ? ` / note=${attempt.note}` : '';
-				return `${attempt.command} / STATUS ${attempt.statusCode}${incompleteMeta}${note} / ${firstLine}`;
-			});
-		};
-		const makeDeploySnapshot = (
-			success: boolean,
-			lastStage: SituationDeploySnapshot['lastStage'],
-			summary: string,
-			compileErrorCodes: number[],
-			controllerSystemCodes: number[],
-			comparisonNote?: string,
-			unverifiableReason?: string,
-			compileRawSummary?: string[],
-		): SituationDeploySnapshot => ({
-			mode: modeLabel,
-			success,
-			lastStage,
-			compileErrorCodes: uniqueCodes(compileErrorCodes),
-			controllerSystemCodes: uniqueCodes(controllerSystemCodes),
-			updatedAt: Date.now(),
-			summary,
-			comparisonNote,
-			unverifiableReason,
-			compileRawSummary,
-		});
-
 		const cfg = getControllerConfig();
 
 		let projectDir: string;
@@ -312,95 +264,27 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				host.markCompileStale(result.projectName, `${mode} 업로드 후 Compile 미수행(활성 쓰레드)`, projectDir);
 				const msg = `${mode} 중단: ${result.failedStatusMessage ?? '활성 쓰레드 존재'}`;
 				host.log(`[Deploy] ${msg}`);
-				host.lastDeploySnapshot = makeDeploySnapshot(false, 'THREAD_CHECK', msg, [], []);
+				host.lastDeploySnapshot = makeDeploySnapshot({ mode: modeLabel, success: false, lastStage: 'THREAD_CHECK', summary: msg, compileErrorCodes: [], controllerSystemCodes: [] });
 				if (!quickOpts?.changedFiles?.length) { vscode.window.showWarningMessage(msg); }
 				return result;
 			}
 
-			// errorLog를 제어기 시스템 에러 / GPL 배포 에러로 분류해 출력 채널에 기록한다.
-			// 이 함수는 성공·실패 경로 공통으로 호출된다.
-			function logErrorLogSections(): { sysCount: number; deployErrCount: number } {
-				let sysCount = 0;
-				let deployErrCount = 0;
-				if (result.errorLog.length === 0) { return { sysCount, deployErrCount }; }
-
-				host.log('');
-				host.log('── [ErrorLog 분류] ──────────────────────────────────────');
-				// 같은 코드가 연달아 나오면(예: Trj/AutoEx 동시 -1600) 동일한 설명이 항목마다
-				// 반복돼 로그가 부푼다 — 부가 설명(detail/해석/권장)은 코드당 한 번만 출력한다.
-				const printedNotes = new Set<string>();
-				for (const entry of result.errorLog) {
-					const c = classifyErrorEntry(entry);
-					const code = extractErrorCodeFromEntry(entry) ?? c.parsedCode;
-					const hint = typeof code === 'number' ? getErrorCodeHint(code) : undefined;
-					const noteKey = typeof code === 'number' ? `code:${code}` : `text:${c.summary}`;
-					const firstOfCode = !printedNotes.has(noteKey);
-					printedNotes.add(noteKey);
-					if (c.isControllerSystem) {
-						sysCount++;
-						host.log(`[⚠ 환경 경고] ${typeof code === 'number' ? `[${code}] ` : ''}${c.summary}`);
-						if (firstOfCode) {
-							if (c.detail) { host.log(`          ${c.detail}`); }
-							if (hint) {
-								host.log(`          해석: ${hint.meaning}`);
-								host.log(`          권장: ${hint.action}`);
-							}
-						}
-					} else {
-						deployErrCount++;
-						host.log(`[✘ 코드/배포 에러] ${typeof code === 'number' ? `[${code}] ` : ''}${c.summary}`);
-						if (firstOfCode && hint) {
-							host.log(`          해석: ${hint.meaning}`);
-							host.log(`          권장: ${hint.action}`);
-						}
-					}
-				}
-				host.log('─────────────────────────────────────────────────────────');
-				return { sysCount, deployErrCount };
-			}
-
-			function logCompileRawSection(): void {
-				if (result.compileAttemptLogs.length === 0) { return; }
-				host.log('');
-				host.log('── [COMPILE 원문 로그] ──────────────────────────────────');
-				for (const attempt of result.compileAttemptLogs) {
-					host.log(`[${attempt.command}] STATUS ${attempt.statusCode}`);
-					if (attempt.note) {
-						host.log(`  note: ${attempt.note}`);
-					}
-					if (attempt.responseMeta && (!attempt.responseMeta.responseComplete || !attempt.responseMeta.statusTagReceived || !attempt.responseMeta.dataTagClosed)) {
-						host.log(`  responseComplete=${attempt.responseMeta.responseComplete}`);
-						host.log(`  bytesReceived=${attempt.responseMeta.bytesReceived}`);
-						host.log(`  lastChunkAt=${attempt.responseMeta.lastChunkAt}`);
-						host.log(`  idleTimeoutMs=${attempt.responseMeta.idleTimeoutMs}`);
-					}
-					host.log(attempt.raw || '(empty)');
-					if (attempt.errors.length > 0) {
-						for (const ce of attempt.errors) {
-							host.log(`  -> ${ce.file}:${ce.line} (${ce.code}) ${ce.message}`);
-						}
-					}
-				}
-				if (result.precheckWarnings.length > 0) {
-					host.log('  precheckWarnings:');
-					for (const w of result.precheckWarnings) {
-						host.log(`  - ${w}`);
-					}
-				}
-				host.log('─────────────────────────────────────────────────────────');
-			}
+			// ErrorLog 분류·COMPILE 원문 섹션의 문구는 controller/deployOutcome.ts 가 만든다(테스트 대상) — 여기서는 줄만 찍는다.
+			const logErrorLogSections = (): { sysCount: number; deployErrCount: number } => {
+				const classified = classifyDeployErrorLog(result.errorLog);
+				for (const line of classified.lines) { host.log(line); }
+				return classified;
+			};
+			const logCompileRawSection = (): void => {
+				for (const line of buildCompileRawSectionLines(result)) { host.log(line); }
+			};
 
 			if (result.success) {
 				host.clearCompileStale(result.projectName);
-				const controllerSystemCodes = result.errorLog
-					.map(e => classifyErrorEntry(e).parsedCode)
-					.filter((code): code is number => typeof code === 'number');
-				const signature = buildOutcomeSignature(result, controllerSystemCodes);
-				const samePattern = deployOutcomeHistory.filter(h => h.signature === signature);
-				const comparisonNote = samePattern.length > 0
-					? `회귀 아님: 동일 결과 패턴 ${samePattern.length + 1}회 관측`
-					: undefined;
-				pushDeployOutcome({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.success ? '성공' : '실패' });
+				const controllerSystemCodes = parsedErrorCodes(result.errorLog);
+				const signature = buildDeployOutcomeSignature(result, controllerSystemCodes);
+				const comparisonNote = comparisonNoteFor(deployOutcomeHistory.countSame(signature), 'result');
+				deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.success ? '성공' : '실패' });
 				const deployedFolderName = path.basename(projectDir).trim();
 				const remotePathInfo = result.selectedRemoteProjectPath
 					? ` / 경로: ${result.selectedRemoteProjectPath}`
@@ -429,16 +313,17 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						vscode.window.showInformationMessage(`빌드 완료: ${result.projectName}${remotePathInfo} (FTP/컨텍스트 갱신 완료, Start 미실행)`);
 						consoleChannel.show(true);
 					}
-					host.lastDeploySnapshot = makeDeploySnapshot(
-						true,
-						'SUCCESS',
-						sysCount > 0
+					host.lastDeploySnapshot = makeDeploySnapshot({
+						mode: modeLabel,
+						success: true,
+						lastStage: 'SUCCESS',
+						summary: sysCount > 0
 							? `빌드 성공 / 제어기 시스템 경고 ${sysCount}건${remotePathInfo}`
 							: `빌드 성공${remotePathInfo}`,
-						[],
+						compileErrorCodes: [],
 						controllerSystemCodes,
 						comparisonNote,
-					);
+					});
 				} else {
 					const { sysCount, deployErrCount } = logErrorLogSections();
 					if (sysCount > 0 || deployErrCount > 0) {
@@ -468,16 +353,17 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						}
 						consoleChannel.show(true);
 					}
-					host.lastDeploySnapshot = makeDeploySnapshot(
-						true,
-						'SUCCESS',
-						sysCount > 0 || deployErrCount > 0
+					host.lastDeploySnapshot = makeDeploySnapshot({
+						mode: modeLabel,
+						success: true,
+						lastStage: 'SUCCESS',
+						summary: sysCount > 0 || deployErrCount > 0
 							? `배포 성공 / 배포 에러 ${deployErrCount}건 / 시스템 경고 ${sysCount}건${remotePathInfo}`
 							: `배포 성공${remotePathInfo}`,
-						[],
+						compileErrorCodes: [],
 						controllerSystemCodes,
 						comparisonNote,
-					);
+					});
 				}
 			} else {
 				logErrorLogSections();
@@ -495,59 +381,30 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						projectDir,
 					);
 				}
-				const phaseLabel = result.failedPhase ? ` (${result.failedPhase} 단계)` : '';
-				const sysErrors = result.errorLog.filter(e => classifyErrorEntry(e).isControllerSystem);
-				const sysCodes = sysErrors
-					.map(e => classifyErrorEntry(e).parsedCode)
-					.filter((code): code is number => typeof code === 'number');
-				const signature = buildOutcomeSignature(result, sysCodes);
-				const samePattern = deployOutcomeHistory.filter(h => h.signature === signature);
-				const comparisonNote = samePattern.length > 0
-					? `회귀 아님: 동일 실패 패턴 ${samePattern.length + 1}회 관측`
-					: undefined;
-				pushDeployOutcome({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.failedPhase ?? 'FAIL' });
-				const sysLabel = sysErrors.length > 0
-					? ` / 제어기 시스템 경고 ${sysErrors.length}건 (배포 원인 아님)`
-					: '';
-				const envBlocking = (result.failedPhase === 'COMPILE') && sysErrors.length > 0;
-				const unverifiableReason = envBlocking ? '제어기 환경 오류가 COMPILE 단계에 존재' : undefined;
-				const commandLabel = result.failedCommand ? ` / ${result.failedCommand}` : '';
-				const statusLabel = typeof result.failedStatusCode === 'number'
-					? ` / STATUS ${result.failedStatusCode}${result.failedStatusMessage ? ` (${result.failedStatusMessage})` : ''}`
-					: '';
-
-				let errMsg: string;
-				if (envBlocking) {
-					errMsg = `코드 수정 효과 검증 불가: COMPILE 환경 블로커 감지${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
-				} else if (result.compileErrors.length > 0) {
-					errMsg = `${result.compileErrors.length}개 컴파일 에러${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
+				const sysErrors = controllerSystemErrorEntries(result.errorLog);
+				const sysCodes = parsedErrorCodes(sysErrors);
+				const signature = buildDeployOutcomeSignature(result, sysCodes);
+				const comparisonNote = comparisonNoteFor(deployOutcomeHistory.countSame(signature), 'failure');
+				deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.failedPhase ?? 'FAIL' });
+				// 실패 문구·검증 불가 사유·마지막 단계는 controller/deployOutcome.ts 의 순수 규칙이 정한다(테스트 대상).
+				const failure = describeDeployFailure(result, sysErrors, comparisonNote);
+				if (failure.jumpToCompileErrors) {
 					await jumpToFirstCompileError(result.compileErrors, projectDir,
 						msg => outputChannel.appendLine(`[Deploy] ${msg}`));
-				} else if (sysErrors.length > 0 && result.errorLog.length === sysErrors.length) {
-					// 에러 로그 전체가 제어기 시스템 에러인 경우 — GPL 코드 원인 없음을 명시
-					const firstSys = classifyErrorEntry(sysErrors[0]);
-					errMsg = `${result.failedPhase ?? '단계 미상'} 단계 실패${commandLabel}${statusLabel} — GPL 코드 오류 없음, 제어기 시스템 경고 ${sysErrors.length}건: ${firstSys.summary}`;
-				} else {
-					errMsg = `알 수 없는 오류${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
-				}
-				if (comparisonNote) {
-					errMsg = `${errMsg} / ${comparisonNote}`;
-				}
-				if (result.selectedRemoteProjectPath) {
-					errMsg = `${errMsg} / 경로: ${result.selectedRemoteProjectPath}`;
 				}
 
-				vscode.window.showErrorMessage(`배포 실패: ${errMsg}`);
-				host.lastDeploySnapshot = makeDeploySnapshot(
-					false,
-					(result.failedPhase ?? 'COMPILE') as SituationDeploySnapshot['lastStage'],
-					errMsg,
-					result.compileErrors.map(e => e.code),
-					sysCodes,
+				vscode.window.showErrorMessage(`배포 실패: ${failure.message}`);
+				host.lastDeploySnapshot = makeDeploySnapshot({
+					mode: modeLabel,
+					success: false,
+					lastStage: failure.lastStage,
+					summary: failure.message,
+					compileErrorCodes: result.compileErrors.map(e => e.code),
+					controllerSystemCodes: sysCodes,
 					comparisonNote,
-					unverifiableReason,
-					makeRawCompileSummary(result),
-				);
+					unverifiableReason: failure.unverifiableReason,
+					compileRawSummary: summarizeCompileAttempts(result),
+				});
 			}
 			return result;
 		} catch (err: any) {

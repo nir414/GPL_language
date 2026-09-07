@@ -25,21 +25,17 @@ import { editorBreakpointTargets } from '../controller/breakpointSync';
 import { FtpEntry, listRemoteDirs } from '../controller/ftpClient';
 import { onDebugThreadsUpdated } from '../controller/debugBridge';
 import { AUTO_REFRESH_MIN_INTERVAL_MS, decideAutoRefresh, formatLastRefreshTime } from './refreshThrottle';
+import { formatConnectionStats, formatDate, formatDateTimeFromTs, formatSize } from './treeFormat';
+import {
+	buildRuntimeConsoleTreeDescription,
+	buildRuntimeConsoleTreeTooltip,
+	formatRuntimeConsoleStatusDetail,
+	getRuntimeConsoleHypothesis,
+	getRuntimeConsoleTreeIcon,
+	isRuntimeConsoleUnstable,
+} from './runtimeConsoleTreePresentation';
+import type { SituationDeploySnapshot } from '../controller/deployOutcome';
 import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
-
-export interface SituationDeploySnapshot {
-	mode: 'Build' | 'Deploy & Run' | 'Upload & Start';
-	success: boolean;
-	// 순서(2026-08-25 재배치): UPLOAD → STOP/THREAD_CHECK → COMPILE → START → ERROR_CHECK
-	lastStage: 'LOCKED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
-	compileErrorCodes: number[];
-	controllerSystemCodes: number[];
-	updatedAt: number;
-	summary: string;
-	comparisonNote?: string;
-	unverifiableReason?: string;
-	compileRawSummary?: string[];
-}
 
 /**
  * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
@@ -1538,181 +1534,4 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			default: return new vscode.ThemeIcon('circle-outline');
 		}
 	}
-}
-
-/**
- * 1402 keep-alive 연결 통계 한 줄(GitHub #22): `keep-alive 유지 중 · 연결 3회 · 재사용 412회`.
- * 정상 폴링 중에는 연결 수가 늘지 않고 재사용만 늘어야 한다 — 늘어나면 제어기가 응답 뒤 끊거나 stale 재시도가 잦다는 뜻.
- */
-function formatConnectionStats(s: ReturnType<typeof getConnectionStats>): string {
-	if (!s) { return ''; }
-	const parts = [s.keepAliveActive ? 'keep-alive 유지 중' : 'keep-alive 대기', `연결 ${s.connects}회`, `재사용 ${s.reuses}회`];
-	if (s.retries > 0) { parts.push(`재시도 ${s.retries}회`); }
-	return parts.join(' · ');
-}
-
-function formatSize(bytes: number): string {
-	if (bytes < 1024) { return `${bytes} B`; }
-	if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)} KB`; }
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatDate(date: Date): string {
-	const y = date.getFullYear();
-	const m = String(date.getMonth() + 1).padStart(2, '0');
-	const d = String(date.getDate()).padStart(2, '0');
-	const h = String(date.getHours()).padStart(2, '0');
-	const min = String(date.getMinutes()).padStart(2, '0');
-	return `${y}-${m}-${d} ${h}:${min}`;
-}
-
-function formatDateTimeFromTs(timestamp?: number): string {
-	if (!timestamp) { return '(없음)'; }
-	return new Date(timestamp).toLocaleString('ko-KR');
-}
-
-function formatRuntimeConsoleStatusDetail(status: RuntimeConsoleStatusSnapshot): string {
-	const parts: string[] = [];
-	if (status.reason) {
-		parts.push(status.reason);
-	}
-	if (status.detail) {
-		parts.push(status.detail);
-	}
-	if (status.noPayloadStreak > 0) {
-		parts.push(`noPayloadStreak=${status.noPayloadStreak}`);
-	}
-	if (status.immediateEofStreak > 0) {
-		parts.push(`pollEmptyStreak=${status.immediateEofStreak}`);
-	}
-	if (status.reconnectDelayMs) {
-		parts.push(`reconnect=${status.reconnectDelayMs}ms`);
-	}
-	if (parts.length === 0) {
-		return status.connected ? '정상 연결' : '상세 없음';
-	}
-	return parts.join(' / ');
-}
-
-function formatRuntimeConsoleTreeState(status: RuntimeConsoleStatusSnapshot): string {
-	switch (status.state) {
-		case 'connected':
-			return '연결됨';
-		case 'connected-no-payload':
-			return '연결됨 · payload 대기';
-		case 'connecting':
-			return '연결 중';
-		case 'reconnecting':
-			if (isRuntimeConsolePollingState(status)) {
-				return '이벤트 대기 폴링';
-			}
-			return '재연결 대기';
-		case 'connect-failed':
-			return '연결 실패';
-		case 'no-payload':
-			return 'payload 없음';
-		case 'polling':
-			return '연결 유지 · 이벤트 대기';
-		case 'stopped':
-			return '중지됨';
-		case 'batch-complete':
-			return '연결 유지 · 배치 완료';
-		case 'socket-error':
-			return '소켓 오류';
-		default:
-			return status.connected ? '연결됨' : '미연결';
-	}
-}
-
-function buildRuntimeConsoleTreeDescription(status: RuntimeConsoleStatusSnapshot): string {
-	const parts: string[] = [formatRuntimeConsoleTreeState(status)];
-	if (status.reconnectDelayMs) {
-		parts.push(isRuntimeConsolePollingState(status)
-			? `${status.reconnectDelayMs}ms 뒤 폴링`
-			: `${status.reconnectDelayMs}ms 뒤 재연결`);
-	} else if (status.lastPayloadAt) {
-		const payloadSummary = status.lastPayloadBytes
-			? `${formatDateTimeFromTs(status.lastPayloadAt)} · ${status.lastPayloadBytes}B`
-			: formatDateTimeFromTs(status.lastPayloadAt);
-		parts.push(`마지막 payload ${payloadSummary}`);
-	} else if (status.noPayloadStreak > 0) {
-		parts.push(`payload 없음 x${status.noPayloadStreak}`);
-	} else if (status.reason && status.reason !== '미연결') {
-		parts.push(status.reason);
-	}
-	return parts.join(' · ');
-}
-
-function getRuntimeConsoleTreeIcon(status: RuntimeConsoleStatusSnapshot): string {
-	if (status.connected
-		|| status.state === 'connected-no-payload'
-		|| status.state === 'batch-complete'
-		|| status.state === 'polling') {
-		return 'pass';
-	}
-	if (status.state === 'connecting' || status.state === 'reconnecting') {
-		return 'refresh';
-	}
-	return 'warning';
-}
-
-function buildRuntimeConsoleTreeTooltip(
-	status: RuntimeConsoleStatusSnapshot,
-	ip: string,
-	port: number,
-): string {
-	const lines = [
-		`1403 콘솔: ${formatRuntimeConsoleTreeState(status)} (${ip}:${port})`,
-		`상세: ${formatRuntimeConsoleStatusDetail(status)}`,
-	];
-	if (status.lastConnectAt) {
-		lines.push(`마지막 연결 시도: ${formatDateTimeFromTs(status.lastConnectAt)}`);
-	}
-	if (status.lastPayloadAt) {
-		lines.push(`마지막 payload: ${formatDateTimeFromTs(status.lastPayloadAt)}${status.lastPayloadBytes ? ` (${status.lastPayloadBytes}B)` : ''}`);
-	}
-	if (status.lastErrorCode) {
-		lines.push(`마지막 오류 코드: ${status.lastErrorCode}`);
-	}
-	if (status.reconnectDelayMs) {
-		lines.push(`${isRuntimeConsolePollingState(status) ? '폴링 대기' : '재연결 대기'}: ${status.reconnectDelayMs}ms${status.reconnectAttempt ? ` (attempt ${status.reconnectAttempt})` : ''}`);
-	}
-	lines.push('클릭: 연결/재연결 후 로그 보기');
-	lines.push('버튼: 트래픽 보기');
-	return lines.join('\n');
-}
-
-function isRuntimeConsoleUnstable(status: RuntimeConsoleStatusSnapshot): boolean {
-	if (status.connected) { return false; }
-	if (status.state === 'stopped'
-		|| status.state === 'idle'
-		|| status.state === 'polling'
-		|| status.state === 'batch-complete'
-		|| status.state === 'connected-no-payload'
-		|| isRuntimeConsolePollingState(status)) {
-		return false;
-	}
-	if (status.immediateEofStreak > 0 && status.noPayloadStreak === 0 && status.lastErrorCode === undefined) { return false; }
-	if (status.noPayloadStreak >= 5) { return true; }
-	return /refused|socket error|connect failed|ECONN/i.test(`${status.reason} ${status.detail ?? ''}`);
-}
-
-function getRuntimeConsoleHypothesis(status: RuntimeConsoleStatusSnapshot): string | undefined {
-	if (status.lastErrorCode === 'ECONNREFUSED' || /ECONNREFUSED/i.test(status.detail ?? '')) {
-		return '다른 1403 소비자가 포트를 점유했거나, 제어기 쪽 콘솔 서비스가 비활성일 가능성이 있습니다.';
-	}
-	if (status.state === 'polling') {
-		return '1403 이벤트 큐가 비어 있어 payload 없는 짧은 세션을 반복하는 정상 폴링 상태입니다.';
-	}
-	if (status.state === 'no-payload' || status.state === 'connected-no-payload') {
-		return '실제 런타임이 Idle 상태이거나, 1403이 빈 배치 세션만 반환하는 상태일 수 있습니다.';
-	}
-	return undefined;
-}
-
-function isRuntimeConsolePollingState(status: RuntimeConsoleStatusSnapshot): boolean {
-	const text = `${status.reason} ${status.detail ?? ''}`;
-	return status.state === 'polling'
-		|| status.immediateEofStreak > 0
-		|| /이벤트 대기 폴링|이벤트 큐|빈 이벤트|Idle timeout|Empty batch/i.test(text);
 }

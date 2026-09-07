@@ -75,13 +75,13 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | Build Only(배포) | GPL: Deploy (/GPL 업로드 + Compile, Start 없음) | `gpl.deploy` |
 | 업로드 후 실행 | GPL: 업로드 스타트 (/GPL 업로드 + Start, Compile은 제어기가 수행) | `gpl.uploadStart` |
 | 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` |
-| Flash 저장 | GPL: Save to Flash (/flash/projects에 저장만) | `gpl.saveToFlash` |
+| Flash 저장 | GPL: Save to Flash (/flash/projects에 저장만) | `gpl.saveToFlash` **— 사람 전용, AI/자동화 차단** |
 | 빠른 컴파일 | GPL: 빠른 컴파일 (변경분만 /GPL 직접 업로드, STOP/START 생략) | `gpl.quickCompile` |
 | 전체 정지 | GPL: 모든 쓰레드 중지 (Stop -all) | `gpl.controller.stopAll` (별칭 `gpl.stopAll`) |
 | 자동화 대상 조회/고정 | (팔레트 미노출 — 자동화 전용) | `gpl.automation.target` |
 
 > **자동화(MCP·URI)로 배포/실행 명령을 부를 때는 대상 프로젝트를 인자로 넘긴다** (2026-08-31, `§1-CM`).
-> `gpl.deploy`·`gpl.uploadStart`·`gpl.quickCompile`·`gpl.start`·`gpl.saveToFlash` 는 인자가
+> `gpl.deploy`·`gpl.uploadStart`·`gpl.quickCompile`·`gpl.start` 는 인자가
 > `{project|projectDir|projectFile}` 중 하나를 가진 객체면 **비대화형**으로 동작한다 — QuickPick·모달을 띄우지 않고
 > 대상을 정할 수 없으면 `{ok:false, error:"PROJECT_AMBIGUOUS", candidates:[…]}` 를 반환한다.
 > 인자가 없거나 `vscode.Uri`(탐색기 우클릭)면 종전 대화형 경로다(사람용). **active editor 는 자동화 대상 결정에
@@ -143,7 +143,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | `gpl.automation.target` | `{}` → 현재 상태(`{ ok, target, configuredDefault, candidates:[{project,dir,runnable,referencedAsLibraryBy?}], hint }`) · `{ project: "GPL_Code" }` → 세션 대상 고정 · `{ clear: true }` → 해제 |
 | `gpl.deploy` / `gpl.quickCompile` | `{ project: "GPL_Code" }` 또는 `{ projectDir: "…/projects/GPL_Code" }` / `{ projectFile: "…/Main.gpl" }`. 선택: `saveDirty: true`(미저장 문서 저장 후 계속 — 기본은 `UNSAVED_FILES` 로 중단) |
 | `gpl.uploadStart` / `gpl.start` | 위와 같고 **Start 를 보내므로** `confirmStart: true` 가 필요하다(사용자 확인을 받았음을 단언 — 없으면 `INTERACTIVE_UI_REQUIRED`). 설정 `gpl.controller.requireStartConfirmation: false` 면 불필요. 선택: `ignoreCompileStale: true`(기본은 `COMPILE_UNVERIFIED` 로 중단) |
-| `gpl.saveToFlash` | `{ project }`/`{ projectDir }`/`{ projectFile }` + 선택 `saveDirty` |
+| `gpl.saveToFlash` | **자동화 호출 불가** — `{ok:false, error:"AI_BLOCKED", detail}` 을 돌려주고 아무것도 올리지 않는다. 브리지는 `command-blocked`, URI 는 경고 후 무시. flash 영구 사본을 되돌릴 수 없게 덮어쓰므로 사용자가 UI 에서 직접 실행한다 (`src/controller/aiCommandPolicy.ts`, 2026-09-07) |
 
 공통 규약:
 
@@ -168,7 +168,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
   결과는 URI로 돌려받을 수 없으므로 Output(`[URI] <id> => …`)과 `gpl.ai.debug.*`의 `[AI Debug]` 로그로 확인한다. `gpl.*` 밖의 명령은 실행하지
   않는다(임의 VS Code 명령 프록시 방지 — 범위 한정이지 기능 제한이 아님). 해석 규칙: `src/controller/uriDispatch.ts`.
 - **명령 정책(`src/controller/commandPolicy.ts`, 2026-08-28)** — 모든 1402 명령은 `sendCommandDetailed`의 직렬 큐 한 곳을 지나며, 여기서 확장이
-  안전 조건을 **대신 기다려서** 충족시킨다(승인 모달·거부 목록 없음 — AI 접근을 막지 않는다는 사용자 결정). R1 같은 쓰레드 Step/Continue는 직전
+  안전 조건을 **대신 기다려서** 충족시킨다(승인 모달·거부 목록 없음 — AI 접근을 막지 않는다는 사용자 결정. 예외는 되돌릴 수 없는 명령의 차단 목록 `controller/aiCommandPolicy.ts` 뿐 — 현재 `gpl.saveToFlash` 1건). R1 같은 쓰레드 Step/Continue는 직전
   명령의 정지 확인 뒤·최소 간격(`gpl.debug.minStepIntervalMs`) 뒤에만 전송(#28), R2 Start/Compile/Load/Unload 전에 `Stopping` 쓰레드 정착 대기(§0.6),
   R3 Compile 완료 직후 같은 프로젝트 Start는 `gpl.controller.startAfterCompileGapMs`(기본 1.5 s) 완충(§0.7). `gpl.controller.transitionSettleWaitMs`(기본 8 s)
   안에 충족되지 않으면 제어기에 보내지 않고 `gpl.ai.debug.*`는 `{ ok: false, error: "policy-hold", code, detail, sentToController: false }`를,

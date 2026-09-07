@@ -48,6 +48,7 @@ import './idlePing.test';
 import './commandPolicy.test';
 import './uriDispatch.test';
 import './agentBridge.test';
+import './aiCommandPolicy.test';
 import './projectNameGuard.test';
 import './projectSources.test';
 import './compileUnit.test';

@@ -21,11 +21,13 @@
  *
  * 신뢰 경계: 같은 사용자의 임시 디렉터리(배포 잠금과 동일 수준). 실행 대상은 `gpl.*` 명령으로 한정한다 —
  * 임의 VS Code 명령의 프록시가 되지 않게 하는 범위 한정이며, 제어기 안전 조건은 명령 정책이 별도로 담당한다(접근 제한이 아님).
+ * 예외는 `aiCommandPolicy.ts` 의 AI 차단 목록뿐이다(되돌릴 수 없는 파괴적 명령 — 2026-09-07 사용자 결정).
  */
 
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { findAiBlockedCommand, aiBlockedDetail } from './aiCommandPolicy';
 
 export const AGENT_BRIDGE_VERSION = 1;
 /** presence heartbeat 주기 — STALE_MS보다 충분히 짧게. */
@@ -70,7 +72,9 @@ export interface BridgeRequest {
 
 export type BridgeErrorCode =
     | 'invalid-request' | 'unsupported-command' | 'unknown-command'
-    | 'stale-request' | 'command-failed' | 'bridge-disabled';
+    | 'stale-request' | 'command-failed' | 'bridge-disabled'
+    /** AI/자동화 경로에서 실행할 수 없는 명령(aiCommandPolicy.ts) — 사람이 UI 에서 직접 실행해야 한다. */
+    | 'command-blocked';
 
 export interface BridgeResponse {
     version: number;
@@ -131,7 +135,12 @@ export function validateBridgeRequest(raw: unknown, fileId: string, now: number)
     if (typeof r.command !== 'string' || !BRIDGE_COMMAND_ID_PATTERN.test(r.command)) {
         return { ok: false, error: 'unsupported-command', detail: `'${String(r.command)}' — 이 확장의 명령(gpl.*)만 실행할 수 있음` };
     }
-    const createdAt = typeof r.createdAt === 'number' && Number.isFinite(r.createdAt) ? r.createdAt : now;
+    // 브리지는 AI/자동화 전용 통로다 — 되돌릴 수 없는 명령은 여기서 실행하지 않는다(aiCommandPolicy.ts).
+    const blocked = findAiBlockedCommand(r.command);
+    if (blocked) {
+        return { ok: false, error: 'command-blocked', detail: aiBlockedDetail(blocked) };
+    }
+    const createdAt =typeof r.createdAt === 'number' && Number.isFinite(r.createdAt) ? r.createdAt : now;
     const ttl = typeof r.timeoutMs === 'number' && Number.isFinite(r.timeoutMs) && r.timeoutMs > 0
         ? Math.min(r.timeoutMs, 10 * 60_000)
         : DEFAULT_REQUEST_TTL_MS;

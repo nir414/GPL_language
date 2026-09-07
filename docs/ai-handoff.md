@@ -1,13 +1,12 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
 - **최종 갱신: 2026-09-07** · 현재 package 버전 **0.9.0** (태그 `v0.9.0` — `v0.8.22` 이후 첫 정식 릴리스. CI `release.yml`이 빌드·패키징·릴리즈)
-- **직전 세션: §1-CZ** — **`extension.ts` activate() 5,300줄을 명령 그룹별 모듈(`src/activation/`)로 분해 — 동작 동일.**
-  §3-B 에 2026-07-16 부터 보류돼 있던 항목. 명령 핸들러 72개·헬퍼 70여 개·공유 클로저 변수 50여 개가
-  한 함수에 있던 것을, 클로저가 공유하던 것을 명시적으로 담는 `ExtensionHost`(`activation/host.ts`)와
-  `activateXxx(host)` 모듈 14개로 나눴다. 본문은 줄 범위 그대로 옮기고 공유 참조만 `host.<x>` 로 기계
-  치환한 뒤 `tsc --strict` 로 누락을 잡았다. 등록 명령 82개 집합·구독 수 전후 동일. 순수 로직 4건
-  (`threadArgs`·`stepCommand`·`buildRuntimeConsoleUserMessage`·`normalizeEvalValue`)은 vscode 무의존 모듈로
-  빼고 테스트 15건을 붙였다(`npm test` 778/778). **실기·Extension Development Host 동작 확인은 미실시** — §3 참조.
+- **직전 세션: §1-DA** — **flash 영구 저장(`gpl.saveToFlash`)을 AI/자동화 경로에서만 차단.**
+  `/flash/projects/<project>` 사본을 미러 동기화로 덮어쓰고 로컬에 없는 원격 파일을 지우는 되돌릴 수 없는
+  조작이라 사람이 판단할 몫이라는 사용자 결정(2026-09-07). 차단 목록 정본 `src/controller/aiCommandPolicy.ts`
+  하나를 브리지(`command-blocked`)·URI(경고 후 무시)·명령 자체(`AI_BLOCKED`)가 함께 보고, MCP 서버는 같은
+  목록을 미러링해 왕복 없이 거부하며 instructions 로도 알린다. **사람의 UI 경로(팔레트·컨텍스트 메뉴)는 그대로다.**
+  테스트 `npm test` 784/784 · MCP `node --test` 86/86.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -453,6 +452,7 @@ src/activation/debugDecorations.ts       # ExecutionDecorations — 정지 줄/�
 src/activation/{languageFeatures,xmlCommands,breakpointCommands,consoleCommands,aiAgentSetup,aiDebugCommands,controllerCommands,treeCommands,ftpCommands,debugIntegration,uriHandler}.ts  # 명령 그룹별 activateXxx(host) — 본문은 종전 extension.ts 그대로 (§1-CZ)
 src/controller/threadArgs.ts             # asThreadNode — 쓰레드 명령 인자 정규화(순수) (§1-CZ)
 src/controller/stepCommand.ts            # buildStepCommand — Step 명령 조립 정본(트리·AI API 공용, 순수) (§1-CZ)
+src/controller/aiCommandPolicy.ts        # AI/자동화 경로에서 거부할 명령 목록(정본) — 되돌릴 수 없는 명령만. 브리지·URI·명령 자체가 함께 본다 (§1-DA)
 controller-mcp/src/deployLock.js         # 잠금 파일 읽기 전용 구현(확장과 파일 계약 공유) — Compile/Start/Load/Unload 유한 대기·거부(§1-BD)
 src/gplParser.ts                         # Property/Sub/Function 파싱 + parseDocument 메모이즈 캐시(§1-B E) + docComment 수집(§1-J)
 src/gplBuiltins.ts                       # 핵심 빌트인/String 함수 (Trim→메서드, Rnd(seed), Replace 제거, Asc/Chr/… 추가) + Bit 문자열 전역함수(§1-J)
@@ -481,7 +481,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-CQ ~ §1-CZ)만 둔다.
+본문에는 **최근 10개 세션**(§1-CR ~ §1-DA)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -489,8 +489,8 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | [2026-06](archive/handoff/2026-06.md) | §1-A ~ §1-B (2026-06-30) | 2 |
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
-| [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-CP (2026-09-02) | 3 |
-| (본문 아래) | §1-CQ ~ §1-CZ (2026-09-02 ~ 2026-09-07) | 10 |
+| [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-CQ (2026-09-02) | 4 |
+| (본문 아래) | §1-CR ~ §1-DA (2026-09-02 ~ 2026-09-07) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -589,7 +589,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CN | 09-02 | 프로젝트 상위 폴더에서 워크스페이스를 여는 중첩 구조 지원 — 정의/참조/이름바꾸기의 컴파일 단위 경계(`compileUnit.ts`) + 탐색 상한·`.svn` 제외 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CO | 09-02 | AI(MCP)가 건 중단점이 에디터에 안 보이던 문제 — 제어기→에디터 미러(`breakpointMirror.ts`) + `list_breakpoints` 빈 결과 수정 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CP | 09-02 | 디버깅 중 호버에서 문서화 주석이 사라지던 동작 — `gpl.hover.duringDebug` 기본값 `compact` → `normal` + 설정 정규화 단일 출처화 | [2026-09](archive/handoff/2026-09.md) |
-| §1-CQ | 09-02 | 정의 찾기(F12)가 같은 선언을 3번 띄우던 문제 — 심볼 캐시 경로 키 정규화(`normalizePathKey`) + peek 목록 중복/잔류 제거 | 본문 ↓ |
+| §1-CQ | 09-02 | 정의 찾기(F12)가 같은 선언을 3번 띄우던 문제 — 심볼 캐시 경로 키 정규화(`normalizePathKey`) + peek 목록 중복/잔류 제거 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CR | 09-02 | 문서화 주석이 `Module`·`Class`·변수·상수 선언에서 표시되지 않던 문제 — 파서의 `docComment` 수집 대상을 모든 선언 종류로 확장 + 소속 판정 단일 출처화(`isDeclaredIn`) | 본문 ↓ |
 | §1-CS | 09-02 | 옛 주석의 ASCII 장식 구분선(`' ====`)이 호버를 setext 헤딩으로 깨뜨리던 문제 — `isDecorativeRule`/`stripDecorativeRules`(렌더 단계에서만 제거) | 본문 ↓ |
 | §1-CT | 09-02 | 중첩 라이브러리 구조에서 BP 가능하게 — 소스 승격 계획/검증(`sourcePromotion.ts`) + 디버그 소스맵을 컴파일 단위로 좁힘 | 본문 ↓ |
@@ -599,116 +599,11 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CX | 09-03 | 밀린 세션 20개분(§1-CD~§1-CW) 작업 트리 일괄 커밋 + `.gitignore` 정리 — 리팩토링 준비 | 본문 ↓ |
 | §1-CY | 09-07 | 네트워크 DataID 조사 + 실기 실측 대조 — 진단에 쓸 항목 골라내기(`reference/network-dataids.md`) | 본문 ↓ |
 | §1-CZ | 09-07 | `extension.ts` activate() 5,300줄을 명령 그룹별 모듈(`src/activation/`)로 분해 — `ExtensionHost` + 순수 로직 4건 분리·테스트 15건 (§3-B 보류 항목 종결) | 본문 ↓ |
+| §1-DA | 09-07 | flash 영구 저장(`gpl.saveToFlash`)을 AI/자동화 경로에서 차단 — 차단 목록 정본 `aiCommandPolicy.ts` + 브리지·URI·명령 3중 게이트, MCP 미러 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-CQ ~ §1-CZ (2026-09-02 ~ 2026-09-07).** 이 아래부터는 세션 원문이다.
-
-## 1-CQ. 2026-09-02 세션 — 정의 찾기(F12)가 같은 선언을 여러 번 띄우던 문제 (심볼 캐시 경로 키)
-
-### 증상 (사용자 보고, 스크린샷 1건)
-
-`Main.gpl:146`의 `LGF.SetPath(...)`에서 F12 → peek 목록에 **`LogFile.gpl` 파일 노드가 3개**(각 배지 `1`)
-떴다. 가운데 하나만 소스 줄(`Public Sub SetPath(ByVal path As String)`) 미리보기를 그렸고, 나머지 둘은
-`LogFile.gpl:81:2`라는 텍스트만 보였다.
-
-### 원인 — provider가 아니라 **심볼 캐시의 경로 키**
-
-읽어낸 사실 세 가지:
-
-1. **파일 노드가 3개**(같은 파일이면 노드 1개에 배지 3) → VS Code가 **서로 다른 URI 3개**로 봤다.
-2. `LogFile.gpl:81:2`는 VS Code가 **그 URI의 텍스트 모델을 못 열었을 때** 쓰는 대체 라벨이다
-   (`referencesWidget`의 `basename:line:col` 폴백 — 이미 1-based인 값에 +1을 더해 찍으므로,
-   `buildLocation`이 만든 `Position(79, 0)`이 `81:2`로 보인다). 즉 **셋 다 같은 선언(80줄)**을 가리켰고
-   그중 둘은 열리지 않는 경로였다.
-3. `rankOverloadMatches`의 동점 그룹 조건(typeScore·exactTotal·**pathScore**가 모두 같아야 함)상,
-   셋은 서로 다른 프로젝트의 동명 심볼이 아니라 **사실상 같은 자리를 가리키는 중복 항목**이었다.
-
-캐시 안에서 경로 비교는 거의 다 대소문자 무시인데(`deleteByFsPath`·`scoreFilePath`·
-`collectProjectSourcePaths.push`·`resolveProjectFileScope.seen`) **저장 키만 원문 문자열 그대로**였다.
-
-- `symbolCache.ts` `this.symbols`의 키가 `document.uri.fsPath` 원문 → 같은 파일이 표기만 달라도 별도 항목.
-- `getProjectSourcesFromGpr`의 `sources`가 `Set<string>`(대소문자 구분) → `.gpr`의 `ProjectSource=` 표기와
-  디스크 표기가 다르면 같은 파일이 두 항목으로 인덱싱된다. (`.gpr` 하나 안에서는
-  `collectProjectSourcePaths`가 이미 무시 비교로 걸렀지만, **여러 `.gpr`를 합치는 자리**가 비어 있었다.)
-- 인덱싱 이후 사라진 파일(SVN 전환·탐색기 이동 등 워처가 놓친 변경)의 잔류 항목도 같은 증상을 낸다 —
-  열리지 않는 URI 2개는 이쪽에 더 가깝다.
-
-중복은 name index를 통해 hover·자동완성·참조·이름 바꾸기까지 그대로 전파된다. `definitionProvider`가
-동점 후보를 전부 peek로 돌려주는 설계(§1-K) 자체는 옳고, **입력이 오염돼 있었다.**
-
-### 조치
-
-- **`src/controller/projectPickerCore.ts`** — `normalizePathKey()` 신설
-  (`path.resolve` + 끝 슬래시 제거 + 소문자). 종전 `normalizeDirKey`는 같은 규칙의 **별칭**으로 남겨
-  기존 호출부(30여 곳)를 건드리지 않았다. 규칙이 둘로 갈라지지 않게 구현은 한 곳뿐이다.
-  (이미 `projectSources.ts:392`가 파일 경로에 `normalizeDirKey`를 쓰고 있었다 — 이름만 폴더용이었다.)
-- **`src/symbolCache.ts`**
-  - `symbols`를 `Map<정규화 키, { filePath, symbols }>`로 변경. **표시·URI 생성에는 원본 표기**를 쓴다
-    (`findReferences`가 키를 그대로 경로로 쓰고 있었으므로 필수 — 소문자 경로가 새어 나가면 안 된다).
-  - `deleteByFsPath`의 "직접 삭제 실패 시 대소문자 무시 전수 조회" 폴백 제거 — 키가 이미 정규화라 불필요.
-  - `deleteByFsPathPrefix`도 정규화 키 접두 비교로 교체(`.`/`..`·구분자 차이에 강해졌다).
-  - `getProjectSourcesFromGpr`의 `Set<string>` → `Map<정규화 키, 원본 경로>`. **먼저 들어온 표기**를
-    남기므로 디스크 재귀 스캔 표기가 `.gpr` 표기보다 우선한다.
-  - `scoreFilePath`·`findDefinitionMatches`의 현재 파일 비교도 같은 키 규칙으로 통일.
-- **`src/language/symbolLocations.ts` (신규, vscode 무의존)** — 안전망 순수 로직.
-  - `dedupeSymbolLocations`: (정규화 경로, 줄)이 같은 후보는 **첫 항목만** 남긴다(랭킹 순서 유지).
-  - `preferExistingFiles`: 후보가 2개 이상일 때 열 수 없는 파일을 뺀다. **전부 없으면 원본 유지** —
-    확인 실패(권한·네트워크 드라이브)로 "정의 없음"이 되는 퇴보를 막는다. 파일당 1회만 확인.
-- **`src/providers/definitionProvider.ts`**
-  - `buildDefinitionResult`가 위 두 함수를 거친 뒤 peek 목록을 만든다(후보 1개면 I/O 없음).
-    걸러낸 경우 `[Duplicate Locations]`·`[Stale Locations]` 로그를 남긴다.
-  - **진단이 막혀 있던 이유도 고쳤다**: `fileNameOf`(basename만)를 제거하고 후보 로그·`[Location]` 로그가
-    **전체 경로**를 찍게 했다. 종전엔 세 후보가 전부 `file=LogFile.gpl`로 보여 중복을 알 수 없었다.
-
-### 검증
-
-- `npm run compile` 0 오류, `npm test` **695/695**(신규 8건 포함 — `src/test/symbolLocations.test.ts`).
-  경로 케이스는 `path.resolve(path.sep, …)`로 만들어 Windows/리눅스 양쪽에서 같은 의미가 되게 했다.
-- 사용자 로컬 확인 필요(제어기 불필요 — 편집기 동작만) → §3.
-
-### 남은 일 / 판단 보류
-
-- **중복의 발생원 자체는 아직 확정하지 못했다.** 표기 차이인지 잔류 항목인지는 §3 확인 항목의
-  ①(경로 3개 비교)·②(`GPL: Refresh Symbols` 후 재시도)로 갈린다. 어느 쪽이든 이번 변경으로 증상은
-  사라진다. 둘 중 **잔류 항목 쪽**은 아래 후속에서 처리했다.
-- (관찰) peek 왼쪽 미리보기에서 `Public Function IsEnabled()`(72줄)가 80줄의 상위 스코프처럼 붙어 보였다.
-  `foldingRangeProvider`는 종결어를 kind별로 매칭하므로 범위 자체는 어긋나지 않아 보이지만,
-  `Set x = …` 대입문이 `{ kind: 'set' }` 시작 패턴에 걸려 스택에 쌓이는 것은 사실이다.
-  → **§1-CU 에서 고쳤다.** 그때 적은 "범위에는 영향 없음"은 **틀렸다**: 종결어는 스택을 위에서부터
-  훑으므로, 접근자 본문의 대입문 항목이 뒤따르는 `End Set` 을 가로채 접근자 폴딩이 대입문 줄부터
-  시작한다. 시작 패턴을 `blockContext` 와 같은 `/^\s*Set\s*\(/i` 로 좁혔다.
-
-### 후속 (같은 세션) — 잔류 항목 자가 치유 + 진단 명령의 눈
-
-위 "잔류 항목 쪽" 숙제를 이어서 닫았다. 정의 이동만 걸러 내면 **호버·자동완성·참조 검색은 계속 사라진
-파일의 심볼을 본다**는 점이 남아 있었다(안전망이 provider 한 곳에만 있었다).
-
-- **`src/language/symbolLocations.ts`** — 존재 판정을 이 모듈로 모았다.
-  - `isMissingFile(path, stat?)`: **`ENOENT`일 때만** "없음". 권한 오류·네트워크 드라이브 일시 장애
-    (`EPERM`·`EACCES`·`EBUSY`·`ETIMEDOUT`·`ENOTDIR`…)나 코드 없는 오류는 **남긴다** — 확인 실패로
-    인덱스를 지우면 정의가 통째로 사라진다. `stat`을 주입받아 오류 코드별로 테스트한다.
-  - `fileExists = !isMissingFile` — `preferExistingFiles`의 기본 probe. 종전 provider의
-    `fs.existsSync` + `catch → false`는 이 규칙과 반대였다(확인 실패를 삭제로 봤다) → 교체.
-- **`src/symbolCache.ts`**
-  - `pruneMissingFiles(filePaths?)` 신설 — 사라진 파일 항목을 지우고 개수를 돌려준다. 인자를 주면
-    그 경로만(정의 이동에서 발견한 몇 건), 생략하면 인덱스 전체. 제거가 있을 때만 name index 재구성.
-  - `findReferences`가 **읽기에 실패한 경로를 모아** 루프 종료 후 `pruneMissingFiles`에 넘긴다.
-    참조 검색은 이미 인덱스의 모든 파일을 읽으므로, 자가 치유가 붙기 가장 자연스러운 자리다
-    (순회 중 Map을 건드리지 않도록 `Array.from`으로 스냅샷을 뜬 뒤 돈다).
-  - `listIndexedFiles()` — 진단 명령용(원본 표기 그대로).
-- **`src/providers/definitionProvider.ts`** — 잔류를 걸러낼 때 그 경로를 `pruneMissingFiles`에 넘겨
-  인덱스에서도 지운다. 로그에 제거 건수를 남긴다.
-- **`gpl.debugSymbolCache`(`GPL: Debug Symbol Cache`)** — 이번 버그를 **이 명령으로 진단할 수 없었던**
-  이유를 고쳤다. 종전에는 basename으로 묶어 출력해서, 같은 파일이 여러 경로로 중복 인덱싱돼도 한
-  덩어리로 보였다. 이제 **전체 경로** 단위로 묶고 맨 위에 두 가지를 요약한다.
-  - `⚠ 같은 이름의 파일이 여러 경로에 인덱싱돼 있다` + 경로 전체 나열(동명 파일이 정상인 경우와
-    표기만 다른 중복을 사람이 구분할 수 있게).
-  - `⚠ 디스크에 없는 파일이 인덱스에 남아 있다` + 경로 나열.
-  - 알림 메시지에 확인할 항목 수를 넣어, 출력 채널을 열지 않고도 문제 유무를 알 수 있게 했다.
-
-검증: `npm run compile` 0 오류, `npm test` **724/724**(이 후속에서 3건 추가 — 오류 코드별 `isMissingFile`
-규칙 포함). 총계가 §1-CQ 본문의 695보다 큰 것은 같은 시각 다른 세션들이 테스트를 추가했기 때문이다.
+**최근 세션 본문 — §1-CR ~ §1-DA (2026-09-02 ~ 2026-09-07).** 이 아래부터는 세션 원문이다.
 
 ## 1-CR. 2026-09-02 세션 — 문서화 주석이 `Module`·`Class`·변수·상수 선언에서 표시되지 않던 문제
 
@@ -1668,4 +1563,82 @@ src/config.ts                           # isRuntimeConsoleAutoStartOnDeploy/OnDe
 src/test/{threadArgs,stepCommand,runtimeConsolePresentation}.test.ts  # 신규 + showVariableParser.test.ts 3건
 docs/ai-handoff.md                      # 헤더·§1 인덱스·§3·§3-B(보류 항목 종결)·§4 갱신 + 이 절
 docs/archive/handoff/2026-09.md         # §1-CP 이동
+```
+
+---
+
+## 1-DA. 2026-09-07 세션 — flash 영구 저장(`gpl.saveToFlash`)을 AI 경로에서 차단
+
+### 요청
+
+> "GPL MCP 서버에 AI는 FlashSave 금지. 그리고 기능에서도 비활성화 시켜놔야겠어."
+
+차단 범위는 확인 결과 **AI 경로만** — 사람이 팔레트·컨텍스트 메뉴에서 실행하는 경로는 그대로 둔다.
+
+### 확인한 것 (단정 전 근거)
+
+- **"FlashSave"는 1402 콘솔 명령이 아니다.** Brooks 공식 문서의 Console Commands 디렉터리 49개
+  (`Controller_Software/Software_Reference/Console_Commands/`)에 그런 명령이 없고, 파라미터 쓰기 `Pc` 문서에도
+  flash 저장 언급이 없다. 이 저장소에서 flash 에 쓰는 유일한 경로는 확장 명령 **`gpl.saveToFlash`**
+  (`/flash/projects/<project>` FTP 미러 저장)다. → 콘솔 명령 차단은 필요 없고 확장 명령 차단이 맞다.
+- **AI 가 그 명령에 닿는 문 3개**: ① MCP `extension_command`(→ Agent Bridge) ② URI
+  `vscode://…/gpl.saveToFlash?project=X` ③ 자동화 인자(`isAutomationInvocation`)를 실은 직접 호출.
+  셋 다 `gpl.*` 이면 통과였다.
+- 왜 위험한가: `mirrorProject` 는 **로컬에 없는 원격 파일을 지운다**. flash 는 영구 사본이고 쓰기 수명이
+  유한하다. 테스트 배포는 `/GPL` 직접 업로드로 충분하므로 AI 가 flash 를 건드릴 이유가 없다.
+
+### 조치 — 차단 목록 정본 1개 + 게이트 3곳 + MCP 미러
+
+- **`src/controller/aiCommandPolicy.ts` (신규, vscode 무의존)** — `AI_BLOCKED_COMMANDS` 에 명령 ID·제목·
+  **왜 막는지**·**사람이 실행하는 방법**을 함께 담는다(응답에 그대로 실어 호출자가 우회를 찾지 않게).
+  `findAiBlockedCommand` 는 대소문자·공백을 무시해 표기 변경 우회를 막는다. 항목을 추가하면 아래 세 곳이
+  자동으로 따른다 — 명령별 `if` 를 흩뿌리지 않는 것이 목적.
+- **게이트 3곳**
+  - `controller/agentBridge.ts` — `validateBridgeRequest` 에서 거부(`error:"command-blocked"`). MCP 를 포함한
+    **모든 브리지 클라이언트**가 여기를 지나므로 MCP 번들이 구버전이어도 막힌다.
+  - `activation/uriHandler.ts` — 실행 전 거부, Output `[URI] 차단 …` + 경고 메시지.
+  - `activation/deploy.ts` 의 `gpl.saveToFlash` — 자동화 인자면 `{ok:false, error:"AI_BLOCKED", detail}` 을
+    돌려주고 아무것도 올리지 않는다(브리지·URI 를 거치지 않는 직접 호출까지 막는 마지막 관문).
+    자동화 분기가 통째로 사라지면서 이 명령은 사람 경로(QuickPick + 미저장 확인)만 남았다.
+- **MCP 서버** — `controller-mcp/src/aiPolicy.js` 가 같은 목록을 미러링해 `extension_command` 에서
+  **왕복 없이** `{ok:false, sent:false, error:"AI_BLOCKED", recommendedAction}` 로 거부하고, 도구 설명과
+  `guidelines.js`(initialize instructions — 도구 호출 **전에** 읽힌다)에도 금지를 명시한다.
+  두 목록이 어긋나면 "MCP 는 막는데 URI 는 뚫리는" 구멍이 생기므로 **테스트가 두 파일의 명령 ID 집합을 대조**한다.
+
+### 원칙과의 관계 (중요 — 지우지 말 것)
+
+2026-08-28 사용자 결정 "AI 접근을 지침/허용 목록/승인 모달로 막지 않는다"는 그대로 유효하다. 이번 것은
+**되돌릴 수 없는 파괴적 명령만 담는 예외 목록**이다. 구분 기준: `commandPolicy.ts` 는 *기다리면 안전해지는*
+타이밍 조건을 확장이 대신 충족시키고, `aiCommandPolicy.ts` 는 *기다린다고 안전해지지 않는* "해도 되는가"의
+판단이 필요한 명령만 거부한다. 이 구분을 `commandPolicy.ts` 머리말·런북 §명령 정책·
+`.github/instructions/…` 7번 항목에 각각 적어 두었다.
+
+### 검증
+
+- `npm test` 784/784 (778 + 신규 `src/test/aiCommandPolicy.test.ts` 6건 — 목록 내용·표기 우회·비차단 명령 통과·
+  브리지 거부/통과).
+- `controller-mcp` `node --test` 86/86 (79 + 신규 `test/aiPolicy.test.mjs` 7건 — 거부 결과 형태·instructions 문구·
+  **확장 목록과의 일치**).
+- 실기기 확인 불필요(제어기에 아무것도 보내지 않는 경로 차단).
+
+### 남은 일
+
+- 사람 경로 스모크(팔레트에서 Save to Flash 실행)는 §3 의 확장 실동작 스모크 항목에 함께 둔다 — 자동화 분기
+  제거로 이 명령의 사람 경로 코드가 바뀌었다.
+
+### 바뀐 파일
+
+```
+src/controller/aiCommandPolicy.ts       # 신규 — AI 차단 목록 정본
+src/controller/agentBridge.ts           # command-blocked 코드 + validateBridgeRequest 게이트
+src/controller/commandPolicy.ts         # 머리말에 예외 명시(원칙 구분)
+src/activation/uriHandler.ts            # URI 경로 차단
+src/activation/deploy.ts                # gpl.saveToFlash 자동화 분기 제거 + AI_BLOCKED 반환
+src/test/aiCommandPolicy.test.ts        # 신규 6건 (index.ts 등재)
+controller-mcp/src/aiPolicy.js          # 신규 — MCP 미러 목록
+controller-mcp/src/index.js             # extension_command 거부 + 도구 설명
+controller-mcp/src/guidelines.js        # instructions 에 flash 저장 금지
+controller-mcp/test/aiPolicy.test.mjs   # 신규 7건 (확장 목록과 대조 포함)
+docs/development/ai-controller-debugging-runbook.md · .github/instructions/gpl-ai-controller-debugging.instructions.md
+docs/ai-handoff.md · docs/archive/handoff/2026-09.md  # 이 절 + §1-CQ 아카이브 이동
 ```

@@ -67,6 +67,10 @@ const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 1402 ASC
   대상을 쓴다. 배포/업로드는 \`deploy_project\`(확장 경유 — 1402 콘솔은 파일을 못 올린다)를 쓰고, 대상을 정할 수
   없으면 \`PROJECT_AMBIGUOUS\`와 후보 목록이 온다 — **사용자에게 프로젝트 선택 UI를 누르거나 파일을 열어 달라고
   요청하지 말고** 후보를 보여 주고 어느 것인지 물을 것. 어느 프로젝트가 쓰였는지는 \`project_target\`으로 확인한다.
+- **flash 영구 저장(\`gpl.saveToFlash\` / "GPL: Save to Flash")은 AI 가 하지 않는다.** \`/flash/projects/<project>\` 의 영구 사본을
+  미러 동기화로 덮어쓰고 로컬에 없는 원격 파일을 지우는 되돌릴 수 없는 조작이라 사람이 판단할 몫이다 — 확장이 브리지·URI·명령
+  자체에서 거부하므로(\`error:"AI_BLOCKED"\`, 전송 안 됨) 우회 경로를 찾지 말고 필요하면 사용자에게 실행을 요청할 것.
+  배포/테스트는 \`/GPL\` 직접 업로드(\`deploy_project\`·\`gpl.quickCompile\`)로 하며 flash 를 건드릴 이유가 없다.
 - **존재하지 않는 명령(\`-714\`)은 표기를 바꿔 재시도하지 않는다.** 같은 명령은 서버가 캐시로 막고(\`sent:false\`),
   같은 계열에서 이미 없다고 확인된 표기는 \`relatedUnknownCommands\`로 알려 준다 — 레퍼런스를 확인하거나 구조화 도구를 쓸 것.`;
 

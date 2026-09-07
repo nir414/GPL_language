@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { resolveUriRequest, summarizeUriResult } from '../controller/uriDispatch';
+import { findAiBlockedCommand, aiBlockedDetail } from '../controller/aiCommandPolicy';
 import type { ExtensionHost } from './host';
 
 export function activateUriHandler(host: ExtensionHost): void {
@@ -18,7 +19,8 @@ export function activateUriHandler(host: ExtensionHost): void {
 	//   터미널/에이전트: code --open-url "vscode://nir414.gpl-language-support/gpl.ai.debug.getState"
 	// 접근은 막지 않는다(사용자 결정). 제어기 안전 조건(Step 연타 #28·정지 정착 §0.6·Compile→Start 완충 §0.7)은 명령 계층의 정책
 	// (controller/commandPolicy.ts)이 어느 경로에서든 같은 방식으로 충족시키므로 URI 에 별도 허용 목록을 두지 않는다. 다만 이 확장의
-	// 명령(`gpl.*`)만 실행한다 — 임의 VS Code 명령의 프록시가 되지 않도록(범위 한정, 제한이 아님). 결과는 URI 로 돌려줄 수 없으므로
+	// 명령(`gpl.*`)만 실행한다 — 임의 VS Code 명령의 프록시가 되지 않도록(범위 한정, 제한이 아님). 유일한 예외는 되돌릴 수 없는
+	// 파괴적 명령의 AI 차단 목록(`controller/aiCommandPolicy.ts`, 2026-09-07) — 그 명령은 사람이 UI 에서 직접 실행한다. 결과는 URI 로 돌려줄 수 없으므로
 	// Output([URI] <id> => …) 과 `gpl.ai.debug.*` 의 [AI Debug] 로그로 확인한다. 해석 규칙은 controller/uriDispatch.ts(단위 테스트 대상).
 	context.subscriptions.push(
 		vscode.window.registerUriHandler({
@@ -61,6 +63,13 @@ export function activateUriHandler(host: ExtensionHost): void {
 								await vscode.commands.executeCommand('gpl.controller.showDashboard');
 								return;
 						}
+					}
+					// URI 는 터미널/에이전트 진입점이므로 AI 차단 목록(aiCommandPolicy.ts)의 명령은 실행하지 않는다.
+					const blocked = findAiBlockedCommand(req.commandId);
+					if (blocked) {
+						host.log(`[URI] 차단 '${req.commandId}' — ${aiBlockedDetail(blocked)}`);
+						vscode.window.showWarningMessage(`GPL URI: '${req.commandId}'는 자동화 경로에서 실행할 수 없습니다 — ${blocked.humanPath}`);
+						return;
 					}
 					// 일반 경로: 이 확장이 등록한 명령이면 그대로 실행한다(인자 형태는 각 명령의 규약 — 런북 Command ID 표 참조).
 					const known = await vscode.commands.getCommands(true);

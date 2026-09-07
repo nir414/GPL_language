@@ -53,6 +53,7 @@ import {
   BRIDGE_COMMAND_ID_PATTERN,
 } from './extensionBridge.js';
 import { runBatch, normalizeCommandInput, BATCH_MAX } from './batch.js';
+import { aiBlockedResult, AI_BLOCKED_COMMANDS } from './aiPolicy.js';
 import { SERVER_INSTRUCTIONS, DOC_COMMENT_GUIDE } from './guidelines.js';
 import {
   SEND_OUTCOME_NOT_SENT,
@@ -786,7 +787,9 @@ tool('extension_command',
   'gpl.controller.pushBreakpoints/pullBreakpoints · gpl.ai.debug.getState/getConnectionState/setBreakpoint/evaluate/loop · ' +
   'gpl.diagnosticSnapshot · gpl.controller.showDashboard · gpl.controller.threadBreak({threadName}) 등. ' +
   '인자 형식은 확장 런북(Command ID 표)을 따른다. 제어기 안전 조건(Step 연타·정지 정착·Compile→Start 완충)은 확장의 명령 정책이 ' +
-  '자동으로 지키며, 보류되면 result.error="policy-hold"로 돌아온다(제어기에 보내지 않은 상태).',
+  '자동으로 지키며, 보류되면 result.error="policy-hold"로 돌아온다(제어기에 보내지 않은 상태). ' +
+  `**사람 전용 명령은 실행할 수 없다**(error="AI_BLOCKED", 전송 안 됨): ${AI_BLOCKED_COMMANDS.map((c) => c.command).join(' · ')} — ` +
+  '되돌릴 수 없는 명령이라 사용자가 UI 에서 직접 실행한다. 우회 경로를 찾지 말고 사용자에게 요청할 것.',
   {
     command: z.string().describe('확장 명령 ID (gpl.* 형식)'),
     args: z.any().optional().describe('명령 인자(객체/문자열). 생략하면 인자 없이 호출'),
@@ -796,14 +799,21 @@ tool('extension_command',
     if (!BRIDGE_COMMAND_ID_PATTERN.test(command)) {
       return textResult({ ok: false, error: 'unsupported-command', hint: `'${command}' — 이 확장의 명령(gpl.*)만 실행할 수 있다.` });
     }
+    // AI 차단 목록(aiPolicy.js) — 확장 쪽에서도 브리지/URI/명령 자체가 막지만, 왕복 없이 사유를 바로 돌려준다.
+    const blocked = aiBlockedResult(command);
+    if (blocked) {
+      logLine(`  block ${command} — AI 차단 명령(사람 전용)`);
+      return textResult(blocked);
+    }
     const res = await callExtension(command, args, { timeoutMs });
     return textResult({ command, ...res, transport: transportInfo() });
   });
 
 // ── 자동화 대상 프로젝트 (2026-08-31 개선안 §15~§27) ──────────────────────
-// 확장의 `gpl.deploy`/`gpl.uploadStart`/`gpl.quickCompile`/`gpl.start`/`gpl.saveToFlash` 는 인자로 대상을 받으면
+// 확장의 `gpl.deploy`/`gpl.uploadStart`/`gpl.quickCompile`/`gpl.start` 는 인자로 대상을 받으면
 // **UI 를 띄우지 않고** 구조화된 결과를 돌려준다(그 전에는 QuickPick 이 열려 자동화가 멈췄다). 여기서는 그 인자를
 // 항상 채워 보내고, 대상을 세션에 고정해 배포·컴파일·실행·Unload 가 전부 같은 프로젝트로 나가게 한다.
+// (`gpl.saveToFlash` 도 같은 인자 규약이었으나 2026-09-07 부터 AI 경로에서 차단된다 — aiPolicy.js.)
 
 tool('project_target',
   '이 세션의 대상 프로젝트를 조회/고정/해제한다. **작업 시작 시 한 번 고정할 것** — 이후 모든 도구(compile_project·' +

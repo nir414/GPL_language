@@ -42,7 +42,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
    - 세션 종료 전 핸드오프가 현재 상태와 일치하는지 확인하고, 완료/미완료를 정확히 표시한다.
 5. 환경 주의: 이 작업 환경에서 방금 수정한 파일이 잘려 읽혀 `tsc`가 가짜 문법 오류를 낼 수 있다. 코드 오류로 단정하지 말고, 검증은 사용자 로컬 `npm run compile`로 확인한다.
 6. **PA 제어기의 `Start`는 자체적으로 Compile을 수행한다**(사용자 실사용 사실 — Brooks 문서의 "사전 컴파일 필요·`-compile` 별도"와 다름). 따라서 **Compile 직후 Start를 연속으로 보내지 않는다(한 번에 하나만)**: 에러 확인은 `Compile`(또는 `GPL: Deploy`), 실행은 `Start`(`GPL: Start`)만. 컴파일 중복의 안전성은 미확인. Brooks 공식 문서는 가설로 다루고 실기기 응답을 사실로 삼는다(`docs/ai-handoff.md` §0.7). 확장 경로(명령·`gpl.ai.debug.*`·URI)로 보낼 때는 명령 정책(`src/controller/commandPolicy.ts`)이 이 조건과 Step 연타·정지 정착(§0.6)을 대신 기다려 충족시키므로 호출자가 따로 지킬 필요가 없다 — raw TCP/MCP 직접 전송 때만 스스로 지킨다.
-7. **AI의 확장 기능 접근을 지침으로 제한하지 않는다(2026-08-28 사용자 결정).** MCP·`gpl.ai.debug.*`·URI는 AI가 학습하지 않은 GPL 확장을 그대로 써서 테스트·자료 검토·로그 확인을 돕게 만든 것이다. 특정 사고를 막는 조건이 필요하면 지침에 "하지 말 것"을 적는 대신 확장이 기계적으로(대기·간격·정착 확인) 충족시키도록 구현한다. 승인 모달·거부 목록을 AI 경로에 새로 넣지 않는다.
+7. **AI의 확장 기능 접근을 지침으로 제한하지 않는다(2026-08-28 사용자 결정).** MCP·`gpl.ai.debug.*`·URI는 AI가 학습하지 않은 GPL 확장을 그대로 써서 테스트·자료 검토·로그 확인을 돕게 만든 것이다. 특정 사고를 막는 조건이 필요하면 지침에 "하지 말 것"을 적는 대신 확장이 기계적으로(대기·간격·정착 확인) 충족시키도록 구현한다. 승인 모달·거부 목록을 AI 경로에 새로 넣지 않는다. **유일한 예외(2026-09-07 사용자 결정): 되돌릴 수 없는 파괴적 명령의 차단 목록 `src/controller/aiCommandPolicy.ts`.** 현재 `gpl.saveToFlash`(flash 영구 사본 덮어쓰기) 한 건이며, 기다린다고 안전해지는 타이밍 문제가 아니라 "해도 되는가"의 판단이 필요한 종류만 여기에 넣는다.
 
 ## 먼저 수집할 증거
 
@@ -108,7 +108,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 | Build Only | GPL: Deploy (/GPL 업로드 + Compile, Start 없음) | `gpl.deploy` | 최신 로컬 코드 검증 기본 경로, /GPL 직접 업로드 |
 | 업로드 후 실행 | GPL: 업로드 스타트 (/GPL 업로드 + Start, Compile은 제어기가 수행) | `gpl.uploadStart` | 실행 상태 변경. `Compile`을 보내지 않는다(§0.7) — 소스 에러는 Start STATUS로만 드러남 |
 | 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` | 실행 상태 변경 (구 `gpl.deployRun`에서 분리) |
-| flash 저장 | GPL: Save to Flash | `gpl.saveToFlash` | /flash/projects에 FTP 미러 저장만 (Load/Compile 없음) |
+| flash 저장 | GPL: Save to Flash | `gpl.saveToFlash` | **사람 전용 — AI/자동화 경로 차단(`AI_BLOCKED`).** /flash/projects에 FTP 미러 저장만 (Load/Compile 없음). 필요하면 사용자에게 실행을 요청한다 |
 | launch 생성 | GPL: Create/Update Debug launch.json | `gpl.debug.generateLaunch` | Attach 구성 생성 |
 | 빠른 Attach | GPL: Quick Debug Attach (No launch.json) | `gpl.debug.attachNow` | 임시 디버깅 |
 | 런타임 콘솔 시작 | GPL: Start Runtime Console | `gpl.console.start` | 1403 payload 확인 |

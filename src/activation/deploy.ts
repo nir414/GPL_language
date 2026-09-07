@@ -9,6 +9,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { isRuntimeConsoleAutoStartOnDeploy } from '../config';
+import { AI_BLOCKED_ERROR, aiBlockedDetail, findAiBlockedCommand } from '../controller/aiCommandPolicy';
 import { getControllerConfig, sendCommand } from '../controller/controllerConnection';
 import { describeDeployLock, getDeployLock } from '../controller/deployLock';
 import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult } from '../controller/deployService';
@@ -596,7 +597,9 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 
 	type AutomationErrorCode =
 		| 'NO_GPL_PROJECT' | 'PROJECT_NOT_FOUND' | 'PROJECT_AMBIGUOUS'
-		| 'UNSAVED_FILES' | 'INTERACTIVE_UI_REQUIRED' | 'COMPILE_UNVERIFIED';
+		| 'UNSAVED_FILES' | 'INTERACTIVE_UI_REQUIRED' | 'COMPILE_UNVERIFIED'
+		/** AI/자동화 경로에서 실행할 수 없는 명령(controller/aiCommandPolicy.ts). */
+		| typeof AI_BLOCKED_ERROR;
 
 	interface AutomationFailure {
 		ok: false;
@@ -905,30 +908,30 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	// gpl.saveToFlash — 로컬 프로젝트를 /flash/projects/<projectName>에 FTP 저장만 수행.
 	// 제어기 상태는 건드리지 않는다 (Stop/Unload/Load/Compile 없음 — 2026-07-24 결정).
 	// 미러 동기화: 크기 다른 파일만 업로드 + 원격 전용 파일 삭제(낡은 소스가 이후 Load에 섞이는 것 방지).
+	// **사람 전용 명령** (2026-09-07 사용자 결정): flash 영구 사본을 되돌릴 수 없게 덮어쓰므로 AI/자동화 경로에서는
+	// 실행하지 않는다. 브리지·URI 는 앞단에서 이미 거부하고(controller/aiCommandPolicy.ts), 여기서는 그 두 곳을
+	// 거치지 않는 직접 호출까지 막는 마지막 관문이다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.saveToFlash', async (resource?: unknown) => {
+			const auto = isAutomationInvocation(resource) ? resource as AutomationTargetArgs : undefined;
+			if (auto) {
+				const blocked = findAiBlockedCommand('gpl.saveToFlash')!;
+				const detail = aiBlockedDetail(blocked);
+				host.log(`[SaveToFlash] 자동화 호출 거부 — ${detail}`);
+				return { ok: false, error: AI_BLOCKED_ERROR, detail } satisfies AutomationFailure;
+			}
 			const busy = host.currentDeployLockHolder();
 			if (busy) {
 				host.warnDeployBusy('Save to Flash', busy, '완료 후 flash 저장을 실행하세요');
 				return;
 			}
-			const auto = isAutomationInvocation(resource) ? resource as AutomationTargetArgs : undefined;
-			let projectDir: string | undefined;
-			if (auto) {
-				const target = await resolveAutomationTarget(auto, 'gpl.saveToFlash');
-				if (isAutomationFailure(target)) { return target; }
-				const dirty = await handleDirtyForAutomation(target.dir, auto, 'gpl.saveToFlash');
-				if (dirty) { return dirty; }
-				projectDir = target.dir;
-			} else {
-				projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요', resource);
-				if (!projectDir) { return; }
-				// 업로드 전 미저장 파일 확인. savedFiles는 pending에서 지우지 않는다 —
-				// flash 업로드는 /GPL을 갱신하지 않으므로 /GPL 동기화는 이후 autoOnSave가 자체 게이트로 처리.
-				if (!(await confirmSaveDirtyProjectDocs(projectDir)).ok) {
-					host.log('[SaveToFlash] 미저장 파일 확인에서 취소됨 — 업로드를 시작하지 않음');
-					return;
-				}
+			const projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요', resource);
+			if (!projectDir) { return; }
+			// 업로드 전 미저장 파일 확인. savedFiles는 pending에서 지우지 않는다 —
+			// flash 업로드는 /GPL을 갱신하지 않으므로 /GPL 동기화는 이후 autoOnSave가 자체 게이트로 처리.
+			if (!(await confirmSaveDirtyProjectDocs(projectDir)).ok) {
+				host.log('[SaveToFlash] 미저장 파일 확인에서 취소됨 — 업로드를 시작하지 않음');
+				return;
 			}
 			const cfg = getControllerConfig();
 			const projectName = readGprProjectName(projectDir) ?? path.basename(projectDir);

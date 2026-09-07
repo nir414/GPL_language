@@ -93,6 +93,7 @@ nav:
       - 콘솔 명령: reference/console-commands.md
       - 로봇 호밍 방법: reference/robot-homing-methods.md
       - Project.gpr 형식: reference/project-file-gpr.md
+      - 네트워크 DataID: reference/network-dataids.md
   - 릴리스:
       - 빠른 가이드: releases/quick-guide.md
       - 상세 프로세스: releases/process.md

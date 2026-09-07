@@ -1,13 +1,13 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-09-03** · 현재 package 버전 **0.9.0** (태그 `v0.9.0` — `v0.8.22` 이후 첫 정식 릴리스. CI `release.yml`이 빌드·패키징·릴리즈)
-- **직전 세션: §1-CX** — **밀린 작업 트리 일괄 커밋 + `.gitignore` 정리 + 0.9.0 릴리스.**
-  마지막 커밋 `b9a30d5` 이후 세션 20개분(§1-CD ~ §1-CW)이 커밋되지 않은 채 쌓여 있었다(90개 경로,
-  +6,412/-4,080). 계층별로 6개 커밋(언어 · 프로젝트 · 제어기/디버깅 · MCP · 빌드/등록 · 문서)으로
-  나눠 올리고, `.claude/settings.local.json`·문서 빌드 venv·패치 잔여물을 `.gitignore`에 넣었다.
-  이어서 **0.9.0 minor 릴리스** — `0.8.23`~`0.8.28`은 태그 없이 로컬 VSIX로만 나갔던 개발 빌드였고,
-  그 내용을 `[0.9.0]` 절로 묶어 `v0.8.22` 이후 첫 정식 릴리스로 냈다(CHANGELOG `[0.8.27]` vs
-  `package.json` 0.8.28 어긋남도 이것으로 해소). `npm test` 763/763, `pre-release-check` 통과.
+- **최종 갱신: 2026-09-07** · 현재 package 버전 **0.9.0** (태그 `v0.9.0` — `v0.8.22` 이후 첫 정식 릴리스. CI `release.yml`이 빌드·패키징·릴리즈)
+- **직전 세션: §1-CZ** — **`extension.ts` activate() 5,300줄을 명령 그룹별 모듈(`src/activation/`)로 분해 — 동작 동일.**
+  §3-B 에 2026-07-16 부터 보류돼 있던 항목. 명령 핸들러 72개·헬퍼 70여 개·공유 클로저 변수 50여 개가
+  한 함수에 있던 것을, 클로저가 공유하던 것을 명시적으로 담는 `ExtensionHost`(`activation/host.ts`)와
+  `activateXxx(host)` 모듈 14개로 나눴다. 본문은 줄 범위 그대로 옮기고 공유 참조만 `host.<x>` 로 기계
+  치환한 뒤 `tsc --strict` 로 누락을 잡았다. 등록 명령 82개 집합·구독 수 전후 동일. 순수 로직 4건
+  (`threadArgs`·`stepCommand`·`buildRuntimeConsoleUserMessage`·`normalizeEvalValue`)은 vscode 무의존 모듈로
+  빼고 테스트 15건을 붙였다(`npm test` 778/778). **실기·Extension Development Host 동작 확인은 미실시** — §3 참조.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -83,6 +83,28 @@
 ## 3. 다음에 할 일 (체크리스트)
 
 열린 항목만 둔다. 완료된 항목은 `docs/archive/handoff/2026-08.md` §부록으로 옮겼다(2026-08-31 정리).
+
+- [ ] **(2026-09-07, §1-CZ) `extension.ts` 분해 뒤 확장 실동작 스모크 — 편집기 동작만(제어기는 조회만).**
+  코드 본문은 그대로 옮겼고 `tsc`·등록 명령 집합 대조·순수 모듈 테스트로 확인했지만, **Extension Development
+  Host 에서 실제로 켜 본 적은 없다.** F5(`GPL-DevHost` 프로필)로 `samples/hello-project`를 열고
+  ① 활성화 배너가 Output 에 찍히고 Output 채널 4개(GPL Language Support/Traffic/Console + 진단)가 보이는지
+  ② F12/Shift+F12/호버가 종전처럼 동작하는지(언어 기능 배선) ③ 제어기 트리가 뜨고 `GPL: Connect`(비연결 상태라
+  실패해도 됨)가 실행되는지 ④ 명령 팔레트에서 `GPL:` 명령이 종전과 같은 개수로 나오는지 ⑤ 창을 닫을 때
+  deactivate 가 예외 없이 끝나는지(개발 호스트 콘솔) 확인한다. 제어기가 있으면 `Show Thread` 조회·정지 위치
+  표시(노란 강조)·디버그 에러 줄(붉은 강조)까지 — 데코레이션은 `ExecutionDecorations` 로 합쳐졌다.
+
+- [ ] **(2026-09-07, §1-CY) 연결 진단에 Ethernet 카운터(DataID 430/431/432) 얹기 — 계층 분리.**
+  `src/controller/resourceProbes.ts`가 지금 `Show Memory`/`Show Network -tcp|-mbuf`만 본다. 여기에
+  `pd 430/431/432`(읽기 전용, 모션 무영향, `read_dataids` 1회 ≈ 1.5 s)를 같은 주기로 더하면
+  "물리/링크(431·432) → 패킷(430 #3·#4) → 세션 끊김(430 #6) → 소켓 고갈(`Show Network -tcp`)"으로
+  접속 문제를 계층별로 가를 수 있다. 판정 기준표는 `docs/reference/network-dataids.md` §3-1.
+  **선행 확인**: `Show Network` 출력과 430이 같은 카운터의 다른 표현인지(겹치면 둘 다 넣을 이유 없음).
+
+- [ ] **(2026-09-07, §1-CY) DataID 430 항목 매핑 확정 — 문서 12개 vs 실측 10개.**
+  공식 문서는 12개(끝 2개가 포트 상태 비트마스크)를 열거하는데 GPL 4.2K5는 **10개만** 준다.
+  번호↔항목 매핑은 아직 [추정]이다. 1402 접속을 의도적으로 끊었다 붙인 전후로 `pd 430`을 두 번 읽어
+  #6(Connections closed/dropped)이 그만큼 증가하면 확정된다. 같은 요령으로 #6 증가율 기준선도 잡는다
+  (실측 절대값 30,773 — 부팅 후 누적이라 절대값은 의미 없고 Δ/분이 신호).
 
 - [ ] **(2026-09-03, §1-CX) GitHub Actions 의 Node 20 지원 종료 — 액션 메이저 버전 올리기.**
   `v0.9.0` 릴리스 로그의 경고: `actions/checkout@v4` · `actions/setup-node@v4` ·
@@ -364,8 +386,6 @@
 #### 언어 정확성 — 문서/실측 확인 필요
 - [ ] **A1** `Replace` — 컨트롤러/GDE에서 `string.Replace(...)` 동작 실측. 동작하면 정확 시그니처+sourceUrl로 재등록(`gplBuiltins.ts`의 제거 주석 참고), 아니면 제거 유지.
 
-#### TS 품질 — 안전하나 범위 큼(미적용)
-- [ ] `extension.ts`(2026-08-31 기준 5312줄 — 보류 판단 시점 3182줄) → 분리 **보류(2026-07-16)** — 행동 수정과 구조 변경 혼합을 피함. 분리 지도(섹션 경계/공유 상태/모듈 제안)는 §1-Q 남은 일 참조.
 
 ---
 
@@ -423,7 +443,16 @@ src/views/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — set
 controller-mcp/src/parse.js              # MCP 파서 — parseThreadList(이름 키)·compactThread·summarizeThreads·parseShowVariable(§1-BF)
 scripts/bundle-mcp.js                    # MCP 번들 + 빌드 스탬프(define __GPL_MCP_BUILD_JSON__, 사이드카 .build.json)(§1-BF)
 src/debug/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach(lockOwner 'F5 Deploy'), _waitDeployLockForStart, getDebugDeployDiagnostics
-src/extension.ts                         # runDeploy(잠금 조회 + warnDeployBusy), autoOnSave, 컴파일 필요 상태(compileStaleProjects/confirmStartWhenCompileStale), 트리 쓰레드 제어(sendThreadCommandChecked/runTreeThreadStep — aiBuildStepCommand 공유, §1-BE)
+src/extension.ts                         # activate()/deactivate() — 배선만(195줄). ExtensionHost 생성 → activation/*.ts 의 activateXxx(host) 를 종전 순서로 호출 (§1-CZ)
+src/activation/host.ts                   # ExtensionHost — 클로저가 공유하던 서비스(채널·심볼 캐시)·가변 상태(트리·상태바·런타임 콘솔·건강 모니터·디버그 여부·마지막 스냅샷)·헬퍼(log·배포 잠금·컴파일 검증 상태·런타임 콘솔 싱글톤·연결 상태 반영·Agent Bridge)·하위 API(project/connection/deploy/decorations). **가변 상태는 항상 host.x 로 읽는다** (§1-CZ)
+src/activation/deploy.ts                 # gpl.deploy/uploadStart/start/saveToFlash/quickCompile + autoOnSave + 자동화 대상 해석·게이트 — runDeploy/runDeployCore(1,106줄, 다음 분해 후보) (§1-CZ)
+src/activation/connection.ts             # 연결 건강 모니터 배선·유실 처리·사후 스냅샷·connect/disconnect(대화형+비대화형)·launch.json·attachNow·debugProject (§1-CZ)
+src/activation/projectContext.ts         # 기대 프로젝트 감지·launch.json 읽기·GPL 파일명→경로 해석(resolveGplFilePath) — host.project (§1-CZ)
+src/activation/controllerOps.ts          # busy 재시도·정지 확인(§0.6)·SoftEStop 복구·정지 진입 대기(waitForThreadPause) — host 를 첫 인자로 (§1-CZ)
+src/activation/debugDecorations.ts       # ExecutionDecorations — 정지 줄/에러 줄 강조 한 객체 (§1-CZ)
+src/activation/{languageFeatures,xmlCommands,breakpointCommands,consoleCommands,aiAgentSetup,aiDebugCommands,controllerCommands,treeCommands,ftpCommands,debugIntegration,uriHandler}.ts  # 명령 그룹별 activateXxx(host) — 본문은 종전 extension.ts 그대로 (§1-CZ)
+src/controller/threadArgs.ts             # asThreadNode — 쓰레드 명령 인자 정규화(순수) (§1-CZ)
+src/controller/stepCommand.ts            # buildStepCommand — Step 명령 조립 정본(트리·AI API 공용, 순수) (§1-CZ)
 controller-mcp/src/deployLock.js         # 잠금 파일 읽기 전용 구현(확장과 파일 계약 공유) — Compile/Start/Load/Unload 유한 대기·거부(§1-BD)
 src/gplParser.ts                         # Property/Sub/Function 파싱 + parseDocument 메모이즈 캐시(§1-B E) + docComment 수집(§1-J)
 src/gplBuiltins.ts                       # 핵심 빌트인/String 함수 (Trim→메서드, Rnd(seed), Replace 제거, Asc/Chr/… 추가) + Bit 문자열 전역함수(§1-J)
@@ -452,7 +481,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-CO ~ §1-CX)만 둔다.
+본문에는 **최근 10개 세션**(§1-CQ ~ §1-CZ)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -460,8 +489,8 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | [2026-06](archive/handoff/2026-06.md) | §1-A ~ §1-B (2026-06-30) | 2 |
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
-| [2026-09](archive/handoff/2026-09.md) | §1-CN (2026-09-02) | 1 |
-| (본문 아래) | §1-CO ~ §1-CX (2026-09-02 ~ 2026-09-03) | 10 |
+| [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-CP (2026-09-02) | 3 |
+| (본문 아래) | §1-CQ ~ §1-CZ (2026-09-02 ~ 2026-09-07) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -558,8 +587,8 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CL | 08-31 | 1402 연결 실패를 제어기 장애로 단정하던 판정 개선 — `recovering` 상태 + 관측/추론 분리 + MCP `outcome:'unknown'` (P0) | [2026-08](archive/handoff/2026-08.md) |
 | §1-CM | 08-31 | 자동화 경로에서 프로젝트 선택 UI 가 떠 멈추던 문제 — 비대화형 대상 해석(`projectTarget.ts`) + `-714` 추측 차단 (P0) | [2026-08](archive/handoff/2026-08.md) |
 | §1-CN | 09-02 | 프로젝트 상위 폴더에서 워크스페이스를 여는 중첩 구조 지원 — 정의/참조/이름바꾸기의 컴파일 단위 경계(`compileUnit.ts`) + 탐색 상한·`.svn` 제외 | [2026-09](archive/handoff/2026-09.md) |
-| §1-CO | 09-02 | AI(MCP)가 건 중단점이 에디터에 안 보이던 문제 — 제어기→에디터 미러(`breakpointMirror.ts`) + `list_breakpoints` 빈 결과 수정 | 본문 ↓ |
-| §1-CP | 09-02 | 디버깅 중 호버에서 문서화 주석이 사라지던 동작 — `gpl.hover.duringDebug` 기본값 `compact` → `normal` + 설정 정규화 단일 출처화 | 본문 ↓ |
+| §1-CO | 09-02 | AI(MCP)가 건 중단점이 에디터에 안 보이던 문제 — 제어기→에디터 미러(`breakpointMirror.ts`) + `list_breakpoints` 빈 결과 수정 | [2026-09](archive/handoff/2026-09.md) |
+| §1-CP | 09-02 | 디버깅 중 호버에서 문서화 주석이 사라지던 동작 — `gpl.hover.duringDebug` 기본값 `compact` → `normal` + 설정 정규화 단일 출처화 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CQ | 09-02 | 정의 찾기(F12)가 같은 선언을 3번 띄우던 문제 — 심볼 캐시 경로 키 정규화(`normalizePathKey`) + peek 목록 중복/잔류 제거 | 본문 ↓ |
 | §1-CR | 09-02 | 문서화 주석이 `Module`·`Class`·변수·상수 선언에서 표시되지 않던 문제 — 파서의 `docComment` 수집 대상을 모든 선언 종류로 확장 + 소속 판정 단일 출처화(`isDeclaredIn`) | 본문 ↓ |
 | §1-CS | 09-02 | 옛 주석의 ASCII 장식 구분선(`' ====`)이 호버를 setext 헤딩으로 깨뜨리던 문제 — `isDecorativeRule`/`stripDecorativeRules`(렌더 단계에서만 제거) | 본문 ↓ |
@@ -568,155 +597,12 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CV | 09-02 | 이름 바꾸기(F2) 오작동 — 선언 심볼 range 를 이름 span 으로(줄 전체 금지) · 콤마 다중 선언 파서(`declarationList.ts`) · 스코프 가시성 정본(`symbolScope.ts`, F12/F2 공유) · 편집 전 텍스트 검증 | 본문 ↓ |
 | §1-CW | 09-02 | 참조 찾기(Shift+F12)가 생성자 `New Class(...)`와 `"Class.Proc"` callback 문자열을 놓치던 문제 — 특수 참조 문법 정본(`referenceSyntax.ts`) | 본문 ↓ |
 | §1-CX | 09-03 | 밀린 세션 20개분(§1-CD~§1-CW) 작업 트리 일괄 커밋 + `.gitignore` 정리 — 리팩토링 준비 | 본문 ↓ |
+| §1-CY | 09-07 | 네트워크 DataID 조사 + 실기 실측 대조 — 진단에 쓸 항목 골라내기(`reference/network-dataids.md`) | 본문 ↓ |
+| §1-CZ | 09-07 | `extension.ts` activate() 5,300줄을 명령 그룹별 모듈(`src/activation/`)로 분해 — `ExtensionHost` + 순수 로직 4건 분리·테스트 15건 (§3-B 보류 항목 종결) | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-CO ~ §1-CX (2026-09-02 ~ 2026-09-03).** 이 아래부터는 세션 원문이다.
-
-## 1-CO. 2026-09-02 세션 — AI(MCP)가 건 중단점이 에디터에 표시되지 않던 문제 (제어기→에디터 미러)
-
-### 증상
-
-사용자 지적: "브레이크 포인트 자동 동기화 되고 있는 거 맞아? AI가 디버깅 하는 중단점은 표시가 안 되는 것 같은데."
-
-맞는 관찰이었다. AI가 MCP `set_breakpoint`로 건 중단점은 편집기에 **아무 표시도 없었다**. 제어기 트리의
-「브레이크포인트」 섹션에 `⚠ 에디터에 없음`으로만 나타났고, 그마저도 그 배지의 뜻은 "에디터에 없는 잔재"라
-AI가 의도적으로 건 것과 지워야 할 쓰레기가 구분되지 않았다.
-
-### 원인
-
-1. **설계상 역방향이 없었다.** §1-AP가 "에디터 중단점이 단일 원본"을 택하면서 제어기→에디터 미러링을
-   두지 않았다(`breakpointSync.ts` 헤더 주석에 그렇게 적혀 있었다). 방향은 에디터→제어기 단방향이고,
-   그 동기화 설정(`gpl.controller.syncEditorBreakpoints`)조차 기본 꺼짐이다.
-2. **AI 경로는 에디터를 전혀 건드리지 않았다.** MCP `set_breakpoint`는 `Set Break …`를 1402로 직송하고,
-   확장 경유 `gpl.ai.debug.setBreakpoint`도 `sendCommand`만 했다 — `vscode.debug.addBreakpoints` 호출이
-   어디에도 없었다.
-3. **게다가 그 BP는 조용히 지워지고 있었다.** `syncEditorBreakpoints`가 켜져 있으면 연결 에지·
-   `GPL: Sync Breakpoints`의 `reconcileAll()`이 "에디터에 없는 이 프로젝트 BP"로 보고 `Nobreak`를 보냈고,
-   디버그 세션 중에는 `setBreakPointsRequest`가 그 파일의 제어기 BP를 전부 지우고 에디터 것만 다시 걸었다.
-4. **(조사 중 발견) MCP `list_breakpoints`가 빈 결과를 돌려주고 있었다.** `Show Break` 응답은
-   `<STATUS>`가 목록 **앞**에 오는데, `runCommand`의 `data`는 `extractData`(= STATUS 이후를 잘라 냄)라
-   목록이 통째로 사라졌다. AI 입장에서는 "중단점 목록이 비어 있다"로 보였다.
-5. **(조사 중 발견) `run_to_line`이 남의 중단점을 지우고 있었다.** 임시 BP를 걸고 끝에 `Set Nobreak`를
-   보내는데, 그 줄에 원래 BP가 있었으면 그것까지 함께 사라졌다.
-
-### 조치
-
-**① `src/controller/breakpointCommand.ts` (신규, vscode 무의존)** — BP 명령 문자열 계층을 단일 출처로.
-
-- `formatBreakpointCommand`: GDE 실측 무공백 표기. `breakpointSync.bpCommand`와
-  `extension.aiBreakpointCommand`가 각자 갖고 있던 같은 문자열을 이것으로 통일했다(표기가 어긋나면
-  조용히 실패하는 자리다). `gplDebugSession._bpCommand`는 자체 폴백 표기 기계(`_bpCommandSpaced`·
-  `_bpFileForms`)를 갖고 있어 이번에는 건드리지 않았다.
-- `parseBreakpointCommand`: 무공백·문서(공백) 표기를 모두 해석하고 경로가 붙은 파일 표기는 파일명만
-  남긴다. 스레드 정지 명령 `Break <thread>`는 `Set` 접두어가 없어 걸리지 않는다.
-- `MirrorEchoMemory`: 미러가 만든 에디터 변경을 TTL(3초)로 기억한다. 플래그가 아니라 TTL인 이유는
-  `onDidChangeBreakpoints` 전달이 비동기라 창이 어긋나기 때문. 항목당 한 번만 소비되므로 사용자가 같은
-  자리를 곧바로 다시 토글하면 그건 정상 전송된다.
-
-**② `src/controller/breakpointMirror.ts` (신규)** — 제어기→에디터 미러.
-
-- `apply(kind, file, line)` / `applyCommand(rawCommand)`. 파일은 `resolveGplFilePath`로 워크스페이스에서
-  찾고, 못 찾으면 조용히 건너뛰며 Output에 남긴다(`unresolved-file`).
-- **거는 자리는 외부 진입점뿐이다** — `gpl.controller.sendCommand`의 **인자 경로**(MCP 브리지·URI·
-  에이전트)와 `gpl.ai.debug.setBreakpoint/clearBreakpoint`. DAP와 `EditorBreakpointSync`는 in-process로
-  `sendCommand()`를 직접 부르므로 여기 걸리지 않는다. 이건 의도적이다: DAP의 "파일 전체 Nobreak 후
-  재설정"을 미러링하면 빨간 점이 깜빡이는 것은 물론 **조건/히트카운트/로그포인트 메타가 날아간다**
-  (제거 후 재추가라서).
-- 제어기가 STATUS 0으로 받아들였을 때만 반영한다 — 실패한 BP를 빨간 점으로 남기면 거짓 표시가 된다.
-- 해제도 미러한다. 제어기에서 사라진 BP의 빨간 점을 남기는 편이 오히려 어긋남이다.
-
-**③ 에코 차단** — `EditorBreakpointSync._collectEchoes()`가 미러발 변경을 걸러 내고, 추가된 것은
-`_tracked`에 넣어 둔다(이후 F9 제거가 기록 기준으로 정확히 `Nobreak`를 보낸다). 설정이 꺼져 있을 때 뜨는
-"어긋남" 안내에서도 미러발 변경은 제외한다(이미 제어기에 있으니 어긋난 게 아니다).
-
-**④ 설정 `gpl.controller.mirrorAiBreakpoints` (기본 `true`)** — 에디터 표시만 바꾸는 동작이라 옵트인이
-아니라 기본 켜짐으로 뒀다(`syncEditorBreakpoints`가 기본 꺼짐인 것은 그쪽이 **제어기 상태**를 바꾸기 때문).
-
-**⑤ MCP `list_breakpoints` 수정** — `controller-mcp/src/parse.js`에 `parseBreakList`/`hasBreakpointAt`를
-추가하고, `showBreakpoints()`가 원시 응답을 직접 파싱하도록 했다. 이제 프로젝트·파일·줄·히트수를
-구조화해 돌려준다.
-
-**⑥ `run_to_line`** — 시작 시 `Show Break`로 그 줄에 BP가 이미 있는지 보고, 있으면 **끝에 지우지 않는다**
-(`breakpointKept: 'preexisting'`). 스스로 만든 임시 BP만 정리하며, 임시 BP는 미러에서 제외한다
-(브리지 인자 `mirrorBreakpoints: false` → 빨간 점 깜빡임 방지). `keepBreakpoint: true`로 남기는 BP는
-정상적으로 미러한다.
-
-### 검증
-
-- 확장 `npm test` 687/687(신규 10건: 명령 표기 왕복·해석 거부·에코 TTL/1회 소비).
-- MCP `npm test` 79/79(신규 3건: 실기기 `Show Break` 캡처 파싱·위치 조회).
-- 실기기 확인은 하지 않았다 — §3에 항목을 남겼다.
-
-### 남은 일
-
-- 실기기에서 미러 동작 확인(§3).
-- `gplDebugSession._bpCommand`는 아직 자체 표기를 갖는다. 폴백 표기 기계까지 `breakpointCommand.ts`로
-  옮길지는 다음에 판단(지금 합치면 BP 표기 폴백 회귀 위험이 실익보다 크다).
-
-## 1-CP. 2026-09-02 세션 — 디버깅 중 호버에서 문서화 주석이 사라지던 동작 (`gpl.hover.duringDebug` 기본값)
-
-### 증상 (사용자 보고, 스크린샷 2건)
-
-편집 중에는 `LOG.cehLog` 호버에 **Sub 카드 전체**(시그니처 · `Module: LOG` · 설명 · `# Parameters`)가
-나오는데, 디버깅을 시작하면 같은 자리에서 **시그니처 한 줄만** 나온다. "왜 디버깅할 때는 문서화 주석
-뷰어가 작동하지 않느냐, 굳이 그럴 이유가 있느냐"는 질문.
-
-### 원인 (버그가 아니라 낡은 기본값)
-
-`gpl.hover.duringDebug` 기본값이 `compact`였다(§1-M, 2026-07-14 도입). 당시 근거는 두 가지였다.
-
-1. doc comment 전문이 든 대형 팝업이 마우스가 지날 때마다 떠서 방해된다.
-2. 디버깅 중에는 **변수 값 호버가 주인공**이므로 언어 호버가 그것을 가리면 안 된다.
-
-두 근거 모두 지금은 성립하지 않는다.
-
-- ①은 **같은 세션에서 도입한 다른 축**(`hover.docComment: summary` + `docCommentMaxLines: 6`)이
-  이미 해결했다. `duringDebug: compact`는 그 위에 얹은 이중 안전장치였다.
-- ②는 §1-CF(예약어 규칙 0)·§1-AU 이후로 **전제가 뒤집혔다**. compact가 지우는 대상과 값 호버가 뜨는
-  자리가 거의 겹치지 않는다:
-
-| 커서 위치 | 디버그 값 호버 | compact가 지우는 것 | 실익 |
-| --- | --- | --- | --- |
-| Sub/Function 이름 | **차단**(evaluatableExpressionProvider 규칙 1 — `-eval`이 Sub를 실행하므로) | Module·설명·Parameters 전부 | 없음 |
-| 예약어(`If`·`As`…) | **차단**(규칙 0, -712 팝업 방지) | — | — |
-| 내장 항목(`Thread.Sleep` 등) | 대부분 차단(부작용 메서드) | 요약·값 표·Reference 링크 | 없음 |
-| 지역/모듈 변수 | 뜸 | 스코프·주석 | 작음(VS Code가 값 호버를 우선) |
-
-즉 **가릴 값이 없는 자리에서 문서만 잃고 있었다.** 사용자가 원인을 추측할 수 없는 동작이기도 하다
-(디버깅을 켜면 호버가 조용히 빈약해진다).
-
-### 조치
-
-- `src/config.ts`
-  - `HOVER_DURING_DEBUG_DEFAULT`를 **`normal`로 변경**(종전 `compact`). 이유를 주석에 남겼다.
-  - **정규화 단일 출처화**: 허용값 목록 상수(`HOVER_DOC_COMMENT_MODES`·`HOVER_DURING_DEBUG_MODES`) +
-    `pickOption(raw, allowed, fallback)` 헬퍼로 교체. 종전 정규화는 `dbgRaw === 'off' || dbgRaw === 'normal'`
-    처럼 **기본값을 뺀 나머지를 하드코딩**한 분기여서, 기본값만 바꾸면 새 기본값이 폴백으로 흡수되고
-    `compact`가 선택 불가가 되는 함정이 있었다(이번 변경에서 실제로 밟을 뻔한 지점). 이제 목록만 맞으면 된다.
-- `package.json` — `gpl.hover.duringDebug` `default`를 `normal`로, enum 순서를 기본값 우선
-  (`normal`·`compact`·`off`, `hover.docComment`와 같은 관례)으로, `description`에 "값 호버가 우선되는
-  자리에서만 의미가 있고 프로시저 이름에서는 문서만 잃는다"는 판단 근거를 명시.
-- `src/providers/hoverProvider.ts` — 동작 변경은 없다. `compact` 분기 주석이 "디버깅 중"이라고 단정하던
-  것을 `duringDebug=compact`(opt-in)로 고치고, 기본값 변경 이유를 provider 쪽에도 남겼다.
-
-설정 축 자체는 유지한다 — 방해되면 `compact`/`off`를 고르면 된다(명시적으로 설정해 둔 사용자는 영향 없음).
-
-### 검증
-
-- `npx tsc --noEmit -p .` **0 오류**, `npm test` **695/695 통과**.
-- 기록해 둘 만한 일: 작업 도중 한때 `src/extension.ts(3800) TS2304: Cannot find name 'isSuccess'`가 떴다
-  (§1-CO의 `breakpointMirror.applyCommand` 줄이 import 없이 들어간 상태). 같은 저장소에서 병행 중이던
-  작업이 `isSuccess` import를 채워(현재 `src/extension.ts` 58줄) 스스로 해소됐다 — 남의 미커밋 파일은
-  손대지 않는 편이 옳았다. **커밋 전 `git diff --cached` 대조**는 그대로 유효하다.
-- 사용자 로컬 확인 필요: 디버깅 중 `LOG.cehLog` 호버에 Module·설명·Parameters가 다시 나오는지
-  (설정은 매 호버마다 읽으므로 재시작 없이 반영된다).
-
-### 남은 일 / 판단 보류
-
-- (선택) **B안 — compact의 의미 재정의**: "값 호버가 실제로 뜨는 대상에서만 간소화"로 바꾸려면 호버
-  provider가 evaluatableExpressionProvider의 판정(규칙 0·1)을 공유해야 한다. 위 표대로면 결과가 `normal`과
-  거의 같아져 지금은 비용 대비 이득이 낮다. 디버그 값 호버의 적용 범위가 넓어지면 그때 재검토.
+**최근 세션 본문 — §1-CQ ~ §1-CZ (2026-09-02 ~ 2026-09-07).** 이 아래부터는 세션 원문이다.
 
 ## 1-CQ. 2026-09-02 세션 — 정의 찾기(F12)가 같은 선언을 여러 번 띄우던 문제 (심볼 캐시 경로 키)
 
@@ -1610,3 +1496,176 @@ MCP 테스트·패키징 스모크가 돈 것이다.
   상태였다. 이제 **제목 줄과 `AGENTS.md` 끝의 Cowork 블록을 빼면 두 파일이 완전히 동일**하다
   (Cowork 블록은 사용자가 넣은 것이라 그대로 뒀다). 한쪽만 고치는 실수가 또 나올 수 있으니,
   이 문서들을 고칠 때는 **양쪽을 함께** 고칠 것.
+
+
+## 1-CY. 2026-09-07 세션 — 네트워크 DataID 조사 + 실기 실측 대조 (진단에 쓸 수 있는 것 골라내기)
+
+### 요청
+
+사용자가 Brooks 공식 문서 2개 링크를 주고 "유용한 자료가 있는지 확인 후, 유용하면 어떻게 활용할지
+알아서 작성해서 메모해 두라"고 했다.
+
+- PDB Controller Settings → Networking: `Controller_Software/Software_Reference/PDB/Controller_Settings/network.htm`
+- Servo Network → Ethernet 설정 절차: `Controller_Software/Software_Setup/Selected_Setup_Procedures/Servo_Network/SrvNet_ethernet.htm`
+
+### 조사 — 문서만 읽지 않고 실기기와 대조했다
+
+문서는 가설이고 실기기 응답이 사실이라는 저장소 방침(§0-3)에 따라, 문서에서 고른 DataID 13개를
+MCP `read_dataids`(= `pd <id>`, **읽기 전용·모션 무영향**)로 한 번에 조회했다 — 13/13 `STATUS 0,"Success"`.
+대상은 G2400C · GPL 4.2K5 · `192.168.0.1`.
+
+수확 5가지:
+
+1. **`431`·`432`(Ethernet 수신·송신 오류)가 전 항목 `0`이다.** CRC·framing·fifo·carrier 등 어디에도
+   값이 없다 → 이 제어기에서 관측돼 온 접속 끊김·재접속 거부는 **케이블/NIC 수준 문제가 아니다.**
+   상위(제어기 소켓 처리·세션 수)에서 찾아야 한다는 근거가 처음으로 생겼다.
+2. **`430`은 문서가 12개 값을 열거하지만 실측은 10개**다. 문서상 마지막 2개(`Port 1/2 status bitmask`)가
+   이 펌웨어에 없다. **파서를 만들 때 길이를 고정하면 안 된다.** 번호↔항목 매핑도 개수가 다르므로
+   아직 [추정]이다(§3 체크리스트).
+3. **`427`(FTP user name and password) = `""`** — 문서상 빈 값이면 로그인이 필요 없다. 캡처에서 본
+   `USER Precise`가 통한 이유이자, **FTP 배포 실패를 자격증명 탓으로 돌릴 근거가 없다**는 뜻이다.
+4. **`134 Slave mode = 0`, `151`은 마스터 시리얼 1개 + 빈칸 15개** → **서보 네트워크 슬레이브가 없다.**
+   `read_dataids({node})`의 `node` 인자를 쓸 대상이 애초에 없다(배열 16칸 = 마스터 1 + 슬레이브 최대 15로,
+   문서의 "최대 15 노드"와도 맞는다).
+5. **`411 Network console enable = 1`** — **TELNET(TCP 23) 콘솔이 열려 있다.** 확장은 안 쓰지만
+   "단일 클라이언트·단일 명령 스트림" 전제를 깨는 외부 접속 경로가 하나 더 있다는 뜻이라,
+   원인 불명의 상태 변화를 조사할 때 후보로 남긴다.
+
+부수적으로 **`464 Web RPC = 0, 0, 0`**(전부 기본값)이라, "GDE가 변수를 웹 RPC로 읽는다"는 기존 가설
+(`development/pa-controller-debug-operations.md` 7-8)을 **뒷받침하지도 반박하지도 않는다**는 것이 확인됐다.
+서보 네트워크 문서에서는 **전원 투입 후 마스터가 약 30초, 슬레이브가 약 60초 대기**한다는 서술을 건졌다 —
+재접속 백오프의 "이 구간의 거부는 장애로 세지 않는다"에 인용할 공식 근거다(다만 2026-08-31의 약 2.5분
+거부는 이보다 길어 **이것만으로는 설명되지 않는다**).
+
+### 조치
+
+- **신규 `docs/reference/network-dataids.md`** — 실측값 표 + `430` 문서↔실측 대조표 +
+  **"어떻게 쓸 것인가" 5절**(연결 진단 계층 분리 / FTP 실패 분류 / `node` 인자 사용 조건 /
+  전원 투입 직후 무응답 / 포트 23) + 후속 검증 항목 + **"확장과 무관해 보이는 것과 그 이유"**.
+  마지막 절은 다음 작업자가 같은 문서를 다시 뒤지지 않게 하려는 것이다(440–444 외부 궤적,
+  453–466 웹 UI 계열 등). 근거 등급은 `project-file-gpr.md`와 같은 [실측]/[문서]/[추정] 표기를 썼다.
+- `mkdocs.yml` nav → 레퍼런스에 등재.
+- `development/pa-controller-debug-operations.md` 7-8 항목에 `464` 실측값 한 줄과 새 문서 참조 추가.
+
+### 검증
+
+- `read_dataids` 13건 전부 `STATUS 0,"Success"` — 값은 새 문서 §1에 원문 그대로.
+- 코드 변경 없음(문서 3개 + nav). 컴파일·테스트 영향 없음.
+
+### 남은 일
+
+§3 체크리스트 2건(Ethernet 카운터를 진단에 얹기 / `430` 매핑 확정). 둘 다 읽기 전용·모션 무영향이다.
+
+### 변경 파일
+
+| 파일 | 내용 |
+| --- | --- |
+| `docs/reference/network-dataids.md` | **신규** — 네트워크 DataID 실측 대조 + 활용 방안 |
+| `mkdocs.yml` | nav 레퍼런스에 신규 문서 등재 |
+| `docs/development/pa-controller-debug-operations.md` | `464` 실측값 + 신규 문서 참조 |
+
+---
+
+## 1-CZ. 2026-09-07 세션 — `extension.ts` activate() 5,300줄을 명령 그룹별 모듈로 분해 (구조 리팩터링, 동작 동일)
+
+### 요청
+
+"알아서 전체 검토 후 작업해 줘." — §1-CX(커밋 정리·0.9.0 릴리스)로 작업 트리를 비운 뒤의 **리팩터링 착수**.
+
+### 검토 결론 (착수 근거)
+
+- 소스 90개 파일 42,720줄 중 `extension.ts`가 5,752줄이고, 그중 **`activate()` 한 함수가 5,300줄**이었다
+  (명령 핸들러 72개 + `registerAiDebugCommand` 10개, 내부 헬퍼 함수 70여 개, 공유 클로저 변수 50여 개).
+  코드 품질(주석·의도)은 좋지만 구조가 전부 한 클로저라 어디를 고쳐도 diff 가 이 파일에 몰렸다.
+- §3-B 에 2026-07-16 부터 "행동 수정과 구조 변경 혼합을 피한다"는 이유로 **보류**돼 있던 항목이고, §1-CX 로
+  트리가 비어 지금이 혼합 없이 할 수 있는 유일한 시점이었다. 로드맵(메모리 structural-refactor-roadmap)의 원칙
+  **"빅뱅 금지 · 안전망 → 인터페이스 → 점진 분해 · 저위험 먼저"** 에 따라 이것 하나만 했고,
+  `gplDebugSession.ts`(5,186줄, DAP+제어기 동작)·`deployService.ts`(`deployLocked` 한 함수 1,100줄)는
+  하드웨어 검증 없이 손대지 않았다.
+
+### 조치 (의도와 방법)
+
+**설계.** 클로저가 공유하던 것을 명시적인 객체 하나로 옮기고, 명령 그룹은 그 객체를 받는 함수로 만든다.
+
+- `activation/host.ts` — `ExtensionHost`. ① 서비스(불변): 출력 채널 3개·배포 진단 컬렉션·심볼 캐시·진단
+  provider·ExtensionContext(생성자에서 만든다 — 종전에는 activate 진행 중 여기저기서 생성). ② 가변 상태: 트리·
+  상태바·런타임 콘솔·건강 모니터/프로버·디버그 세션 여부·마지막 배포/소스 stale/런타임 에러 스냅샷·최근 로그 링버퍼·
+  컴파일 검증 상태·중단점 sync/mirror. **항상 `host.x` 로 읽는다** — 활성화 시점에 구조 분해로 복사하면 낡은 값을
+  본다(종전 클로저의 late binding 과 같게). ③ 헬퍼: 두 그룹 이상이 쓰는 것만(log·배포 잠금 조회/경고·프로젝트명
+  가드·컴파일 검증 mark/clear·런타임 콘솔 싱글톤·연결 상태 반영·Agent Bridge). ④ 하위 API `project`·`connection`·
+  `deploy`·`decorations` — 그 그룹의 활성화 함수가 돌려준 객체를 정의 대입(`!`)으로 둔다(activate 가 동기적으로
+  끝나기 전에 모두 대입되고 명령 핸들러는 그 뒤에만 돈다).
+- `activation/controllerOps.ts` — busy 재시도·정지 확인(`Show Thread` settled, §0.6)·SoftEStop 복구·정지 진입
+  대기. 로그가 필요한 것은 host 를 첫 인자로 받는다(호스트 메서드로 만들지 않은 이유: host 를 "상태 컨테이너"로
+  유지하고 의존성을 인자로 드러내기 위해 — design-principles "의존성은 주입받도록").
+- `activation/debugDecorations.ts` — `ExecutionDecorations`. 종전에는 데코레이션 타입 2개 + "지금 칠해진 에디터"
+  변수 2개를 트리 명령(threadShowLocation)과 디버그 이벤트(gpl.errorLocation)가 나눠 만졌다. "한 번에 한 곳만
+  칠한다·편집 시작 시 모두 지운다"를 한 객체가 지킨다.
+- 명령 그룹 14개(`activateXxx(host)`): languageFeatures(provider·워처·심볼 명령·클릭 후 호버, 활성화 마무리
+  함수 반환) · xmlCommands · projectContext(→ host.project) · breakpointCommands · connection(→ host.connection) ·
+  deploy(→ host.deploy) · consoleCommands · aiAgentSetup · aiDebugCommands · controllerCommands · treeCommands ·
+  ftpCommands · debugIntegration · uriHandler.
+- `extension.ts` — 195줄. host 생성 → 배너 → 위 함수들을 **종전과 같은 순서**로 호출. 다른 점 하나: 프로젝트
+  컨텍스트(`host.project`)를 중단점 명령보다 먼저 만든다(종전에는 함수 호이스팅에 기대 순서가 뒤였다).
+
+**방법 — 기계 치환 + 컴파일러 검출.** 본문을 손으로 옮기지 않았다. 스크립트가 원본의 줄 범위를 그대로 잘라
+`activateXxx(host)` 안에 넣고, 공유 참조만 정규식으로 바꿨다: `logOutput(`→`host.log(`, 가변 상태 14종→`host.x`,
+공유 헬퍼 12종→`host.f(`, controllerOps 함수 4종에 `host` 첫 인자 삽입, 하위 API 는 정의 모듈 밖에서만
+`host.project.f(` 접두. 주석 줄은 건너뛰고, 필요한 import 는 원본 import 블록에서 식별자 출현으로 자동 산출했다.
+남은 것은 **`tsc --strict` 가 전부 잡았다**(1차 59건 → 25건 → 2건 → 0): 스프레드(`...healthMonitor`) 뒤라
+lookbehind 에 걸린 미치환 3건, 인자 없는 호출에 `host` 가 두 번 들어간 1건, 범위에 잘못 섞인 채널 생성 코드,
+모듈 레벨 함수(사후 스냅샷·XML 로더)가 클로저 상태를 쓰던 것(→ host 인자) 등. heredoc 이 백슬래시를 한 단계 벗겨
+정규식 리터럴이 깨진 사고가 두 번 있었다(메모리 reference_bash_heredoc_limit 재확인 — 스크립트는 Write 로 저장 후 실행).
+
+**순수 로직 분리 (별도 커밋 `58bec44`).** activate 안에 있어 테스트할 수 없던 것 4건을 vscode 무의존 모듈로:
+`controller/threadArgs.ts`(asThreadNode) · `controller/stepCommand.ts`(buildStepCommand ← aiBuildStepCommand,
+startCommand.ts 와 같은 "문서 구문 단일 출처") · `controller/runtimeConsolePresentation.ts`(buildRuntimeConsoleUserMessage
+— 상태 라벨 정본이 이미 있던 모듈) · `debug/showVariableParser.ts`(normalizeEvalValue). `config.ts` 에
+`isRuntimeConsoleAutoStartOnDeploy/OnDebug`·`hasOpenGplDocument`. 테스트 15건 신설.
+
+**의도한 동작 차이는 둘뿐.** ① 출력 채널 4개(`GPL Language Support`·`GPL Traffic`·`GPL Console`·배포 진단)의
+생성 **시점**이 활성화 맨 앞으로 모였다(상대 순서는 종전과 같음 — Output 드롭다운은 라벨 정렬이라 체감 차이 없음).
+② 활성화 배너와 FTP Run 로그의 버전 표기가 `vscode.extensions` 런타임 조회 대신 `EXTENSION_VERSION`
+(package.json 단일 소스 — [[feedback_provider_version]] 결정과 일치). 그 밖의 문구·순서·게이트는 그대로다.
+
+### 검증
+
+- `tsc --strict` 무오류, `npm test` **778/778**(763 + 신규 15).
+- **등록 명령 집합 전후 대조**: `registerCommand`/`registerAiDebugCommand` 의 ID 82개가 원본과 **동일 집합**.
+  provider 등록 11종·이벤트 구독 13종의 개수도 동일.
+- `context.subscriptions.push` 118 → 113: 채널 4개를 host 생성자에서 한 번에(−3), 데코레이션 타입 2개 +
+  onDidChangeTextDocument 1개를 `ExecutionDecorations` 하나로(−2) — dispose 대상은 같다.
+- 옛 식별자(`logOutput`·`extVersion`·`clearStoppedDecoration` 등) 잔존 0건, 미사용 import 0건(스크립트 검사).
+- **하지 않은 것**: Extension Development Host 실동작·실기기 확인 — §3 맨 위 항목으로 남겼다. 코드 본문이
+  그대로이고 컴파일러가 참조를 전부 검증했으므로 위험은 낮지만, "켜 봤다"는 사실은 없다.
+
+### 남은 일 / 다음 작업자에게
+
+- §3 스모크 항목(위). 통과하면 이 절의 "미실시" 표기를 지운다.
+- 다음 저위험 후보(같은 host 패턴): `activation/deploy.ts` `runDeployCore` 의 결과 보고부(스냅샷 서명·ErrorLog 분류
+  로그)를 순수 함수로 → 테스트 가능. `controllerTreeProvider.ts` 하단 포맷 함수(1547~)도 순수 모듈 후보.
+- 고위험(하드웨어 검증 필요, 로드맵 P2/P3/P8): `gplDebugSession.ts` 클래스 분해, `deployService.deployLocked`
+  단계 분리, `runtimeConsole.ts` 재연결 상태 머신. 브로커 아키텍처(docs/development/broker-workbench-architecture.md)
+  Phase 0 결합도 제거 체크리스트와 함께 볼 것 — `ExtensionHost` 는 그 체크리스트의 "vscode 결합 지점 목록" 역할도 한다.
+- 새 파일은 `extension.ts` 와 같은 **탭** 들여쓰기다(옮긴 코드의 diff 를 줄이기 위해). 저장소의 다른 파일은 대부분
+  4칸 공백 — 혼재는 종전부터 있던 상태(controller 일부·views 도 탭).
+- 동시 세션 주의: 이 세션과 §1-CY 세션(gpl-language-84)이 같은 작업 트리에서 겹쳤다. 코드 커밋은 이 세션 파일만
+  경로 지정으로 올렸고, 문서 커밋은 §1-CY 문서 변경(코드 0건, 편집 완료 확인)을 **함께** 담았다 — 커밋 메시지에 명시.
+
+### 변경 파일
+
+```txt
+src/extension.ts                        # 5,752 → 195줄. 배선만
+src/activation/host.ts                  # 신규 — ExtensionHost
+src/activation/controllerOps.ts         # 신규 — 재시도/정지 확인/SoftEStop/정지 대기
+src/activation/debugDecorations.ts      # 신규 — ExecutionDecorations
+src/activation/*.ts (14)                # 신규 — 명령 그룹별 activateXxx(host)
+src/controller/threadArgs.ts            # 신규 — asThreadNode (순수)
+src/controller/stepCommand.ts           # 신규 — buildStepCommand (순수)
+src/controller/runtimeConsolePresentation.ts  # buildRuntimeConsoleUserMessage 추가
+src/debug/showVariableParser.ts         # normalizeEvalValue 추가
+src/config.ts                           # isRuntimeConsoleAutoStartOnDeploy/OnDebug · hasOpenGplDocument
+src/test/{threadArgs,stepCommand,runtimeConsolePresentation}.test.ts  # 신규 + showVariableParser.test.ts 3건
+docs/ai-handoff.md                      # 헤더·§1 인덱스·§3·§3-B(보류 항목 종결)·§4 갱신 + 이 절
+docs/archive/handoff/2026-09.md         # §1-CP 이동
+```

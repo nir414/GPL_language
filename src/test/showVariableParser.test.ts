@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
 import {
+    normalizeEvalValue,
     parseShowVariableMulti,
     classifyVarEntry,
     arrayRank,
@@ -220,4 +221,18 @@ test('dapColorizeType: 타입 칸이 없는 2열 응답은 값 모양으로 추�
     assert.strictEqual(dapColorizeType('', 'null'), undefined);
     assert.strictEqual(dapColorizeType('', ''), undefined);
     assert.strictEqual(dapColorizeType(''), undefined);
+});
+
+test('normalizeEvalValue: <DATA> 안의 `name, type, value` CSV 에서 값 칸 이후만 돌려준다', () => {
+    const raw = '<DATA>\r\ncount, Integer, 42\r\n</DATA><STATUS>0</STATUS>';
+    assert.strictEqual(normalizeEvalValue(raw), '42');
+});
+
+test('normalizeEvalValue: 값에 쉼표가 있어도 세 번째 칸부터 다시 잇는다', () => {
+    assert.strictEqual(normalizeEvalValue('<DATA>loc, Location, 1, 2, 3</DATA>'), '1, 2, 3');
+});
+
+test('normalizeEvalValue: CSV 형태가 아니면 태그를 뗀 첫 줄, 빈 응답은 빈 문자열', () => {
+    assert.strictEqual(normalizeEvalValue('<STATUS>-729</STATUS>\r\nUndefined symbol'), 'Undefined symbol');
+    assert.strictEqual(normalizeEvalValue('<STATUS>0</STATUS>'), '');
 });

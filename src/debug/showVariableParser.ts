@@ -222,3 +222,23 @@ export function dapColorizeType(
     if (!Number.isNaN(Number(v))) { return 'number'; }
     return undefined;
 }
+
+/**
+ * `Show Variable -eval` 응답을 한 줄 값으로 정규화 — AI 디버그 루프(`gpl.ai.debug.evaluate`/`loop`)용.
+ * `<DATA>` 안쪽만 취하고 STATUS/태그를 지운 뒤, 첫 줄이 `name, type, value…` CSV 형태면 값 칸 이후를 돌려준다.
+ */
+export function normalizeEvalValue(raw: string): string {
+    const dataMatch = raw.match(/<DATA>([\s\S]*?)<\/DATA>/i);
+    const base = (dataMatch ? dataMatch[1] : raw)
+        .replace(/<STATUS>[\s\S]*?<\/STATUS>/gi, '')
+        .replace(/<[^>]+>/g, '')
+        .trim();
+    const lines = base.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) { return ''; }
+    const first = lines[0];
+    const csv = first.split(',').map(s => s.trim());
+    if (csv.length >= 3) {
+        return csv.slice(2).join(', ').trim();
+    }
+    return first;
+}

@@ -58,6 +58,9 @@ import './breakpointReconcile.test';
 import './breakpointCommand.test';
 import './compileStale.test';
 import './gplStatements.test';
+import './threadArgs.test';
+import './stepCommand.test';
+import './runtimeConsolePresentation.test';
 import { run } from './harness';
 
 void run();

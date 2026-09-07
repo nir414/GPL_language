@@ -217,3 +217,18 @@ export { isInCommentOrString } from './language/cursorExpression';
  * 기존 import 경로 호환을 위해 여기서 재노출한다.
  */
 export { GPL_CONTROL_KEYWORDS } from './language/gplReservedWords';
+
+/** 1403 런타임 콘솔 자동 시작 — Deploy/Build 성공 뒤. 설정은 사용 시점에 읽는다(재시작 없이 반영). 기본 true(package.json 과 동일). */
+export function isRuntimeConsoleAutoStartOnDeploy(workspace: WorkspaceConfigHost): boolean {
+    return workspace.getConfiguration('gpl.runtimeConsole').get<boolean>('autoStartOnDeploy', true);
+}
+
+/** 1403 런타임 콘솔 자동 시작 — 디버그 세션 attach 시. 기본 true. */
+export function isRuntimeConsoleAutoStartOnDebug(workspace: WorkspaceConfigHost): boolean {
+    return workspace.getConfiguration('gpl.runtimeConsole').get<boolean>('autoStartOnDebug', true);
+}
+
+/** 열린 편집기 문서 중 GPL 파일이 하나라도 있는지 — 심볼 캐시 지연 초기화·라이브 로그 자동 시작의 조건. */
+export function hasOpenGplDocument(workspace: Pick<typeof vscode.workspace, 'textDocuments'>): boolean {
+    return workspace.textDocuments.some(doc => isGplDocument(doc));
+}

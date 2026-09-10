@@ -21,6 +21,7 @@
  */
 
 import { buildStartCommand, StartCommandOptions } from './startCommand';
+import type { CommandResponseMeta } from './consoleSocket';
 import {
     isProjectAlreadyLoaded,
     isProjectNotLoaded,
@@ -37,8 +38,8 @@ import {
 /** IO 가 돌려주는 1402 응답. `threadStop.ThreadStopResponse` 와 같은 모양이다. */
 export interface ProjectCommandResponse {
     raw: string;
-    /** 응답 메타(잘림 여부 등) — 로그에만 쓴다. 전송 계층이 주지 못하면 생략한다. */
-    meta?: { responseComplete?: boolean; bytesReceived?: number; lastChunkAt?: string; idleTimeoutMs?: number };
+    /** 응답 메타(잘림 여부 등) — 로그·결과 보고에 그대로 실린다. 전송 계층이 주지 못하면 생략한다. */
+    meta?: CommandResponseMeta;
 }
 
 /**
@@ -216,7 +217,7 @@ export interface CompileAttempt {
     message: string;
     errors: CompileError[];
     raw: string;
-    meta?: ProjectCommandResponse['meta'];
+    meta?: CommandResponseMeta;
     /** 판정 근거 한 줄(STATUS 미수신 등). */
     note?: string;
 }

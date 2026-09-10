@@ -17,10 +17,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
+import { sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
 import { uploadProject, mirrorProject, listRemoteDir, removeRemoteFiles, RemoteFileRef } from './ftpClient';
 import { getSyncManifest, mergeSyncManifest, recordSyncManifest } from './syncManifest';
-import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus, NO_STATUS_CODE } from './responseParser';
+import { parseStatus, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus } from './responseParser';
 import { describeThreadActivity } from './threadActivity';
 import {
     STOP_ALL_CMD,
@@ -29,8 +29,9 @@ import {
     waitThreadsSettle,
 } from './threadStop';
 import type { SettleOutcome, ThreadProbe, ThreadStopIo, ThreadStopOptions } from './threadStop';
-import { buildStartCommand } from './startCommand';
-import { isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
+import { compileProject, loadProject, startProject, unloadProject } from './projectCommands';
+import type { CompileAttempt, ProjectCommandIo } from './projectCommands';
+import { isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
 import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord';
 import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
@@ -786,151 +787,71 @@ async function deployLocked(
     let compiled = options.skipCompile === true;
     let lastCompileFailure: { command: string; code: number; message: string; raw: string } | undefined;
 
-    /** Compile 명령 실행 후 응답의 STATUS와 에러를 검사하는 헬퍼. */
-    async function tryCompile(candidate: string): Promise<{
-        ok: boolean;
-        statusCode: number;
-        errors: CompileError[];
-        raw: string;
-        responseMeta?: CommandResponseMeta;
-        note?: string;
-    }> {
-        try {
-            const detailed = await sendCommandDetailed(`Compile ${candidate}`, cfg, {
-                // 컴파일은 pass 사이에 수 초간 침묵할 수 있다. idle로 조기 완료하면 응답이
-                // 잘려 STATUS/에러 라인을 놓치고 거짓 성공이 난다(GDE는 종결자까지 받음).
-                // 따라서 반드시 종결자 </STATUS>까지 수신하고, 대형 프로젝트 대비 충분한 상한을 둔다.
-                waitForStatusClose: true,
-                timeoutMs: Math.max(cfg.timeoutMs, 60000),
+    // Compile/Load/Unload/Start 절차는 controller/projectCommands.ts 가 정본이다(§1-DE).
+    // 여기서는 전송(1402)과 트레이스 목적지만 물린다 — 판정 규칙(성공 조건·일시적 STATUS 재시도·
+    // 로드 상태 구분·HTTP 응답 감지)을 이 파일과 FTP 경로가 따로 갖고 있던 것이 차이의 원인이었다.
+    const projectIo: ProjectCommandIo = {
+        send: async (command, sendOpts) => {
+            const detailed = await sendCommandDetailed(command, cfg, sendOpts?.forCompile
+                // 컴파일은 pass 사이에 수 초간 침묵한다. idle 로 조기 완료하면 응답이 잘려 STATUS/에러
+                // 라인을 놓치고 거짓 성공이 난다(GDE 는 종결자까지 받는다) — 반드시 </STATUS> 까지 대기.
+                ? { waitForStatusClose: true, timeoutMs: Math.max(cfg.timeoutMs, 60000) }
+                : undefined);
+            return { raw: detailed.raw, meta: detailed.meta };
+        },
+        log: line => pushTrace(`│ ${line}`),
+    };
+
+    /** Compile 한 후보 — 일시적 STATUS(-742/-746/-752) 1회 재시도는 모듈이 한다. 시도 기록은 결과에 싣는다. */
+    async function compileCandidate(candidate: string): Promise<CompileAttempt> {
+        const outcome = await compileProject(projectIo, {
+            candidates: [candidate],
+            retryDelayMs: transientCompileRetryDelayMs,
+            sleep,
+        });
+        for (const a of outcome.attempts) {
+            result.compileAttemptLogs.push({
+                command: a.command,
+                statusCode: a.statusCode,
+                raw: a.raw,
+                errors: a.errors,
+                responseMeta: a.meta,
+                note: a.note,
             });
-            const resp = detailed.raw;
-            const status = parseStatus(resp);
-            const errors = parseCompileErrors(resp);
-            const statusMissing = status.code === NO_STATUS_CODE;
-
-            if (isControllerNonBlockingStatus(status.code) && errors.length === 0) {
-                return {
-                    ok: true,
-                    statusCode: status.code,
-                    errors,
-                    raw: resp,
-                    responseMeta: detailed.meta,
-                };
-            }
-            if (status.code === 0 && errors.length === 0) {
-                return {
-                    ok: true,
-                    statusCode: status.code,
-                    errors,
-                    raw: resp,
-                    responseMeta: detailed.meta,
-                };
-            }
-
-            // STATUS 종결자까지 대기했는데도 STATUS가 없으면(연결 끊김/타임아웃 등)
-            // 컴파일 결과를 확인하지 못한 것이다. 과거에는 'compile successful' 텍스트나
-            // pass 로그 + Show Thread 응답으로 성공 처리했으나, 이는 실제 컴파일 에러를
-            // 가리는 오판의 직접 원인이었다(예: -742를 성공으로 보고). 따라서 절대 성공으로
-            // 간주하지 않고, 결과 미확인으로서 실패 처리한다.
-            return {
-                ok: false,
-                statusCode: status.code,
-                errors,
-                raw: resp,
-                responseMeta: detailed.meta,
-                note: statusMissing
-                    ? (errors.length > 0
-                        ? 'STATUS 미수신이나 에러 라인 검출 → 실패'
-                        : 'STATUS 미수신: 컴파일 결과 확인 실패(성공 간주 안 함)')
-                    : undefined,
-            };
-        } catch (e: any) {
-            const errText = e.message || '';
-            return {
-                ok: false,
-                statusCode: NO_STATUS_CODE,
-                errors: parseCompileErrors(errText),
-                raw: errText,
-            };
         }
+        // compileProject 는 후보마다 최소 한 번 시도하므로 attempts 는 비지 않는다 — 방어적 폴백만 둔다.
+        return outcome.attempts[outcome.attempts.length - 1] ?? {
+            command: `Compile ${candidate}`,
+            ok: false,
+            statusCode: outcome.failure?.code ?? -9999,
+            message: outcome.failure?.message ?? '시도 기록 없음',
+            errors: outcome.errors,
+            raw: outcome.failure?.raw ?? '',
+        };
     }
 
-    async function runStatusCommand(command: string): Promise<{ ok: boolean; statusCode: number; message: string; raw: string }> {
-        try {
-            const raw = await sendCommand(command, cfg);
-            const status = parseStatus(raw);
-            return {
-                ok: status.code === 0 || isControllerNonBlockingStatus(status.code),
-                statusCode: status.code,
-                message: status.message,
-                raw,
-            };
-        } catch (e: any) {
-            const raw = e?.message || String(e);
-            const status = parseStatus(raw);
-            return {
-                ok: false,
-                statusCode: status.code,
-                message: status.message,
-                raw,
-            };
-        }
-    }
-
-    async function ensureLoadedFromFtpPath(candidate: string): Promise<boolean> {
-        pushTrace(`│ CMD Load ${loadPath}`);
-        const load = await runStatusCommand(`Load ${loadPath}`);
-        pushTrace(`│ RAW ${rawPreview(load.raw) || '(empty)'}`);
-        // 응답이 HTTP면 명령이 콘솔이 아니라 제어기 웹서버(GoAhead)에 닿은 것 —
-        // 제어기 이상 징후일 수 있다(2026-07-03 무응답 사례, docs/ai-handoff.md §1-F).
-        // 재시도로 상태를 더 자극하지 않고 즉시 중단한다.
-        if ((load.raw || '').trimStart().startsWith('HTTP/')) {
-            pushTrace('│ ✘ HTTP 응답 감지 — 콘솔이 아닌 웹서버가 응답함. 제어기 상태 이상 가능성, 즉시 중단.');
-            pushTrace('│   → 제어기 웹 UI/GDE 접속 가능 여부를 확인하고, 필요 시 재부팅 후 다시 시도하세요.');
-            lastCompileFailure = {
-                command: `Load ${loadPath}`,
-                code: load.statusCode,
-                message: 'HTTP response detected on 1402 (controller may be unhealthy)',
-                raw: load.raw,
-            };
-            return false;
-        }
-        if (load.ok) {
-            pushTrace(`│ ✔ Load success: ${candidate} ← ${loadPath}`);
-            return true;
-        }
-        if (isProjectAlreadyLoaded(load.statusCode)) {
-            pushTrace(`│ ✔ Load skipped: already loaded (${candidate})`);
-            return true;
-        }
-        pushTrace(`│ ✘ Load failed: STATUS ${load.statusCode}: ${load.message || 'Unknown error'}`);
-        lastCompileFailure = {
-            command: `Load ${loadPath}`,
-            code: load.statusCode,
-            message: load.message || 'Unknown error',
-            raw: load.raw,
+    /** 업로드된 사본을 실제 로드본으로 만든다. HTTP 응답(제어기 이상)은 재시도로 자극하지 않고 중단한다. */
+    async function ensureLoadedFromFtpPath(): Promise<boolean> {
+        const outcome = await loadProject(projectIo, loadPath);
+        if (outcome.ok) { return true; }
+        lastCompileFailure = outcome.failure && {
+            command: outcome.failure.command,
+            code: outcome.failure.code,
+            message: outcome.failure.message,
+            raw: outcome.failure.raw,
         };
         return false;
     }
 
+    /** 로드본을 내린다. `-750`(쓰레드 실행 중)은 호출측이 동기화 중단으로 다룬다. */
     async function tryUnload(candidate: string): Promise<boolean> {
-        pushTrace(`│ CMD Unload ${candidate}`);
-        const unload = await runStatusCommand(`Unload ${candidate}`);
-        pushTrace(`│ RAW ${rawPreview(unload.raw) || '(empty)'}`);
-        if (unload.ok) {
-            pushTrace(`│ ✔ Unload success: ${candidate}`);
-            return true;
-        }
-        if (isProjectNotLoaded(unload.statusCode)) {
-            pushTrace(`│ ✔ Unload skipped: project not loaded (${candidate})`);
-            return true;
-        }
-        pushTrace(`│ ✘ Unload failed: STATUS ${unload.statusCode}: ${unload.message || 'Unknown error'}`);
-        lastCompileFailure = {
-            command: `Unload ${candidate}`,
-            code: unload.statusCode,
-            message: unload.message || 'Unknown error',
-            raw: unload.raw,
+        const outcome = await unloadProject(projectIo, candidate);
+        if (outcome.ok) { return true; }
+        lastCompileFailure = outcome.failure && {
+            command: outcome.failure.command,
+            code: outcome.failure.code,
+            message: outcome.failure.message,
+            raw: outcome.failure.raw,
         };
         return false;
     }
@@ -968,7 +889,7 @@ async function deployLocked(
             result.failedStatusMessage = '*Invalid when thread active* — 실행 중에는 Quick Compile 동기화가 불가합니다. STOP 후 재시도하세요.';
             return result;
         }
-        const synced = await ensureLoadedFromFtpPath(reloadTargets[0] || projectName);
+        const synced = await ensureLoadedFromFtpPath();
         if (!synced) {
             pushTrace('│ ✘ Failed to load uploaded project copy before compile');
             result.failedPhase = 'COMPILE';
@@ -984,45 +905,8 @@ async function deployLocked(
 
     for (const candidate of options.skipCompile ? [] : compileCandidates) {
         let recoveryFailureRecorded = false; // 복구 분기(cr2)가 실패를 기록했는지 (§1-L cr 덮어쓰기 방지)
-        pushTrace(`│ CMD Compile ${candidate}`);
-        let cr = await tryCompile(candidate);
-        result.compileAttemptLogs.push({
-            command: `Compile ${candidate}`,
-            statusCode: cr.statusCode,
-            raw: cr.raw,
-            errors: cr.errors,
-            responseMeta: cr.responseMeta,
-            note: cr.note,
-        });
-        pushTrace(`│ RAW ${rawPreview(cr.raw) || '(empty)'}`);
-        if (cr.note) {
-            pushTrace(`│ NOTE ${cr.note}`);
-        }
-
-        if (cr.responseMeta && !cr.responseMeta.responseComplete) {
-            pushTrace(`│ META responseComplete=false bytesReceived=${cr.responseMeta.bytesReceived} lastChunkAt=${cr.responseMeta.lastChunkAt} idleTimeoutMs=${cr.responseMeta.idleTimeoutMs}`);
-        }
-
-        // STATUS -742/-746/-752이면서 컴파일 에러가 파싱되지 않은 경우는
-        // 일시적 컨트롤러 상태일 수 있어 1회 재시도한다.
-        if (!cr.ok && isTransientCompileStatus(cr.statusCode) && cr.errors.length === 0) {
-            pushTrace(`│ ⚠ Transient STATUS ${cr.statusCode}. retry in ${transientCompileRetryDelayMs}ms`);
-            await sleep(transientCompileRetryDelayMs);
-            const retry = await tryCompile(candidate);
-            result.compileAttemptLogs.push({
-                command: `Compile ${candidate} (retry transient)`,
-                statusCode: retry.statusCode,
-                raw: retry.raw,
-                errors: retry.errors,
-                responseMeta: retry.responseMeta,
-                note: retry.note,
-            });
-            pushTrace(`│ RAW ${rawPreview(retry.raw) || '(empty)'}`);
-            if (retry.note) {
-                pushTrace(`│ NOTE ${retry.note}`);
-            }
-            cr = retry;
-        }
+        // 전송·판정·일시적 STATUS 재시도·로그는 projectCommands 가 한다(§1-DE). 로드 상태 복구만 아래에 남는다.
+        let cr = await compileCandidate(candidate);
 
         if (cr.ok) {
             if (isControllerNonBlockingStatus(cr.statusCode)) {
@@ -1031,7 +915,6 @@ async function deployLocked(
             result.projectName = candidate;
             result.compileErrors = []; // 이전 후보의 컴파일 에러가 성공 결과에 남지 않도록 초기화
             compiled = true;
-            pushTrace(`│ ✔ Compile success: ${candidate}`);
             break;
         }
 
@@ -1064,19 +947,11 @@ async function deployLocked(
             if (!unloaded) {
                 continue;
             }
-            const loaded = await ensureLoadedFromFtpPath(candidate);
+            const loaded = await ensureLoadedFromFtpPath();
             if (!loaded) {
                 continue;
             }
-            const cr2 = await tryCompile(candidate);
-            result.compileAttemptLogs.push({
-                command: `Compile ${candidate} (after reload)`,
-                statusCode: cr2.statusCode,
-                raw: cr2.raw,
-                errors: cr2.errors,
-                responseMeta: cr2.responseMeta,
-                note: cr2.note,
-            });
+            const cr2 = await compileCandidate(candidate);
             if (cr2.ok) {
                 result.projectName = candidate;
                 result.compileErrors = [];
@@ -1097,19 +972,11 @@ async function deployLocked(
         else if (!directActive && (isProjectNotLoaded(cr.statusCode)
             || hasCode(errText, -508) || hasCode(errText, -743))) {
             pushTrace(`│ ⚠ Not loaded. Load → Compile`);
-            const loaded = await ensureLoadedFromFtpPath(candidate);
+            const loaded = await ensureLoadedFromFtpPath();
             if (!loaded) {
                 continue;
             }
-            const cr2 = await tryCompile(candidate);
-            result.compileAttemptLogs.push({
-                command: `Compile ${candidate} (after load)`,
-                statusCode: cr2.statusCode,
-                raw: cr2.raw,
-                errors: cr2.errors,
-                responseMeta: cr2.responseMeta,
-                note: cr2.note,
-            });
+            const cr2 = await compileCandidate(candidate);
             if (cr2.ok) {
                 const warning = `Pre-check warning: Compile by name returned ${cr.statusCode}, but Load ${loadPath} + Compile succeeded`;
                 result.precheckWarnings.push(warning);
@@ -1246,34 +1113,27 @@ async function deployLocked(
             if (pick !== 'Start') {
                 pushTrace('│ ✘ 사용자가 Start를 취소했습니다 (gpl.controller.requireStartConfirmation)');
                 result.failedPhase = 'START';
+                // 아직 보내지 않았으므로 조립된 명령이 없다 — 무엇을 취소했는지만 남긴다.
                 result.failedCommand = `Start ${result.projectName}`;
                 result.failedStatusMessage = '사용자가 Start 실행을 취소했습니다';
                 return result;
             }
         }
-        // 문서 구문으로 조립 — 기본값 `-event`(GDE 동일: 쓰레드 상태 변경을 1403 이벤트로 받는다).
+        // 명령 조립(문서 구문·`-event`)과 STATUS 판정은 projectCommands.startProject 가 한다(§1-DE).
         // `-compile` 은 붙이지 않는다(Start 가 자체 컴파일 — 하드 규칙 7).
-        const startCmd = buildStartCommand({
+        const start = await startProject(projectIo, {
             projectName: result.projectName,
             eventMode: options.startEventMode,
         });
-        pushTrace(`│ CMD ${startCmd}`);
-        const start = await runStatusCommand(startCmd);
-        pushTrace(`│ RAW ${rawPreview(start.raw) || '(empty)'}`);
         if (start.ok) {
-            if (isControllerNonBlockingStatus(start.statusCode)) {
-                pushTrace(`│ ⚠ Start STATUS ${start.statusCode} non-blocking (controller environment warning)`);
-            }
-            pushTrace(`│ ✔ Start success`);
             if (options.skipCompile) {
                 // Start가 STATUS 0으로 끝났다 = 제어기가 방금 올린 소스를 자체 컴파일해 실행 중이다(§0.7).
                 // 그때서야 "이 소스가 제어기에서 돌고 있다"가 사실이 되므로 여기서 스냅샷을 기록한다.
                 recordCompileSnapshot();
             }
         } else {
-            pushTrace(`│ ✘ Start failed: STATUS ${start.statusCode}: ${start.message || 'Unknown error'}`);
             result.failedPhase = 'START';
-            result.failedCommand = `Start ${result.projectName}`;
+            result.failedCommand = start.command;
             result.failedStatusCode = start.statusCode;
             result.failedStatusMessage = start.message || 'Unknown error';
             return result;

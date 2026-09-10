@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { extractBaseObjectName, escapeRegExp, splitParameters, getParameterArity, argCountMatchesArity, matchProcedureHeaderKind, extractQualifierChainBefore } from '../language/cursorExpression';
+import { extractBaseObjectName, escapeRegExp, splitParameters, getParameterArity, argCountMatchesArity, matchProcedureHeaderKind, extractQualifierChainBefore, parseChainSegment } from '../language/cursorExpression';
 
 test('extractBaseObjectName: 대입 + 배열 인덱싱에서 기준 객체', () => {
     assert.strictEqual(extractBaseObjectName('returnError = armList(0)'), 'armList');
@@ -184,4 +184,26 @@ test('replaceIndexTokens: 괄호 안만 치환, 밖 이름은 보존', () => {
     assert.strictEqual(replaceIndexIdentifierTokens('a(obj.idx).b(i)', values), 'a(7).b(3)');
     // 'i'라는 이름의 배열이 밖에 있어도 밖은 치환하지 않는다
     assert.strictEqual(replaceIndexIdentifierTokens('i(i)', values), 'i(3)');
+});
+
+// ─── 체인 세그먼트 파싱 ────────────────────────────────────────────────────────────
+// extractQualifierChainBefore가 돌려주는 문자열 체인을 receiverType의 세그먼트로 옮길 때
+// 쓰는 공용 파서다(완성 provider 경로). 괄호 그룹 유무가 인덱싱/호출 판정의 입력이 된다.
+test('parseChainSegment: 괄호 그룹 유무를 args로 구분한다', () => {
+    assert.deepStrictEqual(parseChainSegment('Name'), { name: 'Name' });
+    assert.deepStrictEqual(parseChainSegment('CurrentThread()'), { name: 'CurrentThread', args: '' });
+    assert.deepStrictEqual(parseChainSegment('armList(i)'), { name: 'armList', args: 'i' });
+    assert.deepStrictEqual(parseChainSegment('f(g(1), 2)'), { name: 'f', args: 'g(1), 2' });
+    assert.strictEqual(parseChainSegment('1bad'), undefined);
+    assert.strictEqual(parseChainSegment('a.b'), undefined);
+});
+
+test('extractQualifierChainBefore: 연달아 붙은 괄호 그룹도 한 세그먼트로 읽는다', () => {
+    // `arr(0)(1).` — 하나만 소비하면 남은 ")" 때문에 체인 전체가 미해석이 되어,
+    // 정의 이동이 한정자를 버린 전역 이름 검색으로 떨어진다.
+    assert.deepStrictEqual(
+        extractQualifierChainBefore('    x = arr(0)(1).'), { chain: ['arr(0)(1)'], partial: '' });
+    assert.deepStrictEqual(
+        extractQualifierChainBefore('    x = obj.items(i).name'),
+        { chain: ['obj', 'items(i)'], partial: 'name' });
 });

@@ -17,6 +17,7 @@ import { test } from './harness';
  *  R4 테스트 등록 누락 없음 — src/test/*.test.ts 는 모두 index.ts 가 import 한다(수동 등록이라 잊기 쉽다).
  *  R5 package.json ↔ 코드 — 선언된 명령·메뉴/키바인딩/활성화 이벤트가 가리키는 명령은 소스에서 등록돼 있어야 한다.
  *  R6 설정 키 — 코드가 읽는 `gpl.*` 설정 키는 package.json 에 선언돼 있어야 한다(오타 방지).
+ *  R7 판정 정본(SSOT) 우회 금지 — "이 판단은 여기서만 한다"고 정한 규칙을 다른 모듈이 손으로 다시 구현하지 않는다.
  */
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -224,4 +225,77 @@ test('구조 R6: 코드가 읽는 gpl.* 설정 키는 package.json 에 선언돼
     assert.ok(used.size > 20, `설정 키 사용 수집이 비정상적으로 적다: ${used.size}`);
     const undeclared = [...used].filter(k => !declared.has(k));
     assert.deepStrictEqual(undeclared, [], `코드가 읽지만 package.json 에 없는 설정 키(오타?): ${undeclared.join(', ')}`);
+});
+
+// ─── R7: 판정 정본(SSOT) 우회 금지 ──────────────────────────────────────────────────────
+// 계층(R1·R2)은 "어디에 두는가"만 강제한다. 같은 판단을 **여러 곳이 각자 구현**하는 것은 계층을 지켜도
+// 일어나고(중복 배제 원칙, DRY 위반), 그 사본들은 시간이 지나며 조금씩 달라진다(구현 편차,
+// Implementation Drift). 실제로 완성 provider 는 수신자 타입 해석을 자체 구현으로 들고 있다가
+// `Thread.CurrentThread().` 뒤를 해석하지 못했고, 배열 요소 타입 벗기기는 사본이 네 벌이었다.
+// 그래서 "이 판단의 정본은 어디"를 표로 두고, 정본 밖에서 같은 판단을 다시 구현한 흔적을 막는다.
+//
+// 새 정본을 세우면 여기 한 줄을 추가한다 — 규칙을 늘리는 비용이 낮아야 실제로 늘어난다.
+
+interface SsotRule {
+    /** 무엇을 판단하는 규칙인가 */
+    what: string;
+    /** 그 판단을 손으로 다시 구현했을 때 소스에 나타나는 표식 */
+    pattern: RegExp;
+    /** 이 표식이 있어도 되는 모듈(정본과, 정본을 감싸는 어댑터) */
+    ownedBy: readonly string[];
+    /** 정본이 실제로 제공해야 하는 export — 이름이 바뀌거나 사라지면 규칙이 낡았다는 뜻이다 */
+    requires: readonly string[];
+    /** 대신 써야 하는 것 */
+    use: string;
+}
+
+const SSOT_RULES: readonly SsotRule[] = [
+    {
+        what: '수신자(receiver) 해석 컨텍스트 조립 — 문서 파싱 + 프로시저 범위 + 내장 사전 훅',
+        pattern: /buildDocumentReceiverLookup\s*\(/,
+        ownedBy: ['language/receiverType', 'providers/receiverContext'],
+        requires: ['buildDocumentReceiverLookup', 'buildReceiverContext'],
+        use: 'providers/receiverContext.buildReceiverContext',
+    },
+    {
+        what: '배열 타입의 요소 타입 벗기기 (`Foo[]` → `Foo`)',
+        pattern: /replace\(\s*\/\\\[\\\]\$\//,
+        ownedBy: ['language/receiverType'],
+        requires: ['elementTypeOf', 'isArrayTypeName'],
+        use: 'language/receiverType.elementTypeOf / isArrayTypeName',
+    },
+];
+
+/**
+ * 주석을 지운 소스 — 표식 검사가 "설명에 이름을 적은 것"까지 위반으로 세지 않게 한다.
+ * 블록 주석과 주석 전용 줄만 지운다(코드 줄의 `https://` 같은 것을 건드리지 않기 위해).
+ */
+function codeOnly(src: string): string {
+    return src
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .filter(line => !/^\s*(\/\/|\*)/.test(line))
+        .join('\n');
+}
+
+test('구조 R7: 판정 정본(SSOT)을 우회해 같은 판단을 다시 구현하지 않는다', () => {
+    const violations: string[] = [];
+    for (const rule of SSOT_RULES) {
+        for (const mod of rule.ownedBy) {
+            assert.ok(sources.has(mod), `R7 표가 가리키는 정본 모듈이 없다: ${mod} (${rule.what}) — 표를 갱신할 것`);
+        }
+        // 규칙이 낡지 않았는지: 정본이 대체 수단을 실제로 export 하고 있어야 한다.
+        const missing = rule.requires.filter(name => !rule.ownedBy.some(mod =>
+            new RegExp(`export\\s+(?:function|const|class)\\s+${name}\\b`).test(sources.get(mod) ?? '')));
+        assert.deepStrictEqual(missing, [],
+            `정본에서 사라진 export 가 R7 표에 남아 있다: ${missing.join(', ')} (${rule.what}) — 표를 갱신할 것`);
+
+        for (const [mod, src] of sources) {
+            if (layerOf(mod) === 'test' || rule.ownedBy.includes(mod)) { continue; }
+            if (rule.pattern.test(codeOnly(src))) {
+                violations.push(`${mod}: ${rule.what} → 대신 ${rule.use} 를 쓸 것`);
+            }
+        }
+    }
+    assert.deepStrictEqual(violations, [], `판정 정본 우회:\n  ${violations.join('\n  ')}`);
 });

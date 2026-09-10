@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
+import { elementTypeOf } from '../language/receiverType';
 import { GPLReferenceProvider } from './referenceProvider';
 import { getQualifiedWordAtPosition, isInCommentOrString, isTraceVerbose } from '../config';
 import { ciEq } from '../language/identifiers';
@@ -268,7 +269,8 @@ export class GPLRenameProvider implements vscode.RenameProvider {
             return this.symbolCache.findMemberInClassMatches(memberName, baseSym.name, document.uri.fsPath)[0];
         }
         if (baseSym.returnType) {
-            const resolvedType = baseSym.returnType.replace(/\[\]$/, '');
+            // 배열 요소 타입 규칙은 공용 정본(receiverType.elementTypeOf) — 사본 금지.
+            const resolvedType = elementTypeOf(baseSym.returnType, true) ?? baseSym.returnType;
             return this.symbolCache.findMemberInClassMatches(memberName, resolvedType, document.uri.fsPath)[0];
         }
         return undefined;

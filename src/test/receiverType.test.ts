@@ -4,6 +4,7 @@ import { GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import {
     buildDocumentReceiverLookup,
     elementTypeOf,
+    isArrayTypeName,
     enclosingClassName,
     enclosingModuleName,
     isDeclaredIn,
@@ -11,6 +12,7 @@ import {
     nestedTypesIn,
     ownedByHolder,
     resolveReceiverHolder,
+    resolveReceiverTarget,
     resolveReceiverTypeName,
     ReceiverBuiltins,
     ReceiverLookup,
@@ -353,4 +355,66 @@ test('membersNamed: 클래스 홀더에서도 자기 자신(클래스 선언)은
     assert.deepStrictEqual(membersNamed(lookup, { kind: 'class', name: 'ZeroPlan' }, 'ZeroPlan'), []);
     // 클래스 선언은 nestedTypesIn/ownedByHolder가 맡는다 — 소속이 맞을 때만.
     assert.deepStrictEqual(nestedTypesIn(lookup, { kind: 'class', name: 'ZeroPlan' }, 'ZeroPlan'), []);
+});
+
+// ─── 멤버 완성 대상 해석(resolveReceiverTarget) ────────────────────────────────────────────
+// 배경(2026-09-10): completionProvider가 자체 체인 해석을 들고 있어 내장 멤버의 반환 타입을
+// 따라가지 못했고(`Thread.CurrentThread().` 뒤가 미해석), 그 폴백인 전역 목록이 dotted 내장
+// 항목을 이름 그대로 삽입해 `Thread.CurrentThread().Thread.Abort()`가 만들어졌다.
+// 이제 완성도 이 해석기를 쓴다 — 그래서 "어느 사전에서 멤버를 꺼낼지"와 "멤버 없는 원시 타입"이
+// 결과에 드러나야 한다(원시 타입은 빈 목록, 미해석은 폴백으로 갈라진다).
+
+test('resolveReceiverTarget: 내장 클래스·사용자 클래스/모듈·원시 타입을 구분한다', () => {
+    const lookup = lookupWithBuiltins();
+
+    // 내장 클래스 정적 접근과 내장 멤버 반환 타입 하강 — 사용자 보고 케이스
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'Thread' }], lookup), { kind: 'builtinClass', name: 'Thread' });
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'Thread' }, { name: 'CurrentThread', args: '' }], lookup),
+        { kind: 'builtinClass', name: 'Thread' });
+    // 내장 타입 로컬에서 시작해도 같다
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'saveThread' }], lookup), { kind: 'builtinClass', name: 'Thread' });
+
+    // 사용자 클래스/모듈
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'arm' }], lookup), { kind: 'class', name: 'RobotArm' });
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'robotArmList', args: '0' }], lookup), { kind: 'class', name: 'RobotArm' });
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'JogModule' }], lookup), { kind: 'module', name: 'JogModule' });
+    // 중첩 클래스 하강도 종전 규칙 그대로
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'ZeroPlan' }, { name: 'StepBatch' }], lookup),
+        { kind: 'class', name: 'StepBatch' });
+});
+
+test('resolveReceiverTarget: 원시 타입은 "멤버 없음"이고, 미해석과 구분된다', () => {
+    const lookup = lookupWithBuiltins();
+
+    // 로컬 Integer / Property Integer → primitive (완성 목록을 비워야 하는 자리)
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'n' }], lookup), { kind: 'primitive', name: 'Integer' });
+    assert.deepStrictEqual(
+        resolveReceiverTarget([{ name: 'arm' }, { name: 'controlAxis' }], lookup),
+        { kind: 'primitive', name: 'Integer' });
+
+    // 원시 타입 뒤로는 하강할 수 없다 — 미해석
+    assert.strictEqual(resolveReceiverTarget([{ name: 'n' }, { name: 'anything' }], lookup), undefined);
+    // 이름을 모르는 수신자·사전에 없는 내장 멤버도 미해석(호출부는 폴백)
+    assert.strictEqual(resolveReceiverTarget([{ name: 'unknownThing' }], lookup), undefined);
+    assert.strictEqual(
+        resolveReceiverTarget([{ name: 'Thread' }, { name: 'NoSuchMember' }], lookup), undefined);
+    // 인덱싱 없는 배열은 내장 Array라 여기서는 미해석(종전 규칙 유지)
+    assert.strictEqual(resolveReceiverTarget([{ name: 'robotArmList' }], lookup), undefined);
+});
+
+test('isArrayTypeName: 배열 표기 판정 — 요소 타입 벗기기와 같은 규칙을 쓴다', () => {
+    assert.strictEqual(isArrayTypeName('RobotArm[]'), true);
+    assert.strictEqual(isArrayTypeName('RobotArm()'), true);
+    assert.strictEqual(isArrayTypeName('Double(,)'), true);
+    assert.strictEqual(isArrayTypeName(' RobotArm[] '), true);
+    assert.strictEqual(isArrayTypeName('RobotArm'), false);
+    assert.strictEqual(isArrayTypeName(''), false);
 });

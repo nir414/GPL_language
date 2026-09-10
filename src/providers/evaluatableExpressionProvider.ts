@@ -21,16 +21,14 @@
  */
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
-import { GPLParser, GPLSymbolKind, GPLSymbol } from '../language/gplParser';
+import { GPLSymbolKind, GPLSymbol } from '../language/gplParser';
 import {
     extractDebugExpressionAt,
     buildDebugExpression,
-    findEnclosingProcedureRange,
     DebugExpressionSegment,
 } from '../language/cursorExpression';
 import { isGplReservedWord } from '../language/gplReservedWords';
 import {
-    buildDocumentReceiverLookup,
     membersNamed,
     resolveReceiverHolder,
     resolveReceiverTypeName,
@@ -38,10 +36,10 @@ import {
     ReceiverLookup,
 } from '../language/receiverType';
 import {
-    GPL_BUILTIN_RECEIVERS,
     findGplBuiltinMember,
     isGplBuiltinClassName,
 } from '../language/gplBuiltins';
+import { buildReceiverContext } from './receiverContext';
 
 type SymbolKindJudgement = 'variable' | 'callable' | 'unknown';
 
@@ -63,15 +61,8 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
 
         // 현재 문서를 로컬/파라미터 포함으로 파싱 (parseDocument는 내용 기준 메모이즈 —
         // 반복 hover 비용 낮음). 워크스페이스 캐시는 로컬을 인덱싱하지 않아 별도 필요.
-        const docSymbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
-            includeLocals: true,
-            includeParameters: true,
-        });
-        const procRange = findEnclosingProcedureRange(
-            i => document.lineAt(i).text, document.lineCount, position.line);
-        const lookup = buildDocumentReceiverLookup(
-            docSymbols, procRange, position.line, name => this.symbolCache.findAllByName(name),
-            GPL_BUILTIN_RECEIVERS);
+        const { lookup, docSymbols } = buildReceiverContext(
+            document, position.line, name => this.symbolCache.findAllByName(name));
 
         // 세그먼트 i의 수신자 홀더(i=0은 수신자 없음). 해석 실패 → undefined(이름 기반 폴백).
         const holderOf = (index: number): ReceiverHolder | undefined =>

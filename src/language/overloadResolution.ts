@@ -12,6 +12,7 @@
  * 가점/감점으로 순위를 바꾼다.
  */
 import { getParameterArity, argCountMatchesArity } from './cursorExpression';
+import { elementTypeOf, isArrayTypeName } from './receiverType';
 
 /**
  * 호출 문맥. 인자 개수와 (lazy) 인자 타입 공급자를 담는다.
@@ -129,8 +130,9 @@ export function scoreArgTypeAgainstParam(argType: string | undefined, param: Par
         return GPL_NUMERIC_TYPES.has(paramType) ? 2 : -1;
     }
 
-    const argIsArray = argType.endsWith('[]');
-    const argElem = (argIsArray ? argType.slice(0, -2) : argType).toLowerCase();
+    // 배열 표기·요소 타입 규칙은 공용 정본(receiverType) — 표기(`Foo[]`/`Foo()`)가 늘어도 한 곳만 고친다.
+    const argIsArray = isArrayTypeName(argType);
+    const argElem = (elementTypeOf(argType, true) ?? argType).toLowerCase();
 
     if (argIsArray !== param.isArray) { return -2; }
     if (argElem === paramType) { return 3; }

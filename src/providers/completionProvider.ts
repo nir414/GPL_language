@@ -1,21 +1,18 @@
 import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { XmlUtils } from '../language/xmlUtils';
-import { getAllGplBuiltins, getGplBuiltinReferenceUrl, GPLBuiltinEntry } from '../language/gplBuiltins';
+import {
+    getAllGplBuiltins,
+    getGplBuiltinReferenceUrl,
+    getGplClassMembers,
+    GPLBuiltinEntry,
+} from '../language/gplBuiltins';
 import { GPLParser } from '../language/gplParser';
-import { extractQualifierChainBefore, findEnclosingProcedureRange } from '../language/cursorExpression';
+import { extractQualifierChainBefore, findEnclosingProcedureRange, parseChainSegment } from '../language/cursorExpression';
+import { resolveReceiverTarget, ReceiverLookup, ReceiverSegment } from '../language/receiverType';
+import { buildReceiverContext } from './receiverContext';
 import { analyzeBlockContext, GplBlockContext } from '../language/blockContext';
 import { getApplicableStatements, GPL_KEYWORDS, GplKeywordKind } from '../language/gplStatements';
-
-/** 한정자(`obj.`) 타입 해석 결과. */
-type QualifierTarget =
-    | { kind: 'builtinClass'; name: string }   // GPL Dictionary 내장 클래스 (Move, XmlDoc, String, …)
-    | { kind: 'userClass'; name: string }      // 워크스페이스에 정의된 클래스
-    | { kind: 'module'; name: string }         // 워크스페이스 모듈 (Module.Member 접근)
-    | { kind: 'none' };                        // 타입은 알지만 멤버가 없음(원시 타입) → 빈 목록으로 소음 억제
-
-/** 멤버가 없는 원시 타입 — 이 타입의 변수 뒤 '.'에서는 완성 목록을 비운다. */
-const PRIMITIVE_TYPES = new Set(['integer', 'double', 'single', 'boolean', 'byte', 'short', 'long', 'object']);
 
 export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     constructor(private symbolCache: SymbolCache) {}
@@ -25,8 +22,8 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     // 새로 생성할 필요가 없다. (공백 트리거 시의 전량 재생성 비용 제거)
     private static _builtinCompletionsCache: vscode.CompletionItem[] | undefined;
     private static _dictionaryCompletionsCache: vscode.CompletionItem[] | undefined;
-    /** 내장(사전) 클래스 이름 소문자 집합 — "Move", "XmlDoc", "String" 등 dotted 이름의 접두부. */
-    private static _builtinClassNames: Set<string> | undefined;
+    /** 한정자 미해석 시의 멤버 후보(내장 dotted 멤버의 tail) — 상수 데이터라 1회만 만든다. */
+    private static _anyMemberCompletionsCache: vscode.CompletionItem[] | undefined;
 
     provideCompletionItems(
         document: vscode.TextDocument,
@@ -55,11 +52,8 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
         // (전역 목록 전체가 뜨던 노이즈 제거 + dotted 내장의 접두부 중복 삽입 방지)
         const chainInfo = extractQualifierChainBefore(beforeCursor);
         if (chainInfo) {
-            const memberItems = this.getMemberCompletions(document, position, chainInfo.chain);
-            if (memberItems) {
-                return memberItems;
-            }
-            // 한정자 타입을 해석하지 못하면 기존 전역 목록으로 폴백한다.
+            return this.getMemberCompletions(document, position, chainInfo.chain)
+                ?? this.getUnresolvedMemberCompletions();
         }
 
         const completionItems: vscode.CompletionItem[] = [];
@@ -130,199 +124,111 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
 
     // ─── 멤버 완성 (`obj.` / `Move.`) ─────────────────────────────
 
-    /** 한정자 체인의 멤버 완성 목록. 타입 해석 실패 시 undefined(전역 목록 폴백). */
+    /**
+     * 한정자 체인의 멤버 완성 목록. 타입 해석 실패 시 undefined(멤버 폴백 목록 사용).
+     *
+     * 체인 해석은 receiverType의 공용 해석기에 맡긴다 — 자체 구현을 두었을 때
+     * 내장 멤버의 반환 타입을 따라가지 못해 `Thread.CurrentThread().` 뒤가 미해석으로 떨어졌고,
+     * 그 폴백(전역 목록)이 dotted 내장 항목을 통째로 삽입해 `….Thread.Abort()`가 만들어졌다
+     * (2026-09-10 사용자 보고).
+     */
     private getMemberCompletions(
         document: vscode.TextDocument,
         position: vscode.Position,
         chain: string[]
     ): vscode.CompletionItem[] | undefined {
-        const target = this.resolveQualifierType(document, position, chain);
+        const segments: ReceiverSegment[] = [];
+        for (const raw of chain) {
+            const seg = parseChainSegment(raw);
+            if (!seg) {
+                return undefined;
+            }
+            segments.push(seg);
+        }
+        const lookup = this.buildReceiverLookup(document, position);
+        if (!lookup) {
+            return undefined;
+        }
+        const target = resolveReceiverTarget(segments, lookup);
         if (!target) {
             return undefined;
         }
         switch (target.kind) {
-            case 'none':
-                return []; // 원시 타입: 멤버 없음 — 전역 목록 노이즈 대신 빈 목록
+            case 'primitive':
+                return []; // 멤버 없음 — 전역 목록 노이즈 대신 빈 목록
             case 'builtinClass':
                 return this.getBuiltinClassMemberCompletions(target.name);
-            case 'userClass':
+            case 'class':
                 return this.getUserSymbolMemberCompletions(this.symbolCache.getClassMembers(target.name));
             case 'module':
                 return this.getUserSymbolMemberCompletions(this.symbolCache.getModuleMembers(target.name));
         }
     }
 
-    /** 한정자 체인의 최종 타입을 해석한다. 1세그먼트: 내장 클래스 → 로컬/파라미터 → 워크스페이스 심볼 순. */
-    private resolveQualifierType(
+    /** 현재 문서·커서 위치의 수신자 해석 컨텍스트(조립 정본은 `receiverContext.ts`). */
+    private buildReceiverLookup(
         document: vscode.TextDocument,
-        position: vscode.Position,
-        chain: string[]
-    ): QualifierTarget | undefined {
-        const first = chain[0];
-        const firstName = first.replace(/\(.*\)$/, '');
-        const firstHasCall = firstName !== first;
-        let current: QualifierTarget | undefined;
-
-        // 1) 내장(사전) 클래스 정적 접근: Move. / XmlDoc. / String. …
-        if (!firstHasCall && this.getBuiltinClassNames().has(firstName.toLowerCase())) {
-            current = { kind: 'builtinClass', name: firstName };
-        }
-
-        // 2) 현재 프로시저의 로컬/파라미터 타입
-        if (!current) {
-            const localType = this.resolveLocalType(document, position, firstName);
-            if (localType) {
-                current = this.typeNameToTarget(localType, firstHasCall);
-            }
-        }
-
-        // 3) 워크스페이스 심볼: 클래스/모듈(정적 접근) → 타입 있는 심볼(returnType)
-        if (!current) {
-            const candidates = this.symbolCache.findAllByName(firstName);
-            const cls = candidates.find(s => s.kind === 'class');
-            const mod = candidates.find(s => s.kind === 'module');
-            if (cls && !firstHasCall) {
-                current = { kind: 'userClass', name: cls.name };
-            } else if (mod && !firstHasCall) {
-                current = { kind: 'module', name: mod.name };
-            } else {
-                const typed = candidates.find(s => s.returnType);
-                if (typed?.returnType) {
-                    current = this.typeNameToTarget(typed.returnType, firstHasCall);
-                }
-            }
-        }
-        if (!current) {
-            return undefined;
-        }
-
-        // 4) 나머지 세그먼트는 사용자 심볼의 returnType으로 체이닝 (내장 반환 타입 체이닝은 미지원)
-        for (let k = 1; k < chain.length; k++) {
-            if (current.kind !== 'userClass' && current.kind !== 'module') {
-                return undefined;
-            }
-            const segRaw = chain[k];
-            const segName = segRaw.replace(/\(.*\)$/, '');
-            const segHasCall = segName !== segRaw;
-            const holder: QualifierTarget = current;
-            const member = holder.kind === 'userClass'
-                ? this.symbolCache.findMemberInClass(segName, holder.name)
-                : this.symbolCache.findAllByName(segName).find(
-                    s => !s.className && s.module?.toLowerCase() === holder.name.toLowerCase());
-            if (!member?.returnType) {
-                // 중첩 클래스 한정자 하강: Outer.Inner. → Inner 멤버 / Module.Class. → Class 멤버
-                if (!segHasCall) {
-                    const nested: import('../language/gplParser').GPLSymbol | undefined = this.symbolCache.findAllByName(segName).find(s => s.kind === 'class'
-                        && (holder.kind === 'userClass'
-                            ? s.parentClassName?.toLowerCase() === holder.name.toLowerCase()
-                            : !s.parentClassName && s.module?.toLowerCase() === holder.name.toLowerCase()));
-                    if (nested) {
-                        current = { kind: 'userClass', name: nested.name };
-                        continue;
-                    }
-                }
-                return undefined;
-            }
-            current = this.typeNameToTarget(member.returnType, segHasCall);
-            if (!current) {
-                return undefined;
-            }
-        }
-        return current;
-    }
-
-    /** 타입 이름 문자열을 완성 대상으로 변환. 배열은 인덱싱 여부에 따라 요소 타입/Array 클래스로. */
-    private typeNameToTarget(typeName: string, hasCallOrIndex: boolean): QualifierTarget | undefined {
-        let t = typeName.trim();
-        if (t.endsWith('[]')) {
-            if (hasCallOrIndex) {
-                t = t.slice(0, -2); // arr(0). → 요소 타입의 멤버
-            } else {
-                t = 'Array';        // arr. → 내장 Array 클래스의 멤버
-            }
-        }
-        const lower = t.toLowerCase();
-        if (PRIMITIVE_TYPES.has(lower)) {
-            return { kind: 'none' };
-        }
-        if (this.getBuiltinClassNames().has(lower)) {
-            return { kind: 'builtinClass', name: t };
-        }
-        const candidates = this.symbolCache.findAllByName(t);
-        if (candidates.some(s => s.kind === 'class')) {
-            return { kind: 'userClass', name: t };
-        }
-        if (candidates.some(s => s.kind === 'module')) {
-            return { kind: 'module', name: t };
-        }
-        return undefined;
-    }
-
-    /** 현재 프로시저 스코프에서 이름이 일치하는 로컬/파라미터의 타입을 찾는다. */
-    private resolveLocalType(
-        document: vscode.TextDocument,
-        position: vscode.Position,
-        name: string
-    ): string | undefined {
+        position: vscode.Position
+    ): ReceiverLookup | undefined {
         try {
-            const range = findEnclosingProcedureRange(
-                line => document.lineAt(line).text, document.lineCount, position.line);
-            if (!range) {
-                return undefined;
-            }
-            const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath, {
-                includeLocals: true,
-                includeParameters: true,
-            });
-            const lower = name.toLowerCase();
-            const match = symbols.find(s => (s.isLocal || s.isParameter)
-                && s.line >= range.startLine && s.line <= range.endLine
-                && s.name.toLowerCase() === lower);
-            return match?.returnType;
+            return buildReceiverContext(
+                document, position.line, name => this.symbolCache.findAllByName(name)).lookup;
         } catch {
             return undefined;
         }
     }
 
-    /** 내장 클래스 이름 집합(소문자). dotted 내장 이름의 접두부에서 1회 구축. */
-    private getBuiltinClassNames(): Set<string> {
-        if (!GPLCompletionProvider._builtinClassNames) {
-            const names = new Set<string>();
-            for (const b of getAllGplBuiltins()) {
-                const dot = b.name.indexOf('.');
-                if (dot > 0) {
-                    names.add(b.name.slice(0, dot).toLowerCase());
+    /**
+     * 한정자 타입을 해석하지 못한 `x.` 뒤의 완성 목록.
+     *
+     * 전역 목록으로 폴백하면 멤버 자리에 올 수 없는 것들(키워드·문 스니펫·전역 함수)이 뜨고,
+     * 특히 dotted 내장 항목이 이름 그대로 삽입돼 `x.Thread.Abort()` 같은 코드가 만들어진다.
+     * 그래서 여기서는 **멤버가 될 수 있는 후보만**, 그것도 tail만 삽입되도록 돌려준다.
+     * 어느 클래스의 멤버인지는 detail에 남겨 고를 때 구분할 수 있게 한다.
+     */
+    private getUnresolvedMemberCompletions(): vscode.CompletionItem[] {
+        if (!GPLCompletionProvider._anyMemberCompletionsCache) {
+            const items: vscode.CompletionItem[] = [];
+            for (const builtin of getAllGplBuiltins()) {
+                const dot = builtin.name.lastIndexOf('.');
+                if (dot <= 0) {
+                    continue; // 전역 함수(CInt, Mid …)는 멤버 자리에 올 수 없다
                 }
+                items.push(this.buildBuiltinMemberItem(builtin, '1_anymember_'));
             }
-            GPLCompletionProvider._builtinClassNames = names;
+            GPLCompletionProvider._anyMemberCompletionsCache = items;
         }
-        return GPLCompletionProvider._builtinClassNames;
+        // 워크스페이스 심볼은 이름 그대로 삽입되므로(dotted 아님) 멤버 자리에서도 안전하다.
+        return [...GPLCompletionProvider._anyMemberCompletionsCache, ...this.symbolCache.getCompletionItems()];
     }
 
     /** 내장 클래스의 멤버 완성 — tail만 삽입해 `Move.Move.Approach` 중복을 방지한다. */
     private getBuiltinClassMemberCompletions(className: string): vscode.CompletionItem[] {
-        const prefixLen = className.length + 1;
-        const prefixLower = className.toLowerCase() + '.';
-        const items: vscode.CompletionItem[] = [];
-        for (const builtin of getAllGplBuiltins()) {
-            if (!builtin.name.toLowerCase().startsWith(prefixLower)) {
-                continue;
-            }
-            const tail = builtin.name.slice(prefixLen);
-            const item = new vscode.CompletionItem(tail, this.mapBuiltinKindToCompletionKind(builtin));
-            item.detail = `GPL Built-in · ${builtin.category}`;
-            item.documentation = this.buildBuiltinDocumentation(builtin);
-            let insert = builtin.insertSnippet ?? builtin.name;
-            if (insert.toLowerCase().startsWith(prefixLower)) {
-                insert = insert.slice(prefixLen);
-            } else if (!builtin.insertSnippet) {
-                insert = tail;
-            }
-            item.insertText = new vscode.SnippetString(insert);
-            item.sortText = `0_member_${tail}`;
-            items.push(item);
-        }
-        return items;
+        return getGplClassMembers(className).map(builtin => this.buildBuiltinMemberItem(builtin, '0_member_'));
+    }
+
+    /**
+     * 내장 dotted 항목(`Thread.Abort`)을 **멤버 자리에 그대로 넣을 수 있는** 완성 항목으로 만든다.
+     * 라벨·삽입 텍스트에서 `클래스.` 접두부를 떼는 것이 핵심이다 — 붙은 채로 삽입되면
+     * `Thread.CurrentThread().Thread.Abort()`가 된다.
+     * 접두부 길이는 수신자 이름이 아니라 **항목 이름의 점 위치**로 정한다(대소문자·표기 차이에 무관).
+     */
+    private buildBuiltinMemberItem(builtin: GPLBuiltinEntry, sortPrefix: string): vscode.CompletionItem {
+        const prefixLen = builtin.name.lastIndexOf('.') + 1;
+        const tail = builtin.name.slice(prefixLen);
+        const item = new vscode.CompletionItem(tail, this.mapBuiltinKindToCompletionKind(builtin));
+        item.detail = `GPL Built-in · ${builtin.name}`;
+        item.documentation = this.buildBuiltinDocumentation(builtin);
+        const snippet = builtin.insertSnippet ?? builtin.name;
+        // insertSnippet은 `Thread.Sleep(${1:ms})`처럼 접두부를 포함한다 — 접두부만 떼고 인자는 살린다.
+        const insert = snippet.length >= prefixLen && snippet.slice(0, prefixLen).toLowerCase() === builtin.name.slice(0, prefixLen).toLowerCase()
+            ? snippet.slice(prefixLen)
+            : tail;
+        item.insertText = new vscode.SnippetString(insert);
+        // dotted 전체 이름으로도 검색되게 한다(`Thread.Ab`로 좁히는 사용자 습관 지원).
+        item.filterText = `${tail} ${builtin.name}`;
+        item.sortText = `${sortPrefix}${tail}`;
+        return item;
     }
 
     /** 사용자 클래스/모듈 멤버 완성 항목 구성. */

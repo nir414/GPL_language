@@ -3,6 +3,7 @@ import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
 import { ciEq } from '../language/identifiers';
+import { elementTypeOf } from '../language/receiverType';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
 import { buildConstructorUsagePattern, isSymbolicStringReferenceAt } from '../language/referenceSyntax';
 import { PROJECT_EXCLUDE_GLOB, resolveProjectFileScope } from '../project/projectFileScope';
@@ -231,9 +232,10 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         }
 
         // Instance usage: keep only matching returnType.
-        // 배열 타입(`Foo[]`)은 요소 타입으로 비교한다 — 파라미터/Dim 배열 표기 일관화(2026-07-13).
+        // 배열 타입(`Foo[]`·`Foo()`)의 요소 타입 규칙은 공용 정본(receiverType.elementTypeOf)을 쓴다
+        // — 사본을 두면 표기 하나가 늘 때 한쪽만 고쳐진다(2026-07-13 표기 일관화의 연장).
         if (qSym.returnType) {
-            return ciEq(qSym.returnType.replace(/\[\]$/, ''), targetClass);
+            return ciEq(elementTypeOf(qSym.returnType, true) ?? qSym.returnType, targetClass);
         }
 
         return true;

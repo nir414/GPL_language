@@ -3,10 +3,11 @@ import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
 import { ciEq } from '../language/identifiers';
-import { extractBaseObjectName, escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix, getStringLiteralContentAt } from '../language/cursorExpression';
+import { escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix, extractQualifierChainBefore, parseChainSegment, getStringLiteralContentAt } from '../language/cursorExpression';
 import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
-import { findGplBuiltinMember, isGplBuiltinClassName } from '../language/gplBuiltins';
-import { ownedByHolder, ReceiverLookup } from '../language/receiverType';
+import { findGplBuiltinMember } from '../language/gplBuiltins';
+import { elementTypeOf, ownedByHolder, resolveReceiverTarget, ReceiverHolder, ReceiverLookup, ReceiverSegment } from '../language/receiverType';
+import { buildReceiverContext } from './receiverContext';
 import { dedupeSymbolLocations, preferExistingFiles, fileExists } from '../language/symbolLocations';
 import { pickVisibleDeclaration } from '../language/symbolScope';
 
@@ -93,8 +94,9 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
                 return type;
             }
             // `name(...)`: 배열 변수 인덱싱이면 요소 타입, 함수 호출이면 반환 타입.
-            if (type.endsWith('[]') && sym!.kind !== 'function') {
-                return type.slice(0, -2);
+            // 요소 타입 규칙은 공용 정본(receiverType.elementTypeOf).
+            if (sym!.kind !== 'function') {
+                return elementTypeOf(type, true) ?? type;
             }
             return type;
         });
@@ -190,18 +192,51 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         return undefined;
     }
 
-    /**
-     * 이 이름의 사용자 정의 클래스/모듈이 인덱스에 있는지.
-     *
-     * 내장(GPL Dictionary) 클래스와 이름이 겹칠 때 사용자 정의를 우선하고
-     * (예: 사용자가 직접 만든 `Location` 클래스), 멤버를 못 찾았을 때
-     * "컨테이너가 확실히 존재한다"를 근거로 전역 폴백을 차단하는 데 쓴다.
-     */
-    private hasUserContainerNamed(name: string): boolean {
-        if (!name) {
-            return false;
+    /** 수신자 체인의 최종 대상(사용자 클래스/모듈 · 내장 클래스 · 원시 타입). 조립은 공용 정본에 맡긴다. */
+    private resolveReceiver(
+        document: vscode.TextDocument,
+        atLine: number,
+        receiver: ReceiverSegment[]
+    ): ReturnType<typeof resolveReceiverTarget> {
+        try {
+            const { lookup } = buildReceiverContext(
+                document, atLine, name => this.symbolCache.findAllByName(name));
+            return resolveReceiverTarget(receiver, lookup);
+        } catch (error) {
+            this.log(`[Receiver Resolve Error] ${error}`);
+            return undefined;
         }
-        return this.symbolCache.findAllByName(name).some(s => s.kind === 'class' || s.kind === 'module');
+    }
+
+    /**
+     * 해석된 홀더(클래스/모듈) 안에서 멤버 정의를 찾는다.
+     *
+     * 종전에는 모듈·정적 클래스·클래스 인스턴스가 각각 같은 조회를 복제하고 있었다(로그 문구만 달랐다).
+     * 홀더 종류는 조회 대상 API 선택에만 쓰이므로 한 곳으로 합친다.
+     * 홀더가 인덱스에 있다는 것은 해석기가 확인한 사실이므로, 멤버를 못 찾으면 소속 확인 조회까지만 하고
+     * 전역 이름 폴백은 막는다(조용히 틀린 곳으로 가느니 "정의 없음"이 안전하다).
+     */
+    private findMemberDefinitionIn(
+        holder: ReceiverHolder,
+        memberName: string,
+        document: vscode.TextDocument,
+        callCtx: CallContext | undefined,
+        callArgCount: number | undefined
+    ): vscode.Definition | undefined {
+        const isClass = holder.kind === 'class';
+        const candidates = isClass
+            ? this.symbolCache.findMemberCandidatesInClass(memberName, holder.name)
+            : this.symbolCache.findMemberCandidatesInModule(memberName, holder.name);
+        this.logMemberCandidates(`${isClass ? 'Class' : 'Module'}:${holder.name}.${memberName}`, candidates, callArgCount);
+
+        const matches = isClass
+            ? this.symbolCache.findMemberInClassMatches(memberName, holder.name, document.uri.fsPath, callCtx)
+            : this.symbolCache.findMemberInModuleMatches(memberName, holder.name, document.uri.fsPath, callCtx);
+        if (matches.length > 0) {
+            this.log(`[Member Found] ${memberName} in ${holder.kind} ${holder.name} | ${this.formatCandidate(matches[0])}`);
+            return this.buildDefinitionResult(matches);
+        }
+        return this.resolveOwnedMemberOrBlock(memberName, holder.name, holder.kind, callCtx);
     }
 
     /**
@@ -523,140 +558,36 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             // Continue with other resolution paths
         }
         
-        // Check if there's a dot before the current word (member access)
-        // Look for pattern: objectExpression.memberName where cursor is on memberName
-        // Handles: obj.member, myRobot(index).member, array[0].member, etc.
-        const beforeWord = line.substring(0, wordRange.start.character).trimEnd();
-        const lastDotIndex = beforeWord.lastIndexOf('.');
-
-        if (lastDotIndex !== -1) {
-            // Extract everything before the last dot
-            const objectExpression = beforeWord.substring(0, lastDotIndex).trim();
-            const baseObjectName = extractBaseObjectName(objectExpression);
+        // ── 멤버 접근(`receiver.member`) — 수신자 체인은 공용 해석기가 푼다 ──────────────
+        // 종전에는 점 **바로 앞 식의 첫 이름만**(extractBaseObjectName) 보고 타입을 정했다. 그래서
+        // `a.b.member` 는 b 가 아니라 a 에서 멤버를 찾았고, `Me.` 나 내장 멤버를 거친 체인
+        // (`Thread.CurrentThread().Name`)은 아예 해석하지 못한 채 **한정자를 버린 전역 이름 폴백**으로
+        // 흘러 동명의 남의 심볼로 점프했다. hover·완성과 같은 정본(receiverType)을 쓰면 그 편차가 사라진다.
+        const chainInfo = extractQualifierChainBefore(line.substring(0, wordRange.start.character).trimEnd());
+        if (chainInfo) {
             const memberName = word;
+            const parsed = chainInfo.chain.map(parseChainSegment);
+            const receiver = parsed.every(seg => seg !== undefined) ? parsed as ReceiverSegment[] : undefined;
+            const target = receiver ? this.resolveReceiver(document, position.line, receiver) : undefined;
+            const chainText = chainInfo.chain.join('.');
+            this.log(`[Member Access] Receiver: "${chainText}" | Member: "${memberName}" | Target: ${target ? `${target.kind} ${target.name}` : '미해석'} | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
 
-            this.log(`[Member Access] Expression: "${objectExpression}" | Base: "${baseObjectName}" | Member: "${memberName}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
-
-            if (!baseObjectName) {
-                this.log(`[Member Access] Failed to extract base object name from "${objectExpression}"`);
-            } else {
-                // Find the variable/object definition to get its type.
-                // Prefer local/parameter symbol first — it has accurate type info
-                // (e.g., "armList() As RobotArm" parameter has returnType "RobotArm").
-                // Cache symbols for same-named variables may lack type info.
-                const localSymbol = this.findLocalSymbol(document, baseObjectName, position.line);
-                const cacheSymbol = this.symbolCache.findDefinition(baseObjectName, document.uri.fsPath);
-
-                // Pick local if it has type info, or if cache has no result;
-                // otherwise prefer whichever has returnType.
-                let objectSymbol: GPLSymbol | undefined;
-                if (localSymbol && localSymbol.returnType) {
-                    objectSymbol = localSymbol;
-                } else if (cacheSymbol && cacheSymbol.returnType) {
-                    objectSymbol = cacheSymbol;
-                } else {
-                    // Neither has type — prefer local (closer scope), then cache
-                    objectSymbol = localSymbol ?? cacheSymbol;
-                }
-
-                // 수신자(receiver)의 타입 이름을 확정한다 — 내장 클래스 판정용.
-                //   - 한정자 자체가 사용자 모듈/클래스면 그 이름 (Module.Member, ClassName.StaticMember)
-                //   - 타입이 있는 변수면 그 타입 (Dim t As Thread → "Thread", 배열 접미사 "[]"는 제거)
-                //   - 아무것도 못 찾았으면 표기된 이름 그대로 (Move.Loc 같은 내장 정적 클래스)
-                const userContainerName = objectSymbol && (objectSymbol.kind === 'module' || objectSymbol.kind === 'class')
-                    ? objectSymbol.name
-                    : undefined;
-                const declaredTypeName = objectSymbol?.returnType?.replace(/\[\]$/, '');
-                const receiverTypeName = userContainerName || declaredTypeName || baseObjectName;
-
+            if (target?.kind === 'builtinClass') {
                 // 내장(GPL Dictionary) 클래스가 수신자면 이동할 소스 정의가 없다
                 // (Move.Loc, Console.WriteLine, Dim t As Thread → t.Start ...).
-                // 여기서 끝내지 않고 아래 전역 이름 폴백으로 흘려보내면 한정자를 버린 채
-                // 이름만 같은 사용자 심볼로 엉뚱하게 점프한다(예: Move.Run → Lib_MoveQueue.Run).
-                // 같은 이름의 사용자 클래스/모듈이 실제로 있으면 사용자 정의를 우선해 차단하지 않는다. (2026-08-31)
-                if (!userContainerName
-                    && isGplBuiltinClassName(receiverTypeName)
-                    && !this.hasUserContainerNamed(receiverTypeName)) {
-                    const builtinMember = findGplBuiltinMember(receiverTypeName, memberName);
-                    const memberDesc = builtinMember ? `내장 ${builtinMember.kind}` : '내장 클래스에 없는 멤버';
-                    this.log(`[Builtin Receiver] "${receiverTypeName}.${memberName}" → ${memberDesc} | 소스 정의 없음 → 전역 폴백 차단`);
-                    return undefined;
-                }
-
-                if (objectSymbol) {
-                    this.log(`[Object Found] Name: ${objectSymbol.name} | Type: ${objectSymbol.returnType || 'N/A'} | Kind: ${objectSymbol.kind}`);
-
-                    if (objectSymbol.kind === 'module') {
-                        this.log(`[Resolution Path] Module.Member → searching "${memberName}" in module "${objectSymbol.name}"`);
-                        // Module.Member access - search in module
-                        const moduleCandidates = this.symbolCache.findMemberCandidatesInModule(memberName, objectSymbol.name);
-                        this.logMemberCandidates(`Module:${objectSymbol.name}.${memberName}`, moduleCandidates, callArgCount);
-
-                        const memberMatches = this.symbolCache.findMemberInModuleMatches(memberName, objectSymbol.name, document.uri.fsPath, callCtx);
-
-                        if (memberMatches.length > 0) {
-                            const memberSymbol = memberMatches[0];
-                            this.log(`[Member Found] ${memberName} in module ${objectSymbol.name}`);
-                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                            this.log(`[Location] File: ${memberSymbol.filePath} | Line: ${memberSymbol.line + 1}`);
-                            return this.buildDefinitionResult(memberMatches);
-                        } else {
-                            // 모듈은 인덱스에 확실히 존재한다 → 소속 확인 조회까지만 하고, 없으면 차단. (2026-08-31)
-                            return this.resolveOwnedMemberOrBlock(memberName, objectSymbol.name, 'module', callCtx);
-                        }
-                    } else if (objectSymbol.kind === 'class') {
-                        // Static access: ClassName.Member
-                        this.log(`[Resolution Path] ClassName.Member → static member "${memberName}" in class "${objectSymbol.name}"`);
-
-                        const classCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, objectSymbol.name);
-                        this.logMemberCandidates(`ClassStatic:${objectSymbol.name}.${memberName}`, classCandidates, callArgCount);
-
-                        const memberMatches = this.symbolCache.findMemberInClassMatches(memberName, objectSymbol.name, document.uri.fsPath, callCtx);
-                        if (memberMatches.length > 0) {
-                            const memberSymbol = memberMatches[0];
-                            this.log(`[Member Found] ${memberName} in class ${objectSymbol.name}`);
-                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                            this.log(`[Location] File: ${memberSymbol.filePath} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
-                            return this.buildDefinitionResult(memberMatches);
-                        } else {
-                            // 클래스가 인덱스에 확실히 존재한다 → 위 모듈 경로와 같은 규칙(중첩 클래스 등도 여기서 잡힌다).
-                            return this.resolveOwnedMemberOrBlock(memberName, objectSymbol.name, 'class', callCtx);
-                        }
-                    } else if (objectSymbol.returnType) {
-                        // Class instance.Member access - search in class
-                        // This handles: Dim obj As MyClass; obj.member
-                        // Also: Dim arr(...) As MyClass; arr(index).member
-                        // Strip array suffix "[]" so "RNDRobot[]" → "RNDRobot"
-                        const resolvedType = objectSymbol.returnType.replace(/\[\]$/, '');
-                        this.log(`[Resolution Path] ClassInstance.Member → instance of class "${resolvedType}" | searching "${memberName}"`);
-                        this.log(`[Type Resolution] Variable "${baseObjectName}" has type "${objectSymbol.returnType}"${resolvedType !== objectSymbol.returnType ? ` → stripped to "${resolvedType}"` : ''}`);
-
-                        const instanceCandidates = this.symbolCache.findMemberCandidatesInClass(memberName, resolvedType);
-                        this.logMemberCandidates(`ClassInstance:${resolvedType}.${memberName}`, instanceCandidates, callArgCount);
-
-                        const memberMatches = this.symbolCache.findMemberInClassMatches(memberName, resolvedType, document.uri.fsPath, callCtx);
-
-                        if (memberMatches.length > 0) {
-                            const memberSymbol = memberMatches[0];
-                            this.log(`[Member Found] ${memberName} in class ${resolvedType}`);
-                            this.log(`[Selected] ${this.formatCandidate(memberSymbol)}`);
-                            this.log(`[Location] File: ${memberSymbol.filePath} | Line: ${memberSymbol.line + 1} | ClassName: ${memberSymbol.className || 'N/A'}`);
-                            return this.buildDefinitionResult(memberMatches);
-                        } else if (this.hasUserContainerNamed(resolvedType)) {
-                            // 클래스 정의가 인덱스에 있다 → 소속 확인 조회까지만 하고, 없으면 차단.
-                            return this.resolveOwnedMemberOrBlock(memberName, resolvedType, 'class', callCtx);
-                        } else {
-                            // 클래스 정의 자체가 인덱스에 없다(캐시 stale·미인덱싱 파일). 예전처럼 전역 폴백에
-                            // 맡긴다 — 여기서 막으면 "파일을 방금 복사해 와 캐시가 낡은" 경우를 못 찾는다.
-                            this.log(`[Member NOT Found] "${memberName}" in class "${resolvedType}" (클래스 정의가 인덱스에 없음 — stale 캐시 가능) → 전역 폴백 허용`);
-                        }
-                    } else {
-                        this.log(`[No Type Info] Object "${baseObjectName}" has no returnType and is not a class/module. Cannot resolve member access.`);
-                    }
-                } else {
-                    this.log(`[Object NOT Found] "${baseObjectName}" not found in cache or local scope`);
-                }
+                // 전역 폴백으로 흘려보내면 한정자를 버린 채 동명 사용자 심볼로 점프한다
+                // (예: Move.Run → Lib_MoveQueue.Run). 해석기는 동명 사용자 클래스/모듈을 먼저
+                // 보므로, 여기 도달했다는 것은 그런 사용자 정의가 없다는 뜻이다. (2026-08-31)
+                const builtinMember = findGplBuiltinMember(target.name, memberName);
+                const memberDesc = builtinMember ? `내장 ${builtinMember.kind}` : '내장 클래스에 없는 멤버';
+                this.log(`[Builtin Receiver] "${target.name}.${memberName}" → ${memberDesc} | 소스 정의 없음 → 전역 폴백 차단`);
+                return undefined;
             }
+            if (target?.kind === 'class' || target?.kind === 'module') {
+                return this.findMemberDefinitionIn(target, memberName, document, callCtx, callArgCount);
+            }
+            // 원시 타입·미해석(캐시 stale·미인덱싱 파일 포함)은 종전처럼 전역 이름 폴백에 맡긴다 —
+            // 여기서 막으면 "파일을 방금 복사해 와 캐시가 낡은" 경우를 못 찾는다.
         }
 
         if (token.isCancellationRequested) {

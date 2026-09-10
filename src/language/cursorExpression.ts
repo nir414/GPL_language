@@ -387,8 +387,9 @@ export function extractQualifierChainBefore(
     while (i > 0 && text[i - 1] === '.') {
         i--; // '.' 소비
         const segEnd = i;
-        // 호출/인덱싱 접미사 "(...)" (중첩 괄호 허용)
-        if (i > 0 && text[i - 1] === ')') {
+        // 호출/인덱싱 접미사 "(...)" (중첩 괄호 허용). `arr(0)(1)`처럼 연달아 붙는 것도 모두 소비한다 —
+        // 하나만 소비하면 남은 ")" 때문에 세그먼트가 깨져 체인 전체가 미해석이 된다.
+        while (i > 0 && text[i - 1] === ')') {
             let depth = 0;
             let j = i - 1;
             for (; j >= 0; j--) {
@@ -419,6 +420,19 @@ export interface DebugExpressionSegment {
     name: string;
     /** 괄호 그룹 내용(괄호 제외). 없으면 인덱싱/호출 접미사 없는 세그먼트. */
     args?: string;
+}
+
+/**
+ * 체인 세그먼트 텍스트(`armList(i)` / `CurrentThread()` / `Name`)를 파싱한다.
+ * 괄호 그룹이 있으면 `args`(괄호 제외 내용, 빈 호출은 `''`)를 채운다 — 인덱싱인지 호출인지는
+ * 여기서 판단하지 않는다(수신자 타입 해석·안전성 판단은 호출자 몫).
+ * `extractQualifierChainBefore`가 돌려준 문자열 체인을 receiverType의 `ReceiverSegment`로
+ * 옮길 때도 이 함수를 쓴다 — 파싱 규칙이 두 벌이 되지 않게 한다.
+ */
+export function parseChainSegment(raw: string): DebugExpressionSegment | undefined {
+    const m = raw.match(/^([A-Za-z_]\w*)(?:\((.*)\))?$/);
+    if (!m) { return undefined; }
+    return m[2] !== undefined ? { name: m[1], args: m[2] } : { name: m[1] };
 }
 
 /** 커서 위치의 디버그 평가 후보 식 (안전성 판단은 호출자 몫 — 세그먼트 구조를 그대로 노출). */
@@ -469,12 +483,6 @@ export function extractDebugExpressionAt(
     const word = lineText.slice(ws, we);
     if (!/^[A-Za-z_]\w*$/.test(word)) { return undefined; }
 
-    const parseSegment = (raw: string): DebugExpressionSegment | undefined => {
-        const m = raw.match(/^([A-Za-z_]\w*)(?:\((.*)\))?$/);
-        if (!m) { return undefined; }
-        return m[2] !== undefined ? { name: m[1], args: m[2] } : { name: m[1] };
-    };
-
     // 3) 앞 체인 (`a(0).b.` 형태) — 재구성 텍스트가 원문과 정확히 일치할 때만 채택
     //    (공백 섞인 `a . b` 등 예외 케이스는 안전하게 커서 단어만 사용)
     const segments: DebugExpressionSegment[] = [];
@@ -483,7 +491,7 @@ export function extractDebugExpressionAt(
     if (before && before.partial === '') {
         const chainText = before.chain.join('.') + '.';
         if (lineText.slice(ws - chainText.length, ws) === chainText) {
-            const parsed = before.chain.map(parseSegment);
+            const parsed = before.chain.map(parseChainSegment);
             if (parsed.every(s => s !== undefined)) {
                 segments.push(...(parsed as DebugExpressionSegment[]));
                 startColumn = ws - chainText.length;

@@ -5,7 +5,6 @@ import { isTraceVerbose, EXTENSION_VERSION, isInCommentOrString, getHoverConfig,
 import { ciEq } from '../language/identifiers';
 import { findEnclosingProcedureRange, extractDebugExpressionAt } from '../language/cursorExpression';
 import {
-    buildDocumentReceiverLookup,
     enclosingClassName,
     enclosingModuleName,
     membersNamed,
@@ -14,13 +13,13 @@ import {
     ReceiverSegment,
 } from '../language/receiverType';
 import { renderDocCommentMarkdown } from '../language/docComment';
+import { buildReceiverContext } from './receiverContext';
 import {
     findGplBuiltin,
     findGplBuiltinMember,
     findGplClassDoc,
     getGplBuiltinReferenceUrl,
     getGplClassMembers,
-    GPL_BUILTIN_RECEIVERS,
     GPLBuiltinEntry,
     GPLClassDoc,
 } from '../language/gplBuiltins';
@@ -235,9 +234,8 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         memberName: string,
     ): GPLBuiltinEntry | undefined {
         try {
-            const docSymbols = this.getDocumentSymbols(document);
-            const range = findEnclosingProcedureRange(i => document.lineAt(i).text, document.lineCount, atLine);
-            const lookup = buildDocumentReceiverLookup(docSymbols, range, atLine, n => this.symbolCache.findAllByName(n), GPL_BUILTIN_RECEIVERS);
+            const { lookup } = buildReceiverContext(
+                document, atLine, n => this.symbolCache.findAllByName(n), this.getDocumentSymbols(document));
             const typeName = resolveReceiverTypeName(receiver, lookup);
             if (!typeName) {
                 return undefined;
@@ -265,9 +263,8 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         memberName: string,
     ): GPLSymbol | undefined {
         try {
-            const docSymbols = this.getDocumentSymbols(document);
-            const range = findEnclosingProcedureRange(i => document.lineAt(i).text, document.lineCount, atLine);
-            const lookup = buildDocumentReceiverLookup(docSymbols, range, atLine, n => this.symbolCache.findAllByName(n), GPL_BUILTIN_RECEIVERS);
+            const { lookup } = buildReceiverContext(
+                document, atLine, n => this.symbolCache.findAllByName(n), this.getDocumentSymbols(document));
             const holder = resolveReceiverHolder(receiver, lookup);
             const chain = receiver.map(s => (s.args !== undefined ? `${s.name}(${s.args})` : s.name)).join('.');
             if (!holder) {

@@ -110,10 +110,11 @@ flowchart BT
 그러면 ① 가짜 IO 로 시나리오를 Node 단독 테스트에 고정할 수 있고 ② 판정 규칙이 바뀌어도 한 곳만 고치면 되며
 ③ 새 호출부가 안전장치를 빠뜨릴 수 없다(실제로 디버그 세션의 attach preflight 는 정지 확인이 빠져 있었다).
 
-정본: `controller/threadStop.ts`(전체·개별 쓰레드 정지). 결과는 성공/실패 불리언이 아니라 **구조화된 결과**로
+정본: `controller/threadStop.ts`(전체·개별 쓰레드 정지) · `controller/projectCommands.ts`(Compile/Load/Unload/Start) ·
+`controller/remoteProjectPath.ts`(어느 원격 사본을 대상으로 삼을지). 결과는 성공/실패 불리언이 아니라 **구조화된 결과**로
 돌려주고, 특히 "확인하지 못함"(`unconfirmed`)을 성공과 구분해 드러낸다 — 배포는 통과시키고 원격 파일 삭제는
-중단하는 식으로 **정책은 호출부가 고른다.** 같은 꼴로 정리할 다음 후보(compile/load/unload/start 등)는
-`docs/ai-handoff.md` §1-DD 의 표에 있다.
+중단하는 식으로 **정책은 호출부가 고른다.** 같은 꼴로 정리할 다음 후보(`Show Thread` 열거·중단점 명령 폴백·busy 재시도·스택 조회)는
+`docs/ai-handoff.md` §1-DD 의 표와 §1-DE 말미에 있다.
 
 ## 4. 조립 — extension.ts → ExtensionHost → activation/*
 

@@ -1,12 +1,11 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
 - **최종 갱신: 2026-09-10** · 현재 package 버전 **0.9.1** (태그 `v0.9.0` — CI `release.yml`이 빌드·패키징·릴리즈)
-- **직전 세션: §1-DD** — **제어기 조작 절차를 API 한 겹으로 묶기(1): 쓰레드 정지 정본 신설.**
-  제어기의 원시 명령은 안전한 단위가 아니다(`Stop -all` 은 *요청 접수*까지만 보장) — 그 절차를 호출부마다
-  다시 조립하던 것을 `controller/threadStop.ts`(vscode 무의존·주입형 IO) 하나로 모으고 5곳을 통합했다.
-  디버그 세션 두 곳은 정지 확인이 아예 없었다(§0.6 위반). 개별 정지 쌍둥이 코드·정지/일시정지 상태 집합
-  중복도 정리하고, 무검증 성공 보고 2건(`ftpUnload`·`threadStart`)을 고쳤다. `npm test` 837/837.
-  같은 성격의 중복 8건을 전수 조사해 다음 단위(`controller/projectCommands.ts`)까지 §1-DD 표에 적어 뒀다.
+- **직전 세션: §1-DE** — **제어기 조작 절차를 API 한 겹으로 묶기(2).** "이 기능 저 기능이 다르게 동작한다"의
+  원인을 계속 없앤다. Compile/Load/Unload/Start 를 `controller/projectCommands.ts`(vscode 무의존·주입형 IO)로
+  모으고 배포·FTP Run 이 같은 구현을 쓰게 했다 — FTP Run 에만 있던 `-event` 누락(1403 이벤트 안 옴)·컴파일 에러가
+  Problems 에 안 뜨던 문제·상태 코드 하드코딩·HTTP 응답 감지 누락이 함께 사라졌다. 원격 사본 선택 규칙
+  (`remoteProjectPath.ts`)과 Start 직전 콘솔 준비도 정본 하나로. `npm test` 859/859. 실기기 검증은 §3.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -88,12 +87,17 @@
   보관한다(머리의 `⚗ TEST X` 줄로 구분된다). 판정: **B에서만 정상 = 원인은 ㉠**(Stop 처리 중 FTP 덮어쓰기),
   **C에서만 정상 = 원인은 ㉡**(정지 직후의 Start), 둘 다 정상 = 각각으로 충분, A에서 재현되면 가설 자체가 맞다.
   결과가 나오면 이 항목과 §1-DC를 사실로 갱신하고, 불필요해진 조합·TEST 명령은 정리한다.
-- [ ] **(2026-09-10, §1-DD) 제어기 API 통합 (2) — `controller/projectCommands.ts`(compile/load/unload/start).**
-  §1-DD 표의 중복 1·2·3 을 한 번에 없앤다. `threadStop.ts` 와 같은 꼴(주입형 IO + 구조화 결과)로 만들고,
-  진단(Problems) 연동·모달 확인 같은 UI 는 호출부에 남긴다. **배포 파이프라인의 심장부라 테스트를 먼저 깔고
-  들어갈 것.** 부수 효과로 `ftpCommands` 의 `Start` 가 `-event` 없이 손으로 조립되던 것(경로마다 1403 이벤트 모드가
-  달라지던 원인)과 `resolveFtpRunPath`/`chooseRemoteProjectPath` 의 가중치 차이(같은 프로젝트에 다른 원격 폴더를
-  고를 수 있다)도 정리된다. 나머지 4~7(Show Thread 열거·중단점 폴백·busy 재시도·스택 조회)은 그다음.
+- [ ] **(2026-09-10, §1-DE) 배포·FTP Run 실기기 확인 — Compile/Load/Unload/Start 구현이 하나로 합쳐졌다.**
+  저속/시뮬레이션에서만(Start 를 보낸다 — 하드 규칙 6). ① 「빠른 컴파일」·「Deploy」가 종전과 같은 트레이스로
+  끝나는지(단계 배너·CMD/RAW/NOTE 줄). ② **소스에 일부러 에러를 넣고** FTP Run 을 실행 → 종전에는 토스트 한 줄만
+  나오던 컴파일 에러가 **Problems 패널에 뜨고 첫 에러로 점프**하는지(같은 이름의 로컬 프로젝트가 열려 있을 때).
+  ③ FTP Run 의 Start 가 Traffic 에 `Start <name> -event` 로 나가는지(종전에는 `-event` 가 없었다) + 1403 이벤트가
+  오는지. ④ 트리에서 `/GPL/<name>` 노드로 FTP Run 했는데 flash 에도 같은 이름이 있으면 로그에 경로 전환
+  (`Path selected: … → …`)이 남는지. ⑤ FTP Unload 를 쓰레드 실행 중 실행 → -750 안내가 뜨는지.
+- [ ] **(2026-09-10, §1-DE) 제어기 API 통합 (3) — 남은 중복 4·5·6·7.**
+  §1-DE 말미의 목록 순서대로. 다음은 **`Show Thread` 열거를 `threadStop.probeThreads` 로 모으기**(저위험,
+  "잘린 응답" 정책 3종을 하나로) → 중단점 명령 폴백을 `breakpointCommand.ts` 로 → busy 재시도 정책 정리
+  (`commandPolicy` R2 가 이미 전송 전 최대 8초 대기라 실효 타임아웃이 곱해진다) → 스택/정지 위치 조회.
 - [ ] **(2026-09-10, §1-DD) 정지 경로 실기기 확인 — 5곳이 같은 절차를 쓰게 바뀌었다(모션 유발 없음, 정지만).**
   ① 패널 「전체 정지」: 정지 확인까지 간 뒤 "전체 정지 완료"가 뜨는지, 제어기를 뽑아 두면(무응답) 완료로
   보고하지 **않고** SoftEStop 안내로 가는지. ② 트리 쓰레드 「정지」·FTP 폴더 「중지」가 같은 문구·같은 절차인지.
@@ -449,6 +453,8 @@ src/controller/connectionHealth.ts       # 연결 건강 판정(vscode 무의존
 src/controller/consoleSocket.ts          # 1402 소켓 계층(vscode 무의존) — keep-alive 소켓 1개, terminator-first 재사용 판정, stale 1회 재시도, 트래픽 링버퍼 600줄 (§1-BI, #22), reject code 부착·보관 소켓 관찰자(§1-BK)
 src/debug/sourceTargets.ts               # BP 유효 줄·프로시저 범위(End Sub 기준)·호출 후보 파싱(vscode 무의존) — BP 줄 보정(문서 규칙)·Jump to Cursor 검증·Step Into Target 후보 (§1-BU)
 src/controller/threadActivity.ts          # "동작 중" 판정(vscode 무의존) — 쓰레드 존재 = 활성, project 컬럼·기본 이름·`_Cmd_<project>`(Execute 쓰레드) 인정 (§1-BU). 상태 판정 단일 출처: isSettledState(Idle/Stopped/Error) · isPausedState/PAUSED_THREAD_STATES(Paused/Break/Error, §1-DD)
+src/controller/projectCommands.ts         # **Compile/Load/Unload/Start 의 정본**(vscode 무의존·주입형 IO) — compileProject(후보 순회·일시적 STATUS 1회 재시도·성공은 STATUS 0+에러 0 뿐)/loadProject(HTTP 응답=제어기 이상)/unloadProject(-750 쓰레드 실행 중)/startProject(항상 buildStartCommand). 배포·FTP Run 이 함께 쓴다 (§1-DE)
+src/controller/remoteProjectPath.ts       # 어느 원격 사본(/flash/projects vs /GPL)을 대상으로 삼을지 — 점수 규칙 단일 정본(존재+200/flash+80/선택+20, switched 로 전환 고지) (§1-DE)
 src/controller/threadStop.ts              # **쓰레드 정지의 정본**(vscode 무의존·주입형 IO) — probeThreads(잘린 응답=확인 불가) / waitThreadsSettle·waitThreadSettle / sendStop / stopAllAndSettle·stopThreadAndSettle(전송→STATUS 판정→폴링→자동 재시도, unconfirmed 노출). 배포·패널·FTP·디버그가 모두 이것을 쓴다 (§1-DD)
 src/controller/startCommand.ts            # Start 명령 조립(vscode 무의존) — 문서 구문 순서, 기본 `-event`(GDE 동일), `-compile` 금지(하드 규칙 7) (§1-BU)
 src/debug/threadLock.ts                  # 스레드 단일 실행 잠금 판정(vscode 무의존) — resolveExecutionThread(대상 확정·staleLock)·shouldPreserveFocus·isAllThreadsResumeRequest. 어댑터의 StoppedEvent 는 전부 _stoppedEvent 경유(불변식) (§1-BS)
@@ -642,7 +648,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CR | 09-02 | 문서화 주석이 `Module`·`Class`·변수·상수 선언에서 표시되지 않던 문제 — 파서의 `docComment` 수집 대상을 모든 선언 종류로 확장 + 소속 판정 단일 출처화(`isDeclaredIn`) | [2026-09](archive/handoff/2026-09.md) |
 | §1-CS | 09-02 | 옛 주석의 ASCII 장식 구분선(`' ====`)이 호버를 setext 헤딩으로 깨뜨리던 문제 — `isDecorativeRule`/`stripDecorativeRules`(렌더 단계에서만 제거) | [2026-09](archive/handoff/2026-09.md) |
 | §1-CT | 09-02 | 중첩 라이브러리 구조에서 BP 가능하게 — 소스 승격 계획/검증(`sourcePromotion.ts`) + 디버그 소스맵을 컴파일 단위로 좁힘 | [2026-09](archive/handoff/2026-09.md) |
-| §1-CU | 09-02 | 최근 세션들의 미완 코드 항목 마무리 — "컴파일 검증 필요" 배지 해제를 배포 경로와 분리(`compileStale.ts` + `onDidRecordCompiled`) · `clean.js` 비ASCII 경로 크래시 · folding 의 `Set` 대입문 오인 | 본문 ↓ |
+| §1-CU | 09-02 | 최근 세션들의 미완 코드 항목 마무리 — "컴파일 검증 필요" 배지 해제를 배포 경로와 분리(`compileStale.ts` + `onDidRecordCompiled`) · `clean.js` 비ASCII 경로 크래시 · folding 의 `Set` 대입문 오인 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CV | 09-02 | 이름 바꾸기(F2) 오작동 — 선언 심볼 range 를 이름 span 으로(줄 전체 금지) · 콤마 다중 선언 파서(`declarationList.ts`) · 스코프 가시성 정본(`symbolScope.ts`, F12/F2 공유) · 편집 전 텍스트 검증 | 본문 ↓ |
 | §1-CW | 09-02 | 참조 찾기(Shift+F12)가 생성자 `New Class(...)`와 `"Class.Proc"` callback 문자열을 놓치던 문제 — 특수 참조 문법 정본(`referenceSyntax.ts`) | 본문 ↓ |
 | §1-CX | 09-03 | 밀린 세션 20개분(§1-CD~§1-CW) 작업 트리 일괄 커밋 + `.gitignore` 정리 — 리팩토링 준비 | 본문 ↓ |
@@ -652,188 +658,11 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-DB | 09-07 | 구조 기반 정비 — tsconfig 엄격 플래그·죽은 코드 제거·계층 경계(`util/pathKey`·`project/gprSync`·언어 모듈 `language/` 이동)·순수 분리(`deployOutcome`·`treeFormat`)·**계층 규칙 테스트 고정**(`architecture.test.ts`)·`docs/development/architecture.md` 신설 | 본문 ↓ |
 | §1-DC | 09-10 | 「업로드 스타트」가 제어기를 멈추게 하던 시퀀스 정정 — 정지 확인 → 업로드 순차(`stopBeforeUpload`) + Start 직전 정지 재확인, 배포 없이 붙는 `gpl.debug.attachOnly` 신설·명령 제목 한국어화 + 원인 규명용 TEST 경로(`gpl.uploadStart.test`) + 빌드 완료 후 GPL Console 포커스 탈취 제거 | 본문 ↓ |
 | §1-DD | 09-10 | 제어기 조작 절차를 API 한 겹으로 묶기(1) — 전체/개별 쓰레드 정지 정본 `controller/threadStop.ts`(주입형 IO·테스트 17건) + 5곳 통합 + 정지/일시정지 상태 판정 단일화 + 무검증 성공 보고 2건 수정 + 중복 절차 전수 조사 | 본문 ↓ |
+| §1-DE | 09-10 | 제어기 조작 절차 API 통합(2) — Compile/Load/Unload/Start 정본 `projectCommands.ts` + 원격 사본 선택 `remoteProjectPath.ts` + Start 전 콘솔 준비 일원화, FTP Run 의 `-event` 누락·컴파일 에러 미표시 해소 | 본문 ↓ |
 
 ---
 
 **최근 세션 본문 — §1-CS ~ §1-DB (2026-09-02 ~ 2026-09-07).** 이 아래부터는 세션 원문이다.
-
-## 1-CU. 2026-09-02 세션 — 최근 세션들이 남긴 미완 코드 항목 마무리 (배지 해제 경로 분리 · 비ASCII 경로 삭제 · `Set` 오인)
-
-### 요청
-
-"최근 채팅 세션들 검토 후 작업 안 된 것들 마무리해 줘." — §2·§3과 §1-CK~§1-CT의 «남은 일»을 훑어
-**실기기·사용자 확인이 필요한 항목을 빼고 코드로 끝낼 수 있는 것**만 골라 처리했다.
-
-훑은 결과의 분류:
-
-| 분류 | 항목 | 이번 처리 |
-| --- | --- | --- |
-| 코드로 끝남 | §1-CT 원인 ①(F5 배포가 배지를 안 지움) · §1-CN(`clean.js` 비ASCII 크래시) · §1-CQ 관찰(`Set` 대입문이 folding 스택에 쌓임) | **처리(아래)** |
-| 이미 되어 있었다 | §1-CR 별건 2건 — 호버 스코프 자기 되풀이 · `getModuleMembers` 가 클래스를 빼먹음 | §1-CR 의 «후속 조치» 에서 이미 처리됨(`receiverType.enclosingClassName` 등) — 코드로 확인만 |
-| 사용자 확인 대기 | §3의 실기기·편집기 확인 항목 대부분 | 그대로 |
-| 사용자 결정 대기 | §2(`isOrgCompleted` 대입 방식 · P1/P2 범위 · `uploadStart` 대화형 모달) | 그대로 |
-| 범위가 큼/모션 접촉 | §1-AQ(Stop/settle/busy-retry 통일) · §1-AH ④(connect backoff·1403 스트림 도구) · §3-B(`Replace` 실측, `extension.ts` 분리) | 그대로 |
-
-### 조치 ① — "컴파일 검증 필요" 배지가 F5 배포에서 안 풀리던 문제 (§1-CT 원인 ①)
-
-**원인.** 배지 상태(`compileStaleProjects`)를 켜고 끄는 코드가 전부 `activate()` 안의 `runDeploy`
-래퍼에만 있었다. F5 의 `deployBeforeAttach` 는 `deployService.deploy()` 를 직접 부르므로 Compile 이
-성공해도 그 래퍼를 지나지 않아 배지가 남는다(MCP 경유 배포도 같다).
-
-**방법.** 두 갈래로 나눴다.
-
-1. **상태를 순수 모듈로** — `controller/compileStale.ts` 신설(`CompileStaleTracker`). `Map` + 키 정규화
-   (공백·대소문자 무시) + `mark`/`clear`/`current`/`list` 만 담고 **vscode 무의존**이다. `mark` 는
-   재호출 시 `since`·`projectDir` 을 보존하고(“얼마나 오래 미검증인가”가 리셋되면 배지가 거짓말을 한다),
-   `clear` 는 지운 항목과 **배지에 대신 표시할 다음 항목**을 함께 돌려준다. 로깅과 UI 반영
-   (`controllerTree`/`statusBar`)은 `extension.ts` 에 그대로 남겼다 — 모듈은 "무엇이 바뀌었는지"만 말한다.
-2. **해제를 배포 경로에서 떼어냄** — `activate()` 에서 `onDidRecordCompiled` 를 구독해 거기서
-   `clearCompileStale(rec.projectName)` 을 부른다. `recordCompiled` 는 **Compile 성공 확정 지점**과
-   **업로드 스타트의 Start 성공 지점**(제어기가 자체 컴파일했음이 STATUS 0 으로 확정된 자리, §0.7)에서만
-   발화하므로 해제 조건과 정확히 일치한다.
-
-**직접 호출을 남긴 곳.** `runDeploy` 성공 지점과 `gpl.controller.ftpRun`(Load→Compile→Start)의 해제는
-지우지 않았다.
-
-- `ftpRun` 은 **deployService 를 거치지 않고** 1402 명령을 직접 보내므로 `recordCompiled` 가 발화하지 않는다
-  → 직접 호출이 없으면 그 경로에서 배지가 남는다.
-- `runDeploy` 쪽은 구독과 겹치지만, `deployService` 의 스냅샷 기록은 `try/catch` 로 감싼 **best-effort** 라
-  `snapshotProjectFiles` 가 던지면 `recordCompiled` 까지 가지 못한다. 그때도 배지는 풀려야 한다.
-- 겹쳐도 로그가 두 줄이 되지 않는다 — `clear` 는 **없던 항목이면 `undefined`** 를 돌려주고 호출부가
-  거기서 조용히 끝낸다(테스트로 고정).
-
-### 조치 ② — `scripts/clean.js` 가 한글 경로 클론에서 죽던 문제 (§1-CN 부수 발견)
-
-Node v24.11.1(Windows)에서 `fs.rmSync()` 의 **경로 인자에 비ASCII 문자가 있으면** 예외도 `exit` 이벤트도
-없이 프로세스가 `0xC0000409` 로 죽는다. 이번에 같은 장비에서 다시 실측해 범위를 확정했다.
-
-```text
-node -v → v24.11.1
-unlinkSync   비ASCII 파일        → OK
-rmdirSync    비ASCII 빈 디렉터리 → OK
-readdirSync  비ASCII 디렉터리    → OK
-lstatSync    비ASCII             → OK
-realpathSync.native 비ASCII      → OK
-rmSync       비ASCII 파일        → 프로세스 사망 (exit 코드 없음)
-rmSync       ASCII 경로          → OK (하위에 한글 폴더가 있어도 안전 — 인자 자체가 ASCII면 된다)
-```
-
-즉 **깨진 것은 `fs.rmSync` 하나**다. 그래서 `removeRecursive(abs)` 를 두고, 인자가 ASCII 면 종전
-`fs.rmSync(abs, {recursive:true, force:true})` 를 그대로 쓰고(빠른 native 경로 — `node_modules` 삭제가
-느려지지 않는다) **비ASCII 경로일 때만** `readdirSync` → `unlinkSync`/`rmdirSync` 로 직접 내려간다.
-`ENOENT` 는 `force:true` 와 같게 관용하고, 디렉터리 심링크는 대상까지 따라가지 않는다.
-
-분기의 근거는 위 실측이다(추측으로 만든 분기가 아니다) — 주석에 함께 적어 뒀다.
-
-### 조치 ③ — folding 의 `Set` 시작 패턴이 대입문까지 물던 문제 (§1-CQ 관찰)
-
-`foldingRangeProvider.ts` 의 시작 패턴이 `/^\s*Set\b/i` 여서 GPL 의 **`Set obj = other` 대입문**마다
-스택에 항목이 쌓였다. §1-CQ 에서는 "범위에는 영향 없음"으로 적었지만, 코드를 읽어 보니 영향이 있다 —
-종결어 처리가 스택을 **위에서부터** 훑어 같은 kind 의 최상단을 닫으므로:
-
-```gpl
-Public Property Size As Integer
-    Set (value As Integer)      ' ← 진짜 접근자 (stack: … property, set)
-        Set m_obj = value       ' ← 대입문이 set 을 또 push  (stack: … property, set, set)
-    End Set                     ' ← 최상단(대입문 항목)을 닫는다 → 대입문 줄부터 접힘
-End Property                    ' ← 진짜 set 항목은 끝까지 안 닫힌 채 남는다
-```
-
-**방법.** 판정 정본인 `language/blockContext.ts` 와 표기를 맞췄다 — GPL 의 `Set` 절은
-`Set (value As Integer)` 처럼 **괄호가 필수**이므로(`gplStatements.ts`) 시작 패턴을 `/^\s*Set\s*\(/i` 로,
-같은 이유로 `Get` 도 `/^\s*Get\s*(?:'.*)?$/i`(접근자 단독 줄)로 좁혔다. folding provider 는
-`vscode.TextDocument` 에 매여 순수 테스트가 안 되므로, **규칙 자체는 테스트 가능한 정본
-(`blockContext`) 쪽에 케이스로 고정**하고 provider 는 그 표기를 따라가게 했다.
-
-### 조치 ④ — README 에 빠져 있던 사용자 기능 2건 (전체 재검토에서 발견)
-
-`README.md` 를 기능·명령 표와 실제 구현으로 대조했더니 **구현·CHANGELOG 에는 있는데 README 에만 없는**
-것이 두 개 있었다.
-
-- **Rename(F2)** — `renameCore.ts`/`renameProvider.ts` 로 들어온 기능(§1-AY)이 언어 기능 표에 아예 없었다.
-  경쟁 확장 대비 차별 기능인데 문서에서 빠져 있던 셈이다. 로컬은 프로시저 범위·모듈/클래스 심볼은
-  프로젝트와 참조 라이브러리 범위, 스레드 문자열 참조·함수 반환값 대입 포함, **F12 로 정의에 갈 수 없는
-  식별자는 거부**한다는 안전선까지 한 줄로 적었다.
-- **`GPL: 브레이크포인트용 소스 승격`** — 0.8.26 의 새 기능(§1-CT)이 명령 표에 없었다. 디버깅·모니터링
-  표에 행을 넣고, "중단점이 회색으로 안 걸릴 때" 안내 블록으로 `-508` 의 원인(제어기는 `.gpr` 에 직접
-  적은 `ProjectSource` 안에서만 대상 파일을 찾는다)과 해법을 함께 적었다.
-
-`gpl.project.syncSources`·문 스니펫·문서화 주석 확장은 이미 README 에 있었다. `pre-release-check` 의
-README 정책(버전·이력 하드코딩 금지) 통과.
-
-### 조치 ⑤ — 동명 프로젝트 QuickPick 이 구분되지 않던 문제 (§1-CN 남은 일)
-
-이 사용자의 실작업 구조는 과제 폴더마다 같은 이름의 프로젝트를 복제해 둔다
-(`…/37. 핵산 Oligo 합성과제/시뮬레이션/projects/GPL_Code`). 그래서 QuickPick 라벨이
-`$(folder) GPL_Code` 로 **똑같이** 보였다(`detail` 의 전체 경로로만 구분 가능).
-
-`projectPickerCore.disambiguateDirLabels(dirs)` 를 신설했다 — 폴더명이 겹치는 그룹에만,
-**그 그룹 안에서 서로 달라지는 데 필요한 최소 상위 폴더**를 계산해 `description` 맨 앞에 붙인다.
-위 구조에서는 `projects` 도 `시뮬레이션` 도 같아 과제 폴더까지 올라가야 하므로
-`37. 핵산 Oligo 합성과제\시뮬레이션\projects` 가 된다. 폴더명이 유일한 후보에는 아무것도 붙이지 않는다.
-한 그룹에는 같은 깊이를 쓴다 — 깊이가 다르면 목록에서 눈으로 비교되지 않는다.
-
-힌트는 `orderProjectDirs`(중복 제거·정렬) **뒤의 목록**에서 계산한다. 같은 폴더가 다른 표기로 두 번
-들어오면 그 둘은 어떤 깊이에서도 구분되지 않아 힌트가 아예 안 붙기 때문이다.
-
-### 재검토 — 정합성 일괄 점검 (이상 없음, 다음 작업자는 다시 안 봐도 된다)
-
-전체 재검토 요청에 따라 "썩기 쉬운 곳"을 기계적으로 대조했다. 아래는 **모두 정상**이었다.
-
-| 점검 | 방법 | 결과 |
-| --- | --- | --- |
-| 신규 모듈 11개가 실제로 쓰이는지 | import 참조 카운트 | 전부 연결됨(고아 없음) |
-| 명령 등록 ↔ `contributes.commands` | 양방향 대조 | 불일치 없음. 미선언 6개는 **의도된 것**(트리 항목 전용 4개 · 자동화 전용 `gpl.automation.target` · 별칭 `gpl.stopAll`) |
-| 설정 키 ↔ `contributes.configuration` | 코드가 읽는 키 대조 | 고아 없음. `gpl.trace.liveTerminal.autoStart` 는 분할 스코프(`getConfiguration('gpl.trace').get('liveTerminal.autoStart')`)로 읽고 있어 단순 grep 에는 안 잡힌다 |
-| `controller-mcp` 테스트 | `node --test` | **79/79 통과**, CI(`ci.yml`)도 실행 중 |
-| 문서가 가리키는 소스 경로 | `ai-handoff`·`CLAUDE`·런북의 `src/**`·`scripts/**` 경로 존재 확인 | 전부 존재 |
-| README·docs 의 상대 링크 | `.md` 링크 대상 존재 확인 | 깨진 링크 없음 |
-| 새 코드의 TODO/FIXME | grep | 없음 |
-
-**손대지 않기로 한 것**: `symbolCache.indexWorkspace()` 의 **전역** 상한(§1-CN 남은 일). 프로젝트별 상한은
-이미 있고(`collectProjectSourcePaths` 의 `truncated`), 전역 상한을 두면 대형 트리에서 **조용히** 정의·참조가
-빠진다 — "느리지만 완전"에서 "빠르지만 불완전"으로 트레이드오프를 바꾸는 결정이라 실측 없이 정할 일이 아니다.
-사용자 판단 대기로 §2 에 남긴다.
-
-### 검증
-
-- `npm run compile` — 통과.
-- `npm test` — **758/758 통과**(이 세션 신규 13건: `compileStale` 6건, `blockContext` 2건, `projectPicker` 5건).
-  (총계가 731 → 758 로 뛴 것은 이 세션 작업만이 아니다 — **§1-CV 세션이 같은 저장소에서 병렬로
-  진행되며** 그쪽 테스트가 합류했다. 두 세션의 편집은 서로 다른 파일이라 충돌하지 않았고
-  `src/test/index.ts` 는 양쪽 등록이 모두 남았다. 병렬 세션이 있을 때 헤더의 "직전 세션" 은
-  **나중에 끝난 쪽**(§1-CV)이 갖는다 — 내 요약을 덮어쓰지 않고 이 본문에만 적었다.)
-- `clean.js` 는 스크래치에 가짜 저장소를 만들어 두 경우로 실행했다.
-  - `…/시뮬레이션/GPL_language`(비ASCII 경로) → `out`·`dist`·루트 `.vsix` 삭제, **종료 코드 0**,
-    무관한 `한글폴더/` 는 그대로. 종전에는 이 지점에서 프로세스가 죽었다.
-  - `…/ascii-repo`(ASCII 경로, 하위에 `out/한글하위/` 포함) → `out`·`.history` 삭제, 종료 코드 0
-    (native 경로 회귀 없음).
-
-### 남은 일
-
-- §3 에 확인 항목 2건 추가: ① 배지 해제(F5·MCP·`ftpRun`·로그 중복 없음) ② `Set` 접근자 접기.
-- folding provider 자체의 순수 모듈 분리(`string[]` → 범위 목록 + vscode 어댑터)는 하지 않았다.
-  이번 수정은 표기 한 줄이라 정본 쪽 테스트로 충분하고, 분리는 접기 동작 전반의 회귀 위험이 실익보다 크다.
-  folding 에 또 손댈 일이 생기면 그때 같이 한다.
-- `extension.ts` 는 `compileStale.ts` 분리로 조금 줄었다(§3-B 의 "분리 보류" 판단은 그대로 — 이번은
-  행동 수정에 딸린 최소 분리다).
-
-### 변경 파일
-
-```txt
-src/controller/compileStale.ts        # 신규 — CompileStaleTracker(vscode 무의존), extension.ts 클로저에서 분리
-src/extension.ts                      # 배지 상태를 tracker 로 교체 + onDidRecordCompiled 구독으로 경로 무관 해제
-src/providers/foldingRangeProvider.ts # Set/Get 시작 패턴을 접근자 표기로 좁힘(blockContext 와 일치)
-scripts/clean.js                      # removeRecursive — 비ASCII 경로는 unlinkSync/rmdirSync 폴백
-src/test/compileStale.test.ts         # 신규 — 6건
-src/test/blockContext.test.ts         # Set 대입문 2건 추가(대입문은 블록을 열지 않는다 / End Set 가로채기 없음)
-src/controller/projectPickerCore.ts   # disambiguateDirLabels — 동명 폴더에만 최소 상위 폴더 표기
-src/controller/projectPicker.ts       # QuickPick description 맨 앞에 위치 표기(정렬·중복 제거 뒤 목록에서 계산)
-src/test/projectPicker.test.ts        # 5건 추가(실사용 과제 폴더 구조 픽스처)
-src/test/index.ts                     # 스위트 등록
-README.md                             # 언어 기능 표에 Rename(F2), 명령 표에 소스 승격 + "회색 BP" 안내
-docs/ai-handoff.md, CHANGELOG.md      # 기록(§1-CK 를 2026-08 아카이브로 이동 — 본문 최근 10세션 유지)
-```
 
 ## 1-CV. 2026-09-02 세션 — 이름 바꾸기(F2)가 선언 줄을 깨뜨리고 사용처를 남기던 문제 (심볼 이름 range · 콤마 다중 선언 · 스코프 판정)
 
@@ -1591,6 +1420,56 @@ Stop 재시도 1회) ② `gpl.controller.stopAll`(busy 재시도 5회 + `verifyA
 | 7 | 스택/정지 위치 조회 | `gplDebugSession._fetchThreadFramesUncached` · `treeCommands.threadShowLocation` · `controllerCommands` | 캐시·폴백 유무 |
 | 8 | 원격 경로 선택 | `deployService.chooseRemoteProjectPath` · `ftpCommands.resolveFtpRunPath` | 점수 가중치가 달라 **같은 프로젝트에 다른 폴더를 고를 수 있다** |
 
-다음 단위는 **`controller/projectCommands.ts`**(compile/load/unload/start를 같은 주입형 IO·구조화 결과로) 를 권한다 —
+→ **§1-DE 에서 `controller/projectCommands.ts` 로 구현했다(1·2·3·8 완료).** 당시 권고는 아래와 같았다 —
 1·2·3 을 한 번에 없애고, ③의 `-event` 누락 같은 조용한 차이도 사라진다. 다만 배포 파이프라인의 심장부라
 별도 세션에서 테스트를 먼저 깔고 들어가는 편이 안전하다(§3).
+
+---
+
+## 1-DE. 2026-09-10 세션 — 제어기 조작 절차를 API 한 겹으로 묶기 (2): Compile/Load/Unload/Start · 원격 경로 · 콘솔 준비
+
+**배경.** 사용자 요청: *"내부 코드를 리팩터링 검토해보자. 깔끔한 모듈화를 제대로 고려해 봐야겠어."* + 보충:
+*"이전부터 자꾸 이 기능 저 기능 서로 다르게 작동해 이것 좀 해결해보자."* → 목표는 파일 크기 줄이기가 아니라
+**같은 동작의 사본이 경로마다 달라진 것(implementation drift)을 없애는 것**이다. §1-DD(쓰레드 정지)의 후속이다.
+
+> 이 작업의 표준 명칭: 중복 제거 쪽은 **consolidation refactoring / DRY → Single Source of Truth**,
+> 외부 시스템을 감싸는 쪽은 **Anti-Corruption Layer**(DDD) 또는 Facade. IO 주입은 **Ports & Adapters**,
+> 판정 결과만 돌려주고 정책은 호출부가 고르게 한 것은 **mechanism/policy 분리**다.
+
+**조치 1 — `controller/projectCommands.ts` 신설(vscode 무의존, 주입형 IO).**
+`compileProject`(후보 이름 순회 + 일시적 STATUS `-742/-746/-752` 1회 재시도, 단 에러 라인이 있으면 재시도 안 함) ·
+`loadProject`(이미 로드됨 / **HTTP 응답 = 제어기 이상**) · `unloadProject`(로드 안 됨 / **-750 쓰레드 실행 중**) ·
+`startProject`(명령은 항상 `buildStartCommand`). 성공 판정은 **STATUS 0(또는 비차단) + 에러 라인 0** 뿐이고,
+STATUS 미수신은 실패다. 컴파일 전송은 `forCompile` 플래그로 종결자 대기를 강제한다(잘린 응답의 거짓 성공 방지).
+단위 테스트 14건.
+
+**조치 2 — FTP Run(`gpl.controller.ftpRun`)을 정본으로 교체.** 이 경로에만 있던 차이가 한꺼번에 사라졌다:
+- **`Start` 에 `-event` 가 빠져 있었다** — 이 버튼으로 시작한 실행만 1403 이벤트를 못 받았다.
+- 일시적 STATUS 를 `-746` 하나만, 그것도 `Stop -all` 을 동원해 처리하던 무거운 복구 경로.
+- `-745/-508/-743/-750` 을 숫자 리터럴로 비교(상태 코드 헬퍼 미사용).
+- Load 의 HTTP 응답 감지(제어기 이상 징후)가 없었다.
+- **컴파일 에러가 토스트 한 줄로만 보였다** → 배포와 같이 **Problems 진단 + 첫 에러로 점프**.
+  (원격 사본을 컴파일하므로 같은 이름의 로컬 프로젝트가 있을 때만 파일을 해석한다. `applyCompileDiagnostics` export.)
+
+**조치 3 — 배포(`deployService`)도 같은 정본으로.** `tryCompile`·`ensureLoadedFromFtpPath`·`tryUnload`·Start 전송을
+모두 모듈 호출로 바꿨다. 이제 **구현은 하나뿐이고**, 배포에만 있던 오케스트레이션(로드 상태 복구 Unload→Load→Compile,
+direct 모드 규칙, 후보 이름 목록)만 남았다. 실패 시 `failedCommand` 에 **실제로 보낸 명령**(스위치 포함)이 들어간다.
+
+**조치 4 — `controller/remoteProjectPath.ts` 신설.** 어느 원격 사본(`/flash/projects/<name>` vs `/GPL/<name>`)을
+대상으로 삼을지 정하는 점수 규칙이 배포와 FTP Run 에 각자 있었다 — 가중치가 달라 **같은 프로젝트에 서로 다른 폴더를
+고를 수 있었다.** 두 옛 구현의 순서를 모두 재현하는 하나의 식으로 통일했다(존재 +200 / flash +80 / 사용자 선택 +20).
+사용자가 고른 경로가 밀릴 수 있다는 점은 그대로 두되(옛 동작), `switched` 로 로그에 남긴다. 테스트 8건 —
+"목록 조회 실패는 *없음*이 아니라 *확인 못 함*" 규약 포함.
+
+**조치 5 — `host.primeRuntimeConsoleForStart()`.** Start 직전 1403 준비(연결·prime·트리 상태 반영)를 배포·Start 단독·
+FTP Run 세 곳이 각자 갖고 있었고 트리 상태 갱신 여부가 달랐다 → 한 메서드로.
+
+**검증.** `npm run compile` 통과, `npm test` **851 → 859/859**(구조 R1~R6 포함). 커밋 3개
+(`482a2a4`, `cc0b38a`, `17763c9`). **실기기 검증은 미수행** — Compile/Load/Unload/Start 를 보내는 경로라 §3 항목으로 남긴다.
+
+**남은 중복(§1-DD 표 기준 진행 상황).** 1·2·3(Compile/Load/Unload/Start)과 8(원격 경로)은 이번에 끝났다. 남은 것:
+- **4. `Show Thread` 열거** — 10곳이 직접 호출하고 "잘린 응답" 정책이 3종(확인 불가 / 빈 목록 / `includes('<STATUS>')`).
+  `threadStop.probeThreads` 로 모으는 것이 다음 순서(저위험).
+- **5. 중단점 명령 폴백** — 4가지 표기 폴백이 DAP 세션에만 있고, `_clearBreakpointsForProject` 는 STATUS 를 안 본다.
+- **6. busy 재시도** — 정책 4종이 겹쳐 실효 타임아웃이 곱해진다(`commandPolicy` R2 가 이미 전송 전 최대 8초 대기).
+- **7. 스택/정지 위치 조회** — 캐시·폴백 유무가 경로마다 다르다.

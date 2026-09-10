@@ -18,7 +18,8 @@ import { describeDeployLock } from '../controller/deployLock';
 import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThreadList } from '../controller/responseParser';
 import { buildStepCommand } from '../controller/stepCommand';
 import type { StepMode } from '../controller/stepCommand';
-import { AI_PAUSED_STATES, waitForThreadPause } from './controllerOps';
+import { waitForThreadPause } from './controllerOps';
+import { isPausedState } from '../controller/threadActivity';
 import { normalizeEvalValue } from '../debug/showVariableParser';
 import type { SituationDeploySnapshot } from '../controller/deployOutcome';
 import { formatBreakpointCommand } from '../controller/breakpointCommand';
@@ -415,7 +416,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 			const threadResp = await sendCommand(SHOW_THREAD_LIST_CMD);
 			const threads = parseThreadList(threadResp);
 			if (!targetThread) {
-				const candidate = threads.find(t => AI_PAUSED_STATES.has(t.state));
+				const candidate = threads.find(t => isPausedState(t.state));
 				targetThread = candidate?.name || '';
 			}
 			if (!targetThread) {

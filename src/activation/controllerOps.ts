@@ -11,9 +11,10 @@
  */
 import * as vscode from 'vscode';
 import { sendCommand, sendCommandDetailed } from '../controller/controllerConnection';
-import { parseStatus, parseThreadList, SHOW_THREAD_LIST_CMD } from '../controller/responseParser';
-import { isSettledState } from '../controller/threadActivity';
-import { probeThreads, stopAllAndSettle, waitThreadsSettle } from '../controller/threadStop';
+import { parseStatus } from '../controller/responseParser';
+import type { ThreadInfo } from '../controller/responseParser';
+import { isPausedState, isSettledState } from '../controller/threadActivity';
+import { probeThreads, stopAllAndSettle, stopThreadAndSettle, waitThreadsSettle } from '../controller/threadStop';
 import type { StopAllOutcome, ThreadStopIo, ThreadStopOptions } from '../controller/threadStop';
 import { isBusyStatus } from '../controller/controllerStatusCodes';
 import { buildRuntimeConsoleUserMessage } from '../controller/runtimeConsolePresentation';
@@ -24,9 +25,9 @@ import type { ExtensionHost } from './host';
  * 접착 계층용 `ThreadStopIo` — 전체 정지 절차(controller/threadStop.ts)에 확장의 전송·로그·대기를 물린다.
  *
  * 정지 절차 자체(전송·STATUS 판정·정지 확인 폴링·재시도)는 그 모듈이 정본이고, 여기서는 목적지만 정한다.
- * `logTo`를 주면 그 채널로(배포/FTP 진행 로그), 없으면 확장 Output(`host.log`)으로 남긴다.
+ * 진행 로그의 목적지(`log`)만 호출부가 정한다 — 확장 Output(`host.log`), FTP 실행 로그, 또는 버림.
  */
-export function createThreadStopIo(host: ExtensionHost, logTo?: (line: string) => void): ThreadStopIo {
+export function createThreadStopIo(log: (line: string) => void): ThreadStopIo {
 	return {
 		send: async (command) => {
 			try {
@@ -37,7 +38,7 @@ export function createThreadStopIo(host: ExtensionHost, logTo?: (line: string) =
 				return null;
 			}
 		},
-		log: logTo ?? host.log,
+		log,
 		sleep,
 	};
 }
@@ -50,11 +51,36 @@ export function stopAllThreads(
 	host: ExtensionHost,
 	opts?: ThreadStopOptions & { logTo?: (line: string) => void },
 ): Promise<StopAllOutcome> {
-	return stopAllAndSettle(createThreadStopIo(host, opts?.logTo), opts);
+	return stopAllAndSettle(createThreadStopIo(opts?.logTo ?? host.log), opts);
 }
 
-/** 정지 계열로 간주하는 스레드 상태 (Error 포함 — 위치/변수 확인이 가능한 상태) */
-export const AI_PAUSED_STATES: ReadonlySet<string> = new Set(['Paused', 'Break', 'Error']);
+/**
+ * **개별 쓰레드 정지 + 사용자 안내** — 트리의 「쓰레드 정지」와 FTP 폴더 「중지」가 함께 쓴다.
+ *
+ * 두 명령은 문구만 다르고 절차(Stop → 정지 확인 → 실패 시 SoftEStop 제안 → 트리 새로고침)가 같아
+ * 같은 코드가 두 벌 있었다(2026-09-10 §1-DD). 정지 절차 자체는 controller/threadStop.ts 가 맡고,
+ * 여기서는 그 결과를 알림으로 옮기는 일만 한다.
+ *
+ * @param label 사용자에게 보일 대상 이름(쓰레드명·프로젝트명).
+ */
+export async function stopThreadWithRecovery(host: ExtensionHost, threadName: string, label = threadName): Promise<boolean> {
+	const outcome = await stopThreadAndSettle(createThreadStopIo(host.log), threadName, { logPrefix: `[Stop ${label}] ` });
+	if (outcome.send.kind === 'failed') {
+		const code = outcome.send.statusCode;
+		vscode.window.showErrorMessage(`${label} 정지 실패: ${code === undefined ? '' : `STATUS ${code} `}${outcome.send.message}`);
+		host.controllerTree?.refresh();
+		return false;
+	}
+	// 확인 불가(Show Thread 무응답)를 "정지됨"으로 보고하지 않는다 — SoftEStop 안내 경로로 보낸다.
+	const stopped = outcome.ok && outcome.settle?.unconfirmed !== true;
+	if (stopped) {
+		vscode.window.showInformationMessage(`${label} 정지 완료`);
+	} else if (!(await trySoftEStopRecovery(host, threadName))) {
+		vscode.window.showWarningMessage(`${label} 정지 명령은 전송됐지만 아직 실행 중일 수 있습니다. 잠시 후 다시 확인해줘.`);
+	}
+	host.controllerTree?.refresh();
+	return stopped;
+}
 
 export function sleep(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -102,7 +128,7 @@ export async function sendCommandWithBusyRetry(
  * settled 판정은 `controller/threadActivity.isSettledState` 하나만 쓴다(집합을 여기 따로 두지 않는다).
  */
 export async function verifyThreadStopped(host: ExtensionHost, threadName: string, maxAttempts = 6): Promise<boolean> {
-	const io = createThreadStopIo(host);
+	const io = createThreadStopIo(host.log);
 	const target = threadName.toLowerCase();
 	for (let i = 1; i <= maxAttempts; i++) {
 		const probe = await probeThreads(io);
@@ -126,7 +152,7 @@ export async function verifyThreadStopped(host: ExtensionHost, threadName: strin
  */
 export async function verifyAllStopped(host: ExtensionHost, maxAttempts = 6): Promise<boolean> {
 	const settleTimeoutMs = 300 * ((maxAttempts * (maxAttempts + 1)) / 2);
-	const outcome = await waitThreadsSettle(createThreadStopIo(host), { settleTimeoutMs });
+	const outcome = await waitThreadsSettle(createThreadStopIo(host.log), { settleTimeoutMs });
 	return outcome.settled && !outcome.unconfirmed;
 }
 
@@ -169,17 +195,24 @@ export async function waitForThreadPause(
 	threadName: string,
 	timeoutMs = 5000,
 	pollIntervalMs = 150,
-): Promise<{ paused: boolean; state?: string; thread?: ReturnType<typeof parseThreadList>[number] }> {
+): Promise<{ paused: boolean; state?: string; thread?: ThreadInfo }> {
+	// 폴링 로그는 남기지 않는다 — Break/Step 마다 Output 에 수십 줄이 쌓인다.
+	const io = createThreadStopIo(() => { /* no log */ });
+	const target = threadName.trim().toLowerCase();
 	const deadline = Date.now() + Math.max(0, timeoutMs);
+	let last: ThreadInfo | undefined;
 	for (;;) {
-		const resp = await sendCommand(SHOW_THREAD_LIST_CMD);
-		const threads = parseThreadList(resp);
-		const found = threads.find(t => t.name === threadName);
-		if (found && AI_PAUSED_STATES.has(found.state)) {
-			return { paused: true, state: found.state, thread: found };
+		// probeThreads 는 잘린 응답(STATUS 미수신)을 null 로 준다 — 종전 구현은 그것을 "쓰레드 없음"으로
+		// 읽어 조용히 계속 폴링했다(§1-DD). 확인 불가는 그냥 다음 폴로 넘긴다.
+		const probe = await probeThreads(io);
+		if (probe) {
+			last = probe.threads.find(t => t.name.trim().toLowerCase() === target);
+			if (last && isPausedState(last.state)) {
+				return { paused: true, state: last.state, thread: last };
+			}
 		}
 		if (Date.now() >= deadline) {
-			return { paused: false, state: found?.state, thread: found };
+			return { paused: false, state: last?.state, thread: last };
 		}
 		await sleep(pollIntervalMs);
 	}

@@ -6,6 +6,7 @@ import {
     ThreadStopResponse,
     probeThreads,
     stopAllAndSettle,
+    stopThreadAndSettle,
     waitThreadsSettle,
 } from '../controller/threadStop';
 
@@ -182,4 +183,34 @@ test('threadStop stopAll: 로그 접두(logPrefix)가 모든 줄에 붙는다(�
     await stopAllAndSettle(io, { logPrefix: '│ ' });
     assert.ok(io.lines.length > 0);
     assert.deepStrictEqual(io.lines.filter(l => !l.startsWith('│ ')), []);
+});
+
+// ── stopThreadAndSettle (개별 정지) ─────────────────────────────
+
+test('threadStop 개별: Stop <thread> 를 보내고 그 쓰레드만 정지 확인한다', async () => {
+    const io = makeIo({
+        'Stop worker1': OK,
+        // 다른 쓰레드(worker2)가 계속 돌아도 대상만 멈추면 통과다.
+        'Show Thread  -web': [threadList(['worker1', 'Running'], ['worker2', 'Running']), threadList(['worker2', 'Running'])],
+    });
+    const outcome = await stopThreadAndSettle(io, 'worker1');
+    assert.strictEqual(outcome.ok, true);
+    assert.strictEqual(io.sent[0], 'Stop worker1');
+});
+
+test('threadStop 개별: 대상 쓰레드 이름은 대소문자를 구분하지 않는다(GPL 규칙)', async () => {
+    const io = makeIo({ 'Stop WORKER1': OK, 'Show Thread  -web': threadList(['worker1', 'Idle']) });
+    const outcome = await stopThreadAndSettle(io, 'WORKER1');
+    assert.strictEqual(outcome.ok, true);
+});
+
+test('threadStop 개별: 대상이 안 멈추면 재시도 후 실패 — 남의 쓰레드는 사유에 넣지 않는다', async () => {
+    const io = makeIo({
+        'Stop worker1': OK,
+        'Show Thread  -web': threadList(['worker1', 'Running'], ['worker2', 'Running']),
+    });
+    const outcome = await stopThreadAndSettle(io, 'worker1', { settleTimeoutMs: 500, pollIntervalMs: 500 });
+    assert.strictEqual(outcome.ok, false);
+    assert.match(outcome.failure?.message ?? '', /worker1\(Running\)/);
+    assert.doesNotMatch(outcome.failure?.message ?? '', /worker2/);
 });

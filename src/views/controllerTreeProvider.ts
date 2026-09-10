@@ -20,6 +20,7 @@ import {
 	getErrorCodeHint,
 	findKnownErrorChains,
 } from '../controller/responseParser';
+import { isPausedState } from '../controller/threadActivity';
 import { breakpointKey, orphanControllerBreakpoints } from '../controller/breakpointReconcile';
 import { editorBreakpointTargets } from '../controller/breakpointSync';
 import { FtpEntry, listRemoteDirs } from '../controller/ftpClient';
@@ -137,9 +138,6 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 */
 	private readonly _onDidThreadPause = new vscode.EventEmitter<{ name: string; state: string }>();
 	readonly onDidThreadPause = this._onDidThreadPause.event;
-
-	/** 정지로 간주하는 상태 (extension.ts AI_PAUSED_STATES와 동일 취지) */
-	private static readonly PAUSED_STATES: ReadonlySet<string> = new Set(['Paused', 'Break', 'Error']);
 
 	private _connected = false;
 	private threads: ThreadInfo[] = [];
@@ -703,9 +701,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private firePauseTransitions(previous: ThreadInfo[], next: ThreadInfo[]): void {
 		const prevStates = new Map(previous.map(t => [t.name, t.state]));
 		for (const t of next) {
-			if (!ControllerTreeProvider.PAUSED_STATES.has(t.state)) { continue; }
+			if (!isPausedState(t.state)) { continue; }
 			const prevState = prevStates.get(t.name);
-			if (prevState === undefined || !ControllerTreeProvider.PAUSED_STATES.has(prevState)) {
+			if (prevState === undefined || !isPausedState(prevState)) {
 				this._onDidThreadPause.fire({ name: t.name, state: t.state });
 				return;
 			}

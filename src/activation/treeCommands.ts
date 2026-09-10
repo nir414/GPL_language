@@ -4,12 +4,11 @@
 
 import * as vscode from 'vscode';
 import { sendCommand } from '../controller/controllerConnection';
-import { isBusyStatus } from '../controller/controllerStatusCodes';
-import { parseStack, parseStatus, parseThreadDetail } from '../controller/responseParser';
+import { isControllerNonBlockingStatus, parseStack, parseStatus, parseThreadDetail } from '../controller/responseParser';
 import { buildStepCommand } from '../controller/stepCommand';
 import type { StepMode } from '../controller/stepCommand';
 import { asThreadNode } from '../controller/threadArgs';
-import { sendCommandWithBusyRetry, trySoftEStopRecovery, verifyThreadStopped, waitForThreadPause } from './controllerOps';
+import { stopThreadWithRecovery, waitForThreadPause } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 export function activateTreeCommands(host: ExtensionHost): void {
@@ -45,7 +44,17 @@ export function activateTreeCommands(host: ExtensionHost): void {
 			const busyAfter = host.currentDeployLockHolder();
 			if (busyAfter) { host.warnDeployBusy('쓰레드 시작', busyAfter); return; }
 			try {
-				await sendCommand(`Start ${node.thread.name}`);
+				// 하드 규칙 2: 성공/실패는 그 명령의 STATUS 로 판정한다. 종전에는 응답을 보지 않고 트리만
+				// 새로고침해, 거부돼도 사용자에게 아무 말이 없었다(§1-DD).
+				// ※ 명령 문자열은 그대로 둔다 — 이건 프로젝트가 아니라 **쓰레드** 시작이라
+				//   buildStartCommand 의 프로젝트 스위치(-event 등)를 붙이는 것은 별도 확인이 필요하다.
+				const raw = await sendCommand(`Start ${node.thread.name}`);
+				const status = parseStatus(raw);
+				if (status.code === 0 || isControllerNonBlockingStatus(status.code)) {
+					vscode.window.showInformationMessage(`${node.thread.name} 시작 완료`);
+				} else {
+					vscode.window.showErrorMessage(`쓰레드 시작 실패: STATUS ${status.code} ${status.message || ''}`.trimEnd());
+				}
 				host.controllerTree?.refresh();
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`쓰레드 시작 실패: ${err.message ?? err}`);
@@ -58,24 +67,8 @@ export function activateTreeCommands(host: ExtensionHost): void {
 			node = asThreadNode(node);
 			if (!node?.thread?.name) { return; }
 			try {
-				const threadName = node.thread.name;
-				const stopResp = await sendCommandWithBusyRetry(host, `Stop ${threadName}`, { maxAttempts: 5, baseDelayMs: 400 });
-				const status = parseStatus(stopResp);
-				if (status.code !== 0 && !isBusyStatus(status.code)) {
-					vscode.window.showErrorMessage(`쓰레드 정지 실패: STATUS ${status.code} ${status.message}`);
-					return;
-				}
-
-				const stopped = await verifyThreadStopped(host, threadName, 7);
-				if (!stopped) {
-					const recovered = await trySoftEStopRecovery(host, threadName);
-					if (!recovered) {
-						vscode.window.showWarningMessage(`${threadName} 정지 명령은 전송됐지만 아직 실행 중일 수 있습니다. 잠시 후 다시 확인해줘.`);
-					}
-				} else {
-					vscode.window.showInformationMessage(`${threadName} 정지 완료`);
-				}
-				host.controllerTree?.refresh();
+				// Stop → 정지 확인 → 실패 시 SoftEStop 제안까지가 한 절차다(controllerOps.stopThreadWithRecovery, §1-DD).
+				await stopThreadWithRecovery(host, node.thread.name);
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`쓰레드 정지 실패: ${err.message ?? err}`);
 			}

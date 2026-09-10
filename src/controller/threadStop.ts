@@ -41,6 +41,11 @@ import { isSettledState } from './threadActivity';
 /** 전체 정지 명령 — 표기 단일 출처(공백/대소문자를 호출부마다 다르게 쓰지 않는다). */
 export const STOP_ALL_CMD = 'Stop -all';
 
+/** 쓰레드 하나만 정지하는 명령. 전체 정지와 절차(전송→확인→재시도)는 같고 대상만 좁다. */
+export function stopThreadCommand(threadName: string): string {
+    return `Stop ${threadName}`;
+}
+
 /** IO 가 돌려주는 1402 응답. */
 export interface ThreadStopResponse {
     /** 응답 원문. */
@@ -168,14 +173,20 @@ export async function probeThreads(io: ThreadStopIo): Promise<ThreadProbe | null
 }
 
 /**
- * 모든 쓰레드가 정지될 때까지 폴링한다.
+ * 정지 확인 폴링의 공통 루프 — "아직 안 멈춘 것"을 고르는 함수(select)만 갈아 끼우면
+ * 전체 정지(모든 쓰레드)와 개별 정지(지정 쓰레드)가 같은 절차를 쓴다.
  *
  * 활성 판정은 **상태 문자열**(Idle/Stopped/Error 가 아닌 것)로 한다 — 목록이 비는 것이 최종형이지만,
  * 정지 직후 잠깐 `Stopped` 항목이 남는 것까지 "안 멈췄다"로 보면 영영 통과하지 못한다.
  * 목록의 존재 자체를 활성으로 보는 더 엄격한 판정이 필요한 곳(autoOnSave 게이트)은 `probeThreads` 를
  * 직접 쓴다(`total > 0` 검사).
  */
-export async function waitThreadsSettle(io: ThreadStopIo, opts?: ThreadStopOptions): Promise<SettleOutcome> {
+async function waitSettleFor(
+    io: ThreadStopIo,
+    opts: ThreadStopOptions | undefined,
+    label: string,
+    select: (probe: ThreadProbe) => ThreadInfo[],
+): Promise<SettleOutcome> {
     const o = resolveOptions(opts);
     const now = io.now ?? Date.now;
     const startedAt = now();
@@ -197,12 +208,14 @@ export async function waitThreadsSettle(io: ThreadStopIo, opts?: ThreadStopOptio
             return { settled: true, unconfirmed: true, elapsedMs: now() - startedAt };
         }
         lastProbe = probe;
+        const pending = select(probe);
         const elapsed = `${((now() - startedAt) / 1000).toFixed(1)}s`;
-        if (probe.active.length === 0) {
-            io.log(`${o.logPrefix}✔ 모든 쓰레드 정지 확인 (${elapsed}${probe.total > 0 ? `, 정지 상태 ${probe.total}개` : ''})`);
+        if (pending.length === 0) {
+            // total 은 Show Thread 목록의 쓰레드 수 — 완전 정지 후에는 목록이 비어 0 이 된다.
+            io.log(`${o.logPrefix}✔ ${label} 정지 확인 (${elapsed}${probe.total > 0 ? `, 목록 ${probe.total}개` : ''})`);
             return { settled: true, unconfirmed: false, threads: probe.threads, elapsedMs: now() - startedAt };
         }
-        lastActiveDesc = describeActive(probe.active);
+        lastActiveDesc = describeActive(pending);
         // 폴링 주기대로 찍으면 같은 줄이 십수 번 반복된다 — 상태가 바뀌면 즉시, 같으면 2초에 한 번만.
         if (lastActiveDesc !== lastLoggedDesc || now() - lastLoggedAt >= 2000) {
             io.log(`${o.logPrefix}… 정지 대기 ${elapsed}: ${lastActiveDesc}`);
@@ -223,33 +236,48 @@ export async function waitThreadsSettle(io: ThreadStopIo, opts?: ThreadStopOptio
     };
 }
 
+/** 모든 쓰레드가 정지될 때까지 폴링한다. */
+export function waitThreadsSettle(io: ThreadStopIo, opts?: ThreadStopOptions): Promise<SettleOutcome> {
+    return waitSettleFor(io, opts, '모든 쓰레드', probe => probe.active);
+}
+
 /**
- * `Stop -all` 을 한 번 보낸다(무응답이면 `resendOnNoResponse` 만큼 재전송).
- * **정지 완료를 판정하지 않는다** — 그건 `waitThreadsSettle` 의 몫이다.
+ * 지정 쓰레드가 정지될 때까지 폴링한다. 목록에서 사라져도 정지로 본다
+ * (이름 비교는 대소문자 무시 — GPL 은 대소문자를 구분하지 않는다).
  */
-export async function sendStopAll(io: ThreadStopIo, opts?: ThreadStopOptions): Promise<StopSendOutcome> {
+export function waitThreadSettle(io: ThreadStopIo, threadName: string, opts?: ThreadStopOptions): Promise<SettleOutcome> {
+    const target = threadName.trim().toLowerCase();
+    return waitSettleFor(io, opts, threadName, probe =>
+        probe.active.filter(t => t.name.trim().toLowerCase() === target));
+}
+
+/**
+ * 정지 명령을 한 번 보낸다(무응답이면 `resendOnNoResponse` 만큼 재전송).
+ * **정지 완료를 판정하지 않는다** — 그건 settle 폴링의 몫이다.
+ */
+export async function sendStop(io: ThreadStopIo, command: string, opts?: ThreadStopOptions): Promise<StopSendOutcome> {
     const o = resolveOptions(opts);
     let resp: ThreadStopResponse | null = null;
     for (let attempt = 0; attempt <= o.resendOnNoResponse; attempt++) {
         if (attempt > 0) {
-            io.log(`${o.logPrefix}⚠ ${STOP_ALL_CMD} 응답 없음 — 재전송합니다`);
+            io.log(`${o.logPrefix}⚠ ${command} 응답 없음 — 재전송합니다`);
         }
-        io.log(`${o.logPrefix}CMD ${STOP_ALL_CMD}`);
+        io.log(`${o.logPrefix}CMD ${command}`);
         try {
-            resp = await io.send(STOP_ALL_CMD);
+            resp = await io.send(command);
         } catch {
             resp = null;
         }
         if (resp) { break; }
     }
     if (!resp) {
-        io.log(`${o.logPrefix}✘ ${STOP_ALL_CMD} 실패 — 응답 없음(타임아웃 또는 연결 실패)`);
-        return { kind: 'failed', command: STOP_ALL_CMD, message: 'No response (timeout or connection failure)' };
+        io.log(`${o.logPrefix}✘ ${command} 실패 — 응답 없음(타임아웃 또는 연결 실패)`);
+        return { kind: 'failed', command, message: 'No response (timeout or connection failure)' };
     }
 
     const status = parseStatus(resp.raw);
     if (status.code === 0) {
-        io.log(`${o.logPrefix}✔ ${STOP_ALL_CMD} 접수 — 실제 정지는 확인 게이트에서 판정`);
+        io.log(`${o.logPrefix}✔ ${command} 접수 — 실제 정지는 확인 게이트에서 판정`);
         return { kind: 'accepted', statusCode: status.code };
     }
     if (isBusyStatus(status.code)) {
@@ -260,26 +288,31 @@ export async function sendStopAll(io: ThreadStopIo, opts?: ThreadStopOptions): P
     const message = status.code === NO_STATUS_CODE
         ? 'STATUS 없음 — 정지 결과 미확인(응답이 잘렸을 수 있음)'
         : status.message || 'Unknown error';
-    io.log(`${o.logPrefix}✘ ${STOP_ALL_CMD} 실패: STATUS ${status.code}: ${message}`);
-    return { kind: 'failed', command: STOP_ALL_CMD, statusCode: status.code, message };
+    io.log(`${o.logPrefix}✘ ${command} 실패: STATUS ${status.code}: ${message}`);
+    return { kind: 'failed', command, statusCode: status.code, message };
 }
 
 /**
- * **전체 정지의 정본** — `Stop -all` → 정지 완료 확인, 안 멈췄으면 자동 재시도.
+ * 정지 명령 → 정지 완료 확인 → (미확인 시) 자동 재시도. 전체/개별 정지의 공통 절차다.
  *
- * 성공(`ok: true`)은 "모든 쓰레드가 정지 상태로 관측됐다" 또는 "확인할 수 없었다(`settle.unconfirmed`)"
- * 둘 중 하나다. 후자를 정지로 단정하면 안 되는 호출부는 `settle.unconfirmed` 를 함께 본다.
+ * 성공(`ok: true`)은 "정지 상태로 관측됐다" 또는 "확인할 수 없었다(`settle.unconfirmed`)" 둘 중 하나다.
+ * 후자를 정지로 단정하면 안 되는 호출부(원격 파일 삭제·Load/Compile 진행 등)는 `settle.unconfirmed` 를 함께 본다.
  */
-export async function stopAllAndSettle(io: ThreadStopIo, opts?: ThreadStopOptions): Promise<StopAllOutcome> {
+async function stopAndSettle(
+    io: ThreadStopIo,
+    command: string,
+    waitSettle: () => Promise<SettleOutcome>,
+    opts?: ThreadStopOptions,
+): Promise<StopAllOutcome> {
     const o = resolveOptions(opts);
-    let lastSend: StopSendOutcome = { kind: 'failed', command: STOP_ALL_CMD, message: '전송하지 않음' };
+    let lastSend: StopSendOutcome = { kind: 'failed', command, message: '전송하지 않음' };
     let lastSettle: SettleOutcome | undefined;
 
     for (let attempt = 1; attempt <= o.maxStopAttempts; attempt++) {
         if (io.isCancelled?.()) {
             return { ok: false, attempts: attempt - 1, send: lastSend, settle: lastSettle, cancelled: true };
         }
-        lastSend = await sendStopAll(io, opts);
+        lastSend = await sendStop(io, command, opts);
         if (lastSend.kind === 'failed') {
             return {
                 ok: false,
@@ -290,7 +323,7 @@ export async function stopAllAndSettle(io: ThreadStopIo, opts?: ThreadStopOption
             };
         }
 
-        lastSettle = await waitThreadsSettle(io, opts);
+        lastSettle = await waitSettle();
         if (lastSettle.cancelled) {
             return { ok: false, attempts: attempt, send: lastSend, settle: lastSettle, cancelled: true };
         }
@@ -298,12 +331,12 @@ export async function stopAllAndSettle(io: ThreadStopIo, opts?: ThreadStopOption
             return { ok: true, attempts: attempt, send: lastSend, settle: lastSettle };
         }
         if (attempt < o.maxStopAttempts) {
-            io.log(`${o.logPrefix}↻ 정지 미확인(${lastSettle.activeDesc}) — ${STOP_ALL_CMD} 자동 재시도 (${attempt + 1}/${o.maxStopAttempts})`);
+            io.log(`${o.logPrefix}↻ 정지 미확인(${lastSettle.activeDesc}) — ${command} 자동 재시도 (${attempt + 1}/${o.maxStopAttempts})`);
         }
     }
 
     const activeDesc = lastSettle?.activeDesc ?? '(확인 불가)';
-    io.log(`${o.logPrefix}✘ ${STOP_ALL_CMD} 후에도 쓰레드가 정지되지 않음: ${activeDesc}`);
+    io.log(`${o.logPrefix}✘ ${command} 후에도 쓰레드가 정지되지 않음: ${activeDesc}`);
     return {
         ok: false,
         attempts: o.maxStopAttempts,
@@ -311,7 +344,24 @@ export async function stopAllAndSettle(io: ThreadStopIo, opts?: ThreadStopOption
         settle: lastSettle,
         failure: {
             command: 'Show Thread (stop settle gate)',
-            message: `${STOP_ALL_CMD} 후에도 활성 쓰레드 존재: ${activeDesc}`,
+            message: `${command} 후에도 활성 쓰레드 존재: ${activeDesc}`,
         },
     };
+}
+
+/** **전체 정지의 정본** — `Stop -all` → 모든 쓰레드 정지 확인, 안 멈췄으면 자동 재시도. */
+export function stopAllAndSettle(io: ThreadStopIo, opts?: ThreadStopOptions): Promise<StopAllOutcome> {
+    return stopAndSettle(io, STOP_ALL_CMD, () => waitThreadsSettle(io, opts), opts);
+}
+
+/**
+ * **개별 정지의 정본** — `Stop <thread>` → 그 쓰레드의 정지 확인, 안 멈췄으면 자동 재시도.
+ * 트리의 쓰레드 정지·FTP 폴더 중지가 같은 절차를 쓴다(종전에는 두 곳에 같은 코드가 있었다).
+ */
+export function stopThreadAndSettle(
+    io: ThreadStopIo,
+    threadName: string,
+    opts?: ThreadStopOptions,
+): Promise<StopAllOutcome> {
+    return stopAndSettle(io, stopThreadCommand(threadName), () => waitThreadSettle(io, threadName, opts), opts);
 }

@@ -37,6 +37,20 @@ export function isSettledState(state: string | undefined): boolean {
     return SETTLED_STATE.test((state ?? '').trim());
 }
 
+/**
+ * "지금 위치·변수를 들여다볼 수 있는" 정지 상태 집합.
+ *
+ * `Stopped`(완전 종료)와 달리 **디버거가 붙어 검사 가능한** 상태다 — 트리의 정지 전이 이벤트,
+ * AI 디버그 API 의 대상 선택, Break/Step 완료 판정이 모두 이 기준을 쓴다.
+ * 종전에는 같은 집합이 activation/controllerOps 와 views/controllerTreeProvider 에 따로 있었다(§1-DD).
+ */
+export const PAUSED_THREAD_STATES: ReadonlySet<string> = new Set(['Paused', 'Break', 'Error']);
+
+/** 상태 문자열이 검사 가능한 정지 상태(Paused/Break/Error)인가. */
+export function isPausedState(state: string | undefined): boolean {
+    return PAUSED_THREAD_STATES.has((state ?? '').trim());
+}
+
 /** 쓰레드 이름을 정규화(대소문자 무시 — GPL/VB.NET 계열은 대소문자를 구분하지 않는다). */
 function norm(s: string | undefined): string {
     return (s ?? '').trim().toLowerCase();

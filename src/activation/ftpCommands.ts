@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { EXTENSION_VERSION } from '../config';
 import { getControllerConfig, sendCommand, sendCommandDetailed } from '../controller/controllerConnection';
-import { isBusyStatus } from '../controller/controllerStatusCodes';
+import { isBusyStatus, isProjectNotLoaded } from '../controller/controllerStatusCodes';
 import {
 	FtpEntry,
 	clearRemoteDir,
@@ -19,11 +19,22 @@ import {
 import { SHOW_THREAD_LIST_CMD, isControllerNonBlockingStatus, parseCompileErrors, parseStatus, parseThreadList } from '../controller/responseParser';
 import { forgetSyncManifest } from '../controller/syncManifest';
 import { describeThreadActivity } from '../controller/threadActivity';
-import { sendCommandWithBusyRetry, sleep, stopAllThreads, trySoftEStopRecovery, verifyThreadStopped } from './controllerOps';
+import { sleep, stopAllThreads, stopThreadWithRecovery } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 export function activateFtpCommands(host: ExtensionHost): void {
 	const { context, outputChannel, consoleChannel } = host;
+
+	/** 1402 명령 전송 + STATUS 판정 — ok 는 비차단 STATUS(환경 경고)까지 성공으로 본다. */
+	const runStatusCommand = async (command: string) => {
+		const raw = await sendCommand(command);
+		const status = parseStatus(raw);
+		return {
+			raw,
+			status,
+			ok: status.code === 0 || isControllerNonBlockingStatus(status.code),
+		};
+	};
 
 	// FTP 프로젝트 다운로드
 	context.subscriptions.push(
@@ -345,16 +356,6 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				return compact.length > 260 ? `${compact.slice(0, 260)}...` : compact;
 			};
 
-			const runStatusCommand = async (command: string) => {
-				const raw = await sendCommand(command);
-				const status = parseStatus(raw);
-				return {
-					raw,
-					status,
-					ok: status.code === 0 || isControllerNonBlockingStatus(status.code),
-				};
-			};
-
 			const logCompileAttempt = (compile: FtpCompileAttempt): void => {
 				host.log(`│ RAW ${rawPreview(compile.raw) || '(empty)'}`);
 				if (compile.note) {
@@ -543,23 +544,8 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			if (!name) { return; }
 
 			try {
-				const stopResp = await sendCommandWithBusyRetry(host, `Stop ${name}`, { maxAttempts: 5, baseDelayMs: 400 });
-				const status = parseStatus(stopResp);
-				if (status.code !== 0 && !isBusyStatus(status.code)) {
-					vscode.window.showErrorMessage(`${name} 중지 실패: STATUS ${status.code} ${status.message}`);
-					return;
-				}
-
-				const stopped = await verifyThreadStopped(host, name, 7);
-				if (!stopped) {
-					const recovered = await trySoftEStopRecovery(host, name);
-					if (!recovered) {
-						vscode.window.showWarningMessage(`${name} 정지 명령은 전송됐지만 아직 실행 중일 수 있습니다. 잠시 후 다시 확인해줘.`);
-					}
-				} else {
-					vscode.window.showInformationMessage(`${name} 중지 완료`);
-				}
-				host.controllerTree?.refresh();
+				// 트리의 「쓰레드 정지」와 같은 절차다(controllerOps.stopThreadWithRecovery, §1-DD).
+				await stopThreadWithRecovery(host, name);
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`${name} 중지 실패: ${err.message ?? err}`);
 			}
@@ -574,8 +560,18 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			if (!host.ensureProjectNameSafe(name, 'remote', 'Unload')) { return; }
 
 			try {
-				await sendCommand(`Unload ${name}`);
-				vscode.window.showInformationMessage(`${name} Unload 완료`);
+				// 하드 규칙 2: 성공/실패는 그 명령의 STATUS 로 판정한다. 종전에는 응답을 보지 않고 무조건
+				// "Unload 완료"를 띄워, 쓰레드가 살아 있어 거부된(-750) 경우에도 성공으로 보고했다(§1-DD).
+				const { status } = await runStatusCommand(`Unload ${name}`);
+				if (status.code === 0) {
+					vscode.window.showInformationMessage(`${name} Unload 완료`);
+				} else if (isProjectNotLoaded(status.code)) {
+					vscode.window.showInformationMessage(`${name} 은(는) 로드돼 있지 않습니다 (Unload 불필요)`);
+				} else {
+					vscode.window.showErrorMessage(
+						`${name} Unload 실패: STATUS ${status.code} ${status.message || ''}`.trimEnd()
+						+ (isBusyStatus(status.code) || status.code === -750 ? ' — 쓰레드를 먼저 정지하세요.' : ''));
+				}
 				host.controllerTree?.refresh();
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`Unload 실패: ${err.message ?? err}`);

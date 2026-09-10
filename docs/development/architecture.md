@@ -99,6 +99,22 @@ flowchart BT
 고정할 수 있는가"를 먼저 묻고, 그렇다면 순수 모듈로 쓴 뒤 접착 계층에서 부른다(예: `startCommand`·
 `commandPolicy`·`breakpointReconcile`·`deployOutcome`).
 
+### 3.1 제어기 조작은 "절차"를 모듈로 (주입형 IO)
+
+제어기(1402)의 원시 명령은 **안전한 단위가 아니다.** 예를 들어 `Stop -all` 은 정지 *요청 접수*까지만 보장하고
+(§0.6), 실제 정지는 `Show Thread` 폴링으로 확인해야 하며, `-752` 는 실패가 아니라 진행 중이고, 안 멈추면
+재시도해야 한다. 즉 **"프로그램을 멈춘다"는 한 동작 = 전송 + STATUS 판정 + 확인 폴링 + 재시도 + 실패 처리** 전부다.
+
+그래서 이런 절차는 호출부에서 조립하지 않고 `controller/` 의 순수 모듈에 **절차째로** 둔다. 호출부가 다른 것은
+전송 수단과 로그 목적지뿐이므로 그것만 IO 인터페이스로 주입한다(`send`/`log`/`sleep`/`isCancelled`/`now`).
+그러면 ① 가짜 IO 로 시나리오를 Node 단독 테스트에 고정할 수 있고 ② 판정 규칙이 바뀌어도 한 곳만 고치면 되며
+③ 새 호출부가 안전장치를 빠뜨릴 수 없다(실제로 디버그 세션의 attach preflight 는 정지 확인이 빠져 있었다).
+
+정본: `controller/threadStop.ts`(전체·개별 쓰레드 정지). 결과는 성공/실패 불리언이 아니라 **구조화된 결과**로
+돌려주고, 특히 "확인하지 못함"(`unconfirmed`)을 성공과 구분해 드러낸다 — 배포는 통과시키고 원격 파일 삭제는
+중단하는 식으로 **정책은 호출부가 고른다.** 같은 꼴로 정리할 다음 후보(compile/load/unload/start 등)는
+`docs/ai-handoff.md` §1-DD 의 표에 있다.
+
 ## 4. 조립 — extension.ts → ExtensionHost → activation/*
 
 - `extension.ts` 는 `ExtensionHost` 를 만들고 `activateXxx(host)` 를 **종전 순서대로** 부른다. 순서가 뜻을

@@ -1,12 +1,12 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-09-07** · 현재 package 버전 **0.9.0** (태그 `v0.9.0` — `v0.8.22` 이후 첫 정식 릴리스. CI `release.yml`이 빌드·패키징·릴리즈)
-- **직전 세션: §1-DB** — **구조 기반 정비(리팩터링 5커밋, 동작 동일).** tsconfig 엄격 플래그 5종·죽은 코드 제거 →
-  경로 키(`util/pathKey`)·`.gpr` 순수 로직(`project/gprSync`)으로 language/project → controller 역방향 의존 제거 →
-  루트의 언어 모듈 6개를 `language/`로 → 배포 결과 보고부(`controller/deployOutcome`)·트리 포맷(`views/treeFormat`·
-  `runtimeConsoleTreePresentation`) 순수 분리 → **계층 규칙을 테스트로 고정**(`src/test/architecture.test.ts`: vscode 허용
-  목록·의존 방향·런타임 순환·테스트 등록·package.json↔명령/설정 키). 계층 지도는 `docs/development/architecture.md`.
-  `npm test` 784 → 820/820. 착수 전 다른 세션의 §1-DA 미커밋 작업 트리는 검증 후 그 세션 이름으로 분리 커밋(9b79f1e)했다.
+- **최종 갱신: 2026-09-10** · 현재 package 버전 **0.9.1** (태그 `v0.9.0` — CI `release.yml`이 빌드·패키징·릴리즈)
+- **직전 세션: §1-DD** — **제어기 조작 절차를 API 한 겹으로 묶기(1): 쓰레드 정지 정본 신설.**
+  제어기의 원시 명령은 안전한 단위가 아니다(`Stop -all` 은 *요청 접수*까지만 보장) — 그 절차를 호출부마다
+  다시 조립하던 것을 `controller/threadStop.ts`(vscode 무의존·주입형 IO) 하나로 모으고 5곳을 통합했다.
+  디버그 세션 두 곳은 정지 확인이 아예 없었다(§0.6 위반). 개별 정지 쌍둥이 코드·정지/일시정지 상태 집합
+  중복도 정리하고, 무검증 성공 보고 2건(`ftpUnload`·`threadStart`)을 고쳤다. `npm test` 837/837.
+  같은 성격의 중복 8건을 전수 조사해 다음 단위(`controller/projectCommands.ts`)까지 §1-DD 표에 적어 뒀다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -83,6 +83,30 @@
 
 열린 항목만 둔다. 완료된 항목은 `docs/archive/handoff/2026-08.md` §부록으로 옮겼다(2026-08-31 정리).
 
+- [ ] **(2026-09-10, §1-DC) 「업로드 스타트」 원인 규명 — `gpl.uploadStart.test`(비커 버튼)로 조합을 하나씩 실험.**
+  저속/시뮬레이션에서만(하드 규칙 6). **D(현재 기본) → B → C → A** 순으로 돌리고 각 회차의 Deploy 트레이스를
+  보관한다(머리의 `⚗ TEST X` 줄로 구분된다). 판정: **B에서만 정상 = 원인은 ㉠**(Stop 처리 중 FTP 덮어쓰기),
+  **C에서만 정상 = 원인은 ㉡**(정지 직후의 Start), 둘 다 정상 = 각각으로 충분, A에서 재현되면 가설 자체가 맞다.
+  결과가 나오면 이 항목과 §1-DC를 사실로 갱신하고, 불필요해진 조합·TEST 명령은 정리한다.
+- [ ] **(2026-09-10, §1-DD) 제어기 API 통합 (2) — `controller/projectCommands.ts`(compile/load/unload/start).**
+  §1-DD 표의 중복 1·2·3 을 한 번에 없앤다. `threadStop.ts` 와 같은 꼴(주입형 IO + 구조화 결과)로 만들고,
+  진단(Problems) 연동·모달 확인 같은 UI 는 호출부에 남긴다. **배포 파이프라인의 심장부라 테스트를 먼저 깔고
+  들어갈 것.** 부수 효과로 `ftpCommands` 의 `Start` 가 `-event` 없이 손으로 조립되던 것(경로마다 1403 이벤트 모드가
+  달라지던 원인)과 `resolveFtpRunPath`/`chooseRemoteProjectPath` 의 가중치 차이(같은 프로젝트에 다른 원격 폴더를
+  고를 수 있다)도 정리된다. 나머지 4~7(Show Thread 열거·중단점 폴백·busy 재시도·스택 조회)은 그다음.
+- [ ] **(2026-09-10, §1-DD) 정지 경로 실기기 확인 — 5곳이 같은 절차를 쓰게 바뀌었다(모션 유발 없음, 정지만).**
+  ① 패널 「전체 정지」: 정지 확인까지 간 뒤 "전체 정지 완료"가 뜨는지, 제어기를 뽑아 두면(무응답) 완료로
+  보고하지 **않고** SoftEStop 안내로 가는지. ② 트리 쓰레드 「정지」·FTP 폴더 「중지」가 같은 문구·같은 절차인지.
+  ③ 디버그 세션 attach 시 `stopAllBeforeAttach: true` 구성으로 붙으면 정지 확인 로그가 남는지(종전에는 없었다).
+  ④ `gpl.controller.ftpUnload` 를 **쓰레드가 도는 상태에서** 실행 → 종전의 거짓 "Unload 완료" 대신 실패 사유가
+  뜨는지(-750 이면 "쓰레드를 먼저 정지하세요"). ⑤ 트리 쓰레드 「시작」이 실패할 때 오류가 뜨는지.
+- [ ] **(2026-09-10, §1-DC) `gpl.debug.attachOnly` 확인 — 제어기 연결은 필요하지만 Stop/Start 는 보내지 않는다.**
+  ① 빠른 컴파일 → `GPL: Start` 로 프로그램을 돌려 둔 상태에서 패널 상단 **플러그 아이콘**(또는 팔레트
+  `GPL: 디버그 붙기`)을 눌러 **배포 모달·Stop 모달 없이** 세션이 붙는지, 그리고 **돌던 프로그램이 계속 도는지**.
+  ② 붙은 뒤 F9 중단점이 실제로 걸리는지(`Set Break` 가 Traffic 에 나가는지) + 변수 호버가 되는지.
+  ③ 로컬 소스를 고쳐 저장한 뒤 붙으면 "로컬 소스가 더 새로움" 경고가 뜨는지(Attach only 의 핵심 판정, GitHub #21).
+  ④ 팔레트에서 `GPL: 디버그` 로 검색했을 때 두 명령(`디버그 시작` / `디버그 붙기`)이 모두 나오는지.
+  ⑤ `GPL: AI 디버그 어시스트`의 `build-and-attach` 가 Build Only 뒤 **재배포 없이** 붙는지(§1-DC 조치 B3).
 - [ ] **(2026-09-07, §1-CZ) `extension.ts` 분해 뒤 확장 실동작 스모크 — 편집기 동작만(제어기는 조회만).**
   코드 본문은 그대로 옮겼고 `tsc`·등록 명령 집합 대조·순수 모듈 테스트로 확인했지만, **Extension Development
   Host 에서 실제로 켜 본 적은 없다.** F5(`GPL-DevHost` 프로필)로 `samples/hello-project`를 열고
@@ -297,12 +321,17 @@
   폴백 `Nobreak`가 나가고 실제로 사라지는지(이번 수정의 핵심). ⑤ 다른 프로젝트가 로드된 상태에서
   수렴이 **그 프로젝트 BP를 건드리지 않는지**(`untouched` 카운트). ⑥ 제어기를 뽑고 F9 → 알림·전송이
   없는지(미연결이면 조용히 지나가야 한다).
-- [ ] **(2026-08-31, §1-CD) 「업로드 스타트」 실기기 검증 — Start를 보내므로 저속/시뮬레이션 필수(하드 규칙 6)**:
+- [ ] **(2026-08-31 §1-CD, 2026-09-10 §1-DC 갱신) 「업로드 스타트」 실기기 검증 — Start를 보내므로 저속/시뮬레이션 필수(하드 규칙 6)**:
+  **최우선은 ⓪** — §1-DC의 순차 변경으로 "제어기가 응답을 잃는" 현상이 사라졌는지다. 재현되면 남는 용의자는
+  정지 직후의 `Start`(제어기 자체 컴파일)이고, Deploy 트레이스가 어느 배너에서 끊겼는지가 판별 근거다.
+  ⓪ 실행 → Output `GPL Deploy (Debug)`에 `[1/3] STOP → UPLOAD (순차)`가 찍히고, **`Stop -all`·정지 확인이 끝난
+  뒤에야 `↑` 업로드 줄이 시작되는지**(병행이던 종전과의 차이). 정지가 안 되는 상황을 일부러 만들면
+  "정지가 확인되지 않아 업로드를 시작하지 않았습니다"로 끝나고 **제어기 파일이 그대로인지**.
   ① 패널 상단 세 번째 버튼(로켓)이 `GPL: 업로드 스타트`로 보이고, `Start(실행만)`은 `···` 메뉴에 있는지.
-  ② 정상 소스로 실행 → Output `GPL Deploy (Debug)`에 `[1/3] UPLOAD ∥ STOP` → `[2/3] PREPARE (Compile 생략 …)`
-  → `[3/3] START`가 찍히고 **`Compile <name>` 명령이 Traffic에 단 한 번도 나가지 않는지**(이번 변경의 핵심).
-  ③ Start 확인 모달이 뜨는지(`gpl.controller.requireStartConfirmation` 기본 true) + `Stop -all` settle 뒤에
-  Start가 나가는지(§0.6 R2 정책 로그).
+  ② 정상 소스로 실행 → `[2/3] PREPARE (Compile 생략 …)` → `[3/3] START`가 찍히고
+  **`Compile <name>` 명령이 Traffic에 단 한 번도 나가지 않는지**(§1-CD 변경의 핵심).
+  ③ Start 확인 모달이 뜨는지(`gpl.controller.requireStartConfirmation` 기본 true) + **Start 직전 정지 재확인**
+  (`Show Thread` 한 번 더)이 트레이스에 남고, 쓰레드가 남아 있으면 `Start`가 나가지 않는지(§1-DC 조치 A2).
   ④ **소스에 일부러 에러를 넣고** 실행 → Start의 STATUS 코드와 소요 시간(암묵 컴파일 시간)을 기록하고,
   트리/상태바에 "컴파일 검증 필요"가 뜨는지 + 클릭 시 빠른 컴파일로 에러 위치가 Problems에 오는지.
   ⑤ 성공 후 Attach only 디버깅에서 "로컬 소스가 더 새로움" 헛경고가 **뜨지 않는지**(스냅샷 기록 시점 이동 확인).
@@ -419,7 +448,8 @@ src/controller/uriDispatch.ts            # 외부 진입점 URI 해석(vscode �
 src/controller/connectionHealth.ts       # 연결 건강 판정(vscode 무의존) — ConnectionHealthMonitor(connected→suspect→lost, 프로브 임계 3/거부 2·힌트는 suspect만)·ConnectionHealthProber(1 s 재프로브)·classifyCommandFailure·probeOutcomeFromResponse (§1-BK)
 src/controller/consoleSocket.ts          # 1402 소켓 계층(vscode 무의존) — keep-alive 소켓 1개, terminator-first 재사용 판정, stale 1회 재시도, 트래픽 링버퍼 600줄 (§1-BI, #22), reject code 부착·보관 소켓 관찰자(§1-BK)
 src/debug/sourceTargets.ts               # BP 유효 줄·프로시저 범위(End Sub 기준)·호출 후보 파싱(vscode 무의존) — BP 줄 보정(문서 규칙)·Jump to Cursor 검증·Step Into Target 후보 (§1-BU)
-src/controller/threadActivity.ts          # "동작 중" 판정(vscode 무의존) — 쓰레드 존재 = 활성, project 컬럼·기본 이름·`_Cmd_<project>`(Execute 쓰레드) 인정 (§1-BU)
+src/controller/threadActivity.ts          # "동작 중" 판정(vscode 무의존) — 쓰레드 존재 = 활성, project 컬럼·기본 이름·`_Cmd_<project>`(Execute 쓰레드) 인정 (§1-BU). 상태 판정 단일 출처: isSettledState(Idle/Stopped/Error) · isPausedState/PAUSED_THREAD_STATES(Paused/Break/Error, §1-DD)
+src/controller/threadStop.ts              # **쓰레드 정지의 정본**(vscode 무의존·주입형 IO) — probeThreads(잘린 응답=확인 불가) / waitThreadsSettle·waitThreadSettle / sendStop / stopAllAndSettle·stopThreadAndSettle(전송→STATUS 판정→폴링→자동 재시도, unconfirmed 노출). 배포·패널·FTP·디버그가 모두 이것을 쓴다 (§1-DD)
 src/controller/startCommand.ts            # Start 명령 조립(vscode 무의존) — 문서 구문 순서, 기본 `-event`(GDE 동일), `-compile` 금지(하드 규칙 7) (§1-BU)
 src/debug/threadLock.ts                  # 스레드 단일 실행 잠금 판정(vscode 무의존) — resolveExecutionThread(대상 확정·staleLock)·shouldPreserveFocus·isAllThreadsResumeRequest. 어댑터의 StoppedEvent 는 전부 _stoppedEvent 경유(불변식) (§1-BS)
 src/controller/idlePing.ts               # 1402 유휴 ping 판정/스케줄러(vscode 무의존) — GDE 방식 세션 유지(유휴 5 s → 읽기 명령 1개), 1403 안정성의 열쇠 (§1-BM)
@@ -436,7 +466,7 @@ src/views/refreshThrottle.ts             # 트리 FTP/시스템 정보 자동 �
 src/debug/launchJsonc.ts                 # launch.json JSONC 읽기/부분 갱신(jsonc-parser) — 주석·포맷 보존 upsert (§1-BI, #30)
 controller-mcp/src/batch.js              # MCP controller_command 배치 runBatch/normalizeCommandInput (§1-BI, #16)
 src/controller/trafficResponseBody.ts    # ResponseBodyStreamer — 1402 응답 본문 줄 단위 스트리밍·상한 생략 요약(§1-BG, vscode 무의존 순수 모듈)
-src/controller/deployService.ts          # deploy() = 잠금 획득 → UPLOAD → STOP/THREAD_CHECK(settle 게이트) → COMPILE → ERROR CHECK(§1-BD 재배치), tryCompile, directGpl(§1-G), COMPILE_DEFERRED, findProjectDirs(**/*.gpr)
+src/controller/deployService.ts          # deploy() = 잠금 획득 → UPLOAD ∥ STOP/THREAD_CHECK(settle 게이트, stopBeforeUpload 면 STOP→UPLOAD 순차 §1-DC) → COMPILE → START(직전 정지 재확인 §1-DC) → ERROR CHECK(§1-BD 재배치), tryCompile, directGpl(§1-G), COMPILE_DEFERRED, findProjectDirs(**/*.gpr)
 src/controller/projectPickerCore.ts      # 프로젝트 폴더 선택 순수 규칙 — orderProjectDirs(최근 선택 우선)·projectDirFromResource(폴더 자체/.gpr/포함 파일)·filterDirsByProjectName (§1-BL, vscode 무의존)
 src/controller/projectPicker.ts          # 공용 선택기 pickProjectDir(Detailed)(QuickPick·workspaceState 최근 선택)·readGprProjectName/projectNameOf·context key gpl.projectDirs(탐색기 메뉴) — 명령·F5 provider 공용 (§1-BL)
 src/controller/projectNameGuard.ts       # 프로젝트명/Load 경로 안전성 단일 규칙(vscode 무의존) — 1402 명령은 공백 구분·인용 불가 → 공백·제어 문자 검출 checkProjectName/checkRemotePath·안내 문구 describeProjectNameProblem; deploy/Start/ftpRun·Unload/F5 attach/MCP proj()가 공유 (§1-BQ)
@@ -458,7 +488,7 @@ src/debug/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach
 src/extension.ts                         # activate()/deactivate() — 배선만(195줄). ExtensionHost 생성 → activation/*.ts 의 activateXxx(host) 를 종전 순서로 호출 (§1-CZ)
 src/activation/host.ts                   # ExtensionHost — 클로저가 공유하던 서비스(채널·심볼 캐시)·가변 상태(트리·상태바·런타임 콘솔·건강 모니터·디버그 여부·마지막 스냅샷)·헬퍼(log·배포 잠금·컴파일 검증 상태·런타임 콘솔 싱글톤·연결 상태 반영·Agent Bridge)·하위 API(project/connection/deploy/decorations). **가변 상태는 항상 host.x 로 읽는다** (§1-CZ)
 src/activation/deploy.ts                 # gpl.deploy/uploadStart/start/saveToFlash/quickCompile + autoOnSave + 자동화 대상 해석·게이트 — runDeploy/runDeployCore(969줄 — 결과 보고부는 controller/deployOutcome.ts) (§1-CZ, §1-DB)
-src/activation/connection.ts             # 연결 건강 모니터 배선·유실 처리·사후 스냅샷·connect/disconnect(대화형+비대화형)·launch.json·attachNow·debugProject (§1-CZ)
+src/activation/connection.ts             # 연결 건강 모니터 배선·유실 처리·사후 스냅샷·connect/disconnect(대화형+비대화형)·launch.json·startQuickAttachSession(attachNow=배포 후 붙기 / attachOnly=배포 없이 붙기, §1-DC)·debugProject (§1-CZ)
 src/activation/projectContext.ts         # 기대 프로젝트 감지·launch.json 읽기·GPL 파일명→경로 해석(resolveGplFilePath) — host.project (§1-CZ)
 src/activation/controllerOps.ts          # busy 재시도·정지 확인(§0.6)·SoftEStop 복구·정지 진입 대기(waitForThreadPause) — host 를 첫 인자로 (§1-CZ)
 src/activation/debugDecorations.ts       # ExecutionDecorations — 정지 줄/에러 줄 강조 한 객체 (§1-CZ)
@@ -610,8 +640,8 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CP | 09-02 | 디버깅 중 호버에서 문서화 주석이 사라지던 동작 — `gpl.hover.duringDebug` 기본값 `compact` → `normal` + 설정 정규화 단일 출처화 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CQ | 09-02 | 정의 찾기(F12)가 같은 선언을 3번 띄우던 문제 — 심볼 캐시 경로 키 정규화(`normalizePathKey`) + peek 목록 중복/잔류 제거 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CR | 09-02 | 문서화 주석이 `Module`·`Class`·변수·상수 선언에서 표시되지 않던 문제 — 파서의 `docComment` 수집 대상을 모든 선언 종류로 확장 + 소속 판정 단일 출처화(`isDeclaredIn`) | [2026-09](archive/handoff/2026-09.md) |
-| §1-CS | 09-02 | 옛 주석의 ASCII 장식 구분선(`' ====`)이 호버를 setext 헤딩으로 깨뜨리던 문제 — `isDecorativeRule`/`stripDecorativeRules`(렌더 단계에서만 제거) | 본문 ↓ |
-| §1-CT | 09-02 | 중첩 라이브러리 구조에서 BP 가능하게 — 소스 승격 계획/검증(`sourcePromotion.ts`) + 디버그 소스맵을 컴파일 단위로 좁힘 | 본문 ↓ |
+| §1-CS | 09-02 | 옛 주석의 ASCII 장식 구분선(`' ====`)이 호버를 setext 헤딩으로 깨뜨리던 문제 — `isDecorativeRule`/`stripDecorativeRules`(렌더 단계에서만 제거) | [2026-09](archive/handoff/2026-09.md) |
+| §1-CT | 09-02 | 중첩 라이브러리 구조에서 BP 가능하게 — 소스 승격 계획/검증(`sourcePromotion.ts`) + 디버그 소스맵을 컴파일 단위로 좁힘 | [2026-09](archive/handoff/2026-09.md) |
 | §1-CU | 09-02 | 최근 세션들의 미완 코드 항목 마무리 — "컴파일 검증 필요" 배지 해제를 배포 경로와 분리(`compileStale.ts` + `onDidRecordCompiled`) · `clean.js` 비ASCII 경로 크래시 · folding 의 `Set` 대입문 오인 | 본문 ↓ |
 | §1-CV | 09-02 | 이름 바꾸기(F2) 오작동 — 선언 심볼 range 를 이름 span 으로(줄 전체 금지) · 콤마 다중 선언 파서(`declarationList.ts`) · 스코프 가시성 정본(`symbolScope.ts`, F12/F2 공유) · 편집 전 텍스트 검증 | 본문 ↓ |
 | §1-CW | 09-02 | 참조 찾기(Shift+F12)가 생성자 `New Class(...)`와 `"Class.Proc"` callback 문자열을 놓치던 문제 — 특수 참조 문법 정본(`referenceSyntax.ts`) | 본문 ↓ |
@@ -620,212 +650,12 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-CZ | 09-07 | `extension.ts` activate() 5,300줄을 명령 그룹별 모듈(`src/activation/`)로 분해 — `ExtensionHost` + 순수 로직 4건 분리·테스트 15건 (§3-B 보류 항목 종결) | 본문 ↓ |
 | §1-DA | 09-07 | flash 영구 저장(`gpl.saveToFlash`)을 AI/자동화 경로에서 차단 — 차단 목록 정본 `aiCommandPolicy.ts` + 브리지·URI·명령 3중 게이트, MCP 미러 | 본문 ↓ |
 | §1-DB | 09-07 | 구조 기반 정비 — tsconfig 엄격 플래그·죽은 코드 제거·계층 경계(`util/pathKey`·`project/gprSync`·언어 모듈 `language/` 이동)·순수 분리(`deployOutcome`·`treeFormat`)·**계층 규칙 테스트 고정**(`architecture.test.ts`)·`docs/development/architecture.md` 신설 | 본문 ↓ |
+| §1-DC | 09-10 | 「업로드 스타트」가 제어기를 멈추게 하던 시퀀스 정정 — 정지 확인 → 업로드 순차(`stopBeforeUpload`) + Start 직전 정지 재확인, 배포 없이 붙는 `gpl.debug.attachOnly` 신설·명령 제목 한국어화 + 원인 규명용 TEST 경로(`gpl.uploadStart.test`) + 빌드 완료 후 GPL Console 포커스 탈취 제거 | 본문 ↓ |
+| §1-DD | 09-10 | 제어기 조작 절차를 API 한 겹으로 묶기(1) — 전체/개별 쓰레드 정지 정본 `controller/threadStop.ts`(주입형 IO·테스트 17건) + 5곳 통합 + 정지/일시정지 상태 판정 단일화 + 무검증 성공 보고 2건 수정 + 중복 절차 전수 조사 | 본문 ↓ |
 
 ---
 
 **최근 세션 본문 — §1-CS ~ §1-DB (2026-09-02 ~ 2026-09-07).** 이 아래부터는 세션 원문이다.
-
-## 1-CS. 2026-09-02 세션 — 옛 주석의 ASCII 장식 구분선이 호버 렌더를 깨뜨리던 문제 (setext 머리글 오인)
-
-### 증상 (사용자 신고)
-
-`StringUtils.gpl`의 `SafeTrim` 호버 스크린샷 — `Module: PRS` 아래 구분선 다음에 `====` 한 줄이
-그대로 보이고, 바로 아래 `[2] SafeTrim - None 안전 Trim`이 **본문 글씨의 몇 배 크기 헤딩**으로
-나온다. 같은 확장의 다른 호버(`LGF.SetPath`, 문서화 주석 형식을 갖춘 것)는 정상이었다.
-
-문제의 주석은 옛 ASCII 박스 스타일이다:
-
-```gpl
-' ========================================
-' [2] SafeTrim - None 안전 Trim
-' ========================================
-' 용도: Nothing 체크 + Trim 한 번에
-Public Function SafeTrim(s As String) As String
-```
-
-### 원인 — 마크다운의 setext 머리글
-
-문서화 주석은 `MarkdownString`으로 렌더된다(`renderDocCommentMarkdown` → 호버/자동완성/시그니처).
-구조가 없는 옛 주석은 전부 `description`이 되어 각 줄이 강제 줄바꿈(공백 2칸 + 개행)으로 이어 붙는데,
-**`=`나 `-`만 있는 줄은 마크다운에서 바로 위 문단의 setext 머리글 밑줄**이다 — `===`→`<h1>`,
-`---`→`<h2>`. 즉 렌더 입력이
-
-```text
-========================================
-[2] SafeTrim - None 안전 Trim
-========================================
-용도: Nothing 체크 + Trim 한 번에
-```
-
-일 때 1·2번 줄이 한 문단이 되고 3번 줄이 그 문단의 h1 밑줄이 되어, `====`와 제목이 **함께 h1**으로
-렌더된다(스크린샷의 두꺼운 `====` 줄이 h1 크기의 `=` 문자다). 4번 줄만 정상 문단.
-
-`out/language/docComment.js`로 실제 렌더 문자열을 확인해 확정했다 — 잘못된 폰트·테마·스타일 문제가
-아니라 입력 마크다운이 그렇게 해석되는 것이 맞았다.
-
-곁들여 같은 원인의 문제가 두 개 더 있었다:
-
-- `#####` 처럼 `#`만 있는 장식선이 `HEADER_RE`(`^\s*(#{1,6})\s*(\S.*?)\s*:?\s*$`)에 걸려 **제목이 `#`인
-  섹션**으로 파싱된다(`#{1,6}`가 5개까지 물러나면서 남은 `#`이 제목이 된다).
-- `# Parameters` 본문의 장식선은 불릿이 아니어서 "이어지는 설명"으로 **직전 항목 설명 끝에 `-----`가
-  붙었다**.
-
-### 조치 — 렌더 단계에서만 걸러낸다
-
-`src/language/docComment.ts`:
-
-- **`isDecorativeRule(line)`** (export) — 공백을 뗀 뒤 `^[=\-_*#+/\\|<>]{3,}$`. 구두점만으로 3자
-  이상인 줄을 장식선으로 본다(`========`, `--------`, `* * *`, `#####`, `//////`, `# ====`).
-  - **백틱과 물결(`~`)은 대상에서 뺐다** — 백틱 3개·물결 3개는 코드 펜스 표기라 장식선과 구분할 수 없다.
-  - 마침표·콜론도 뺐다(`...`, `:::`는 내용일 수 있다).
-- **`stripDecorativeRules(lines)`** — 펜스 **밖**에서만 장식선을 제거한다. 예제 코드 안의 `-----`는
-  내용이므로 그대로 둔다.
-- 적용 지점: ① `renderDocCommentMarkdown`의 설명(요약/최대 줄 수로 자르기 **전** — 표시 한도를 장식이
-  잡아먹지 않게) ② `renderSectionBody`(섹션 본문·Examples) ③ `parseDocComment`의 `summary` 계산
-  ④ `parseParamEntries`(항목 설명 오염 방지) ⑤ `HEADER_RE` 매칭 앞의 장식선 제외.
-- **원문(`ParsedDocComment.lines`·`description`)과 줄 인덱스는 건드리지 않는다.** 주석 머지/편집
-  (`mergeDocComment`·`locateDocCommentBlock`·`bodyRange`)이 줄 번호에 의존하므로, 이미 있던
-  `withFenceLanguage`와 같은 원칙("원문은 그대로, 렌더 결과에만 적용")을 따랐다.
-
-렌더 결과: `[2] SafeTrim - None 안전 Trim  \n용도: Nothing 체크 + Trim 한 번에` — 장식선은 사라지고
-두 줄이 평범한 문단으로 나온다. 장식선을 `***`(마크다운 수평선)으로 바꾸는 방안도 있었지만, 호버는
-이미 `---`로 시그니처/스코프/주석을 나누고 있어 수평선이 겹쳐 보이므로 **제거**를 골랐다.
-
-### 조치 2 — 열린 채 끝나는 코드 펜스 보정 (같은 점검에서 발견)
-
-옛 주석 형태를 렌더러에 넣어 훑는 중에 **장식선과 무관한 실제 파손 경로**를 하나 더 찾았다:
-설명 안에 코드 펜스가 있고 **요약 모드나 `maxDescriptionLines`가 펜스 중간에서 자르면** 여는 펜스만
-남아, 뒤따르는 안내 문구(`… *(전체 주석: 정의로 이동 F12)*`)까지 코드 블록에 삼켜졌다.
-
-```text
-maxLines=3  →  "desc line  \n```  \nx = 1  \n… *(전체 주석: 정의로 이동 F12)*"   ← 펜스 1개
-```
-
-- **`closeUnbalancedFence(lines)`** — 펜스 표기를 토글로 세어 열린 채 끝나면 같은 마커를 한 줄 덧붙인다.
-  잘려서 열린 경우와 **작성자가 닫는 펜스를 빼먹은 경우**를 함께 덮는다.
-- 적용: 설명(자르기 **후**, 안내 문구를 붙이기 **전** — 문구가 코드 블록 밖에 있어야 한다)과 섹션 본문.
-- 곁들여 설명 안의 펜스에도 `withFenceLanguage`를 적용해, 섹션(`# Examples`)처럼 언어 표기 없는 여는
-  펜스가 `gpl`로 강조된다(종전에는 설명 쪽만 강조가 없었다).
-
-이 점검에서 함께 확인한 나머지 형태는 **정상 동작**이라 손대지 않았다: 빈 줄 뒤 4칸 이상 들여쓴 줄은
-코드 블록(작성자가 예제로 들여쓴 것이므로 의도에 맞다), `> 주의`는 인용, `1.`/`-`는 목록,
-`| a | b |`·`<STATUS>`는 평문, 박스 문자 구분선(`═════`·`─────`)은 마크다운 문법이 아니라 그림 그대로다.
-
-### 검증
-
-- docComment 단위 테스트 **29/29**(신규 5건: `isDecorativeRule` 판정 표 / 사용자 사례 ASCII 박스
-  렌더 + 원문 보존 + summary / 섹션·파라미터·펜스 안 구분선 / 펜스 중간 잘림 보정 + 자르지 않으면
-  무개입 / 닫는 펜스 누락 섹션). 기존 24건 그대로 통과.
-- `npm run compile` 0 오류, `npm test` **724/724**(위 5건 포함 — 나머지 증가분은 같은 시각 진행된
-  다른 작업의 것이다).
-  - 작업 도중에는 **다른 작업 스트림의 미추적 파일** `src/project/sourcePromotion.ts`가
-    `projectSources.ts`의 비-export 함수 `defaultReadGprText`를 참조해 전체 컴파일이 막혀 있었다
-    (`error TS2304`, 이 세션 변경과 무관). 그동안은 `docComment.ts`와 테스트만 격리 컴파일해
-    검증했고, 그쪽이 해소된 뒤 전체 스위트로 다시 확인했다.
-
-### 남은 일 / 관찰
-
-- 사용자 편집기에서 실제 호버 확인 → §3.
-- §1-CR의 "모듈 파일 머리의 배너 주석" 관찰과 맞물린다 — 배너의 `====` 줄은 이제 걸러지므로 모듈
-  호버가 헤딩으로 튀지 않는다. 다만 배너 안의 이력·작성자 줄은 그대로 설명이 되므로, 실사용 파일에서
-  분량이 어떻게 보이는지는 여전히 확인 대상이다.
-- 옛 주석의 다른 마크다운 오인 요소(줄 앞 `1.`·`-`가 목록이 되는 것 등)는 대체로 읽기에 해가 없어
-  두었다. 실제로 문제가 보고되면 같은 자리(`stripDecorativeRules` 계열)에 규칙을 더한다.
-
-### 변경 파일
-
-- `src/language/docComment.ts` — `isDecorativeRule`·`stripDecorativeRules`·`closeUnbalancedFence` 신설,
-  렌더/summary/파라미터/머리글 판정에 적용 + 설명 쪽 펜스에도 `withFenceLanguage` 적용
-- `src/test/docComment.test.ts` — 5건 추가
-- `CHANGELOG.md`(0.8.26)
-- `docs/ai-handoff.md` — 이 세션 기록 + §1 본문 10개 유지(§1-CI·§1-CJ를 2026-08 아카이브로 이동,
-  범위 표·인덱스 위치 칸 갱신) + §4에 `src/language/docComment.ts` 행 추가
-
-## 1-CT. 2026-09-02 세션 — 중첩 라이브러리 구조에서 BP 를 걸 수 있게: 소스 승격 계획/검증 + 디버그 소스맵 경계
-
-**증상.** 사용자가 「업로드 스타트 + 디버그」를 했는데 ① 상태바에 `컴파일 검증 필요: GPL_Code` 배지가
-남아 있고 ② 중단점이 회색으로 안 걸렸다.
-
-**원인 ①(배지).** 배지 상태 `compileStaleProjects`(`extension.ts`)를 켜고 끄는 코드는 전부 `activate()`
-안의 `runDeploy` 래퍼에만 있다(set: COMPILE_DEFERRED / THREAD_CHECK / Compile·Start 실패, clear: runDeploy
-성공 · Load→Compile→Start 성공). 그런데 F5 의 `deployBeforeAttach` 는 `gplDebugSession._runDeployBeforeAttach`
-에서 `deployService.deploy()` 를 **직접** 부르고 래퍼를 거치지 않으며, deployService → 배지로 오는 이벤트도
-없다. 그래서 **F5 배포가 Compile 까지 성공해도 배지가 지워지지 않는다.** 화면의 배지는 그 전(autoOnSave 의
-Compile 보류 또는 업로드 스타트의 Start 실패)에 켜진 것이 그대로 남은 것이다.
-→ **이번에 코드는 고치지 않았다**(범위 밖). §3 에 항목으로 남겼다. 해소는 `GPL: 빠른 컴파일` 1회.
-
-**원인 ②(BP) — §1-CK 결론은 맞았고, 미검증 항목이 이번에 풀렸다.**
-세션 중간에 `Set Break GPL_Code "Lib_Core\Lib_Core\LogFile\LogFile.gpl" 53` 이 `-775 *Duplicate breakpoint*` 로,
-`Show Stack GPL_Code` 가 프레임 0 을 그 줄에서 보여 줘 "라이브러리 소스에도 걸리는구나"로 **오판했다**.
-사용자 `.gpr` 을 열어 보니 실험용으로 그 파일이 이미 `ProjectSource` 로 승격돼 있었다.
-
-- `ProjectLibrary` 경유 소스 → 표기 무관 `-508` (§1-CK, 여전히 사실)
-- 메인 `.gpr` 에 `ProjectSource="Lib_Core\Lib_Core\LogFile\LogFile.gpl"` 로 직접 등재 → **BP 가 걸리고 히트한다** (신규 검증)
-- 교훈: `-775`/성공을 근거로 결론내기 전에 대상 `.gpr` 을 확인할 것(하드 규칙 3의 실패 사례).
-
-**실제 구조(`projects/GPL_Code`, 사용자 지목).** 메인의 `ProjectSource` 는 `Main.gpl` 하나뿐이고, 코드
-전부가 `ProjectLibrary` 로 들어온다 — 그룹(`Lib_Core`/`Lib_Net`/`Lib_Data`)이 하위를 모으고 하위가 부모를
-되참조하는 **17개 라이브러리 · `.gpr` 18개의 DAG**. 즉 **BP 를 걸 수 있는 파일이 `Main.gpl` 뿐**이었다.
-
-**확장 진단 — 이미 맞던 부분(실측: `out/` 모듈을 실제 경로에 직접 실행).**
-`resolveProjectLibraryDirs` 17개 정확·순환 안전 / `collectRelatedGprPaths` 18개 / `CompileUnitIndex` 소유
-`.gpr` 정확 / `.gpr` 동기화는 중첩 `.gpr` 에서 멈춤(이중 등록 없음) / 배포는 `getAllFiles` 재귀로 `Lib_*`
-전부 업로드. **경로·경계 해석은 이미 이 구조를 지원한다.**
-
-### 조치
-
-**A. `projectSources.ts` — 라이브러리 해석기를 그래프로 일반화.** `buildLibraryGraph()` 신설:
-노드(`dir`/`gprPath`/`projectName`/`sources`/`refs`)와 간선을 돌려준다. 중복·순환으로 **재방문하지 않은
-참조도 노드의 `refs` 에 남으므로** 경로 탐색이 된다. `resolveProjectLibraryDirs` 는 `{dirs, unresolved}`
-만 뽑는 얇은 래퍼가 되어 기존 호출부·테스트는 그대로다.
-
-**B. `project/sourcePromotion.ts`(신규, 순수) — 승격 계획.**
-① 대상을 `ProjectSource` 로 선언한 라이브러리 `L` 을 찾고 ② 루트에서 `L` 로 가는 경로의 **첫 홉**을
-메인의 `ProjectLibrary` 에서 뺀다(**다른 프로젝트의 `.gpr` 은 공유 자산이라 건드리지 않는다 — 메인만 편집**)
-③ 그 제거로 도달 불가가 된 노드 중 `L` 에 도달하는 것은 소스를 메인으로 승격, 도달하지 않는 것은 라이브러리
-참조로 되살린다(**편집 후에도 다른 참조로 도달 가능하면 다시 적지 않는다** — diff 최소화)
-④ **편집 결과 텍스트로 그래프를 다시 풀어** 컴파일 집합 보존을 검증한다(빠지는 파일 / 중복 컴파일 /
-해석 실패). 검증 실패면 `status:'unsafe'` 로 적용 대상에서 뺀다. `outside-main-dir`(승격 대상이 메인 폴더
-밖 — `ProjectSource` 상대 경로로 못 적음)·`not-compiled`·`already-source` 도 상태로 구분한다.
-`findPromotionHosts()` 는 대상을 컴파일하는 프로젝트 후보를 "라이브러리로 참조되지 않는 것" 우선으로 준다
-(`Set Break` 의 프로젝트 인자는 제어기에 **로드된 메인**이어야 하므로).
-
-실제 구조 검증 — `LogFile.gpl` 계획이 **사용자가 손으로 한 편집과 일치**했다:
-`− ProjectLibrary="GPL_Code\Lib_Core"` / `+ ProjectSource="Lib_Core\Lib_Core\LogFile\LogFile.gpl"`,
-그 그룹이 제공하던 나머지 하위는 개별 참조로 복구(다른 경로로 이미 도달하는 것은 생략), 검증 `lost=0 dup=0`.
-`Logger.gpl` 처럼 의존이 넓은 대상은 소스 20개가 함께 승격되는 것을 경고로 알린다(정직한 비용 표시).
-
-**C. `applyGprSync` 확장.** `addLibraries`/`prependLines` 추가 — "다른 줄은 보존" 규칙의 단일 출처를
-승격 편집도 재사용한다. 되돌리기용으로 원래 `ProjectLibrary` 줄을 주석으로 남긴다(사용자 관례와 동일).
-
-**D. `project/promoteSourceCommand.ts`(신규) — `gpl.project.promoteSourceForBreakpoint`.**
-대상 파일 → 호스트 `.gpr`(여러 개면 QuickPick) → 계획 → **좌우 diff 미리보기**(가상 문서 스킴
-`gpl-gpr-preview`) → 모달 승인 → `WorkspaceEdit`+저장(Undo 가능) → 「빠른 컴파일」 제안.
-**승인 없이 파일을 쓰지 않는다.** 팔레트 + `.gpl` 탐색기 우클릭에 등재.
-
-**E. 디버그 소스맵을 컴파일 단위로 좁힘(`gplDebugSession`).** `_buildSourceFileMap` 이 워크스페이스 전체가
-아니라 `_sourceMapRoots()`(= `_projectDirs` 중 최상위만)를 스캔한다. 실측: **스캔 폴더 29→18, 파일 96→28,
-basename 충돌 53건 → 0건**(`MergeCode`/`MergeCode_Beta` 의 동명 파일, `Main.gpl` 2곳이 사라진다).
-단위를 판정할 수 없으면 워크스페이스 전체로 떨어지고, 좁힌 맵에서 못 찾은 파일이 나오면 `_sourceMapWidened`
-로 한 번 넓힌다(**누락 방지 우선**). `_updateProjectDirs` 에서 리셋.
-
-**F. `-508` 안내 문구 갱신.** "걸 수 없습니다" → "메인 `.gpr` 에 등재하면 걸립니다(실측 확인) + 승격 명령이
-그 편집을 계산해 미리보기로 보여 줍니다". 소스 주석의 잘못된 절 참조(`§1-CD` → `§1-CK`·`§1-CT`)도 고쳤다.
-
-### 검증
-
-- `npm test` **713/713 통과**(신규 `sourcePromotion.test.ts` 8건 — 그래프 DAG/되참조, `already-source`,
-  `not-compiled`, 최소 diff, **실사용 편집과 일치**, 라이브러리 소스 전부 승격, **컴파일 집합 보존 그래프
-  재검증**, `outside-main-dir` 차단). `npx tsc -p .` 통과.
-- 실제 구조(`projects/GPL_Code`) 대상 실측 스크립트로 A·B·E 수치 확인(위 본문).
-- **실기기 미검증** — 승격을 적용한 뒤 실제로 `Set Break` 가 STATUS 0 이 되고 BP 가 히트하는지는
-  §3 항목으로 남겼다(승격 자체는 `.gpr` 편집이라 모션 무영향, 재배포/컴파일 필요).
-
-### 남은 일
-
-- §3 에 추가: ① 승격 적용 후 실기기 BP 확인 — **열려 있다**.
-- ② F5 배포 경로가 "컴파일 검증 필요" 배지를 지우지 않는 문제 → **§1-CU 에서 처리했다**
-  (`compileStale.ts` 분리 + `onDidRecordCompiled` 구독으로 경로 무관 해제). 실기기 확인만 §3 에 남았다.
 
 ## 1-CU. 2026-09-02 세션 — 최근 세션들이 남긴 미완 코드 항목 마무리 (배지 해제 경로 분리 · 비ASCII 경로 삭제 · `Set` 오인)
 
@@ -1621,3 +1451,146 @@ src/test/{architecture,gplBuiltins,deployOutcome,treeFormat,runtimeConsoleTreePr
 삭제: src/controller/controllerDiscovery.ts · scripts/dev-cycle.js
 docs/development/architecture.md(신규) · mkdocs.yml · CLAUDE.md · AGENTS.md · docs/ai-handoff.md · docs/archive/handoff/2026-09.md · CHANGELOG.md
 ```
+
+---
+
+## 1-DC. 2026-09-10 세션 — 「업로드 스타트」가 제어기를 멈추게 하던 시퀀스 정정 + 배포 없이 붙는 attach 명령 (`gpl.debug.attachOnly`)
+
+**증상(사용자 보고).** ① `GPL: 업로드 스타트`를 실행하면 **거의 확정적으로** 제어기가 응답을 잃는다.
+`GPL: 빠른 컴파일`은 정상이다. 그래서 실사용은 `빠른 컴파일` → `GPL: Start` → 디버그 attach로 우회하고 있었다.
+② 그런데 그 "디버그 attach"에 해당하는 버튼/명령이 보이지 않는다.
+
+**원인 분석(코드 대조 — 실기기 재현은 아직).** 두 명령의 차이는 `deploy()` 옵션 3개뿐이다
+(`activation/deploy.ts`의 `gpl.uploadStart` vs `gpl.quickCompile`).
+
+| | 빠른 컴파일 | 업로드 스타트 |
+| --- | --- | --- |
+| `Stop -all` | 보내지 않음(`skipStop`, `Show Thread` 프로브만) | **보냄 — FTP 업로드와 동시 진행** |
+| 마무리 | `Compile` | `Start`(= 제어기가 자체 컴파일까지 수행) |
+| 원격 전용 파일 삭제 | 정지 확인 뒤 | 정지 확인 뒤 → **곧바로 Start** |
+
+즉 업로드 스타트에서만 일어나는 일은 두 가지다. **㉠ `Stop -all` 처리(모션 abort·쓰레드 teardown) 중에
+바로 그 쓰레드가 물고 있던 파일을 FTP가 덮어쓴다** — 병행 설계(§1-C의 UPLOAD ∥ STOP, 2026-08-25 이슈 #17)의
+근거였던 "실행 중 FTP 업로드는 무해"라는 관찰은 **Stop을 보내지 않는** 빠른 컴파일 기준이라 이 조합은 검증 밖이었다.
+**㉡ 정지 게이트 통과 직후 완충 없이 `Start`가 들어간다** — 게이트는 `Show Thread -web` 목록이 비면 통과인데,
+`-752`(정지 진행 중) 뒤 제어기 내부 정리가 남아 있을 수 있고, 그 상태에서 들어가는 `Start`는 단순 실행이 아니라
+**프로젝트 전체 컴파일 + 실행**이다. 빠른 컴파일 흐름에는 Stop 자체가 없고 Compile(수 초) + 사람이 Start를
+누르기까지의 간격이 자연히 생긴다. ※ 이 둘은 **유력 가설**이며 실기기 재현으로 확정된 것은 아니다(§3에 검증 항목).
+
+**조치 A — 업로드 스타트만 순차로 (`DeployOptions.stopBeforeUpload` 신설, `controller/deployService.ts`).**
+`stopBeforeUpload: true`면 Phase 1을 `Promise.all([업로드, 정지게이트])` 대신 **정지 게이트 → 업로드** 순차로 돌린다.
+정지가 확인되지 않으면 **업로드를 아예 시작하지 않고 중단**한다 — 제어기의 `/GPL` 사본을 손대지 않으므로
+"실행 중이던 소스와 새 소스가 섞인" 상태가 생기지 않는다(병행 경로의 기존 문구 "업로드는 완료됨"과 구분된다).
+단계 배너는 `[n/N] STOP → UPLOAD (순차)`, 잠금 stage는 `STOP` → `UPLOAD`. 옵션은 `activation/deploy.ts`의
+`QuickDeployOpts`를 거쳐 `gpl.uploadStart`만 켠다 — 빠른 컴파일은 보낼 Stop이 없어 종전 병행 그대로다.
+
+**조치 A2 — Start 직전 정지 재확인(`!skipStart` 공통).** START 단계 진입 시 `waitThreadsSettle()`을 한 번 더 돌려
+활성 쓰레드가 남아 있으면 `failedPhase: 'START'`로 중단하고 `Start`를 보내지 않는다(무응답은 종전 규약대로 확인 불가 → 통과).
+게이트 통과 후 업로드·원격 삭제·Compile로 수십 초가 흐르므로 **그때의 판정을 그대로 믿지 않는다**는 것이 요지다.
+`Deploy & Run` 경로에도 같이 적용된다(읽기 전용 `Show Thread` 한 번이라 비용은 무시할 수준).
+
+**조치 B — `gpl.debug.attachOnly` 신설(`activation/connection.ts`).** 기존 `gpl.debug.attachNow`는
+`deployBeforeAttach: true`라 attach 전에 업로드+Compile을 다시 돌리고, 활성 쓰레드가 있으면
+"Stop -all 하고 계속할까요?" 모달이 뜬다 — **이미 Start 해 둔 프로그램에 붙는 용도로는 쓸 수 없다**(승인하면 그 프로그램이 멈춘다).
+사용자의 실사용 흐름(빠른 컴파일 → Start → 붙기)에 맞는 경로가 없었던 것이다. 두 명령의 본체를
+`startQuickAttachSession({ deployBeforeAttach })` 하나로 합치고, attach-only 쪽은 `stopAllBeforeAttach: false`·
+`stopOnEntry: false`로 **Stop도 Start도 보내지 않는다**(제어기 잔재 BP 정리는 세션 기본값 `clearProjectBreakpointsOnAttach`가 담당).
+
+**조치 B2 — 발견성.** 명령 제목이 이것만 영어(`GPL: Quick Debug Attach (No launch.json)`)라 팔레트에서 `GPL: 디버그`로
+검색하면 걸리지 않았고, 버튼도 패널 제목의 `···` 오버플로(`2_debug@1`)에만 있었다. 제목을 한국어로 바꾸고
+(`GPL: 디버그 시작 (배포 후 붙기, launch.json 불필요)` / `GPL: 디버그 붙기 (배포 없이 실행 중인 프로그램에 attach)`),
+attach-only는 패널 상단 `navigation@4`에 플러그 아이콘 버튼으로 올렸다.
+
+**조치 B3 — `gpl.ai.debugAssist`의 `build-and-attach`.** 바로 위에서 `gpl.deploy`(Build Only)가 성공한 뒤인데
+`attachNow`를 불러 같은 업로드+Compile을 한 번 더 돌리고 있었다 → `attachOnly`로 교체.
+
+**조치 C — 원인을 가려낼 TEST 경로(`gpl.uploadStart.test`, 사용자 요청).** 기본 경로가 가설 ㉠·㉡을 둘 다 막아 버리면
+**무엇이 실제 원인이었는지 알 수 없다.** 그래서 안전장치를 하나씩 켜고 끄는 조합을 QuickPick으로 고르는 진단 명령을 두고,
+패널 상단에 비커 아이콘 버튼(`navigation@5`)으로 올렸다. 조합은 A(둘 다 끔=변경 전 재현) / B(순차만) / C(Start 직전 재확인만) /
+D(둘 다=현재 기본) 넷이고, 고른 조합은 배포 트레이스 머리에 `⚗ TEST X — …`로 남아 나중에 로그만 봐도 구분된다.
+이를 위해 `DeployOptions`에 `preStartSettleCheck`(기본 true, false는 진단용)와 `modeNote`(동작 무영향 메모)를 더했다.
+**실기기에서는 저속/시뮬레이션으로만 실행할 것**(Start를 보낸다 — 하드 규칙 6).
+
+**조치 D — 빌드 계열 완료 후 `GPL Console`로 포커스를 뺏지 않는다(사용자 지적).** 「빠른 컴파일」·Build Only가
+성공하면 `consoleChannel.show(true)`로 **GPL Console**이 튀어나와, 방금 본 업로드/컴파일 진행 로그
+(`GPL Language Support`)가 가려졌다. 실행하지 않은 경로에서 1403 런타임 출력으로 넘어갈 이유가 없으므로
+완료 문구를 `host.log`로 같은 채널에 남기고 `outputChannel.show(true)`로 그 자리를 유지한다
+(`activation/deploy.ts` 성공 처리 `skipStart` 분기). 1403 연결 자체는 종전대로 유지한다 — **포커스만** 바꾸지 않는다.
+`Deploy & Run`·`gpl.start`처럼 실제로 실행하는 경로는 런타임 출력이 콘솔에 나오므로 종전대로 콘솔을 띄운다.
+
+**발견 → §1-DD 에서 조치 — `Stop -all` + 정지 완료 확인이 한 곳으로 묶여 있지 않았다.** 사용자 질문("안전장치 경로가 하나로 묶여 있냐")을
+확인한 결과 **5곳이 각자 구현**이고 기준도 제각각이다: ① `deployService.stopAllAndSettle`(무응답 1회 재전송 + 8초·500ms 폴링 +
+Stop 재시도 1회) ② `gpl.controller.stopAll`(busy 재시도 5회 + `verifyAllStopped(8)` + SoftEStop 복구) ③ `ftpCommands`의 폴더 삭제
+게이트와 ④ `ftpCommands.ensureStoppedBeforeCompile`(②와 같은 조합, 실패 시 throw) ⑤ **`gplDebugSession`의 attach preflight·
+`stopAllOnDisconnect` — 정지 완료 확인이 아예 없다**(응답 문자열 유무/STATUS 0 정규식만 보고 "완료" 로그). settled 상태 집합도
+`controller/threadActivity.isSettledState`와 `activation/controllerOps.SETTLED_THREAD_STATE`로 이중화돼 "동일하게 유지할 것"이라는
+주석에 의존했다. 별도로 `commandPolicy` R2(Stopping 정착 대기)는 성격이 다른 사전 게이트다. → **§1-DD 에서 통합했다.**
+
+**검증.** `npm run compile` 통과, `npm test` **820/820**(구조 R5 "package.json 명령 ↔ 소스 등록" 포함).
+**실기기 검증은 하지 않았다** — `Stop`·`Start`를 보내는 경로라 저속/시뮬레이션 확인이 필요하다(하드 규칙 6, §3 항목).
+
+**남은 일.** §3의 「업로드 스타트」 검증 항목을 이번 변경 기준으로 갱신했다(순차 순서·중단 지점·attach-only 버튼).
+가설 ㉠/㉡ 중 무엇이 실제 원인이었는지는 실기기에서 Deploy 트레이스로 확인해야 한다 — 만약 순차 변경 후에도
+재현되면 남는 용의자는 **정지 직후의 `Start`(㉡) 쪽**이다.
+
+---
+
+## 1-DD. 2026-09-10 세션 — 제어기 조작 절차를 API 한 겹으로 묶기 (1): 쓰레드 정지 정본 + 중복 절차 전수 조사
+
+**배경(사용자 요청).** §1-DC 조사에서 "전체 정지 절차가 5곳에 각자 구현돼 있다"가 드러나자 사용자가 방향을 정했다 —
+*"제어기 자체 기능이 부실해서 제어기 기능을 우리가 한 번 더 API 처럼 묶어 사용해야 한다."*
+
+요지는 이렇다. 제어기의 원시 명령은 **안전한 단위가 아니다.** `Stop -all` 은 정지 *요청 접수*까지만 보장하고,
+실제 정지는 `Show Thread` 로 따로 확인해야 하며, `-752` 는 실패가 아니라 진행 중이고, 안 멈추면 재시도해야 한다.
+즉 "프로그램을 멈춘다"라는 **하나의 안전한 동작**은 명령 하나가 아니라 *전송+판정+폴링+재시도+실패 처리* 절차 전체다.
+그 절차를 호출부마다 다시 조립하니 어떤 곳은 폴링을 빠뜨리고 어떤 곳은 재시도 횟수가 달랐다. §1-DB 의 계층 리팩터링이
+*파일 배치*를 정리한 것이라면, 이것은 *제어기 조작 절차*를 정리하는 같은 성격의 작업이다.
+
+**조치 1 — `controller/threadStop.ts` 신설(vscode 무의존, 주입형 IO).**
+호출부는 전송·로그·대기(`ThreadStopIo`)만 주입하고 절차는 이 모듈이 갖는다.
+
+- `probeThreads` — `Show Thread  -web` 1회. **STATUS 종결자를 못 받으면 `null`(확인 불가)** 로 빈 목록과 구분한다.
+- `waitThreadsSettle` / `waitThreadSettle` — 정지 확인 폴링. 대상 선택자만 다른 공통 루프(`waitSettleFor`)를 쓴다.
+- `sendStop` — 정지 명령 1회(무응답 재전송). `0`=접수 / `-752`=진행 중(비치명) / 그 외·STATUS 없음=실패.
+- `stopAllAndSettle` / `stopThreadAndSettle` — 전송 → 확인 → 미확인 시 자동 재시도(기본 2회).
+- 결과에 **`unconfirmed`** 를 실어 "확인 불가"를 정지로 위장하지 않는다 — 배포는 통과, 원격 삭제·Load/Compile 은
+  중단이라는 **정책 차이를 호출부가 고르게** 한다(종전에는 그 차이가 우연이었다).
+- 가짜 IO 로 시나리오를 고정한 단위 테스트 **17건**(`src/test/threadStop.test.ts`) — 가상 시계라 실제로 기다리지 않는다.
+
+**조치 2 — 5곳을 이 모듈로 통합.** ① `deployService`(정지 게이트·Start 직전 재확인) ② `controllerOps.stopAllThreads`
+(패널 「전체 정지」·FTP 삭제 게이트·FTP Run 전 정지) ③ `gplDebugSession`(attach preflight·`stopAllOnDisconnect`).
+**디버그 세션 두 곳은 정지 확인이 아예 없었다** — attach preflight 는 응답 문자열이 있기만 하면 "완료"로 로그했다(§0.6 위반).
+
+**조치 3 — 개별 정지도 같은 절차로.** 트리 「쓰레드 정지」와 FTP 「중지」에 line-for-line 같은 코드가 두 벌 있었다
+→ `controllerOps.stopThreadWithRecovery`(Stop → 확인 → 실패 시 SoftEStop 제안 → 트리 갱신) 하나로.
+
+**조치 4 — 상태 판정 단일화.** settled 집합이 `controllerOps.SETTLED_THREAD_STATE` 에 복제돼 "동일하게 유지할 것"이라는
+주석에 의존하고 있었고, 일시정지 집합(`Paused/Break/Error`)도 `controllerOps.AI_PAUSED_STATES` 와
+`controllerTreeProvider.PAUSED_STATES` 두 벌이었다. 모두 `threadActivity` 의 `isSettledState` /
+`isPausedState`·`PAUSED_THREAD_STATES` 로 모았다. `waitForThreadPause` 가 **잘린 응답을 "쓰레드 없음"으로 읽던** 문제도
+`probeThreads` 경유로 고쳤다.
+
+**조치 5 — 무검증 성공 보고 2건(하드 규칙 2 위반) 수정.**
+① `gpl.controller.ftpUnload` 는 응답을 보지 않고 무조건 "Unload 완료"를 띄웠다 — 쓰레드가 살아 있어 거부돼도(-750) 성공으로
+보고했다. 이제 STATUS 로 판정하고 "로드 안 됨"과 "쓰레드 정지 필요"를 구분해 안내한다.
+② `gpl.controller.threadStart` 는 STATUS 를 보지 않고 트리만 새로고침해 거부돼도 아무 말이 없었다.
+
+**검증.** `npm run compile` 통과, `npm test` **837/837**(구조 R1~R6 포함). 커밋 2개(`865fb26`, `f05b5fa`).
+실기기 검증은 미수행 — 정지 경로가 바뀌었으므로 §3 항목으로 남긴다.
+
+**전수 조사 결과(다음 단위 후보).** 같은 성격의 중복이 아직 8건 남아 있다. 위험/가치 순으로:
+
+| # | 절차 | 지금 어디에 흩어져 있나 | 핵심 불일치 |
+| --- | --- | --- | --- |
+| 1 | `Compile` | `deployService.tryCompile`(+재시도·복구) · `ftpCommands.tryCompile` · MCP | transient 재시도가 `-742/-746/-752` vs `-746` only vs 없음, 후보 이름 순회 유무, 진단(Problems) 연동 유무 |
+| 2 | `Load`/`Unload` | `deployService`(HTTP 응답 감지·`-750` 락 규칙 있음) · `ftpCommands`(코드 하드코딩) | 상태 코드 헬퍼 vs 리터럴, 비차단 STATUS 취급 |
+| 3 | `Start` | `deployService` · `deploy.gpl.start` · `gplDebugSession` · `ftpCommands`(**`-event` 없이 손으로 조립**) · `treeCommands`(쓰레드 Start) | 모션 확인 모달·정지 게이트·STATUS 검증이 경로마다 다름 |
+| 4 | `Show Thread` 열거 | 10곳 | "잘린 응답" 정책 3종(확인 불가 / 빈 목록 / `includes('<STATUS>')`) |
+| 5 | 중단점 명령 | `breakpointCommand` · `breakpointSync` · `gplDebugSession._sendBpCommandWithFallback`(4가지 표기 폴백) · MCP | 폴백은 DAP 에만 있고, `_clearBreakpointsForProject` 는 STATUS 를 안 본다 |
+| 6 | busy 재시도 | `controllerOps.sendCommandWithBusyRetry` · `deployService` · `ftpCommands` · `commandPolicy` R2 | 정책 4종이 겹쳐 실효 타임아웃이 곱해진다 |
+| 7 | 스택/정지 위치 조회 | `gplDebugSession._fetchThreadFramesUncached` · `treeCommands.threadShowLocation` · `controllerCommands` | 캐시·폴백 유무 |
+| 8 | 원격 경로 선택 | `deployService.chooseRemoteProjectPath` · `ftpCommands.resolveFtpRunPath` | 점수 가중치가 달라 **같은 프로젝트에 다른 폴더를 고를 수 있다** |
+
+다음 단위는 **`controller/projectCommands.ts`**(compile/load/unload/start를 같은 주입형 IO·구조화 결과로) 를 권한다 —
+1·2·3 을 한 번에 없애고, ③의 `-event` 누락 같은 조용한 차이도 사라진다. 다만 배포 파이프라인의 심장부라
+별도 세션에서 테스트를 먼저 깔고 들어가는 편이 안전하다(§3).

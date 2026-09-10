@@ -1318,7 +1318,13 @@ async function deployLocked(
 /**
  * 컴파일 에러를 VS Code Diagnostic으로 변환.
  */
-function applyCompileDiagnostics(
+/**
+ * 컴파일 에러를 Problems 패널 진단으로 표시한다.
+ *
+ * 종전에는 배포 경로만 이것을 불렀고 FTP Run 은 토스트 한 줄로 끝나서, **같은 컴파일 에러가 어느 버튼으로
+ * 했느냐에 따라 다르게 보였다**(§1-DE). 이제 두 경로가 함께 쓴다 — 그래서 export 한다.
+ */
+export function applyCompileDiagnostics(
     errors: CompileError[],
     projectDir: string,
     collection: vscode.DiagnosticCollection

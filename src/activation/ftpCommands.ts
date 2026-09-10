@@ -6,7 +6,10 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { EXTENSION_VERSION } from '../config';
 import { getControllerConfig, sendCommand, sendCommandDetailed } from '../controller/controllerConnection';
-import { isBusyStatus, isProjectNotLoaded } from '../controller/controllerStatusCodes';
+import { isBusyStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from '../controller/controllerStatusCodes';
+import { applyCompileDiagnostics, findProjectDirs, jumpToFirstCompileError } from '../controller/deployService';
+import { compileProject, loadProject, startProject, unloadProject } from '../controller/projectCommands';
+import type { ProjectCommandIo } from '../controller/projectCommands';
 import {
 	FtpEntry,
 	clearRemoteDir,
@@ -16,24 +19,27 @@ import {
 	removeRemoteDir,
 	removeRemoteFile,
 } from '../controller/ftpClient';
-import { SHOW_THREAD_LIST_CMD, isControllerNonBlockingStatus, parseCompileErrors, parseStatus, parseThreadList } from '../controller/responseParser';
+import { NO_STATUS_CODE, SHOW_THREAD_LIST_CMD, parseThreadList } from '../controller/responseParser';
 import { forgetSyncManifest } from '../controller/syncManifest';
 import { describeThreadActivity } from '../controller/threadActivity';
-import { sleep, stopAllThreads, stopThreadWithRecovery } from './controllerOps';
+import { stopAllThreads, stopThreadWithRecovery } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 export function activateFtpCommands(host: ExtensionHost): void {
-	const { context, outputChannel, consoleChannel } = host;
+	const { context, outputChannel, consoleChannel, deployDiagnostics } = host;
 
-	/** 1402 명령 전송 + STATUS 판정 — ok 는 비차단 STATUS(환경 경고)까지 성공으로 본다. */
-	const runStatusCommand = async (command: string) => {
-		const raw = await sendCommand(command);
-		const status = parseStatus(raw);
-		return {
-			raw,
-			status,
-			ok: status.code === 0 || isControllerNonBlockingStatus(status.code),
-		};
+	/**
+	 * 원격 프로젝트 이름과 같은 로컬 폴더를 찾는다(컴파일 에러를 Problems 진단으로 표시할 기준 경로).
+	 * FTP Run 은 제어기의 사본을 컴파일하므로 로컬에 대응 폴더가 없을 수도 있다 — 그 경우 undefined.
+	 */
+	const findLocalProjectDir = async (projectName: string): Promise<string | undefined> => {
+		try {
+			const dirs = await findProjectDirs();
+			const target = projectName.trim().toLowerCase();
+			return dirs.find(d => path.basename(d).trim().toLowerCase() === target);
+		} catch {
+			return undefined;
+		}
 	};
 
 	// FTP 프로젝트 다운로드
@@ -337,68 +343,18 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			}
 			host.log(`│ Load before Compile: ${loadBeforeCompile ? 'enabled' : 'skipped'}`);
 
-			type FtpCompileAttempt = {
-				raw: string;
-				status: ReturnType<typeof parseStatus>;
-				errors: ReturnType<typeof parseCompileErrors>;
-				ok: boolean;
-				note?: string;
-				responseMeta?: {
-					responseComplete: boolean;
-					bytesReceived: number;
-					lastChunkAt: string;
-					idleTimeoutMs: number;
-				};
-			};
-
-			const rawPreview = (raw: string): string => {
-				const compact = raw.replace(/\r/g, '').replace(/\n+/g, ' | ').trim();
-				return compact.length > 260 ? `${compact.slice(0, 260)}...` : compact;
-			};
-
-			const logCompileAttempt = (compile: FtpCompileAttempt): void => {
-				host.log(`│ RAW ${rawPreview(compile.raw) || '(empty)'}`);
-				if (compile.note) {
-					host.log(`│ NOTE ${compile.note}`);
-				}
-				if (compile.responseMeta && !compile.responseMeta.responseComplete) {
-					host.log(`│ META responseComplete=false bytesReceived=${compile.responseMeta.bytesReceived} lastChunkAt=${compile.responseMeta.lastChunkAt} idleTimeoutMs=${compile.responseMeta.idleTimeoutMs}`);
-				}
-			};
-
-			const tryCompile = async (): Promise<FtpCompileAttempt> => {
-				// 컴파일은 pass 사이에 수 초간 침묵할 수 있어 idle 기반 조기 완료는 응답이 잘려
-				// STATUS/에러 라인을 놓친다. deployService.tryCompile과 동일하게 종결자
-				// </STATUS>까지 대기하고 대형 프로젝트 대비 충분한 상한을 둔다 (§0.2).
-				const detailed = await sendCommandDetailed(`Compile ${name}`, cfg, {
-					waitForStatusClose: true,
-					timeoutMs: Math.max(cfg.timeoutMs, 60000),
-				});
-				const raw = detailed.raw;
-				const status = parseStatus(raw);
-				const errors = parseCompileErrors(raw);
-
-				if ((status.code === 0 || isControllerNonBlockingStatus(status.code)) && errors.length === 0) {
-					return {
-						raw,
-						status,
-						errors,
-						ok: true,
-						responseMeta: detailed.meta,
-					};
-				}
-
-				// STATUS가 없으면(-9999) 컴파일 결과를 확인하지 못한 것이다. 'compile successful'
-				// 텍스트 마커나 Show Thread 응답으로 성공을 추정하지 않는다 — 실제 컴파일 에러를
-				// 가리는 오판의 직접 원인이었다. 성공 판정은 STATUS 0 + 에러 없음뿐이다 (§0.2/§0.3).
-				return {
-					raw,
-					status,
-					errors,
-					ok: false,
-					note: status.code === -9999 ? 'STATUS 누락 — 컴파일 결과 미확인(성공 추정 금지)' : undefined,
-					responseMeta: detailed.meta,
-				};
+			// Compile/Load/Unload/Start 절차는 controller/projectCommands.ts 가 정본이다(§1-DE).
+			// 여기서는 전송(1402)과 로그 목적지만 물린다 — 종전에는 이 파일이 같은 절차를 따로 구현하면서
+			// `-event` 누락 · 상태 코드 하드코딩 · 재시도 범위 축소 같은 차이를 만들었다.
+			const projectIo: ProjectCommandIo = {
+				send: async (command, sendOpts) => {
+					const detailed = await sendCommandDetailed(command, cfg, sendOpts?.forCompile
+						// 컴파일은 pass 사이에 수 초간 침묵한다 — 종결자까지 기다리지 않으면 응답이 잘려 거짓 성공이 난다(§0.2).
+						? { waitForStatusClose: true, timeoutMs: Math.max(cfg.timeoutMs, 60000) }
+						: undefined);
+					return { raw: detailed.raw, meta: detailed.meta };
+				},
+				log: line => host.log(`│ ${line}`),
 			};
 
 			const ensureStoppedBeforeCompile = async (): Promise<boolean> => {
@@ -419,21 +375,6 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				return false;
 			};
 
-			const ensureLoadedFromFtp = async (): Promise<boolean> => {
-				host.log(`│ Load ${effectiveLoadPath}`);
-				const { status } = await runStatusCommand(`Load ${effectiveLoadPath}`);
-				if (status.code === 0) {
-					host.log(`│ ✔ Load success`);
-					return true;
-				}
-				if (status.code === -745) {
-					host.log(`│ ✔ Load skipped (already loaded)`);
-					return true;
-				}
-				host.log(`│ ✘ Load failed: STATUS ${status.code} ${status.message || ''}`.trimEnd());
-				return false;
-			};
-
 			try {
 				// §0.6: Stop -all의 STATUS 0은 "정지 요청 수리"일 뿐 정지 완료가 아니다.
 				// 전체 정지가 확인되지 않으면 Load/Compile/Start를 진행하지 않고 중단한다.
@@ -441,79 +382,64 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				if (!stoppedBeforeRun) {
 					throw new Error('Stop -all 후 전체 정지가 확인되지 않았습니다. 스레드 상태를 확인한 뒤 다시 시도하세요 (Load/Compile/Start 중단).');
 				}
+
+				/** Load 한 번 — HTTP 응답(제어기 이상)은 재시도로 자극하지 않고 즉시 중단한다. */
+				const ensureLoadedFromFtp = async (): Promise<void> => {
+					const loaded = await loadProject(projectIo, effectiveLoadPath);
+					if (!loaded.ok) {
+						throw new Error(loaded.httpResponse
+							? `Load 중단: ${loaded.failure?.message} — 제어기 웹 UI/GDE 접속 여부를 확인하세요.`
+							: `Load failed: ${effectiveLoadPath} (STATUS ${loaded.failure?.code} ${loaded.failure?.message ?? ''})`.trimEnd());
+					}
+				};
+
 				if (loadBeforeCompile) {
-					const loadedBeforeCompile = await ensureLoadedFromFtp();
-					if (!loadedBeforeCompile) {
-						throw new Error(`Load failed: ${effectiveLoadPath}`);
-					}
+					await ensureLoadedFromFtp();
 				}
 
-				// 1) Compile 시도
+				// 1) Compile — 일시적 STATUS(-742/-746/-752) 1회 재시도는 모듈이 한다.
 				host.log('│ Phase: Compile uploaded controller copy');
-				host.log(`│ Compile ${name}`);
-				let compile = await tryCompile();
-				logCompileAttempt(compile);
+				let compile = await compileProject(projectIo, { candidates: [name] });
 				if (!compile.ok) {
-					const statusCode = compile.status.code;
-					if (statusCode === -746) {
-						host.log('│ ⚠ STATUS -746 Interlocked for read');
-						host.log('│ ⚠ Retry path: Stop → wait → Compile');
-						const stoppedForRetry = await ensureStoppedBeforeCompile();
-						if (!stoppedForRetry) {
-							throw new Error('Stop -all 후 전체 정지가 확인되지 않아 Compile 재시도를 중단했습니다 (§0.6).');
+					const statusCode = compile.failure?.code ?? NO_STATUS_CODE;
+					// 로드 상태 이상은 복구 후 한 번 더 — 어떤 코드가 어떤 상태인지는 controllerStatusCodes 가 정본이다.
+					if (isProjectAlreadyLoaded(statusCode)) {
+						host.log('│ ⚠ Already loaded → Unload → Load → Compile');
+						const unloaded = await unloadProject(projectIo, name);
+						if (!unloaded.ok) {
+							throw new Error(unloaded.blockedByActiveThread
+								? `Unload 불가: 쓰레드가 실행 중입니다(STATUS ${unloaded.failure?.code}). 정지 후 다시 시도하세요.`
+								: `Unload failed: STATUS ${unloaded.failure?.code} ${unloaded.failure?.message ?? ''}`.trimEnd());
 						}
-						await sleep(500);
-						compile = await tryCompile();
-						logCompileAttempt(compile);
-						if (!compile.ok) {
-							throw new Error(`Compile failed after retry: STATUS ${compile.status.code} ${compile.status.message || ''}${compile.note ? ` — ${compile.note}` : ''}`.trimEnd());
-						}
-						host.log('│ ✔ Compile success (after interlock retry)');
-					} else if (statusCode === -745) {
-						host.log(`│ ⚠ Already loaded → Unload → Load → Compile`);
-						const { status: unloadStatus } = await runStatusCommand(`Unload ${name}`);
-						if (unloadStatus.code === 0) {
-							host.log(`│ ✔ Unload success`);
-						} else if (unloadStatus.code === -508 || unloadStatus.code === -743) {
-							host.log(`│ ✔ Unload skipped (project not loaded)`);
-						} else {
-							throw new Error(`Unload failed: STATUS ${unloadStatus.code} ${unloadStatus.message || ''}`.trimEnd());
-						}
-						const loaded = await ensureLoadedFromFtp();
-						if (!loaded) {
-							throw new Error(`Load failed: ${effectiveLoadPath}`);
-						}
-						compile = await tryCompile();
-						logCompileAttempt(compile);
-						if (!compile.ok) {
-							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}${compile.note ? ` — ${compile.note}` : ''}`.trimEnd());
-						}
-						host.log(`│ ✔ Compile success (after reload)`);
-					} else if (statusCode === -508 || statusCode === -743) {
-						host.log(`│ ⚠ Not loaded → Load → Compile`);
-						const loaded = await ensureLoadedFromFtp();
-						if (!loaded) {
-							throw new Error(`Load failed: ${effectiveLoadPath}`);
-						}
-						compile = await tryCompile();
-						logCompileAttempt(compile);
-						if (!compile.ok) {
-							throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}${compile.note ? ` — ${compile.note}` : ''}`.trimEnd());
-						}
-						host.log(`│ ✔ Compile success (after load)`);
-					} else {
-						const compileError = compile.errors[0];
-						if (compileError) {
-							throw new Error(`Compile failed: ${compileError.file}:${compileError.line} (${compileError.code}) ${compileError.message}`);
-						}
-						throw new Error(`Compile failed: STATUS ${compile.status.code} ${compile.status.message || ''}${compile.note ? ` — ${compile.note}` : ''}`.trimEnd());
+						await ensureLoadedFromFtp();
+						compile = await compileProject(projectIo, { candidates: [name] });
+					} else if (isProjectNotLoaded(statusCode)) {
+						host.log('│ ⚠ Not loaded → Load → Compile');
+						await ensureLoadedFromFtp();
+						compile = await compileProject(projectIo, { candidates: [name] });
 					}
-				} else {
-					host.log(`│ ✔ Compile success`);
 				}
 
-				// Compile이 성공했으니 "컴파일 필요" 상태가 있었다면 해제.
+				if (!compile.ok) {
+					// 컴파일 에러는 배포 경로와 **같은 방식으로** 보여준다 — Problems 진단 + 첫 에러로 점프(§1-DE).
+					// 로컬에 같은 이름의 프로젝트가 있으면 그 폴더 기준으로 파일을 해석한다(FTP Run 은 원격 사본을 컴파일한다).
+					const localDir = await findLocalProjectDir(name);
+					if (compile.errors.length > 0 && localDir) {
+						applyCompileDiagnostics(compile.errors, localDir, deployDiagnostics);
+						await jumpToFirstCompileError(compile.errors, localDir, (msg: string) => host.log(`│ ${msg}`));
+					}
+					for (const e of compile.errors) {
+						host.log(`│ ✘ ${e.file}:${e.line} (${e.code}) ${e.message}`);
+					}
+					const first = compile.errors[0];
+					throw new Error(first
+						? `Compile failed: ${first.file}:${first.line} (${first.code}) ${first.message}${compile.errors.length > 1 ? ` 외 ${compile.errors.length - 1}건` : ''}`
+						: `Compile failed: STATUS ${compile.failure?.code} ${compile.failure?.message ?? ''}`.trimEnd());
+				}
+
+				// Compile이 성공했으니 "컴파일 필요" 상태가 있었다면 해제하고, 이전 진단도 지운다.
 				host.clearCompileStale(name);
+				deployDiagnostics.clear();
 
 				// 2) 콘솔 자동 시작/재연결 (Start 직전 블라인드 구간 완화)
 				const console = host.ensureRuntimeConsole();
@@ -521,13 +447,14 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				await console.waitUntilReady(1200);
 				consoleChannel.show(true);
 
-				// 3) Start
-				host.log(`│ Start ${name}`);
-				const { status: startStatus } = await runStatusCommand(`Start ${name}`);
-				if (startStatus.code !== 0) {
-					throw new Error(`Start failed: STATUS ${startStatus.code} ${startStatus.message || ''}`.trimEnd());
+				// 3) Start — 명령 조립은 buildStartCommand 하나만 쓴다(종전에는 여기만 `-event` 가 빠져 있었다).
+				const start = await startProject(projectIo, {
+					projectName: name,
+					eventMode: vscode.workspace.getConfiguration('gpl').get<boolean>('controller.startEventMode', true),
+				});
+				if (!start.ok) {
+					throw new Error(`Start failed: STATUS ${start.statusCode} ${start.message}`.trimEnd());
 				}
-				host.log(`│ ✔ Start success`);
 				vscode.window.showInformationMessage(`${name} 업로드된 제어기 복사본 기준 컴파일 & 실행 완료`);
 				host.controllerTree?.refresh();
 			} catch (err: any) {
@@ -562,15 +489,20 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			try {
 				// 하드 규칙 2: 성공/실패는 그 명령의 STATUS 로 판정한다. 종전에는 응답을 보지 않고 무조건
 				// "Unload 완료"를 띄워, 쓰레드가 살아 있어 거부된(-750) 경우에도 성공으로 보고했다(§1-DD).
-				const { status } = await runStatusCommand(`Unload ${name}`);
-				if (status.code === 0) {
-					vscode.window.showInformationMessage(`${name} Unload 완료`);
-				} else if (isProjectNotLoaded(status.code)) {
+				// 판정 자체는 controller/projectCommands.unloadProject 가 한다(FTP Run 과 같은 절차, §1-DE).
+				const outcome = await unloadProject(
+					{ send: async command => ({ raw: await sendCommand(command) }), log: line => host.log(`[Unload] ${line}`) },
+					name,
+				);
+				if (outcome.notLoaded) {
 					vscode.window.showInformationMessage(`${name} 은(는) 로드돼 있지 않습니다 (Unload 불필요)`);
+				} else if (outcome.ok) {
+					vscode.window.showInformationMessage(`${name} Unload 완료`);
 				} else {
 					vscode.window.showErrorMessage(
-						`${name} Unload 실패: STATUS ${status.code} ${status.message || ''}`.trimEnd()
-						+ (isBusyStatus(status.code) || status.code === -750 ? ' — 쓰레드를 먼저 정지하세요.' : ''));
+						`${name} Unload 실패: STATUS ${outcome.failure?.code} ${outcome.failure?.message ?? ''}`.trimEnd()
+						+ (outcome.blockedByActiveThread || isBusyStatus(outcome.failure?.code ?? 0)
+							? ' — 쓰레드를 먼저 정지하세요.' : ''));
 				}
 				host.controllerTree?.refresh();
 			} catch (err: any) {

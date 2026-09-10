@@ -17,6 +17,11 @@ import {
   isRetrySafeCommand,
   bridgeUnavailableHint,
   resolveBridge,
+  listExtensionInstances,
+  resolveExtensionInstance,
+  instanceBridgeDirs,
+  instancePresenceDir,
+  takeLateResponse,
 } from '../src/extensionBridge.js';
 
 function tmpDir() {
@@ -163,4 +168,134 @@ test('힌트: 사유마다 "무엇을 하면 되는지"를 알려 준다(점유 
   assert.match(bridgeUnavailableHint('presence-missing'), /확장/);
   assert.match(bridgeUnavailableHint('bridge-disabled'), /gpl\.agentBridge\.enabled/);
   assert.match(bridgeUnavailableHint('bridge-off'), /GPL_BRIDGE/);
+});
+
+// ── 인스턴스 분리(2026-09-10 개선안 §4·§5·§6) ─────────────────────────────
+
+function writeInstancePresence(dir, ip, instanceId, overrides = {}) {
+  const rec = {
+    version: AGENT_BRIDGE_VERSION,
+    extensionInstanceId: instanceId,
+    pid: process.pid,
+    extensionVersion: '0.9.4',
+    ip,
+    port: 1402,
+    connected: true,
+    debugSessionActive: false,
+    since: Date.now(),
+    heartbeat: Date.now(),
+    bridge: { enabled: true, ...instanceBridgeDirs(instanceId, dir) },
+    workspaceFolders: [],
+    ...overrides,
+  };
+  fs.mkdirSync(instancePresenceDir(dir), { recursive: true });
+  fs.writeFileSync(path.join(instancePresenceDir(dir), `${instanceId}.json`), JSON.stringify(rec));
+  return rec;
+}
+
+test('인스턴스 목록: 살아 있는 것만, ip 로 거르고 리더를 계산한다', () => {
+  const dir = tmpDir();
+  const ip = '10.0.0.20';
+  writeInstancePresence(dir, ip, 'first', { since: 1000, heartbeat: Date.now() });
+  writeInstancePresence(dir, ip, 'second', { since: 2000, heartbeat: Date.now() });
+  writeInstancePresence(dir, '10.0.0.99', 'other');
+  writeInstancePresence(dir, ip, 'dead', { heartbeat: Date.now() - 60_000 });
+
+  const list = listExtensionInstances(ip, { dir });
+  assert.deepEqual(list.map((p) => p.extensionInstanceId), ['first', 'second']);
+  assert.equal(list.find((p) => p.extensionInstanceId === 'first').leader, true);
+  assert.equal(list.find((p) => p.extensionInstanceId === 'second').leader, false);
+  // ip 를 주지 않으면 다른 제어기를 보는 창까지 나온다.
+  assert.equal(listExtensionInstances(undefined, { dir }).length, 3);
+});
+
+test('인스턴스 선택: projectDir 로 워크스페이스를 특정하고, 애매하면 임의로 고르지 않는다(§6)', () => {
+  const dir = tmpDir();
+  const ip = '10.0.0.21';
+  writeInstancePresence(dir, ip, 'antibody', { workspaceFolders: ['C:\\SVN\\pa\\Antibody'] });
+  writeInstancePresence(dir, ip, 'binder', { workspaceFolders: ['C:\\SVN\\pa\\Binder'] });
+
+  const hit = resolveExtensionInstance(ip, { dir, projectDir: 'C:\\SVN\\pa\\Binder\\projects\\MergeCode' });
+  assert.equal(hit.ok, true);
+  assert.equal(hit.instance.extensionInstanceId, 'binder');
+  assert.equal(hit.via, 'workspace-match');
+
+  // 같은 이름의 프로젝트가 두 워크스페이스에 있어도 폴더가 다르면 창이 갈린다.
+  const other = resolveExtensionInstance(ip, { dir, projectDir: 'C:/SVN/pa/Antibody/projects/MergeCode' });
+  assert.equal(other.instance.extensionInstanceId, 'antibody');
+
+  // 근거가 없으면 애매하다고 답한다 — 먼저 집는 창에 맡기지 않는다.
+  const amb = resolveExtensionInstance(ip, { dir });
+  assert.equal(amb.ok, false);
+  assert.equal(amb.error, 'EXTENSION_AMBIGUOUS');
+  assert.equal(amb.candidates.length, 2);
+
+  // 명시 지정은 최우선. 살아 있지 않은 id 는 NOT_FOUND.
+  assert.equal(resolveExtensionInstance(ip, { dir, instanceId: 'binder' }).ok, true);
+  assert.equal(resolveExtensionInstance(ip, { dir, instanceId: 'ghost' }).error, 'EXTENSION_NOT_FOUND');
+});
+
+test('인스턴스 선택: 후보가 둘이면 제어기에 연결된 창으로 좁힌다', () => {
+  const dir = tmpDir();
+  const ip = '10.0.0.22';
+  writeInstancePresence(dir, ip, 'idle', { connected: false });
+  writeInstancePresence(dir, ip, 'live', { connected: true });
+  const r = resolveExtensionInstance(ip, { dir });
+  assert.equal(r.ok, true);
+  assert.equal(r.instance.extensionInstanceId, 'live');
+  assert.equal(r.via, 'connected');
+});
+
+test('요청 라우팅: instanceId 를 주면 그 창의 큐에만 쓴다', async () => {
+  const dir = tmpDir();
+  const ip = '10.0.0.23';
+  const call = callExtensionCommand(ip, 'gpl.deploy', {}, { dir, instanceId: 'win-a', timeoutMs: 300, pollMs: 10 });
+  // 요청이 인스턴스 큐에 생겼는지 — 레거시 큐는 비어 있어야 한다.
+  await new Promise((r) => setTimeout(r, 60));
+  const instReq = fs.readdirSync(instanceBridgeDirs('win-a', dir).reqDir);
+  assert.equal(instReq.length, 1);
+  const legacyReq = bridgeDirs(ip, dir).reqDir;
+  const legacyCount = fs.existsSync(legacyReq) ? fs.readdirSync(legacyReq).length : 0;
+  assert.equal(legacyCount, 0, '레거시 큐로는 새지 않아야 한다');
+  const res = await call;
+  assert.equal(res.error, 'bridge-timeout');
+  assert.equal(res.instanceId, 'win-a');
+  assert.ok(res.requestId, '타임아웃에도 requestId 를 돌려줘야 나중에 결과를 회수할 수 있다');
+});
+
+test('타임아웃 뒤 도착한 응답은 requestId 로 회수한다(§11 — 재실행 금지)', async () => {
+  const dir = tmpDir();
+  const ip = '10.0.0.24';
+  const { reqDir, resDir } = instanceBridgeDirs('win-b', dir);
+  fs.mkdirSync(reqDir, { recursive: true });
+  const res = await callExtensionCommand(ip, 'gpl.deploy', {}, { dir, instanceId: 'win-b', requestId: 'req-1', timeoutMs: 120, pollMs: 10 });
+  assert.equal(res.error, 'bridge-timeout');
+  assert.equal(res.requestId, 'req-1');
+  // 확장이 뒤늦게 결과를 쓴 상황.
+  fs.mkdirSync(resDir, { recursive: true });
+  fs.writeFileSync(path.join(resDir, 'req-1.json'), JSON.stringify({ version: AGENT_BRIDGE_VERSION, id: 'req-1', ok: true, result: { success: true } }));
+  const late = takeLateResponse(ip, 'req-1', { dir, instanceId: 'win-b' });
+  assert.equal(late.ok, true);
+  assert.equal(late.result.success, true);
+  // 한 번 회수하면 사라진다.
+  assert.equal(takeLateResponse(ip, 'req-1', { dir, instanceId: 'win-b' }), null);
+});
+
+test('resolveBridge: 인스턴스 presence 가 있으면 리더를 기본 경로로 쓴다(레거시는 폴백)', async () => {
+  const dir = tmpDir();
+  const ip = '10.0.0.25';
+  writeInstancePresence(dir, ip, 'late', { since: 5000 });
+  writeInstancePresence(dir, ip, 'early', { since: 1000 });
+  const r = await resolveBridge(ip, { dir, mode: 'auto', wake: false });
+  assert.equal(r.available, true);
+  assert.equal(r.presence.extensionInstanceId, 'early');
+  assert.equal(r.instances.length, 2);
+  assert.notEqual(r.legacy, true);
+
+  // 구버전 확장(인스턴스 presence 없음)은 레거시 presence 로 계속 동작한다.
+  const dir2 = tmpDir();
+  writePresence(dir2, ip);
+  const legacy = await resolveBridge(ip, { dir: dir2, mode: 'auto', wake: false });
+  assert.equal(legacy.available, true);
+  assert.equal(legacy.legacy, true);
 });

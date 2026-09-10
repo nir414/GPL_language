@@ -16,7 +16,7 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLDiagnosticProvider } from '../providers/diagnosticProvider';
 import { getControllerConfig, setIdlePingActive } from '../controller/controllerConnection';
-import { AgentBridgeServer } from '../controller/agentBridge';
+import { AgentBridgeServer, newExtensionInstanceId } from '../controller/agentBridge';
 import { ConnectionHealthMonitor, ConnectionHealthProber } from '../controller/connectionHealth';
 import { EditorBreakpointSync } from '../controller/breakpointSync';
 import { ControllerBreakpointMirror } from '../controller/breakpointMirror';
@@ -273,6 +273,11 @@ export class ExtensionHost {
 	// 그대로 타므로 세션 경쟁("1402를 VS Code가 점유 중")이 사라진다. 파일 계약은 controller/agentBridge.ts 머리말 참조.
 	private agentBridge: AgentBridgeServer | undefined;
 	private agentBridgeKey = '';
+	/**
+	 * 이 확장 호스트(VS Code 창)의 고유 id — 창 수명 동안 고정된다(개선안 §4). 제어기 주소가 바뀌어
+	 * 브리지를 다시 만들어도 같은 값을 넘겨, MCP 가 보는 인스턴스 정체성이 흔들리지 않게 한다.
+	 */
+	readonly extensionInstanceId = newExtensionInstanceId();
 
 	ensureAgentBridge(): AgentBridgeServer | undefined {
 		if (vscode.workspace.getConfiguration('gpl.agentBridge').get<boolean>('enabled', true) === false) {
@@ -288,7 +293,10 @@ export class ExtensionHost {
 			ip: cfg.ip,
 			port: cfg.port,
 			extensionVersion: EXTENSION_VERSION,
+			instanceId: this.extensionInstanceId,
 			workspace: vscode.workspace.workspaceFolders?.[0]?.name,
+			// MCP 가 projectDir 로 어느 창에 보낼지 고르는 근거(§6).
+			workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath),
 			execute: (command, args) => Promise.resolve(
 				args === undefined
 					? vscode.commands.executeCommand(command)

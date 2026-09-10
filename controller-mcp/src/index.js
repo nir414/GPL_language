@@ -48,6 +48,9 @@ import {
   resolveBridge,
   readExtensionPresence,
   callExtensionCommand,
+  listExtensionInstances,
+  resolveExtensionInstance,
+  takeLateResponse,
   bridgeUnavailableHint,
   isRetrySafeCommand,
   BRIDGE_COMMAND_ID_PATTERN,
@@ -190,8 +193,11 @@ async function currentBridge({ force = false, wake = false } = {}) {
   return bridgeState;
 }
 
-/** 확장 명령 1건 호출(브리지). 결과는 확장 명령의 반환값 그대로. */
-async function callExtension(command, args, { timeoutMs } = {}) {
+/**
+ * 확장 명령 1건 호출(브리지). 결과는 확장 명령의 반환값 그대로.
+ * `instanceId` 를 주면 그 창의 큐로만 보낸다 — 생략하면 현재 경로(리더 인스턴스 또는 레거시 큐).
+ */
+async function callExtension(command, args, { timeoutMs, instanceId } = {}) {
   const b = await currentBridge();
   if (!b.available) {
     const err = new Error(
@@ -201,7 +207,8 @@ async function callExtension(command, args, { timeoutMs } = {}) {
     err.sendOutcome = SEND_OUTCOME_NOT_SENT;
     throw err;
   }
-  return callExtensionCommand(HOST, command, args, { timeoutMs: timeoutMs ?? 30_000 });
+  const target = instanceId ?? b.presence?.extensionInstanceId ?? undefined;
+  return callExtensionCommand(HOST, command, args, { timeoutMs: timeoutMs ?? 30_000, instanceId: target });
 }
 
 /**
@@ -221,7 +228,8 @@ async function sendGuarded(command, opts) {
       // 확장은 `Set Break`/`Nobreak`를 에디터 중단점에도 반영한다(빨간 점). 스스로 정리하는
       // 임시 BP만 여기서 제외한다 — 안 그러면 빨간 점이 깜빡인다.
       ...(opts?.mirrorBreakpoints === false ? { mirrorBreakpoints: false } : {}),
-    }, { timeoutMs: cmdTimeout + 20_000 });
+      // 1402 콘솔 명령은 어느 창을 거치든 같은 제어기로 나가므로 현재 경로(리더 인스턴스)를 그대로 쓴다.
+    }, { timeoutMs: cmdTimeout + 20_000, instanceId: b.presence?.extensionInstanceId ?? undefined });
 
     if (res.ok && res.result && typeof res.result.raw === 'string') {
       cmdSeq++;
@@ -274,7 +282,16 @@ function transportInfo() {
     mode: BRIDGE_MODE,
     using: bridgeState.available ? 'extension-bridge' : 'direct-tcp',
     reason: bridgeState.available ? null : bridgeState.reason,
-    extension: p ? { version: p.extensionVersion, pid: p.pid, connected: p.connected, debugSessionActive: p.debugSessionActive, workspace: p.workspace ?? null } : null,
+    extension: p ? {
+      version: p.extensionVersion,
+      pid: p.pid,
+      connected: p.connected,
+      debugSessionActive: p.debugSessionActive,
+      workspace: p.workspace ?? null,
+      extensionInstanceId: p.extensionInstanceId ?? null,
+    } : null,
+    // 같은 제어기를 보는 VS Code 창이 몇 개인지 — 2개 이상이면 배포 대상 창을 특정해야 한다(§6).
+    extensionInstances: (bridgeState.instances ?? []).length,
     hint: bridgeState.available
       ? '1402 명령이 확장 세션(직렬 큐·keep-alive·명령 정책)을 통해 나간다 — 세션 경쟁 없음.'
       : bridgeUnavailableHint(bridgeState.reason),
@@ -360,16 +377,31 @@ function tool(name, description, shape, handler) {
  * 없으므로(Brooks 문서) 공백·제어 문자가 든 이름은 명령이 끊긴다 — 보내기 전에 오류로 돌려준다
  * (확장의 controller/projectNameGuard.ts와 같은 규칙).
  */
-// ── 세션 대상 프로젝트 (2026-08-31 개선안 §18·§19) ─────────────────────────
+// ── 세션 대상 프로젝트 (2026-08-31 개선안 §18·§19, 2026-09-10 개선안 §3) ────
 // 종전에는 프로젝트명 인자를 생략하면 곧바로 환경변수 기본값(GPL_PROJECT)으로 떨어졌고, 확장 명령(gpl.deploy 등)은
 // 아예 대상 인자를 받지 못해 QuickPick 이 열렸다. 한 작업 세션의 대상은 하나로 고정되는 것이 정상이므로
 // `project_target` 로 한 번 정하면 이후 모든 도구가 같은 대상을 쓴다. 우선순위: 인자 > 세션 대상 > GPL_PROJECT.
-let sessionProject = null;
+//
+// 대상의 canonical identity 는 **폴더 경로**다(2026-09-10 개선안 §3.1). 같은 `ProjectName` 이 여러 과제 폴더에
+// 복제돼 있는 실제 배치(`Antibody/projects/MergeCode`, `Binder/projects/MergeCode` …)에서 이름만으로는 특정할 수
+// 없기 때문이다. 이름은 1402 콘솔 명령의 인자로만 쓴다(`Compile <name>` — 제어기는 경로를 모른다).
+//
+// **해석(resolve)과 고정(target 설정)을 분리한다**(§3.2): 확장이 `PROJECT_AMBIGUOUS`/`PROJECT_NOT_FOUND` 를
+// 돌려주면 세션 대상은 **바뀌지 않는다**. 종전 구현은 확장이 애매하다고 답해도 요청받은 이름을 그대로 세션에
+// 박아 넣어, 이후 도구가 "확정되지 않은 대상"을 확정된 것처럼 썼다.
+let sessionTarget = null;   // { project, dir, verified, via } | null
+
+/** 세션 대상을 확정한다. dir 가 있으면 canonical identity 로 함께 기억한다. */
+function setSessionTarget(project, { dir = null, verified = false, via = null } = {}) {
+  const name = typeof project === 'string' && project.trim() ? project.trim() : null;
+  if (!name) return;
+  sessionTarget = { project: name, dir: dir || null, verified: verified === true, via };
+}
 
 /** 이 세션의 대상 프로젝트가 어디서 왔는지 — 응답에 실어 "왜 이 프로젝트가 쓰였지"를 추론하지 않게 한다(§27). */
 function targetProjectInfo(explicit) {
-  const name = (explicit && explicit.trim()) || sessionProject || DEFAULT_PROJECT;
-  const source = (explicit && explicit.trim()) ? 'argument' : sessionProject ? 'session-target' : 'env-default';
+  const name = (explicit && explicit.trim()) || sessionTarget?.project || DEFAULT_PROJECT;
+  const source = (explicit && explicit.trim()) ? 'argument' : sessionTarget ? 'session-target' : 'env-default';
   return { project: name, source };
 }
 
@@ -767,17 +799,100 @@ tool('extension_status',
   async ({ wake }) => {
     const b = await currentBridge({ force: true, wake: wake === true });
     const raw = readExtensionPresence(HOST);
+    const instances = b.instances ?? [];
     return textResult({
       host: HOST,
       transport: transportInfo(),
       bridgeMode: BRIDGE_MODE,
-      presenceFile: raw.presence?.file ?? null,
+      presenceFile: b.presence?.file ?? raw.presence?.file ?? null,
       woken: b.woken ?? false,
       wakeError: b.wakeError ?? null,
       available: b.available,
+      // 창이 여럿일 수 있다 — 이 도구는 "지금 명령이 나가는 창"을 보여 주고, 전체 목록은 extension_list 다(§21).
+      instanceCount: instances.length,
+      instances: instances.map((p) => ({
+        extensionInstanceId: p.extensionInstanceId,
+        pid: p.pid,
+        workspace: p.workspace ?? null,
+        connected: !!p.connected,
+        leader: !!p.leader,
+      })),
+      legacyPresenceOnly: b.legacy === true,
       nextStep: b.available
-        ? 'extension_command로 확장 기능(Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)을 그대로 사용할 수 있다.'
+        ? (instances.length > 1
+          ? `창이 ${instances.length}개다 — 1402 명령은 리더 창으로 나가지만, 배포/컴파일은 extension_resolve 로 대상 창을 특정할 것.`
+          : 'extension_command로 확장 기능(Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)을 그대로 사용할 수 있다.')
         : bridgeUnavailableHint(b.reason),
+    });
+  });
+
+tool('extension_list',
+  '이 PC 에서 살아 있는 **VS Code 확장 인스턴스(창) 전부**를 나열한다(2026-09-10 개선안 §21). ' +
+  '같은 제어기에 두 개 이상의 창이 붙어 있으면 배포/컴파일을 어느 창이 수행할지가 달라지므로, ' +
+  '"확장이 하나뿐"이라고 가정하지 말고 이 도구로 확인할 것. 각 항목: extensionInstanceId · pid · workspace · ' +
+  'workspaceFolders · connected(제어기 연결) · debugSessionActive · leader(레거시 큐 담당). ' +
+  '대상 창을 정하려면 extension_resolve 를 쓴다.',
+  { allControllers: z.boolean().optional().describe('true면 다른 제어기를 보는 창까지 모두(기본 false — 이 제어기만)') },
+  async ({ allControllers }) => {
+    const instances = listExtensionInstances(allControllers === true ? undefined : HOST, {});
+    return textResult({
+      ok: true,
+      host: HOST,
+      count: instances.length,
+      extensions: instances.map((p) => ({
+        extensionInstanceId: p.extensionInstanceId,
+        pid: p.pid,
+        extensionVersion: p.extensionVersion,
+        workspace: p.workspace ?? null,
+        workspaceFolders: p.workspaceFolders ?? [],
+        controller: { ip: p.ip, port: p.port, connected: !!p.connected },
+        debugSessionActive: !!p.debugSessionActive,
+        leader: !!p.leader,
+        heartbeatAgeMs: Date.now() - p.heartbeat,
+      })),
+      transport: transportInfo(),
+      hint: instances.length === 0
+        ? '살아 있는 인스턴스가 없다 — VS Code 에서 확장이 활성화되지 않았거나 구버전이다(구버전은 extension_status 로 확인).'
+        : instances.length === 1
+          ? '창이 하나뿐이라 대상이 자명하다.'
+          : '창이 여럿이다 — 배포 계열은 projectDir 로 대상 창을 특정할 것(extension_resolve). 임의로 고르지 않는다.',
+    });
+  });
+
+tool('extension_resolve',
+  '어느 VS Code 창(확장 인스턴스)이 이 작업을 수행해야 하는지 결정한다(§6). ' +
+  '우선순위: 명시 extensionInstanceId → projectDir 를 품은 워크스페이스 → 제어기에 connected → 유일 후보. ' +
+  '**하나로 좁혀지지 않으면 임의로 고르지 않고** `{ok:false, error:"EXTENSION_AMBIGUOUS", candidates:[…]}` 를 돌려준다 — ' +
+  '창을 하나만 남기라고 요구하지 말고 후보를 사용자에게 보여 주고 물을 것.',
+  {
+    projectDir: z.string().optional().describe('작업 대상 프로젝트 폴더 경로'),
+    extensionInstanceId: z.string().optional().describe('창을 직접 지정'),
+  },
+  async ({ projectDir, extensionInstanceId }) => {
+    const r = resolveExtensionInstance(HOST, { instanceId: extensionInstanceId, projectDir: projectDir ?? sessionTarget?.dir ?? undefined });
+    if (!r.ok) {
+      return textResult({
+        ...r,
+        recovery: {
+          action: r.error === 'EXTENSION_AMBIGUOUS' ? 'RESOLVE_EXTENSION' : 'NONE',
+          retryCurrentCommand: false,
+          detail: r.error === 'EXTENSION_AMBIGUOUS'
+            ? 'projectDir 를 주거나 후보 중 하나의 extensionInstanceId 를 골라 다시 호출할 것.'
+            : 'VS Code 에서 확장이 활성화됐는지 확인할 것(extension_status wake=true).',
+        },
+      });
+    }
+    return textResult({
+      ok: true,
+      via: r.via,
+      extension: {
+        extensionInstanceId: r.instance.extensionInstanceId,
+        pid: r.instance.pid,
+        workspace: r.instance.workspace ?? null,
+        workspaceFolders: r.instance.workspaceFolders ?? [],
+        connected: !!r.instance.connected,
+        leader: !!r.instance.leader,
+      },
     });
   });
 
@@ -794,8 +909,9 @@ tool('extension_command',
     command: z.string().describe('확장 명령 ID (gpl.* 형식)'),
     args: z.any().optional().describe('명령 인자(객체/문자열). 생략하면 인자 없이 호출'),
     timeoutMs: z.number().int().min(1000).max(600000).optional().describe('응답 대기(ms, 기본 30000). Deploy처럼 오래 걸리는 명령은 크게'),
+    extensionInstanceId: z.string().optional().describe('명령을 실행할 VS Code 창(extension_list/extension_resolve 로 확인). 생략하면 현재 경로'),
   },
-  async ({ command, args, timeoutMs }) => {
+  async ({ command, args, timeoutMs, extensionInstanceId }) => {
     if (!BRIDGE_COMMAND_ID_PATTERN.test(command)) {
       return textResult({ ok: false, error: 'unsupported-command', hint: `'${command}' — 이 확장의 명령(gpl.*)만 실행할 수 있다.` });
     }
@@ -805,7 +921,7 @@ tool('extension_command',
       logLine(`  block ${command} — AI 차단 명령(사람 전용)`);
       return textResult(blocked);
     }
-    const res = await callExtension(command, args, { timeoutMs });
+    const res = await callExtension(command, args, { timeoutMs, instanceId: extensionInstanceId });
     return textResult({ command, ...res, transport: transportInfo() });
   });
 
@@ -831,35 +947,68 @@ tool('project_target',
   async ({ project, projectDir, projectFile, clear }) => {
     let extension = null;
     let extensionError = null;
+    /** 확장이 돌려준 구조화 실패(PROJECT_AMBIGUOUS 등) — 있으면 대상을 고정하지 않는다(§3.2). */
+    let resolveFailure = null;
     const b = await currentBridge();
     if (b.available) {
       try {
         const res = await callExtension('gpl.automation.target', { project, projectDir, projectFile, clear });
-        extension = res?.ok ? (res.result ?? null) : null;
-        if (!res?.ok) extensionError = res?.detail ?? res?.error ?? 'unknown';
+        if (!res?.ok) {
+          extensionError = res?.detail ?? res?.error ?? 'unknown';
+        } else if (res.result && typeof res.result === 'object' && res.result.ok === false) {
+          // 확장이 대상을 정하지 못했다 — 결과를 그대로 올려 보내고 세션 대상은 건드리지 않는다.
+          resolveFailure = res.result;
+        } else {
+          extension = res.result ?? null;
+        }
       } catch (err) {
         extensionError = err?.message ?? String(err);
       }
     }
     if (clear === true) {
-      sessionProject = null;
-    } else {
-      // 확장이 해석한 이름을 우선 쓴다(.gpr ProjectName 이 폴더명과 다를 수 있다 — 제어기 명령 인자는 ProjectName).
-      const resolved = extension?.target?.project ?? (project && project.trim() ? project.trim() : null);
-      if (resolved) sessionProject = resolved;
+      sessionTarget = null;
+    } else if (resolveFailure) {
+      // 해석 실패 — 고정하지 않는다. 요청 이름을 세션에 박으면 이후 도구가 미확정 대상을 확정된 것처럼 쓴다.
+      return textResult({
+        ok: false,
+        error: resolveFailure.error,
+        detail: resolveFailure.detail,
+        requestedProject: project ?? projectDir ?? projectFile ?? null,
+        effectiveTarget: null,
+        candidates: resolveFailure.candidates ?? [],
+        target: sessionTarget,
+        transport: transportInfo(),
+        recovery: {
+          action: 'SELECT_PROJECT_DIR',
+          retryCurrentCommand: false,
+          detail: '후보를 사용자에게 보여 주고 어느 것인지 물은 뒤 projectDir 로 다시 호출할 것. '
+            + '대상이 확정되지 않았으므로 deploy/compile 계열을 실행하지 말 것.',
+        },
+      });
+    } else if (extension?.target) {
+      // 확장이 해석한 이름·폴더를 쓴다(.gpr ProjectName 이 폴더명과 다를 수 있다 — 제어기 명령 인자는 ProjectName).
+      setSessionTarget(extension.target.project, { dir: extension.target.dir, verified: true, via: 'extension' });
+    } else if (project && project.trim()) {
+      // 브리지가 없는 직접 접속 경로 — 확인해 줄 확장이 없다. 1402 명령의 인자는 이름이므로 이름만으로 고정하되
+      // verified:false 로 남겨 "워크스페이스에서 확인되지 않은 대상"임을 응답에 드러낸다.
+      setSessionTarget(project, { verified: false, via: b.available ? 'requested' : 'requested-no-bridge' });
     }
     const info = targetProjectInfo(undefined);
     return textResult({
       ok: true,
-      target: sessionProject,
+      target: sessionTarget,
       effectiveProject: info.project,
+      effectiveTarget: sessionTarget,
       source: info.source,
       envDefault: DEFAULT_PROJECT,
       extension,
       extensionError,
       transport: transportInfo(),
-      hint: sessionProject
-        ? `이후 도구는 project 인자를 생략하면 '${sessionProject}' 를 씁니다. 다른 프로젝트는 그 호출에 project 를 직접 주세요.`
+      hint: sessionTarget
+        ? `이후 도구는 project 인자를 생략하면 '${sessionTarget.project}' 를 씁니다`
+          + `${sessionTarget.dir ? ` (폴더 ${sessionTarget.dir})` : ''}`
+          + `${sessionTarget.verified ? '' : ' — 워크스페이스에서 확인되지 않은 이름입니다(확장 브리지 없음)'}. `
+          + '다른 프로젝트는 그 호출에 project 를 직접 주세요.'
         : '세션 대상이 없습니다 — 인자를 생략한 도구는 GPL_PROJECT 기본값을 씁니다. 워크스페이스에 프로젝트가 여럿이면 확장 명령은 PROJECT_AMBIGUOUS 를 돌려줍니다. 먼저 이 도구로 대상을 고정할 것.',
     });
   });
@@ -907,8 +1056,9 @@ tool('deploy_project',
     const command = m === 'quick' ? 'gpl.quickCompile' : m === 'upload-start' ? 'gpl.uploadStart' : 'gpl.deploy';
     const args = {
       // 대상을 항상 명시해 보낸다 — 확장이 active editor 를 보거나 QuickPick 을 열 이유를 없앤다(§18·§22).
-      project: project ?? sessionProject ?? undefined,
-      projectDir: projectDir ?? undefined,
+      // 인자로 이름만 준 호출에는 세션 폴더를 얹지 않는다(다른 프로젝트를 가리키는 이름일 수 있다).
+      project: project ?? sessionTarget?.project ?? undefined,
+      projectDir: projectDir ?? (project ? undefined : sessionTarget?.dir ?? undefined),
       projectFile: projectFile ?? undefined,
       saveDirty: saveDirty === true ? true : undefined,
       confirmStart: confirmStart === true ? true : undefined,
@@ -919,9 +1069,32 @@ tool('deploy_project',
       // 넣는 대신 project 를 환경 기본값으로 채워 보낸다(확장이 못 찾으면 PROJECT_NOT_FOUND 로 돌려준다).
       args.project = DEFAULT_PROJECT;
     }
+    // 어느 창이 이 배포를 수행할지 먼저 정한다(§6). 창이 여럿인데 특정할 수 없으면 보내지 않는다 —
+    // 종전에는 요청을 공용 큐에 던져 **먼저 집은 창**이 실행했고, 다른 워크스페이스의 창이 남의 배포를 할 수 있었다.
+    const instances = listExtensionInstances(HOST, {});
+    let instanceId;
+    if (instances.length > 0) {
+      const pick = resolveExtensionInstance(HOST, { projectDir: args.projectDir ?? sessionTarget?.dir ?? undefined });
+      if (!pick.ok && instances.length > 1) {
+        return textResult({
+          ok: false, mode: m, command,
+          error: pick.error,
+          detail: pick.detail,
+          candidates: pick.candidates,
+          recovery: {
+            action: 'RESOLVE_EXTENSION',
+            retryCurrentCommand: false,
+            detail: '배포를 수행할 VS Code 창을 특정해야 한다. projectDir 를 주거나 사용자에게 어느 창인지 물을 것 — '
+              + '창을 하나만 남기라고 요구하는 것은 임시 회피다.',
+          },
+          transport: transportInfo(),
+        });
+      }
+      instanceId = pick.ok ? pick.instance.extensionInstanceId : undefined;
+    }
     let res;
     try {
-      res = await callExtension(command, args, { timeoutMs: timeoutMs ?? 240_000 });
+      res = await callExtension(command, args, { timeoutMs: timeoutMs ?? 240_000, instanceId });
     } catch (err) {
       return textResult({
         ok: false, mode: m, command,
@@ -931,8 +1104,13 @@ tool('deploy_project',
       });
     }
     const out = deployOutcome(m, command, res);
-    if (out.ok && args.project) sessionProject = args.project;   // 성공한 대상을 세션에 고정
-    return textResult({ ...out, targetSent: args, transport: transportInfo() });
+    if (out.ok) {
+      // 성공한 대상만 세션에 고정한다 — 실패(PROJECT_AMBIGUOUS 등)는 대상을 바꾸지 않는다(§3.2).
+      const name = (out.result && typeof out.result === 'object' && typeof out.result.projectName === 'string' && out.result.projectName)
+        || args.project;
+      setSessionTarget(name, { dir: args.projectDir ?? sessionTarget?.dir ?? null, verified: true, via: 'deploy' });
+    }
+    return textResult({ ...out, targetSent: args, extensionInstanceId: instanceId ?? null, transport: transportInfo() });
   });
 
 // ── 컴파일/실행 ───────────────────────────────────────────────────────────

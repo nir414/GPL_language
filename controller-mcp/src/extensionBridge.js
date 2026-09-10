@@ -6,10 +6,16 @@
 // 이 브리지로 보낸다 → 트래픽이 확장의 단일 직렬 큐·keep-alive 세션·명령 정책(R1/R2/R3)을 그대로 타고,
 // GPL Traffic/Output에도 함께 남는다. 확장이 없으면 종전처럼 직접 접속으로 자동 폴백한다.
 //
+// 인스턴스 분리(2026-09-10 개선안 §4·§5·§6): presence 와 큐가 제어기 IP 하나를 네임스페이스로 쓰던 때에는
+// 같은 제어기를 보는 VS Code 창이 둘이면 두 창이 같은 요청 디렉터리를 읽어 **아무 창이나** 명령을 실행했고,
+// presence 도 서로 덮어써 어느 창인지 알 수 없었다. 이제 확장이 창마다 `extensionInstanceId` 로 presence 와
+// 큐를 분리하고, 이쪽은 대상 인스턴스를 먼저 고른 뒤(§6) 그 큐로만 보낸다.
+//
 // 파일 계약(확장 src/controller/agentBridge.ts와 동일하게 유지):
-//   presence : <dir>/<ip>.extension.json
-//   요청     : <dir>/bridge/<ip>/req/<id>.json
-//   응답     : <dir>/bridge/<ip>/res/<id>.json
+//   presence(인스턴스) : <dir>/extensions/<instanceId>.json
+//   presence(레거시)   : <dir>/<ip>.extension.json          — 리더 인스턴스만 쓴다(구버전 호환)
+//   요청     : <dir>/bridge/inst/<instanceId>/req/<id>.json  (레거시: <dir>/bridge/<ip>/req/<id>.json)
+//   응답     : 같은 큐의 res/<id>.json
 // dir 기본값은 배포 잠금과 같은 %TEMP%/gpl-controller (GPL_LOCK_DIR로 재정의 가능).
 
 import fs from 'node:fs';
@@ -40,6 +46,149 @@ export function presenceFilePath(ip, dir = bridgeRootDir()) {
 export function bridgeDirs(ip, dir = bridgeRootDir()) {
   const base = path.join(dir, 'bridge', sanitizeIpForPath(ip));
   return { base, reqDir: path.join(base, 'req'), resDir: path.join(base, 'res') };
+}
+
+// ── 인스턴스 네임스페이스(§4·§5) ──────────────────────────────────────────
+
+export function sanitizeInstanceId(id) {
+  const safe = String(id || '').trim().replace(/[^A-Za-z0-9._-]/g, '_');
+  return safe || 'unknown';
+}
+
+export function instancePresenceDir(dir = bridgeRootDir()) {
+  return path.join(dir, 'extensions');
+}
+
+export function instanceBridgeDirs(instanceId, dir = bridgeRootDir()) {
+  const base = path.join(dir, 'bridge', 'inst', sanitizeInstanceId(instanceId));
+  return { base, reqDir: path.join(base, 'req'), resDir: path.join(base, 'res') };
+}
+
+/** presence 레코드가 지금 살아 있는가(heartbeat·pid·브리지 사용 가능). */
+function presenceIsLive(rec, { now, staleMs, pidAlive }) {
+  if (!rec || typeof rec !== 'object' || rec.version !== AGENT_BRIDGE_VERSION) return false;
+  if (typeof rec.heartbeat !== 'number' || now - rec.heartbeat > staleMs) return false;
+  if (typeof rec.pid === 'number' && rec.pid > 0 && !pidAlive(rec.pid)) return false;
+  return !!rec.bridge?.enabled;
+}
+
+/**
+ * 살아 있는 확장 인스턴스 목록(§21). `ip` 를 주면 그 제어기를 보는 것만 남긴다.
+ * `leader` 는 계산값이다 — 레거시(IP) 큐를 맡은 인스턴스로, 확장과 같은 규칙(가장 먼저 뜬 것)으로 정한다.
+ */
+export function listExtensionInstances(ip, { dir, now = Date.now(), staleMs = PRESENCE_STALE_MS, pidAlive = isPidAlive } = {}) {
+  const base = instancePresenceDir(dir);
+  let names;
+  try {
+    names = fs.readdirSync(base).filter((n) => n.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    let rec;
+    try {
+      rec = JSON.parse(fs.readFileSync(path.join(base, name), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!presenceIsLive(rec, { now, staleMs, pidAlive })) continue;
+    if (typeof rec.extensionInstanceId !== 'string' || !rec.extensionInstanceId) continue;
+    if (ip && rec.ip !== ip) continue;
+    out.push({ ...rec, file: path.join(base, name) });
+  }
+  const leaderId = electLeaderInstanceId(out);
+  return out
+    .map((p) => ({ ...p, leader: p.extensionInstanceId === leaderId }))
+    .sort((a, b) => a.since - b.since);
+}
+
+/** 레거시(IP) 큐를 맡은 인스턴스 — 확장 `electLeaderInstanceId` 와 같은 규칙(가장 먼저 뜬 것, 동률이면 id 순). */
+export function electLeaderInstanceId(presences) {
+  const live = (presences || []).filter((p) => p?.bridge?.enabled && typeof p.extensionInstanceId === 'string');
+  if (live.length === 0) return undefined;
+  let best = live[0];
+  for (const p of live.slice(1)) {
+    if (p.since < best.since || (p.since === best.since && String(p.extensionInstanceId) < String(best.extensionInstanceId))) {
+      best = p;
+    }
+  }
+  return best.extensionInstanceId;
+}
+
+/** 경로 비교용 정규화 — Windows 대소문자·구분자 차이를 없앤다. */
+function normalizePathKey(p) {
+  const s = String(p || '').trim().replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
+
+/** `child` 가 `parent` 안(또는 같은 폴더)인가. */
+export function pathIsInside(child, parent) {
+  const c = normalizePathKey(child);
+  const p = normalizePathKey(parent);
+  if (!c || !p) return false;
+  return c === p || c.startsWith(`${p}/`);
+}
+
+/**
+ * 명령을 보낼 확장 인스턴스를 고른다(§6). **후보가 하나로 좁혀지지 않으면 임의로 고르지 않는다** —
+ * 엉뚱한 창이 배포를 수행하는 것이 원래 문제였다.
+ *
+ * 우선순위: 명시 instanceId → projectDir 를 품은 워크스페이스 → 그 제어기에 connected → 유일 후보.
+ * @returns {{ok:true, instance, via}|{ok:false, error:'EXTENSION_NOT_FOUND'|'EXTENSION_AMBIGUOUS', detail, candidates}}
+ */
+export function resolveExtensionInstance(ip, { instanceId, projectDir, dir, now, staleMs, pidAlive } = {}) {
+  const all = listExtensionInstances(ip, { dir, now, staleMs, pidAlive });
+  const summarize = (list) => list.map((p) => ({
+    extensionInstanceId: p.extensionInstanceId,
+    pid: p.pid,
+    workspace: p.workspace ?? null,
+    workspaceFolders: p.workspaceFolders ?? [],
+    connected: !!p.connected,
+    leader: !!p.leader,
+  }));
+  if (all.length === 0) {
+    return {
+      ok: false,
+      error: 'EXTENSION_NOT_FOUND',
+      detail: '살아 있는 확장 인스턴스가 없다(VS Code 에서 GPL 확장이 실행 중이 아니거나 활성화되지 않음).',
+      candidates: [],
+    };
+  }
+  if (instanceId) {
+    const hit = all.find((p) => p.extensionInstanceId === instanceId);
+    if (hit) return { ok: true, instance: hit, via: 'explicit-instance' };
+    return {
+      ok: false,
+      error: 'EXTENSION_NOT_FOUND',
+      detail: `extensionInstanceId '${instanceId}' 인 확장 인스턴스가 살아 있지 않다(창이 닫혔거나 id 가 바뀌었다).`,
+      candidates: summarize(all),
+    };
+  }
+  let pool = all;
+  let via = 'sole-instance';
+  if (projectDir) {
+    const inWorkspace = all.filter((p) => (p.workspaceFolders ?? []).some((f) => pathIsInside(projectDir, f)));
+    if (inWorkspace.length > 0) {
+      pool = inWorkspace;
+      via = 'workspace-match';
+    }
+  }
+  if (pool.length > 1) {
+    const connected = pool.filter((p) => p.connected);
+    if (connected.length > 0 && connected.length < pool.length) {
+      pool = connected;
+      via = 'connected';
+    }
+  }
+  if (pool.length === 1) return { ok: true, instance: pool[0], via };
+  return {
+    ok: false,
+    error: 'EXTENSION_AMBIGUOUS',
+    detail: `대상 확장 인스턴스를 하나로 정할 수 없다(후보 ${pool.length}개). `
+      + 'projectDir 로 워크스페이스를 특정하거나 extensionInstanceId 를 직접 지정할 것 — 임의로 고르지 않는다.',
+    candidates: summarize(pool),
+  };
 }
 
 export function isPidAlive(pid) {
@@ -103,12 +252,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @returns {Promise<{ok:boolean, result?:any, error?:string, detail?:string, code?:string, ms:number}>}
  *          ok=true는 "확장이 명령을 실행했다"는 뜻이고, 명령 자체의 성공/실패는 result 안에 있다.
  */
-export async function callExtensionCommand(ip, command, args, { dir, timeoutMs = 20_000, pollMs = 25, from = 'gpl-controller-mcp' } = {}) {
+export async function callExtensionCommand(ip, command, args, { dir, timeoutMs = 20_000, pollMs = 25, from = 'gpl-controller-mcp', instanceId, requestId } = {}) {
   if (!BRIDGE_COMMAND_ID_PATTERN.test(String(command || ''))) {
     return { ok: false, error: 'unsupported-command', detail: `'${command}' — 확장 명령(gpl.*)만 브리지로 실행할 수 있다`, ms: 0 };
   }
-  const { reqDir, resDir } = bridgeDirs(ip, dir);
-  const id = makeRequestId();
+  // 대상 인스턴스가 정해졌으면 그 창의 큐로만 보낸다(§5). 없으면 레거시(IP) 큐 — 구버전 확장 호환.
+  const { reqDir, resDir } = instanceId ? instanceBridgeDirs(instanceId, dir) : bridgeDirs(ip, dir);
+  const id = requestId || makeRequestId();
   const reqFile = path.join(reqDir, `${id}.json`);
   const resFile = path.join(resDir, `${id}.json`);
   const startedAt = Date.now();
@@ -132,21 +282,52 @@ export async function callExtensionCommand(ip, command, args, { dir, timeoutMs =
       try { fs.unlinkSync(resFile); } catch { /* noop */ }
       try {
         const res = JSON.parse(text);
-        return { ...res, ms: Date.now() - startedAt };
+        return { ...res, requestId: id, instanceId: instanceId ?? null, ms: Date.now() - startedAt };
       } catch (err) {
-        return { ok: false, error: 'response-parse-failed', detail: err?.message ?? String(err), ms: Date.now() - startedAt };
+        return { ok: false, error: 'response-parse-failed', detail: err?.message ?? String(err), requestId: id, ms: Date.now() - startedAt };
       }
     }
     if (Date.now() >= deadline) {
-      // 요청이 남아 있으면 치운다 — 확장이 나중에 뒤늦게 실행하지 않도록.
-      try { fs.unlinkSync(reqFile); } catch { /* noop */ }
+      // 아직 집어 가지 않은 요청이면 치운다 — 확장이 한참 뒤에 뒤늦게 실행하지 않도록.
+      // 이미 집어 갔다면(파일 없음) 확장은 계속 실행 중이고 결과는 응답 파일로 온다 — 그래서
+      // requestId 를 함께 돌려준다. 같은 명령을 다시 보내지 말고 `takeLateResponse` 로 회수할 것(§9·§11).
+      let stillQueued = true;
+      try { fs.unlinkSync(reqFile); } catch { stillQueued = false; }
       return {
         ok: false, error: 'bridge-timeout',
-        detail: `확장이 ${timeoutMs}ms 안에 응답하지 않음 (요청 ${reqFile})`,
+        detail: stillQueued
+          ? `확장이 ${timeoutMs}ms 안에 요청을 집어 가지 않아 요청을 취소했다 (${reqFile}) — 실행되지 않았다.`
+          : `확장이 요청을 실행 중이지만 ${timeoutMs}ms 안에 끝나지 않았다 — 결과는 나중에 응답 파일로 온다. 같은 명령을 다시 보내지 말 것.`,
+        sent: !stillQueued,
+        requestId: id,
+        instanceId: instanceId ?? null,
+        responseFile: resFile,
         ms: Date.now() - startedAt,
       };
     }
     await sleep(pollMs);
+  }
+}
+
+/**
+ * 타임아웃 뒤에 도착한 응답 회수(§11). 있으면 소비하고 돌려주고, 없으면 null.
+ * 확장은 응답 파일을 RESPONSE_SWEEP_MS(5분) 동안 보관하므로 그 사이에는 결과를 되찾을 수 있다.
+ */
+export function takeLateResponse(ip, requestId, { dir, instanceId } = {}) {
+  if (!requestId) return null;
+  const { resDir } = instanceId ? instanceBridgeDirs(instanceId, dir) : bridgeDirs(ip, dir);
+  const file = path.join(resDir, `${String(requestId).replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  try { fs.unlinkSync(file); } catch { /* noop */ }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }
 
@@ -171,13 +352,32 @@ export function wakeExtension({ cli = process.env.GPL_VSCODE_CLI || 'code', time
  * 브리지 사용 가능 여부 판정 + (필요하면) 확장 깨우기.
  * mode: 'auto'(기본, 없으면 직접 접속) | 'only'(브리지 필수) | 'off'(항상 직접 접속)
  */
-export async function resolveBridge(ip, { dir, mode = 'auto', wake = true, wakeWaitMs = 4000, now = Date.now } = {}) {
+export async function resolveBridge(ip, { dir, mode = 'auto', wake = true, wakeWaitMs = 4000, now = Date.now, instanceId } = {}) {
   if (mode === 'off') {
-    return { available: false, reason: 'bridge-off', presence: null };
+    return { available: false, reason: 'bridge-off', presence: null, instances: [] };
   }
+  /**
+   * 인스턴스 presence 가 있으면 그쪽이 정본이다. 여러 창이 떠 있어도 **기본 경로는 리더**로 정해 둔다 —
+   * 임의 선택이 아니라 확장과 같은 규칙으로 계산한 값이라 양쪽이 같은 창을 가리킨다. 1402 콘솔 명령은
+   * 어느 창을 거치든 같은 제어기로 나가므로 이것으로 충분하고, **대상이 중요한 배포/프로젝트 명령은**
+   * 호출측이 `resolveExtensionInstance(projectDir)` 로 창을 특정한다(§6).
+   */
+  const pick = () => {
+    const instances = listExtensionInstances(ip, { dir });
+    if (instances.length === 0) return null;
+    const chosen = (instanceId && instances.find((p) => p.extensionInstanceId === instanceId))
+      || instances.find((p) => p.leader)
+      || instances[0];
+    return { available: true, reason: null, presence: chosen, instances };
+  };
+
+  const first = pick();
+  if (first) return first;
+
   let read = readExtensionPresence(ip, { dir });
   if (read.presence) {
-    return { available: true, reason: null, presence: read.presence };
+    // 구버전 확장(인스턴스 presence 없음) — 레거시 경로로 계속 동작한다.
+    return { available: true, reason: null, presence: read.presence, instances: [], legacy: true };
   }
   if (wake && (read.reason === 'presence-missing' || read.reason === 'presence-stale' || read.reason === 'presence-dead-pid')) {
     // 확장이 아직 활성화되지 않았을 수 있다 — URI로 깨우고 잠깐 기다린다.
@@ -186,16 +386,18 @@ export async function resolveBridge(ip, { dir, mode = 'auto', wake = true, wakeW
       const deadline = now() + wakeWaitMs;
       while (now() < deadline) {
         await sleep(150);
+        const again = pick();
+        if (again) return { ...again, woken: true };
         read = readExtensionPresence(ip, { dir });
         if (read.presence) {
-          return { available: true, reason: null, presence: read.presence, woken: true };
+          return { available: true, reason: null, presence: read.presence, instances: [], legacy: true, woken: true };
         }
       }
     } else {
-      return { available: false, reason: read.reason, presence: null, wakeError: woke.detail };
+      return { available: false, reason: read.reason, presence: null, instances: [], wakeError: woke.detail };
     }
   }
-  return { available: false, reason: read.reason, presence: null };
+  return { available: false, reason: read.reason, presence: null, instances: [] };
 }
 
 /**

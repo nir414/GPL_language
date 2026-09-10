@@ -7,9 +7,14 @@ import {
     AGENT_BRIDGE_VERSION,
     AgentBridgeServer,
     bridgeDirs,
+    electLeaderInstanceId,
+    instanceBridgeDirs,
+    instancePresenceFilePath,
     isPresenceStale,
+    listInstancePresences,
     presenceFilePath,
     requestIdFromFileName,
+    sanitizeInstanceId,
     sanitizeIpForPath,
     validateBridgeRequest,
 } from '../controller/agentBridge';
@@ -197,4 +202,130 @@ test('agentBridge: presence 파일은 start 에서 생기고 setState 를 반영
         server.stop();
     }
     assert.strictEqual(fs.existsSync(server.presencePath), false);
+});
+
+// ── 인스턴스 분리(개선안 §4·§5) ────────────────────────────────────────────
+
+test('agentBridge: 인스턴스 경로 — presence 는 extensions/, 큐는 bridge/inst/<id>/', () => {
+    assert.strictEqual(sanitizeInstanceId('a/b:c'), 'a_b_c');
+    assert.strictEqual(sanitizeInstanceId(''), 'unknown');
+    assert.ok(instancePresenceFilePath('inst-1', '/tmp/x').endsWith(path.join('extensions', 'inst-1.json')));
+    const d = instanceBridgeDirs('inst-1', '/tmp/x');
+    assert.ok(d.reqDir.endsWith(path.join('bridge', 'inst', 'inst-1', 'req')));
+    // 인스턴스가 다르면 큐도 다르다 — 이것이 "남의 창이 내 배포를 집어 가는" 문제를 없앤다.
+    assert.notStrictEqual(instanceBridgeDirs('a', '/tmp/x').reqDir, instanceBridgeDirs('b', '/tmp/x').reqDir);
+});
+
+test('agentBridge: 리더 선출은 가장 먼저 뜬 인스턴스, 동률이면 id 순', () => {
+    const p = (id: string, since: number, enabled = true) => ({
+        version: AGENT_BRIDGE_VERSION, extensionInstanceId: id, pid: 1, extensionVersion: 'x',
+        ip: IP, port: 1402, connected: false, debugSessionActive: false, since, heartbeat: since,
+        bridge: { enabled, reqDir: '', resDir: '' },
+    });
+    assert.strictEqual(electLeaderInstanceId([p('b', 200), p('a', 100)]), 'a');
+    assert.strictEqual(electLeaderInstanceId([p('b', 100), p('a', 100)]), 'a');
+    // 브리지가 꺼진 인스턴스는 후보가 아니다.
+    assert.strictEqual(electLeaderInstanceId([p('a', 100, false), p('b', 200)]), 'b');
+    assert.strictEqual(electLeaderInstanceId([]), undefined);
+});
+
+/** 같은 디렉터리를 공유하는 두 확장 호스트(= 같은 제어기를 보는 VS Code 창 2개). */
+function makeTwoInstances(dir: string) {
+    const calls: Record<string, string[]> = { a: [], b: [] };
+    const mk = (id: 'a' | 'b', now: number) => new AgentBridgeServer({
+        ip: IP,
+        port: 1402,
+        extensionVersion: '0.0.0-test',
+        dir,
+        instanceId: id,
+        now: () => now,
+        pid: process.pid,
+        heartbeatIntervalMs: 0,
+        scanIntervalMs: 0,
+        execute: async (command) => { calls[id].push(command); return { ok: true }; },
+    });
+    return { a: mk('a', 1000), b: mk('b', 2000), calls };
+}
+
+function writeRequest(reqDir: string, id: string, createdAt: number, command = 'gpl.ping'): void {
+    fs.mkdirSync(reqDir, { recursive: true });
+    fs.writeFileSync(path.join(reqDir, `${id}.json`), JSON.stringify({
+        version: AGENT_BRIDGE_VERSION, id, command, createdAt,
+    }));
+}
+
+test('agentBridge: 두 인스턴스는 서로의 요청을 집어 가지 않는다(§5 — 창이 뒤섞이던 원인)', async () => {
+    const dir = tmpDir();
+    const { a, b, calls } = makeTwoInstances(dir);
+    a.start();
+    b.start();
+    try {
+        writeRequest(b.requestDir, 'for-b', 2000, 'gpl.deploy');
+        // 먼저 A 를 돌려도 B 의 요청은 남아 있어야 한다.
+        await a.drain();
+        assert.deepStrictEqual(calls.a, []);
+        await b.drain();
+        assert.deepStrictEqual(calls.b, ['gpl.deploy']);
+    } finally {
+        a.stop();
+        b.stop();
+    }
+});
+
+test('agentBridge: 레거시(IP) 큐는 리더만 처리한다 — 구버전 MCP 호환', async () => {
+    const dir = tmpDir();
+    const { a, b, calls } = makeTwoInstances(dir);
+    a.start();   // 먼저 떴으므로 리더
+    b.start();
+    try {
+        assert.strictEqual(a.isLeader, true, 'A 가 리더여야 한다');
+        assert.strictEqual(b.isLeader, false, 'B 는 리더가 아니어야 한다');
+        writeRequest(a.legacyRequestDir, 'legacy-1', 1000, 'gpl.legacy');
+        await b.drain();
+        assert.deepStrictEqual(calls.b, [], '비리더는 레거시 큐를 건드리지 않는다');
+        await a.drain();
+        assert.deepStrictEqual(calls.a, ['gpl.legacy']);
+        // 레거시 presence 는 리더가 쓴다 — 구버전 MCP 가 보는 파일.
+        const legacy = JSON.parse(fs.readFileSync(a.legacyPresencePath, 'utf8'));
+        assert.strictEqual(legacy.extensionInstanceId, 'a');
+        assert.ok(legacy.bridge.reqDir.endsWith(path.join('bridge', IP, 'req')), '레거시 presence 는 레거시 큐를 가리킨다');
+    } finally {
+        a.stop();
+        b.stop();
+    }
+});
+
+test('agentBridge: 비리더가 멈춰도 리더의 레거시 presence 를 지우지 않는다', () => {
+    const dir = tmpDir();
+    const { a, b } = makeTwoInstances(dir);
+    a.start();
+    b.start();
+    try {
+        assert.ok(fs.existsSync(a.legacyPresencePath));
+        b.stop();
+        assert.ok(fs.existsSync(a.legacyPresencePath), '남의 presence 를 지우면 구버전 MCP 가 확장을 잃는다');
+    } finally {
+        a.stop();
+    }
+    assert.strictEqual(fs.existsSync(a.legacyPresencePath), false, '리더가 멈추면 자기 것은 치운다');
+});
+
+test('agentBridge: listInstancePresences 는 살아 있는 것만·ip 로 거른다', () => {
+    const dir = tmpDir();
+    const { a, b } = makeTwoInstances(dir);
+    a.start();
+    b.start();
+    try {
+        const live = listInstancePresences({ dir, ip: IP, now: 2000 });
+        assert.deepStrictEqual(live.map(p => p.extensionInstanceId).sort(), ['a', 'b']);
+        // heartbeat 가 오래되면 목록에서 빠진다.
+        assert.strictEqual(listInstancePresences({ dir, ip: IP, now: 2000 + 60_000 }).length, 0);
+        // 다른 제어기를 보는 창은 이 제어기 목록에 없다.
+        assert.strictEqual(listInstancePresences({ dir, ip: '10.0.0.9', now: 2000 }).length, 0);
+        // 죽은 pid 는 제외한다.
+        assert.strictEqual(listInstancePresences({ dir, ip: IP, now: 2000, pidAlive: () => false }).length, 0);
+    } finally {
+        a.stop();
+        b.stop();
+    }
 });

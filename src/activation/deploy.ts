@@ -237,12 +237,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						return pick === 'Stop 후 계속';
 					}
 					: undefined,
-				beforeStart: skipStart ? undefined : async () => {
-					const console = host.ensureRuntimeConsole();
-					console.primeForRuntimeStart();
-					await console.waitUntilReady(1200);
-					host.controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
-				},
+				beforeStart: skipStart ? undefined : () => host.primeRuntimeConsoleForStart('Deploy'),
 			}, outputChannel, deployDiagnostics);
 
 			// 배포 잠금 보유 중(UI 확인이 끝난 사이 다른 창/autoOnSave가 먼저 잡은 경우) — 컨텍스트와 함께 안내.
@@ -815,15 +810,8 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				}
 			}
 
-			// Start 전 런타임 콘솔 준비 (구 Deploy & Run의 beforeStart와 동일 처리)
-			try {
-				const console = host.ensureRuntimeConsole();
-				console.primeForRuntimeStart();
-				await console.waitUntilReady(1200);
-				host.controllerTree?.setRuntimeConsoleStatus(console.getStatusSnapshot());
-			} catch (err: any) {
-				host.log(`[Start] runtime console pre-start failed: ${err?.message ?? err}`);
-			}
+			// Start 전 런타임 콘솔 준비 — 배포·FTP Run 과 같은 절차(host.primeRuntimeConsoleForStart, §1-DE).
+			await host.primeRuntimeConsoleForStart('Start');
 
 			try {
 				// 문서 구문으로 조립(startCommand.ts) — 기본 `-event`(GDE 동일), `-compile` 없음(하드 규칙 7)

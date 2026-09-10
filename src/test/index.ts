@@ -40,6 +40,7 @@ import './threadLock.test';
 import './threadActivity.test';
 import './threadStop.test';
 import './projectCommands.test';
+import './remoteProjectPath.test';
 import './sourceTargets.test';
 import './startCommand.test';
 import './launchJsonc.test';

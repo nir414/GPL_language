@@ -226,6 +226,24 @@ export class ExtensionHost {
 		return runtimeConsole;
 	}
 
+	/**
+	 * Start 직전 1403 런타임 콘솔 준비 — 연결·prime·상태 반영을 한 절차로 묶은 것.
+	 *
+	 * Start 를 보내는 경로(배포·Start 단독·FTP Run)가 각자 같은 3~4줄을 갖고 있어서, 어떤 경로는 트리
+	 * 상태를 갱신하고 어떤 경로는 안 하는 식으로 미묘하게 달랐다(§1-DE). 실패해도 Start 를 막지는 않는다 —
+	 * 콘솔은 관찰용이고, 못 붙었다는 사실만 로그로 남긴다.
+	 */
+	async primeRuntimeConsoleForStart(label = 'Start'): Promise<void> {
+		try {
+			const runtimeConsole = this.ensureRuntimeConsole();
+			runtimeConsole.primeForRuntimeStart();
+			await runtimeConsole.waitUntilReady(1200);
+			this.controllerTree?.setRuntimeConsoleStatus(runtimeConsole.getStatusSnapshot());
+		} catch (err: any) {
+			this.log(`[${label}] runtime console pre-start failed: ${err?.message ?? err}`);
+		}
+	}
+
 	// ── 연결 상태 반영 ───────────────────────────────────────────────────────────
 	updateUiContexts(connected: boolean): void {
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.connected', connected);

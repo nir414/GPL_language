@@ -37,6 +37,7 @@ import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord'
 import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
 import { isPathUnder } from '../util/pathKey';
 import { resolveProjectLibraryDirs } from '../project/projectSources';
+import { resolveRemoteProjectPath } from './remoteProjectPath';
 import { PROJECT_EXCLUDE_GLOB } from '../project/projectFileScope';
 
 export interface DeployOptions {
@@ -267,45 +268,22 @@ async function deployLocked(
         return compact.length > 260 ? `${compact.slice(0, 260)}…` : compact;
     };
 
+    /** 어느 원격 사본을 대상으로 삼을지 — 규칙은 controller/remoteProjectPath.ts 가 정본이다(§1-DE). */
     async function chooseRemoteProjectPath(projectFolderName: string): Promise<{
         basePath: string;
         projectPath: string;
         candidates: string[];
     }> {
-        const uniqueBasePaths = [...new Set([
-            cfg.ftpFlashProjectsPath,
-            cfg.ftpBasePath,
-        ].map(p => (p || '').trim()).filter(Boolean))];
-
-        const scored: Array<{ basePath: string; projectPath: string; exists: boolean; rank: number }> = [];
-        for (const basePath of uniqueBasePaths) {
-            const projectPath = `${basePath}/${projectFolderName}`;
-            let exists = false;
-            try {
-                const entries = await listRemoteDir(cfg.ip, basePath);
-                exists = entries.some(e => e.isDirectory && e.name.toLowerCase() === projectFolderName.toLowerCase());
-            } catch {
-                // ignore: probe failure means existence unknown
-            }
-
-            const rank = exists
-                ? (basePath === cfg.ftpFlashProjectsPath ? 300 : 200)
-                : (basePath === cfg.ftpFlashProjectsPath ? 120 : 100);
-            scored.push({ basePath, projectPath, exists, rank });
-        }
-
-        scored.sort((a, b) => b.rank - a.rank);
-        const chosen = scored[0] ?? {
-            basePath: cfg.ftpBasePath,
-            projectPath: `${cfg.ftpBasePath}/${projectFolderName}`,
-            exists: false,
-            rank: 0,
-        };
-
+        const choice = await resolveRemoteProjectPath({
+            projectFolderName,
+            flashBasePath: cfg.ftpFlashProjectsPath,
+            gplBasePath: cfg.ftpBasePath,
+            listDir: base => listRemoteDir(cfg.ip, base),
+        });
         return {
-            basePath: chosen.basePath,
-            projectPath: chosen.projectPath,
-            candidates: scored.map(s => s.projectPath),
+            basePath: choice.basePath,
+            projectPath: choice.projectPath,
+            candidates: choice.candidates.map(c => c.projectPath),
         };
     }
 

@@ -20,6 +20,7 @@ import {
 	removeRemoteFile,
 } from '../controller/ftpClient';
 import { NO_STATUS_CODE, SHOW_THREAD_LIST_CMD, parseThreadList } from '../controller/responseParser';
+import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../controller/remoteProjectPath';
 import { forgetSyncManifest } from '../controller/syncManifest';
 import { describeThreadActivity } from '../controller/threadActivity';
 import { stopAllThreads, stopThreadWithRecovery } from './controllerOps';
@@ -283,61 +284,26 @@ export function activateFtpCommands(host: ExtensionHost): void {
 
 			outputChannel.show(true);
 
-			const resolveFtpRunPath = async (): Promise<{
-				loadPath: string;
-				basePath: string;
-				candidates: string[];
-				switched: boolean;
-			}> => {
-				const configuredBases = [
-					cfg.ftpFlashProjectsPath,
-					cfg.ftpBasePath,
-					path.posix.dirname(loadPath),
-				];
-				const uniqueBases = [...new Set(configuredBases
-					.map(p => (p || '').replace(/\/+$/, ''))
-					.filter(Boolean))];
-
-				const scored: Array<{ basePath: string; projectPath: string; exists: boolean; rank: number }> = [];
-				for (const basePath of uniqueBases) {
-					const projectPath = `${basePath}/${name}`;
-					let exists = false;
-					try {
-						const entries = await listRemoteDir(cfg.ip, basePath);
-						exists = entries.some(e => e.isDirectory && e.name.toLowerCase() === name.toLowerCase());
-					} catch {
-						// Probe failure leaves the path as a candidate, but not a confirmed one.
-					}
-
-					const isSelected = projectPath.toLowerCase() === loadPath.toLowerCase();
-					const isFlash = basePath.toLowerCase() === cfg.ftpFlashProjectsPath.toLowerCase();
-					const rank = (exists ? 200 : 0) + (isFlash ? 80 : 0) + (isSelected ? 20 : 0);
-					scored.push({ basePath, projectPath, exists, rank });
-				}
-
-				scored.sort((a, b) => b.rank - a.rank);
-				const chosen = scored[0] ?? {
-					basePath: path.posix.dirname(loadPath),
-					projectPath: loadPath,
-					exists: false,
-					rank: 0,
-				};
-				return {
-					loadPath: chosen.projectPath,
-					basePath: chosen.basePath,
-					candidates: scored.map(s => `${s.projectPath}${s.exists ? ' (exists)' : ''}`),
-					switched: chosen.projectPath.toLowerCase() !== loadPath.toLowerCase(),
-				};
-			};
+			// 어느 원격 사본을 실행할지 — 규칙은 controller/remoteProjectPath.ts 가 정본이다(§1-DE).
+			// 종전에는 이 파일과 배포 경로가 각자 점수식을 갖고 있어 같은 프로젝트에 다른 폴더를 고를 수 있었다.
+			const resolveFtpRunPath = () => resolveRemoteProjectPath({
+				projectFolderName: name,
+				flashBasePath: cfg.ftpFlashProjectsPath,
+				gplBasePath: cfg.ftpBasePath,
+				// 사용자가 트리에서 고른 노드의 상위 폴더도 후보에 넣는다(설정 밖 경로일 수 있다).
+				extraBasePaths: [path.posix.dirname(loadPath)],
+				selectedPath: loadPath,
+				listDir: base => listRemoteDir(cfg.ip, base),
+			});
 
 			const resolvedPath = await resolveFtpRunPath();
-			const effectiveLoadPath = resolvedPath.loadPath;
+			const effectiveLoadPath = resolvedPath.projectPath;
 
 			host.log('');
 			host.log(`━━ [FTP Run v${EXTENSION_VERSION}] ${name} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 			host.log(`│ Note: FTP Run uses the uploaded controller copy at ${effectiveLoadPath}`);
 			host.log(`│       Local edits are NOT uploaded here. Use GPL: Deploy (Build Only) to verify latest local code.`);
-			host.log(`│ Path candidates: ${resolvedPath.candidates.join(' | ') || effectiveLoadPath}`);
+			host.log(`│ Path candidates: ${describeRemotePathCandidates(resolvedPath.candidates).join(' | ') || effectiveLoadPath}`);
 			if (resolvedPath.switched) {
 				host.log(`│ Path selected: ${loadPath} → ${effectiveLoadPath}`);
 			}
@@ -441,10 +407,8 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				host.clearCompileStale(name);
 				deployDiagnostics.clear();
 
-				// 2) 콘솔 자동 시작/재연결 (Start 직전 블라인드 구간 완화)
-				const console = host.ensureRuntimeConsole();
-				console.primeForRuntimeStart();
-				await console.waitUntilReady(1200);
+				// 2) 콘솔 자동 시작/재연결 (Start 직전 블라인드 구간 완화) — 배포 경로와 같은 절차(§1-DE).
+				await host.primeRuntimeConsoleForStart('FTP Run');
 				consoleChannel.show(true);
 
 				// 3) Start — 명령 조립은 buildStartCommand 하나만 쓴다(종전에는 여기만 `-event` 가 빠져 있었다).

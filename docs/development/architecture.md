@@ -119,20 +119,21 @@ flowchart BT
 ### 3.2 용어 — 이 구조를 부르는 표준 이름
 
 여기서 한 일에는 업계 표준 명칭이 있다. 검색·문서화·외부 자료 대조를 위해 **영문 원어를 함께** 적어 둔다
-(한국어 번역이 갈리는 항목은 아래에 표기했다).
+(한국어 번역이 갈리는 항목은 표 아래에 밝혔다). 저장소 문서·주석은 이 표기를 쓴다.
 
-| 영문 | 한국어 | 이 저장소에서 무엇을 가리키나 |
-| --- | --- | --- |
-| Anti-Corruption Layer (ACL) | 손상 방지 계층 | 제어기(1402)의 부실한 원시 명령을 우리 도메인 언어로 감싸는 `controller/` 절차 모듈들. **§3.1 이 말하는 것이 이것이다** |
-| Facade pattern | 퍼사드 패턴 | 여러 단계(전송·판정·폴링·재시도)를 호출 하나로 감춘 형태 |
-| Dependency Injection (DI) | 의존성 주입 | `send`/`log`/`sleep` 을 호출부가 넣어 주는 IO 인터페이스 |
-| Ports and Adapters / Hexagonal Architecture | 포트와 어댑터 / 육각형 아키텍처 | 순수 계층(포트) ↔ vscode·소켓 접착(어댑터)의 분리 — §2 계층표 전체 |
-| Humble Object pattern | 험블 오브젝트 패턴 | vscode 의존을 테스트 불가능한 얇은 껍질로 몰아내는 방식(`deployService` 의 UI 부분) |
-| Single Source of Truth (SSOT) | 단일 진실 공급원 | "정본" 이라고 쓰는 것 — 판정 규칙이 사는 단 한 곳 |
-| Don't Repeat Yourself (DRY) | 중복 배제 원칙 | 위를 요구하는 원칙 |
-| Consolidation refactoring | 통합 리팩터링 | 흩어진 사본을 정본 하나로 모으는 작업 자체(§1-DD·§1-DE) |
-| Implementation drift | 구현 편차 | 사본들이 시간이 지나며 조금씩 달라진 상태 — "이 기능 저 기능이 다르게 동작한다"의 정체 |
-| Mechanism / policy separation | 메커니즘과 정책의 분리 | 모듈은 관측 결과(`unconfirmed` 등)만 돌려주고, 그걸로 무엇을 할지는 호출부가 정하는 규약 |
+| 용어 | 이 저장소에서 무엇을 가리키나 |
+| --- | --- |
+| 손상 방지 계층 (ACL, Anti-Corruption Layer) | 제어기(1402)의 부실한 원시 명령을 우리 도메인 언어로 감싸는 `controller/` 절차 모듈들. **§3.1 이 말하는 것이 이것이다** |
+| 단일 진실 공급원 (SSOT, Single Source of Truth) | 이 저장소에서 "정본"이라고 쓰는 것 — 판정 규칙이 사는 단 한 곳 |
+| 중복 배제 원칙 (DRY, Don't Repeat Yourself) | 위를 요구하는 원칙 |
+| 의존성 주입 (DI, Dependency Injection) | `send`/`log`/`sleep` 을 호출부가 넣어 주는 IO 인터페이스 |
+| 포트와 어댑터 (Ports and Adapters) | 순수 계층이 정의한 인터페이스(포트) ↔ vscode·소켓 구현(어댑터)의 분리 |
+| 육각형 아키텍처 (Hexagonal Architecture) | 위 원칙을 아키텍처 전체에 적용한 형태 — §2 계층표가 그 그림이다 |
+| 퍼사드 패턴 (Facade Pattern) | 여러 단계(전송·판정·폴링·재시도)를 호출 하나로 감춘 형태 |
+| 중복 구현 통합 (Code Consolidation) | 흩어진 사본을 정본 하나로 모으는 작업 자체(§1-DD·§1-DE) |
+| 구현 편차 (Implementation Drift) | 사본들이 시간이 지나며 조금씩 달라진 상태 — "이 기능 저 기능이 다르게 동작한다"의 정체 |
+| 메커니즘과 정책의 분리 (Separation of Mechanism and Policy) | 모듈은 관측 결과(`unconfirmed` 등)만 돌려주고, 그걸로 무엇을 할지는 호출부가 정하는 규약 |
+| 험블 오브젝트 패턴 (Humble Object Pattern) | vscode 의존을 테스트 불가능한 얇은 껍질로 몰아내는 방식(`deployService` 의 UI 부분) |
 
 > **번역이 갈리는 항목**: Anti-Corruption Layer 는 Microsoft Learn 이 **손상 방지 계층**, 에릭 에반스 DDD
 > 번역서 계열이 **부패 방지 계층**을 쓴다. 이 저장소는 **손상 방지 계층**으로 통일한다.

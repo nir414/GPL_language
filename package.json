@@ -76,6 +76,7 @@
         "onCommand:gpl.ai.debug.disconnect",
         "onCommand:gpl.ai.debug.getConnectionState",
         "onCommand:gpl.automation.target",
+        "onCommand:gpl.automation.operations",
         "onUri",
         "onCommand:gpl.diagnosticSnapshot",
         "onDebugResolve:brooks-gpl"

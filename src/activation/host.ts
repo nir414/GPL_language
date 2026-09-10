@@ -62,6 +62,12 @@ export class ExtensionHost {
 	healthMonitor: ConnectionHealthMonitor | undefined;
 	healthProber: ConnectionHealthProber | undefined;
 	isDebugSessionActive = false;
+	/**
+	 * 살아 있는 `brooks-gpl` 디버그 세션 핸들 — `vscode.debug.activeDebugSession` 은 사용자가 다른 세션에
+	 * 포커스를 두면 우리 세션이 아니게 되므로, 종료시킬 대상은 시작/종료 이벤트로 직접 붙잡아 둔다
+	 * (제어기 연결 해제가 이 세션을 끝내야 1402 폴이 멎고 소켓이 실제로 비워진다).
+	 */
+	gplDebugSession: vscode.DebugSession | undefined;
 	lastDeploySnapshot: SituationDeploySnapshot | undefined;
 	/** 디버그 어댑터가 gpl.sourceStale 이벤트로 알린 "소스가 제어기 컴파일 코드보다 새로움" 상태(GitHub #21). */
 	lastSourceStale: { projectName: string; files: string[]; compiledAt?: number } | undefined;
@@ -119,6 +125,14 @@ export class ExtensionHost {
 	/** 현재 배포 잠금 보유자(이 창·다른 창·살아 있는 다른 프로세스). 없으면 undefined. */
 	currentDeployLockHolder(): DeployLockRecord | undefined {
 		return getDeployLock(getControllerConfig().ip).current()?.record;
+	}
+
+	/**
+	 * 보유자와 함께 **이 프로세스의 것인지**(local)까지 — 같은 창의 다른 작업과 다른 창의 작업은 대응이 다르다(§7.3).
+	 * 응답에 실어 보내면 호출자가 "기다릴 일인지, 내 쪽 겹침인지"를 문장 해석 없이 안다.
+	 */
+	currentDeployLockOwnership(): { record: DeployLockRecord; local: boolean } | undefined {
+		return getDeployLock(getControllerConfig().ip).current();
 	}
 
 	/** 배포 잠금 보유 중 경고 — 누가·어느 단계·언제부터인지 함께 보여 준다(이슈 #15). */

@@ -21,7 +21,9 @@ import { sendCommandDetailed, trySendCommand, getControllerConfig, ControllerCon
 import { uploadProject, mirrorProject, listRemoteDir, removeRemoteFiles, RemoteFileRef } from './ftpClient';
 import { getSyncManifest, mergeSyncManifest, recordSyncManifest } from './syncManifest';
 import { parseStatus, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus } from './responseParser';
-import { describeThreadActivity } from './threadActivity';
+import type { ThreadInfo } from './responseParser';
+import { describeThreadActivity, isSettledState } from './threadActivity';
+import { createFileSourceLookup, diagnoseStuckThread } from './threadStuckDiagnosis';
 import {
     STOP_ALL_CMD,
     probeThreads,
@@ -33,6 +35,7 @@ import { compileProject, loadProject, startProject, unloadProject } from './proj
 import type { CompileAttempt, ProjectCommandIo } from './projectCommands';
 import { isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
+import { beginOperation, findActiveByIdempotencyKey, sweepOperations, OperationHandle, OperationRecord } from './operationStore';
 import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord';
 import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
 import { isPathUnder } from '../util/pathKey';
@@ -125,11 +128,27 @@ export interface DeployOptions {
      * ('autoOnSave Quick Compile' / 'Quick Compile' / 'Deploy').
      */
     lockOwner?: string;
+    // ── 작업 기록(operationStore.ts, 개선안 §8~§11) ──────────────────────────
+    /**
+     * 이 배포에 붙일 작업 종류 라벨('DEPLOY'/'QUICK_COMPILE'/'UPLOAD_START'). 생략하면 옵션에서 유추한다.
+     * 기록 자체는 항상 남긴다 — 사람이 UI 로 시작한 배포도 MCP 가 진행 상황을 읽을 수 있어야 하기 때문이다.
+     */
+    operationType?: string;
+    /**
+     * 같은 키로 들어온 요청은 **새 배포를 시작하지 않는다**(§10). 브리지 타임아웃 뒤의 재시도가 두 번째
+     * 배포를 일으키는 것을 막는다. 진행 중인 같은 키의 작업이 있으면 failedPhase 'IN_PROGRESS' 로 돌아온다.
+     */
+    idempotencyKey?: string;
+    /** 이 배포를 수행하는 확장 인스턴스(§4) — 기록·잠금 레코드에 남는다. */
+    extensionInstanceId?: string;
+    /** 이 배포를 일으킨 브리지 요청 id — 로그 상관용(§23). */
+    requestId?: string;
 }
 
 /** 배포 단계/결과 분류. 실패 단계뿐 아니라 LOCKED·AUTO_GATE·COMPILE_DEFERRED 같은 "중단" 결과도 담는다. */
 export type DeployPhase =
     | 'LOCKED'            // 배포 잠금을 다른 배포/창/프로세스가 보유 중 — 제어기를 건드리지 않음
+    | 'IN_PROGRESS'       // 같은 idempotencyKey 의 배포가 이미 진행 중 — 새로 시작하지 않음(§10)
     | 'AUTO_GATE'         // autoOnSave: /GPL 폴더 없음 등으로 업로드 전 스킵
     | 'UPLOAD'
     | 'STOP'
@@ -167,6 +186,15 @@ export interface DeployResult {
     /** failedPhase === 'LOCKED'일 때 잠금 보유자(경고 문구용) */
     lockHolder?: DeployLockRecord;
     /**
+     * 잠금 보유자가 **이 프로세스**인가(§7.3). 같은 창의 다른 배포와 다른 창/프로세스의 배포는 대응이 다르다 —
+     * 전자는 내 코드가 겹쳐 부른 것이고 후자는 기다리면 풀린다.
+     */
+    lockHolderIsLocal?: boolean;
+    /** 이 배포의 작업 기록 id(operationStore.ts). 타임아웃 뒤 결과 조회의 열쇠다(§8·§11). */
+    operationId?: string;
+    /** failedPhase === 'IN_PROGRESS' 일 때 이미 진행 중인 작업(§10). */
+    existingOperation?: OperationRecord;
+    /**
      * Compile 성공 시 기록한 컴파일 스냅샷의 파일 수(GitHub #21, deployRecord.recordCompiled).
      * 기록에 실패했거나 컴파일까지 가지 못했으면 undefined. 배포 성공/실패 판정과는 무관한 보조 정보.
      */
@@ -187,13 +215,28 @@ function emptyResult(): DeployResult {
 }
 
 /** 배포 잠금 보유 중이라 시작하지 못했을 때의 결과(호출측 사전 검사에서도 재사용). */
-export function makeLockedResult(holder: DeployLockRecord): DeployResult {
+export function makeLockedResult(holder: DeployLockRecord, isLocal?: boolean): DeployResult {
     return {
         ...emptyResult(),
         failedPhase: 'LOCKED',
         failedCommand: 'DeployLock acquire',
         failedStatusMessage: `배포가 이미 진행 중입니다 (${describeDeployLock(holder)})`,
         lockHolder: holder,
+        ...(isLocal === undefined ? {} : { lockHolderIsLocal: isLocal }),
+        // 보유자가 작업 기록을 남겼으면 그 id 를 함께 준다 — 막힌 쪽이 진행 상황을 조회할 수 있게(§7.2).
+        ...(holder.operationId ? { operationId: holder.operationId } : {}),
+    };
+}
+
+/** 같은 키의 배포가 이미 돌고 있어 새로 시작하지 않았을 때의 결과(§10). */
+function makeInProgressResult(existing: OperationRecord): DeployResult {
+    return {
+        ...emptyResult(),
+        failedPhase: 'IN_PROGRESS',
+        failedCommand: 'Operation idempotency check',
+        failedStatusMessage: `같은 요청의 배포가 이미 진행 중입니다 (${existing.operationId}, ${existing.phase})`,
+        operationId: existing.operationId,
+        existingOperation: existing,
     };
 }
 
@@ -202,6 +245,29 @@ function defaultLockOwner(options: DeployOptions): string {
     if (options.skipStop) { return 'Quick Compile'; }
     if (options.skipCompile && !options.skipStart) { return 'Upload & Start'; }
     return options.skipStart ? 'Deploy' : 'Deploy & Run';
+}
+
+function defaultOperationType(options: DeployOptions): string {
+    if (options.operationType) { return options.operationType; }
+    if ((options.changedFiles ?? []).length > 0) { return 'AUTO_QUICK_COMPILE'; }
+    if (options.skipStop) { return 'QUICK_COMPILE'; }
+    if (options.skipCompile && !options.skipStart) { return 'UPLOAD_START'; }
+    return 'DEPLOY';
+}
+
+/**
+ * 배포 잠금 핸들에 작업 기록을 얹는다 — `lock.setStage()` 한 번으로 잠금 단계와 작업 phase 가 함께 움직인다.
+ * (단계 갱신 지점이 배포 본문 곳곳에 있으므로, 각 지점을 고치는 대신 핸들을 감싸 한 곳에서 연결한다.)
+ */
+function withOperationPhase(lock: DeployLockHandle, op: OperationHandle | undefined): DeployLockHandle {
+    if (!op) { return lock; }
+    return {
+        get record() { return lock.record; },
+        get released() { return lock.released; },
+        setStage(stage: string) { lock.setStage(stage); op.setPhase(stage); },
+        heartbeat() { lock.heartbeat(); op.heartbeat(); },
+        release() { lock.release(); },
+    };
 }
 
 /**
@@ -221,21 +287,97 @@ export async function deploy(
 ): Promise<DeployResult> {
     const cfg: ControllerConfig = { ...getControllerConfig(), ...controllerOverride };
     const owner = options.lockOwner ?? defaultLockOwner(options);
-    const acquired = getDeployLock(cfg.ip).acquire(owner, 'PREPARE');
-    if (!acquired.ok) {
-        output.appendLine(`[Lock] 배포 잠금 획득 실패 — ${describeDeployLock(acquired.holder)}${acquired.local ? '' : ' (다른 창/프로세스)'}`);
-        return makeLockedResult(acquired.holder);
+
+    // ① 멱등 검사 — 같은 키의 배포가 이미 돌고 있으면 두 번째를 만들지 않는다(§10).
+    //    브리지 타임아웃 뒤의 재시도가 중복 배포가 되던 경로를 여기서 끊는다.
+    if (options.idempotencyKey) {
+        const existing = findActiveByIdempotencyKey(options.idempotencyKey);
+        if (existing) {
+            output.appendLine(`[Op] 같은 요청이 진행 중이라 새 배포를 시작하지 않습니다 — ${existing.operationId} (${existing.phase})`);
+            return makeInProgressResult(existing);
+        }
     }
+
+    // ② 잠금. 작업 기록을 먼저 만들어 두어야 잠금 레코드에 operationId 를 실을 수 있다(§7.2).
+    const operation = beginOperation({
+        type: defaultOperationType(options),
+        controllerId: cfg.ip,
+        extensionInstanceId: options.extensionInstanceId,
+        projectDir: options.projectDir,
+        idempotencyKey: options.idempotencyKey,
+        requestId: options.requestId,
+        phase: 'LOCK_WAIT',
+    });
+    const acquired = getDeployLock(cfg.ip).acquire(owner, 'PREPARE', {
+        operationId: operation.operationId,
+        extensionInstanceId: options.extensionInstanceId,
+        projectDir: options.projectDir,
+    });
+    if (!acquired.ok) {
+        output.appendLine(`[Lock] 배포 잠금 획득 실패 — ${describeDeployLock(acquired.holder)}${acquired.local ? ' (이 창의 다른 작업)' : ' (다른 창/프로세스)'}`);
+        operation.fail({
+            code: acquired.local ? 'LOCK_HELD_BY_OTHER_OPERATION' : 'LOCK_HELD_BY_OTHER_OPERATION',
+            message: `배포 잠금 보유 중: ${describeDeployLock(acquired.holder)}`,
+            retryable: true,
+            // 다른 작업이 잡고 있다 — 우회하거나 되풀이하지 말고 그 작업의 결과를 확인할 것(§16).
+            retryMode: 'CHECK_OPERATION',
+            safeToRepeat: true,
+        });
+        return makeLockedResult(acquired.holder, acquired.local);
+    }
+    operation.setPhase('PREPARE');
     // autoOnSave는 저장마다 도니 잠금 로그로 채널을 채우지 않는다.
     const quiet = !!options.autoGate;
     const startedAt = Date.now();
-    if (!quiet) { output.appendLine(`[Lock] 배포 잠금 획득: ${owner} (pid ${process.pid})`); }
+    if (!quiet) { output.appendLine(`[Lock] 배포 잠금 획득: ${owner} (pid ${process.pid}, ${operation.operationId})`); }
+    let result: DeployResult | undefined;
     try {
-        return await deployLocked(options, output, diagnosticCollection, token, cfg, acquired.handle);
+        result = await deployLocked(options, output, diagnosticCollection, token, cfg, withOperationPhase(acquired.handle, operation));
+        result.operationId = operation.operationId;
+        return result;
     } finally {
         acquired.handle.release();
+        // ③ 결과를 남긴다 — 잠금은 사라져도 기록은 남아야 타임아웃 뒤에 결과를 되찾을 수 있다(§18 "Result Persist").
+        finishOperation(operation, result);
+        sweepOperations();
         if (!quiet) { output.appendLine(`[Lock] 배포 잠금 해제: ${owner} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`); }
     }
+}
+
+/** 배포 결과를 작업 기록에 확정한다. 예외로 빠져나간 경우(result 없음)도 FAILED 로 닫는다. */
+function finishOperation(operation: OperationHandle, result: DeployResult | undefined): void {
+    if (operation.finished) { return; }
+    if (!result) {
+        operation.fail({
+            code: 'OPERATION_FAILED',
+            message: '배포가 예외로 중단됐습니다(결과 없음).',
+            retryable: true,
+            retryMode: 'CHECK_OPERATION',
+            safeToRepeat: false,
+        });
+        return;
+    }
+    const summary: Record<string, unknown> = {
+        success: result.success,
+        projectName: result.projectName,
+        compileErrorCount: result.compileErrors.length,
+        ...(result.uploadStats ? { uploadStats: result.uploadStats } : {}),
+        ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
+        ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),
+    };
+    if (result.projectName) { operation.describeTarget({ projectName: result.projectName }); }
+    if (result.success) {
+        operation.complete(summary);
+        return;
+    }
+    operation.fail({
+        code: result.failedPhase ? `DEPLOY_${result.failedPhase}` : 'OPERATION_FAILED',
+        message: result.failedStatusMessage ?? `배포가 ${result.failedPhase ?? '알 수 없는 단계'} 에서 중단됐습니다.`,
+        retryable: result.failedPhase !== 'COMPILE',   // 컴파일 에러는 소스를 고쳐야 한다 — 되풀이해도 같은 결과다
+        retryMode: result.failedPhase === 'COMPILE' ? 'NONE' : 'RETRY_SAME_REQUEST',
+        // 업로드/Compile 은 제어기 상태를 바꾼다 — 같은 요청을 그대로 되풀이해도 되는지는 단계에 달렸다.
+        safeToRepeat: result.failedPhase === 'LOCKED' || result.failedPhase === 'AUTO_GATE' || result.failedPhase === 'IN_PROGRESS',
+    }, summary);
 }
 
 async function deployLocked(
@@ -494,6 +636,25 @@ async function deployLocked(
      */
     const probeActiveThreads = (): Promise<ThreadProbe | null> => probeThreads(threadStopIo);
 
+    /**
+     * 정지 게이트가 실패했을 때 "왜 안 멈추는지"를 읽기 전용으로 캐서 트레이스에 남긴다(§3, 2026-09-10).
+     * 실패 한 줄만 남기면 사용자가 매번 손으로 `Show Thread` → 소스 열기 → 호출 대상 찾기를 반복해야 한다.
+     * 복구 명령은 **만들어 보여 주기만** 하고 보내지 않는다 — 대상 식별이 정적 분석이라 확인이 필요하다.
+     */
+    async function traceStuckDiagnosis(threads: ThreadInfo[] | undefined): Promise<void> {
+        const active = (threads ?? []).filter(t => !isSettledState(t.state));
+        if (active.length === 0) { return; }
+        const lookup = createFileSourceLookup([options.projectDir]);
+        // 여러 개가 걸려 있어도 두 개까지만 — 진단마다 샘플링 시간이 든다.
+        for (const t of active.slice(0, 2)) {
+            try {
+                await diagnoseStuckThread(threadStopIo, t.name, lookup, { logPrefix: '│ ', sampleCount: 3 });
+            } catch (e: any) {
+                pushTrace(`│ ⚠ 정지 불가 진단 실패(무시): ${e?.message ?? e}`);
+            }
+        }
+    }
+
     /** Stop -all → 정지 완료 게이트(재시도 포함). 실패 사유는 result 에 옮겨 적는다. true 면 계속 진행 가능. */
     async function stopAllAndSettle(): Promise<boolean> {
         const outcome = await runStopAllAndSettle(threadStopIo, threadStopOpts);
@@ -501,6 +662,7 @@ async function deployLocked(
         if (outcome.cancelled) { return false; }
         if (outcome.settle && !outcome.settle.settled) {
             pushTrace('│   → 정지 미완료 상태에서 Compile/Start를 보내지 않고 중단합니다.');
+            await traceStuckDiagnosis(outcome.settle.threads);
         }
         result.failedPhase = 'STOP';
         result.failedCommand = outcome.failure?.command ?? STOP_ALL_CMD;
@@ -1230,17 +1392,21 @@ export function resolveErrorFilePath(file: string, projectDir: string): string {
  * 첫 번째 컴파일 에러 위치로 포커스·커서를 이동하고 Problems 패널을 표시한다.
  * (수동 Deploy/Quick Compile과 디버그 F5 배포 경로 공통 UX.
  *  설정 gpl.deploy.jumpToFirstError로 토글, 기본 켜짐.)
+ *
+ * 반환값은 **패널을 Problems 로 전환했는지**다. 호출측은 이 값이 true 면 출력 채널을
+ * `show()` 하지 않아야 한다 — 그러지 않으면 나중에 도착한 출력 패널 표시가 Problems 를
+ * 덮어써서, 에러 줄로 점프해 놓고도 패널은 출력으로 되돌아간다(§1-DH).
  */
 export async function jumpToFirstCompileError(
     errors: CompileError[],
     projectDir: string,
     logError: (message: string) => void
-): Promise<void> {
-    if (errors.length === 0) { return; }
+): Promise<boolean> {
+    if (errors.length === 0) { return false; }
     const jumpEnabled = vscode.workspace
         .getConfiguration('gpl')
         .get<boolean>('deploy.jumpToFirstError', true);
-    if (!jumpEnabled) { return; }
+    if (!jumpEnabled) { return false; }
 
     const first = errors[0];
     // Problems 패널 명령은 키보드 포커스를 패널로 가져가므로 편집기 점프보다
@@ -1259,6 +1425,8 @@ export async function jumpToFirstCompileError(
     } catch (jumpErr: any) {
         logError(`첫 에러 파일 열기 실패: ${jumpErr?.message ?? jumpErr}`);
     }
+    // 편집기 점프가 실패해도 Problems 패널 전환은 이미 일어났으므로 true 다.
+    return true;
 }
 
 /**

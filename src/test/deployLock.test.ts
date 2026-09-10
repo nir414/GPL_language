@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from './harness';
-import { DeployLock, DeployLockRecord, describeDeployLock, deployLockFileName, DEPLOY_LOCK_STALE_MS } from '../controller/deployLock';
+import { DeployLock, DeployLockRecord, describeDeployLock, deployLockFileName, DEPLOY_LOCK_STALE_MS, DEPLOY_LOCK_VERSION } from '../controller/deployLock';
 
 /** 테스트 전용 임시 디렉터리 + 주입 가능한 시계/pid/생존 판정. */
 function makeEnv(overrides: { pid?: number; alive?: Set<number>; startAt?: number } = {}) {
@@ -45,10 +45,40 @@ test('deployLock: 획득하면 파일에 owner/stage/pid가 기록되고 current
         assert.strictEqual(raw.owner, 'Deploy');
         assert.strictEqual(raw.stage, 'PREPARE');
         assert.strictEqual(raw.pid, 1001);
-        assert.strictEqual(raw.version, 1);
+        assert.strictEqual(raw.version, DEPLOY_LOCK_VERSION);
         const cur = lock.current();
         assert.ok(cur && cur.local);
         assert.strictEqual(cur!.record.owner, 'Deploy');
+    } finally { t.cleanup(); }
+});
+
+test('deployLock: v2 — 작업 식별 정보(operationId/인스턴스/폴더)를 함께 기록한다', () => {
+    const t = makeEnv();
+    try {
+        const lock = new DeployLock('10.0.0.1', t.env);
+        const r = lock.acquire('Deploy', 'PREPARE', {
+            operationId: 'deploy-1-2-3',
+            extensionInstanceId: 'win-a',
+            projectDir: 'C:/ws/MergeCode',
+        });
+        assert.ok(r.ok);
+        const raw = t.readRaw();
+        assert.strictEqual(raw.operationId, 'deploy-1-2-3');
+        assert.strictEqual(raw.extensionInstanceId, 'win-a');
+        assert.strictEqual(raw.projectDir, 'C:/ws/MergeCode');
+        // 다시 읽어도 같은 값이 온다 — 잠금에 막힌 쪽이 그 작업의 결과를 조회할 수 있어야 한다(§7.2).
+        assert.strictEqual(lock.current()!.record.operationId, 'deploy-1-2-3');
+    } finally { t.cleanup(); }
+});
+
+test('deployLock: 식별 정보를 주지 않으면 필드를 만들지 않는다(구버전 레코드와 같은 모양)', () => {
+    const t = makeEnv();
+    try {
+        const lock = new DeployLock('10.0.0.1', t.env);
+        assert.ok(lock.acquire('Deploy', 'PREPARE').ok);
+        const raw = t.readRaw();
+        assert.strictEqual('operationId' in raw, false);
+        assert.strictEqual('projectDir' in raw, false);
     } finally { t.cleanup(); }
 });
 

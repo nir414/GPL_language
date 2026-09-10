@@ -22,7 +22,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-export const DEPLOY_LOCK_VERSION = 1;
+/**
+ * v2(2026-09-10 개선안 §7.2): 레코드에 **무슨 작업인지**를 담는다(operationId·extensionInstanceId·projectDir).
+ * 종전에는 owner/stage/pid 뿐이라 "누가 왜 잡고 있는지"를 사람이 문장으로 읽을 수만 있었고, 잠금에 막힌 호출자가
+ * 그 작업의 결과를 조회할 방법이 없었다 — 이제 operationId 로 `operationStore` 의 기록을 바로 찾을 수 있다.
+ * 읽는 쪽은 모르는 필드를 무시하고 version 도 검사하지 않으므로 구버전과 섞여도 안전하다.
+ */
+export const DEPLOY_LOCK_VERSION = 2;
 /** heartbeat가 이 시간 이상 갱신되지 않으면 보유자가 죽은 것으로 본다. */
 export const DEPLOY_LOCK_STALE_MS = 30_000;
 /** 보유 중 heartbeat 갱신 주기. STALE_MS보다 충분히 짧아야 한다. */
@@ -41,6 +47,19 @@ export interface DeployLockRecord {
 	heartbeat: number;
 	pid: number;
 	host: string;
+	/** 이 잠금을 잡은 작업(operationStore.ts). 잠금에 막힌 쪽이 결과를 조회할 열쇠다(§7.2). */
+	operationId?: string;
+	/** 잠금을 잡은 확장 인스턴스(§4) — 어느 VS Code 창인지. */
+	extensionInstanceId?: string;
+	/** 대상 프로젝트 폴더(§3.1 canonical identity). */
+	projectDir?: string;
+}
+
+/** 잠금 레코드에 함께 남길 작업 식별 정보(§7.2). 전부 선택 사항 — 모르면 생략한다. */
+export interface DeployLockContext {
+	operationId?: string;
+	extensionInstanceId?: string;
+	projectDir?: string;
 }
 
 export interface DeployLockHandle {
@@ -146,7 +165,7 @@ export class DeployLock {
 	 * 잠금 획득. 이미 보유 중(이 프로세스/다른 프로세스)이면 보유자 정보를 돌려준다.
 	 * stale(죽은 pid·heartbeat 만료·이 프로세스의 잔재)이면 지우고 1회 재시도한다.
 	 */
-	acquire(owner: string, stage: string): DeployLockAcquireResult {
+	acquire(owner: string, stage: string, context: DeployLockContext = {}): DeployLockAcquireResult {
 		if (this.local && !this.local.released) {
 			return { ok: false, holder: this.local.record, local: true };
 		}
@@ -161,6 +180,9 @@ export class DeployLock {
 				heartbeat: this.now(),
 				pid: this.pid,
 				host: this.host,
+				...(context.operationId ? { operationId: context.operationId } : {}),
+				...(context.extensionInstanceId ? { extensionInstanceId: context.extensionInstanceId } : {}),
+				...(context.projectDir ? { projectDir: context.projectDir } : {}),
 			};
 			let fd: number | undefined;
 			try {
@@ -269,6 +291,9 @@ export class DeployLock {
 						heartbeat: typeof parsed.heartbeat === 'number' ? parsed.heartbeat : parsed.since,
 						pid: typeof parsed.pid === 'number' ? parsed.pid : -1,
 						host: typeof parsed.host === 'string' ? parsed.host : '',
+						...(typeof parsed.operationId === 'string' ? { operationId: parsed.operationId } : {}),
+						...(typeof parsed.extensionInstanceId === 'string' ? { extensionInstanceId: parsed.extensionInstanceId } : {}),
+						...(typeof parsed.projectDir === 'string' ? { projectDir: parsed.projectDir } : {}),
 					},
 				};
 			}

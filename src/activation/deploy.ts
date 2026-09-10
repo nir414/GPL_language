@@ -17,6 +17,7 @@ import { mirrorProject } from '../controller/ftpClient';
 import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
 import { buildTargetCandidates, pickProjectDir, readGprProjectName } from '../controller/projectPicker';
 import { normalizeDirKey } from '../util/pathKey';
+import { activeOperations, listOperations, readOperation } from '../controller/operationStore';
 import {
 	describeCandidates,
 	describeResolution,
@@ -59,6 +60,11 @@ export type QuickDeployOpts = {
 	preStartSettleCheck?: boolean;
 	/** 배포 트레이스 머리에 남길 메모(TEST 조합 이름 등). 동작에는 영향 없음. */
 	modeNote?: string;
+	/**
+	 * 같은 키의 배포가 진행 중이면 새로 시작하지 않는다(개선안 §10). 자동화 호출자(MCP)가 넘긴다 —
+	 * 브리지 응답 대기가 끊긴 뒤의 재시도가 두 번째 배포를 만드는 것을 막는다.
+	 */
+	idempotencyKey?: string;
 };
 
 export function activateDeployCommands(host: ExtensionHost): DeployApi {
@@ -72,8 +78,9 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	 * 여기서는 이미 잡혀 있으면 컨텍스트와 함께 경고하고 바로 끝낸다. 결과는 호출측(autoOnSave 재예약, Start 전 Compile)이 쓴다.
 	 */
 	async function runDeploy(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<DeployResult | undefined> {
-		const holder = host.currentDeployLockHolder();
-		if (holder) {
+		const owned = host.currentDeployLockOwnership();
+		if (owned) {
+			const { record: holder, local } = owned;
 			if (quickOpts?.changedFiles?.length) {
 				host.log(`[QuickCompile] autoOnSave 대기 — 배포 잠금 보유 중 (${describeDeployLock(holder)})`);
 			} else {
@@ -83,7 +90,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 					'완료 후 다시 시도하세요',
 				);
 			}
-			return makeLockedResult(holder);
+			return makeLockedResult(holder, local);
 		}
 		return runDeployCore(skipStart, quickOpts);
 	}
@@ -216,6 +223,9 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				skipUnchanged: quickOpts?.skipUnchanged,
 				changedFiles: quickOpts?.changedFiles,
 				autoGate: quickOpts?.autoGate,
+				// 작업 기록(operationStore.ts) — 어느 창의 무슨 작업인지 남겨 타임아웃 뒤에도 결과를 조회할 수 있게(§8·§23).
+				idempotencyKey: quickOpts?.idempotencyKey,
+				extensionInstanceId: host.extensionInstanceId,
 				// 배포 잠금 레코드의 owner — 다른 창/MCP가 "누가 잡고 있는지" 볼 수 있게 경로별로 구분.
 				lockOwner: quickOpts?.changedFiles?.length
 					? 'autoOnSave Quick Compile'
@@ -377,7 +387,8 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			} else {
 				logErrorLogSections();
 				logCompileRawSection();
-				outputChannel.show(true);
+				// 출력 패널 표시는 아래에서 결정한다 — 컴파일 에러로 Problems 패널로 점프하는 경우엔
+				// 출력을 함께 띄우면 패널이 다시 출력으로 되돌아간다(§1-DH).
 				if (result.uploadStats) {
 					// 업로드는 됐고 Compile이 실패 — 컴파일본은 이전 상태이므로 Start 전 확인 대상.
 					host.markCompileStale(
@@ -397,9 +408,13 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.failedPhase ?? 'FAIL' });
 				// 실패 문구·검증 불가 사유·마지막 단계는 controller/deployOutcome.ts 의 순수 규칙이 정한다(테스트 대상).
 				const failure = describeDeployFailure(result, sysErrors, comparisonNote);
-				if (failure.jumpToCompileErrors) {
-					await jumpToFirstCompileError(result.compileErrors, projectDir,
+				// 소스 줄에 붙는 컴파일 에러면 Problems 패널 + 에러 줄로 보내고, 그 외(제어기 시스템 에러 등
+				// 코드 위치가 없는 실패)에만 출력 패널을 띄운다.
+				const jumpedToError = failure.jumpToCompileErrors
+					&& await jumpToFirstCompileError(result.compileErrors, projectDir,
 						msg => outputChannel.appendLine(`[Deploy] ${msg}`));
+				if (!jumpedToError) {
+					outputChannel.show(true);
 				}
 
 				vscode.window.showErrorMessage(`배포 실패: ${failure.message}`);
@@ -460,6 +475,11 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		confirmStart?: boolean;
 		/** Start 계열 — "컴파일 검증 필요" 상태여도 그대로 Start 한다. */
 		ignoreCompileStale?: boolean;
+		/**
+		 * 같은 키의 배포가 진행 중이면 새로 시작하지 않고 그 작업을 가리켜 돌려준다(개선안 §10).
+		 * 브리지 응답이 끊긴 뒤 호출자가 같은 요청을 다시 보내도 중복 배포가 되지 않게 하는 장치다.
+		 */
+		idempotencyKey?: string;
 	}
 
 	type AutomationErrorCode =
@@ -592,7 +612,14 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		if (isAutomationFailure(target)) { return target; }
 		const dirty = await handleDirtyForAutomation(target.dir, args, label);
 		if (dirty) { return dirty; }
-		return runDeploy(skipStart, { ...opts, overrideProjectDir: target.dir, nonInteractive: true });
+		return runDeploy(skipStart, {
+			...opts,
+			overrideProjectDir: target.dir,
+			nonInteractive: true,
+			// 호출자가 키를 주지 않으면 (명령 + 대상 폴더)로 만든다 — 같은 대상에 같은 종류의 배포가
+			// 겹쳐 들어오는 것이 막으려는 상황이므로, 키가 없다고 중복 방지가 꺼지면 안 된다(§10).
+			idempotencyKey: args.idempotencyKey ?? `${label}:${normalizeDirKey(target.dir)}`,
+		});
 	}
 
 	/**
@@ -629,6 +656,40 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				hint: current
 					? '이 대상이 인자 없는 자동화 호출에 쓰입니다. 다른 프로젝트를 쓰려면 그 호출에 project/projectDir 를 직접 주세요.'
 					: '고정된 대상이 없습니다 — 자동화 호출은 실행 가능 프로젝트가 유일하거나 설정 기본값이 있을 때만 자동 결정되고, 그 밖에는 PROJECT_AMBIGUOUS 를 돌려줍니다.',
+			};
+		})
+	);
+
+	/**
+	 * `gpl.automation.operations` — 장시간 작업(배포·컴파일)의 진행/결과 조회 (개선안 §8·§11·§21).
+	 *
+	 * 브리지 응답 대기가 끊겨도 작업 자체는 계속 진행되고 결과는 파일에 남는다. 호출자는 같은 작업을
+	 * 다시 실행하는 대신 여기서 상태를 확인한다 — `UNKNOWN` 은 실패가 아니라 **결과 미확정**이다.
+	 * 읽기 전용이며 제어기를 건드리지 않는다.
+	 */
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.automation.operations', async (args?: unknown) => {
+			const a = (typeof args === 'object' && args !== null ? args : {}) as { operationId?: string; activeOnly?: boolean; limit?: number };
+			const controllerId = getControllerConfig().ip;
+			if (a.operationId) {
+				const rec = readOperation(a.operationId);
+				return rec
+					? { ok: true, operation: rec }
+					: {
+						ok: false,
+						error: 'OPERATION_UNKNOWN',
+						detail: `작업 '${a.operationId}' 기록이 없습니다(오래돼 정리됐거나 id 가 다릅니다). `
+							+ '기록이 없다는 것은 실패했다는 뜻이 아닙니다 — 제어기 상태를 관측해 판단하세요.',
+					};
+			}
+			const all = a.activeOnly === true ? activeOperations({ controllerId }) : listOperations({ controllerId });
+			return {
+				ok: true,
+				controllerId,
+				extensionInstanceId: host.extensionInstanceId,
+				count: all.length,
+				operations: all.slice(0, Math.max(1, Math.min(a.limit ?? 20, 100))),
+				deployLock: host.currentDeployLockOwnership() ?? null,
 			};
 		})
 	);

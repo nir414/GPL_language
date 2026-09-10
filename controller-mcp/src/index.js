@@ -55,6 +55,7 @@ import {
   isRetrySafeCommand,
   BRIDGE_COMMAND_ID_PATTERN,
 } from './extensionBridge.js';
+import { listOperations, readOperation, describeOperation, operationRecovery } from './operations.js';
 import { runBatch, normalizeCommandInput, BATCH_MAX } from './batch.js';
 import { aiBlockedResult, AI_BLOCKED_COMMANDS } from './aiPolicy.js';
 import { SERVER_INSTRUCTIONS, DOC_COMMENT_GUIDE } from './guidelines.js';
@@ -1050,8 +1051,9 @@ tool('deploy_project',
     confirmStart: z.boolean().optional().describe('upload-start 전용 — 사용자에게 실행 확인을 이미 받았음을 단언'),
     ignoreCompileStale: z.boolean().optional().describe('컴파일 미검증 상태여도 진행'),
     timeoutMs: z.number().int().min(5000).max(600000).optional().describe('확장 명령 응답 대기(ms, 기본 240000 — 업로드+컴파일은 오래 걸린다)'),
+    idempotencyKey: z.string().optional().describe('같은 키의 배포가 진행 중이면 새로 시작하지 않는다. 생략하면 (명령+대상 폴더)로 자동 생성'),
   },
-  async ({ mode, project, projectDir, projectFile, saveDirty, confirmStart, ignoreCompileStale, timeoutMs }) => {
+  async ({ mode, project, projectDir, projectFile, saveDirty, confirmStart, ignoreCompileStale, timeoutMs, idempotencyKey }) => {
     const m = mode ?? 'build';
     const command = m === 'quick' ? 'gpl.quickCompile' : m === 'upload-start' ? 'gpl.uploadStart' : 'gpl.deploy';
     const args = {
@@ -1063,6 +1065,9 @@ tool('deploy_project',
       saveDirty: saveDirty === true ? true : undefined,
       confirmStart: confirmStart === true ? true : undefined,
       ignoreCompileStale: ignoreCompileStale === true ? true : undefined,
+      // 같은 키의 배포가 이미 돌고 있으면 확장이 두 번째를 시작하지 않는다(§10). 키를 주지 않으면
+      // 확장이 (명령 + 대상 폴더)로 만든다 — 여기서 굳이 무작위 키를 만들면 중복 방지가 꺼진다.
+      idempotencyKey: idempotencyKey ?? undefined,
     };
     if (!args.project && !args.projectDir && !args.projectFile) {
       // 대상 키가 하나도 없으면 확장이 "자동화 인자"로 인식하지 못해 대화형 경로로 간다 — projectDir 자리에 빈 값을
@@ -1103,6 +1108,28 @@ tool('deploy_project',
         hint: 'extension_status 로 확장 브리지를 확인할 것. 확장 없이는 파일 업로드가 불가하다(1402 콘솔은 Compile/Start 만 가능).',
       });
     }
+    // 응답 대기가 끊긴 경우 — 확장이 이미 요청을 집어 갔다면 배포는 **계속 진행 중**이다.
+    // 종전에는 여기서 결과가 사라져 AI 가 같은 배포를 다시 보내거나 "실패"로 보고했다(§9·§16).
+    if (!res?.ok && res?.error === 'bridge-timeout') {
+      const running = listOperations({ controllerId: HOST }).find(
+        (r) => (r.state === 'RUNNING' || r.state === 'QUEUED') && (!args.projectDir || r.projectDir === args.projectDir),
+      );
+      return textResult({
+        ok: false,
+        mode: m,
+        command,
+        error: 'BRIDGE_REQUEST_TIMEOUT',
+        detail: res.detail,
+        sent: res.sent === true,
+        requestId: res.requestId ?? null,
+        operationId: running?.operationId ?? null,
+        operation: running ? { state: running.state, phase: running.phase, summary: describeOperation(running) } : null,
+        recovery: res.sent === false
+          ? { action: 'RETRY_SAME_REQUEST', retryCurrentCommand: true, detail: '확장이 요청을 집어 가지 않아 실행되지 않았다 — 같은 요청을 다시 보내도 안전하다.' }
+          : { action: 'CHECK_OPERATION', retryCurrentCommand: false, detail: '배포는 진행 중이다. **다시 배포하지 말고** operation_status 로 결과를 확인할 것.' },
+        transport: transportInfo(),
+      });
+    }
     const out = deployOutcome(m, command, res);
     if (out.ok) {
       // 성공한 대상만 세션에 고정한다 — 실패(PROJECT_AMBIGUOUS 등)는 대상을 바꾸지 않는다(§3.2).
@@ -1111,6 +1138,56 @@ tool('deploy_project',
       setSessionTarget(name, { dir: args.projectDir ?? sessionTarget?.dir ?? null, verified: true, via: 'deploy' });
     }
     return textResult({ ...out, targetSent: args, extensionInstanceId: instanceId ?? null, transport: transportInfo() });
+  });
+
+tool('operation_status',
+  '배포·컴파일 같은 **장시간 작업의 진행 상황과 결과**를 확인한다(2026-09-10 개선안 §8·§11). ' +
+  '`deploy_project` 응답 대기가 끊겼을 때 **같은 배포를 다시 보내지 말고 이 도구로 확인할 것** — 확장은 계속 진행 중이고 ' +
+  '결과는 파일에 남는다(이 서버가 재시작돼도 조회된다). operationId 를 생략하면 최근 작업 목록. ' +
+  '`state`: RUNNING(진행 중) · COMPLETED · FAILED · CANCELLED · **UNKNOWN**. ' +
+  '**UNKNOWN 은 실패가 아니라 결과 미확정이다**(작업하던 프로세스의 생존 신호가 끊김) — 자동 재실행 금지, ' +
+  'recovery.action 을 따를 것.',
+  {
+    operationId: z.string().optional().describe('조회할 작업 id(deploy_project 응답의 operationId)'),
+    activeOnly: z.boolean().optional().describe('true면 진행 중인 것만'),
+    limit: z.number().int().min(1).max(100).optional().describe('목록 개수(기본 10)'),
+  },
+  async ({ operationId, activeOnly, limit }) => {
+    if (operationId) {
+      const rec = readOperation(operationId);
+      if (!rec) {
+        return textResult({
+          ok: false,
+          error: 'OPERATION_UNKNOWN',
+          operationId,
+          detail: `작업 '${operationId}' 기록이 없다(오래돼 정리됐거나 id 가 다르다). 기록이 없다는 것은 실패했다는 뜻이 아니다.`,
+          recovery: { action: 'CHECK_OPERATION', retryCurrentCommand: false, detail: 'operation_status 를 인자 없이 불러 최근 작업 목록을 확인하거나, show_threads 로 제어기 상태를 관측할 것.' },
+        });
+      }
+      return textResult({ ok: true, operation: rec, summary: describeOperation(rec), recovery: operationRecovery(rec) });
+    }
+    const all = listOperations({ controllerId: HOST }).filter((r) => activeOnly !== true || r.state === 'RUNNING' || r.state === 'QUEUED');
+    const shown = all.slice(0, limit ?? 10);
+    return textResult({
+      ok: true,
+      controllerId: HOST,
+      count: all.length,
+      operations: shown.map((r) => ({
+        operationId: r.operationId,
+        type: r.type,
+        state: r.state,
+        phase: r.phase,
+        projectName: r.projectName ?? null,
+        projectDir: r.projectDir ?? null,
+        extensionInstanceId: r.extensionInstanceId ?? null,
+        createdAt: r.createdAt,
+        finishedAt: r.finishedAt ?? null,
+        summary: describeOperation(r),
+      })),
+      hint: shown.some((r) => r.state === 'RUNNING')
+        ? '진행 중인 작업이 있다 — 새 배포를 보내면 배포 잠금에 막힌다. 끝날 때까지 이 도구로 확인할 것.'
+        : '진행 중인 작업이 없다.',
+    });
   });
 
 // ── 컴파일/실행 ───────────────────────────────────────────────────────────

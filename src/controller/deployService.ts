@@ -37,6 +37,8 @@ import { isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCo
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
 import { beginOperation, findActiveByIdempotencyKey, sweepOperations, OperationHandle, OperationRecord } from './operationStore';
 import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord';
+import { compareProvenance, describeProvenance } from './deployProvenance';
+import type { ProvenanceReport } from './deployProvenance';
 import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
 import { isPathUnder } from '../util/pathKey';
 import { resolveProjectLibraryDirs } from '../project/projectSources';
@@ -192,6 +194,11 @@ export interface DeployResult {
     lockHolderIsLocal?: boolean;
     /** 이 배포의 작업 기록 id(operationStore.ts). 타임아웃 뒤 결과 조회의 열쇠다(§8·§11). */
     operationId?: string;
+    /**
+     * 배포 증적(§12·§13) — "올린 것 == 지금 로컬 소스"인지의 대조 결과. 업로드까지 간 경로에서만 채워진다.
+     * Compile 성공과는 **다른 질문**에 답한다: 방금 고친 파일이 실제로 올라갔는가.
+     */
+    provenance?: ProvenanceReport;
     /** failedPhase === 'IN_PROGRESS' 일 때 이미 진행 중인 작업(§10). */
     existingOperation?: OperationRecord;
     /**
@@ -364,6 +371,18 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         ...(result.uploadStats ? { uploadStats: result.uploadStats } : {}),
         ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
         ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),
+        // 증적을 기록에 함께 남긴다 — 타임아웃 뒤 결과 조회에서도 "올린 것이 내 소스인가"를 알 수 있게(§12).
+        ...(result.provenance ? {
+            provenance: {
+                inSync: result.provenance.inSync,
+                localRevision: result.provenance.localRevision,
+                uploadedRevision: result.provenance.uploadedRevision,
+                changedSinceUpload: result.provenance.changedSinceUpload,
+                notUploaded: result.provenance.notUploaded,
+                fileCount: result.provenance.fileCount,
+                verifiedBy: result.provenance.verifiedBy,
+            },
+        } : {}),
     };
     if (result.projectName) { operation.describeTarget({ projectName: result.projectName }); }
     if (result.success) {
@@ -890,6 +909,25 @@ async function deployLocked(
         if (result.uploadStats) { result.uploadStats.deleted = deleted; }
         if (deleted < pendingDeletes.length) {
             pushTrace(`│ ⚠ 삭제 실패 ${pendingDeletes.length - deleted}개 (non-fatal — 남은 파일은 Compile 결과로 드러남)`);
+        }
+    }
+
+    // ── 배포 증적 대조 (개선안 §12·§13) ──
+    // 업로드가 끝난 시점에 "지금 로컬 소스"와 "우리가 이 원격 경로에 올린 내용"의 지문을 맞춰 본다.
+    // Compile 성공만으로는 **방금 고친 파일이 올라갔는지**를 알 수 없다 — 그 답을 결과에 싣는다.
+    // 대조 실패는 배포를 막지 않는다(보조 정보) — 판정은 여전히 각 명령의 STATUS 다(§0 하드 규칙 2).
+    if (ftpProjectDir) {
+        try {
+            result.provenance = compareProvenance({
+                local: snapshotProjectFiles(options.projectDir),
+                uploaded: getSyncManifest(cfg.ip, ftpProjectDir),
+            });
+            pushTrace(`│ 증적: ${describeProvenance(result.provenance)}`);
+            for (const rel of result.provenance.changedSinceUpload.slice(0, 5)) {
+                pushTrace(`│ ⚠ 올린 뒤 변경됨(업로드 안 된 편집분일 수 있음): ${rel}`);
+            }
+        } catch (err: any) {
+            pushTrace(`│ 증적 대조 생략 — ${err?.message ?? err}`);
         }
     }
 

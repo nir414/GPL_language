@@ -27,6 +27,8 @@ import './referenceSyntax.test';
 import './gplReservedWords.test';
 import './deployLock.test';
 import './operationStore.test';
+import './deployProvenance.test';
+import './automationRecovery.test';
 import './trafficResponseBody.test';
 import './deployRecord.test';
 import './ftpRefreshThrottle.test';

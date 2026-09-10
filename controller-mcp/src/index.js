@@ -1028,10 +1028,60 @@ function deployOutcome(mode, command, res) {
   }
   const r = res.result;
   // 확장이 UI 없이 돌려주는 구조화 실패 — 그대로 전달한다(사용자에게 클릭을 요구하지 않기 위한 설계).
+  // 확장이 recovery 를 실어 주면 그대로 올라간다(확장 automationRecovery.ts 가 정본).
   if (r && typeof r === 'object' && r.ok === false && typeof r.error === 'string') {
     return { ok: false, mode, command, ...r, ms: res.ms };
   }
+  // 배포는 끝까지 갔지만 중간 단계에서 멈춘 경우 — DeployResult 는 `ok` 필드가 없고 success/failedPhase 로 말한다.
+  // 그것을 그대로 넘기면 호출자가 "명령은 성공했다"로 오독하므로 여기서 단계별 복구 지시로 번역한다(§16·§17).
+  if (r && typeof r === 'object' && r.success === false && typeof r.failedPhase === 'string') {
+    return {
+      ok: false,
+      mode,
+      command,
+      error: `DEPLOY_${r.failedPhase}`,
+      detail: r.failedStatusMessage ?? `배포가 ${r.failedPhase} 단계에서 중단됐다.`,
+      failedPhase: r.failedPhase,
+      operationId: r.operationId ?? null,
+      lockHolder: r.lockHolder ?? null,
+      lockHolderIsLocal: r.lockHolderIsLocal ?? null,
+      compileErrors: r.compileErrors ?? [],
+      provenance: r.provenance ?? null,
+      recovery: deployPhaseRecovery(r.failedPhase),
+      result: r,
+      ms: res.ms,
+    };
+  }
   return { ok: true, mode, command, result: r ?? null, ms: res.ms };
+}
+
+/**
+ * 배포 단계별 복구 지시 — 확장 `controller/automationRecovery.ts` 의 표와 **같은 결론**을 유지할 것.
+ * (확장을 거치지 않는 응답 경로에서도 같은 지시를 줘야 호출자가 경로마다 다르게 행동하지 않는다.)
+ */
+function deployPhaseRecovery(failedPhase) {
+  switch (failedPhase) {
+    case 'LOCKED':
+      return { action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: true, detail: '다른 배포가 진행 중이다(제어기에 아무것도 보내지 않았다). **다른 명령으로 우회하지 말고** operation_status 로 그 작업을 확인한 뒤 끝나고 다시 보낼 것.' };
+    case 'IN_PROGRESS':
+      return { action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: true, detail: '같은 요청의 배포가 이미 돌고 있다. operationId 로 결과를 확인할 것 — 다시 보내도 같은 응답이 온다.' };
+    case 'COMPILE':
+      return { action: 'NONE', retryCurrentCommand: false, safeToRepeat: false, detail: '컴파일 에러다. compileErrors 의 위치를 고친 뒤 다시 배포할 것 — 되풀이해도 같은 결과다.' };
+    case 'COMPILE_DEFERRED':
+      return { action: 'NONE', retryCurrentCommand: false, safeToRepeat: true, detail: '업로드는 끝났고 쓰레드가 있어 Compile 만 보류됐다. 쓰레드를 정지한 뒤 컴파일할 것 — 다시 업로드할 필요는 없다.' };
+    case 'THREAD_CHECK':
+      return { action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true, detail: '실행 중인 쓰레드가 있어 Compile 을 보내지 않았다(업로드는 끝났다). 정지해도 되는지 사용자에게 확인할 것.' };
+    case 'AUTO_GATE':
+      return { action: 'NONE', retryCurrentCommand: false, safeToRepeat: true, detail: '자동 게이트 조건이 맞지 않아 업로드하지 않았다(제어기를 건드리지 않음). build 모드로 명시 배포할 것.' };
+    case 'UPLOAD':
+      return { action: 'RETRY_SAME_REQUEST', retryCurrentCommand: true, safeToRepeat: true, detail: '업로드 단계에서 중단됐다. 원인(FTP 연결·경로)을 확인한 뒤 같은 요청을 다시 보내도 된다.' };
+    case 'START':
+      return { action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: false, detail: 'Start 단계에서 중단됐다. **다시 Start 하지 말고** show_threads 로 상태를 먼저 관측할 것(이미 실행됐을 수 있다).' };
+    case 'STOP':
+      return { action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: false, detail: '정지 단계에서 중단됐다. 쓰레드 상태를 관측한 뒤 판단할 것 — -752 는 비치명이고 정지가 진행 중일 수 있다.' };
+    default:
+      return { action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: false, detail: '분류되지 않은 단계에서 중단됐다. 되풀이하기 전에 제어기·작업 상태를 관측할 것.' };
+  }
 }
 
 tool('deploy_project',
@@ -1138,6 +1188,54 @@ tool('deploy_project',
       setSessionTarget(name, { dir: args.projectDir ?? sessionTarget?.dir ?? null, verified: true, via: 'deploy' });
     }
     return textResult({ ...out, targetSent: args, extensionInstanceId: instanceId ?? null, transport: transportInfo() });
+  });
+
+tool('diagnostic_snapshot',
+  '자동화가 어긋났을 때 **관계 전체를 한 번에** 본다(2026-09-10 개선안 §22): 살아 있는 VS Code 창 목록 · 진행 중/최근 작업 · ' +
+  '배포 잠금 보유자 · 세션 대상 프로젝트 · 현재 전송 경로. **제어기에 명령을 보내지 않는다**(파일과 presence 만 읽는다) — ' +
+  '"왜 엉뚱한 프로젝트가 올라갔지", "왜 LOCKED 지"를 추측하지 말고 이것으로 확인할 것.',
+  {},
+  async () => {
+    const instances = listExtensionInstances(HOST, {});
+    const ops = listOperations({ controllerId: HOST });
+    const lock = readDeployLock(HOST);
+    const active = ops.filter((r) => r.state === 'RUNNING' || r.state === 'QUEUED');
+    return textResult({
+      ok: true,
+      controller: { id: HOST, port: PORT },
+      sessionTarget,
+      extensions: instances.map((p) => ({
+        extensionInstanceId: p.extensionInstanceId,
+        pid: p.pid,
+        workspace: p.workspace ?? null,
+        workspaceFolders: p.workspaceFolders ?? [],
+        connected: !!p.connected,
+        debugSessionActive: !!p.debugSessionActive,
+        leader: !!p.leader,
+      })),
+      deployLock: lock
+        ? {
+          owner: lock.owner,
+          stage: lock.stage,
+          pid: lock.pid,
+          host: lock.host,
+          // v2 레코드는 무슨 작업이 잡고 있는지까지 말해 준다(§7.2) — 구버전 레코드면 null 이다.
+          operationId: lock.operationId ?? null,
+          extensionInstanceId: lock.extensionInstanceId ?? null,
+          projectDir: lock.projectDir ?? null,
+          summary: describeDeployLock(lock),
+        }
+        : null,
+      activeOperations: active.map((r) => ({ operationId: r.operationId, type: r.type, state: r.state, phase: r.phase, projectDir: r.projectDir ?? null, extensionInstanceId: r.extensionInstanceId ?? null })),
+      recentOperations: ops.slice(0, 5).map((r) => ({ operationId: r.operationId, type: r.type, state: r.state, summary: describeOperation(r) })),
+      transport: transportInfo(),
+      reading: [
+        instances.length > 1 ? `창이 ${instances.length}개다 — 배포 대상 창을 extension_resolve 로 특정할 것.` : null,
+        lock && !lock.operationId ? '잠금 레코드가 구버전(작업 id 없음)이다 — 확장을 갱신하면 어느 작업이 잡고 있는지 보인다.' : null,
+        active.length > 0 ? `진행 중 작업 ${active.length}건 — 새 배포는 잠금에 막힌다. operation_status 로 확인할 것.` : null,
+        sessionTarget && !sessionTarget.verified ? '세션 대상이 워크스페이스에서 확인되지 않은 이름이다(확장 브리지 없이 고정됨).' : null,
+      ].filter(Boolean),
+    });
   });
 
 tool('operation_status',

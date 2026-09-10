@@ -18,6 +18,8 @@ import { checkProjectName, describeProjectNameProblem } from '../controller/proj
 import { buildTargetCandidates, pickProjectDir, readGprProjectName } from '../controller/projectPicker';
 import { normalizeDirKey } from '../util/pathKey';
 import { activeOperations, listOperations, readOperation } from '../controller/operationStore';
+import { recoveryFor } from '../controller/automationRecovery';
+import type { RecoveryHint } from '../controller/automationRecovery';
 import {
 	describeCandidates,
 	describeResolution,
@@ -494,10 +496,27 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		detail: string;
 		candidates?: TargetCandidateSummary[];
 		files?: string[];
+		/**
+		 * 다음에 무엇을 할지 — 호출자(AI/MCP)가 detail 문장을 해석해 행동을 지어내지 않게 한다(개선안 §15~§17).
+		 * 규칙은 `controller/automationRecovery.ts` 가 정본이며 코드마다 하나로 정해져 있다.
+		 */
+		recovery?: RecoveryHint;
 	}
 
 	function isAutomationFailure(v: unknown): v is AutomationFailure {
 		return typeof v === 'object' && v !== null && (v as AutomationFailure).ok === false && typeof (v as AutomationFailure).error === 'string';
+	}
+
+	/**
+	 * 자동화 실패를 만드는 유일한 지점 — 복구 지시를 빠뜨리지 않게 한다.
+	 * (코드마다의 지시는 `automationRecovery.ts` 표에 있고, 표에 없는 코드는 보수적인 기본값으로 떨어진다.)
+	 */
+	function automationFailure(
+		error: AutomationErrorCode,
+		detail: string,
+		extra: Omit<AutomationFailure, 'ok' | 'error' | 'detail' | 'recovery'> = {},
+	): AutomationFailure {
+		return { ok: false, error, detail, ...extra, recovery: recoveryFor(error) };
 	}
 
 	/** 설정 `gpl.controller.defaultProject` — 프로젝트명 또는 폴더명. 빈 문자열이면 없음. */
@@ -521,7 +540,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		});
 		if (!r.ok) {
 			host.log(`[Automation] ${label}: ${describeResolution(r)} · 후보: ${describeCandidates(r.candidates)}`);
-			return { ok: false, error: r.error, detail: r.detail, candidates: r.candidates };
+			return automationFailure(r.error, r.detail, { candidates: r.candidates });
 		}
 		automationTargetDir = r.dir;
 		host.log(`[Automation] ${label}: 대상 ${describeResolution(r)}`);
@@ -538,17 +557,16 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		const files = dirty.map(d => d.uri.fsPath);
 		if (!args.saveDirty) {
 			host.log(`[Automation] ${label}: 미저장 파일 ${files.length}개 — 업로드하지 않음 (saveDirty:true 로 저장 승인 가능)`);
-			return {
-				ok: false,
-				error: 'UNSAVED_FILES',
-				detail: `대상 프로젝트에 저장되지 않은 편집기 문서가 ${files.length}개 있습니다. 업로드는 디스크 내용을 올리므로 이전 내용이 올라갑니다. `
+			return automationFailure(
+				'UNSAVED_FILES',
+				`대상 프로젝트에 저장되지 않은 편집기 문서가 ${files.length}개 있습니다. 업로드는 디스크 내용을 올리므로 이전 내용이 올라갑니다. `
 					+ '사용자에게 저장을 요청하거나, 저장해도 된다면 `saveDirty: true` 로 다시 호출하세요.',
-				files,
-			};
+				{ files },
+			);
 		}
 		for (const doc of dirty) {
 			if (!(await doc.save())) {
-				return { ok: false, error: 'UNSAVED_FILES', detail: `파일 저장 실패: ${path.basename(doc.uri.fsPath)} — 업로드를 중단했습니다.`, files };
+				return automationFailure('UNSAVED_FILES', `파일 저장 실패: ${path.basename(doc.uri.fsPath)} — 업로드를 중단했습니다.`, { files });
 			}
 			quickCompilePendingFiles.delete(doc.uri.fsPath);
 		}
@@ -573,15 +591,14 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			return undefined;
 		}
 		host.log(`[Automation] ${label}: 모션 확인 미충족 — INTERACTIVE_UI_REQUIRED (모달을 띄우지 않음)`);
-		return {
-			ok: false,
-			error: 'INTERACTIVE_UI_REQUIRED',
-			detail: '이 명령은 로봇을 움직일 수 있는 Start 를 보내므로 사용자 확인이 필요합니다(설정 '
+		return automationFailure(
+			'INTERACTIVE_UI_REQUIRED',
+			'이 명령은 로봇을 움직일 수 있는 Start 를 보내므로 사용자 확인이 필요합니다(설정 '
 				+ '`gpl.controller.requireStartConfirmation`, 기본 켜짐). 비대화형 호출에서는 확인 모달을 띄우지 않습니다 — '
 				+ '사용자에게 실행 여부를 물어 확인을 받은 뒤 `confirmStart: true` 로 다시 호출하거나, 사용자가 VS Code 에서 '
 				+ '직접 실행하게 하세요. 이미 올라간 프로젝트를 그냥 돌리는 것이면 1402 `Start <project>`(MCP `start_project`)를 '
 				+ '쓰는 편이 낫습니다 — 확장 UI 경로를 거치지 않습니다.',
-		};
+		);
 	}
 
 	/**
@@ -592,13 +609,12 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		const stale = host.findCompileStale(projectName);
 		if (!stale || args.ignoreCompileStale === true) { return undefined; }
 		host.log(`[Automation] ${label}: 컴파일 미검증 — COMPILE_UNVERIFIED (${stale.reason})`);
-		return {
-			ok: false,
-			error: 'COMPILE_UNVERIFIED',
-			detail: `'${projectName}' 의 /GPL 소스가 아직 Compile 로 검증되지 않았습니다(사유: ${stale.reason}). `
+		return automationFailure(
+			'COMPILE_UNVERIFIED',
+			`'${projectName}' 의 /GPL 소스가 아직 Compile 로 검증되지 않았습니다(사유: ${stale.reason}). `
 				+ 'Start 는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start 가 실패하고 에러 위치가 Problems 에 오지 않습니다. '
 				+ '먼저 `gpl.quickCompile` 로 에러를 확인하거나, 그대로 진행하려면 `ignoreCompileStale: true` 로 다시 호출하세요.',
-		};
+		);
 	}
 
 	/** 배포 계열 자동화 진입 공통: 대상 해석 → 미저장 처리 → runDeploy. */
@@ -680,6 +696,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						error: 'OPERATION_UNKNOWN',
 						detail: `작업 '${a.operationId}' 기록이 없습니다(오래돼 정리됐거나 id 가 다릅니다). `
 							+ '기록이 없다는 것은 실패했다는 뜻이 아닙니다 — 제어기 상태를 관측해 판단하세요.',
+						recovery: recoveryFor('OPERATION_UNKNOWN'),
 					};
 			}
 			const all = a.activeOnly === true ? activeOperations({ controllerId }) : listOperations({ controllerId });
@@ -839,7 +856,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				if (!nameCheck.ok) {
 					const reason = describeProjectNameProblem(projectName, gprName ? 'project' : 'folder', nameCheck);
 					host.log(`[Automation] gpl.start 중단: ${reason}`);
-					return { ok: false, error: 'PROJECT_NOT_FOUND', detail: reason } as AutomationFailure;
+					return automationFailure('PROJECT_NOT_FOUND', reason);
 				}
 			} else if (!host.ensureProjectNameSafe(projectName, gprName ? 'project' : 'folder', 'Start')) {
 				return undefined;
@@ -913,7 +930,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				const blocked = findAiBlockedCommand('gpl.saveToFlash')!;
 				const detail = aiBlockedDetail(blocked);
 				host.log(`[SaveToFlash] 자동화 호출 거부 — ${detail}`);
-				return { ok: false, error: AI_BLOCKED_ERROR, detail } satisfies AutomationFailure;
+				return automationFailure(AI_BLOCKED_ERROR, detail);
 			}
 			const busy = host.currentDeployLockHolder();
 			if (busy) {

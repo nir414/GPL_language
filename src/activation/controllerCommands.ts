@@ -13,7 +13,6 @@ import {
 	sendCommandDetailed,
 	setTrafficResponseBodyEnabled,
 } from '../controller/controllerConnection';
-import { isBusyStatus } from '../controller/controllerStatusCodes';
 import {
 	SHOW_THREAD_LIST_CMD,
 	extractErrorCodeFromEntry,
@@ -24,7 +23,7 @@ import {
 	parseStatus,
 	parseThreadList,
 } from '../controller/responseParser';
-import { sendCommandWithBusyRetry, showRuntimeConsoleUserMessage, trySoftEStopRecovery, verifyAllStopped } from './controllerOps';
+import { showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 async function normalizeControllerCommandInput(rawCommand: string): Promise<string | undefined> {
@@ -228,14 +227,17 @@ export function activateControllerCommands(host: ExtensionHost): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.stopAll', async () => {
 			try {
-				const stopResp = await sendCommandWithBusyRetry(host, 'Stop -all', { maxAttempts: 5, baseDelayMs: 500 });
-				const status = parseStatus(stopResp);
-				if (status.code !== 0 && !isBusyStatus(status.code)) {
-					vscode.window.showErrorMessage(`전체 정지 실패: STATUS ${status.code} ${status.message}`);
+				// 전송·STATUS 판정·정지 확인 폴링·자동 재시도는 controller/threadStop.ts 가 한다(§1-DD).
+				// -752(정지 진행 중)는 실패가 아니라는 판정도 그 안에 있다 — 여기서는 결과만 사용자에게 옮긴다.
+				const outcome = await stopAllThreads(host, { logTo: line => host.log(`[Stop] ${line}`) });
+				if (outcome.send.kind === 'failed') {
+					const code = outcome.send.statusCode;
+					vscode.window.showErrorMessage(`전체 정지 실패: ${code === undefined ? '' : `STATUS ${code} `}${outcome.send.message}`);
 					return;
 				}
 
-				const stopped = await verifyAllStopped(host, 8);
+				// 확인 불가(Show Thread 무응답)는 "정지됨"으로 단정하지 않는다 — SoftEStop 안내 경로로 보낸다.
+				const stopped = outcome.ok && outcome.settle?.unconfirmed !== true;
 				if (stopped) {
 					vscode.window.showWarningMessage('전체 정지 완료 (Stop -all)');
 				} else {

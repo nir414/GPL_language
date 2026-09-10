@@ -41,6 +41,8 @@ import { deploy, findProjectDirs, jumpToFirstCompileError } from '../controller/
 import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
 import { gprPathInDir, resolveGprSourcePaths, resolveProjectLibraryDirs, walkTree } from '../project/projectSources';
 import { getDeployLock, describeDeployLock } from '../controller/deployLock';
+import { stopAllAndSettle } from '../controller/threadStop';
+import type { ThreadStopIo } from '../controller/threadStop';
 import {
     parseThreadList,
     parseThreadDetail,
@@ -859,9 +861,11 @@ export class GPLDebugSession extends LoggingDebugSession {
 
             if (this._stopAllOnDisconnect) {
                 // stopAllOnDisconnect=true: 디버거 분리 시 제어기 측 프로그램도 정지한다.
-                const stopResp = await this._sendCmd('Stop -all');
-                const okStop = /<STATUS>\s*0\s*,/.test(stopResp || '');
-                this._log(okStop ? '프로젝트 정지 완료 (Stop -all)' : 'Stop -all 전송(응답 STATUS 확인 필요)');
+                // STATUS 0 은 "정지 요청 접수"일 뿐이므로 정지 완료까지 확인한다(§0.6, controller/threadStop.ts).
+                const outcome = await stopAllAndSettle(this._threadStopIo());
+                this._log(outcome.ok
+                    ? `프로젝트 정지 완료 (Stop -all)${outcome.settle?.unconfirmed ? ' — Show Thread 무응답으로 확인은 못 함' : ''}`
+                    : `Stop -all 후에도 정지가 확인되지 않았습니다 — ${outcome.failure?.message ?? '사유 미상'}`);
             } else {
                 // 기본: Disconnect는 "VS Code 디버그 세션 종료"일 뿐 제어기 측 프로젝트 실행은 그대로 둔다.
                 // 명시적으로 중지하려면 launch 구성에 stopAllOnDisconnect=true 를 주거나
@@ -4943,18 +4947,34 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
+     * 전체 정지 절차(controller/threadStop.ts)에 이 세션의 전송·로그를 물린다.
+     *
+     * 종전에는 `Stop -all` 을 한 번 보내고 **응답 문자열이 있기만 하면** "완료"로 로그했다 — STATUS 도
+     * 정지 완료도 보지 않아 §0.6 위반이었다(2026-09-10 §1-DD 조사). 이제 배포·패널·FTP 와 같은 절차를 쓴다.
+     */
+    private _threadStopIo(): ThreadStopIo {
+        return {
+            send: async (command) => {
+                const raw = await this._sendCmd(command);
+                return raw === null ? null : { raw };
+            },
+            log: line => this._log(line),
+            sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+        };
+    }
+
+    /**
      * Preflight for stable debugging sessions.
      */
     private async _runAttachPreflight(stopAll: boolean, clearProjectBps: boolean): Promise<void> {
         if (!this._isConnected) { return; }
 
         if (stopAll) {
-            const stopResp = await this._sendCmd('Stop -all');
-            if (stopResp) {
-                this._log('attach preflight: Stop -all 완료');
-            } else {
-                this._log('attach preflight: Stop -all 실패(계속 진행)');
-            }
+            // 정지 확인까지 마친 뒤에 BP 정리·attach 로 넘어간다(정지 미완료 상태의 Set Break 는 §0.6 밖이다).
+            const outcome = await stopAllAndSettle(this._threadStopIo(), { logPrefix: 'attach preflight: ' });
+            this._log(outcome.ok
+                ? `attach preflight: 전체 정지 확인${outcome.settle?.unconfirmed ? ' (Show Thread 무응답 — 확인 불가로 통과)' : ''}`
+                : `attach preflight: 전체 정지 실패(계속 진행) — ${outcome.failure?.message ?? '사유 미상'}`);
         }
 
         if (clearProjectBps && this._projectName) {

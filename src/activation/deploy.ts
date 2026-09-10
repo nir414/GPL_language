@@ -53,6 +53,12 @@ export interface DeployApi {
 export type QuickDeployOpts = {
 	skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[];
 	overrideProjectDir?: string; noStopPrompt?: boolean; autoGate?: boolean; skipCompile?: boolean; nonInteractive?: boolean;
+	/** 정지 완료를 확인한 뒤에 업로드한다(기본은 병행) — 업로드 스타트 경로. DeployOptions.stopBeforeUpload 주석 참조. */
+	stopBeforeUpload?: boolean;
+	/** Start 직전 정지 재확인(기본 true). false는 진단용 — TEST 경로에서만 쓴다. */
+	preStartSettleCheck?: boolean;
+	/** 배포 트레이스 머리에 남길 메모(TEST 조합 이름 등). 동작에는 영향 없음. */
+	modeNote?: string;
 };
 
 export function activateDeployCommands(host: ExtensionHost): DeployApi {
@@ -203,6 +209,10 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				skipStop: quickOpts?.skipStop,
 				// 업로드 스타트: Compile을 보내지 않는다 — 제어기의 Start가 자체 컴파일하므로(§0.7) 중복이다.
 				skipCompile: quickOpts?.skipCompile,
+				// 업로드 스타트: 정지 완료 → 업로드 → Start 순차. Stop 처리 중 같은 파일을 덮어쓰는 조합을 피한다.
+				stopBeforeUpload: quickOpts?.stopBeforeUpload,
+				preStartSettleCheck: quickOpts?.preStartSettleCheck,
+				modeNote: quickOpts?.modeNote,
 				skipUnchanged: quickOpts?.skipUnchanged,
 				changedFiles: quickOpts?.changedFiles,
 				autoGate: quickOpts?.autoGate,
@@ -310,8 +320,12 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 							'출력 보기',
 						);
 					} else {
+						// 완료 문구는 진행 로그와 같은 자리(GPL Language Support)에 남긴다 — 실행하지 않은 경로에서
+						// GPL Console(1403 런타임 출력)로 포커스를 뺏으면 방금 본 업로드/컴파일 로그가 사라진다
+						// (2026-09-10 사용자 지적). 1403 연결 자체는 위에서 이미 해 뒀다.
+						host.log(`[Deploy] ✔ 빌드 완료: ${result.projectName}${remotePathInfo} (FTP/컨텍스트 갱신 완료, Start 미실행)`);
 						vscode.window.showInformationMessage(`빌드 완료: ${result.projectName}${remotePathInfo} (FTP/컨텍스트 갱신 완료, Start 미실행)`);
-						consoleChannel.show(true);
+						outputChannel.show(true);
 					}
 					host.lastDeploySnapshot = makeDeploySnapshot({
 						mode: modeLabel,
@@ -648,7 +662,10 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	// Start 확인 모달·배포 잠금·프로젝트명 가드는 모두 기존 배포 경로와 동일하게 적용된다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.uploadStart', async (resource?: unknown) => {
-			const uploadStart = { skipCompile: true } as const;
+			// stopBeforeUpload: 정지 완료를 확인한 뒤 업로드한다(2026-09-10) — 기본 병행(UPLOAD ∥ STOP)은
+			// Stop -all 처리 중에 실행 파일을 FTP로 덮어쓰게 되고, 그 직후 Start까지 이어지는 이 경로에서
+			// 제어기가 응답을 잃는 현상이 보고됐다. 빠른 컴파일(Stop 없음)은 종전대로 병행이다.
+			const uploadStart = { skipCompile: true, stopBeforeUpload: true } as const;
 			if (isAutomationInvocation(resource)) {
 				// Start 를 보내는 경로 — 모션 확인 없이 자동으로 실행하지 않는다(하드 규칙 6).
 				const args = resource as AutomationTargetArgs;
@@ -662,6 +679,76 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				return runDeploy(false, { ...uploadStart, overrideProjectDir: dir });
 			}
 			return runDeploy(false, { ...uploadStart });
+		})
+	);
+
+	// gpl.uploadStart.test — 「업로드 스타트」의 안전장치 두 개를 하나씩 켜고 끄며 실기기에서 원인을 가려내는 진단 경로(§1-DC).
+	//
+	// 제어기가 응답을 잃던 원인 가설이 둘이고(㉠ Stop 처리 중 FTP 덮어쓰기 / ㉡ 정지 직후의 Start),
+	// 기본 경로는 둘 다 막아 놓았다. 그러면 "무엇이 실제 원인이었는지"를 알 수 없으므로, 조합을 골라
+	// 한 번에 하나씩만 되살려 볼 수 있게 한다. 고른 조합은 배포 트레이스 머리에 `⚗`로 남아 나중에 로그만
+	// 봐도 구분된다. **실기기에서는 저속/시뮬레이션으로만 실행할 것**(Start를 보낸다 — 하드 규칙 6).
+	type UploadStartTestCase = {
+		key: string;
+		label: string;
+		detail: string;
+		stopBeforeUpload: boolean;
+		preStartSettleCheck: boolean;
+	};
+	const uploadStartTestCases: UploadStartTestCase[] = [
+		{
+			key: 'A',
+			label: 'A. 변경 전 그대로 (두 안전장치 모두 끔)',
+			detail: '업로드 ∥ Stop 동시 진행 + Start 직전 재확인 없음 — 죽던 그 순서를 그대로 재현합니다.',
+			stopBeforeUpload: false,
+			preStartSettleCheck: false,
+		},
+		{
+			key: 'B',
+			label: 'B. 순차만 켬 (㉠ 차단 — 정지 확인 → 업로드)',
+			detail: 'Stop 처리 중 FTP 덮어쓰기만 막습니다. 여기서 안 죽으면 원인은 ㉠ 쪽입니다.',
+			stopBeforeUpload: true,
+			preStartSettleCheck: false,
+		},
+		{
+			key: 'C',
+			label: 'C. Start 직전 재확인만 켬 (㉡ 차단)',
+			detail: '업로드는 종전대로 병행하고 Start 직전에만 정지를 재확인합니다. 여기서 안 죽으면 원인은 ㉡ 쪽입니다.',
+			stopBeforeUpload: false,
+			preStartSettleCheck: true,
+		},
+		{
+			key: 'D',
+			label: 'D. 현재 기본값 (둘 다 켬)',
+			detail: '지금 「업로드 스타트」 버튼이 하는 것과 같습니다. 대조군으로 씁니다.',
+			stopBeforeUpload: true,
+			preStartSettleCheck: true,
+		},
+	];
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.uploadStart.test', async (resource?: unknown) => {
+			const picked = await vscode.window.showQuickPick(
+				uploadStartTestCases.map(c => ({ label: c.label, detail: c.detail, test: c })),
+				{
+					title: '업로드 스타트 — 시퀀스 조합 선택 (진단용)',
+					placeHolder: '되살릴 조합을 고르세요. 실기기라면 저속/시뮬레이션에서만 실행하세요.',
+					ignoreFocusOut: true,
+				},
+			);
+			if (!picked) { return undefined; }
+			const test = picked.test;
+			host.log(`[UploadStart TEST] ${test.label} (stopBeforeUpload=${test.stopBeforeUpload}, preStartSettleCheck=${test.preStartSettleCheck})`);
+			const opts: QuickDeployOpts = {
+				skipCompile: true,
+				stopBeforeUpload: test.stopBeforeUpload,
+				preStartSettleCheck: test.preStartSettleCheck,
+				modeNote: `TEST ${test.key} — 정지→업로드 순차 ${test.stopBeforeUpload ? '켬' : '끔'} / Start 직전 재확인 ${test.preStartSettleCheck ? '켬' : '끔'}`,
+			};
+			const dir = resource instanceof vscode.Uri
+				? await pickWorkspaceProjectDir('업로드 후 시작할 프로젝트를 선택하세요', resource)
+				: undefined;
+			if (resource instanceof vscode.Uri && !dir) { return undefined; }
+			return runDeploy(false, dir ? { ...opts, overrideProjectDir: dir } : opts);
 		})
 	);
 

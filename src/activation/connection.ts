@@ -391,51 +391,67 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		})
 	);
 
+	/**
+	 * launch.json 없이 즉석 구성으로 디버그 세션을 연다 — `gpl.debug.attachNow`(배포 포함)와
+	 * `gpl.debug.attachOnly`(배포 없이 붙기)의 공통 본체.
+	 *
+	 * 두 명령의 차이는 `deployBeforeAttach` 하나뿐이다. 배포를 포함하면 attach 전에 업로드+Compile이
+	 * 돌고, 활성 쓰레드가 있으면 "Stop -all 하고 계속할까요?" 모달이 뜬다 — 즉 **이미 Start 해 둔
+	 * 프로그램에 붙는 용도로는 쓸 수 없다**(승인하면 그 프로그램이 멈춘다). 그 흐름(빠른 컴파일 →
+	 * Start → 붙기)을 위해 배포 없는 경로를 따로 둔다 (2026-09-10).
+	 */
+	async function startQuickAttachSession(opts: { deployBeforeAttach: boolean }): Promise<void> {
+		// 중복 세션 방지: 이미 brooks-gpl 세션이 살아있으면 사용자에게 처리 방식 선택을 요청
+		const existing = vscode.debug.activeDebugSession;
+		const hasGplSession = existing?.type === 'brooks-gpl';
+		if (hasGplSession) {
+			const pick = await vscode.window.showWarningMessage(
+				'GPL 디버그 세션이 이미 실행 중입니다.',
+				{ modal: false },
+				'기존 세션 유지',
+				'중단하고 다시 시작',
+			);
+			if (pick === '기존 세션 유지' || pick === undefined) {
+				return;
+			}
+			// 중단하고 다시 시작
+			try {
+				await vscode.debug.stopDebugging(existing);
+				// 세션 정리 시간을 짧게 대기 (DAP terminated 이벤트 처리)
+				await new Promise(r => setTimeout(r, 400));
+			} catch {
+				// 무시: stopDebugging이 실패해도 새 세션 시작은 시도
+			}
+		}
+
+		const cfg = getControllerConfig();
+		const projectName = await host.project.resolveExpectedProjectName();
+		const launchInfo = host.project.readLaunchControllerInfo();
+		const label = opts.deployBeforeAttach ? 'GPL Quick Attach' : 'GPL Attach Only';
+
+		const dynamicConfig: vscode.DebugConfiguration = {
+			type: 'brooks-gpl',
+			request: 'attach',
+			name: projectName ? `${label} (${projectName})` : label,
+			controllerIp: launchInfo?.ip || cfg.ip,
+			controllerPort: launchInfo?.port || cfg.port,
+			projectName,
+			deployBeforeAttach: opts.deployBeforeAttach,
+			// 붙기만 하는 경로에서는 실행 중인 프로그램을 건드리지 않는다 — Stop 도 Start 도 보내지 않는다.
+			// (제어기 쪽 잔재 브레이크포인트 정리는 세션 기본값 clearProjectBreakpointsOnAttach 가 담당한다.)
+			stopAllBeforeAttach: false,
+			stopOnEntry: false,
+		};
+
+		const started = await vscode.debug.startDebugging(undefined, dynamicConfig);
+		if (!started) {
+			vscode.window.showErrorMessage('디버깅 시작 실패: 구성 또는 제어기 상태를 확인해줘.');
+		}
+	}
+
 	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.debug.attachNow', async () => {
-			// 중복 세션 방지: 이미 brooks-gpl 세션이 살아있으면 사용자에게 처리 방식 선택을 요청
-			const existing = vscode.debug.activeDebugSession;
-			const hasGplSession = existing?.type === 'brooks-gpl';
-			if (hasGplSession) {
-				const pick = await vscode.window.showWarningMessage(
-					'GPL 디버그 세션이 이미 실행 중입니다.',
-					{ modal: false },
-					'기존 세션 유지',
-					'중단하고 다시 시작',
-				);
-				if (pick === '기존 세션 유지' || pick === undefined) {
-					return;
-				}
-				// 중단하고 다시 시작
-				try {
-					await vscode.debug.stopDebugging(existing);
-					// 세션 정리 시간을 짧게 대기 (DAP terminated 이벤트 처리)
-					await new Promise(r => setTimeout(r, 400));
-				} catch {
-					// 무시: stopDebugging이 실패해도 새 세션 시작은 시도
-				}
-			}
-
-			const cfg = getControllerConfig();
-			const projectName = await host.project.resolveExpectedProjectName();
-			const launchInfo = host.project.readLaunchControllerInfo();
-
-			const dynamicConfig: vscode.DebugConfiguration = {
-				type: 'brooks-gpl',
-				request: 'attach',
-				name: projectName ? `GPL Quick Attach (${projectName})` : 'GPL Quick Attach',
-				controllerIp: launchInfo?.ip || cfg.ip,
-				controllerPort: launchInfo?.port || cfg.port,
-				projectName,
-				deployBeforeAttach: true,
-				stopOnEntry: false,
-			};
-
-			const started = await vscode.debug.startDebugging(undefined, dynamicConfig);
-			if (!started) {
-				vscode.window.showErrorMessage('디버깅 시작 실패: 구성 또는 제어기 상태를 확인해줘.');
-			}
-		})
+		vscode.commands.registerCommand('gpl.debug.attachNow', () => startQuickAttachSession({ deployBeforeAttach: true })),
+		vscode.commands.registerCommand('gpl.debug.attachOnly', () => startQuickAttachSession({ deployBeforeAttach: false })),
 	);
 
 	// gpl.debugProject — 프로젝트를 지정해 Deploy(Upload ∥ Stop → Compile) 후 attach.

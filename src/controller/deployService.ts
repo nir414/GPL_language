@@ -20,10 +20,17 @@ import * as fs from 'fs';
 import { sendCommand, sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
 import { uploadProject, mirrorProject, listRemoteDir, removeRemoteFiles, RemoteFileRef } from './ftpClient';
 import { getSyncManifest, mergeSyncManifest, recordSyncManifest } from './syncManifest';
-import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, parseThreadList, ThreadInfo, CompileError, isControllerNonBlockingStatus, SHOW_THREAD_LIST_CMD, NO_STATUS_CODE } from './responseParser';
-import { describeThreadActivity, isSettledState } from './threadActivity';
+import { parseCompileErrors, parseStatus, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus, NO_STATUS_CODE } from './responseParser';
+import { describeThreadActivity } from './threadActivity';
+import {
+    STOP_ALL_CMD,
+    probeThreads,
+    stopAllAndSettle as runStopAllAndSettle,
+    waitThreadsSettle,
+} from './threadStop';
+import type { SettleOutcome, ThreadProbe, ThreadStopIo, ThreadStopOptions } from './threadStop';
 import { buildStartCommand } from './startCommand';
-import { isBusyStatus, isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
+import { isTransientCompileStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
 import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord';
 import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
@@ -63,6 +70,31 @@ export interface DeployOptions {
      * 기존(flash 업로드 + Unload/Load) 경로로 폴백한다. flash 저장은 Save to Flash가 담당.
      */
     directGpl?: boolean;
+    /**
+     * 정지(STOP 게이트)를 **완료한 뒤에** 업로드를 시작한다(기본은 둘을 동시에 진행).
+     *
+     * 기본 병행은 속도를 위한 것이고 "실행 중 FTP 업로드는 무해"라는 관찰에 근거한다(2026-08-25, 이슈 #17).
+     * 그러나 그 관찰은 Stop을 보내지 않는 빠른 컴파일 기준이다 — Stop -all 처리(모션 abort·쓰레드 teardown)가
+     * 진행되는 동안 같은 파일을 FTP로 덮어쓰는 조합은 검증된 적이 없고, 업로드 스타트에서 제어기가 응답을
+     * 잃는 현상이 관찰됐다(2026-09-10 사용자 보고). 정지 후 Start까지 이어지는 경로에서는 순차로 돌려
+     * "정지 완료 → 업로드 → Start" 순서를 보장한다. skipStop 경로에는 영향이 없다(보낼 Stop이 없다).
+     * 정지가 확인되지 않으면 업로드를 아예 시작하지 않는다 — 제어기의 파일은 그대로 남는다.
+     */
+    stopBeforeUpload?: boolean;
+    /**
+     * START 단계 진입 시 `Show Thread`로 정지를 **한 번 더** 확인한다(기본 true).
+     *
+     * 정지 게이트를 통과한 뒤에도 업로드·원격 삭제·Compile로 수십 초가 흐르고, `-752`(정지 진행 중) 뒤
+     * 제어기 내부 정리가 남아 있을 수 있다. 그 상태에서 `Start`(=제어기 자체 컴파일 포함)를 보내는 것이
+     * 제어기 이상의 유력 가설이라 기본으로 막는다(2026-09-10, §1-DC).
+     * **false는 진단용이다** — 이 안전장치를 꺼서 원인을 가려내는 TEST 경로(`gpl.uploadStart.test`)에서만 쓴다.
+     */
+    preStartSettleCheck?: boolean;
+    /**
+     * 배포 트레이스 머리 상자에 한 줄 덧붙일 메모(예: TEST 조합 이름). 동작에는 영향을 주지 않는다 —
+     * 나중에 로그만 보고 "어떤 조합으로 돌린 실행인지" 구분하기 위한 것이다.
+     */
+    modeNote?: string;
     /**
      * 빠른 컴파일(skipStop)에서 활성 쓰레드 감지 시 호출된다.
      * true를 반환하면 Stop -all + 정지 완료 확인을 거쳐 계속 진행하고,
@@ -404,6 +436,9 @@ async function deployLocked(
             ? ' (Upload & Start — Compile 생략, Start가 자체 컴파일)'
             : options.skipStart ? ' (Build Only)' : '';
     pushTrace(`│  ◆ ${projectName}${modeSuffix}`);
+    if (options.modeNote) {
+        pushTrace(`│  ⚗ ${options.modeNote}`);
+    }
     pushTrace(`├──────────────────────────────────────────────────────┤`);
     pushTrace(`│  Local:  ${options.projectDir}`);
     pushTrace(`│  FTP:    ${ftpProjectDir}`);
@@ -447,136 +482,51 @@ async function deployLocked(
     }
     pushTrace(`╰──────────────────────────────────────────────────────╯`);
 
-    // ── 쓰레드 상태 프로브 (read-only) ─────────────
-    // Stop -all의 STATUS 0은 "정지 요청 접수"이지 완전 정지 보장이 아니다.
-    // 정지 완료 전에 Compile/Start를 보내면 제어기 이상 현상(메모리 누수 의심,
-    // 2026-07-08 사용자 관찰)이 발생할 수 있어, Show Thread로 실제 상태를 확인한다.
-    // 상태 문자열은 '왜 보류하는지' 설명에만 쓴다 — 활성 판정 자체는 **쓰레드의 존재**로 한다
-    // (사용자 규약 2026-08-28: Stop 의 STATUS 0 은 접수일 뿐이고, `Execute` 는 `_Cmd_<project>`
-    //  라는 별도 쓰레드를 만든다 → 목록에 남아 있으면 아직 동작 중으로 본다. threadActivity.ts)
-    const threadSettled = (state: string): boolean => isSettledState(state);
-    async function probeActiveThreads(): Promise<{ active: ThreadInfo[]; total: number; threads: ThreadInfo[] } | null> {
-        // GDE 캡처 실측(runbook): 인자 없는 `Show Thread`는 스레드가 실행 중이어도
-        // <DATA></DATA> 빈 응답을 줄 수 있다 → 게이트가 항상 통과하는 false-pass.
-        // 전체 열거는 반드시 `Show Thread  -web`(SHOW_THREAD_LIST_CMD)로 한다.
-        try {
-            const resp = await sendCommandDetailed(SHOW_THREAD_LIST_CMD, cfg);
-            // idle/close로 잘린(STATUS 미수신) 응답은 "확인 불가"로 처리한다(하드 규칙 2).
-            if (!resp.meta.statusTagReceived) { return null; }
-            const threads = parseThreadList(resp.raw);
-            return { active: threads.filter(t => !threadSettled(t.state)), total: threads.length, threads };
-        } catch {
-            return null;
-        }
-    }
-
-    type StopAllOutcome =
-        | { kind: 'accepted' }   // STATUS 0 — 정지 요청 접수(완료 아님, §0.6)
-        | { kind: 'stopping' }   // STATUS -752 — 정지 진행 중(비치명), settle 게이트로 판정
-        | { kind: 'failed'; command: string; code?: number; message: string };
+    // ── 쓰레드 정지 절차 (controller/threadStop.ts 가 정본) ─────────────
+    // Stop -all 의 STATUS 0 은 "정지 요청 접수"이지 완전 정지 보장이 아니다(§0.6). 정지 완료 전에
+    // Compile/Start 를 보내면 제어기 이상 현상(메모리 누수 의심, 2026-07-08 사용자 관찰)이 생길 수 있어
+    // Show Thread 로 실제 상태를 확인한다. 전송+판정+폴링+재시도로 이뤄진 그 절차는 배포·패널·FTP·디버그가
+    // 모두 같은 기준을 쓰도록 threadStop.ts 하나에 모아 뒀다(§1-DD) — 여기서는 전송·로그·대기만 주입한다.
+    const threadStopIo: ThreadStopIo = {
+        send: async (command) => {
+            try {
+                const resp = await sendCommandDetailed(command, cfg);
+                // RAW 는 Stop 에만 남긴다 — 정지 확인 폴링까지 찍으면 트레이스가 같은 줄로 뒤덮인다.
+                if (command === STOP_ALL_CMD) {
+                    pushTrace(`│ RAW ${rawPreview(resp.raw) || '(empty)'}`);
+                }
+                // idle/close 로 잘린(STATUS 미수신) 응답은 "확인 불가"로 처리한다(하드 규칙 2).
+                return { raw: resp.raw, statusComplete: resp.meta.statusTagReceived };
+            } catch {
+                return null;
+            }
+        },
+        log: line => pushTrace(line),
+        sleep,
+        isCancelled: () => token?.isCancellationRequested === true,
+    };
+    // 배포 트레이스는 모든 줄이 `│ ` 로 시작한다.
+    const threadStopOpts: ThreadStopOptions = { logPrefix: '│ ' };
 
     /**
-     * Stop -all 전송(무응답 시 1회 재전송).
-     *
-     * STATUS -752 "Timeout stopping thread"는 정지 요청 후 3초(제어기 내부 대기) 안에
-     * 쓰레드가 멈추지 않았다는 뜻일 뿐, 요청 자체는 접수되어 하던 일(모션/I/O)을 마치면
-     * 멈춘다(GPL 에러 문서: "This is not a critical error"). 실패로 판정하지 않고
-     * 'stopping'으로 분류해, 호출측이 settle 게이트(Show Thread 폴링)로 실제 정지를
-     * 판정하게 한다 — Compile 쪽 transient(-742/-746/-752) 처리와 대칭 (2026-08-05).
+     * 현재 쓰레드 목록(read-only). null 은 "확인 불가"이며 빈 목록과 구분해야 한다.
+     * 활성 판정 자체는 **쓰레드의 존재**로 하는 곳(autoOnSave 게이트)이 있어 total 까지 그대로 쓴다
+     * (사용자 규약 2026-08-28: `Execute` 는 `_Cmd_<project>` 라는 별도 쓰레드를 만든다 — threadActivity.ts).
      */
-    async function sendStopAll(): Promise<StopAllOutcome> {
-        pushTrace('│ CMD Stop -all');
-        let resp = await trySendCommand('Stop -all', cfg);
-        if (resp === null) {
-            pushTrace('│ ⚠ Stop -all failed or timed out. Retrying...');
-            resp = await trySendCommand('Stop -all', cfg);
-            if (resp === null) {
-                pushTrace('│ ✘ Stop -all failed after retry');
-                return { kind: 'failed', command: 'Stop -all', message: 'No response (timeout or connection failure)' };
-            }
-        }
-        const status = parseStatus(resp);
-        pushTrace(`│ RAW ${rawPreview(resp) || '(empty)'}`);
-        if (status.code === 0) {
-            pushTrace('│ ✔ Stop -all 접수 — 실제 정지는 아래 게이트에서 확인');
-            return { kind: 'accepted' };
-        }
-        if (isBusyStatus(status.code)) {
-            pushTrace(`│ ⚠ STATUS ${status.code}: ${status.message} — 정지 진행 중(비치명, 하던 일을 마치면 정지). 정지 완료 게이트로 실제 상태를 확인합니다`);
-            return { kind: 'stopping' };
-        }
-        pushTrace(`│ ✘ Stop -all failed: STATUS ${status.code}: ${status.message}`);
-        return { kind: 'failed', command: 'Stop -all', code: status.code, message: status.message };
-    }
+    const probeActiveThreads = (): Promise<ThreadProbe | null> => probeThreads(threadStopIo);
 
-    /**
-     * Stop 완료 게이트: 모든 쓰레드가 Idle/Stopped/Error가 될 때까지 폴링 대기.
-     * Show Thread 무응답 시에는 확인 불가로 보고 경고 후 통과시킨다(기존 동작 수준 유지).
-     */
-    async function waitThreadsSettle(timeoutMs = 8000): Promise<{ ok: boolean; cancelled?: boolean; activeDesc?: string }> {
-        const startedAt = Date.now();
-        const deadline = startedAt + timeoutMs;
-        let lastActiveDesc = '';
-        let lastLoggedDesc = '';
-        let lastLoggedAt = 0;
-        while (Date.now() < deadline) {
-            if (token?.isCancellationRequested) { return { ok: false, cancelled: true }; }
-            const probe = await probeActiveThreads();
-            if (probe === null) {
-                pushTrace('│ ⚠ Show Thread 무응답 — 정지 완료 확인 불가(계속 진행)');
-                return { ok: true };
-            }
-            const elapsed = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
-            if (probe.active.length === 0) {
-                // total은 Show Thread 목록의 쓰레드 수 — 완전 정지 후에는 목록이 비어 0이 된다.
-                pushTrace(`│ ✔ 모든 쓰레드 정지 확인 (${elapsed}${probe.total > 0 ? `, 정지 상태 ${probe.total}개` : ''})`);
-                return { ok: true };
-            }
-            lastActiveDesc = probe.active.map(t => `${t.name}(${t.state})`).join(', ');
-            // 500ms 폴링을 그대로 찍으면 같은 줄이 십수 번 반복된다 — 상태가 바뀌면 즉시,
-            // 같은 상태면 2초에 한 번만 경과 시간과 함께 남긴다.
-            if (lastActiveDesc !== lastLoggedDesc || Date.now() - lastLoggedAt >= 2000) {
-                pushTrace(`│ … 정지 대기 ${elapsed}: ${lastActiveDesc}`);
-                lastLoggedDesc = lastActiveDesc;
-                lastLoggedAt = Date.now();
-            }
-            await sleep(500);
-        }
-        return { ok: false, activeDesc: lastActiveDesc };
-    }
-
-    /**
-     * Stop -all → 정지 완료 게이트를 수행하고, 실패 시 result에 기록한다. true면 계속 진행 가능.
-     *
-     * STATUS 0도 -752(stopping)도 "정지 완료"가 아니므로 실제 정지는 항상 settle
-     * 게이트(Show Thread 폴링)로 판정한다. 게이트에서 정지가 확인되지 않으면
-     * Stop -all을 1회 자동 재시도한 뒤 다시 게이트를 돌린다 — 가끔 나는 -752
-     * 타임아웃 때문에 사용자가 손으로 재시도할 필요가 없도록 (2026-08-05).
-     */
+    /** Stop -all → 정지 완료 게이트(재시도 포함). 실패 사유는 result 에 옮겨 적는다. true 면 계속 진행 가능. */
     async function stopAllAndSettle(): Promise<boolean> {
-        const maxStopAttempts = 2;
-        for (let attempt = 1; attempt <= maxStopAttempts; attempt++) {
-            const stop = await sendStopAll();
-            if (stop.kind === 'failed') {
-                result.failedPhase = 'STOP';
-                result.failedCommand = stop.command;
-                result.failedStatusCode = stop.code;
-                result.failedStatusMessage = stop.message;
-                return false;
-            }
-            const settle = await waitThreadsSettle();
-            if (settle.cancelled) { return false; }
-            if (settle.ok) { return true; }
-            if (attempt < maxStopAttempts) {
-                pushTrace(`│ ↻ 정지 미확인(${settle.activeDesc}) — Stop -all 자동 재시도 (${attempt + 1}/${maxStopAttempts})`);
-                continue;
-            }
-            pushTrace(`│ ✘ Stop -all 후에도 쓰레드가 정지되지 않음: ${settle.activeDesc}`);
+        const outcome = await runStopAllAndSettle(threadStopIo, threadStopOpts);
+        if (outcome.ok) { return true; }
+        if (outcome.cancelled) { return false; }
+        if (outcome.settle && !outcome.settle.settled) {
             pushTrace('│   → 정지 미완료 상태에서 Compile/Start를 보내지 않고 중단합니다.');
-            result.failedPhase = 'STOP';
-            result.failedCommand = 'Show Thread (stop settle gate)';
-            result.failedStatusMessage = `Stop -all 후에도 활성 쓰레드 존재: ${settle.activeDesc}`;
         }
+        result.failedPhase = 'STOP';
+        result.failedCommand = outcome.failure?.command ?? STOP_ALL_CMD;
+        result.failedStatusCode = outcome.failure?.statusCode;
+        result.failedStatusMessage = outcome.failure?.message ?? '정지를 확인하지 못했습니다';
         return false;
     }
 
@@ -586,12 +536,19 @@ async function deployLocked(
     // 반복하느라 오래 걸리므로 업로드와 겹쳐 총 소요를 max(업로드, 정지)로 줄인다.
     // 두 작업이 *모두* 끝난 뒤에만 다음(원격 전용 파일 삭제 → COMPILE)으로 간다 — "정지 확인 전 Compile/Start 금지"(§0.6)와
     // "업로드 도중 Compile/Start 금지"(배포 잠금)는 그대로다. 원격 전용 파일 삭제는 실행 중 무해가 미검증이라 정지 확인 뒤로 지연.
+    //
+    // 예외: stopBeforeUpload(업로드 스타트) — 정지 완료를 먼저 확인한 뒤에만 업로드한다(옵션 주석 참조).
+
+    // 병행은 "보낼 Stop이 있을 때"만 의미가 있다 — skipStop 경로는 프로브(읽기 전용)뿐이라 순차로 돌릴 이유가 없다.
+    const sequentialStop = options.stopBeforeUpload === true && !options.skipStop;
 
     pushTrace('');
     phase++;
     const gateLabel = options.skipStop ? '쓰레드 상태 확인' : 'STOP';
-    pushTrace(`━━ [${phase}/${totalPhases}] UPLOAD ∥ ${gateLabel} (동시 진행) ━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lock.setStage(options.skipStop ? 'UPLOAD+THREAD_CHECK' : 'UPLOAD+STOP');
+    pushTrace(sequentialStop
+        ? `━━ [${phase}/${totalPhases}] ${gateLabel} → UPLOAD (순차) ━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+        : `━━ [${phase}/${totalPhases}] UPLOAD ∥ ${gateLabel} (동시 진행) ━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lock.setStage(options.skipStop ? 'UPLOAD+THREAD_CHECK' : sequentialStop ? 'STOP' : 'UPLOAD+STOP');
 
     if (token?.isCancellationRequested) { return result; }
 
@@ -742,9 +699,25 @@ async function deployLocked(
         return (await stopAllAndSettle()) ? 'proceed' : 'abort';
     }
 
-    // 두 작업을 동시에 시작하고 둘 다 끝날 때까지 기다린다. 한쪽이 먼저 실패해도 다른 쪽을 끝까지 기다려야 한다 —
-    // 특히 업로드가 진행 중인데 돌아가 배포 잠금을 풀면 "업로드 도중 Compile/Start" 창이 열린다.
-    const [upload, gate] = await Promise.all([runUpload(), runStopGate()]);
+    let upload: UploadOutcome;
+    let gate: 'proceed' | 'abort';
+    if (sequentialStop) {
+        // 정지 완료 → 업로드 순차. 정지가 확인되지 않으면 업로드하지 않는다 — 제어기의 /GPL 사본은
+        // 손대지 않은 상태로 남으므로, 실패해도 "실행 중이던 소스와 올라간 소스가 섞인" 상태가 생기지 않는다.
+        gate = await runStopGate();
+        if (gate === 'abort') {
+            // failedPhase(STOP/THREAD_CHECK)는 게이트가 이미 기록했다.
+            pushTrace('│ ✘ 정지가 확인되지 않아 업로드를 시작하지 않았습니다 — 제어기의 파일은 그대로입니다.');
+            return result;
+        }
+        lock.setStage('UPLOAD');
+        pushTrace('│ ✔ 정지 확인 완료 → 업로드 시작');
+        upload = await runUpload();
+    } else {
+        // 두 작업을 동시에 시작하고 둘 다 끝날 때까지 기다린다. 한쪽이 먼저 실패해도 다른 쪽을 끝까지 기다려야 한다 —
+        // 특히 업로드가 진행 중인데 돌아가 배포 잠금을 풀면 "업로드 도중 Compile/Start" 창이 열린다.
+        [upload, gate] = await Promise.all([runUpload(), runStopGate()]);
+    }
 
     const pendingDeletes: RemoteFileRef[] = upload.ok ? upload.pendingDeletes : [];
     const deferNote = pendingDeletes.length > 0 ? ` (원격 전용 파일 ${pendingDeletes.length}개 삭제는 보류)` : '';
@@ -1230,6 +1203,26 @@ async function deployLocked(
         lock.setStage('START');
 
         if (token?.isCancellationRequested) { return result; }
+
+        // Start 직전 정지 재확인(§0.6) — 정지 게이트를 통과한 뒤에도 업로드·원격 파일 삭제·Compile로
+        // 수십 초가 지났고, -752(정지 진행 중) 뒤 제어기 내부 정리가 남아 있을 수 있다. 정지되지 않은
+        // 쓰레드가 남은 채 Start(=제어기 자체 컴파일 포함)를 보내는 것이 제어기 이상의 유력한 경로라
+        // 여기서 한 번 더 막는다. 무응답은 확인 불가로 보고 통과시킨다(waitThreadsSettle 규약과 동일).
+        const preStartSettle: SettleOutcome = options.preStartSettleCheck === false
+            ? { settled: true, unconfirmed: false, elapsedMs: 0 }
+            : await waitThreadsSettle(threadStopIo, threadStopOpts);
+        if (options.preStartSettleCheck === false) {
+            pushTrace('│ ⚗ TEST: Start 직전 정지 재확인을 생략했습니다 (진단용 — 기본 경로는 확인합니다)');
+        }
+        if (preStartSettle.cancelled) { return result; }
+        if (!preStartSettle.settled) {
+            pushTrace(`│ ✘ Start 직전 확인에서 활성 쓰레드 발견: ${preStartSettle.activeDesc}`);
+            pushTrace('│   → 정지되지 않은 상태로 Start를 보내지 않고 중단합니다. 프로그램을 STOP한 뒤 다시 실행하세요.');
+            result.failedPhase = 'START';
+            result.failedCommand = 'Show Thread (pre-Start settle gate)';
+            result.failedStatusMessage = `Start 직전에도 활성 쓰레드 존재: ${preStartSettle.activeDesc}`;
+            return result;
+        }
 
         if (options.beforeStart) {
             pushTrace('│ Preparing runtime console before Start');

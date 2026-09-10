@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.9.0",
+    "version": "0.9.1",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -50,6 +50,8 @@
         "onCommand:gpl.project.promoteSourceForBreakpoint",
         "onCommand:gpl.debug.generateLaunch",
         "onCommand:gpl.debug.attachNow",
+        "onCommand:gpl.debug.attachOnly",
+        "onCommand:gpl.uploadStart.test",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
         "onCommand:gpl.console.ensure",
@@ -291,8 +293,18 @@
             },
             {
                 "command": "gpl.debug.attachNow",
-                "title": "GPL: Quick Debug Attach (No launch.json)",
+                "title": "GPL: 디버그 시작 (배포 후 붙기, launch.json 불필요)",
                 "icon": "$(debug-alt)"
+            },
+            {
+                "command": "gpl.debug.attachOnly",
+                "title": "GPL: 디버그 붙기 (배포 없이 실행 중인 프로그램에 attach)",
+                "icon": "$(plug)"
+            },
+            {
+                "command": "gpl.uploadStart.test",
+                "title": "GPL: 업로드 스타트 TEST (시퀀스 조합 선택 — 진단용)",
+                "icon": "$(beaker)"
             },
             {
                 "command": "gpl.debugProject",
@@ -746,6 +758,16 @@
                     "command": "gpl.controller.copySituationForChat",
                     "when": "view == gplThreads && gpl.ui.connected",
                     "group": "2_tools@3"
+                },
+                {
+                    "command": "gpl.debug.attachOnly",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@4"
+                },
+                {
+                    "command": "gpl.uploadStart.test",
+                    "when": "view == gplThreads && gpl.ui.connected",
+                    "group": "navigation@5"
                 },
                 {
                     "command": "gpl.debug.attachNow",

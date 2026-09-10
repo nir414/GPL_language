@@ -19,7 +19,7 @@ import {
 import { SHOW_THREAD_LIST_CMD, isControllerNonBlockingStatus, parseCompileErrors, parseStatus, parseThreadList } from '../controller/responseParser';
 import { forgetSyncManifest } from '../controller/syncManifest';
 import { describeThreadActivity } from '../controller/threadActivity';
-import { sendCommandWithBusyRetry, sleep, trySoftEStopRecovery, verifyAllStopped, verifyThreadStopped } from './controllerOps';
+import { sendCommandWithBusyRetry, sleep, stopAllThreads, trySoftEStopRecovery, verifyThreadStopped } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 export function activateFtpCommands(host: ExtensionHost): void {
@@ -134,19 +134,15 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			'모두 정지 후 계속',
 		);
 		if (pick !== '모두 정지 후 계속') { return false; }
-		try {
-			const stopResp = await sendCommandWithBusyRetry(host, 'Stop -all', { maxAttempts: 5, baseDelayMs: 500 });
-			const status = parseStatus(stopResp);
-			// STATUS -752(Timeout stopping thread)는 "정지 진행 중"이라 실패가 아니다 — 최종 판정은 아래 settle 게이트로.
-			if (status.code !== 0 && !isBusyStatus(status.code)) {
-				vscode.window.showErrorMessage(`정지 실패: STATUS ${status.code} ${status.message} — 삭제를 중단합니다.`);
-				return false;
-			}
-		} catch (err: any) {
-			vscode.window.showErrorMessage(`정지 실패: ${err.message ?? err} — 삭제를 중단합니다.`);
+		// 전송·STATUS 판정(-752 = 정지 진행 중)·정지 확인 폴링·재시도는 controller/threadStop.ts 가 한다(§1-DD).
+		const outcome = await stopAllThreads(host, { logTo: (line: string) => host.log(`[Stop] ${line}`) });
+		if (outcome.send.kind === 'failed') {
+			const code = outcome.send.statusCode;
+			vscode.window.showErrorMessage(`정지 실패: ${code === undefined ? '' : `STATUS ${code} `}${outcome.send.message} — 삭제를 중단합니다.`);
 			return false;
 		}
-		if (!(await verifyAllStopped(host, 8))) {
+		// 확인 불가(Show Thread 무응답)도 진행하지 않는다 — 원격 파일 삭제는 되돌릴 수 없다.
+		if (!outcome.ok || outcome.settle?.unconfirmed === true) {
 			vscode.window.showWarningMessage('정지 완료를 확인하지 못해 삭제를 중단합니다. 상태를 확인한 뒤 다시 실행해주세요.');
 			return false;
 		}
@@ -406,15 +402,14 @@ export function activateFtpCommands(host: ExtensionHost): void {
 
 			const ensureStoppedBeforeCompile = async (): Promise<boolean> => {
 				host.log('│ Phase: Stop before Compile');
-				host.log('│ Stop -all');
-				const stopResp = await sendCommandWithBusyRetry(host, 'Stop -all', { maxAttempts: 5, baseDelayMs: 500 });
-				const stopStatus = parseStatus(stopResp);
-				if (stopStatus.code !== 0 && !isBusyStatus(stopStatus.code)) {
-					throw new Error(`Stop -all failed: STATUS ${stopStatus.code} ${stopStatus.message || ''}`.trimEnd());
+				// 정지 절차는 controller/threadStop.ts 가 정본 — 진행 로그만 이 실행 로그(`│ `)에 합류시킨다(§1-DD).
+				const outcome = await stopAllThreads(host, { logPrefix: '│ ', logTo: host.log });
+				if (outcome.send.kind === 'failed') {
+					const code = outcome.send.statusCode;
+					throw new Error(`Stop -all failed: ${code === undefined ? '' : `STATUS ${code} `}${outcome.send.message}`.trimEnd());
 				}
-
-				const stopped = await verifyAllStopped(host, 8);
-				if (stopped) {
+				// 확인 불가(무응답)를 정지로 보지 않는다 — 이 뒤에 Load/Compile/Start 가 이어진다(§0.6).
+				if (outcome.ok && outcome.settle?.unconfirmed !== true) {
 					host.log('│ ✔ Stop complete');
 					return true;
 				}

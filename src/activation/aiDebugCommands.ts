@@ -102,8 +102,10 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 				await vscode.commands.executeCommand('gpl.diagnosticSnapshot');
 
 				if (mode === 'build-and-attach') {
-					recordStep('빠른 Attach 시작');
-					await vscode.commands.executeCommand('gpl.debug.attachNow');
+					// 바로 위에서 Build Only(gpl.deploy)가 성공한 뒤이므로 배포 없이 붙는다 —
+					// attachNow(deployBeforeAttach)를 쓰면 같은 업로드+Compile이 한 번 더 돈다 (2026-09-10).
+					recordStep('Attach 시작 (배포 없이 — Build Only 직후)');
+					await vscode.commands.executeCommand('gpl.debug.attachOnly');
 				}
 
 				summary.ok = true;

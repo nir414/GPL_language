@@ -37,7 +37,7 @@ export interface AiBlockedCommand {
 export const AI_BLOCKED_COMMANDS: readonly AiBlockedCommand[] = Object.freeze([
     Object.freeze({
         command: 'gpl.saveToFlash',
-        title: 'GPL: Save to Flash',
+        title: 'GPL: Save to Flash (/flash/projects 에 영구 저장)',
         reason: '제어기 flash 의 영구 사본(/flash/projects/<project>)을 미러 동기화로 덮어쓰고 로컬에 없는 원격 파일을 삭제한다 — '
             + '되돌릴 수 없고 flash 쓰기 수명을 소모하므로 사람이 판단해 실행할 명령이다.',
         humanPath: '사용자가 명령 팔레트의 "GPL: Save to Flash" 또는 탐색기/제어기 트리 컨텍스트 메뉴에서 직접 실행합니다.',

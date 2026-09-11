@@ -211,17 +211,17 @@ test('identifyResponder: 두 인터페이스 MAC 상이 → unknown + 경로 확
 test('describeReachability: REFUSED → 관측(새 연결 거부)만 단정하고 제어기 상태는 미확정으로 남긴다 (2026-08-31)', () => {
     const v = describeReachability({ ip: '192.168.0.1', tcp1402: 'refused', icmp: { alive: true, ttl: 255, ms: 5 }, arp: ARP_PRECISE });
     assert.ok(v.includes('새 연결이 거부됨(refused)'), v);
-    assert.ok(v.includes('제어기 런타임 상태는 확정할 수 없다'), v);
+    assert.ok(v.includes('제어기 런타임 상태는 확정할 수 없습니다'), v);
     // 종전 문구("제어기 소프트웨어 다운/재시작 중")처럼 원인을 단정하지 않는다.
     assert.ok(!/소프트웨어 다운\/재시작 중\)/.test(v), v);
-    assert.ok(!v.includes('무효일 수 있다'), v);
+    assert.ok(!v.includes('무효일 수 있습니다'), v);
     assert.ok(v.includes('[응답 장치: 제어기'), v);
 });
 
 test('describeReachability: REFUSED + TTL=64/Micro-Star → 판정 무효 가능 경고 + arp/TTL 확인 안내 (#22 사후 진단 함정)', () => {
     const v = describeReachability({ ip: '192.168.0.1', tcp1402: 'refused', icmp: { alive: true, ttl: 64, ms: 5 }, arp: ARP_GATEWAY });
     assert.ok(v.includes('새 연결이 거부됨(refused)'), v);
-    assert.ok(v.includes('무효일 수 있다'), v);
+    assert.ok(v.includes('무효일 수 있습니다'), v);
     assert.ok(v.includes('arp -a 192.168.0.1') && v.includes('TTL'), v);
     assert.ok(v.includes('[응답 장치: 제어기 아님'), v);
 });
@@ -234,7 +234,7 @@ test('describeReachability: ICMP만 응답(TCP timeout) → 부팅 중/소켓 �
 test('describeReachability: 전부 무응답 → 도달 불가 관측 + ping 세부 포함, 원인은 구분 불가로 남김', () => {
     const v = describeReachability({ ip: '192.168.0.1', tcp1402: 'unreachable', icmp: { alive: false, ms: 1000, detail: 'destination-host-unreachable' }, arp: ARP_NONE });
     assert.ok(v.startsWith('ICMP·TCP 모두 무응답(unreachable, ping: destination-host-unreachable)'), v);
-    assert.ok(v.includes('구분되지 않는다'), v);
+    assert.ok(v.includes('구분되지 않습니다'), v);
 });
 
 // -- assessReachability (구조화 판정: 관측 / 추론 / 확신도) ------------------
@@ -296,5 +296,5 @@ test('describeReachability: ping 판정 불가(null) → TCP 실패만 확인', 
 test('describeReachability: OPEN인데 응답 장치가 게이트웨이 → 도달 가능 판정에도 경고', () => {
     const v = describeReachability({ ip: '192.168.0.1', tcp1402: 'open', icmp: { alive: true, ttl: 64, ms: 2 }, arp: ARP_GATEWAY });
     assert.ok(v.includes('도달 가능'), v);
-    assert.ok(v.includes('무효일 수 있다'), v);
+    assert.ok(v.includes('무효일 수 있습니다'), v);
 });

@@ -338,22 +338,22 @@ export function describeReachability(input: ReachabilityInput): string {
 
     let verdict: string;
     if (tcp1402 === 'open') {
-        verdict = `${ip}:1402 도달 가능 — TCP 연결이 열린다.`;
+        verdict = `${ip}:1402 도달 가능 — TCP 연결이 열립니다.`;
     } else if (tcp1402 === 'refused') {
-        verdict = `${ip}:1402 새 연결이 거부됨(refused) — 호스트의 TCP 스택은 응답하나 지금 명령 채널을 열 수 없다는 관측이다. `
-            + '이것만으로 제어기 런타임 상태는 확정할 수 없다(가능한 설명: 채널 교란 가능 명령 뒤의 일시적 사용 불가 / 소프트웨어 재시작·부팅 중 / 같은 IP의 다른 장치가 응답).';
+        verdict = `${ip}:1402 새 연결이 거부됨(refused) — 호스트의 TCP 스택은 응답하지만 지금 명령 채널을 열 수 없다는 관측입니다. `
+            + '이것만으로 제어기 런타임 상태는 확정할 수 없습니다(가능한 설명: 채널 교란 가능 명령 뒤의 일시적 사용 불가 / 소프트웨어 재시작·부팅 중 / 같은 IP의 다른 장치가 응답).';
     } else if (icmp.alive === true) {
         verdict = `ICMP는 응답하나 1402 TCP가 실패(${tcp1402}) — 부팅 중(서비스 미기동)이거나 소켓 점유/경로 차단. 런타임 상태 미확정.`;
     } else if (icmp.alive === false) {
-        verdict = `ICMP·TCP 모두 무응답(${tcp1402}${icmp.detail ? `, ping: ${icmp.detail}` : ''}) — 호스트에 도달하지 못했다는 관측. `
-            + '전원·네트워크·재부팅 초기 단계 중 어느 것인지는 이 관측만으로 구분되지 않는다.';
+        verdict = `ICMP·TCP 모두 무응답(${tcp1402}${icmp.detail ? `, ping: ${icmp.detail}` : ''}) — 호스트에 도달하지 못했다는 관측입니다. `
+            + '전원·네트워크·재부팅 초기 단계 중 어느 것인지는 이 관측만으로 구분되지 않습니다.';
     } else {
         verdict = `ICMP 판정 불가(ping 미지원) — TCP 실패(${tcp1402})만 확인됨.`;
     }
 
     if (who.kind === 'other-device' && (tcp1402 === 'open' || tcp1402 === 'refused' || icmp.alive === true)) {
-        verdict += ` 주의: 응답한 장치가 제어기가 아닌 것으로 보인다 — 제어기 DHCP 임대 상실로 ${ip} 트래픽이 사무실 게이트웨이로 흘러간 경우일 수 있어 이 판정(${tcp1402})은 무효일 수 있다. ` +
-            `\`arp -a ${ip}\`의 MAC(제어기 ${PRECISE_OUI}=Precise)과 ping TTL(제어기 ${CONTROLLER_TTL} / 게이트웨이 64)을 확인하고, 직결 NIC의 IP가 APIPA(169.254.x)로 떨어졌는지 볼 것.`;
+        verdict += ` 주의: 응답한 장치가 제어기가 아닌 것으로 보입니다 — 제어기 DHCP 임대 상실로 ${ip} 트래픽이 사무실 게이트웨이로 흘러간 경우일 수 있어 이 판정(${tcp1402})은 무효일 수 있습니다. ` +
+            `\`arp -a ${ip}\`의 MAC(제어기 ${PRECISE_OUI}=Precise)과 ping TTL(제어기 ${CONTROLLER_TTL} / 게이트웨이 64)을 확인하고, 직결 NIC의 IP가 APIPA(169.254.x)로 떨어졌는지 확인하세요.`;
     }
     return verdict + identity;
 }

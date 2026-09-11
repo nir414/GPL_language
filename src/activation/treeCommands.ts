@@ -28,6 +28,15 @@ export function activateTreeCommands(host: ExtensionHost): void {
 		})
 	);
 
+	// 패널 접힘 상태를 기본값으로 초기화 — VS Code 가 저장해 둔 사용자 접기 상태를 버리고
+	// provider 의 기본 collapsibleState 를 다시 적용한다(ControllerTreeProvider.resetSectionLayout).
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.resetPanelLayout', () => {
+			host.controllerTree?.resetSectionLayout();
+			vscode.window.showInformationMessage('GPL Controller 패널의 접힘 상태를 기본값으로 되돌렸습니다.');
+		})
+	);
+
 	// 개별 쓰레드 시작/정지
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.threadStart', async (node: any) => {
@@ -39,7 +48,7 @@ export function activateTreeCommands(host: ExtensionHost): void {
 				host.warnDeployBusy('쓰레드 시작', busy, '완료 후 쓰레드를 시작하세요');
 				return;
 			}
-			// /GPL 소스가 Compile로 검증되지 않은 프로젝트면 안내(Start는 제어기가 자체 컴파일 — 소스 에러 시 Start 실패, §0.7).
+			// /GPL 소스가 Compile로 검증되지 않은 프로젝트면 안내(Start 는 `-compile` 로 컴파일 — 소스 에러 시 Start 실패, §0.7).
 			if (!(await host.deploy.confirmStartWhenCompileStale(node.thread.project || node.thread.name))) { return; }
 			const busyAfter = host.currentDeployLockHolder();
 			if (busyAfter) { host.warnDeployBusy('쓰레드 시작', busyAfter); return; }

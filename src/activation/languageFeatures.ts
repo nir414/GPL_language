@@ -248,17 +248,17 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 			outputChannel.appendLine(`Files: ${entries.length} | Symbols: ${allSymbols.length}`);
 
 			if (duplicated.length > 0) {
-				outputChannel.appendLine(`\n⚠ 같은 이름의 파일이 여러 경로에 인덱싱돼 있다 (${duplicated.length}건)`);
-				outputChannel.appendLine('  — 다른 프로젝트의 동명 파일이면 정상이다. 경로가 사실상 같은데 표기만 다르면 중복 인덱싱이다.');
+				outputChannel.appendLine(`\n⚠ 같은 이름의 파일이 여러 경로에 인덱싱돼 있습니다 (${duplicated.length}건)`);
+				outputChannel.appendLine('  — 다른 프로젝트의 동명 파일이면 정상입니다. 경로가 사실상 같은데 표기만 다르면 중복 인덱싱입니다.');
 				for (const [name, paths] of duplicated) {
 					outputChannel.appendLine(`  ${name} (${paths.length}곳)`);
 					for (const p of paths) { outputChannel.appendLine(`    - ${p}`); }
 				}
 			}
 			if (missing.length > 0) {
-				outputChannel.appendLine(`\n⚠ 디스크에 없는 파일이 인덱스에 남아 있다 (${missing.length}건) — 정의 이동에서 "열리지 않는 후보"로 나타난다`);
+				outputChannel.appendLine(`\n⚠ 디스크에 없는 파일이 인덱스에 남아 있습니다 (${missing.length}건) — 정의 이동에서 "열리지 않는 후보"로 나타납니다`);
 				for (const p of missing) { outputChannel.appendLine(`    - ${p}`); }
-				outputChannel.appendLine('  → `GPL: Refresh Symbols`로 정리된다(정의 이동·참조 검색이 만나면 자동으로도 지운다).');
+				outputChannel.appendLine('  → `GPL: Refresh Symbols`로 정리됩니다(정의 이동·참조 검색이 만나면 자동으로도 지워집니다).');
 			}
 
 			for (const { filePath, symbols } of entries) {

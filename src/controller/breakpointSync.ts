@@ -340,7 +340,7 @@ export class EditorBreakpointSync implements vscode.Disposable {
 			this.deps.log(`[BP Sync] Show Break 실패 — ${err instanceof Error ? err.message : String(err)}`);
 		}
 		if (!showResp || !isSuccess(showResp)) {
-			this.deps.log('[BP Sync] Show Break 응답을 판정할 수 없어 중단점 맞추기를 중단합니다 (제어기 상태를 모르는 채로 해제하지 않는다).');
+			this.deps.log('[BP Sync] Show Break 응답을 판정할 수 없어 중단점 맞추기를 중단합니다 (제어기 상태를 모르는 채로 해제하지 않습니다).');
 			return { ...empty, ok: false, error: 'show-break-failed' };
 		}
 

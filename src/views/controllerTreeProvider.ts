@@ -40,7 +40,7 @@ import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
 
 /**
  * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
- * PA 제어기의 Start는 자체적으로 Compile을 수행하므로(ai-handoff §0.7) 옛 바이너리 문제는 아니지만,
+ * 확장의 Start 는 `-compile` 로 컴파일까지 하므로(§1-DN) 옛 바이너리가 실행되지는 않지만,
  * 소스 에러가 있으면 Start가 실패하고 Problems 연동이 없다 — 먼저 Quick Compile로 확인하도록 안내한다.
  */
 export interface CompileStaleState {
@@ -98,6 +98,15 @@ class InfoNode {
 }
 
 // ── Provider ────────────────────────────────────────────
+
+/**
+ * 섹션 기본 접힘 상태의 "세대". VS Code 는 TreeItem.id 별로 사용자의 접기/펴기 상태를 워크스페이스에
+ * 저장하고, 저장된 상태가 있으면 provider 가 준 collapsibleState 를 무시한다. 그래서 기본값을 바꿔도
+ * 기존 사용자에게는 반영되지 않는다 — 이 값을 올리면 섹션 id 가 달라져 저장된 상태가 한 번만
+ * 초기화되고(이후 사용자가 접은 것은 평소대로 기억된다), 새 기본값이 적용된다.
+ * **기본 접힘 상태를 바꿀 때마다 1 씩 올릴 것.**
+ */
+const SECTION_LAYOUT_EPOCH = 2;
 
 /** threadPollIntervalMs 설정 미지정 시 기본 폴링 간격 */
 const DEFAULT_THREAD_POLL_MS = 5000;
@@ -174,6 +183,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		immediateEofStreak: 0,
 		lastChangedAt: Date.now(),
 	};
+	/** 런타임 레이아웃 초기화 횟수 — SECTION_LAYOUT_EPOCH 와 함께 섹션 id 를 이루어, 사용자가 명령으로
+	 *  접힘 상태를 기본값으로 되돌릴 수 있게 한다(gpl.controller.resetPanelLayout). */
+	private sectionLayoutSalt = 0;
 	private runtimeErrorContext?: RuntimeErrorContext;
 	private compileStale?: CompileStaleState;
 
@@ -181,6 +193,16 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	private _debugModeSubscription: vscode.Disposable | undefined;
 
 	get isConnected(): boolean { return this._connected; }
+
+	/**
+	 * 섹션 접힘 상태를 기본값으로 되돌린다(gpl.controller.resetPanelLayout).
+	 * salt 를 올리면 섹션 TreeItem.id 가 바뀌어 VS Code 가 저장해 둔 접기 상태를 잃고,
+	 * provider 가 주는 기본 collapsibleState 를 다시 따른다.
+	 */
+	resetSectionLayout(): void {
+		this.sectionLayoutSalt++;
+		this._onDidChangeTreeData.fire(undefined);
+	}
 
 	/** "컴파일 검증 필요" 상태 표시(프로젝트 상태 섹션). undefined면 해제. */
 	setCompileStale(state?: CompileStaleState): void {
@@ -265,6 +287,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const sec = new SectionNode(id, title, icon, description,
 			this.buildOnDemandCacheTooltip(this.lastFtpRefreshAt, FTP_AUTO_REFRESH_MIN_INTERVAL_MS));
 		sec.remotePath = basePath;
+		sec.collapsed = false;
 		if (error) {
 			sec.children = [new InfoNode(error, 'error')];
 		} else if (entries.length === 0) {
@@ -738,7 +761,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				'error',
 				errCtx.statusText || '최근 오류',
 			);
-			runtimeErrSec.collapsed = false;
+			runtimeErrSec.collapsed = true;
 			runtimeErrSec.children = [
 				new InfoNode(`오류 스레드: ${threadLabel}`, 'debug-stop', errCtx.statusText || undefined),
 				new InfoNode(`직전 명령: ${errCtx.lastCommand || '(없음)'}`, 'terminal', undefined),
@@ -800,7 +823,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				hasExpectedFtp || !expectedFolder ? undefined : `${expectedFolder} 폴더 없음`),
 		];
 		if (stale) {
-			// /GPL 소스만 올라가고 Compile로 검증되지 않은 상태(이슈 #17 재구성의 부수 상태). Start는 자체 컴파일하므로(§0.7)
+			// /GPL 소스만 올라가고 Compile로 검증되지 않은 상태(이슈 #17 재구성의 부수 상태). Start는 `-compile` 로 컴파일하므로(§0.7)
 			// 옛 프로그램이 도는 건 아니지만, 소스 에러가 있으면 Start가 실패하고 Problems 연동이 없다.
 			ctxSec.collapsed = false;
 			ctxSec.children.unshift(new InfoNode(
@@ -810,14 +833,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				{ command: 'gpl.quickCompile', title: 'Quick Compile' },
 				'compileStaleItem',
 				`/GPL 소스가 아직 Compile로 검증되지 않았습니다 (${new Date(stale.since).toLocaleString()} 이후). ` +
-				'Start는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start가 실패합니다 — 클릭하면 Quick Compile로 먼저 확인합니다.',
+				'Start는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 Start가 실패합니다 — 클릭하면 Quick Compile로 먼저 확인합니다.',
 			));
 		}
 		sections.push(ctxSec);
 
 		// ── 연결 정보 (간소화)
 		const conn = new SectionNode('connection', cfg.ip, 'plug', '연결됨');
-		conn.collapsed = false;
+		conn.collapsed = true;
 		const trafficOpts = getTrafficLogOptions();
 		conn.children = [
 			new InfoNode(`1402 명령 포트: ${cfg.port}`, 'server', formatConnectionStats(getConnectionStats()), {
@@ -925,6 +948,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 						}, 'breakpointItem', tooltip);
 				});
 			}
+			bpSec.collapsed = true;
 			sections.push(bpSec);
 		}
 
@@ -1044,6 +1068,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			codeChildren.push(new InfoNode('활성 코드 오류 없음', 'pass'));
 		}
 		codeSec.children = codeChildren;
+		codeSec.collapsed = false;
 		sections.push(codeSec);
 
 		const envSec = new SectionNode(
@@ -1076,6 +1101,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			envChildren.push(new InfoNode('활성 환경 경고 없음', 'pass'));
 		}
 		envSec.children = envChildren;
+		envSec.collapsed = false;
 		sections.push(envSec);
 
 		return sections;
@@ -1419,6 +1445,11 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			? vscode.TreeItemCollapsibleState.Collapsed
 			: vscode.TreeItemCollapsibleState.Expanded;
 		const item = new vscode.TreeItem(node.label, state);
+		// id 를 주지 않으면 VS Code 가 라벨로 핸들을 만들어 사용자의 접기 상태를 저장하고, 그 뒤로는
+		// 위의 collapsibleState 를 무시한다(라벨이 IP·개수를 품고 있어 상태가 흩어지기도 한다).
+		// 안정적인 id 에 세대·초기화 salt 를 붙여, 평소에는 사용자의 선택을 기억하되 기본값을 바꾸거나
+		// 초기화 명령을 실행했을 때만 새 기본 상태로 한 번 되돌아가게 한다.
+		item.id = `section-${node.id}@${SECTION_LAYOUT_EPOCH}.${this.sectionLayoutSalt}`;
 		item.iconPath = new vscode.ThemeIcon(node.iconId);
 		item.description = node.description;
 		if (node.tooltip) { item.tooltip = node.tooltip; }

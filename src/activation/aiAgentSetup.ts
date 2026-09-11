@@ -18,6 +18,18 @@ export function activateAiAgentSetup(host: ExtensionHost): void {
 			const projectName = (await host.project.detectWorkspaceProjectName())?.trim() || undefined;
 			const result = await exportAiAgentSetup(context, { ip: config.ip, port: config.port, projectName });
 			host.log(`[AI Setup] gpl.ai.exportAgentSetup => ${JSON.stringify(result)}`);
+			// Export 직후 같은 점검을 자동으로 돌린다 — 종전에는 사용자가 `Check AI Agent Setup` 을 따로
+			// 눌러야 결과를 알 수 있어 버튼이 둘로 나뉘어 있었다(2026-09-10 사용자 지적, §1-DQ).
+			// 점검 명령 자체는 남아 있다(팔레트·재점검용).
+			const report = inspectAiAgentSetup(context);
+			host.log(`[AI Setup] export 후 자동 점검 => ${JSON.stringify(report, null, 2)}`);
+			if (!report.ok) {
+				const pick = await vscode.window.showWarningMessage(
+					`GPL AI Agent Setup 내보내기 완료 — 점검에서 ${report.problems.length}건: ${report.problems.join(' / ')}`,
+					'출력 보기',
+				);
+				if (pick === '출력 보기') { outputChannel.show(true); }
+			}
 			return result;
 		})
 	);

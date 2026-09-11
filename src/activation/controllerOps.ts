@@ -76,7 +76,7 @@ export async function stopThreadWithRecovery(host: ExtensionHost, threadName: st
 	if (stopped) {
 		vscode.window.showInformationMessage(`${label} 정지 완료`);
 	} else if (!(await trySoftEStopRecovery(host, threadName))) {
-		vscode.window.showWarningMessage(`${label} 정지 명령은 전송됐지만 아직 실행 중일 수 있습니다. 잠시 후 다시 확인해줘.`);
+		vscode.window.showWarningMessage(`${label} 정지 명령은 전송됐지만 아직 실행 중일 수 있습니다. 잠시 후 다시 확인하세요.`);
 	}
 	host.controllerTree?.refresh();
 	return stopped;
@@ -158,11 +158,11 @@ export async function verifyAllStopped(host: ExtensionHost, maxAttempts = 6): Pr
 
 export async function trySoftEStopRecovery(host: ExtensionHost, targetName?: string): Promise<boolean> {
 	const targetLabel = targetName ? `${targetName}` : '전체 스레드';
+	// 모달은 VS Code 가 취소 버튼을 자동으로 붙인다 — '취소' 를 항목으로 넘기면 버튼이 두 개가 된다.
 	const choice = await vscode.window.showWarningMessage(
-		`${targetLabel} 정지가 확인되지 않았어. SoftEStop을 실행해서 제어된 감속 정지를 시도할까?`,
+		`${targetLabel} 정지가 확인되지 않았습니다. SoftEStop으로 제어된 감속 정지를 시도할까요?`,
 		{ modal: true },
 		'SoftEStop 실행',
-		'취소',
 	);
 	if (choice !== 'SoftEStop 실행') {
 		return false;
@@ -178,7 +178,7 @@ export async function trySoftEStopRecovery(host: ExtensionHost, targetName?: str
 			return true;
 		}
 
-		vscode.window.showWarningMessage(`SoftEStop 후에도 ${targetLabel} 정지 확인이 안 됐어. 컨트롤러 상태 점검이 필요해.`);
+		vscode.window.showWarningMessage(`SoftEStop 후에도 ${targetLabel} 정지가 확인되지 않았습니다. 제어기 상태를 점검하세요.`);
 		return false;
 	} catch (err: any) {
 		vscode.window.showErrorMessage(`SoftEStop 실패: ${err?.message ?? err}`);

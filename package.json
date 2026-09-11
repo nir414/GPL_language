@@ -49,9 +49,7 @@
         "onCommand:gpl.quickCompile",
         "onCommand:gpl.project.promoteSourceForBreakpoint",
         "onCommand:gpl.debug.generateLaunch",
-        "onCommand:gpl.debug.attachNow",
         "onCommand:gpl.debug.attachOnly",
-        "onCommand:gpl.uploadStart.test",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
         "onCommand:gpl.console.ensure",
@@ -229,381 +227,461 @@
         "commands": [
             {
                 "command": "gpl.refreshSymbols",
-                "title": "GPL: Refresh Symbols"
+                "title": "Refresh Symbols (심볼 다시 읽기)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.insertDocComment",
-                "title": "GPL: 문서화 주석 생성 (Insert Documentation Comment)"
+                "title": "Insert Documentation Comment (문서화 주석 생성)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.debugSymbolCache",
-                "title": "GPL: Debug Symbol Cache"
+                "title": "Debug Symbol Cache (심볼 캐시 진단)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.showXmlBestPractices",
-                "title": "GPL: Show XML Best Practices"
+                "title": "Show XML Best Practices (XML 권장 사용법)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.analyzeXmlEncoding",
-                "title": "GPL: Analyze XML Encoding"
+                "title": "Analyze XML Encoding (XML 인코딩 분석)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.controller.showDashboard",
-                "title": "GPL: 제어기 대시보드 열기",
+                "title": "Open Controller Dashboard (제어기 대시보드)",
+                "category": "GPL",
                 "icon": "$(dashboard)"
             },
             {
                 "command": "gpl.controller.connect",
-                "title": "GPL: Connect to Controller",
+                "title": "Connect to Controller (제어기 연결)",
+                "category": "GPL",
                 "icon": "$(plug)"
             },
             {
                 "command": "gpl.controller.disconnect",
-                "title": "GPL: Disconnect Controller",
+                "title": "Disconnect Controller (제어기 연결 해제)",
+                "category": "GPL",
                 "icon": "$(debug-disconnect)"
             },
             {
                 "command": "gpl.deploy",
-                "title": "GPL: Deploy (/GPL 업로드 + Compile, Start 없음)",
+                "title": "Deploy (/GPL 업로드 + 컴파일, 실행 안 함)",
+                "category": "GPL",
                 "icon": "$(cloud-upload)"
             },
             {
                 "command": "gpl.uploadStart",
-                "title": "GPL: 업로드 스타트 (/GPL 업로드 + Start, Compile은 제어기가 수행)",
+                "title": "Upload & Start (/GPL 업로드 + 컴파일 실행)",
+                "category": "GPL",
                 "icon": "$(rocket)"
             },
             {
                 "command": "gpl.start",
-                "title": "GPL: Start (실행만, 배포 없음)",
+                "title": "Start (배포 없이 실행)",
+                "category": "GPL",
                 "icon": "$(play)"
             },
             {
                 "command": "gpl.saveToFlash",
-                "title": "GPL: Save to Flash (/flash/projects에 저장만)",
+                "title": "Save to Flash (/flash/projects 에 영구 저장)",
+                "category": "GPL",
                 "icon": "$(save)"
             },
             {
                 "command": "gpl.quickCompile",
-                "title": "GPL: 빠른 컴파일 (변경분만 /GPL 직접 업로드, STOP/START 생략)",
+                "title": "Quick Compile (변경분만 업로드 + 컴파일)",
+                "category": "GPL",
                 "icon": "$(zap)"
             },
             {
                 "command": "gpl.debug.generateLaunch",
-                "title": "GPL: Create/Update Debug launch.json",
+                "title": "Create/Update launch.json (디버그 구성 만들기)",
+                "category": "GPL",
                 "icon": "$(gear)"
             },
             {
-                "command": "gpl.debug.attachNow",
-                "title": "GPL: 디버그 시작 (배포 후 붙기, launch.json 불필요)",
-                "icon": "$(debug-alt)"
-            },
-            {
                 "command": "gpl.debug.attachOnly",
-                "title": "GPL: 디버그 붙기 (배포 없이 실행 중인 프로그램에 attach)",
+                "title": "Debug: Attach Only (배포 없이 실행 중에 붙기)",
+                "category": "GPL",
                 "icon": "$(plug)"
             },
             {
-                "command": "gpl.uploadStart.test",
-                "title": "GPL: 업로드 스타트 TEST (시퀀스 조합 선택 — 진단용)",
-                "icon": "$(beaker)"
-            },
-            {
                 "command": "gpl.debugProject",
-                "title": "GPL: Debug Project (Deploy + Attach)",
+                "title": "Debug Project (프로젝트 선택 후 배포 + 붙기)",
+                "category": "GPL",
                 "icon": "$(debug-alt)"
             },
             {
                 "command": "gpl.project.syncSources",
-                "title": "GPL: Project.gpr 소스 목록 동기화 (.gpl 추가/누락 정리)",
+                "title": "Sync Project Sources (.gpr 소스 목록 동기화)",
+                "category": "GPL",
                 "icon": "$(list-tree)"
             },
             {
                 "command": "gpl.project.promoteSourceForBreakpoint",
-                "title": "GPL: 브레이크포인트용 소스 승격 (라이브러리 소스를 메인 ProjectSource로)",
+                "title": "Promote Source for Breakpoint (중단점용 소스 승격)",
+                "category": "GPL",
                 "icon": "$(debug-breakpoint-conditional)"
             },
             {
                 "command": "gpl.console.start",
-                "title": "GPL: Start Runtime Console",
+                "title": "Start Runtime Console (런타임 콘솔 시작)",
+                "category": "GPL",
                 "icon": "$(terminal)"
             },
             {
                 "command": "gpl.console.stop",
-                "title": "GPL: Stop Runtime Console (콘솔 중지)",
+                "title": "Stop Runtime Console (런타임 콘솔 중지)",
+                "category": "GPL",
                 "icon": "$(stop)"
             },
             {
                 "command": "gpl.console.ensure",
-                "title": "GPL: Ensure Runtime Console (1403)",
+                "title": "Ensure Runtime Console (1403 연결 확인)",
+                "category": "GPL",
                 "icon": "$(refresh)"
             },
             {
                 "command": "gpl.logs.liveTerminal.start",
-                "title": "GPL: Start Live Log Terminal",
+                "title": "Start Live Log Terminal (라이브 로그 시작)",
+                "category": "GPL",
                 "icon": "$(terminal)"
             },
             {
                 "command": "gpl.logs.liveTerminal.stop",
-                "title": "GPL: Stop Live Log Terminal (라이브 로그 중지)",
+                "title": "Stop Live Log Terminal (라이브 로그 중지)",
+                "category": "GPL",
                 "icon": "$(debug-stop)"
             },
             {
                 "command": "gpl.threads.refresh",
-                "title": "GPL: Refresh All",
+                "title": "Refresh All (전체 새로고침)",
+                "category": "GPL",
                 "icon": "$(refresh)"
             },
             {
                 "command": "gpl.controller.showTraffic",
-                "title": "GPL: Show Traffic Monitor",
+                "title": "Show Traffic Monitor (통신 모니터)",
+                "category": "GPL",
                 "icon": "$(radio-tower)"
             },
             {
                 "command": "gpl.controller.toggleTrafficResponseBody",
-                "title": "GPL: Toggle Traffic Response Body (1402)",
+                "title": "Toggle Traffic Response Body (1402 응답 본문 표시)",
+                "category": "GPL",
                 "icon": "$(eye)"
             },
             {
                 "command": "gpl.controller.clearTraffic",
-                "title": "GPL: Clear Traffic Monitor",
+                "title": "Clear Traffic Monitor (통신 기록 지우기)",
+                "category": "GPL",
                 "icon": "$(clear-all)"
             },
             {
                 "command": "gpl.controller.sendCommand",
-                "title": "GPL: Send Command to Controller",
+                "title": "Send Command to Controller (제어기에 명령 보내기)",
+                "category": "GPL",
                 "icon": "$(debug-console)"
             },
             {
                 "command": "gpl.controller.showGlobal",
-                "title": "GPL: 전역변수 보기/편집 (Show/Set Global)",
+                "title": "Show/Set Global (전역변수 보기·편집)",
+                "category": "GPL",
                 "icon": "$(symbol-variable)"
             },
             {
                 "command": "gpl.controller.showDio",
-                "title": "GPL: DIO 조회 (Show DIO)",
+                "title": "Show DIO (DIO 조회)",
+                "category": "GPL",
                 "icon": "$(symbol-boolean)"
             },
             {
                 "command": "gpl.controller.setDio",
-                "title": "GPL: DIO 출력 설정 (Set DIO)",
+                "title": "Set DIO (DIO 출력 설정)",
+                "category": "GPL",
                 "icon": "$(circuit-board)"
             },
             {
                 "command": "gpl.controller.refreshFtp",
-                "title": "GPL: Refresh FTP Files",
+                "title": "Refresh FTP Files (FTP 목록 새로고침)",
+                "category": "GPL",
                 "icon": "$(refresh)"
             },
             {
                 "command": "gpl.controller.refreshSystemInfo",
-                "title": "GPL: Refresh System Info",
+                "title": "Refresh System Info (시스템 정보 새로고침)",
+                "category": "GPL",
                 "icon": "$(refresh)"
             },
             {
+                "command": "gpl.controller.resetPanelLayout",
+                "title": "Reset Panel Layout (패널 배치 초기화)",
+                "category": "GPL",
+                "icon": "$(layout)"
+            },
+            {
                 "command": "gpl.controller.copySituationForChat",
-                "title": "GPL: Copy Situation for Chat",
+                "title": "Copy Situation for Chat (상황 복사)",
+                "category": "GPL",
                 "icon": "$(copy)"
             },
             {
                 "command": "gpl.diagnosticSnapshot",
-                "title": "GPL: Diagnostic Snapshot",
+                "title": "Diagnostic Snapshot (진단 스냅샷)",
+                "category": "GPL",
                 "icon": "$(notebook-render-output)"
             },
             {
                 "command": "gpl.controller.pushBreakpoints",
-                "title": "GPL: Push Editor Breakpoints to Controller (에디터 중단점 반영)"
+                "title": "Push Breakpoints to Controller (에디터 중단점 반영)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.controller.syncBreakpoints",
-                "title": "GPL: Sync Breakpoints (제어기를 에디터 기준으로 맞추기)",
+                "title": "Sync Breakpoints (제어기를 에디터 기준으로 맞추기)",
+                "category": "GPL",
                 "icon": "$(sync)"
             },
             {
                 "command": "gpl.controller.clearBreakpointHere",
-                "title": "제어기에서 이 중단점 해제"
+                "title": "Clear Breakpoint (제어기에서 이 중단점 해제)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.controller.pullBreakpoints",
-                "title": "GPL: Pull Controller Breakpoints (제어기 중단점 가져오기)"
+                "title": "Pull Breakpoints from Controller (제어기 중단점 가져오기)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.controller.refreshBreakpoints",
-                "title": "GPL: Refresh Controller Breakpoints (중단점 새로고침)",
+                "title": "Refresh Breakpoints (중단점 새로고침)",
+                "category": "GPL",
                 "icon": "$(refresh)"
             },
             {
                 "command": "gpl.ai.exportAgentSetup",
-                "title": "GPL: Export AI Agent Setup",
+                "title": "Export AI Agent Setup (AI 설정 내보내기·점검)",
+                "category": "GPL",
                 "icon": "$(hubot)"
             },
             {
                 "command": "gpl.ai.checkAgentSetup",
-                "title": "GPL: Check AI Agent Setup",
+                "title": "Check AI Agent Setup (AI 설정 점검)",
+                "category": "GPL",
                 "icon": "$(checklist)"
             },
             {
                 "command": "gpl.ai.debugAssist",
-                "title": "GPL: AI Debug Assist",
+                "title": "AI Debug Assist (AI 디버그 도우미)",
+                "category": "GPL",
                 "icon": "$(hubot)"
             },
             {
                 "command": "gpl.ai.debug.getState",
-                "title": "GPL: AI Debug Get State"
+                "title": "AI Debug: Get State (상태 조회)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.setBreakpoint",
-                "title": "GPL: AI Debug Set Breakpoint"
+                "title": "AI Debug: Set Breakpoint (중단점 설정)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.clearBreakpoint",
-                "title": "GPL: AI Debug Clear Breakpoint"
+                "title": "AI Debug: Clear Breakpoint (중단점 해제)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.breakThread",
-                "title": "GPL: AI Debug Break Thread"
+                "title": "AI Debug: Break Thread (스레드 일시정지)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.stepThread",
-                "title": "GPL: AI Debug Step Thread"
+                "title": "AI Debug: Step Thread (스레드 스텝)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.continueThread",
-                "title": "GPL: AI Debug Continue Thread"
+                "title": "AI Debug: Continue Thread (스레드 재개)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.evaluate",
-                "title": "GPL: AI Debug Evaluate"
+                "title": "AI Debug: Evaluate (식 평가)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.loop",
-                "title": "GPL: AI Debug Loop"
+                "title": "AI Debug: Loop (자동 반복)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.connect",
-                "title": "GPL: AI Debug Connect (비대화형 연결)"
+                "title": "AI Debug: Connect (비대화형 연결)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.disconnect",
-                "title": "GPL: AI Debug Disconnect"
+                "title": "AI Debug: Disconnect (연결 해제)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.ai.debug.getConnectionState",
-                "title": "GPL: AI Debug Get Connection State"
+                "title": "AI Debug: Get Connection State (연결 상태 조회)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.debug.showSourceStale",
-                "title": "GPL: 소스 변경 상태 보기 (디버그 BP 신뢰성)"
+                "title": "Show Source Stale State (소스 변경 상태)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.debug.lockThread",
-                "title": "GPL: 스레드 실행 잠금 (이 스레드만 Continue/Step)",
+                "title": "Lock Thread (이 스레드만 Continue/Step)",
+                "category": "GPL",
                 "icon": "$(lock)"
             },
             {
                 "command": "gpl.debug.unlockThread",
-                "title": "GPL: 스레드 실행 잠금 해제",
+                "title": "Unlock Thread (스레드 실행 잠금 해제)",
+                "category": "GPL",
                 "icon": "$(unlock)"
             },
             {
                 "command": "gpl.debug.toggleThreadLock",
-                "title": "GPL: 스레드 실행 잠금 토글"
+                "title": "Toggle Thread Lock (스레드 실행 잠금 토글)",
+                "category": "GPL"
             },
             {
                 "command": "gpl.controller.threadStart",
-                "title": "쓰레드 시작",
+                "title": "Start Thread (쓰레드 시작)",
+                "category": "GPL",
                 "icon": "$(play)"
             },
             {
                 "command": "gpl.controller.threadStop",
-                "title": "쓰레드 정지 (Stop Thread)",
+                "title": "Stop Thread (쓰레드 정지)",
+                "category": "GPL",
                 "icon": "$(debug-stop)"
             },
             {
                 "command": "gpl.controller.threadBreak",
-                "title": "일시정지",
+                "title": "Break Thread (일시정지)",
+                "category": "GPL",
                 "icon": "$(debug-pause)"
             },
             {
                 "command": "gpl.controller.threadContinue",
-                "title": "재개",
+                "title": "Continue Thread (재개)",
+                "category": "GPL",
                 "icon": "$(debug-continue)"
             },
             {
                 "command": "gpl.controller.threadContinueNoError",
-                "title": "에러 건너뛰고 재개",
+                "title": "Continue Ignoring Error (에러 건너뛰고 재개)",
+                "category": "GPL",
                 "icon": "$(debug-continue)"
             },
             {
                 "command": "gpl.controller.threadStep",
-                "title": "스텝 오버 (Step Over)",
+                "title": "Step Over (스텝 오버)",
+                "category": "GPL",
                 "icon": "$(debug-step-over)"
             },
             {
                 "command": "gpl.controller.threadStepInto",
-                "title": "스텝 인투 (Step Into)",
+                "title": "Step Into (스텝 인투)",
+                "category": "GPL",
                 "icon": "$(debug-step-into)"
             },
             {
                 "command": "gpl.controller.threadStepOut",
-                "title": "스텝 아웃 (Step Out)",
+                "title": "Step Out (스텝 아웃)",
+                "category": "GPL",
                 "icon": "$(debug-step-out)"
             },
             {
                 "command": "gpl.controller.threadShowLocation",
-                "title": "현재 위치 보기",
+                "title": "Show Location (현재 위치 보기)",
+                "category": "GPL",
                 "icon": "$(go-to-file)"
             },
             {
                 "command": "gpl.controller.threadShowStack",
-                "title": "스택 보기 (Show Stack)",
+                "title": "Show Stack (스택 보기)",
+                "category": "GPL",
                 "icon": "$(list-tree)"
             },
             {
                 "command": "gpl.controller.ftpRun",
-                "title": "업로드된 복사본 컴파일 & 실행",
+                "title": "Compile & Run (업로드된 복사본 실행)",
+                "category": "GPL",
                 "icon": "$(play)"
             },
             {
                 "command": "gpl.controller.ftpStop",
-                "title": "중지 (Stop)",
+                "title": "Stop (중지)",
+                "category": "GPL",
                 "icon": "$(debug-stop)"
             },
             {
                 "command": "gpl.controller.ftpDownload",
-                "title": "다운로드",
+                "title": "Download (다운로드)",
+                "category": "GPL",
                 "icon": "$(cloud-download)"
             },
             {
                 "command": "gpl.controller.ftpDelete",
-                "title": "삭제",
+                "title": "Delete (삭제)",
+                "category": "GPL",
                 "icon": "$(trash)"
             },
             {
                 "command": "gpl.controller.ftpClearFolder",
-                "title": "GPL: FTP 폴더 비우기 (제어기의 파일 전체 삭제)",
+                "title": "Clear FTP Folder (제어기 파일 전체 삭제)",
+                "category": "GPL",
                 "icon": "$(trash)"
             },
             {
                 "command": "gpl.controller.stopAll",
-                "title": "GPL: 모든 쓰레드 중지 (Stop -all)",
+                "title": "Stop All Threads (모든 쓰레드 중지)",
+                "category": "GPL",
                 "icon": "$(debug-stop)"
             },
             {
+                "command": "gpl.controller.diagnoseStuckThread",
+                "title": "Diagnose Stuck Thread (정지 불가 쓰레드 진단)",
+                "category": "GPL",
+                "icon": "$(search)"
+            },
+            {
                 "command": "gpl.controller.consoleToggle",
-                "title": "GPL: 콘솔 토글",
+                "title": "Toggle Console (콘솔 토글)",
+                "category": "GPL",
                 "icon": "$(terminal)"
             },
             {
                 "command": "gpl.controller.clearErrors",
-                "title": "에러 로그 초기화",
+                "title": "Clear Error Log (에러 로그 초기화)",
+                "category": "GPL",
                 "icon": "$(clear-all)"
             },
             {
                 "command": "gpl.controller.copyError",
-                "title": "에러 복사",
+                "title": "Copy Error (에러 복사)",
+                "category": "GPL",
                 "icon": "$(copy)"
             },
             {
                 "command": "gpl.controller.ftpUnload",
-                "title": "Unload",
+                "title": "Unload (메모리에서 내리기)",
+                "category": "GPL",
                 "icon": "$(close)"
             }
         ],
@@ -650,6 +728,150 @@
                 {
                     "command": "gpl.debug.toggleThreadLock",
                     "when": "inDebugMode && debugType == 'brooks-gpl'"
+                },
+                {
+                    "command": "gpl.controller.clearBreakpointHere",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadStart",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadStop",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadBreak",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadContinue",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadContinueNoError",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadStep",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadStepInto",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadStepOut",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadShowLocation",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.threadShowStack",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.ftpRun",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.ftpStop",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.ftpDownload",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.ftpDelete",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.ftpUnload",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.ftpClearFolder",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.copyError",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.clearErrors",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.refreshFtp",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.refreshSystemInfo",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.refreshBreakpoints",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.toggleTrafficResponseBody",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.clearTraffic",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.diagnoseStuckThread",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.getState",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.setBreakpoint",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.clearBreakpoint",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.breakThread",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.stepThread",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.continueThread",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.evaluate",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.loop",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.connect",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.disconnect",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.ai.debug.getConnectionState",
+                    "when": "false"
                 }
             ],
             "explorer/context": [
@@ -697,138 +919,103 @@
             "view/title": [
                 {
                     "command": "gpl.controller.connect",
-                    "when": "view == gplThreads && !gpl.ui.connected",
-                    "group": "navigation@1"
+                    "group": "navigation@1",
+                    "when": "view == gplThreads && !gpl.ui.connected"
                 },
                 {
                     "command": "gpl.controller.stopAll",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@1"
-                },
-                {
-                    "command": "gpl.threads.refresh",
-                    "when": "view == gplThreads",
-                    "group": "2_tools@1"
-                },
-                {
-                    "command": "gpl.deploy",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "1_deploy@0"
-                },
-                {
-                    "command": "gpl.uploadStart",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@3"
-                },
-                {
-                    "command": "gpl.start",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "1_deploy@2"
+                    "group": "navigation@1",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
                     "command": "gpl.quickCompile",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@2"
+                    "group": "navigation@2",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
-                    "command": "gpl.saveToFlash",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "1_deploy@1"
-                },
-                {
-                    "command": "gpl.diagnosticSnapshot",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "3_diag@1"
-                },
-                {
-                    "command": "gpl.ai.debugAssist",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "3_diag@2"
-                },
-                {
-                    "command": "gpl.controller.showTraffic",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "3_diag@3"
-                },
-                {
-                    "command": "gpl.controller.sendCommand",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "2_tools@2"
-                },
-                {
-                    "command": "gpl.controller.copySituationForChat",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "2_tools@3"
+                    "command": "gpl.uploadStart",
+                    "group": "navigation@3",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
                     "command": "gpl.debug.attachOnly",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@4"
+                    "group": "navigation@4",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
-                    "command": "gpl.uploadStart.test",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "navigation@5"
+                    "command": "gpl.threads.refresh",
+                    "group": "navigation@5",
+                    "when": "view == gplThreads"
                 },
                 {
-                    "command": "gpl.debug.attachNow",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "2_debug@1"
+                    "command": "gpl.deploy",
+                    "group": "1_deploy@1",
+                    "when": "view == gplThreads && gpl.ui.connected"
+                },
+                {
+                    "command": "gpl.start",
+                    "group": "1_deploy@2",
+                    "when": "view == gplThreads && gpl.ui.connected"
+                },
+                {
+                    "command": "gpl.saveToFlash",
+                    "group": "1_deploy@3",
+                    "when": "view == gplThreads && gpl.ui.connected"
+                },
+                {
+                    "command": "gpl.debugProject",
+                    "group": "2_debug@1",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
                     "command": "gpl.debug.generateLaunch",
-                    "when": "view == gplThreads",
-                    "group": "2_debug@2"
-                },
-                {
-                    "command": "gpl.controller.pushBreakpoints",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "2_debug@3"
-                },
-                {
-                    "command": "gpl.controller.pullBreakpoints",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "2_debug@4"
+                    "group": "2_debug@2",
+                    "when": "view == gplThreads"
                 },
                 {
                     "command": "gpl.controller.syncBreakpoints",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "2_debug@5"
+                    "group": "2_debug@3",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
-                    "command": "gpl.console.start",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "3_console@1"
+                    "command": "gpl.controller.pullBreakpoints",
+                    "group": "2_debug@4",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
-                    "command": "gpl.console.stop",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "3_console@2"
+                    "command": "gpl.controller.sendCommand",
+                    "group": "3_tools@1",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
-                    "command": "gpl.logs.liveTerminal.start",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "3_console@3"
+                    "command": "gpl.controller.copySituationForChat",
+                    "group": "3_tools@2",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
-                    "command": "gpl.logs.liveTerminal.stop",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "3_console@4"
+                    "command": "gpl.controller.resetPanelLayout",
+                    "group": "3_tools@3",
+                    "when": "view == gplThreads"
+                },
+                {
+                    "command": "gpl.diagnosticSnapshot",
+                    "group": "4_diag@1",
+                    "when": "view == gplThreads && gpl.ui.connected"
+                },
+                {
+                    "command": "gpl.ai.debugAssist",
+                    "group": "4_diag@2",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
                     "command": "gpl.ai.exportAgentSetup",
-                    "when": "view == gplThreads",
-                    "group": "3_diag@4"
-                },
-                {
-                    "command": "gpl.ai.checkAgentSetup",
-                    "when": "view == gplThreads",
-                    "group": "3_diag@5"
+                    "group": "4_diag@3",
+                    "when": "view == gplThreads"
                 },
                 {
                     "command": "gpl.controller.disconnect",
-                    "when": "view == gplThreads && gpl.ui.connected",
-                    "group": "9_connection@1"
+                    "group": "9_connection@1",
+                    "when": "view == gplThreads && gpl.ui.connected"
                 }
             ],
             "view/item/context": [
@@ -876,11 +1063,6 @@
                     "command": "gpl.controller.clearTraffic",
                     "when": "view == gplThreads && viewItem == trafficMonitorItem",
                     "group": "trafficMonitor@3"
-                },
-                {
-                    "command": "gpl.console.stop",
-                    "when": "view == gplThreads && viewItem == runtimeConsoleItem",
-                    "group": "runtimeConsole@1"
                 },
                 {
                     "command": "gpl.controller.threadStart",
@@ -971,6 +1153,11 @@
                     "command": "gpl.controller.threadShowStack",
                     "when": "view == gplThreads && viewItem =~ /^gplThread-(paused|error|running)$/",
                     "group": "threadInspect@2"
+                },
+                {
+                    "command": "gpl.controller.diagnoseStuckThread",
+                    "when": "view == gplThreads && viewItem == gplThread-running",
+                    "group": "threadInspect@3"
                 },
                 {
                     "command": "gpl.threads.refresh",
@@ -1091,6 +1278,26 @@
                     "command": "gpl.controller.ftpDownload",
                     "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "ftp@5"
+                },
+                {
+                    "command": "gpl.console.start",
+                    "group": "runtimeConsole@1",
+                    "when": "view == gplThreads && viewItem == runtimeConsoleItem"
+                },
+                {
+                    "command": "gpl.console.stop",
+                    "group": "runtimeConsole@2",
+                    "when": "view == gplThreads && viewItem == runtimeConsoleItem"
+                },
+                {
+                    "command": "gpl.logs.liveTerminal.start",
+                    "group": "runtimeConsole@3",
+                    "when": "view == gplThreads && viewItem == runtimeConsoleItem"
+                },
+                {
+                    "command": "gpl.logs.liveTerminal.stop",
+                    "group": "runtimeConsole@4",
+                    "when": "view == gplThreads && viewItem == runtimeConsoleItem"
                 }
             ]
         },
@@ -1348,7 +1555,7 @@
                     "type": "number",
                     "default": 1500,
                     "minimum": 0,
-                    "description": "같은 프로젝트의 Compile 응답 완료 뒤 Start를 보내기까지의 완충 시간(ms). PA 제어기의 Start는 자체 컴파일을 수행하므로 Compile 직후 연속 Start(컴파일 중복)를 피합니다(ai-handoff §0.7 — 중복 실행의 안전성은 실기기 미검증이라 거부가 아닌 완충으로 둠). 0이면 완충 없음."
+                    "description": "같은 프로젝트의 Compile 응답 완료 뒤 Start를 보내기까지의 완충 시간(ms). 확장이 보내는 Start에는 -compile이 붙어 컴파일까지 수행하므로 Compile 직후 연속 Start(컴파일 중복)를 피합니다(ai-handoff §0.7 — 중복 실행의 안전성은 실기기 미검증이라 거부가 아닌 완충으로 둠). 0이면 완충 없음."
                 },
                 "gpl.controller.keepAlive1402": {
                     "scope": "window",
@@ -1466,7 +1673,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "`Start`에 `-event`를 붙입니다(기본 켜짐). 공식 문서상 `-event`는 쓰레드 상태 변경을 콘솔 메시지가 아니라 **이벤트로** 보내며, GDE도 캡처 2회 모두 `Start <프로젝트> -event`를 사용했습니다(2026-06-23) — 1403 스트림으로 상태 변경을 받아 폴링 의존을 줄이는 표준 방식입니다. 끄면 `-noevent`를 붙여 종전 콘솔 메시지 방식으로 되돌립니다. `-compile`은 어떤 경우에도 붙이지 않습니다(제어기 Start가 자체 컴파일 — ai-handoff §0.7)."
+                    "description": "`Start`에 `-event`를 붙입니다(기본 켜짐). 공식 문서상 `-event`는 쓰레드 상태 변경을 콘솔 메시지가 아니라 **이벤트로** 보내며, GDE도 캡처 2회 모두 `Start <프로젝트> -event`를 사용했습니다(2026-06-23) — 1403 스트림으로 상태 변경을 받아 폴링 의존을 줄이는 표준 방식입니다. 끄면 `-noevent`를 붙여 종전 콘솔 메시지 방식으로 되돌립니다. `-compile`은 항상 붙습니다 — 제어기의 Start는 스위치 없이는 컴파일하지 않고 옛 바이너리를 실행하기 때문입니다(2026-09-10 실기 관측, ai-handoff §0.7)."
                 },
                 "gpl.debug.jumpToCursor": {
                     "scope": "window",

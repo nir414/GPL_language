@@ -84,7 +84,7 @@ export function activateConsoleCommands(host: ExtensionHost): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.logs.liveTerminal.stop', () => {
 			if (!isLiveLogTerminalEnabled()) {
-				vscode.window.showInformationMessage('GPL Live Logs 터미널이 이미 중지 상태야.');
+				vscode.window.showInformationMessage('GPL Live Logs 터미널은 이미 중지 상태입니다.');
 				return;
 			}
 			// Live Log 세션 종료 시 1403 소비자도 함께 정리해 소켓/타이머/리스너를 완전 해제한다.
@@ -139,7 +139,7 @@ export function activateConsoleCommands(host: ExtensionHost): void {
 			}
 			host.log('─────────────────────────────────────────────────────────');
 			outputChannel.show(true);
-			vscode.window.showInformationMessage('진단 스냅샷을 클립보드에 복사했어.');
+			vscode.window.showInformationMessage('진단 스냅샷을 클립보드에 복사했습니다.');
 		})
 	);
 }

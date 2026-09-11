@@ -14,9 +14,22 @@ import { validateBridgeRequest, AGENT_BRIDGE_VERSION } from '../controller/agent
 test('aiCommandPolicy: flash 영구 저장이 목록에 있고 사유·대안을 갖췄다', () => {
     const entry = findAiBlockedCommand('gpl.saveToFlash');
     assert.ok(entry, 'gpl.saveToFlash 가 차단 목록에 없음');
-    assert.strictEqual(entry!.title, 'GPL: Save to Flash');
     assert.ok(/되돌릴 수 없/.test(entry!.reason), '왜 막는지 설명 누락');
     assert.ok(entry!.humanPath.includes('명령 팔레트'), '사람이 실행할 경로 안내 누락');
+});
+
+// 차단 항목의 `title` 은 AI 에게 "사람에게 이 이름으로 부탁하라"고 알려주는 값이다 —
+// package.json 의 실제 표시 이름과 어긋나면 사용자가 팔레트에서 찾지 못한다(2026-09-10 §1-DQ).
+test('aiCommandPolicy: 차단 항목의 title 이 package.json 표시 이름과 일치한다', () => {
+    const pkg = require('../../package.json') as {
+        contributes: { commands: { command: string; title: string; category?: string }[] };
+    };
+    for (const entry of AI_BLOCKED_COMMANDS) {
+        const declared = pkg.contributes.commands.find(c => c.command === entry.command);
+        assert.ok(declared, `${entry.command} 가 package.json 에 없음`);
+        const shown = declared!.category ? `${declared!.category}: ${declared!.title}` : declared!.title;
+        assert.strictEqual(entry.title, shown, `${entry.command} 의 title 이 표시 이름과 다름`);
+    }
 });
 
 test('aiCommandPolicy: 대소문자·공백을 바꾼 표기로 우회되지 않는다', () => {

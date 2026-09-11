@@ -222,6 +222,7 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 		vscode.debug.onDidStartDebugSession(session => {
 			if (session.type === 'brooks-gpl') {
 				host.isDebugSessionActive = true;
+				host.gplDebugSession = session;
 				host.updateUiContexts(host.controllerTree?.isConnected ?? host.statusBar?.isConnected ?? false);
 				host.ensureAgentBridge()?.setState({ debugSessionActive: true });
 				const projectFromDebugConfig = (session.configuration?.projectName || '').toString().trim();
@@ -243,6 +244,7 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 		vscode.debug.onDidTerminateDebugSession(session => {
 			if (session.type === 'brooks-gpl') {
 				host.isDebugSessionActive = false;
+				if (host.gplDebugSession?.id === session.id) { host.gplDebugSession = undefined; }
 				host.updateUiContexts(host.controllerTree?.isConnected ?? host.statusBar?.isConnected ?? false);
 				host.ensureAgentBridge()?.setState({ debugSessionActive: false });
 				host.controllerTree?.exitDebugMode();

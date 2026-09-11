@@ -31,6 +31,7 @@ import * as vscode from 'vscode';
 
 import {
     sendCommand,
+    sendCommandDetailed,
     getControllerConfig,
     ControllerConfig,
     probeControllerCommand,
@@ -76,7 +77,7 @@ import {
     resolveExecutionThread,
     shouldPreserveFocus,
 } from './threadLock';
-import { buildStartCommand } from '../controller/startCommand';
+import { buildStartCommand, commandRunsCompiler } from '../controller/startCommand';
 import {
     breakpointCandidateLines,
     buildProcedureRanges,
@@ -1892,7 +1893,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     /**
      * 디버거가 보내는 `Start` 명령을 문서 구문(startCommand.ts)으로 조립한다.
      * `-event`(GDE 기본), `-stack`, `-init`, `-trace` 는 설정·launch 구성에서 온다.
-     * `-compile` 은 붙이지 않는다(Start 가 자체 컴파일 — 하드 규칙 7).
+     * `-compile` 은 startCommand 기본값으로 항상 붙는다(§1-DN — 없으면 옛 바이너리에 브레이크포인트를 걸게 된다).
      */
     private _buildStartCommand(extra: { breakOnEntry?: boolean; breakOnException?: boolean }): string {
         const cfg = vscode.workspace.getConfiguration('gpl');
@@ -3053,7 +3054,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             + '라이브러리 경유 소스에는 그대로는 브레이크포인트를 걸 수 없습니다(-508). '
             + `메인 프로젝트 Project.gpr 에 ProjectSource="${rel}" 로 직접 등재하면 걸립니다`
             + '(2026-09-02 실측 확인). 명령 팔레트의 '
-            + '"GPL: 브레이크포인트용 소스 승격"(gpl.project.promoteSourceForBreakpoint)이 '
+            + '"GPL: Promote Source for Breakpoint (중단점용 소스 승격)"(gpl.project.promoteSourceForBreakpoint)이 '
             + '그 편집을 계산해 미리보기로 보여 줍니다 — 대상 파일을 끌어오는 ProjectLibrary 참조를 빼고 '
             + '그 그룹이 제공하던 나머지 라이브러리를 개별 참조로 되살려, 컴파일 집합을 그대로 유지합니다.';
     }
@@ -4148,7 +4149,14 @@ export class GPLDebugSession extends LoggingDebugSession {
         return this._enqueueCommand(async () => {
             if (!this._config || !this._isConnected) { return null; }
             try {
-                const result = await sendCommand(command, this._config);
+                // `-compile` 이 붙은 Start 는 컴파일까지 수행해 응답이 Compile 과 같다(pass 사이 수 초 침묵).
+                // 짧은 idle 완료로 받으면 잘려서 `-9999 No STATUS found` 가 되므로 종결자까지 기다린다(§1-DN).
+                const result = commandRunsCompiler(command)
+                    ? (await sendCommandDetailed(command, this._config, {
+                        waitForStatusClose: true,
+                        timeoutMs: Math.max(this._config.timeoutMs, 60000),
+                    })).raw
+                    : await sendCommand(command, this._config);
                 // 주요 명령은 응답 첫 줄을 디버그 콘솔에 표시
                 if (/^(Set |Start |Stop |Continue |Step |Break |Compile |Execute )/i.test(command)) {
                     const firstLine = result?.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0] || '';
@@ -4873,10 +4881,14 @@ export class GPLDebugSession extends LoggingDebugSession {
                 }
             }
 
-            await jumpToFirstCompileError(result.compileErrors, projectDir,
+            // Problems 패널로 점프했으면 출력 패널을 띄우지 않는다 — 종전에는 곧바로 show 해서
+            // 에러 줄로 보내 놓고도 패널이 출력으로 되돌아갔다(§1-DH).
+            const jumpedToError = await jumpToFirstCompileError(result.compileErrors, projectDir,
                 msg => this._log(`[deploy] ${msg}`));
 
-            deployOutput.show(true);
+            if (!jumpedToError) {
+                deployOutput.show(true);
+            }
             return { ok: false };
         }
 

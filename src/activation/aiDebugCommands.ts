@@ -104,7 +104,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 
 				if (mode === 'build-and-attach') {
 					// 바로 위에서 Build Only(gpl.deploy)가 성공한 뒤이므로 배포 없이 붙는다 —
-					// attachNow(deployBeforeAttach)를 쓰면 같은 업로드+Compile이 한 번 더 돈다 (2026-09-10).
+					// 배포를 동반하는 경로(gpl.debugProject / deployBeforeAttach)를 쓰면 같은 업로드+Compile이 한 번 더 돈다 (2026-09-10).
 					recordStep('Attach 시작 (배포 없이 — Build Only 직후)');
 					await vscode.commands.executeCommand('gpl.debug.attachOnly');
 				}
@@ -336,7 +336,8 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 	});
 
 	registerAiDebugCommand('gpl.ai.debug.disconnect', async () => {
-		const result = await vscode.commands.executeCommand<{ ok: boolean; connected: boolean; ip: string; port: number }>(
+		// debugSessionEnded: 해제 전에 살아 있던 디버그 세션을 끝냈는지 — 끝내야 어댑터 폴이 멎고 1402 소켓이 실제로 비워진다.
+		const result = await vscode.commands.executeCommand<{ ok: boolean; connected: boolean; ip: string; port: number; debugSessionEnded?: boolean }>(
 			'gpl.controller.disconnect', { silent: true });
 		return { ...(result ?? {}), ok: true, connected: false };
 	});

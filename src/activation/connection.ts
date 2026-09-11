@@ -127,6 +127,50 @@ async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: Controlle
 }
 
 
+// ── 디버그 세션 종료 (연결 해제 전 선행 단계) ────────────────────────────────
+/**
+ * 어댑터가 종료 과정에서 보내는 1402 명령(등록 BP 수만큼의 `Nobreak` + 구성에 따라 `Stop -all` 정착 확인)이
+ * 끝나기를 기다리는 상한. 넘겨도 실패로 보지 않고 로그만 남기고 진행한다 — `closeControllerConnection()` 은
+ * in-flight 명령을 중단하지 않으므로 먼저 진행해도 응답은 정상적으로 회수된다.
+ */
+const DEBUG_SESSION_STOP_TIMEOUT_MS = 15000;
+
+/**
+ * `brooks-gpl` 디버그 세션을 끝내고 **실제 종료(terminated 이벤트)까지** 기다린다.
+ *
+ * 왜 기다리는가: `vscode.debug.stopDebugging()` 은 요청 전달까지만 보장한다. 기다리지 않고 소켓을 닫으면
+ * 어댑터의 종료 명령(`Nobreak`·`Stop -all`)이 곧바로 새 1402 연결을 열어 "해제했는데 포트가 다시 잡히는"
+ * 상태가 된다.
+ */
+async function stopDebugSessionAndWait(
+	session: vscode.DebugSession,
+	timeoutMs: number,
+): Promise<'terminated' | 'timeout' | 'failed'> {
+	let sub: vscode.Disposable | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		// 구독을 먼저 걸어 stopDebugging 과 종료 이벤트 사이의 경합을 없앤다.
+		const terminated = new Promise<'terminated'>(resolve => {
+			sub = vscode.debug.onDidTerminateDebugSession(s => {
+				if (s.id === session.id) { resolve('terminated'); }
+			});
+		});
+		const timedOut = new Promise<'timeout'>(resolve => {
+			timer = setTimeout(() => resolve('timeout'), timeoutMs);
+		});
+		try {
+			await vscode.debug.stopDebugging(session);
+		} catch {
+			// 이미 사라진 세션 등 — 종료 이벤트를 기다려 봐야 오지 않으므로 바로 돌려준다(해제는 계속한다).
+			return 'failed';
+		}
+		return await Promise.race([terminated, timedOut]);
+	} finally {
+		sub?.dispose();
+		if (timer) { clearTimeout(timer); }
+	}
+}
+
 export function activateConnection(host: ExtensionHost): ConnectionApi {
 	const { context, outputChannel } = host;
 
@@ -392,13 +436,13 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 	);
 
 	/**
-	 * launch.json 없이 즉석 구성으로 디버그 세션을 연다 — `gpl.debug.attachNow`(배포 포함)와
-	 * `gpl.debug.attachOnly`(배포 없이 붙기)의 공통 본체.
+	 * launch.json 없이 즉석 구성으로 디버그 세션을 연다 — `gpl.debug.attachOnly`(배포 없이 붙기)의 본체.
 	 *
-	 * 두 명령의 차이는 `deployBeforeAttach` 하나뿐이다. 배포를 포함하면 attach 전에 업로드+Compile이
-	 * 돌고, 활성 쓰레드가 있으면 "Stop -all 하고 계속할까요?" 모달이 뜬다 — 즉 **이미 Start 해 둔
-	 * 프로그램에 붙는 용도로는 쓸 수 없다**(승인하면 그 프로그램이 멈춘다). 그 흐름(빠른 컴파일 →
-	 * Start → 붙기)을 위해 배포 없는 경로를 따로 둔다 (2026-09-10).
+	 * 대상 프로젝트는 `resolveExpectedProjectName()`(launch.json → 워크스페이스 자동 탐지)으로 정한다.
+	 * **배포를 동반하는 경로는 이 자동 탐지를 쓰지 않는다** — 과제별로 같은 이름의 프로젝트를 복제해 두는
+	 * 배치에서는 엉뚱한 것을 고를 수 있고, 배포는 되돌리기 어렵기 때문이다. 그쪽은 대상을 명시적으로
+	 * 고르는 `gpl.debugProject`(QuickPick·탐색기 우클릭) 하나로 합쳤다(2026-09-10 사용자 결정, §1-DQ).
+	 * 여기 남은 경로는 이미 돌고 있는 프로그램에 **붙기만** 하므로 제어기 상태를 바꾸지 않는다.
 	 */
 	async function startQuickAttachSession(opts: { deployBeforeAttach: boolean }): Promise<void> {
 		// 중복 세션 방지: 이미 brooks-gpl 세션이 살아있으면 사용자에게 처리 방식 선택을 요청
@@ -445,12 +489,11 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 
 		const started = await vscode.debug.startDebugging(undefined, dynamicConfig);
 		if (!started) {
-			vscode.window.showErrorMessage('디버깅 시작 실패: 구성 또는 제어기 상태를 확인해줘.');
+			vscode.window.showErrorMessage('디버깅 시작 실패: 구성 또는 제어기 상태를 확인하세요.');
 		}
 	}
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.debug.attachNow', () => startQuickAttachSession({ deployBeforeAttach: true })),
 		vscode.commands.registerCommand('gpl.debug.attachOnly', () => startQuickAttachSession({ deployBeforeAttach: false })),
 	);
 
@@ -484,20 +527,65 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.controller.disconnect', (args?: unknown) => {
+		vscode.commands.registerCommand('gpl.controller.disconnect', async (args?: unknown) => {
 			// 싱글톤 인스턴스는 보존하고 연결만 끊는다 (v0.5.48 일관성).
 			// 반환값·silent 인자는 AI/URI 진입점용(GitHub #25) — 사람이 누를 때(인자 없음)는 종전과 동일하게 알림을 띄운다.
 			const silent = !!args && typeof args === 'object' && (args as { silent?: boolean }).silent === true;
 			const cfg = getControllerConfig();
+
+			// ① 디버그 세션이 살아 있으면 먼저 끝낸다.
+			// 어댑터는 attach 시점에 복사한 자기 _config 로 Show Thread 를 폴할 뿐 확장의 연결 상태를 참조하지 않는다.
+			// 그래서 소켓만 닫으면 다음 폴(기본 1 s)이 1402 를 다시 열고 keep-alive 로 보관해 사실상 영구 점유가 되고,
+			// 제어기는 단일 클라이언트라 GDE 등 다른 도구가 붙지 못한다. 세션을 끝내야 폴이 멎고 포트가 실제로 빈다.
+			const debugSession = host.isDebugSessionActive ? host.gplDebugSession : undefined;
+			let debugSessionEnded = false;
+			if (debugSession) {
+				// 구성에 따라 세션 종료가 제어기 프로그램까지 멈춘다(Stop -all) — 모션 영향이므로 사람에게는 먼저 확인받는다
+				// (하드 규칙 6). silent(AI/URI)는 묻지 않고 진행하되 결과에 무엇이 일어났는지 담아 돌려준다.
+				const stopsProgram = debugSession.configuration?.stopAllOnDisconnect === true;
+				if (!silent && stopsProgram) {
+					const proceed = '세션 종료 후 해제';
+					const pick = await vscode.window.showWarningMessage(
+						`연결을 해제하려면 디버그 세션(${debugSession.name})을 먼저 끝내야 합니다.`,
+						{
+							modal: true,
+							detail: '이 세션은 stopAllOnDisconnect=true 구성이라 종료할 때 제어기 프로그램도 정지합니다(Stop -all)'
+								+ ' — 실행 중인 동작이 멈춥니다.',
+						},
+						proceed,
+					);
+					if (pick !== proceed) {
+						host.log('[Controller] 연결 해제 취소 — 디버그 세션 종료를 사용자가 취소했습니다.');
+						return { ok: false, cancelled: true, connected: true, ip: cfg.ip, port: cfg.port };
+					}
+				}
+				host.log(`[Controller] 연결 해제 — 디버그 세션 종료 중: ${debugSession.name}`
+					+ `${stopsProgram ? ' (stopAllOnDisconnect=true → Stop -all)' : ' (제어기 프로그램은 그대로 실행)'}`);
+				const stopOutcome = await stopDebugSessionAndWait(debugSession, DEBUG_SESSION_STOP_TIMEOUT_MS);
+				debugSessionEnded = stopOutcome === 'terminated';
+				if (!debugSessionEnded) {
+					host.log('[Controller] 디버그 세션 종료 미확인 — '
+						+ (stopOutcome === 'failed'
+							? 'stopDebugging 요청이 거부됐습니다(이미 사라진 세션일 수 있음).'
+							: `${DEBUG_SESSION_STOP_TIMEOUT_MS}ms 안에 terminated 이벤트가 오지 않았습니다.`)
+						+ ' 해제는 계속하지만 폴이 남아 있으면 1402 가 다시 열릴 수 있습니다.');
+				}
+			}
+
 			host.stopRuntimeConsoleAndSyncTree();
 			closeControllerConnection('disconnect');
 			clearSessionControllerOverride();
 			host.setControllerConnected(false);
 			host.lastRuntimeErrorContext = undefined;
 			host.controllerTree?.setRuntimeErrorContext(undefined);
-			host.log(`[Controller] Disconnected: ${cfg.ip}:${cfg.port}${silent ? ' (silent)' : ''}`);
-			if (!silent) { vscode.window.showInformationMessage('GPL Controller 연결 해제'); }
-			return { ok: true, connected: false, ip: cfg.ip, port: cfg.port };
+			host.log(`[Controller] Disconnected: ${cfg.ip}:${cfg.port}${silent ? ' (silent)' : ''}`
+				+ `${debugSessionEnded ? ' — 디버그 세션 종료됨' : ''}`);
+			if (!silent) {
+				vscode.window.showInformationMessage(debugSessionEnded
+					? 'GPL Controller 연결 해제 — 디버그 세션도 종료했습니다'
+					: 'GPL Controller 연결 해제');
+			}
+			return { ok: true, connected: false, ip: cfg.ip, port: cfg.port, debugSessionEnded };
 		})
 	);
 

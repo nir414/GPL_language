@@ -41,6 +41,7 @@ import './stepGate.test';
 import './spontaneousPause.test';
 import './threadLock.test';
 import './threadActivity.test';
+import './threadStuckDiagnosis.test';
 import './threadStop.test';
 import './projectCommands.test';
 import './remoteProjectPath.test';

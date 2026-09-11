@@ -23,7 +23,11 @@ import {
 	parseStatus,
 	parseThreadList,
 } from '../controller/responseParser';
-import { showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
+import { probeThreads } from '../controller/threadStop';
+import { isSettledState } from '../controller/threadActivity';
+import { createFileSourceLookup, diagnoseStuckThread } from '../controller/threadStuckDiagnosis';
+import { buildTargetCandidates } from '../controller/projectPicker';
+import { createThreadStopIo, showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 async function normalizeControllerCommandInput(rawCommand: string): Promise<string | undefined> {
@@ -243,7 +247,7 @@ export function activateControllerCommands(host: ExtensionHost): void {
 				} else {
 					const recovered = await trySoftEStopRecovery(host);
 					if (!recovered) {
-						vscode.window.showWarningMessage('Stop -all 전송됨. 제어기 바쁨/재시작으로 정지 확인이 지연되고 있습니다. 상태를 다시 확인해줘.');
+						vscode.window.showWarningMessage('Stop -all 전송됨. 제어기 바쁨/재시작으로 정지 확인이 지연되고 있습니다. 상태를 다시 확인하세요.');
 					}
 				}
 				host.controllerTree?.refresh();
@@ -257,6 +261,75 @@ export function activateControllerCommands(host: ExtensionHost): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.stopAll', async () => {
 			await vscode.commands.executeCommand('gpl.controller.stopAll');
+		})
+	);
+
+	// 정지 불가 쓰레드 진단 (읽기 전용) — Stop/Break 가 -752 만 돌려줄 때 "왜 안 멈추는지"를 캔다.
+	// 배포 실패 경로는 자동으로 같은 진단을 남기고(deployService), 이 명령은 그 밖에서 손으로 부르는 입구다.
+	// 복구 명령은 **만들어 보여 주기만** 한다 — 대상 식별이 정적 분석이라 사람의 확인이 필요하고,
+	// Execute 는 임의 GPL 문장 실행 경로다(ai-handoff §3, 2026-09-10 실측).
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.diagnoseStuckThread', async (arg?: unknown) => {
+			try {
+				const io = createThreadStopIo(line => outputChannel.appendLine(line));
+				const probe = await probeThreads(io);
+				if (!probe) {
+					vscode.window.showWarningMessage('Show Thread 응답을 받지 못했습니다 — 제어기 연결을 확인하세요.');
+					return;
+				}
+				const active = probe.threads.filter(t => !isSettledState(t.state));
+				if (active.length === 0) {
+					vscode.window.showInformationMessage('활성 쓰레드가 없습니다 — 진단할 대상이 없습니다.');
+					return;
+				}
+
+				// 팔레트는 인자 없음, 트리 우클릭은 TreeItem(`node.thread.name`), 자동화는 문자열로 부른다.
+				let target = typeof arg === 'string'
+					? arg
+					: (arg as { thread?: { name?: string } } | undefined)?.thread?.name;
+				if (!target && active.length === 1) { target = active[0].name; }
+				if (!target) {
+					const picked = await vscode.window.showQuickPick(
+						active.map(t => ({
+							label: t.name,
+							description: `${t.state}${t.file ? ` @ ${t.file}:${t.fileLine ?? '?'}` : ''}`,
+						})),
+						{ placeHolder: '진단할 쓰레드를 선택하세요' },
+					);
+					if (!picked) { return; }
+					target = picked.label;
+				}
+
+				// 소스 탐색 범위: 그 쓰레드의 프로젝트와 이름이 같은 워크스페이스 프로젝트를 우선한다.
+				// 같은 이름의 프로젝트가 여러 벌 복제된 배치가 실제로 있어서(중첩 워크스페이스), 못 좁히면
+				// 전체 후보로 넓히되 엉뚱한 사본을 집을 수 있음을 리포트가 아니라 탐색 범위로만 흡수한다.
+				const info = active.find(t => t.name.trim().toLowerCase() === target!.trim().toLowerCase());
+				const allCandidates = await buildTargetCandidates();
+				const owner = (info?.project ?? '').trim().toLowerCase();
+				const matched = owner ? allCandidates.filter(c => c.projectName.trim().toLowerCase() === owner) : [];
+				const searchDirs = (matched.length > 0 ? matched : allCandidates).map(c => c.dir);
+
+				outputChannel.show(true);
+				const diagnosis = await diagnoseStuckThread(io, target, createFileSourceLookup(searchDirs));
+
+				if (diagnosis.candidates.length === 0) {
+					vscode.window.showInformationMessage(`정지 불가 진단 완료: ${target} — 출력 패널을 확인하세요.`);
+					return;
+				}
+				const pick = await vscode.window.showWarningMessage(
+					`${target}: 복구 후보 ${diagnosis.candidates.length}건을 만들었습니다. 전송하지 않았습니다 — 확인 후 직접 보내세요.`,
+					'첫 후보 복사',
+					'출력 보기',
+				);
+				if (pick === '첫 후보 복사') {
+					await vscode.env.clipboard.writeText(diagnosis.candidates[0].command);
+					vscode.window.showInformationMessage('복사했습니다. 디버그 콘솔에서는 앞에 `>` 를 붙여 보내세요.');
+				} else if (pick === '출력 보기') {
+					outputChannel.show(true);
+				}
+			} catch (err: any) {
+				vscode.window.showErrorMessage(`정지 불가 진단 실패: ${err?.message ?? err}`);
+			}
 		})
 	);
 

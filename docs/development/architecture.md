@@ -111,7 +111,9 @@ flowchart BT
 ③ 새 호출부가 안전장치를 빠뜨릴 수 없다(실제로 디버그 세션의 attach preflight 는 정지 확인이 빠져 있었다).
 
 정본: `controller/threadStop.ts`(전체·개별 쓰레드 정지) · `controller/projectCommands.ts`(Compile/Load/Unload/Start) ·
-`controller/remoteProjectPath.ts`(어느 원격 사본을 대상으로 삼을지). 결과는 성공/실패 불리언이 아니라 **구조화된 결과**로
+`controller/remoteProjectPath.ts`(어느 원격 사본을 대상으로 삼을지) ·
+`controller/threadStuckDiagnosis.ts`(정지 불가 쓰레드 진단 — **상태를 바꾸지 않는** 읽기 전용 절차. 원시 명령 위에
+얹는 겹은 같지만 결과가 "조치"가 아니라 **근거와 후보**다. 실행 여부는 사람이 고른다). 결과는 성공/실패 불리언이 아니라 **구조화된 결과**로
 돌려주고, 특히 "확인하지 못함"(`unconfirmed`)을 성공과 구분해 드러낸다 — 배포는 통과시키고 원격 파일 삭제는
 중단하는 식으로 **정책은 호출부가 고른다.** 같은 꼴로 정리할 다음 후보(`Show Thread` 열거·중단점 명령 폴백·busy 재시도·스택 조회)는
 `docs/ai-handoff.md` §1-DD 의 표와 §1-DE 말미에 있다.
@@ -138,6 +140,67 @@ flowchart BT
 > **번역이 갈리는 항목**: Anti-Corruption Layer 는 Microsoft Learn 이 **손상 방지 계층**, 에릭 에반스 DDD
 > 번역서 계열이 **부패 방지 계층**을 쓴다. 이 저장소는 **손상 방지 계층**으로 통일한다.
 > Single Source of Truth 도 *단일 진실 원천*·*단일 정보원* 표기가 있으나 위 표기를 쓴다.
+
+### 3.2.1 이 용어들은 표어가 아니라 **검사 대상**이다
+
+위 표의 원칙 중 계층으로 표현되는 것(육각형 아키텍처·포트와 어댑터·험블 오브젝트)은 구조 테스트
+R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Single Source of Truth)** 과
+**중복 배제 원칙(DRY, Don't Repeat Yourself)** 은 계층을 지켜도 무너진다 — 같은 판단을 여러 모듈이
+각자 구현하면 폴더 규칙은 하나도 어기지 않으면서 구현 편차(Implementation Drift)가 생긴다.
+실제로 그렇게 됐다: 수신자 타입 해석은 `language/receiverType.ts` 가 정본인데 완성 provider 는
+자체 구현을 들고 있다가 `Thread.CurrentThread().` 뒤를 해석하지 못했고(§1-DO), 배열 요소 타입을
+벗기는 규칙은 사본이 네 벌이었다.
+
+그래서 **"이 판단의 정본은 어디"를 표로 두고 구조 테스트 R7 이 우회를 잡는다**
+(`src/test/architecture.test.ts` 의 `SSOT_RULES`).
+
+| 판단 | 정본 | 우회 표식(R7 이 잡는 것) |
+| --- | --- | --- |
+| 수신자 체인 → 타입/홀더 | `language/receiverType.ts` (순수) | — |
+| 그 해석기에 넘길 컨텍스트 조립 | `providers/receiverContext.ts` (vscode 접착) | `buildDocumentReceiverLookup(` 직접 호출 |
+| 배열 표기·요소 타입 | `language/receiverType.ts` (`elementTypeOf`·`isArrayTypeName`) | `replace(/\[\]$/…)` |
+
+새 정본을 세우면 `SSOT_RULES` 에 한 줄을 더한다(무엇을·정본은 어디·우회 표식·대신 쓸 것).
+규칙을 늘리는 비용이 낮아야 실제로 늘어난다.
+
+**의존성 주입(DI, Dependency Injection)** 도 같은 방식으로 읽는다: `receiverContext` 는
+`SymbolCache` 를 import 하지 않고 이름 조회 함수만 받는다 — `controller/` 절차 모듈이
+`send`/`log`/`sleep` 을 받는 것과 같은 규약이고, 그래서 테스트 대역으로 갈아끼울 수 있다.
+
+### 3.3 프로세스 간 조정은 `%TEMP%` 파일 계약으로
+
+이 확장의 자동화는 **한 프로세스 안에서 끝나지 않는다.** VS Code 창이 여럿일 수 있고, MCP 서버
+(`controller-mcp`)는 별도 node 프로세스이며, 제어기는 단일 클라이언트다. 그래서 "누가 지금 업로드
+중인가", "어느 창에 명령을 보내야 하나", "그 배포는 끝났나" 같은 것을 **프로세스 밖에서 볼 수 있는
+파일**로 조정한다. 새 포트·서버·의존성을 만들지 않는 것이 이 선택의 이유다.
+
+| 경로 (`%TEMP%/gpl-controller/`) | 정본 모듈 | 무엇을 조정하나 |
+| --- | --- | --- |
+| `<ip>.lock.json` | `controller/deployLock.ts` | 업로드/배포 크리티컬 섹션의 상호 배제 — 끝나면 **사라진다** |
+| `extensions/<instanceId>.json` | `controller/agentBridge.ts` | 살아 있는 확장 인스턴스(창) 목록 — 어느 창인지·무슨 워크스페이스인지 |
+| `bridge/inst/<instanceId>/{req,res}` | `controller/agentBridge.ts` | MCP → 그 창의 명령 요청/응답 |
+| `<ip>.extension.json` · `bridge/<ip>/…` | `controller/agentBridge.ts` | 위의 **레거시(IP) 경로** — 리더 인스턴스 하나만 서비스(구버전 MCP 호환) |
+| `operations/<operationId>.json` | `controller/operationStore.ts` | 장시간 작업의 단계와 **결과** — 끝난 뒤에도 **남는다** |
+
+지켜야 할 규약:
+
+1. **각 계약의 정본 모듈은 하나**이고, MCP 쪽 구현(`controller-mcp/src/{deployLock,extensionBridge,operations}.js`)은
+   그 파일 머리말에 적힌 계약을 **읽기 전용으로 미러**한다. 필드를 늘릴 때 양쪽 머리말을 같이 고친다.
+2. **읽는 쪽은 모르는 필드를 무시하고 version 을 튕기지 않는다.** 그래서 필드 추가는 구버전과 섞여도
+   안전하다(배포 잠금 v1→v2 가 그 예다). 반대로 필드의 *의미*를 바꾸는 것은 호환을 깨는 변경이다.
+3. **쓰기는 임시 파일 + rename**(원자적)으로 하고, 지우는 것은 **자기 레코드일 때만** 확인 후 지운다 —
+   뒤늦은 `finally` 가 새 보유자를 지우면 상호 배제가 무너진다.
+4. **"살아 있음"은 heartbeat + pid 로 판정한다.** 그리고 그 판정은 **읽는 쪽이** 하고 파일을 고치지 않는다.
+   진행 중이라고 적혀 있는데 신호가 끊긴 것은 `UNKNOWN`(결과 미확정)이며 **실패가 아니다**(§0 하드 규칙 3).
+5. **이 파일들은 로그가 아니라 조정/조회 프리미티브다.** 제어기의 상태 판단에는 쓰지 않는다 —
+   그것은 여전히 1402 `<STATUS>` 와 1403 스트림만이 답한다(§0 하드 규칙 1과 충돌하지 않는 이유).
+6. 여러 창이 같은 자원을 볼 때 **임의로 하나를 고르지 않는다.** 대상이 좁혀지지 않으면 후보를 담은
+   구조화 오류(`EXTENSION_AMBIGUOUS` 등)를 돌려주고, 고정이 필요한 경우에만 **계산으로 정한 리더**를 쓴다
+   (`electLeaderInstanceId` — 확장과 MCP 가 같은 규칙이라 같은 답을 낸다).
+
+오류 응답의 "그래서 무엇을 하면 되는가"는 `controller/automationRecovery.ts` 표가 정본이다 —
+코드마다 `action`·`retryCurrentCommand`·`safeToRepeat` 를 고정하고, **표에 없는 코드는 재시도 금지**로
+떨어진다. 배포가 실제로 무엇을 올렸는지는 `controller/deployProvenance.ts` 가 지문 대조로 답한다.
 
 ## 4. 조립 — extension.ts → ExtensionHost → activation/*
 
@@ -173,8 +236,9 @@ flowchart BT
   새 테스트 파일은 `index.ts` 에 한 줄 import — 잊으면 구조 테스트 R4 가 실패한다.
 - **대상**: 순수 모듈 전부(2026-09-07 기준 820건). vscode 를 import 하는 모듈은 이 러너로 못 돈다 — 그래서
   판단 로직을 순수 모듈로 빼는 것이 곧 테스트 가능성이다.
-- **구조 테스트** `architecture.test.ts` (6건): R1 vscode 허용 목록 · R2 계층 방향 · R3 런타임 순환 · R4 테스트 등록 ·
-  R5 package.json↔명령 · R6 package.json↔설정 키. 실패 메시지가 위반 목록을 그대로 보여 준다.
+- **구조 테스트** `architecture.test.ts` (7건): R1 vscode 허용 목록 · R2 계층 방향 · R3 런타임 순환 · R4 테스트 등록 ·
+  R5 package.json↔명령 · R6 package.json↔설정 키 · **R7 판정 정본(SSOT) 우회 금지**(§3.2.1).
+  실패 메시지가 위반 목록을 그대로 보여 준다.
 - **컴파일러 게이트**(tsconfig): `strict` + `noUnusedLocals` · `noUnusedParameters` · `noImplicitReturns` ·
   `noImplicitOverride` · `noFallthroughCasesInSwitch`. 쓰지 않는 매개변수는 `_` 접두.
 - **하드웨어 검증이 필요한 것**은 코드로 강제하지 않고 `docs/ai-handoff.md` §3 체크리스트로 남긴다(하드 규칙 6).
@@ -189,6 +253,7 @@ flowchart BT
 | `views/controllerTreeProvider.ts` | 1,537줄 | 포맷 함수는 분리됨. 섹션별 노드 생성 분리는 후보 |
 | `activation/deploy.ts` | 969줄 | 결과 보고부 분리됨. 자동화 게이트·명령 6개가 남아 있다 |
 | 1403 상태 문구 두 표현 | `controller/runtimeConsolePresentation`(알림, 영문) vs `views/runtimeConsoleTreePresentation`(트리, 한국어) | 폴링 판정 정규식이 다르다 — 실기기 문구 대조 후 통일 결정 |
+| provider 별 수신자 해석 사본 | definition·hover·완성·디버그 hover | **정리됨(2026-09-10)** — 해석은 `language/receiverType`, 조립은 `providers/receiverContext` 하나로. R7 이 재발을 막는다 |
 | `config.ts` 안의 언어 헬퍼 | `getQualifiedWordAtPosition`·`isInCommentOrString`·`GPL_CONTROL_KEYWORDS` | `language/` 로 옮길 후보(`ciEq` 는 옮겼다) |
 | `symbolCache.ts` 루트 배치 | — | vscode 의존이라 `language/` 에 넣지 않았다. 순수 인덱스와 vscode 로더로 나누면 이동 가능 |
 | `controller-mcp/src/index.js` | 1,276줄 | MCP 서버 도구 정의 한 파일 — 별도 하위 프로젝트, 테스트 86건 |

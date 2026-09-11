@@ -14,90 +14,9 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 
 > GPL 언어 공식 레퍼런스: [Brooks Automation GPL Reference](https://www2.brooksautomation.com/Controller_Software/Introduction_To_The_Software/Guidance_Programming_Language/)
 
-## 빠른 시작 (5분)
-
-### 1) 제어기 연결하기
-
-1. 확장 설치 후 프로젝트(`.gpl` 파일) 열기
-2. `settings.json`에 `gpl.controller.ip` 설정
-3. 명령 팔레트(`Ctrl+Shift+P`) → `GPL: Connect to Controller`
-
-### 2) 배포·컴파일 확인하기
-
-1. `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` 실행
-2. 컴파일 에러가 있으면 Problems 패널에서 확인 (에러 위치로 자동 점프)
-
-### 3) 디버깅 시작하기
-
-1. `.gpl` 파일에 브레이크포인트 설정
-2. F5 → **Attach to GPL Controller**
-3. `stopOnEntry` 또는 브레이크포인트에서 정지 확인
-
-> 처음에는 **Deploy(Build Only)** 로 통신/컴파일 경로부터 확인하고, 이후 Attach 디버깅으로
-> 넘어가면 가장 안정적입니다.
-
-## 설치
-
-1. [Releases](https://github.com/nir414/GPL_language/releases)에서 최신 `.vsix` 파일을 다운로드합니다.
-2. VS Code → Extensions(`Ctrl+Shift+X`) → **…** → **Install from VSIX…** → 파일 선택
-3. Reload 후 `.gpl`/`.gpo` 파일을 열면 자동 활성화
-
 ## 기능
 
-### 제어기 통합
-
-Brooks PreciseFlex 제어기에 직접 연결하여 VS Code 안에서 배포·실행·모니터링:
-
-- **TCP 명령**(포트 1402) · **FTP 업로드**(포트 21) · **런타임 출력 스트림**(포트 1403)
-- **배포 워크플로**: UPLOAD ∥ STOP → COMPILE — FTP 업로드와 정지(`Stop -all` + 정지 완료 확인)를 동시에
-  진행하고 둘 다 끝난 뒤 Compile(소요 시간 = max(업로드, 정지)). 컴파일 에러는 Problems 패널에 자동 연동,
-  실행(START)과 flash 저장은 별도 명령으로 분리(Compile과 Start는 한 번에 하나만).
-  업로드/배포 중에는 배포 잠금으로 다른 창·MCP의 Compile/Start를 차단(잠금 보유자·단계·경과를 경고에 표시)
-- **사이드바 GPL Controller 패널**: 연결 정보, 쓰레드 실시간 상태/개별 제어(정지·일시정지·재개·
-  Step Over/Into/Out·스택 보기), 제어기 브레이크포인트 목록, FTP 파일 관리(컴파일/실행/다운로드/삭제 · 폴더 통째로 비우기),
-  시스템 정보, 에러 로그
-- **실시간 로그 터미널**: 1402/1403 트래픽을 VS Code 터미널에 미러링 (파일 미생성, 메모리 버퍼만 사용)
-- **제어기 대시보드 탭**: 연결·고전원·스레드·에러 상태 배지, 스레드 표, 축 위치 게이지, XY 미니 플롯, 에러 로그를
-  새 탭에서 실시간 표시(주기 선택·일시정지). 연결 중 상태바의 대시보드 아이콘으로 진입
-
-> ⚠️ **알려진 제한 — 1403 수신**: 1403 출력 이벤트 수신은 실기기에서 안정 동작을 확보하지
-> 못했습니다(연결은 되지만 payload가 없는 경우가 많음). `[1403]` 출력은 as-is로 제공되며,
-> `[1402]` 명령 트래픽 미러링은 정상 사용 가능합니다.
-
 ### 디버거 (DAP)
-
-`brooks-gpl` 디버그 어댑터로 Attach 모드 디버깅: 행 브레이크포인트, Step Over/Into/Out(F10/F11/Shift+F11),
-Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stack·다중 쓰레드 표시.
-런타임 Error 발생 시 해당 파일/라인을 자동으로 열고 이동합니다.
-
-- 단축키는 VS Code 표준 그대로입니다(F9 = 브레이크포인트 토글). GDE 습관(F9 = Continue)이 필요하면
-  `gpl.keybindings.gdeStyle`을 켭니다.
-- **스레드 단일 실행 잠금**: CALL STACK에서 스레드 우클릭 → `GPL: 스레드 실행 잠금`(팔레트: `GPL: 스레드 실행 잠금 토글`).
-  잠금 중에는 Continue/Step이 포커스와 무관하게 잠근 스레드에만 나가고, 다른 스레드가 정지해도 디버그 포커스를
-  가져가지 않습니다. 상태바 `$(lock) 스레드 잠금: <이름>`을 클릭하면 해제됩니다. 추가로 재개되는 스레드는 없습니다
-  (제어기 실행 명령은 원래 스레드 단위이며, 잠금은 대상을 좁히기만 합니다).
-- **커서까지 이동(Jump to Cursor)**: 정지 중 편집기 우클릭 → `커서까지 이동`으로 다음 실행 문장을 옮깁니다
-  (제어기 `Set Thread <스레드> -line <줄>`). **건너뛴 문장은 실행되지 않으므로** 초기화·안전 조건이 빠진 채
-  진행될 수 있어 기본값은 실행 직전 경고 확인입니다(`gpl.debug.jumpToCursor`: `warn`/`on`/`off`).
-  대상 줄은 문서 제약대로 같은 프로시저 안의 실행 문장이어야 하며, 확장이 파서로 미리 확인합니다.
-- **Step Into Target**: 한 줄에 호출이 여러 개면 F11 대신 우클릭 → `Step Into Target`으로 들어갈 호출을 고릅니다.
-  제어기 Step에는 대상 지정이 없어 정의 위치에 임시 브레이크포인트를 걸고 Continue한 뒤 정리합니다(실패 시 기본 Step).
-- **프로시저 이름 브레이크포인트**: BREAKPOINTS 뷰의 함수 중단점에 `Class.Proc`을 입력하면 파서가 정의 위치를 찾아
-  그 프로시저 첫 실행 줄에 설정합니다.
-- **브레이크포인트 줄 보정**: 빈 줄·주석에 BP를 찍으면 제어기가 다음 실행 문장으로 옮기는데(공식 문서 규칙),
-  확장이 그 줄을 미리 계산해 같은 위치에 설정하고 이유를 BP 메시지로 알려 줍니다. 동시 BP 상한(문서상 32개)을
-  넘으면 경고합니다.
-- **조건부 BP·히트 조건·로그포인트**(기본 꺼짐, `gpl.debug.clientSideBreakpointLogic`): 제어기에 조건 개념이 없어
-  확장이 적중 시 조건을 평가하고 **불일치하면 자동으로 Continue**합니다. 자동 재개는 모션을 다시 움직이므로
-  기본값을 꺼짐으로 두었고, 켜면 VS Code의 조건·히트 수·로그 메시지 입력이 나타납니다.
-- 변수 값에 16진수를 함께 보려면 `gpl.debug.integerHex`(비트마스크 DataID 읽을 때 유용). VARIABLES/WATCH의
-  '값 복사'는 표시용 접미 없이 원문을 복사합니다.
-- 이전 Step/Continue의 정지가 확인되기 전에 들어온 같은 쓰레드의 Step/Continue 요청은 무시됩니다
-  (키 자동 반복으로 Step이 수백 건 연속 송신되어 제어기가 다운된 사고 방지, `gpl.debug.minStepIntervalMs`).
-  디버거 밖(트리·AI 명령·URI)에서 보내는 Step/Continue도 확장의 명령 정책이 정지 확인 뒤에만 보냅니다.
-- **Attach only(`deployBeforeAttach: false`)** 로 붙을 때 마지막 Compile 이후 편집된 소스가 있으면 상태바에
-  `⚠ 소스 변경됨 N — BP 신뢰 불가` 배지가 뜨고 해당 파일의 브레이크포인트는 회색(unverified)으로 표시됩니다
-  (제어기는 시작 시점 컴파일 코드를 실행하므로 줄 번호가 어긋남). 배지를 클릭해 Stop + Upload + Run 으로 재시작할 수 있습니다.
 
 **디버그 단축키 (VS Code 표준)** — 확장이 표준 키를 덮어쓰지 않습니다.
 
@@ -136,9 +55,10 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | `startShowInitStatements` | `Start -init` — 스텝/트레이스 중 초기화 문장도 표시 |
 | `startTrace` | `Start -trace` — 실행 문장을 콘솔에 표시(문서가 성능 저하를 경고 — 진단용) |
 
-- `Start`에는 기본으로 `-event`가 붙습니다(`gpl.controller.startEventMode`). 공식 문서상 `-event`는 쓰레드 상태
-  변경을 콘솔 메시지가 아니라 **이벤트로** 보내며, GDE도 항상 이 형태를 사용합니다. `-compile`은 어떤 경우에도
-  붙이지 않습니다(제어기 Start가 자체 컴파일).
+- `Start`에는 기본으로 `-compile`과 `-event`가 붙습니다(`-event`는 `gpl.controller.startEventMode`로 조절).
+  `-compile`이 없으면 제어기는 컴파일하지 않고 직전에 컴파일된 **옛 바이너리를 그대로 실행**하므로, 방금 올린
+  소스가 반영되지 않습니다. `-event`는 쓰레드 상태 변경을 콘솔 메시지가 아니라 **이벤트로** 보내며(1403 스트림),
+  GDE도 항상 이 형태를 사용합니다.
 
 ### 언어 기능
 
@@ -151,7 +71,7 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | 문 스니펫 | 줄 시작에서 키워드 입력 | `Try`·`Select`·`For`·`While`·`Do`·`If` 제어 구조와 `Sub`/`Function`/`Property`/`Module`/`Class`/`Dim`/`Const`/`ReDim`/`Delegate` 선언 골격을 `Tab` 이동 자리와 함께 삽입. 공식 Statement Dictionary 구문을 따르고(`End While`, `Select match_value`, `Set (value As …)`), 그 자리에서 유효한 문만 제안(`Else`는 `If` 안, `Exit For`는 `For` 안) |
 | 키워드 완성 | `Ctrl+Space` | 키워드·원시 타입(`Integer`, `Single` …)·낱말 연산자(`Mod`, `AndAlso`, `Is` …)를 설명과 함께 제안 |
 | Hover Info | 마우스 올리기 | 심볼 타입·파라미터 정보 + 내장 함수 시그니처. 클릭 뒤 마우스를 멈춰도 다시 표시하려면 `gpl.hover.showAfterClick` |
-| 문서화 주석 | `'''` | 선언 위 `'` 주석에 `# Parameters` / `# Returns` / `# Examples`를 쓰면 호버·자동완성·시그니처 도움말이 구조로 표시. Module·Class·변수·상수 선언도 대상. `'''` 입력·전구 메뉴·`GPL: 문서화 주석 생성`으로 골격 생성(있으면 빠진 항목만 보완) |
+| 문서화 주석 | `'''` | 선언 위 `'` 주석에 `# Parameters` / `# Returns` / `# Examples`를 쓰면 호버·자동완성·시그니처 도움말이 구조로 표시. Module·Class·변수·상수 선언도 대상. `'''` 입력·전구 메뉴·`GPL: Insert Documentation Comment`으로 골격 생성(있으면 빠진 항목만 보완) |
 | Outline | `Ctrl+Shift+O` | 문서 내 심볼 구조 |
 | Symbol Search | `Ctrl+T` | 워크스페이스 전체 심볼 검색 |
 | Code Folding | — | Module/Class/Sub/Function·If/Select/For/While/Do/Try 블록과 `' #region` 접기 |
@@ -183,43 +103,44 @@ Continue(F5), Pause(F6), 변수 조회(Variables/Hover/Debug Console), Call Stac
 | 명령 | 설명 |
 |---|---|
 | `GPL: Connect to Controller` / `Disconnect Controller` | 제어기 연결/해제 |
-| `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)` | UPLOAD ∥ STOP → COMPILE — 로컬 코드 업로드 후 검증 |
-| `GPL: 빠른 컴파일` | 변경분만 /GPL에 직접 업로드 + Compile (STOP/START 생략) |
-| `GPL: 업로드 스타트` | STOP → /GPL 업로드 → Start. 컴파일은 제어기가 수행 (확장은 `Compile`을 보내지 않음) |
-| `GPL: Start` | 실행만 (배포 없음) |
+| `GPL: Quick Compile` | 변경분만 /GPL에 직접 업로드 + Compile (STOP/START 생략) — 패널 상단 아이콘 |
+| `GPL: Upload & Start` | STOP → /GPL 업로드 → Start(`-compile` 포함) — 패널 상단 아이콘 |
+| `GPL: Deploy` | 전체 /GPL 업로드 + Compile, 실행하지 않음 |
+| `GPL: Start` | 배포 없이 실행만 (이미 올라간 것을 다시 돌릴 때) |
 | `GPL: Save to Flash` | `/flash/projects`에 영구 저장만 |
-| `GPL: 모든 쓰레드 중지` | `Stop -all` 전체 정지 |
+| `GPL: Stop All Threads` | `Stop -all` 전체 정지 — 패널 상단 아이콘 |
 
 - 대상 프로젝트는 `.gpr`가 있는 폴더입니다. 워크스페이스에 여러 개면 QuickPick으로 고르고(최근 선택이 맨 위),
-  **탐색기에서 프로젝트 폴더(`.gpr`가 들어 있는 폴더)를 우클릭**하면 선택 없이 그 프로젝트로 Deploy/빠른 컴파일/
-  Debug Project/업로드 스타트/Start/Save to Flash를 실행할 수 있습니다. 제어기 쪽 프로젝트 이름은 `.gpr`의 `ProjectName`입니다.
-- **`Project.gpr` 우클릭 → `GPL: Project.gpr 소스 목록 동기화`**: 폴더의 `.gpl`과 `ProjectSource` 목록을 대조해
+  **탐색기에서 프로젝트 폴더(`.gpr`가 들어 있는 폴더)를 우클릭**하면 선택 없이 그 프로젝트로 Deploy/Quick Compile/
+  Debug Project/Upload & Start/Start/Save to Flash를 실행할 수 있습니다. 제어기 쪽 프로젝트 이름은 `.gpr`의 `ProjectName`입니다.
+- **`Project.gpr` 우클릭 → `GPL: Sync Project Sources`**: 폴더의 `.gpl`과 `ProjectSource` 목록을 대조해
   누락된 파일 추가·없는 파일 항목 제거를 확인 후 반영합니다(GDE 형식 유지). `.gpl`을 새로 만들거나 이름 변경·삭제하면
   반영할지 물어봅니다(`gpl.project.autoSyncSources`).
 
-> **`업로드 스타트`와 `빠른 컴파일`의 차이**: PA 제어기의 `Start`는 자체적으로 컴파일을 수행하므로,
-> 업로드 스타트는 `Compile`을 따로 보내지 않습니다(같은 컴파일을 두 번 하지 않기 위해서입니다).
+> **`Upload & Start`와 `Quick Compile`의 차이**: 확장이 보내는 `Start`에는 `-compile`이 붙어 컴파일까지
+> 함께 수행되므로, Upload & Start는 `Compile`을 따로 보내지 않습니다(같은 컴파일을 두 번 하지 않기 위해서입니다).
 > 그 대신 소스에 에러가 있으면 Problems 패널이 아니라 **Start 실패(STATUS)** 로만 드러납니다 —
-> 에러 위치까지 보려면 `빠른 컴파일`로 확인하세요.
+> 에러 위치까지 보려면 `Quick Compile`로 확인하세요.
 
-> **FTP 패널의 "업로드된 복사본 컴파일 & 실행" 주의**: 제어기에 **이미 업로드된 복사본만**
+> **FTP 패널의 `Compile & Run`(업로드된 복사본 실행) 주의**: 제어기에 **이미 업로드된 복사본만**
 > 대상으로 하며 로컬 변경사항을 업로드하지 않습니다. 최신 로컬 코드 검증은 Deploy를 사용하세요.
 
 ### 디버깅·모니터링
 
 | 명령 | 설명 |
 |---|---|
-| `GPL: Quick Debug Attach (No launch.json)` | launch.json 없이 즉시 Attach |
-| `GPL: Debug Project (Deploy + Attach)` | 프로젝트를 골라(또는 탐색기 우클릭) 배포 후 Attach — launch.json 불필요 |
-| `GPL: Create/Update Debug launch.json` | Attach 구성 자동 생성 |
-| `GPL: Push/Pull Controller Breakpoints` | 에디터 ↔ 제어기 브레이크포인트 동기화 |
-| `GPL: 브레이크포인트용 소스 승격` | 라이브러리로 딸려 온 소스에 중단점을 걸 수 있게 메인 `.gpr` 의 `ProjectSource` 로 올립니다(`.gpl` 우클릭). 빠지는 파일도 중복 컴파일도 없는지 검증한 뒤 diff 미리보기와 확인을 거쳐서만 저장 |
-| `GPL: Start/Stop Runtime Console` | 1403 런타임 콘솔 시작/중지 |
-| `GPL: Start/Stop Live Log Terminal` | 1402/1403 실시간 로그 터미널 |
-| `GPL: Show Traffic Monitor` | 1402 송신 명령·수신 응답 본문(실시간, 줄 단위)과 1403 트래픽 모니터. 트리 `1402 통신 모니터` 항목에서 본문 표시 켜기/끄기·지우기 |
+| `GPL: Debug: Attach Only` | 배포 없이 실행 중인 프로그램에 즉시 Attach — 패널 상단 아이콘 |
+| `GPL: Debug Project` | 프로젝트를 골라(또는 탐색기 우클릭) 배포 후 Attach — launch.json 불필요 |
+| `GPL: Create/Update launch.json` | Attach 구성 자동 생성 |
+| `GPL: Sync Breakpoints` | 제어기를 에디터 기준으로 맞춥니다(에디터에 없는 잔재는 해제, 빠진 것은 설정) |
+| `GPL: Pull Breakpoints from Controller` | 반대 방향 — 제어기에 걸린 중단점을 에디터로 가져옵니다 |
+| `GPL: Promote Source for Breakpoint` | 라이브러리로 딸려 온 소스에 중단점을 걸 수 있게 메인 `.gpr` 의 `ProjectSource` 로 올립니다(`.gpl` 우클릭). 빠지는 파일도 중복 컴파일도 없는지 검증한 뒤 diff 미리보기와 확인을 거쳐서만 저장 |
+| `GPL: Start/Stop Runtime Console` | 1403 런타임 콘솔 시작/중지 — 패널 트리의 `런타임 콘솔` 항목 우클릭 |
+| `GPL: Start/Stop Live Log Terminal` | 1402/1403 실시간 로그 터미널 — 같은 항목 우클릭 |
+| `GPL: Show Traffic Monitor` | 1402 송신 명령·수신 응답 본문(실시간, 줄 단위)과 1403 트래픽 모니터 — 패널 트리의 `1402 통신 모니터` 항목에서 열고 본문 표시 켜기/끄기·지우기 |
 | `GPL: Send Command to Controller` | 콘솔 명령 직접 전송 |
-| `GPL: 전역변수 보기/편집` / `DIO 조회/설정` | 전역변수·DIO 조회/변경 |
-| `GPL: Refresh All` | 쓰레드·FTP·시스템 정보 전체 새로고침 |
+| `GPL: Show/Set Global` / `Show DIO` / `Set DIO` | 전역변수·DIO 조회/변경 |
+| `GPL: Refresh All` | 쓰레드·FTP·시스템 정보 전체 새로고침 — 패널 상단 아이콘 |
 
 > **중단점이 회색으로 안 걸릴 때**: 제어기는 중단점 대상 파일을 그 프로젝트가 `.gpr` 에 **직접 적은**
 > `ProjectSource` 안에서만 찾습니다. `ProjectLibrary` 로 참조해 들어온 소스는 어떤 표기를 써도

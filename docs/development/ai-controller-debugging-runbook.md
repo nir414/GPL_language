@@ -92,7 +92,8 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 목적 | 제목 | Command ID |
 | --- | --- | --- |
 | launch 생성 | GPL: Create/Update Debug launch.json | `gpl.debug.generateLaunch` |
-| 빠른 Attach | GPL: Quick Debug Attach (No launch.json) | `gpl.debug.attachNow` |
+| 붙기만 | GPL: Debug: Attach Only | `gpl.debug.attachOnly` |
+| 배포 + 붙기 | GPL: Debug Project | `gpl.debugProject` |
 | 런타임 콘솔 시작 | GPL: Start Runtime Console | `gpl.console.start` |
 | 런타임 콘솔 중지 | GPL: Stop Runtime Console (콘솔 중지) | `gpl.console.stop` |
 | 런타임 콘솔 보장 | GPL: Ensure Runtime Console (1403) | `gpl.console.ensure` |

@@ -37,9 +37,14 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
    preflight가 감지해 주지만, 애초에 만들지 않는 것이 원칙.
 6. 모션/하드웨어에 영향 가능한 변경(자동 `Start`, 브레이크포인트 명령 형식 등)은 저속/시뮬레이션
    검증 없이 적용하지 않는다 (`docs/ai-handoff.md` §3-B).
-7. **PA 제어기의 `Start`는 자체적으로 Compile을 수행한다**(사용자 실사용 사실 — Brooks 문서와 다름).
-   따라서 Compile 직후 Start를 연속으로 보내지 않는다(한 번에 하나만). Deploy는 Compile까지, 실행은
-   `GPL: Start` 별도 (`docs/ai-handoff.md` §0.7).
+7. **PA 제어기의 `Start`는 스위치 없이는 컴파일하지 않는다 — `-compile`을 반드시 붙인다**
+   (2026-09-10 사용자 실기 관측·결정). `-compile` 없이 `Start`하면 FTP로 `/GPL`에 올린 새 소스가 아니라
+   **직전에 컴파일돼 있던 옛 바이너리가 그대로 실행된다.** 캡처(`captures/gde_1402.pcapng`)의 GDE도
+   `Load … → COMPILE <proj> → Start <proj> -event` 순으로 **Start 앞에 명시적 `COMPILE`을 따로 보냈다** —
+   그 캡처의 `-event`만 보고 "Start가 자체 컴파일한다"고 읽었던 옛 규칙이 오해였다.
+   확장은 `startCommand.buildStartCommand`가 `-compile`을 기본으로 붙여 보장한다(`compile: false`를 명시할 때만 뺀다).
+   여전히 유효한 함의: **Compile 직후 Start를 연속으로 보내지 않는다(컴파일 중복) — 한 번에 하나만.**
+   Deploy는 Compile까지, 실행은 `GPL: Start` 별도 (`docs/ai-handoff.md` §0.7).
 
 ## 작업을 마칠 때 반드시 남길 기록 (기록 규칙)
 

@@ -24,7 +24,7 @@
  *      접수일 뿐, 정지 완료 전 Compile/Start 는 제어기 이상 유발). Running/Paused 는 막지 않는다 — 다중 프로젝트 동시 실행은
  *      정상 사용이고, 대상 프로젝트가 실행 중이면 제어기가 STATUS 로 거부한다(그 판정은 제어기의 것).
  *  R3. Start <project>: 같은 프로젝트의 Compile 응답 완료 뒤 `startAfterCompileGapMs` 가 지나기 전이면 그만큼 기다린다(§0.7 —
- *      Start 가 자체 컴파일을 수행하므로 컴파일 연속을 피한다. 안전성 실측 전이라 거부가 아닌 완충 지연으로 둔다).
+ *      Start 가 `-compile` 로 컴파일을 수행하므로 컴파일 연속을 피한다. 안전성 실측 전이라 거부가 아닌 완충 지연으로 둔다).
  *
  * 단위 테스트: src/test/commandPolicy.test.ts
  */
@@ -142,7 +142,7 @@ const TRAITS_BY_KIND: Readonly<Record<PolicyCommandKind, CommandChannelTraits>> 
     // 프로젝트 로드본을 메모리에서 넣고 빼는 명령 — 2026-08-31 Unload 실측 근거.
     unload: { mutability: 'state-changing', expectedDuration: 'variable', mayDisruptChannel: true },
     load: { mutability: 'state-changing', expectedDuration: 'variable', mayDisruptChannel: true },
-    // 컴파일은 pass 사이에 수 초간 침묵하고(§waitForStatusClose), Start 는 자체 컴파일을 수행한다(§0.7).
+    // 컴파일은 pass 사이에 수 초간 침묵하고(§waitForStatusClose), Start 는 `-compile` 로 컴파일을 수행한다(§0.7).
     compile: { mutability: 'state-changing', expectedDuration: 'long', mayDisruptChannel: true },
     start: { mutability: 'state-changing', expectedDuration: 'long', mayDisruptChannel: true },
     // 정지 계열 — 오래 걸릴 수 있으나(-752) 채널 단절 근거는 없다.
@@ -376,7 +376,7 @@ export class ControllerCommandPolicy {
         if (doneAt === undefined) { return; }
         const remaining = this.opts.startAfterCompileGapMs - (io.now() - doneAt);
         if (remaining > 0) {
-            io.log(`R3 start ${target}: Compile 완료 직후 — ${remaining}ms 완충 뒤 전송 (§0.7 Start 자체 컴파일)`);
+            io.log(`R3 start ${target}: Compile 완료 직후 — ${remaining}ms 완충 뒤 전송 (§0.7 Start -compile)`);
             await io.sleep(remaining);
         }
     }

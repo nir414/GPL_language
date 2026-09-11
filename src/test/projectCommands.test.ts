@@ -135,34 +135,34 @@ test('projectCommands Compile: 전송 예외도 실패 결과로 돌려준다(�
 
 // ── Start ──────────────────────────────────────────────────────
 
-test('projectCommands Start: 명령은 항상 buildStartCommand 로 조립한다(-event 누락 방지)', async () => {
-    const io = makeIo({ 'Start P -event': OK });
+test('projectCommands Start: 명령은 항상 buildStartCommand 로 조립한다(-compile/-event 누락 방지)', async () => {
+    const io = makeIo({ 'Start P -compile -event': OK });
     const out = await startProject(io, { projectName: 'P' });
     assert.strictEqual(out.ok, true);
-    assert.strictEqual(out.command, 'Start P -event');
-    assert.deepStrictEqual(io.sent, ['Start P -event']);
+    assert.strictEqual(out.command, 'Start P -compile -event');
+    assert.deepStrictEqual(io.sent, ['Start P -compile -event']);
 });
 
 test('projectCommands Start: 디버거 스위치도 같은 조립기를 거친다', async () => {
-    const io = makeIo({ 'Start P -bex -break -event': OK });
+    const io = makeIo({ 'Start P -bex -break -compile -event': OK });
     const out = await startProject(io, { projectName: 'P', breakOnEntry: true, breakOnException: true });
     assert.strictEqual(out.ok, true);
 });
 
 test('projectCommands Start: 비차단 STATUS 는 성공이되 경고로 표시한다', async () => {
-    const io = makeIo({ 'Start P -event': status(-1000, 'environment warning') });
+    const io = makeIo({ 'Start P -compile -event': status(-1000, 'environment warning') });
     const out = await startProject(io, { projectName: 'P' });
     assert.strictEqual(out.ok, isNonBlocking(-1000));
     if (out.ok) { assert.strictEqual(out.nonBlockingWarning, true); }
 });
 
 test('projectCommands Start: 실패 STATUS 는 failure 로 그대로 옮긴다', async () => {
-    const io = makeIo({ 'Start P -event': status(-303, 'Undefined symbol') });
+    const io = makeIo({ 'Start P -compile -event': status(-303, 'Undefined symbol') });
     const out = await startProject(io, { projectName: 'P' });
     assert.strictEqual(out.ok, false);
     assert.deepStrictEqual(
         { code: out.failure?.code, cmd: out.failure?.command },
-        { code: -303, cmd: 'Start P -event' },
+        { code: -303, cmd: 'Start P -compile -event' },
     );
 });
 

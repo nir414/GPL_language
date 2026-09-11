@@ -45,7 +45,7 @@ export class ConnectionStatusBar implements vscode.Disposable {
 
     /**
      * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트(이슈 #17 재구성의 부수 상태).
-     * Start는 제어기가 자체 컴파일하므로(ai-handoff §0.7) 소스 에러가 있으면 Start가 실패한다 — 놓치지 않게 상태바에
+     * Start 는 `-compile` 로 컴파일까지 하므로(ai-handoff §0.7) 소스 에러가 있으면 Start가 실패한다 — 놓치지 않게 상태바에
      * 경고 배지로 보인다. undefined면 해제.
      */
     setCompileStale(state?: StatusBarCompileStale): void {
@@ -170,7 +170,7 @@ export class ConnectionStatusBar implements vscode.Disposable {
                 this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect\n\n` +
                     `컴파일 검증 필요: ${stale.projectName} — ${stale.reason}\n` +
                     `${new Date(stale.since).toLocaleString()} 이후 /GPL 소스가 아직 Compile로 검증되지 않았습니다. ` +
-                    'Start는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start가 실패합니다 — Quick Compile로 먼저 확인하세요.';
+                    'Start는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 Start가 실패합니다 — Quick Compile로 먼저 확인하세요.';
             } else {
                 this.item.text = `$(plug) GPL: ${cfg.ip}`;
                 this.item.backgroundColor = undefined;

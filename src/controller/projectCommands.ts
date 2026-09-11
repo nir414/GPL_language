@@ -20,7 +20,7 @@
  * 단위 테스트: `src/test/projectCommands.test.ts` (가짜 IO 로 시나리오를 재현한다).
  */
 
-import { buildStartCommand, StartCommandOptions } from './startCommand';
+import { buildStartCommand, commandRunsCompiler, StartCommandOptions } from './startCommand';
 import type { CommandResponseMeta } from './consoleSocket';
 import {
     isProjectAlreadyLoaded,
@@ -90,9 +90,13 @@ export function rawPreview(raw: string): string {
  * 명령 전송 + STATUS 판정. 예외는 던지지 않고 결과로 돌려준다
  * (예외 메시지 안에 STATUS 가 실려 오는 전송 계층이 있어 그것도 파싱한다).
  */
-export async function runStatusCommand(io: ProjectCommandIo, command: string): Promise<StatusOutcome> {
+export async function runStatusCommand(
+    io: ProjectCommandIo,
+    command: string,
+    opts?: { forCompile?: boolean },
+): Promise<StatusOutcome> {
     try {
-        const resp = await io.send(command);
+        const resp = await io.send(command, opts);
         const status = parseStatus(resp.raw);
         return {
             ok: status.code === 0 || isControllerNonBlockingStatus(status.code),
@@ -359,7 +363,7 @@ export interface StartOutcome {
  * `Start <project> [스위치]` — 명령 문자열은 **항상** `startCommand.buildStartCommand` 로 만든다.
  *
  * 손으로 조립하면 경로마다 스위치가 달라진다(실제로 FTP Run 경로에는 `-event` 가 빠져 있어 그 경로로
- * 시작한 실행만 1403 이벤트를 받지 못했다). `-compile` 은 붙이지 않는다 — Start 가 자체 컴파일한다(하드 규칙 7).
+ * 시작한 실행만 1403 이벤트를 받지 못했다). `-compile` 은 기본으로 붙는다 — 없으면 옛 바이너리가 실행된다(§1-DN).
  *
  * ※ 모션 확인 모달·배포 잠금·컴파일 검증 게이트는 **호출부**의 몫이다(사용자 상호작용이므로).
  */
@@ -371,7 +375,9 @@ export async function startProject(
     const p = prefixOf(opts);
     const command = buildStartCommand(startOptions);
     io.log(`${p}CMD ${command}`);
-    const start = await runStatusCommand(io, command);
+    // `-compile` 이 붙은 Start 는 Compile 과 같은 응답(수 초 침묵 + 긴 출력)이라 같은 대기 규칙으로 보낸다.
+    // 짧은 idle 완료로 받으면 compiler pass 도중 잘려 `-9999 No STATUS found` 가 된다(§1-DN).
+    const start = await runStatusCommand(io, command, { forCompile: commandRunsCompiler(command) });
     io.log(`${p}RAW ${rawPreview(start.raw) || '(empty)'}`);
 
     if (start.ok) {

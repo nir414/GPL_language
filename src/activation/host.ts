@@ -166,7 +166,7 @@ export class ExtensionHost {
 	markCompileStale(projectName: string, reason: string, projectDir?: string): void {
 		const info = this.compileStaleProjects.mark(projectName, reason, projectDir);
 		if (!info) { return; }
-		this.log(`[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (Start는 제어기가 자체 컴파일 — 소스 에러가 있으면 Start 실패, 먼저 Quick Compile 권장)`);
+		this.log(`[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (Start 는 -compile 로 컴파일 — 소스 에러가 있으면 Start 실패, 먼저 Quick Compile 권장)`);
 		this.controllerTree?.setCompileStale(info);
 		this.statusBar?.setCompileStale(info);
 	}

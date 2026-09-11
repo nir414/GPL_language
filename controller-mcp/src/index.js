@@ -1087,7 +1087,7 @@ function deployPhaseRecovery(failedPhase) {
 tool('deploy_project',
   '로컬 프로젝트를 제어기에 올린다(확장 경유 — FTP 업로드는 1402 콘솔로 불가). **대상은 인자/세션 대상으로 결정되고 UI 는 뜨지 않는다.** ' +
   'mode: `build`(기본 — 정지 후 /GPL 전체 업로드 + Compile, Start 없음) · `quick`(변경분만 업로드 + Compile, 정지 생략 — 에러 확인용) · ' +
-  '`upload-start`(업로드 + Start, Compile 생략 — Start 가 자체 컴파일). ' +
+  '`upload-start`(업로드 + Start, 별도 Compile 생략 — Start 의 -compile 이 컴파일). ' +
   '대상을 정할 수 없으면 `{ok:false, error:"PROJECT_AMBIGUOUS", candidates:[…]}` 가 오므로 사용자에게 묻거나 project 를 지정할 것. ' +
   '미저장 편집기 문서가 있으면 `UNSAVED_FILES` 로 멈춘다(업로드는 디스크 내용을 올리므로) — 저장해도 되면 saveDirty=true. ' +
   '`upload-start` 는 로봇이 움직일 수 있어 사용자 확인이 필요하다: 확인을 받은 뒤 confirmStart=true 로 호출하지 않으면 ' +
@@ -1291,7 +1291,7 @@ tool('operation_status',
 // ── 컴파일/실행 ───────────────────────────────────────────────────────────
 tool('compile_project',
   '프로젝트를 컴파일한다(Compile) — 에러 확인용. 성공/실패는 STATUS로만 판정하고, 실패 시 에러 라인을 파싱해 돌려준다. ' +
-  '실행이 목적이면 이 도구 대신 start_project만 호출할 것(Start가 자체 컴파일 — Compile 직후 Start 연속 호출 금지).',
+  '실행이 목적이면 이 도구 대신 start_project만 호출할 것(start_project가 -compile로 컴파일까지 한다 — Compile 직후 Start 연속 호출 금지).',
   { project: z.string().optional().describe(`프로젝트명(기본 ${DEFAULT_PROJECT})`) },
   async ({ project }) => {
     const raw = await sendGuarded(`Compile ${proj(project)}`, { timeoutMs: Math.max(TIMEOUT, 60000) });
@@ -1302,14 +1302,21 @@ tool('compile_project',
 
 tool('start_project',
   '프로젝트 실행을 시작한다(Start). stopOnEntry=true면 진입점에서 정지(-break -bex). [시뮬레이션 모드 권장] ' +
-  'PA 제어기의 Start는 자체적으로 Compile을 수행하므로 compile_project 직후 연속 호출하지 말 것(한 번에 하나만).',
+  '-compile로 컴파일까지 수행하므로 compile_project 직후 연속 호출하지 말 것(컴파일 중복, 한 번에 하나만). '
+  + '-compile 없이 Start하면 제어기가 컴파일하지 않고 직전에 컴파일된 옛 바이너리를 실행한다(2026-09-10 실기 관측).',
   {
     project: z.string().optional(),
     stopOnEntry: z.boolean().optional().describe('진입점에서 멈춤(디버그 시작용)'),
   },
   async ({ project, stopOnEntry }) => {
-    const cmd = stopOnEntry ? `Start ${proj(project)} -break -bex` : `Start ${proj(project)}`;
-    return textResult(await runCommand(cmd));
+    // 확장의 startCommand.buildStartCommand 와 같은 형태 — 문서 구문 순서(-bex → -break → -compile → -event).
+    // `-compile` 이 없으면 제어기가 옛 바이너리를 실행하고, `-event` 가 없으면 1403 상태 이벤트가 오지 않는다.
+    const cmd = stopOnEntry
+      ? `Start ${proj(project)} -bex -break -compile -event`
+      : `Start ${proj(project)} -compile -event`;
+    // -compile 이 붙은 Start 는 제어기에서 컴파일까지 돌리므로 응답이 Compile 과 같다(pass 사이 수 초 침묵).
+    // 기본 타임아웃(15 s)으로 받으면 compiler pass 도중 끊겨 결과 미확정이 된다 — compile_project 와 같은 상한을 쓴다.
+    return textResult(await runCommand(cmd, { timeoutMs: Math.max(TIMEOUT, 60000) }));
   });
 
 tool('unload_project',

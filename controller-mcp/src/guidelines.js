@@ -56,7 +56,8 @@ const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 1402 ASC
   (명령 직렬화 큐도 모션 안전 게이트도 없어 사고로 이어진다).
 - 명령의 성공/실패는 응답의 \`<STATUS>\`를 \`</STATUS>\`까지 읽고 판정한다 — 로그 파일·침묵 같은 간접 신호로 추정하지 않는다.
 - \`start_project\`·\`continue_thread\`·\`step_thread\`·\`set_variable\`은 모션을 유발할 수 있다. 실기 연결로 보이면 실행 전에 사용자 확인을 받는다.
-- Start는 제어기가 자체 컴파일을 수행하므로 \`compile_project\` 직후 \`start_project\`를 연속으로 보내지 않는다.
+- \`start_project\`는 \`-compile\`을 붙여 보낸다(제어기의 Start는 스위치 없이는 컴파일하지 않고 옛 바이너리를 실행한다 —
+  2026-09-10 실기 관측). 따라서 \`compile_project\` 직후 \`start_project\`를 연속으로 보내지 않는다(컴파일 중복).
 - **연결 실패는 관측이고 제어기 장애는 판단이다.** 타임아웃이나 \`ECONNREFUSED\` 하나로 "제어기 다운/재시작 중"이나
   전원 재투입을 결론내지 않는다 — 실측 2026-08-31: Unload 타임아웃 뒤 약 2.5분간 1402 재접속이 거부되다가 재부팅 없이
   정상 복귀했다. 응답의 \`outcome\`·\`controllerHealth\`·\`assessment.confidence\`를 그대로 읽고, \`unknown\`/\`unconfirmed\`면

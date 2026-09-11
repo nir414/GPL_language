@@ -10,7 +10,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { isRuntimeConsoleAutoStartOnDeploy } from '../config';
 import { AI_BLOCKED_ERROR, aiBlockedDetail, findAiBlockedCommand } from '../controller/aiCommandPolicy';
-import { getControllerConfig, sendCommand } from '../controller/controllerConnection';
+import { getControllerConfig, sendCommandDetailed } from '../controller/controllerConnection';
 import { describeDeployLock, getDeployLock } from '../controller/deployLock';
 import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult } from '../controller/deployService';
 import { mirrorProject } from '../controller/ftpClient';
@@ -30,7 +30,7 @@ import {
 import type { ProjectTargetRequest, TargetCandidateSummary } from '../controller/projectTarget';
 import { isControllerNonBlockingStatus, parseStatus } from '../controller/responseParser';
 import { RuntimeConsole } from '../controller/runtimeConsole';
-import { buildStartCommand } from '../controller/startCommand';
+import { buildStartCommand, commandRunsCompiler } from '../controller/startCommand';
 import { getSyncManifest, recordSyncManifest } from '../controller/syncManifest';
 import {
 	DeployOutcomeHistory,
@@ -56,12 +56,6 @@ export interface DeployApi {
 export type QuickDeployOpts = {
 	skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[];
 	overrideProjectDir?: string; noStopPrompt?: boolean; autoGate?: boolean; skipCompile?: boolean; nonInteractive?: boolean;
-	/** 정지 완료를 확인한 뒤에 업로드한다(기본은 병행) — 업로드 스타트 경로. DeployOptions.stopBeforeUpload 주석 참조. */
-	stopBeforeUpload?: boolean;
-	/** Start 직전 정지 재확인(기본 true). false는 진단용 — TEST 경로에서만 쓴다. */
-	preStartSettleCheck?: boolean;
-	/** 배포 트레이스 머리에 남길 메모(TEST 조합 이름 등). 동작에는 영향 없음. */
-	modeNote?: string;
 	/**
 	 * 같은 키의 배포가 진행 중이면 새로 시작하지 않는다(개선안 §10). 자동화 호출자(MCP)가 넘긴다 —
 	 * 브리지 응답 대기가 끊긴 뒤의 재시도가 두 번째 배포를 만드는 것을 막는다.
@@ -98,7 +92,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	}
 
 	/**
-	 * Start 전 "컴파일 검증 필요" 상태 확인. PA 제어기의 Start는 자체적으로 Compile을 수행하므로(§0.7) 소스에 에러가
+	 * Start 전 "컴파일 검증 필요" 상태 확인. 확장의 Start는 `-compile` 로 컴파일까지 함께 수행하므로(§0.7) 소스에 에러가
 	 * 있으면 Start가 실패하고 Problems 연동도 없다 — 먼저 Compile로 검증할지 묻는다. 단 Compile 직후 Start를 연속으로
 	 * 보내지 않으므로(한 번에 하나만, 컴파일 중복 회피) "Compile만 실행"을 고르면 Start는 하지 않는다. true면 Start 진행.
 	 */
@@ -108,7 +102,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		const dir = projectDir ?? stale.projectDir;
 		const choices = dir ? ['Compile만 실행', '그대로 Start'] : ['그대로 Start'];
 		const pick = await vscode.window.showWarningMessage(
-			`'${projectName}'의 /GPL 소스가 아직 Compile로 검증되지 않았습니다. Start는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start가 실패합니다(Problems 연동 없음).`,
+			`'${projectName}'의 /GPL 소스가 아직 Compile로 검증되지 않았습니다. Start는 -compile 로 컴파일까지 하므로 소스에 에러가 있으면 Start가 실패합니다(Problems 연동 없음).`,
 			{
 				modal: true,
 				detail: `사유: ${stale.reason}\n발생: ${new Date(stale.since).toLocaleString()}\n\n` +
@@ -216,12 +210,8 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				projectDir,
 				skipStart,
 				skipStop: quickOpts?.skipStop,
-				// 업로드 스타트: Compile을 보내지 않는다 — 제어기의 Start가 자체 컴파일하므로(§0.7) 중복이다.
+				// 업로드 스타트: Compile을 보내지 않는다 — Start 의 `-compile` 이 컴파일하므로(§0.7) 중복이다.
 				skipCompile: quickOpts?.skipCompile,
-				// 업로드 스타트: 정지 완료 → 업로드 → Start 순차. Stop 처리 중 같은 파일을 덮어쓰는 조합을 피한다.
-				stopBeforeUpload: quickOpts?.stopBeforeUpload,
-				preStartSettleCheck: quickOpts?.preStartSettleCheck,
-				modeNote: quickOpts?.modeNote,
 				skipUnchanged: quickOpts?.skipUnchanged,
 				changedFiles: quickOpts?.changedFiles,
 				autoGate: quickOpts?.autoGate,
@@ -396,7 +386,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 					host.markCompileStale(
 						result.projectName,
 						quickOpts?.skipCompile && result.failedPhase === 'START'
-							// 업로드 스타트는 Compile을 보내지 않는다 — Start 실패는 제어기 자체 컴파일 실패일 수 있고
+							// 업로드 스타트는 Compile을 보내지 않는다 — Start 실패는 `-compile` 컴파일 실패일 수 있고
 							// 그 경우 에러 위치가 Problems에 오지 않으므로 빠른 컴파일로 확인하도록 남긴다(§0.7).
 							? '업로드 스타트: Start 실패 — 소스 에러 여부는 빠른 컴파일로 확인 필요'
 							: `${mode} 업로드 후 Compile 실패(${result.failedPhase ?? 'FAIL'})`,
@@ -612,7 +602,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		return automationFailure(
 			'COMPILE_UNVERIFIED',
 			`'${projectName}' 의 /GPL 소스가 아직 Compile 로 검증되지 않았습니다(사유: ${stale.reason}). `
-				+ 'Start 는 제어기가 자체 컴파일하므로 소스에 에러가 있으면 Start 가 실패하고 에러 위치가 Problems 에 오지 않습니다. '
+				+ 'Start 는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 Start 가 실패하고 에러 위치가 Problems 에 오지 않습니다. '
 				+ '먼저 `gpl.quickCompile` 로 에러를 확인하거나, 그대로 진행하려면 `ignoreCompileStale: true` 로 다시 호출하세요.',
 		);
 	}
@@ -729,16 +719,15 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	);
 
 	// gpl.uploadStart — Stop + /GPL 직접 업로드 + Start. Compile은 보내지 않는다.
-	// PA 제어기의 Start가 자체적으로 Compile을 수행하므로(사용자 실사용 사실, ai-handoff §0.7)
+	// 확장의 Start 는 `-compile` 로 컴파일까지 수행하므로(ai-handoff §0.7)
 	// 확장이 Compile을 먼저 보내면 같은 컴파일이 두 번 돈다. 대신 소스 에러는 Problems 대신
 	// Start의 STATUS 실패로만 드러나므로, 에러 위치가 필요하면 '빠른 컴파일'(gpl.quickCompile)을 쓴다.
 	// Start 확인 모달·배포 잠금·프로젝트명 가드는 모두 기존 배포 경로와 동일하게 적용된다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.uploadStart', async (resource?: unknown) => {
-			// stopBeforeUpload: 정지 완료를 확인한 뒤 업로드한다(2026-09-10) — 기본 병행(UPLOAD ∥ STOP)은
-			// Stop -all 처리 중에 실행 파일을 FTP로 덮어쓰게 되고, 그 직후 Start까지 이어지는 이 경로에서
-			// 제어기가 응답을 잃는 현상이 보고됐다. 빠른 컴파일(Stop 없음)은 종전대로 병행이다.
-			const uploadStart = { skipCompile: true, stopBeforeUpload: true } as const;
+			// 업로드는 정지 게이트와 **병행**한다(UPLOAD ∥ STOP) — 속도가 목적이고, 2026-09-10 실기기
+			// 재현 시도에서 "Stop 처리 중 FTP 덮어쓰기"가 제어기 이상을 유발하지 않음이 확인됐다(§1-DL).
+			const uploadStart = { skipCompile: true } as const;
 			if (isAutomationInvocation(resource)) {
 				// Start 를 보내는 경로 — 모션 확인 없이 자동으로 실행하지 않는다(하드 규칙 6).
 				const args = resource as AutomationTargetArgs;
@@ -752,76 +741,6 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				return runDeploy(false, { ...uploadStart, overrideProjectDir: dir });
 			}
 			return runDeploy(false, { ...uploadStart });
-		})
-	);
-
-	// gpl.uploadStart.test — 「업로드 스타트」의 안전장치 두 개를 하나씩 켜고 끄며 실기기에서 원인을 가려내는 진단 경로(§1-DC).
-	//
-	// 제어기가 응답을 잃던 원인 가설이 둘이고(㉠ Stop 처리 중 FTP 덮어쓰기 / ㉡ 정지 직후의 Start),
-	// 기본 경로는 둘 다 막아 놓았다. 그러면 "무엇이 실제 원인이었는지"를 알 수 없으므로, 조합을 골라
-	// 한 번에 하나씩만 되살려 볼 수 있게 한다. 고른 조합은 배포 트레이스 머리에 `⚗`로 남아 나중에 로그만
-	// 봐도 구분된다. **실기기에서는 저속/시뮬레이션으로만 실행할 것**(Start를 보낸다 — 하드 규칙 6).
-	type UploadStartTestCase = {
-		key: string;
-		label: string;
-		detail: string;
-		stopBeforeUpload: boolean;
-		preStartSettleCheck: boolean;
-	};
-	const uploadStartTestCases: UploadStartTestCase[] = [
-		{
-			key: 'A',
-			label: 'A. 변경 전 그대로 (두 안전장치 모두 끔)',
-			detail: '업로드 ∥ Stop 동시 진행 + Start 직전 재확인 없음 — 죽던 그 순서를 그대로 재현합니다.',
-			stopBeforeUpload: false,
-			preStartSettleCheck: false,
-		},
-		{
-			key: 'B',
-			label: 'B. 순차만 켬 (㉠ 차단 — 정지 확인 → 업로드)',
-			detail: 'Stop 처리 중 FTP 덮어쓰기만 막습니다. 여기서 안 죽으면 원인은 ㉠ 쪽입니다.',
-			stopBeforeUpload: true,
-			preStartSettleCheck: false,
-		},
-		{
-			key: 'C',
-			label: 'C. Start 직전 재확인만 켬 (㉡ 차단)',
-			detail: '업로드는 종전대로 병행하고 Start 직전에만 정지를 재확인합니다. 여기서 안 죽으면 원인은 ㉡ 쪽입니다.',
-			stopBeforeUpload: false,
-			preStartSettleCheck: true,
-		},
-		{
-			key: 'D',
-			label: 'D. 현재 기본값 (둘 다 켬)',
-			detail: '지금 「업로드 스타트」 버튼이 하는 것과 같습니다. 대조군으로 씁니다.',
-			stopBeforeUpload: true,
-			preStartSettleCheck: true,
-		},
-	];
-	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.uploadStart.test', async (resource?: unknown) => {
-			const picked = await vscode.window.showQuickPick(
-				uploadStartTestCases.map(c => ({ label: c.label, detail: c.detail, test: c })),
-				{
-					title: '업로드 스타트 — 시퀀스 조합 선택 (진단용)',
-					placeHolder: '되살릴 조합을 고르세요. 실기기라면 저속/시뮬레이션에서만 실행하세요.',
-					ignoreFocusOut: true,
-				},
-			);
-			if (!picked) { return undefined; }
-			const test = picked.test;
-			host.log(`[UploadStart TEST] ${test.label} (stopBeforeUpload=${test.stopBeforeUpload}, preStartSettleCheck=${test.preStartSettleCheck})`);
-			const opts: QuickDeployOpts = {
-				skipCompile: true,
-				stopBeforeUpload: test.stopBeforeUpload,
-				preStartSettleCheck: test.preStartSettleCheck,
-				modeNote: `TEST ${test.key} — 정지→업로드 순차 ${test.stopBeforeUpload ? '켬' : '끔'} / Start 직전 재확인 ${test.preStartSettleCheck ? '켬' : '끔'}`,
-			};
-			const dir = resource instanceof vscode.Uri
-				? await pickWorkspaceProjectDir('업로드 후 시작할 프로젝트를 선택하세요', resource)
-				: undefined;
-			if (resource instanceof vscode.Uri && !dir) { return undefined; }
-			return runDeploy(false, dir ? { ...opts, overrideProjectDir: dir } : opts);
 		})
 	);
 
@@ -861,7 +780,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			} else if (!host.ensureProjectNameSafe(projectName, gprName ? 'project' : 'folder', 'Start')) {
 				return undefined;
 			}
-			// /GPL 소스가 Compile로 검증되지 않았으면 안내(Start는 제어기가 자체 컴파일 — 소스 에러 시 Start 실패, §0.7).
+			// /GPL 소스가 Compile로 검증되지 않았으면 안내(Start 는 `-compile` 로 컴파일 — 소스 에러 시 Start 실패, §0.7).
 			if (auto) {
 				const stale = compileStaleGate('gpl.start', projectName, auto);
 				if (stale) { return stale; }
@@ -892,13 +811,20 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			await host.primeRuntimeConsoleForStart('Start');
 
 			try {
-				// 문서 구문으로 조립(startCommand.ts) — 기본 `-event`(GDE 동일), `-compile` 없음(하드 규칙 7)
+				// 문서 구문으로 조립(startCommand.ts) — 기본 `-compile`(§1-DN) + `-event`(GDE 동일)
 				const startCmd = buildStartCommand({
 					projectName,
 					eventMode: vscode.workspace.getConfiguration('gpl').get<boolean>('controller.startEventMode', true),
 				});
 				host.log(`[Start] CMD ${startCmd}`);
-				const raw = await sendCommand(startCmd);
+				// `-compile` 이 붙은 Start 는 제어기에서 컴파일까지 돌리므로 응답이 Compile 과 똑같다 —
+				// pass 사이 수 초 침묵 + 긴 출력. 짧은 idle 완료로 받으면 `begin compiler pass 2` 에서 잘려
+				// `-9999 No STATUS found` 가 된다(2026-09-10 실기 관측, §1-DN).
+				const startCfg = getControllerConfig();
+				const startResp = await sendCommandDetailed(startCmd, startCfg, commandRunsCompiler(startCmd)
+					? { waitForStatusClose: true, timeoutMs: Math.max(startCfg.timeoutMs, 60000) }
+					: undefined);
+				const raw = startResp.raw;
 				const status = parseStatus(raw);
 				if (status.code === 0 || isControllerNonBlockingStatus(status.code)) {
 					if (status.code !== 0) {

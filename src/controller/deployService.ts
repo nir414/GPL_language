@@ -9,8 +9,8 @@
  * settle 폴링·재시도를 반복하느라 오래 걸리므로 업로드와 겹쳐 총 소요를 max(업로드, 정지)로 줄인다.
  * 진짜 위험은 ① 업로드 도중 Compile/Start(제어기 사망) ② 정지 미완료 상태의 Compile/Start(§0.6)다. 두 작업이
  * *모두* 끝난 뒤에만 COMPILE로 가고(②), ①은 deploy() 전체를 감싸는 배포 잠금(deployLock.ts, 프로세스 간 파일)으로 막는다.
- * COMPILE과 START는 한 번에 하나만 보낸다 — PA 제어기의 Start는 자체적으로 Compile을 수행하므로(사용자 실사용 사실,
- * ai-handoff §0.7) Compile 직후 Start는 컴파일 중복이다. 그래서 업로드 후 실행이 필요한 경로(gpl.uploadStart)는
+ * COMPILE과 START는 한 번에 하나만 보낸다 — 확장이 보내는 Start 에는 `-compile` 이 붙어 컴파일까지 수행하므로
+ * (§1-DN, ai-handoff §0.7) Compile 직후 Start는 컴파일 중복이다. 그래서 업로드 후 실행이 필요한 경로(gpl.uploadStart)는
  * skipCompile 로 Compile 을 건너뛰고 Start 만 보내고, 배포 없이 실행만 하는 경로는 gpl.start 가 따로 담당한다.
  */
 
@@ -52,9 +52,9 @@ export interface DeployOptions {
     skipStop?: boolean;
     /**
      * COMPILE 단계(Compile 명령)를 생략한다 — '업로드 스타트'(gpl.uploadStart) 경로.
-     * PA 제어기의 `Start`는 자체적으로 Compile을 수행하므로(사용자 실사용 사실, ai-handoff §0.7)
+     * 확장이 보내는 `Start`에는 `-compile`이 붙어 컴파일까지 수행하므로(§1-DN, ai-handoff §0.7)
      * 확장이 `Compile`을 먼저 보내면 같은 컴파일을 두 번 하게 된다. 업로드 직후 곧바로 Start를 보내
-     * 컴파일은 제어기에 맡긴다. 클래식(비 direct) 경로의 Unload/Load 동기화는 그대로 수행한다 —
+     * 컴파일은 Start의 `-compile`에 맡긴다. 클래식(비 direct) 경로의 Unload/Load 동기화는 그대로 수행한다 —
      * Start 하려면 제어기에 프로젝트가 로드돼 있어야 하기 때문이다.
      * 대가: 소스 에러가 Problems(진단)로 오지 않고 Start의 STATUS 실패로만 드러난다.
      * 에러 위치를 보려면 `gpl.quickCompile`(빠른 컴파일)로 따로 확인한다.
@@ -77,31 +77,6 @@ export interface DeployOptions {
      * 기존(flash 업로드 + Unload/Load) 경로로 폴백한다. flash 저장은 Save to Flash가 담당.
      */
     directGpl?: boolean;
-    /**
-     * 정지(STOP 게이트)를 **완료한 뒤에** 업로드를 시작한다(기본은 둘을 동시에 진행).
-     *
-     * 기본 병행은 속도를 위한 것이고 "실행 중 FTP 업로드는 무해"라는 관찰에 근거한다(2026-08-25, 이슈 #17).
-     * 그러나 그 관찰은 Stop을 보내지 않는 빠른 컴파일 기준이다 — Stop -all 처리(모션 abort·쓰레드 teardown)가
-     * 진행되는 동안 같은 파일을 FTP로 덮어쓰는 조합은 검증된 적이 없고, 업로드 스타트에서 제어기가 응답을
-     * 잃는 현상이 관찰됐다(2026-09-10 사용자 보고). 정지 후 Start까지 이어지는 경로에서는 순차로 돌려
-     * "정지 완료 → 업로드 → Start" 순서를 보장한다. skipStop 경로에는 영향이 없다(보낼 Stop이 없다).
-     * 정지가 확인되지 않으면 업로드를 아예 시작하지 않는다 — 제어기의 파일은 그대로 남는다.
-     */
-    stopBeforeUpload?: boolean;
-    /**
-     * START 단계 진입 시 `Show Thread`로 정지를 **한 번 더** 확인한다(기본 true).
-     *
-     * 정지 게이트를 통과한 뒤에도 업로드·원격 삭제·Compile로 수십 초가 흐르고, `-752`(정지 진행 중) 뒤
-     * 제어기 내부 정리가 남아 있을 수 있다. 그 상태에서 `Start`(=제어기 자체 컴파일 포함)를 보내는 것이
-     * 제어기 이상의 유력 가설이라 기본으로 막는다(2026-09-10, §1-DC).
-     * **false는 진단용이다** — 이 안전장치를 꺼서 원인을 가려내는 TEST 경로(`gpl.uploadStart.test`)에서만 쓴다.
-     */
-    preStartSettleCheck?: boolean;
-    /**
-     * 배포 트레이스 머리 상자에 한 줄 덧붙일 메모(예: TEST 조합 이름). 동작에는 영향을 주지 않는다 —
-     * 나중에 로그만 보고 "어떤 조합으로 돌린 실행인지" 구분하기 위한 것이다.
-     */
-    modeNote?: string;
     /**
      * 빠른 컴파일(skipStop)에서 활성 쓰레드 감지 시 호출된다.
      * true를 반환하면 Stop -all + 정지 완료 확인을 거쳐 계속 진행하고,
@@ -573,12 +548,9 @@ async function deployLocked(
     const modeSuffix = options.skipStop
         ? ' (Quick Compile)'
         : options.skipCompile && !options.skipStart
-            ? ' (Upload & Start — Compile 생략, Start가 자체 컴파일)'
+            ? ' (Upload & Start — Compile 생략, Start -compile 이 컴파일)'
             : options.skipStart ? ' (Build Only)' : '';
     pushTrace(`│  ◆ ${projectName}${modeSuffix}`);
-    if (options.modeNote) {
-        pushTrace(`│  ⚗ ${options.modeNote}`);
-    }
     pushTrace(`├──────────────────────────────────────────────────────┤`);
     pushTrace(`│  Local:  ${options.projectDir}`);
     pushTrace(`│  FTP:    ${ftpProjectDir}`);
@@ -697,18 +669,15 @@ async function deployLocked(
     // 두 작업이 *모두* 끝난 뒤에만 다음(원격 전용 파일 삭제 → COMPILE)으로 간다 — "정지 확인 전 Compile/Start 금지"(§0.6)와
     // "업로드 도중 Compile/Start 금지"(배포 잠금)는 그대로다. 원격 전용 파일 삭제는 실행 중 무해가 미검증이라 정지 확인 뒤로 지연.
     //
-    // 예외: stopBeforeUpload(업로드 스타트) — 정지 완료를 먼저 확인한 뒤에만 업로드한다(옵션 주석 참조).
-
-    // 병행은 "보낼 Stop이 있을 때"만 의미가 있다 — skipStop 경로는 프로브(읽기 전용)뿐이라 순차로 돌릴 이유가 없다.
-    const sequentialStop = options.stopBeforeUpload === true && !options.skipStop;
+    // 2026-09-10(§1-DL): 업로드 스타트 경로만 순차(STOP → UPLOAD)로 돌려 본 적이 있다 — "Stop 처리 중 FTP
+    // 덮어쓰기"가 제어기 이상의 원인이라는 가설 때문이었는데, 실기기에서 그 순서로도(안전장치를 끈 조합
+    // 포함) 재현되지 않아 가설을 기각하고 병행으로 되돌렸다. 순차는 총 소요를 늘리기만 했다.
 
     pushTrace('');
     phase++;
     const gateLabel = options.skipStop ? '쓰레드 상태 확인' : 'STOP';
-    pushTrace(sequentialStop
-        ? `━━ [${phase}/${totalPhases}] ${gateLabel} → UPLOAD (순차) ━━━━━━━━━━━━━━━━━━━━━━━━━━━`
-        : `━━ [${phase}/${totalPhases}] UPLOAD ∥ ${gateLabel} (동시 진행) ━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lock.setStage(options.skipStop ? 'UPLOAD+THREAD_CHECK' : sequentialStop ? 'STOP' : 'UPLOAD+STOP');
+    pushTrace(`━━ [${phase}/${totalPhases}] UPLOAD ∥ ${gateLabel} (동시 진행) ━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lock.setStage(options.skipStop ? 'UPLOAD+THREAD_CHECK' : 'UPLOAD+STOP');
 
     if (token?.isCancellationRequested) { return result; }
 
@@ -859,25 +828,9 @@ async function deployLocked(
         return (await stopAllAndSettle()) ? 'proceed' : 'abort';
     }
 
-    let upload: UploadOutcome;
-    let gate: 'proceed' | 'abort';
-    if (sequentialStop) {
-        // 정지 완료 → 업로드 순차. 정지가 확인되지 않으면 업로드하지 않는다 — 제어기의 /GPL 사본은
-        // 손대지 않은 상태로 남으므로, 실패해도 "실행 중이던 소스와 올라간 소스가 섞인" 상태가 생기지 않는다.
-        gate = await runStopGate();
-        if (gate === 'abort') {
-            // failedPhase(STOP/THREAD_CHECK)는 게이트가 이미 기록했다.
-            pushTrace('│ ✘ 정지가 확인되지 않아 업로드를 시작하지 않았습니다 — 제어기의 파일은 그대로입니다.');
-            return result;
-        }
-        lock.setStage('UPLOAD');
-        pushTrace('│ ✔ 정지 확인 완료 → 업로드 시작');
-        upload = await runUpload();
-    } else {
-        // 두 작업을 동시에 시작하고 둘 다 끝날 때까지 기다린다. 한쪽이 먼저 실패해도 다른 쪽을 끝까지 기다려야 한다 —
-        // 특히 업로드가 진행 중인데 돌아가 배포 잠금을 풀면 "업로드 도중 Compile/Start" 창이 열린다.
-        [upload, gate] = await Promise.all([runUpload(), runStopGate()]);
-    }
+    // 두 작업을 동시에 시작하고 둘 다 끝날 때까지 기다린다. 한쪽이 먼저 실패해도 다른 쪽을 끝까지 기다려야 한다 —
+    // 특히 업로드가 진행 중인데 돌아가 배포 잠금을 풀면 "업로드 도중 Compile/Start" 창이 열린다.
+    const [upload, gate] = await Promise.all([runUpload(), runStopGate()]);
 
     const pendingDeletes: RemoteFileRef[] = upload.ok ? upload.pendingDeletes : [];
     const deferNote = pendingDeletes.length > 0 ? ` (원격 전용 파일 ${pendingDeletes.length}개 삭제는 보류)` : '';
@@ -938,7 +891,7 @@ async function deployLocked(
     // skipCompile 경로에서도 이 단계는 남는다 — 클래식 경로의 Unload/Load 동기화가 여기서 일어나고
     // (Start 하려면 프로젝트가 로드돼 있어야 한다), direct /GPL 모드에서는 안내 한 줄만 남는다.
     pushTrace(options.skipCompile
-        ? `━━ [${phase}/${totalPhases}] PREPARE (Compile 생략 — Start가 자체 컴파일, §0.7) ━━━━━`
+        ? `━━ [${phase}/${totalPhases}] PREPARE (Compile 생략 — Start -compile 이 컴파일, §0.7) ━━━━━`
         : `━━ [${phase}/${totalPhases}] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     lock.setStage('COMPILE');
 
@@ -1250,15 +1203,11 @@ async function deployLocked(
         if (token?.isCancellationRequested) { return result; }
 
         // Start 직전 정지 재확인(§0.6) — 정지 게이트를 통과한 뒤에도 업로드·원격 파일 삭제·Compile로
-        // 수십 초가 지났고, -752(정지 진행 중) 뒤 제어기 내부 정리가 남아 있을 수 있다. 정지되지 않은
-        // 쓰레드가 남은 채 Start(=제어기 자체 컴파일 포함)를 보내는 것이 제어기 이상의 유력한 경로라
-        // 여기서 한 번 더 막는다. 무응답은 확인 불가로 보고 통과시킨다(waitThreadsSettle 규약과 동일).
-        const preStartSettle: SettleOutcome = options.preStartSettleCheck === false
-            ? { settled: true, unconfirmed: false, elapsedMs: 0 }
-            : await waitThreadsSettle(threadStopIo, threadStopOpts);
-        if (options.preStartSettleCheck === false) {
-            pushTrace('│ ⚗ TEST: Start 직전 정지 재확인을 생략했습니다 (진단용 — 기본 경로는 확인합니다)');
-        }
+        // 수십 초가 지났고, -752(정지 진행 중) 뒤 제어기 내부 정리가 남아 있을 수 있다. 활성 쓰레드가
+        // 남은 채 Start(=`-compile` 컴파일 포함)를 보내지 않기 위한 게이트다. 비용은 읽기 전용
+        // `Show Thread` 한 번(정지돼 있으면 즉시 통과)이라 §1-DL에서 병행 복귀 후에도 남겨 두었다.
+        // 무응답은 확인 불가로 보고 통과시킨다(waitThreadsSettle 규약과 동일).
+        const preStartSettle: SettleOutcome = await waitThreadsSettle(threadStopIo, threadStopOpts);
         if (preStartSettle.cancelled) { return result; }
         if (!preStartSettle.settled) {
             pushTrace(`│ ✘ Start 직전 확인에서 활성 쓰레드 발견: ${preStartSettle.activeDesc}`);
@@ -1298,14 +1247,14 @@ async function deployLocked(
             }
         }
         // 명령 조립(문서 구문·`-event`)과 STATUS 판정은 projectCommands.startProject 가 한다(§1-DE).
-        // `-compile` 은 붙이지 않는다(Start 가 자체 컴파일 — 하드 규칙 7).
+        // `-compile` 은 startCommand 기본값으로 항상 붙는다(§1-DN — 없으면 옛 바이너리가 실행된다).
         const start = await startProject(projectIo, {
             projectName: result.projectName,
             eventMode: options.startEventMode,
         });
         if (start.ok) {
             if (options.skipCompile) {
-                // Start가 STATUS 0으로 끝났다 = 제어기가 방금 올린 소스를 자체 컴파일해 실행 중이다(§0.7).
+                // Start가 STATUS 0으로 끝났다 = 제어기가 방금 올린 소스를 `-compile` 로 컴파일해 실행 중이다(§0.7).
                 // 그때서야 "이 소스가 제어기에서 돌고 있다"가 사실이 되므로 여기서 스냅샷을 기록한다.
                 recordCompileSnapshot();
             }

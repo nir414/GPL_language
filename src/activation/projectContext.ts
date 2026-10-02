@@ -14,6 +14,8 @@ import { checkProjectName, describeProjectNameProblem } from '../controller/proj
 import { parseGpr, pickSourceCandidate } from '../controller/responseParser';
 import { parseJsonc, upsertLaunchConfiguration } from '../debug/launchJsonc';
 import { walkTree } from '../project/projectSources';
+import { chooseCompileUnitGprs, GprIdentity, readGprIdentity, readGprIdentityInDir } from '../project/compileUnitTarget';
+import { ResolvedBreakpointTarget, resolveBreakpointTarget } from '../project/breakpointTarget';
 import type { ExtensionHost } from './host';
 
 export interface ProjectContextApi {
@@ -26,6 +28,7 @@ export interface ProjectContextApi {
 	findWorkspaceFilesByName(target: string): string[];
 	findExpectedProjectDirs(): string[];
 	resolveGplFilePath(filename: string): string | undefined;
+	resolveBreakpointTarget(file: string, line: number, projectName: string): ResolvedBreakpointTarget | undefined;
 }
 
 export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
@@ -298,24 +301,33 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 		return results;
 	}
 
+	/** 대상 폴더/기대 프로젝트 불일치 경고는 조합당 1회 — 파일명 해석은 이벤트마다 불린다. */
+	const warnedTargetMismatch = new Set<string>();
+
 	/**
-	 * 제어기 트리의 기대 프로젝트와 이름이 일치하는 Project.gpr 폴더들을 수집한다.
-	 * 동명 소스 경합 시 우선 선택 기준 (gplDebugSession._updateProjectDirs와 같은 역할).
+	 * 동명 소스 경합 시 우선 선택 기준이 되는 프로젝트 폴더들 — 규칙 정본은 `project/compileUnitTarget.ts`
+	 * (디버그 어댑터 `_updateProjectDirs` 와 같은 규칙). 세션 대상 폴더(`host.sessionTargetDir`)가 기대
+	 * 프로젝트의 것이면 **그 하나**(워크스페이스 스캔 생략), 아니면 기대 프로젝트명과 일치하는 `Project.gpr`
+	 * 폴더 전부. 과제별 동명 프로젝트 3개가 있던 배치에서 배포본이 아닌 사본이 열리던 문제(2026-09-18).
 	 */
 	function findExpectedProjectDirs(): string[] {
-		const expected = host.controllerTree?.getExpectedProjectName?.()?.trim();
-		if (!expected) { return []; }
-		const want = expected.toLowerCase();
-		const dirs: string[] = [];
-		for (const gprPath of findWorkspaceFilesByName('Project.gpr')) {
-			try {
-				const info = parseGpr(fs.readFileSync(gprPath, 'utf-8'));
-				if (info.projectName && info.projectName.toLowerCase() === want) {
-					dirs.push(path.dirname(gprPath));
-				}
-			} catch { /* skip */ }
+		const expected = host.controllerTree?.getExpectedProjectName?.()?.trim() ?? '';
+		const target = readGprIdentityInDir(host.sessionTargetDir);
+		const choice = chooseCompileUnitGprs(expected, target, () =>
+			findWorkspaceFilesByName('Project.gpr')
+				.map(readGprIdentity)
+				.filter((g): g is GprIdentity => !!g));
+		if (choice.via === 'target-dir-mismatch' && target) {
+			const key = `${target.gprPath}|${expected}`.toLowerCase();
+			if (!warnedTargetMismatch.has(key)) {
+				warnedTargetMismatch.add(key);
+				host.log(
+					`[ProjectContext] ⚠ 세션 대상 폴더(${path.dirname(target.gprPath)})의 프로젝트명 "${target.projectName}" 이 `
+					+ `기대 프로젝트 "${expected}" 와 다릅니다 — 이름이 일치하는 폴더로 파일명을 해석합니다.`,
+				);
+			}
 		}
-		return dirs;
+		return choice.gprPaths.map(p => path.dirname(p));
 	}
 
 	/**
@@ -327,7 +339,15 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 	 * 명령의 동작 불일치 원인).
 	 */
 	function resolveGplFilePath(filename: string): string | undefined {
-		// 제어기가 전체 경로를 줄 수 있으므로 베이스네임만 비교 대상으로 삼는다.
+		if (!path.isAbsolute(filename) && /[\\/]/.test(filename)) {
+			const native = filename.replace(/[\\/]+/g, path.sep);
+			const exact = findExpectedProjectDirs()
+				.map(dir => path.resolve(dir, native))
+				.find(candidate => fs.existsSync(candidate));
+			if (exact) { return exact; }
+		}
+		if (path.isAbsolute(filename) && fs.existsSync(filename)) { return path.resolve(filename); }
+		// 제어기가 전체 경로를 줄 수도 있으므로 basename 폴백도 유지한다.
 		const target = filename.replace(/^.*[\\/]/, '');
 		const candidates = findWorkspaceFilesByName(target);
 		if (candidates.length === 0) { return undefined; }
@@ -343,6 +363,44 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 		return pick.path;
 	}
 
+	/** 메인 `.gpr` 기준으로 `Set Break`에 사용할 정확한 source identity를 구한다. */
+	function resolveBpTarget(file: string, line: number, projectName: string): ResolvedBreakpointTarget | undefined {
+		const allGprs = findWorkspaceFilesByName('Project.gpr');
+		const target = readGprIdentityInDir(host.sessionTargetDir);
+		const choice = chooseCompileUnitGprs(
+			projectName,
+			target,
+			() => allGprs.map(readGprIdentity).filter((g): g is GprIdentity => !!g),
+		);
+		if (choice.gprPaths.length === 0) { return undefined; }
+
+		let resolvedLocal = path.isAbsolute(file) ? path.resolve(file) : undefined;
+		if (!resolvedLocal) {
+			const native = file.replace(/[\\/]+/g, path.sep);
+			resolvedLocal = choice.gprPaths
+				.map(gpr => path.resolve(path.dirname(gpr), native))
+				.find(candidate => fs.existsSync(candidate));
+		}
+		resolvedLocal = resolvedLocal ?? resolveGplFilePath(file);
+		if (!resolvedLocal) { return undefined; }
+
+		let fallback: ResolvedBreakpointTarget | undefined;
+		for (const gprPath of choice.gprPaths) {
+			try {
+				const result = resolveBreakpointTarget({
+					gprPath,
+					gprText: fs.readFileSync(gprPath, 'utf8'),
+					localPath: resolvedLocal,
+					line,
+					knownGprPaths: allGprs,
+				});
+				if (result.kind !== 'outside-project') { return result; }
+				fallback = fallback ?? result;
+			} catch { /* 다음 동명 프로젝트 후보 확인 */ }
+		}
+		return fallback;
+	}
+
 	return {
 		detectWorkspaceProjectContext,
 		detectWorkspaceProjectName,
@@ -353,5 +411,6 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 		findWorkspaceFilesByName,
 		findExpectedProjectDirs,
 		resolveGplFilePath,
+		resolveBreakpointTarget: resolveBpTarget,
 	};
 }

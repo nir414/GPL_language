@@ -2,8 +2,9 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { sendCommand } from './controllerConnection';
 import { parseStatus, isSuccess, parseBreakList } from './responseParser';
-import { BreakpointTarget, controllerTargets, planReconcile, ReconcilePlan } from './breakpointReconcile';
-import { formatBreakpointCommand, MirrorEchoMemory } from './breakpointCommand';
+import { BreakpointTarget, controllerTargets, isResolvedBreakpointRecord, planReconcile, ReconcilePlan } from './breakpointReconcile';
+import { formatBreakpointCommand, MirrorEchoMemory, normalizeBreakpointCommandFile } from './breakpointCommand';
+import type { ResolvedBreakpointTarget } from '../project/breakpointTarget';
 
 /**
  * 에디터 중단점 → 제어기 동기화 (VS Code가 중단점의 단일 원본).
@@ -42,6 +43,8 @@ export interface BreakpointSyncDeps {
 	isDebugSessionActive(): boolean;
 	/** 워크스페이스에서 감지한 제어기 프로젝트명 (빈 문자열이면 미확정) */
 	resolveProjectName(): Promise<string>;
+	/** 메인 `.gpr`의 직접 ProjectSource / library source를 판정한다. */
+	resolveTarget(fsPath: string, line: number, projectName: string): ResolvedBreakpointTarget | undefined;
 	log(line: string): void;
 	/** 제어기 쪽 중단점을 실제로 변경한 배치가 끝난 뒤 호출 — UI(트리 중단점 섹션) 즉시 갱신용 */
 	onDidSync?(): void;
@@ -93,17 +96,26 @@ function isGplSource(fsPath: string): boolean {
 }
 
 /**
- * 지금 에디터에 있는 GPL 중단점 위치 목록 (제어기 명령 단위 — 베이스네임 + 1-based 줄).
+ * 지금 에디터에 있는 GPL 중단점 위치 목록 (제어기 명령 단위 — project-relative 경로 + 1-based 줄).
  * 비활성(enabled=false) 중단점은 제어기에 걸지 않으므로 기본적으로 제외한다.
  */
-export function editorBreakpointTargets(includeDisabled = false): BreakpointTarget[] {
+export function editorBreakpointTargets(
+	includeDisabled = false,
+	resolveTarget?: (fsPath: string, line: number) => BreakpointTarget | undefined,
+): BreakpointTarget[] {
 	const out: BreakpointTarget[] = [];
 	for (const bp of vscode.debug.breakpoints) {
 		if (!(bp instanceof vscode.SourceBreakpoint)) { continue; }
 		if (!includeDisabled && !bp.enabled) { continue; }
 		const fsPath = bp.location.uri.fsPath;
 		if (!isGplSource(fsPath)) { continue; }
-		out.push({ file: path.basename(fsPath), line: bp.location.range.start.line + 1 });
+		const line = bp.location.range.start.line + 1;
+		if (resolveTarget) {
+			const target = resolveTarget(fsPath, line);
+			if (target) { out.push(target); }
+		} else {
+			out.push({ file: path.basename(fsPath), line });
+		}
 	}
 	return out;
 }
@@ -134,22 +146,51 @@ export class EditorBreakpointSync implements vscode.Disposable {
 		return this._isEnabled() && this.deps.isConnected() && !this.deps.isDebugSessionActive();
 	}
 
-	/** SourceBreakpoint를 제어기 대상(파일 베이스네임 + 1-based 줄)으로 변환. GPL 파일이 아니면 undefined. */
-	private _toTarget(bp: vscode.Breakpoint): BreakpointTarget | undefined {
+	private _sourceLocation(bp: vscode.Breakpoint): { fsPath: string; line: number } | undefined {
 		if (!(bp instanceof vscode.SourceBreakpoint)) { return undefined; }
 		const fsPath = bp.location.uri.fsPath;
 		if (!isGplSource(fsPath)) { return undefined; }
-		return { file: path.basename(fsPath), line: bp.location.range.start.line + 1 };
+		return { fsPath, line: bp.location.range.start.line + 1 };
+	}
+
+	private _resolveTarget(bp: vscode.Breakpoint, project: string): ResolvedBreakpointTarget | undefined {
+		const location = this._sourceLocation(bp);
+		return location ? this.deps.resolveTarget(location.fsPath, location.line, project) : undefined;
+	}
+
+	private _toTarget(bp: vscode.Breakpoint, project: string): BreakpointTarget | undefined {
+		const resolved = this._resolveTarget(bp, project);
+		return resolved?.kind === 'direct-source' && resolved.file
+			? { file: resolved.file, line: resolved.line }
+			: undefined;
+	}
+
+	private _noteUnsendable(resolved: ResolvedBreakpointTarget | undefined): void {
+		if (resolved?.message) { this.deps.log(`[BP Sync] ${resolved.message}`); }
 	}
 
 	private async _send(kind: 'Break' | 'Nobreak', project: string, file: string, line: number): Promise<boolean> {
 		const cmd = bpCommand(kind, project, file, line);
 		try {
-			const resp = await sendCommand(cmd);
-			if (!isSuccess(resp)) {
-				const status = parseStatus(resp);
+			let resp = await sendCommand(cmd);
+			let status = parseStatus(resp);
+			if (!isSuccess(resp) && !(kind === 'Break' && status.code === -775)) {
 				this.deps.log(`[BP Sync] 실패 (STATUS ${status.code}): ${cmd}`);
 				return false;
+			}
+			if (kind === 'Break') {
+				let resolved = await this._isResolvedControllerBreakpoint(project, file, line);
+				if (status.code === -775 && !resolved) {
+					this.deps.log(`[BP Sync] 미해석 중복 record 정리 후 재설정: ${file}:${line}`);
+					await sendCommand(bpCommand('Nobreak', project, file, line));
+					resp = await sendCommand(cmd);
+					status = parseStatus(resp);
+					resolved = isSuccess(resp) && await this._isResolvedControllerBreakpoint(project, file, line);
+				}
+				if (!resolved) {
+					this.deps.log(`[BP Sync] 제어기가 record를 받았지만 procedure instruction에 연결되지 않았습니다: ${cmd}`);
+					return false;
+				}
 			}
 			this.deps.log(`[BP Sync] ${cmd}`);
 			return true;
@@ -159,6 +200,18 @@ export class EditorBreakpointSync implements vscode.Disposable {
 		}
 	}
 
+	private async _isResolvedControllerBreakpoint(project: string, file: string, line: number): Promise<boolean> {
+		const response = await sendCommand('Show Break');
+		if (!isSuccess(response)) { return false; }
+		const wantedProject = project.toLowerCase();
+		const wantedFile = normalizeBreakpointCommandFile(file).toLowerCase();
+		return parseBreakList(response).some(bp =>
+			bp.project.toLowerCase() === wantedProject
+			&& normalizeBreakpointCommandFile(bp.file).toLowerCase() === wantedFile
+			&& bp.fileLine === line
+			&& isResolvedBreakpointRecord(bp));
+	}
+
 	private _noteUnsupportedKinds(bp: vscode.Breakpoint, file: string, line: number): void {
 		if (bp.condition || bp.hitCondition || bp.logMessage) {
 			this.deps.log(`[BP Sync] ${file}:${line} — 조건/히트카운트/로그 중단점은 제어기가 지원하지 않아 일반 중단점으로 설정됩니다.`);
@@ -166,7 +219,11 @@ export class EditorBreakpointSync implements vscode.Disposable {
 	}
 
 	private async _applyAdd(bp: vscode.Breakpoint, project: string): Promise<boolean> {
-		const target = this._toTarget(bp);
+		const resolved = this._resolveTarget(bp, project);
+		const target = resolved?.kind === 'direct-source' && resolved.file
+			? { file: resolved.file, line: resolved.line }
+			: undefined;
+		if (!target) { this._noteUnsendable(resolved); }
 		if (!target || !bp.enabled) { return false; }
 		this._noteUnsupportedKinds(bp, target.file, target.line);
 		const ok = await this._send('Break', project, target.file, target.line);
@@ -192,7 +249,11 @@ export class EditorBreakpointSync implements vscode.Disposable {
 			await this._send('Nobreak', tracked.project, tracked.file, tracked.line);
 			return true;
 		}
-		const target = this._toTarget(bp);
+		const resolved = this._resolveTarget(bp, project);
+		const target = resolved?.kind === 'direct-source' && resolved.file
+			? { file: resolved.file, line: resolved.line }
+			: undefined;
+		if (!target) { this._noteUnsendable(resolved); }
 		if (!target || !project) { return false; }
 		this.deps.log(`[BP Sync] 전송 기록 없음 — 현재 위치로 해제 시도: ${target.file}:${target.line}`);
 		await this._send('Nobreak', project, target.file, target.line);
@@ -205,7 +266,7 @@ export class EditorBreakpointSync implements vscode.Disposable {
 	 */
 	private _involvesGplBreakpoint(e: vscode.BreakpointsChangeEvent, echoed: ReadonlySet<string>): boolean {
 		return [...e.added, ...e.removed, ...e.changed]
-			.some(bp => !echoed.has(bp.id) && this._toTarget(bp) !== undefined);
+			.some(bp => !echoed.has(bp.id) && this._sourceLocation(bp) !== undefined);
 	}
 
 	/**
@@ -215,14 +276,14 @@ export class EditorBreakpointSync implements vscode.Disposable {
 	 * (제어기가 "Duplicate breakpoint"로 거절), 방금 해제한 위치에 `Set Nobreak`를 또 보내는
 	 * 무의미한 왕복이 생긴다. 반환값은 그렇게 걸러 낼 중단점의 id 집합(항목당 한 번만 매칭).
 	 */
-	private _collectEchoes(e: vscode.BreakpointsChangeEvent): Set<string> {
+	private _collectEchoes(e: vscode.BreakpointsChangeEvent, project: string): Set<string> {
 		const echoed = new Set<string>();
 		const echo = this.deps.mirrorEcho;
 		if (!echo) { return echoed; }
 		const groups = [['Break', e.added], ['Nobreak', e.removed]] as const;
 		for (const [kind, list] of groups) {
 			for (const bp of list) {
-				const target = this._toTarget(bp);
+				const target = this._toTarget(bp, project);
 				if (target && echo.consume(kind, target.file, target.line)) { echoed.add(bp.id); }
 			}
 		}
@@ -232,13 +293,14 @@ export class EditorBreakpointSync implements vscode.Disposable {
 
 	/** 미러가 추가한 중단점을 전송 기록에 넣는다 — 이후 F9 제거가 기록 기준으로 정확히 지워진다. */
 	private _trackEchoedAdd(bp: vscode.Breakpoint, project: string): void {
-		const target = this._toTarget(bp);
+		const target = this._toTarget(bp, project);
 		if (!target || !project) { return; }
 		this._tracked.set(bp.id, { project, file: target.file, line: target.line });
 	}
 
 	private async _onChange(e: vscode.BreakpointsChangeEvent): Promise<void> {
-		const echoed = this._collectEchoes(e);
+		const project = (await this.deps.resolveProjectName()).trim();
+		const echoed = this._collectEchoes(e, project);
 		if (!this._shouldSync()) {
 			// 꺼져 있거나 미연결/디버그 세션 중 — 추적만 정리하고 전송하지 않는다.
 			// (연결 후 따라잡기는 onControllerConnected → reconcileAll이 담당)
@@ -255,7 +317,6 @@ export class EditorBreakpointSync implements vscode.Disposable {
 			return;
 		}
 
-		const project = (await this.deps.resolveProjectName()).trim();
 		if (!project) {
 			this.deps.log('[BP Sync] 프로젝트명을 확정할 수 없어 중단점 변경을 반영하지 않습니다 (Project.gpr 확인).');
 			return;
@@ -300,7 +361,7 @@ export class EditorBreakpointSync implements vscode.Disposable {
 			return result;
 		}
 		for (const bp of vscode.debug.breakpoints) {
-			const target = this._toTarget(bp);
+			const target = this._toTarget(bp, project);
 			if (!target || !bp.enabled) {
 				result.skipped++;
 				continue;
@@ -345,7 +406,11 @@ export class EditorBreakpointSync implements vscode.Disposable {
 		}
 
 		const { targets, untouched } = controllerTargets(parseBreakList(showResp), project);
-		const plan: ReconcilePlan = planReconcile(targets, editorBreakpointTargets(), untouched);
+		const editorTargets = vscode.debug.breakpoints
+			.map(bp => ({ bp, target: this._toTarget(bp, project) }))
+			.filter((entry): entry is { bp: vscode.Breakpoint; target: BreakpointTarget } => !!entry.target && entry.bp.enabled)
+			.map(entry => entry.target);
+		const plan: ReconcilePlan = planReconcile(targets, editorTargets, untouched);
 
 		let added = 0, removed = 0, failed = 0;
 		for (const t of plan.toRemove) {
@@ -372,7 +437,7 @@ export class EditorBreakpointSync implements vscode.Disposable {
 	/** 위치가 같은 에디터 중단점을 찾아 전송 기록에 넣는다 (reconcile 결과를 _tracked에 반영). */
 	private _trackTarget(project: string, target: BreakpointTarget): void {
 		for (const bp of vscode.debug.breakpoints) {
-			const t = this._toTarget(bp);
+			const t = this._toTarget(bp, project);
 			if (!t || !bp.enabled) { continue; }
 			if (t.line === target.line && t.file.toLowerCase() === target.file.toLowerCase()) {
 				this._tracked.set(bp.id, { project, file: t.file, line: t.line });

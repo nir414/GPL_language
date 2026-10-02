@@ -5,6 +5,7 @@ import {
     breakpointKey,
     controllerTargets,
     dedupeTargets,
+    isResolvedBreakpointRecord,
     orphanControllerBreakpoints,
     planReconcile,
 } from '../controller/breakpointReconcile';
@@ -40,6 +41,17 @@ test('breakpointReconcile: 위치가 없는 항목(fileLine 0)은 제거 대상�
     const { targets, untouched } = controllerTargets([bp('GPL_Code', 'Main.gpl', 0)], 'GPL_Code');
     assert.deepStrictEqual(targets, []);
     assert.strictEqual(untouched, 1);
+});
+
+test('breakpointReconcile: procedure에 해석되지 않은 ? / 0 record는 유효한 BP가 아니다', () => {
+    const unresolved = bp('GPL_Code', 'Lib_Net\\Server\\Loop.gpl', 72);
+    unresolved.proc = '?';
+    unresolved.procLine = 0;
+    const { targets, untouched } = controllerTargets([unresolved], 'GPL_Code');
+    assert.deepStrictEqual(targets, []);
+    assert.strictEqual(untouched, 1);
+    assert.strictEqual(isResolvedBreakpointRecord(unresolved), false);
+    assert.strictEqual(isResolvedBreakpointRecord(bp('GPL_Code', 'Main.gpl', 10)), true);
 });
 
 test('breakpointReconcile: 에디터에 없는 제어기 BP는 해제, 에디터에만 있는 BP는 설정', () => {
@@ -95,4 +107,15 @@ test('breakpointReconcile: orphan 판정은 에디터에 대응 점이 없는 �
 test('breakpointReconcile: 비교 키는 파일명 대소문자를 무시하고 줄 번호를 구분한다', () => {
     assert.strictEqual(breakpointKey({ file: 'Main.gpl', line: 10 }), breakpointKey({ file: 'MAIN.GPL', line: 10 }));
     assert.notStrictEqual(breakpointKey({ file: 'Main.gpl', line: 10 }), breakpointKey({ file: 'Main.gpl', line: 11 }));
+});
+
+test('breakpointReconcile: 같은 basename의 다른 상대 경로를 구분하고 구분자 차이는 흡수한다', () => {
+    assert.notStrictEqual(
+        breakpointKey({ file: 'App\\Host\\Commands.gpl', line: 10 }),
+        breakpointKey({ file: 'Other\\Commands.gpl', line: 10 }),
+    );
+    assert.strictEqual(
+        breakpointKey({ file: 'App/Host/Commands.gpl', line: 10 }),
+        breakpointKey({ file: 'app\\host\\commands.gpl', line: 10 }),
+    );
 });

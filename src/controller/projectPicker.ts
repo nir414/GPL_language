@@ -38,6 +38,17 @@ export function readGprProjectName(projectDir: string): string | undefined {
     }
 }
 
+/** 프로젝트 폴더의 .gpr에서 ProjectStart를 읽는다 (없거나 실패 시 undefined). */
+export function readGprProjectStart(projectDir: string): string | undefined {
+    try {
+        const gprFile = fs.readdirSync(projectDir).find(f => f.toLowerCase().endsWith('.gpr'));
+        if (!gprFile) { return undefined; }
+        return parseGpr(fs.readFileSync(path.join(projectDir, gprFile), 'utf8')).projectStart || undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 /** 제어기 쪽 프로젝트명: .gpr ProjectName, 없으면 폴더명 (deployService.deploy와 같은 규칙). */
 export function projectNameOf(projectDir: string): string {
     return readGprProjectName(projectDir) ?? path.basename(projectDir);
@@ -105,6 +116,8 @@ export async function buildTargetCandidates(): Promise<TargetCandidate[]> {
 
 export interface PickProjectDirOptions {
     placeHolder: string;
+    /** 호출측이 범위를 정한 후보. 다른 워크스페이스 폴더를 섞지 않는다. */
+    dirs?: readonly string[];
     /** 명시 리소스(탐색기 우클릭 등). 주면 QuickPick 없이 그 리소스가 속한 프로젝트로 확정한다. */
     resource?: vscode.Uri | string;
     /** launch.json projectName 등 이름 필터. 일치하는 후보가 있으면 그 안에서만 고른다. */
@@ -121,7 +134,7 @@ export type PickProjectDirResult =
 
 /** 결과 종류까지 필요한 호출측(F5 구성 해석 등)용. */
 export async function pickProjectDirDetailed(opts: PickProjectDirOptions): Promise<PickProjectDirResult> {
-    const dirs = await findProjectDirs();
+    const dirs = opts.dirs ? [...opts.dirs] : await findProjectDirs();
 
     if (opts.resource) {
         const fsPath = typeof opts.resource === 'string' ? opts.resource : opts.resource.fsPath;

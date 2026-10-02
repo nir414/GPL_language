@@ -5,11 +5,20 @@
 import * as vscode from 'vscode';
 import { MirrorEchoMemory } from '../controller/breakpointCommand';
 import { ControllerBreakpointMirror } from '../controller/breakpointMirror';
+import { isResolvedBreakpointRecord } from '../controller/breakpointReconcile';
 import { EditorBreakpointSync } from '../controller/breakpointSync';
 import type { ExtensionHost } from './host';
 
 export function activateBreakpointCommands(host: ExtensionHost): void {
 	const { context } = host;
+	host.controllerTree.setEditorBreakpointTargetResolver((fsPath, line) => {
+		const projectName = host.controllerTree.getExpectedProjectName();
+		if (!projectName) { return undefined; }
+		const resolved = host.project.resolveBreakpointTarget(fsPath, line, projectName);
+		return resolved?.kind === 'direct-source' && resolved.file
+			? { file: resolved.file, line: resolved.line }
+			: undefined;
+	});
 
 	// 제어기 → 에디터 중단점 미러 (§1-CO). AI(MCP·URI·명령 콘솔)가 건 BP를 그 자리에서 빨간 점으로
 	// 만든다 — 종전에는 제어기에만 존재해 보이지 않았고, reconcile/DAP가 "에디터에 없는 BP"로 보고
@@ -30,6 +39,7 @@ export function activateBreakpointCommands(host: ExtensionHost): void {
 		isConnected: () => host.controllerTree?.isConnected ?? false,
 		isDebugSessionActive: () => host.isDebugSessionActive,
 		resolveProjectName: () => host.project.resolveExpectedProjectName(),
+		resolveTarget: (fsPath, line, projectName) => host.project.resolveBreakpointTarget(fsPath, line, projectName),
 		log: line => host.log(line),
 		// 동기화 배치 직후 트리의 중단점 섹션을 즉시 갱신 (다음 상세 폴링까지 기다리지 않음)
 		onDidSync: () => { void host.controllerTree?.refreshBreakpointsNow(); },
@@ -69,7 +79,7 @@ export function activateBreakpointCommands(host: ExtensionHost): void {
 	);
 
 	// 제어기 중단점 → 에디터 가져오기 (단발 pull — 사용자가 명시 실행할 때만, 상시 미러링 아님).
-	// 에디터에 이미 있는 위치는 건너뛰므로 동기화 리스너와의 에코는 신규 항목에만 발생(멱등이라 무해).
+	// 신규 빨간 점은 미러 에코로 표시해 실시간 동기화가 같은 Set Break를 되쏘지 않게 한다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.pullBreakpoints', async () => {
 			const list = await host.controllerTree?.refreshBreakpointsNow();
@@ -78,9 +88,12 @@ export function activateBreakpointCommands(host: ExtensionHost): void {
 				return { ok: false, error: 'not-connected' };
 			}
 			let added = 0, existing = 0, unresolved = 0;
-			const toAdd: vscode.SourceBreakpoint[] = [];
+			const toAdd: Array<{ breakpoint: vscode.SourceBreakpoint; file: string; line: number }> = [];
 			for (const bp of list) {
-				if (!bp.file || bp.fileLine <= 0) { unresolved++; continue; }
+				if (!isResolvedBreakpointRecord(bp)) {
+					unresolved++;
+					continue;
+				}
 				const filePath = host.project.resolveGplFilePath(bp.file);
 				if (!filePath) {
 					unresolved++;
@@ -94,11 +107,18 @@ export function activateBreakpointCommands(host: ExtensionHost): void {
 					b.location.uri.fsPath.toLowerCase() === uri.fsPath.toLowerCase() &&
 					b.location.range.start.line === lineIdx);
 				if (already) { existing++; continue; }
-				toAdd.push(new vscode.SourceBreakpoint(new vscode.Location(uri, new vscode.Position(lineIdx, 0))));
+				toAdd.push({
+					breakpoint: new vscode.SourceBreakpoint(new vscode.Location(uri, new vscode.Position(lineIdx, 0))),
+					file: bp.file,
+					line: bp.fileLine,
+				});
 				added++;
 			}
 			if (toAdd.length > 0) {
-				vscode.debug.addBreakpoints(toAdd);
+				for (const entry of toAdd) {
+					bpMirrorEcho.note('Break', entry.file, entry.line);
+				}
+				vscode.debug.addBreakpoints(toAdd.map(entry => entry.breakpoint));
 			}
 			const msg = `제어기 중단점 가져오기: 추가 ${added}, 이미 있음 ${existing}, 해석 불가 ${unresolved}` +
 				(added > 0 ? ' (줄 번호는 배포본 기준)' : '');

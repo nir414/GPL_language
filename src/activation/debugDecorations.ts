@@ -3,7 +3,7 @@
  *
  * 종전에는 activate() 클로저의 `stoppedLineDecoration`/`errorLineDecoration` 과 "현재 칠해진 에디터" 변수 2개를
  * 트리 명령과 디버그 이벤트 핸들러가 함께 만졌다. 여기로 모아 "한 번에 한 곳만 칠한다"는 규칙을 한 객체가 지킨다.
- * 사용자가 편집을 시작하면 두 강조를 모두 지운다(종전과 동일).
+ * 칠해진 문서를 사용자가 편집하면 그 강조를 지운다(다른 문서·Output 채널의 변경은 무시 — §1-EA).
  */
 import * as vscode from 'vscode';
 
@@ -30,13 +30,17 @@ export class ExecutionDecorations implements vscode.Disposable {
 			overviewRulerColor: new vscode.ThemeColor('editorOverviewRuler.errorForeground'),
 			overviewRulerLane: vscode.OverviewRulerLane.Right,
 		});
-		// Clear highlight when user starts editing or switches away
+		// 칠해진 문서를 사용자가 실제로 편집하면 그 강조만 지운다.
+		// 종전에는 어떤 문서의 변경이든 두 강조를 다 지웠는데, Output 채널(`output:` 스킴)도 TextDocument 라 이 이벤트를
+		// 낸다 — `threadShowLocation` 이 칠한 직후 `[Thread] … 정지 위치` 로그 한 줄을 찍는 순간 강조가 지워져
+		// "노란색이 깜빡하고 사라진다"(2026-09-21 사용자 관측, §1-EA). 5초 폴링 로그·1403 콘솔 줄도 같은 경로로 지웠다.
 		this.disposables.push(
 			this.stoppedLine,
 			this.errorLine,
-			vscode.workspace.onDidChangeTextDocument(() => {
-				this.clearStopped();
-				this.clearError();
+			vscode.workspace.onDidChangeTextDocument(e => {
+				if (e.contentChanges.length === 0) { return; }
+				if (this.stoppedEditor && e.document === this.stoppedEditor.document) { this.clearStopped(); }
+				if (this.errorEditor && e.document === this.errorEditor.document) { this.clearError(); }
 			}),
 		);
 	}

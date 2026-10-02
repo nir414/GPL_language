@@ -48,7 +48,7 @@ export interface MirrorResult {
 export interface BreakpointMirrorDeps {
 	/** 미러 사용 여부 (설정) */
 	isEnabled(): boolean;
-	/** 파일명(베이스네임) → 워크스페이스 절대 경로. 찾지 못하면 undefined. */
+	/** project-relative 파일 표기 → 워크스페이스 절대 경로. 찾지 못하면 undefined. */
 	resolveFilePath(fileName: string): string | undefined;
 	log(line: string): void;
 	/**

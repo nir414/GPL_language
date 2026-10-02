@@ -11,8 +11,9 @@
  */
 
 import { BreakpointInfo } from './responseParser';
+import { normalizeBreakpointCommandFile } from './breakpointCommand';
 
-/** 제어기 명령 인자와 같은 단위의 중단점 위치 — 파일 베이스네임 + 1-based 줄. */
+/** 제어기 명령 인자와 같은 단위의 중단점 위치 — project-relative 파일 identity + 1-based 줄. */
 export interface BreakpointTarget {
     file: string;
     line: number;
@@ -29,9 +30,14 @@ export interface ReconcilePlan {
     untouched: number;
 }
 
+/** `Show Break` record가 실제 procedure instruction에 연결됐는지 판정한다. */
+export function isResolvedBreakpointRecord(bp: BreakpointInfo): boolean {
+    return !!bp.file && bp.fileLine > 0 && !!bp.proc && bp.proc !== '?' && bp.procLine > 0;
+}
+
 /** 파일명 대소문자 차이를 흡수한 비교 키 (제어기는 파일명을 원문 그대로 돌려준다). */
 export function breakpointKey(target: BreakpointTarget): string {
-    return `${target.file.toLowerCase()}:${target.line}`;
+    return `${normalizeBreakpointCommandFile(target.file).toLowerCase()}:${target.line}`;
 }
 
 /** 같은 위치를 가리키는 중복 항목을 제거한다(입력 순서 유지). */
@@ -63,7 +69,7 @@ export function controllerTargets(
     let untouched = 0;
     for (const bp of list) {
         const proj = (bp.project || '').trim().toLowerCase();
-        if (!proj || proj !== wanted || !bp.file || bp.fileLine <= 0) {
+        if (!proj || proj !== wanted || !isResolvedBreakpointRecord(bp)) {
             untouched++;
             continue;
         }

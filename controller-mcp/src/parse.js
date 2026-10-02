@@ -157,7 +157,8 @@ export function statusHint(code) {
       return '그 프레임 스코프에 없는 이름이거나 객체 멤버 점 표기 식이다(-eval은 프레임별 스코프가 엄격히 분리됨). ' +
         '로컬/파라미터는 show_stack으로 정확한 프레임 인덱스를 확인해 그 프레임에서 읽고, ' +
         '객체 멤버는 부모 객체명만 평가해 덤프의 멤버 줄에서 확인할 것. ' +
-        '모듈 전역 필드(theMotionLoger.lastStage 형태)와 배열 인덱스(arr(i))는 평가 가능.';
+        '모듈 전역 필드(theMotionLoger.lastStage 형태)와 배열 인덱스(arr(i))는 평가 가능. ' +
+        'Public 필드 점 표기(obj.PublicField)는 클래스 밖 프레임에서도 통과하고 Private 필드는 그 클래스 안 프레임에서만 읽힌다(2026-09-17 관측).';
     case -714:
       return '존재하지 않는 콘솔 명령. 추측으로 다른 표기를 재시도하지 말고 ' +
         'docs/reference/console-commands.md 또는 Brooks GPL Dictionary에서 명령을 확인할 것.';

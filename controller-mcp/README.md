@@ -30,7 +30,8 @@ npm install
 | --- | --- | --- |
 | `GPL_HOST` | `192.168.0.1` | 제어기 IP |
 | `GPL_PORT` | `1402` | ASCII 콘솔 포트 |
-| `GPL_PROJECT` | `MergeCode` | 기본 프로젝트명(도구에서 생략 시 사용) |
+| `GPL_PROJECT` | `MergeCode` | 기본 프로젝트명. 빈 문자열이면 미확정 상태로 두고 임의의 이름으로 폴백하지 않음 |
+| `GPL_PROJECT_DIR` | 미설정 | Export가 저장한 프로젝트 폴더. 이 키가 있으면 `project_target(projectDir)`으로 대상 확인 후 프로젝트 도구 사용. 빈 문자열이면 폴더 선택 필요 |
 | `GPL_LOCK_WAIT_MS` | `20000` | **배포 잠금 대기 상한(ms)**. VS Code 확장이 FTP 업로드/배포 중이면 `%TEMP%\gpl-controller\<ip>.lock.json`을 잡는다. 이때 `compile_project`/`start_project`/`unload_project`와 `controller_command`의 Compile/Start/Load/Unload는 잠금이 풀릴 때까지 이 시간만 기다렸다 진행하고, 초과 시 보유자 정보와 함께 거부한다(업로드 도중 Compile/Start는 제어기 이상 유발 — GitHub #17) |
 | `GPL_LOCK_DIR` | `%TEMP%\gpl-controller` | 배포 잠금 파일 디렉터리 재지정(테스트/특수 환경용. 확장과 같은 경로여야 한다) |
 | `GPL_TIMEOUT_MS` | `15000` | 명령 타임아웃(ms). compile은 최소 60s로 자동 상향 |

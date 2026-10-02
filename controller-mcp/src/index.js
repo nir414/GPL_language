@@ -7,6 +7,7 @@
 //   GPL_HOST       제어기 IP            (기본 192.168.0.1)
 //   GPL_PORT       콘솔 포트            (기본 1402)
 //   GPL_PROJECT    기본 프로젝트명      (기본 MergeCode)
+//   GPL_PROJECT_DIR Export 대상 폴더     (있으면 project_target으로 폴더 확인 후 프로젝트 도구 사용)
 //   GPL_TIMEOUT_MS 명령 타임아웃(ms)    (기본 15000)
 //   GPL_LOCK_WAIT_MS 배포 잠금 대기 상한(ms) (기본 20000) — VS Code 확장이 FTP 업로드/배포 중이면
 //                  Compile/Start/Load/Unload를 이 시간까지 기다렸다 진행, 초과 시 거부 (src/deployLock.js)
@@ -59,6 +60,7 @@ import { listOperations, readOperation, describeOperation, operationRecovery } f
 import { runBatch, normalizeCommandInput, BATCH_MAX } from './batch.js';
 import { aiBlockedResult, AI_BLOCKED_COMMANDS } from './aiPolicy.js';
 import { SERVER_INSTRUCTIONS, DOC_COMMENT_GUIDE } from './guidelines.js';
+import { readConfiguredTarget, projectForCommand } from './configuredTarget.js';
 import {
   SEND_OUTCOME_NOT_SENT,
   SEND_OUTCOME_UNKNOWN,
@@ -73,7 +75,8 @@ import {
 
 const HOST = process.env.GPL_HOST || '192.168.0.1';
 const PORT = parseInt(process.env.GPL_PORT || '1402', 10);
-const DEFAULT_PROJECT = process.env.GPL_PROJECT || 'MergeCode';
+const CONFIGURED_TARGET = readConfiguredTarget(process.env);
+const DEFAULT_PROJECT = CONFIGURED_TARGET.project;
 const TIMEOUT = parseInt(process.env.GPL_TIMEOUT_MS || '15000', 10);
 const IDLE_CLOSE = parseInt(process.env.GPL_IDLE_CLOSE_MS || '30000', 10);
 const LOCK_WAIT_MS = parseInt(process.env.GPL_LOCK_WAIT_MS || '20000', 10);
@@ -365,6 +368,9 @@ function tool(name, description, shape, handler) {
       return res;
     } catch (err) {
       logLine(`tool ${name} 실패 | ${Date.now() - t0}ms | ${err?.message ?? String(err)}`);
+      if (err?.code === 'PROJECT_TARGET_REQUIRED') {
+        return textResult({ ok: false, error: err.code, detail: err.message, sent: false, outcome: SEND_OUTCOME_NOT_SENT });
+      }
       return {
         content: [{ type: 'text', text: `ERROR (${name}): ${err?.message ?? String(err)}` }],
         isError: true,
@@ -407,7 +413,9 @@ function targetProjectInfo(explicit) {
 }
 
 const proj = (p) => {
-  const name = targetProjectInfo(p).project;
+  const resolved = projectForCommand(p, sessionTarget, CONFIGURED_TARGET);
+  if (!resolved.ok) { throw taggedError(resolved.detail, SEND_OUTCOME_NOT_SENT, { code: resolved.error }); }
+  const name = resolved.project;
   if (/[\s\u0000-\u001F\u007F]/u.test(name)) {
     throw taggedError(
       `프로젝트명 '${name}'에 공백/제어 문자가 있어 제어기 명령을 보내지 않았습니다 — ` +
@@ -953,7 +961,9 @@ tool('project_target',
     const b = await currentBridge();
     if (b.available) {
       try {
-        const res = await callExtension('gpl.automation.target', { project, projectDir, projectFile, clear });
+        const routing = resolveExtensionInstance(HOST, { projectDir: projectDir ?? (projectFile ? path.dirname(projectFile) : undefined) ?? sessionTarget?.dir ?? CONFIGURED_TARGET.dir ?? undefined });
+        if (!routing.ok) { throw new Error(`대상 VS Code 창을 확정할 수 없음: ${routing.error}`); }
+        const res = await callExtension('gpl.automation.target', { project, projectDir, projectFile, clear }, { instanceId: routing.instance.extensionInstanceId });
         if (!res?.ok) {
           extensionError = res?.detail ?? res?.error ?? 'unknown';
         } else if (res.result && typeof res.result === 'object' && res.result.ok === false) {
@@ -989,6 +999,12 @@ tool('project_target',
     } else if (extension?.target) {
       // 확장이 해석한 이름·폴더를 쓴다(.gpr ProjectName 이 폴더명과 다를 수 있다 — 제어기 명령 인자는 ProjectName).
       setSessionTarget(extension.target.project, { dir: extension.target.dir, verified: true, via: 'extension' });
+    } else if (CONFIGURED_TARGET.requiresResolution && (project || projectDir || projectFile)) {
+      return textResult({
+        ok: false, error: 'PROJECT_TARGET_UNVERIFIED', sent: false,
+        detail: extensionError || '작업 폴더를 확인할 확장 브리지가 없습니다. VS Code GPL 확장을 확인하고 project_target을 다시 호출하세요.',
+        target: sessionTarget, transport: transportInfo(),
+      });
     } else if (project && project.trim()) {
       // 브리지가 없는 직접 접속 경로 — 확인해 줄 확장이 없다. 1402 명령의 인자는 이름이므로 이름만으로 고정하되
       // verified:false 로 남겨 "워크스페이스에서 확인되지 않은 대상"임을 응답에 드러낸다.
@@ -1002,6 +1018,8 @@ tool('project_target',
       effectiveTarget: sessionTarget,
       source: info.source,
       envDefault: DEFAULT_PROJECT,
+      envProjectDir: CONFIGURED_TARGET.dir,
+      requiresResolvedTarget: CONFIGURED_TARGET.requiresResolution,
       extension,
       extensionError,
       transport: transportInfo(),
@@ -1010,7 +1028,9 @@ tool('project_target',
           + `${sessionTarget.dir ? ` (폴더 ${sessionTarget.dir})` : ''}`
           + `${sessionTarget.verified ? '' : ' — 워크스페이스에서 확인되지 않은 이름입니다(확장 브리지 없음)'}. `
           + '다른 프로젝트는 그 호출에 project 를 직접 주세요.'
-        : '세션 대상이 없습니다 — 인자를 생략한 도구는 GPL_PROJECT 기본값을 씁니다. 워크스페이스에 프로젝트가 여럿이면 확장 명령은 PROJECT_AMBIGUOUS 를 돌려줍니다. 먼저 이 도구로 대상을 고정할 것.',
+        : CONFIGURED_TARGET.requiresResolution
+          ? '작업 대상 미확정 — 이 도구에 projectDir을 지정하고 성공 응답을 확인한 뒤 프로젝트 도구를 사용할 것.'
+          : '세션 대상이 없습니다 — 인자를 생략한 도구는 GPL_PROJECT 기본값을 씁니다. 프로젝트가 여럿이면 먼저 projectDir로 대상을 고정할 것.',
     });
   });
 

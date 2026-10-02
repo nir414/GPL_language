@@ -43,6 +43,11 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 - 머리글은 \`# Parameters\` / \`# Returns\` / \`# Examples\` / \`# Remarks\`(한국어 \`# 매개변수\`·\`# 반환\`·
   \`# 예제\`·\`# 비고\`도 인식). 표에 없는 머리글(\`# Errors\` 등)을 써도 순서를 지켜 그대로 표시된다.
 - 매개변수를 추가·삭제하면 문서화 주석도 함께 고친다(설명만 있고 항목이 빠진 주석은 오해를 만든다).
+- **오버로드(같은 이름의 Sub/Function 여럿)는 주석을 통째로 복붙하지 않는다 — 공통 문서는 이름 단위로 공유하고,
+  오버로드별 차이만 개별 문서화한다.** 가장 완전한 시그니처 하나에 전체 문서(설명·\`# Parameters\`·\`# Returns\`)를
+  쓰고, 나머지 오버로드에는 차이 한 줄과 **그 오버로드에만 있는 매개변수** 항목만 쓴다(차이가 없으면 생략해도 된다).
+  확장이 빠진 조각(공통 설명·같은 이름의 매개변수 설명·같은 반환 타입의 Returns)을 형제 오버로드 주석에서 채워
+  출처와 함께 표시하고, \`'''\`·\`gpl.insertDocComment\` 골격도 형제가 이미 설명한 매개변수는 뺀다.
 - 골격은 손으로 쓰지 않아도 된다: 편집기에서 선언 위에 \`'''\`를 입력하거나,
   \`extension_command('gpl.insertDocComment', { uri, line })\`로 만든다. 이미 주석이 있으면
   **빠진 항목만** 덧붙고 기존 설명은 보존된다.
@@ -50,7 +55,8 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   형식을 맞추는 것은 좋지만, 무관한 파일을 일괄 변환하지는 않는다.`;
 
 /** 서버가 무엇이고 무엇을 하지 말아야 하는지 — 도구 호출 전에 알아야 할 최소 규칙. */
-const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 1402 ASCII 콘솔로 조작하는 서버다.
+const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 **명령 콘솔**(ASCII, 기본 1402)로 조작하는 서버다.
+제어기 채널은 번호가 아니라 이름으로 부른다 — 명령 콘솔(1402) · 런타임 콘솔(1403) · FTP(21).
 
 - 제어기와의 통신은 **이 서버의 도구로만** 한다. PowerShell/Node/Python으로 원시 TCP 소켓을 직접 열지 않는다
   (명령 직렬화 큐도 모션 안전 게이트도 없어 사고로 이어진다).
@@ -65,7 +71,7 @@ const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 1402 ASC
 - **상태 변경 명령의 타임아웃은 실패가 아니라 결과 미확정(\`outcome:"unknown"\`)이다** — 제어기가 실행했을 수 있다.
   같은 명령을 곧바로 재전송하지 않고 \`recommendedAction\`을 따른다(\`outcome:"not-sent"\`면 다시 보내도 안전하다).
 - **대상 프로젝트는 작업 시작 시 \`project_target\`으로 한 번 고정한다.** 그러면 이후 도구가 인자를 생략해도 같은
-  대상을 쓴다. 배포/업로드는 \`deploy_project\`(확장 경유 — 1402 콘솔은 파일을 못 올린다)를 쓰고, 대상을 정할 수
+  대상을 쓴다. 배포/업로드는 \`deploy_project\`(확장 경유 — 명령 콘솔은 파일을 못 올린다)를 쓰고, 대상을 정할 수
   없으면 \`PROJECT_AMBIGUOUS\`와 후보 목록이 온다 — **사용자에게 프로젝트 선택 UI를 누르거나 파일을 열어 달라고
   요청하지 말고** 후보를 보여 주고 어느 것인지 물을 것. 어느 프로젝트가 쓰였는지는 \`project_target\`으로 확인한다.
 - **flash 영구 저장(\`gpl.saveToFlash\` / "GPL: Save to Flash")은 AI 가 하지 않는다.** \`/flash/projects/<project>\` 의 영구 사본을

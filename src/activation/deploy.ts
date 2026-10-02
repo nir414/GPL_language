@@ -11,8 +11,9 @@ import * as path from 'path';
 import { isRuntimeConsoleAutoStartOnDeploy } from '../config';
 import { AI_BLOCKED_ERROR, aiBlockedDetail, findAiBlockedCommand } from '../controller/aiCommandPolicy';
 import { getControllerConfig, sendCommandDetailed } from '../controller/controllerConnection';
+import { describeCompileStale } from '../controller/compileStale';
 import { describeDeployLock, getDeployLock } from '../controller/deployLock';
-import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult } from '../controller/deployService';
+import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult, onDidUploadProgress } from '../controller/deployService';
 import { mirrorProject } from '../controller/ftpClient';
 import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
 import { buildTargetCandidates, pickProjectDir, readGprProjectName } from '../controller/projectPicker';
@@ -69,6 +70,16 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	// 배포 결과 이력 — signature 만 중복 알림 억제에 쓴다(상한 50, 규칙은 controller/deployOutcome.ts).
 	const deployOutcomeHistory = new DeployOutcomeHistory(50);
 
+	// 업로드 진행 바(상태바) — 배포가 어느 경로(명령·F5·autoOnSave·MCP)로 시작됐든 deployService 가 같은 이벤트를 내므로
+	// 여기서 한 번만 구독한다. 출력 패널의 파일별 로그는 그대로(이력), 움직이는 바는 상태바(§1-EE).
+	context.subscriptions.push(onDidUploadProgress(e => {
+		if (e.kind === 'progress') {
+			host.statusBar?.setUploadProgress(e.progress, e.projectName);
+		} else {
+			host.statusBar?.endUpload(e.ok ? { ok: true, summary: e.summary } : { ok: false, message: e.message });
+		}
+	}));
+
 	/**
 	 * 배포 진입점. 잠금은 deploy() 안에서 — 프로젝트 선택/미저장 확인 UI가 끝난 뒤 — 획득한다(UI 대기 중 잠금 금지, 이슈 #15).
 	 * 여기서는 이미 잡혀 있으면 컨텍스트와 함께 경고하고 바로 끝낸다. 결과는 호출측(autoOnSave 재예약, Start 전 Compile)이 쓴다.
@@ -102,11 +113,10 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		const dir = projectDir ?? stale.projectDir;
 		const choices = dir ? ['Compile만 실행', '그대로 Start'] : ['그대로 Start'];
 		const pick = await vscode.window.showWarningMessage(
-			`'${projectName}'의 /GPL 소스가 아직 Compile로 검증되지 않았습니다. Start는 -compile 로 컴파일까지 하므로 소스에 에러가 있으면 Start가 실패합니다(Problems 연동 없음).`,
+			describeCompileStale(stale),
 			{
 				modal: true,
-				detail: `사유: ${stale.reason}\n발생: ${new Date(stale.since).toLocaleString()}\n\n` +
-					'"Compile만 실행"은 에러를 확인만 하고 Start하지 않습니다(Compile 직후 Start 연속 실행은 피함 — 한 번에 하나만).',
+				detail: '"Compile만 실행"은 에러를 확인만 하고 Start하지 않습니다(Compile 직후 Start 연속 실행은 피함 — 한 번에 하나만).',
 			},
 			...choices,
 		);
@@ -448,7 +458,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	async function pickWorkspaceProjectDir(placeHolder: string, resource?: unknown): Promise<string | undefined> {
 		const dir = await pickProjectDir({ placeHolder, resource: resource instanceof vscode.Uri ? resource : undefined });
 		// 사람이 고른 대상을 세션 대상으로도 기억한다 — 뒤이은 자동화 호출이 같은 프로젝트를 다시 묻지 않게(개선안 §19·§26).
-		if (dir) { automationTargetDir = dir; }
+		if (dir) { host.sessionTargetDir = dir; }
 		return dir;
 	}
 
@@ -457,8 +467,8 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	// (MCP 브리지·URI·다른 확장)은 UI 를 절대 띄우지 않고 구조화된 결과를 돌려준다. 두 경로를 섞지 않는다.
 	// active editor 는 자동화 대상 결정에 쓰지 않는다 — 어느 탭을 열어 뒀는지는 사람의 UI 상태다(§22).
 
-	/** 세션 한정 자동화 대상(메모리 전용, 디스크 미저장). 명시 지정·사람의 QuickPick 선택으로 갱신된다. */
-	let automationTargetDir: string | undefined;
+	// 세션 한정 대상 폴더는 `host.sessionTargetDir`(단일 출처) — 명시 지정·사람의 QuickPick 선택·디버그 세션의
+	// projectDir 로 갱신되고, 동명 소스 해석(project/compileUnitTarget.ts)도 같은 값을 1순위 기준으로 쓴다.
 
 	interface AutomationTargetArgs extends ProjectTargetRequest {
 		/** true면 대상 폴더의 미저장 편집분을 저장하고 계속한다. 기본은 UNSAVED_FILES 오류(사람 편집분을 몰래 저장하지 않는다). */
@@ -525,14 +535,14 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	): Promise<{ ok: true; dir: string; projectName: string } | AutomationFailure> {
 		const candidates = await buildTargetCandidates();
 		const r = resolveProjectTarget(request, candidates, {
-			sessionTargetDir: automationTargetDir,
+			sessionTargetDir: host.sessionTargetDir,
 			configuredDefault: getConfiguredDefaultProject(),
 		});
 		if (!r.ok) {
 			host.log(`[Automation] ${label}: ${describeResolution(r)} · 후보: ${describeCandidates(r.candidates)}`);
 			return automationFailure(r.error, r.detail, { candidates: r.candidates });
 		}
-		automationTargetDir = r.dir;
+		host.sessionTargetDir = r.dir;
 		host.log(`[Automation] ${label}: 대상 ${describeResolution(r)}`);
 		return { ok: true, dir: r.dir, projectName: r.projectName };
 	}
@@ -586,7 +596,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			'이 명령은 로봇을 움직일 수 있는 Start 를 보내므로 사용자 확인이 필요합니다(설정 '
 				+ '`gpl.controller.requireStartConfirmation`, 기본 켜짐). 비대화형 호출에서는 확인 모달을 띄우지 않습니다 — '
 				+ '사용자에게 실행 여부를 물어 확인을 받은 뒤 `confirmStart: true` 로 다시 호출하거나, 사용자가 VS Code 에서 '
-				+ '직접 실행하게 하세요. 이미 올라간 프로젝트를 그냥 돌리는 것이면 1402 `Start <project>`(MCP `start_project`)를 '
+				+ '직접 실행하게 하세요. 이미 올라간 프로젝트를 그냥 돌리는 것이면 명령 콘솔 `Start <project>`(MCP `start_project`)를 '
 				+ '쓰는 편이 낫습니다 — 확장 UI 경로를 거치지 않습니다.',
 		);
 	}
@@ -601,8 +611,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		host.log(`[Automation] ${label}: 컴파일 미검증 — COMPILE_UNVERIFIED (${stale.reason})`);
 		return automationFailure(
 			'COMPILE_UNVERIFIED',
-			`'${projectName}' 의 /GPL 소스가 아직 Compile 로 검증되지 않았습니다(사유: ${stale.reason}). `
-				+ 'Start 는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 Start 가 실패하고 에러 위치가 Problems 에 오지 않습니다. '
+			`${describeCompileStale(stale)} `
 				+ '먼저 `gpl.quickCompile` 로 에러를 확인하거나, 그대로 진행하려면 `ignoreCompileStale: true` 로 다시 호출하세요.',
 		);
 	}
@@ -639,15 +648,15 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		vscode.commands.registerCommand('gpl.automation.target', async (args?: unknown) => {
 			const a = (typeof args === 'object' && args !== null ? args : {}) as ProjectTargetRequest & { clear?: boolean };
 			if (a.clear === true) {
-				automationTargetDir = undefined;
+				host.sessionTargetDir = undefined;
 				host.log('[Automation] 세션 대상 해제');
 			} else if (isProjectTargetRequest(a)) {
 				const target = await resolveAutomationTarget(a, 'gpl.automation.target');
 				if (isAutomationFailure(target)) { return target; }
 			}
 			const candidates = await buildTargetCandidates();
-			const current = automationTargetDir
-				? candidates.find(c => normalizeDirKey(c.dir) === normalizeDirKey(automationTargetDir!))
+			const current = host.sessionTargetDir
+				? candidates.find(c => normalizeDirKey(c.dir) === normalizeDirKey(host.sessionTargetDir!))
 				: undefined;
 			return {
 				ok: true,
@@ -887,12 +896,17 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				const stats = await mirrorProject(cfg.ip, projectDir, remoteDir, {
 					// 크기만 같고 내용이 바뀐 파일을 스킵하지 않도록 직전 업로드 지문(SHA-1)을 함께 본다.
 					manifest: getSyncManifest(cfg.ip, remoteDir),
-					onProgress: (current, total, file) => {
-						acquired.handle.heartbeat();
-						host.log(`[SaveToFlash] [${current}/${total}] ${file}`);
+					// deployService 를 거치지 않는 경로라 상태바 진행 바는 여기서 직접 잇는다(같은 표시 API).
+					onProgress: (event) => {
+						if (event.type === 'file') {
+							acquired.handle.heartbeat();
+							host.log(`[SaveToFlash] [${event.doneFiles}/${event.totalFiles}] ${event.file}`);
+						}
+						host.statusBar?.setUploadProgress(event, projectName);
 					},
 					onDelete: (file) => host.log(`[SaveToFlash] del ${file} (원격 전용 — 로컬에 없어 삭제)`),
 				});
+				host.statusBar?.endUpload({ ok: true, summary: stats });
 				recordSyncManifest(cfg.ip, remoteDir, stats.manifest);
 				host.log(`[SaveToFlash] 완료: ${stats.uploaded} sent, ${stats.skipped} skipped, ${stats.deleted} deleted`);
 				vscode.window.showInformationMessage(
@@ -900,6 +914,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				);
 				await host.controllerTree?.refreshAll();
 			} catch (err: any) {
+				host.statusBar?.endUpload({ ok: false, message: err?.message ?? String(err) });
 				vscode.window.showErrorMessage(`flash 저장 실패: ${err.message ?? err}`);
 			} finally {
 				acquired.handle.release();

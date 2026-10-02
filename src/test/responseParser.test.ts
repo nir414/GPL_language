@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
+import { classifyErrorEntry, getGplErrorGroup, isConsoleStatusEventFrame, normalizeConsoleLine } from '../controller/responseParser';
 import { parseStatus, parseCompileErrors, parseThreadList, latin1ToUtf8, SHOW_THREAD_LIST_CMD, SHOW_THREAD_LIST_STACK_CMD } from '../controller/responseParser';
 
 test('parseStatus: 성공 코드와 메시지', () => {
@@ -137,4 +138,71 @@ test('latin1ToUtf8: ascii 디코딩은 상위 비트를 버려 복구 불가 —
     const bytes = Buffer.from('저장소', 'utf8');
     assert.notStrictEqual(Buffer.from(bytes.toString('ascii'), 'latin1').toString('utf8'), '저장소');
     assert.strictEqual(latin1ToUtf8(bytes.toString('latin1')), '저장소');
+});
+
+// ─── 에러 코드 그룹 — 공식 범위 표(Error_Intro.htm)가 정본 (§1-EA) ───
+
+test('errorGroups: 문서 범위대로 코드를 그룹에 넣는다 (경계 포함)', () => {
+    assert.strictEqual(getGplErrorGroup(-757)?.title, 'Language Related Errors');
+    assert.strictEqual(getGplErrorGroup(-700)?.title, 'Language Related Errors', '경계값 -700 포함');
+    assert.strictEqual(getGplErrorGroup(-999)?.title, 'Language Related Errors', '경계값 -999 포함');
+    assert.strictEqual(getGplErrorGroup(-200)?.title, 'Standard System Errors');
+    assert.strictEqual(getGplErrorGroup(-1521)?.category, 'environment');
+    assert.strictEqual(getGplErrorGroup(-1200)?.category, 'unknown', '로봇 에러는 코드/환경이 갈리지 않는다');
+    assert.strictEqual(getGplErrorGroup(0), undefined, '성공/경고 범위는 에러 그룹이 아니다');
+    assert.strictEqual(getGplErrorGroup(-5000), undefined, '표에 없는 구간');
+});
+
+test('classifyErrorEntry: -757·-700 은 코드 오류다 (종전에는 환경 경고로 떨어졌다)', () => {
+    const c = classifyErrorEntry('09-21-2026 10:04:49.135, GenAdp, -757, "*Object not instantiated*"');
+    assert.strictEqual(c.category, 'code');
+    assert.strictEqual(c.isControllerSystem, false, '환경 경고 칸으로 가면 안 된다');
+    assert.strictEqual(c.parsedCode, -757);
+    assert.ok(c.detail?.includes('Language Related Errors'), '문서상 그룹을 밝힌다');
+
+    const aborted = classifyErrorEntry('09-21-2026 10:04:49.135, GenAdp, -700, "*Thread execution aborted*"');
+    assert.strictEqual(aborted.category, 'code');
+    assert.strictEqual(aborted.isControllerSystem, false);
+});
+
+test('classifyErrorEntry: 환경 코드는 그대로 환경, 분류 미상은 단정하지 않는다', () => {
+    const env = classifyErrorEntry('09-21-2026 10:04:49.135, SYSTEM, -1521, "*Invalid parameter DB*"');
+    assert.strictEqual(env.category, 'environment');
+    assert.strictEqual(env.isControllerSystem, true);
+
+    const unknown = classifyErrorEntry('09-21-2026 10:04:49.135, GenAdp, -1200, "*Robot problem*"');
+    assert.strictEqual(unknown.category, 'unknown');
+    assert.strictEqual(unknown.isControllerSystem, true, '미상은 코드 오류로 단정하지 않는다');
+    assert.ok(unknown.detail?.includes('갈리지 않음'));
+});
+
+test('classifyErrorEntry: 코드별 힌트가 있으면 범위 표보다 우선한다', () => {
+    // -508 은 Input and Output Errors 범위지만 손으로 검토한 힌트가 있다.
+    const c = classifyErrorEntry('09-21-2026 10:04:49.135, GenAdp, -508, "*File not found*"');
+    assert.strictEqual(c.category, 'code');
+    assert.ok(c.detail?.includes('File not found'));
+});
+
+// ─── 1403 상태 이벤트 프레임 억제 (§1-EA) ───
+// 실기 관측(2026-09-21): `<E>2</E>`·`<E>0</E>` 같은 단일 숫자 프레임이 와서, 두 숫자 형태만 알던
+// 종전 규칙을 빠져나가 `</E>` 만 떨어진 `<E>2` 가 GPL Console 에 찍혔다.
+
+test('consoleFrame: 숫자만 든 프레임은 형태에 상관없이 상태 이벤트다', () => {
+    assert.strictEqual(isConsoleStatusEventFrame('<E>1,4</E>'), true, 'GDE 캡처의 형식');
+    assert.strictEqual(isConsoleStatusEventFrame('<E>2</E>'), true, '실기에서 온 단일 숫자 형식');
+    assert.strictEqual(isConsoleStatusEventFrame('<E>0</E>'), true);
+    assert.strictEqual(isConsoleStatusEventFrame('<E>1,2,3</E>'), true);
+    assert.strictEqual(isConsoleStatusEventFrame('  <E>2</E>\u0000 '), true, 'NUL·공백은 프레임 판정에 영향 없다');
+
+    assert.strictEqual(isConsoleStatusEventFrame('<E>3,GenAdp<L>12</L>hello</E>'), false, '메시지 프레임은 로그다');
+    assert.strictEqual(isConsoleStatusEventFrame('<E>2'), false, '닫히지 않은 조각은 프레임이 아니다');
+    assert.strictEqual(isConsoleStatusEventFrame('MAIN Startup complete'), false);
+});
+
+test('normalizeConsoleLine: 상태 이벤트는 빈 문자열, 메시지 프레임은 그대로', () => {
+    assert.strictEqual(normalizeConsoleLine('<E>2</E>'), '', '종전에는 `<E>2` 가 콘솔에 찍혔다');
+    assert.strictEqual(normalizeConsoleLine('<E>0</E>'), '');
+    assert.strictEqual(normalizeConsoleLine('<E>1,4</E>'), '');
+    assert.strictEqual(normalizeConsoleLine('</E>'), '');
+    assert.strictEqual(normalizeConsoleLine('<E>3,GenAdp<L>5</L>hello</E>'), '[GenAdp] hello');
 });

@@ -59,7 +59,7 @@ export function activateConsoleCommands(host: ExtensionHost): void {
 			const snapshot = console.getStatusSnapshot();
 			host.controllerTree?.setRuntimeConsoleStatus(snapshot);
 			consoleChannel.show(true);
-			showRuntimeConsoleUserMessage(snapshot, hasPayload, '1403 콘솔 확인');
+			showRuntimeConsoleUserMessage(snapshot, hasPayload, '런타임 콘솔 확인');
 		})
 	);
 
@@ -77,7 +77,7 @@ export function activateConsoleCommands(host: ExtensionHost): void {
 				host.log(`[Console] live log start -> runtime console start failed: ${err?.message ?? err}`);
 			}
 			host.log('Live log terminal started');
-			vscode.window.showInformationMessage('GPL Live Logs 터미널 시작 (1403 런타임 콘솔 연결 시도)');
+			vscode.window.showInformationMessage('GPL Live Logs 터미널 시작 (런타임 콘솔 연결 시도)');
 		})
 	);
 
@@ -91,7 +91,7 @@ export function activateConsoleCommands(host: ExtensionHost): void {
 			host.runtimeConsole?.stop();
 			host.log('Live log terminal stopped');
 			stopLiveLogTerminal();
-			vscode.window.showInformationMessage('GPL Live Logs 터미널 중지 (1403 런타임 콘솔도 정리됨)');
+			vscode.window.showInformationMessage('GPL Live Logs 터미널 중지 (런타임 콘솔도 정리됨)');
 		})
 	);
 
@@ -119,6 +119,17 @@ export function activateConsoleCommands(host: ExtensionHost): void {
 
 			await vscode.env.clipboard.writeText(text);
 			vscode.window.showInformationMessage('AI 공유용 상태 스냅샷을 클립보드에 복사했습니다.');
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.copyThreads', async () => {
+			if (!host.controllerTree) { return; }
+			// 붙여넣은 목록이 화면보다 낡지 않도록 복사 직전에 한 번 갱신한다(상황 복사와 같은 취지).
+			await host.controllerTree.refreshAll();
+			const markdown = host.controllerTree.buildThreadReportMarkdown();
+			await vscode.env.clipboard.writeText(markdown);
+			vscode.window.showInformationMessage('쓰레드 목록을 클립보드에 복사했습니다.');
 		})
 	);
 

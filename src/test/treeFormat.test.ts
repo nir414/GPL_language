@@ -1,15 +1,8 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { formatConnectionStats, formatDate, formatDateTimeFromTs, formatSize } from '../views/treeFormat';
+import { formatConnectionStats, formatDate, formatDateTimeFromTs } from '../views/treeFormat';
 
-test('treeFormat 크기: B / KB / MB 경계와 소수 1자리', () => {
-    assert.strictEqual(formatSize(0), '0 B');
-    assert.strictEqual(formatSize(1023), '1023 B');
-    assert.strictEqual(formatSize(1024), '1.0 KB');
-    assert.strictEqual(formatSize(1536), '1.5 KB');
-    assert.strictEqual(formatSize(1024 * 1024), '1.0 MB');
-    assert.strictEqual(formatSize(5 * 1024 * 1024 + 512 * 1024), '5.5 MB');
-});
+// 크기 표기 테스트는 formatBytes.test.ts 로 옮겼다(정본이 util/formatBytes 로 이동, §1-EE).
 
 test('treeFormat 날짜: YYYY-MM-DD HH:mm (로컬 시각, 0 채움)', () => {
     assert.strictEqual(formatDate(new Date(2026, 8, 7, 9, 5)), '2026-09-07 09:05');

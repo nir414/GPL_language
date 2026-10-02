@@ -27,6 +27,7 @@ import {
 	SHOW_THREAD_LIST_CMD,
 	ThreadInfo,
 } from './responseParser';
+import { countThreadStates } from './threadReport';
 import {
 	buildResourceSnapshot,
 	extractDataPayload,
@@ -165,13 +166,16 @@ export async function fetchControllerStatus(
 		return snapshot;
 	}
 
-	// 스레드 요약
+	// 스레드 요약 — 상태 집계는 공용 정본(threadReport.countThreadStates)이 한다.
+	// 패널 요약·상황 스냅샷·MCP `controller_status` 가 같은 기준으로 세야 `Break` 같은
+	// 상태 하나가 한쪽에서만 정지로 잡히는 일이 없다.
 	const t = snapshot.threads;
+	const counts = countThreadStates(t);
 	snapshot.threadSummary = {
-		running: t.filter(x => x.state === 'Running').length,
-		paused: t.filter(x => x.state === 'Paused' || x.state === 'Break').length,
-		idle: t.filter(x => x.state === 'Idle').length,
-		error: t.filter(x => x.state === 'Error').length,
+		running: counts.running,
+		paused: counts.paused,
+		idle: counts.idle,
+		error: counts.errCount,
 		total: t.length,
 	};
 

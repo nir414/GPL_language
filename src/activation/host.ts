@@ -23,6 +23,7 @@ import { ControllerBreakpointMirror } from '../controller/breakpointMirror';
 import { checkProjectName, checkRemotePath, describeProjectNameProblem } from '../controller/projectNameGuard';
 import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controller/deployLock';
 import { CompileStaleInfo, CompileStaleTracker } from '../controller/compileStale';
+import { ControllerEventLog } from '../controller/recentEvents';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext } from '../views/controllerTreeProvider';
 import type { SituationDeploySnapshot } from '../controller/deployOutcome';
@@ -34,9 +35,6 @@ import type { ProjectContextApi } from './projectContext';
 import type { ConnectionApi } from './connection';
 import type { DeployApi } from './deploy';
 import type { ExecutionDecorations } from './debugDecorations';
-
-// recentDebugLogLines 보관 상한 — 초과 시 오래된 라인부터 잘라낸다
-const RECENT_DEBUG_LOG_MAX = 240;
 
 export class ExtensionHost {
 	// ── 서비스(불변) ──────────────────────────────────────────────────────────────
@@ -68,13 +66,20 @@ export class ExtensionHost {
 	 * (제어기 연결 해제가 이 세션을 끝내야 1402 폴이 멎고 소켓이 실제로 비워진다).
 	 */
 	gplDebugSession: vscode.DebugSession | undefined;
+	/**
+	 * 세션 대상 프로젝트 **폴더**(단일 출처, 메모리 전용) — 자동화 대상 해석(`project_target`·`gpl.automation.target`,
+	 * `controller/projectTarget.ts` 규칙 3), 사람의 QuickPick 선택, 디버그 세션의 `projectDir` 가 갱신한다.
+	 * 배포 대상이면서 **동명 소스 해석의 1순위 기준**이다(`project/compileUnitTarget.ts`) — 제어기는 파일명만
+	 * 주므로, 과제별 동명 프로젝트가 여럿인 워크스페이스에서 이 값이 없으면 어느 사본을 열지 임의로 갈린다.
+	 */
+	sessionTargetDir: string | undefined;
 	lastDeploySnapshot: SituationDeploySnapshot | undefined;
 	/** 디버그 어댑터가 gpl.sourceStale 이벤트로 알린 "소스가 제어기 컴파일 코드보다 새로움" 상태(GitHub #21). */
 	lastSourceStale: { projectName: string; files: string[]; compiledAt?: number } | undefined;
 	sourceStaleNotifiedSessionId: string | undefined;
 	lastRuntimeErrorContext: RuntimeErrorContext | undefined;
-	/** `[main]` 로그의 최근 라인 — 오류 상세 보기에서 "직전 로그"로 보여 준다. */
-	readonly recentDebugLogLines: string[] = [];
+	/** 제어기 사건 링버퍼 — 오류 상세 보기의 "직전 제어기 사건". 규칙·접기는 `controller/recentEvents`. */
+	readonly recentControllerEvents = new ControllerEventLog();
 	/**
 	 * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
 	 * 상태와 규칙은 `controller/compileStale.ts`(순수 모듈)에 있고, 여기서는 로그·UI 반영만 얹는다.
@@ -106,16 +111,27 @@ export class ExtensionHost {
 
 	// ── 로그 ─────────────────────────────────────────────────────────────────────
 	/**
-	 * 확장 로그 한 줄 — Output 채널 + 라이브 로그 터미널 + 최근 라인 링버퍼.
+	 * 확장 로그 한 줄 — Output 채널 + 라이브 로그 터미널 + 제어기 사건 링버퍼.
 	 * 콜백 인자로 그대로 넘길 수 있게(`{ log: host.log }`) 화살표 프로퍼티다.
+	 *
+	 * 링버퍼에 담는 것은 **제어기 사건뿐**이다(판정은 `controller/recentEvents`). 보고서처럼 이미 렌더된
+	 * 블록은 `report()` 로 내보내 버퍼를 거치지 않게 한다 — 섞이면 보고서가 자기 출력을 다시 먹는다(§1-EA).
 	 */
 	readonly log = (msg: string): void => {
-		this.recentDebugLogLines.push(`[main] ${msg}`);
-		if (this.recentDebugLogLines.length > RECENT_DEBUG_LOG_MAX) {
-			this.recentDebugLogLines.splice(0, this.recentDebugLogLines.length - RECENT_DEBUG_LOG_MAX);
-		}
+		this.recentControllerEvents.record(msg);
 		this.outputChannel.appendLine(msg);
 		appendLiveLog(`[main] ${msg}`);
+	};
+
+	/**
+	 * 이미 렌더된 블록(오류 상세 보고서 등)을 그대로 출력한다 — `log()` 와 달리 **링버퍼에 남기지 않는다.**
+	 * 보고서가 "직전 제어기 사건"의 재료가 되면 누를 때마다 자기 출력이 한 겹씩 쌓인다(§1-EA 의 원인).
+	 */
+	readonly report = (lines: readonly string[]): void => {
+		for (const line of lines) {
+			this.outputChannel.appendLine(line);
+			appendLiveLog(`[main] ${line}`);
+		}
 	};
 
 	// ── 배포 잠금 / 프로젝트명 가드 ───────────────────────────────────────────────

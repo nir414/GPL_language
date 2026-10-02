@@ -15,11 +15,7 @@ export function formatConnectionStats(s: ConnectionStats | undefined): string {
 	return parts.join(' · ');
 }
 
-export function formatSize(bytes: number): string {
-	if (bytes < 1024) { return `${bytes} B`; }
-	if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)} KB`; }
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+// 크기 표기(`formatSize`)는 util/formatBytes.formatBytes 로 옮겼다(2026-09-30 §1-EE) — 업로드 진행 바와 규칙을 공유한다.
 
 export function formatDate(date: Date): string {
 	const y = date.getFullYear();

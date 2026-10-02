@@ -6,7 +6,6 @@
  */
 
 import * as vscode from 'vscode';
-import * as path from 'path';
 import {
 	getCommandPolicySnapshot,
 	getConnectionProbeTimeoutMs,
@@ -22,7 +21,8 @@ import { waitForThreadPause } from './controllerOps';
 import { isPausedState } from '../controller/threadActivity';
 import { normalizeEvalValue } from '../debug/showVariableParser';
 import type { SituationDeploySnapshot } from '../controller/deployOutcome';
-import { formatBreakpointCommand } from '../controller/breakpointCommand';
+import { formatBreakpointCommand, normalizeBreakpointCommandFile } from '../controller/breakpointCommand';
+import { isResolvedBreakpointRecord } from '../controller/breakpointReconcile';
 import type { ConnectArgs } from './connection';
 import type { ExtensionHost } from './host';
 
@@ -38,7 +38,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 				[
 					{ label: '진단만 (연결 + 스냅샷)', description: '상태만 수집하고 코드 변경 실행은 하지 않음', mode: 'diagnose-only' as AssistMode },
 					{ label: 'Build Only + 진단', description: '최신 로컬 코드 업로드/컴파일 검증 후 스냅샷', mode: 'build-only' as AssistMode },
-					{ label: 'Build Only + 콘솔', description: 'Build Only 후 1403 콘솔 연결 확인', mode: 'build-and-console' as AssistMode },
+					{ label: 'Build Only + 콘솔', description: 'Build Only 후 런타임 콘솔 연결 확인', mode: 'build-and-console' as AssistMode },
 					{ label: 'Build Only + Attach', description: 'Build Only 성공 시 빠른 Attach 시작', mode: 'build-and-attach' as AssistMode },
 				],
 				{ placeHolder: 'AI 디버그 어시스트 실행 모드를 선택하세요' },
@@ -233,20 +233,61 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		if (!projectName) {
 			return { ok: false, error: 'missing-projectName' };
 		}
-		const fileName = path.basename(args.file);
 		const line = Math.max(1, Math.floor(args.line));
-		const cmd = formatBreakpointCommand(clear ? 'Nobreak' : 'Break', projectName, fileName, line);
-		const raw = await sendCommand(cmd);
-		const status = parseStatus(raw);
-		const ok = status.code === 0;
+		const target = host.project.resolveBreakpointTarget(args.file, line, projectName);
+		if (!target) {
+			return { ok: false, error: 'breakpoint-source-unresolved', file: args.file, line };
+		}
+		if (target.kind === 'library-source') {
+			return {
+				ok: false,
+				error: 'library-source-breakpoint-unsupported',
+				file: args.file,
+				line,
+				message: target.message,
+				suggestedCommand: 'gpl.project.promoteSourceForBreakpoint',
+			};
+		}
+		if (target.kind !== 'direct-source' || !target.file) {
+			return { ok: false, error: 'outside-project', file: args.file, line, message: target.message };
+		}
+
+		const fileName = target.file;
+		const cmd = formatBreakpointCommand(clear ? 'Nobreak' : 'Break', target.projectName, fileName, line);
+		let raw = await sendCommand(cmd);
+		let status = parseStatus(raw);
+		let ok = status.code === 0;
+		let controllerBreakpoint: ReturnType<typeof parseBreakList>[number] | undefined;
+		if (!clear && (ok || status.code === -775)) {
+			const fileKey = normalizeBreakpointCommandFile(fileName).toLowerCase();
+			const readControllerBreakpoint = async () => {
+				const list = parseBreakList(await sendCommand('Show Break'));
+				return list.find(bp => bp.project.toLowerCase() === target.projectName.toLowerCase()
+					&& normalizeBreakpointCommandFile(bp.file).toLowerCase() === fileKey
+					&& bp.fileLine === line);
+			};
+			controllerBreakpoint = await readControllerBreakpoint();
+			const resolved = !!controllerBreakpoint && isResolvedBreakpointRecord(controllerBreakpoint);
+			if (status.code === -775 && !resolved) {
+				await sendCommand(formatBreakpointCommand('Nobreak', target.projectName, fileName, line));
+				raw = await sendCommand(cmd);
+				status = parseStatus(raw);
+				controllerBreakpoint = status.code === 0 ? await readControllerBreakpoint() : undefined;
+			}
+			ok = status.code === 0
+				&& !!controllerBreakpoint
+				&& isResolvedBreakpointRecord(controllerBreakpoint);
+		}
 		// 제어기가 받아들였을 때만 에디터에 반영한다 — 실패한 BP를 빨간 점으로 남기면 거짓 표시가 된다.
 		const mirror = ok && args.mirror !== false
 			? host.breakpointMirror.apply(clear ? 'Nobreak' : 'Break', fileName, line)
 			: undefined;
 		return {
 			ok,
+			...(!ok && !clear && status.code === 0 ? { error: 'breakpoint-unresolved' } : {}),
 			command: cmd,
 			status,
+			...(controllerBreakpoint ? { controllerBreakpoint } : {}),
 			...(mirror ? { editorBreakpoint: mirror.mirrored ? 'updated' : mirror.reason } : {}),
 		};
 	}

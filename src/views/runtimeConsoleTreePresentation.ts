@@ -1,5 +1,5 @@
 /**
- * 1403 런타임 콘솔 상태의 **트리 행** 표시 규칙(라벨·description·아이콘·툴팁·불안정 판정·가설) — vscode 무의존.
+ * 런타임 콘솔(1403) 상태의 **트리 행** 표시 규칙(라벨·description·아이콘·툴팁·불안정 판정·가설) — vscode 무의존.
  * controllerTreeProvider.ts 하단에 있던 함수를 그대로 옮겼다(2026-09-07 §1-DB, 동작 동일).
  *
  * 같은 상태 enum 의 다른 표현이 `controller/runtimeConsolePresentation.ts` 에도 있다 — 그쪽은 알림 메시지용
@@ -8,6 +8,7 @@
  * 옮기면서 통일하지 않았다 — 통일은 실기기 관측 문구를 대조한 뒤 결정할 일이라 동작을 바꾸지 않았다(ai-handoff §3).
  */
 import type { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+import { channelName } from '../controller/channelNames';
 import { formatDateTimeFromTs } from './treeFormat';
 
 export function formatRuntimeConsoleStatusDetail(status: RuntimeConsoleStatusSnapshot): string {
@@ -101,7 +102,7 @@ export function buildRuntimeConsoleTreeTooltip(
 	port: number,
 ): string {
 	const lines = [
-		`1403 콘솔: ${formatRuntimeConsoleTreeState(status)} (${ip}:${port})`,
+		`${channelName('runtime')}: ${formatRuntimeConsoleTreeState(status)} (${ip}:${port})`,
 		`상세: ${formatRuntimeConsoleStatusDetail(status)}`,
 	];
 	if (status.lastConnectAt) {
@@ -138,13 +139,13 @@ export function isRuntimeConsoleUnstable(status: RuntimeConsoleStatusSnapshot): 
 
 export function getRuntimeConsoleHypothesis(status: RuntimeConsoleStatusSnapshot): string | undefined {
 	if (status.lastErrorCode === 'ECONNREFUSED' || /ECONNREFUSED/i.test(status.detail ?? '')) {
-		return '다른 1403 소비자가 포트를 점유했거나, 제어기 쪽 콘솔 서비스가 비활성일 가능성이 있습니다.';
+		return '다른 런타임 콘솔 소비자가 포트를 점유했거나, 제어기 쪽 콘솔 서비스가 비활성일 가능성이 있습니다.';
 	}
 	if (status.state === 'polling') {
-		return '1403 이벤트 큐가 비어 있어 payload 없는 짧은 세션을 반복하는 정상 폴링 상태입니다.';
+		return '런타임 콘솔 이벤트 큐가 비어 있어 payload 없는 짧은 세션을 반복하는 정상 폴링 상태입니다.';
 	}
 	if (status.state === 'no-payload' || status.state === 'connected-no-payload') {
-		return '실제 런타임이 Idle 상태이거나, 1403이 빈 배치 세션만 반환하는 상태일 수 있습니다.';
+		return '실제 런타임이 Idle 상태이거나, 런타임 콘솔이 빈 배치 세션만 반환하는 상태일 수 있습니다.';
 	}
 	return undefined;
 }

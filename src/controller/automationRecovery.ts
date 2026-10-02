@@ -53,7 +53,7 @@ const TABLE: Record<string, RecoveryHint> = {
     },
     EXTENSION_NOT_FOUND: {
         action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true,
-        detail: '살아 있는 확장 인스턴스가 없다. VS Code 에서 확장이 활성화됐는지 확인할 것(1402 콘솔 명령은 직접 접속으로 가능하지만 파일 업로드는 확장이 필요하다).',
+        detail: '살아 있는 확장 인스턴스가 없다. VS Code 에서 확장이 활성화됐는지 확인할 것(명령 콘솔은 직접 접속으로 쓸 수 있지만 파일 업로드는 확장이 필요하다).',
     },
 
     // ── 사람의 판단이 필요한 게이트 ─────────────────────────────────────────

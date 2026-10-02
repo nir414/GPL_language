@@ -20,13 +20,18 @@ import {
 	getErrorCodeHint,
 	findKnownErrorChains,
 } from '../controller/responseParser';
+import { EXTENSION_VERSION } from '../config';
+import { channelName } from '../controller/channelNames';
 import { isPausedState } from '../controller/threadActivity';
-import { breakpointKey, orphanControllerBreakpoints } from '../controller/breakpointReconcile';
+import { BreakpointTarget, breakpointKey, orphanControllerBreakpoints } from '../controller/breakpointReconcile';
 import { editorBreakpointTargets } from '../controller/breakpointSync';
 import { FtpEntry, listRemoteDirs } from '../controller/ftpClient';
 import { onDebugThreadsUpdated } from '../controller/debugBridge';
 import { AUTO_REFRESH_MIN_INTERVAL_MS, decideAutoRefresh, formatLastRefreshTime } from './refreshThrottle';
-import { formatConnectionStats, formatDate, formatDateTimeFromTs, formatSize } from './treeFormat';
+import { formatConnectionStats, formatDate, formatDateTimeFromTs } from './treeFormat';
+import { formatBytes } from '../util/formatBytes';
+import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from './compileStaleBadge';
+import type { CompileStaleInfo } from '../controller/compileStale';
 import {
 	buildRuntimeConsoleTreeDescription,
 	buildRuntimeConsoleTreeTooltip,
@@ -36,18 +41,14 @@ import {
 	isRuntimeConsoleUnstable,
 } from './runtimeConsoleTreePresentation';
 import type { SituationDeploySnapshot } from '../controller/deployOutcome';
+import {
+	countThreadStates,
+	renderThreadListReport,
+	renderThreadTable,
+	summarizeThreadStates,
+	type ThreadStateCounts,
+} from '../controller/threadReport';
 import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
-
-/**
- * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
- * 확장의 Start 는 `-compile` 로 컴파일까지 하므로(§1-DN) 옛 바이너리가 실행되지는 않지만,
- * 소스 에러가 있으면 Start가 실패하고 Problems 연동이 없다 — 먼저 Quick Compile로 확인하도록 안내한다.
- */
-export interface CompileStaleState {
-	projectName: string;
-	since: number;
-	reason: string;
-}
 
 export interface RuntimeErrorContext {
 	threadName: string;
@@ -187,12 +188,20 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 *  접힘 상태를 기본값으로 되돌릴 수 있게 한다(gpl.controller.resetPanelLayout). */
 	private sectionLayoutSalt = 0;
 	private runtimeErrorContext?: RuntimeErrorContext;
-	private compileStale?: CompileStaleState;
+	/** "컴파일 검증 필요" 상태(정본은 host 의 CompileStaleTracker — 여기는 표시만). */
+	private compileStale?: CompileStaleInfo;
+	private editorBreakpointTargetResolver?: (fsPath: string, line: number) => BreakpointTarget | undefined;
 
 	/** 디버그 세션 중 bridge 이벤트 구독 핸들 */
 	private _debugModeSubscription: vscode.Disposable | undefined;
 
 	get isConnected(): boolean { return this._connected; }
+
+	setEditorBreakpointTargetResolver(
+		resolver: (fsPath: string, line: number) => BreakpointTarget | undefined,
+	): void {
+		this.editorBreakpointTargetResolver = resolver;
+	}
 
 	/**
 	 * 섹션 접힘 상태를 기본값으로 되돌린다(gpl.controller.resetPanelLayout).
@@ -205,7 +214,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	}
 
 	/** "컴파일 검증 필요" 상태 표시(프로젝트 상태 섹션). undefined면 해제. */
-	setCompileStale(state?: CompileStaleState): void {
+	setCompileStale(state?: CompileStaleInfo): void {
 		this.compileStale = state;
 		this._onDidChangeTreeData.fire(undefined);
 	}
@@ -296,7 +305,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			sec.children = entries.map(e => {
 				const entryIcon = e.isDirectory ? 'folder' : 'file';
 				const parts: string[] = [];
-				if (!e.isDirectory) { parts.push(formatSize(e.size)); }
+				if (!e.isDirectory) { parts.push(formatBytes(e.size)); }
 				if (e.modifiedAt) { parts.push(formatDate(e.modifiedAt)); }
 				const desc = parts.join(' · ');
 				const ctx = e.isDirectory ? folderCtx : fileCtx;
@@ -307,14 +316,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		return sec;
 	}
 
-	/** 상태별 쓰레드 수 집계 (트리 루트 설명·상태 스냅샷 공용). */
-	private countThreadStates(): { running: number; paused: number; idle: number; errCount: number } {
-		return {
-			running: this.threads.filter(t => t.state === 'Running').length,
-			paused: this.threads.filter(t => t.state === 'Paused' || t.state === 'Break').length,
-			idle: this.threads.filter(t => t.state === 'Idle').length,
-			errCount: this.threads.filter(t => t.state === 'Error').length,
-		};
+	/** 상태별 쓰레드 수 집계 (트리 루트 설명·상태 스냅샷 공용). 판정은 `controller/threadReport` 가 정본. */
+	private countThreadStates(): ThreadStateCounts {
+		return countThreadStates(this.threads);
 	}
 
 	/**
@@ -826,14 +830,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			// /GPL 소스만 올라가고 Compile로 검증되지 않은 상태(이슈 #17 재구성의 부수 상태). Start는 `-compile` 로 컴파일하므로(§0.7)
 			// 옛 프로그램이 도는 건 아니지만, 소스 에러가 있으면 Start가 실패하고 Problems 연동이 없다.
 			ctxSec.collapsed = false;
+			// 문구·클릭 대상은 상태바 배지와 같은 규칙(views/compileStaleBadge) — 폴더를 알면 Uri 인자로 선택 창 없이 그 프로젝트.
 			ctxSec.children.unshift(new InfoNode(
-				`컴파일 검증 필요: ${stale.projectName}`,
+				compileStaleBadgeLabel(stale),
 				'warning',
 				stale.reason,
-				{ command: 'gpl.quickCompile', title: 'Quick Compile' },
+				compileStaleBadgeCommand(stale, dir => vscode.Uri.file(dir)),
 				'compileStaleItem',
-				`/GPL 소스가 아직 Compile로 검증되지 않았습니다 (${new Date(stale.since).toLocaleString()} 이후). ` +
-				'Start는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 Start가 실패합니다 — 클릭하면 Quick Compile로 먼저 확인합니다.',
+				compileStaleBadgeTooltip(stale),
 			));
 		}
 		sections.push(ctxSec);
@@ -843,31 +847,31 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		conn.collapsed = true;
 		const trafficOpts = getTrafficLogOptions();
 		conn.children = [
-			new InfoNode(`1402 명령 포트: ${cfg.port}`, 'server', formatConnectionStats(getConnectionStats()), {
+			new InfoNode(`${channelName('command')}: ${cfg.ip}:${cfg.port}`, 'server', formatConnectionStats(getConnectionStats()), {
 				command: 'gpl.controller.pingPort',
 				title: '포트 통신 테스트',
 				arguments: ['command', cfg.ip, cfg.port],
 			}),
 			new InfoNode(
-				'1402 통신 모니터',
+				'통신 모니터',
 				'radio-tower',
 				trafficOpts.responseBody
 					? `명령 + 응답 본문${trafficOpts.maxResponseChars > 0 ? ` (≤${trafficOpts.maxResponseChars}자)` : ''}`
 					: '명령 + STATUS 요약만',
 				{ command: 'gpl.controller.showTraffic', title: 'GPL Traffic 열기' },
 				'trafficMonitorItem',
-				'확장이 1402로 보내는 모든 명령(>>>)과 제어기 응답( | 본문 줄, <<< STATUS 요약)을 ' +
+				`확장이 ${channelName('command')}로 보내는 모든 명령(>>>)과 제어기 응답( | 본문 줄, <<< STATUS 요약)을 ` +
 				'GPL Traffic 출력 채널에 실시간으로 표시합니다.\n' +
 				'클릭: 채널 열기 · 인라인/우클릭: 응답 본문 표시 켜기/끄기, 채널 지우기\n' +
 				'설정: gpl.controller.trafficLogResponseBody / trafficLogMaxResponseChars',
 			),
 			new InfoNode(
-				'1403 콘솔',
+				channelName('runtime'),
 				getRuntimeConsoleTreeIcon(this.runtimeConsoleStatus),
 				buildRuntimeConsoleTreeDescription(this.runtimeConsoleStatus),
 				{
 					command: 'gpl.console.ensure',
-					title: '1403 연결/재연결/로그 보기',
+					title: '런타임 콘솔 연결/재연결/로그 보기',
 				},
 				'runtimeConsoleItem',
 				buildRuntimeConsoleTreeTooltip(this.runtimeConsoleStatus, cfg.ip, cfg.consolePort),
@@ -919,7 +923,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			// 제어기에는 있지만 에디터에 빨간 점이 없는 항목 = 어긋남(§1-CJ). 실행하면 여기서 멈추므로
 			// 눈에 보이게 표시한다 — 이 상태가 "F9로 지웠는데 왜 걸리지?"의 정체다.
 			const orphanKeys = new Set(
-				orphanControllerBreakpoints(this.breakpoints, editorBreakpointTargets())
+				orphanControllerBreakpoints(
+					this.breakpoints,
+					editorBreakpointTargets(false, this.editorBreakpointTargetResolver),
+				)
 					.map(b => breakpointKey({ file: b.file, line: b.fileLine })));
 			const bpSec = new SectionNode('breakpoints',
 				`브레이크포인트 (${this.breakpoints.length})`, 'debug-breakpoint',
@@ -1015,15 +1022,11 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		);
 		const codeChildren: ControllerNode[] = [];
 
+		// Error 상태 쓰레드는 쓰레드 섹션과 같은 행(ThreadNode)으로 넣는다 — 종전 InfoNode 는 명령도 메뉴도 없어
+		// 클릭·복사·위치 이동이 아무것도 되지 않았다. 같은 행이면 클릭 = 에러 위치, 우클릭 = Show Stack/Continue/Stop,
+		// 인라인 복사(툴팁 = 이름·상태·파일:줄)가 그대로 붙는다. 인스턴스는 새로 만든다(같은 객체를 두 곳에 두면 VS Code 가 거부).
 		for (const et of errorThreads) {
-			codeChildren.push(new InfoNode(
-				`🔴 ${et.name}`,
-				'debug-stop',
-				`${et.file}  [${et.lastStatus}]`,
-				undefined,
-				'errorThread',
-				`${et.name}: ${et.file} - ${et.lastStatus}`,
-			));
+			codeChildren.push(new ThreadNode(et));
 		}
 
 		for (const e of codeErrors) {
@@ -1041,7 +1044,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				{
 					command: 'gpl.controller.showErrorDetail',
 					title: '오류 상세 보기',
-					arguments: [{ raw: e.raw, code: e.code, category: 'code' }],
+					// 분류는 버킷이 다시 정하지 않고 판정 결과(classifyErrorEntry)를 그대로 넘긴다 — 같은 판단의 사본 금지(R7).
+					arguments: [{ raw: e.raw, code: e.code, category: e.classified.category, groupTitle: e.classified.groupTitle }],
 				},
 				'errorItem',
 				e.hint
@@ -1089,7 +1093,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 				{
 					command: 'gpl.controller.showErrorDetail',
 					title: '오류 상세 보기',
-					arguments: [{ raw: e.raw, code: e.code, category: 'environment' }],
+					arguments: [{ raw: e.raw, code: e.code, category: e.classified.category, groupTitle: e.classified.groupTitle }],
 				},
 				'sysErrorItem',
 				e.hint
@@ -1107,12 +1111,26 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		return sections;
 	}
 
+	/**
+	 * 「전체 쓰레드 복사」가 클립보드에 넣는 보고서. 상황 스냅샷의 `## 쓰레드` 절과 같은 표를 쓴다
+	 * (렌더러 정본: `controller/threadReport`).
+	 */
+	buildThreadReportMarkdown(): string {
+		const cfg = getControllerConfig();
+		return renderThreadListReport({
+			threads: this.threads,
+			connected: this._connected,
+			endpoint: `${cfg.ip}:${cfg.port}`,
+			expectedProject: this.expectedProjectName,
+			extensionVersion: EXTENSION_VERSION,
+		});
+	}
+
 	buildSituationSnapshotMarkdown(extra?: {
 		runtimeConsoleStatus?: RuntimeConsoleStatusSnapshot;
 		deploySnapshot?: SituationDeploySnapshot;
 	}): string {
 		const cfg = getControllerConfig();
-		const { running, paused, idle, errCount } = this.countThreadStates();
 
 		const expected = this.expectedProjectName || '(미설정)';
 		const expectedFolder = this.expectedProjectFolderName || this.expectedProjectName || '(미설정)';
@@ -1167,16 +1185,13 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		lines.push(`- FTP 프로젝트 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}${expectedFolder !== '(미설정)' && !hasExpectedFtp ? ' ⚠ 기대 프로젝트 폴더 없음' : ''}`);
 		lines.push('');
 
-		// ── 쓰레드
+		// ── 쓰레드 (표는 「전체 쓰레드 복사」와 같은 렌더러 — controller/threadReport)
 		lines.push('## 쓰레드');
-		lines.push(`- 전체 ${this.threads.length}: Running ${running}, Paused ${paused}, Idle ${idle}, Error ${errCount}`);
-		if (this.threads.length > 0) {
+		lines.push(`- ${summarizeThreadStates(this.threads)}`);
+		const threadTable = renderThreadTable(this.threads);
+		if (threadTable.length > 0) {
 			lines.push('');
-			lines.push('| 이름 | 상태 | 프로젝트 | 파일 |');
-			lines.push('|------|------|----------|------|');
-			for (const t of this.threads) {
-				lines.push(`| ${t.name} | ${t.state} | ${t.project || '-'} | ${t.file || '-'} |`);
-			}
+			lines.push(...threadTable);
 		}
 		lines.push('');
 
@@ -1204,7 +1219,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			lines.push('|------|------|------|--------|');
 			for (const e of this.ftpEntries) {
 				const type = e.isDirectory ? '폴더' : '파일';
-				const size = e.isDirectory ? '-' : formatSize(e.size);
+				const size = e.isDirectory ? '-' : formatBytes(e.size);
 				const date = e.modifiedAt ? formatDate(e.modifiedAt) : '-';
 				lines.push(`| ${e.name} | ${type} | ${size} | ${date} |`);
 			}
@@ -1317,13 +1332,13 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		let verdictReason = '이상 징후 없음';
 		if (!this._connected) {
 			verdict = '실패';
-			verdictReason = '1402 미연결';
+			verdictReason = `${channelName('command')} 미연결`;
 		} else if (codeErrors > 0 || threadErrors > 0) {
 			verdict = '실패';
 			verdictReason = `코드 오류 ${codeErrors}건 / Error thread ${threadErrors}건`;
 		} else if (runtimeUnstable) {
 			verdict = '간헐';
-			verdictReason = `1403 불안정 (${runtimeReason}${runtime.detail ? `, ${runtime.detail}` : ''})`;
+			verdictReason = `${channelName('runtime')} 불안정 (${runtimeReason}${runtime.detail ? `, ${runtime.detail}` : ''})`;
 		} else if (envErrors > 0) {
 			verdict = '간헐';
 			verdictReason = `환경 경고 ${envErrors}건`; 
@@ -1333,12 +1348,12 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		lines.push('# GPL 원클릭 진단 스냅샷');
 		lines.push('');
 		lines.push(`- 생성 시각: ${new Date().toLocaleString('ko-KR')}`);
-		lines.push(`- 1402 상태: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
-		lines.push(`- 1403 상태: ${formatRuntimeConsoleStateLabel(runtime)} (${cfg.ip}:${cfg.consolePort})`);
-		lines.push(`- 1403 상세: ${formatRuntimeConsoleStatusDetail(runtime)}`);
+		lines.push(`- ${channelName('command')}: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
+		lines.push(`- ${channelName('runtime')}: ${formatRuntimeConsoleStateLabel(runtime)} (${cfg.ip}:${cfg.consolePort})`);
+		lines.push(`- ${channelName('runtime')} 상세: ${formatRuntimeConsoleStatusDetail(runtime)}`);
 		lines.push('');
 
-		lines.push('## 1403 관찰 증거');
+		lines.push(`## ${channelName('runtime')} 관찰 증거`);
 		lines.push(`- 마지막 상태 변경: ${formatDateTimeFromTs(runtime.lastChangedAt)}`);
 		lines.push(`- noPayloadStreak: ${runtime.noPayloadStreak}`);
 		lines.push(`- pollEmptyStreak: ${runtime.immediateEofStreak}`);

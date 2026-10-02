@@ -44,6 +44,20 @@ import { isPathUnder } from '../util/pathKey';
 import { resolveProjectLibraryDirs } from '../project/projectSources';
 import { resolveRemoteProjectPath } from './remoteProjectPath';
 import { PROJECT_EXCLUDE_GLOB } from '../project/projectFileScope';
+import type { UploadProgressEvent, UploadSummary } from './uploadProgress';
+
+/**
+ * 배포 파이프라인의 업로드 진행 알림(§1-EE). 배포가 어느 경로(명령·F5·autoOnSave·MCP)로 시작됐든 같은 이벤트가 나가므로
+ * 표시(상태바 진행 바)는 접착 계층이 한 번만 구독한다 — 호출부마다 콜백을 꿰지 않는다(`deployRecord.onDidRecordCompiled` 와
+ * 같은 꼴). `end` 는 업로드 단계의 성패만 말한다(이후 Compile/Start 는 별개).
+ */
+export type DeployUploadEvent =
+    | { kind: 'progress'; projectName: string; remoteDir: string; progress: UploadProgressEvent }
+    | { kind: 'end'; projectName: string; remoteDir: string; ok: true; summary: UploadSummary }
+    | { kind: 'end'; projectName: string; remoteDir: string; ok: false; message: string };
+
+const _onDidUploadProgress = new vscode.EventEmitter<DeployUploadEvent>();
+export const onDidUploadProgress: vscode.Event<DeployUploadEvent> = _onDidUploadProgress.event;
 
 export interface DeployOptions {
     projectDir: string;
@@ -706,6 +720,22 @@ async function deployLocked(
     const useMirror = directActive && !useChangedOnly;
 
     type UploadOutcome = { ok: true; pendingDeletes: RemoteFileRef[] } | { ok: false; message: string };
+    /**
+     * 진행 알림 — 파일 완료마다 잠금 생존 신호 + 실제 전송분만 로그 한 줄(스킵까지 나열하면 파일 수만큼 쏟아진다).
+     * 바이트 갱신은 로그에 찍지 않고 상태바 구독자에게만 간다(출력 패널은 줄을 제자리에서 못 고친다, §1-EE).
+     */
+    const onUploadProgress = (progress: UploadProgressEvent): void => {
+        if (progress.type === 'file') {
+            lock.heartbeat();
+            if (progress.action === 'uploaded') {
+                pushTrace(`│ ↑ [${progress.doneFiles}/${progress.totalFiles}] ${progress.file}`);
+            }
+        }
+        _onDidUploadProgress.fire({ kind: 'progress', projectName, remoteDir: ftpProjectDir, progress });
+    };
+    const fireUploadEnd = (summary: UploadSummary): void => {
+        _onDidUploadProgress.fire({ kind: 'end', projectName, remoteDir: ftpProjectDir, ok: true, summary });
+    };
     /** 업로드 작업. 예외를 던지지 않고 결과로 돌려준다(Promise.all에서 다른 쪽을 끝까지 기다리기 위해). */
     async function runUpload(): Promise<UploadOutcome> {
         try {
@@ -716,13 +746,7 @@ async function deployLocked(
                     deferDelete: true,
                     // 크기만 같고 내용이 바뀐 파일을 스킵하지 않도록 직전 업로드 지문(SHA-1)을 함께 본다.
                     manifest: previousManifest,
-                    // 스킵 파일까지 전부 나열하면 파일 수만큼 로그가 쏟아진다 — 실제 전송분만 남긴다.
-                    onProgress: (current, total, file, action) => {
-                        lock.heartbeat();
-                        if (action === 'uploaded') {
-                            pushTrace(`│ ↑ [${current}/${total}] ${file}`);
-                        }
-                    },
+                    onProgress: onUploadProgress,
                 });
                 result.uploadStats = {
                     uploaded: stats.uploaded,
@@ -734,18 +758,14 @@ async function deployLocked(
                 recordSyncManifest(cfg.ip, ftpProjectDir, stats.manifest);
                 const noManifest = Object.keys(previousManifest).length === 0;
                 pushTrace(`│ ✔ Mirror done: ${stats.uploaded} sent, ${stats.skipped} skipped${stats.pendingDeletes.length > 0 ? `, ${stats.pendingDeletes.length} remote-only (정지 확인 뒤 삭제)` : ''}${noManifest ? ' (첫 동기화 — 지문 기록 없음, 전체 업로드)' : ''}`);
+                fireUploadEnd(stats);
                 return { ok: true, pendingDeletes: stats.pendingDeletes };
             }
             const stats = await uploadProject(cfg.ip, options.projectDir, ftpProjectDir, {
                 skipUnchanged: options.skipUnchanged,
                 onlyFiles: useChangedOnly ? changedFiles : undefined,
                 manifest: getSyncManifest(cfg.ip, ftpProjectDir),
-                onProgress: (current, total, file, action) => {
-                    lock.heartbeat();
-                    if (action === 'uploaded') {
-                        pushTrace(`│ ↑ [${current}/${total}] ${file}`);
-                    }
-                },
+                onProgress: onUploadProgress,
             });
             // 이번에 다룬 파일만 담겨 있으므로 병합(autoOnSave는 저장 파일만 올린다).
             mergeSyncManifest(cfg.ip, ftpProjectDir, stats.manifest);
@@ -755,10 +775,13 @@ async function deployLocked(
                 totalBytes: stats.totalBytes,
             };
             pushTrace(`│ ✔ Upload done: ${stats.uploaded} sent, ${stats.skipped} skipped`);
+            fireUploadEnd(stats);
             return { ok: true, pendingDeletes: [] };
         } catch (e: any) {
-            pushTrace(`│ ✘ Upload failed: ${e?.message ?? e}`);
-            return { ok: false, message: e?.message || 'Upload failed' };
+            const message = e?.message || 'Upload failed';
+            pushTrace(`│ ✘ Upload failed: ${message}`);
+            _onDidUploadProgress.fire({ kind: 'end', projectName, remoteDir: ftpProjectDir, ok: false, message });
+            return { ok: false, message };
         }
     }
 
@@ -1279,7 +1302,10 @@ async function deployLocked(
         pushTrace(`│ RAW ${rawPreview(errorLogResp) || '(empty)'}`);
         result.errorLog = parseErrorLog(errorLogResp);
         if (result.errorLog.length === 0) {
-            pushTrace('│ ✔ No active errors');
+            // Start 직후의 스냅숏이다 — 기동 수 초 뒤에 나는 런타임 에러(예: -200 No memory available, 2026-09-18 실측
+            // Start 후 5초)는 여기 잡히지 않고 1403 런타임 콘솔/디버그 이벤트([Debug Error])가 알린다.
+            // "에러 없음"으로 읽히지 않게 시점을 문장에 넣는다.
+            pushTrace('│ ✔ ErrorLog empty (snapshot right after Start — later runtime errors arrive via GPL Console / debug events)');
         } else {
             // 과거 누적 항목이 섞일 수 있으므로 "에러 N개" 단정 대신 ErrorLog 항목 수로 표기.
             pushTrace(`│ ⚠ ErrorLog ${result.errorLog.length}건:`);

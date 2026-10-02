@@ -281,7 +281,7 @@ export function assessReachability(input: ReachabilityInput): ReachabilityAssess
         confidence = 'high';
         alternativeExplanations = [
             '채널 교란 가능 명령(Unload/Load/Compile/Start) 뒤의 일시적 사용 불가 - 실측 2026-08-31: 약 2.5분 뒤 재부팅 없이 복귀',
-            '제어기 소프트웨어 재시작/부팅 중(1402 서비스 미기동)',
+            '제어기 소프트웨어 재시작/부팅 중(명령 콘솔 서비스 미기동)',
             '제어기 DHCP 임대 상실로 같은 IP의 다른 장치(사무실 게이트웨이)가 RST 를 돌려주는 경우',
         ];
     } else if (icmp.alive === true) {
@@ -289,7 +289,7 @@ export function assessReachability(input: ReachabilityInput): ReachabilityAssess
         confidence = 'medium';
         alternativeExplanations = [
             '부팅 중(ICMP 스택만 기동)',
-            '1402 소켓이 다른 클라이언트에 점유되어 accept 가 지연',
+            '명령 콘솔 소켓이 다른 클라이언트에 점유되어 accept 가 지연',
             '경로/방화벽이 SYN 을 버림',
         ];
     } else if (icmp.alive === false) {
@@ -310,7 +310,7 @@ export function assessReachability(input: ReachabilityInput): ReachabilityAssess
 
     const controllerHealth: ReachabilityAssessment['controllerHealth'] = state === 'host-unreachable'
         ? { state: 'unreachable', reason: 'ICMP·TCP 모두 무응답 - 호스트에 도달하지 못했다. 런타임 상태는 측정 불가.' }
-        : { state: 'unconfirmed', reason: '1402 도달성만으로는 GPL 런타임 상태를 판정할 수 없다 - 살아 있음의 증거는 명령의 <STATUS> 응답이다.' };
+        : { state: 'unconfirmed', reason: '명령 콘솔 도달성만으로는 GPL 런타임 상태를 판정할 수 없다 - 살아 있음의 증거는 명령의 <STATUS> 응답이다.' };
 
     return {
         observations: {
@@ -338,12 +338,12 @@ export function describeReachability(input: ReachabilityInput): string {
 
     let verdict: string;
     if (tcp1402 === 'open') {
-        verdict = `${ip}:1402 도달 가능 — TCP 연결이 열립니다.`;
+        verdict = `명령 콘솔 ${ip}:1402 도달 가능 — TCP 연결이 열립니다.`;
     } else if (tcp1402 === 'refused') {
-        verdict = `${ip}:1402 새 연결이 거부됨(refused) — 호스트의 TCP 스택은 응답하지만 지금 명령 채널을 열 수 없다는 관측입니다. `
+        verdict = `명령 콘솔 ${ip}:1402 새 연결이 거부됨(refused) — 호스트의 TCP 스택은 응답하지만 지금 명령 채널을 열 수 없다는 관측입니다. `
             + '이것만으로 제어기 런타임 상태는 확정할 수 없습니다(가능한 설명: 채널 교란 가능 명령 뒤의 일시적 사용 불가 / 소프트웨어 재시작·부팅 중 / 같은 IP의 다른 장치가 응답).';
     } else if (icmp.alive === true) {
-        verdict = `ICMP는 응답하나 1402 TCP가 실패(${tcp1402}) — 부팅 중(서비스 미기동)이거나 소켓 점유/경로 차단. 런타임 상태 미확정.`;
+        verdict = `ICMP는 응답하나 명령 콘솔 TCP가 실패(${tcp1402}) — 부팅 중(서비스 미기동)이거나 소켓 점유/경로 차단. 런타임 상태 미확정.`;
     } else if (icmp.alive === false) {
         verdict = `ICMP·TCP 모두 무응답(${tcp1402}${icmp.detail ? `, ping: ${icmp.detail}` : ''}) — 호스트에 도달하지 못했다는 관측입니다. `
             + '전원·네트워크·재부팅 초기 단계 중 어느 것인지는 이 관측만으로 구분되지 않습니다.';

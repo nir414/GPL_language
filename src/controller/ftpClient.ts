@@ -14,6 +14,8 @@ import {
 	manifestFileKey,
 	nextStamp,
 } from './syncManifest';
+import { UploadProgressTracker } from './uploadProgress';
+import type { UploadProgressEvent } from './uploadProgress';
 
 const TIMEOUT_MS = 10_000;
 
@@ -41,6 +43,38 @@ async function createClient(host: string): Promise<FtpClient> {
 	const client = new FtpClient(TIMEOUT_MS);
 	await client.access({ host, user: 'anonymous', password: 'anonymous' });
 	return client;
+}
+
+/**
+ * 업로드 대상 한 건 — 목록·크기를 루프 전에 한 번 읽어 총량(진행 바의 분모)을 먼저 안다.
+ * `size` 는 그 **진행 집계 전용 스냅샷**이다. 해시·업로드 검증·지문은 파일 차례가 왔을 때 다시 stat 한 값을 쓴다 —
+ * 앞 파일들을 올리는 동안(수 초) 사용자가 저장하면 크기가 바뀌는데, 스냅샷 크기로 원격 SIZE 를 대조하면 멀쩡한
+ * 업로드를 "크기 불일치"로 실패시킨다.
+ */
+interface LocalUploadEntry {
+	file: string;
+	/** 프로젝트 기준 상대 경로(`/` 구분) — 원격 경로·지문 키·로그에 그대로 쓴다. */
+	relative: string;
+	/** 루프 전 크기 — 진행 바 분모/누적에만 쓴다(위 설명). */
+	size: number;
+}
+
+function toUploadEntries(localDir: string, files: readonly string[]): LocalUploadEntry[] {
+	return files.map(file => ({
+		file,
+		relative: path.relative(localDir, file).replace(/\\/g, '/'),
+		size: fs.statSync(file).size,
+	}));
+}
+
+/**
+ * 전송 중 바이트를 진행 집계에 잇는다. basic-ftp 는 목록 조회(`list`) 전송에도 같은 핸들러를 부르므로 업로드만 고른다.
+ * 호출자는 끝나면 `client.trackProgress()` 로 핸들러를 떼어 닫히는 소켓의 마지막 보고가 집계로 새지 않게 한다.
+ */
+function trackUploadBytes(client: FtpClient, tracker: UploadProgressTracker): void {
+	client.trackProgress(info => {
+		if (info.type === 'upload') { tracker.transferred(info.bytes); }
+	});
 }
 
 // ── Public API (기존 시그니처 유지) ─────────────────────
@@ -208,7 +242,11 @@ export async function uploadProject(
 		 * 지문이 없는 파일(첫 동기화 등)은 스킵하지 않고 올린다 — 판정 불가는 항상 업로드 쪽으로 넘어뜨린다.
 		 */
 		manifest?: Readonly<SyncManifestFiles>;
-		onProgress?: (current: number, total: number, file: string, action: 'uploaded' | 'skipped') => void;
+		/**
+		 * 진행 알림 — 파일 하나가 끝날 때(`type: 'file'`, 로그 한 줄의 단위)와 전송 중 바이트 갱신(`type: 'bytes'`,
+		 * 상태바용). 집계 규칙은 `uploadProgress.UploadProgressTracker`.
+		 */
+		onProgress?: (event: UploadProgressEvent) => void;
 	},
 ): Promise<{ uploaded: number; skipped: number; totalBytes: number; manifest: SyncManifestFiles }> {
 	const client = await createClient(host);
@@ -226,22 +264,23 @@ export async function uploadProject(
 				return insideLocalDir && fs.existsSync(f) && fs.statSync(f).isFile();
 			})
 			: getAllFiles(localDir));
+		const entries = toUploadEntries(localDir, files);
+		const tracker = new UploadProgressTracker(entries, event => options?.onProgress?.(event));
+		trackUploadBytes(client, tracker);
 		let uploaded = 0;
 		let skipped = 0;
-		let totalBytes = 0;
 		const manifest: SyncManifestFiles = {};
 
-		for (let i = 0; i < files.length; i++) {
-			const file = files[i];
-			const relative = path.relative(localDir, file).replace(/\\/g, '/');
+		for (const entry of entries) {
+			const { file, relative } = entry;
+			// 해시·검증·지문은 지금 이 순간의 파일 기준(LocalUploadEntry 주석) — entry.size 는 진행 집계 전용.
+			const size = fs.statSync(file).size;
 			const remotePath = `${remoteDir}/${relative}`;
-			const stat = fs.statSync(file);
-			totalBytes += stat.size;
 
 			const key = manifestFileKey(relative);
 			const previous = options?.manifest?.[key];
 			// 크기가 같아도 내용이 다를 수 있으므로 로컬 해시로 판정한다(해시 실패 시 크기 비교로 폴백).
-			const local = { size: stat.size, sha1: hashFileSync(file, stat.size) };
+			const local = { size, sha1: hashFileSync(file, size) };
 			let remote: { size: number } | undefined;
 
 			let skip = false;
@@ -259,16 +298,17 @@ export async function uploadProject(
 			if (skip) {
 				skipped++;
 			} else {
-				await uploadVerified(client, file, remotePath, stat.size);
+				tracker.begin(relative, entry.size);
+				await uploadVerified(client, file, remotePath, size);
 				uploaded++;
 			}
 			manifest[key] = nextStamp(local, remote, previous, skip ? 'skipped' : 'uploaded');
-
-			options?.onProgress?.(i + 1, files.length, relative, skip ? 'skipped' : 'uploaded');
+			tracker.end(relative, entry.size, skip ? 'skipped' : 'uploaded');
 		}
 
-		return { uploaded, skipped, totalBytes, manifest };
+		return { uploaded, skipped, totalBytes: tracker.totalBytes, manifest };
 	} finally {
+		client.trackProgress();
 		client.close();
 	}
 }
@@ -295,7 +335,8 @@ export async function mirrorProject(
 	localDir: string,
 	remoteDir: string,
 	options?: {
-		onProgress?: (current: number, total: number, file: string, action: 'uploaded' | 'skipped') => void;
+		/** 진행 알림 — `uploadProject` 와 같은 이벤트(파일 완료 + 전송 중 바이트). */
+		onProgress?: (event: UploadProgressEvent) => void;
 		onDelete?: (file: string) => void;
 		/**
 		 * true면 원격 전용 파일을 지우지 않고 `pendingDeletes`로 돌려준다. 호출측이 안전한 시점
@@ -337,37 +378,38 @@ export async function mirrorProject(
 			});
 		}
 
-		const localFiles = getAllFiles(localDir);
+		const entries = toUploadEntries(localDir, getAllFiles(localDir));
+		const tracker = new UploadProgressTracker(entries, event => options?.onProgress?.(event));
+		trackUploadBytes(client, tracker);
 		const localRelSet = new Set<string>();
 		let uploaded = 0;
 		let skipped = 0;
 		let deleted = 0;
-		let totalBytes = 0;
 		const manifest: SyncManifestFiles = {};
 
 		// 2) 로컬 기준 업로드/스킵
-		for (let i = 0; i < localFiles.length; i++) {
-			const file = localFiles[i];
-			const relative = path.relative(localDir, file).replace(/\\/g, '/');
+		for (const entry of entries) {
+			const { file, relative } = entry;
 			localRelSet.add(relative.toLowerCase());
-			const stat = fs.statSync(file);
-			totalBytes += stat.size;
+			// 해시·검증·지문은 지금 이 순간의 파일 기준(LocalUploadEntry 주석) — entry.size 는 진행 집계 전용.
+			const size = fs.statSync(file).size;
 
 			const remote = remoteByRel.get(relative.toLowerCase());
 			const key = manifestFileKey(relative);
 			const previous = options?.manifest?.[key];
 			// 크기가 같아도 내용이 다를 수 있으므로 로컬 해시를 함께 본다(해시 실패 시 크기 비교로 폴백).
-			const local = { size: stat.size, sha1: hashFileSync(file, stat.size) };
+			const local = { size, sha1: hashFileSync(file, size) };
 			const skip = isUnchanged(previous, local, remote);
 			if (skip) {
 				skipped++;
 			} else {
 				const remotePath = `${remoteDir}/${relative}`;
-				await uploadVerified(client, file, remotePath, stat.size);
+				tracker.begin(relative, entry.size);
+				await uploadVerified(client, file, remotePath, size);
 				uploaded++;
 			}
 			manifest[key] = nextStamp(local, remote, previous, skip ? 'skipped' : 'uploaded');
-			options?.onProgress?.(i + 1, localFiles.length, relative, skip ? 'skipped' : 'uploaded');
+			tracker.end(relative, entry.size, skip ? 'skipped' : 'uploaded');
 		}
 
 		// 3) 원격에만 있는 파일 삭제 (낡은 소스 제거) — deferDelete면 목록만 돌려준다.
@@ -387,8 +429,9 @@ export async function mirrorProject(
 			}
 		}
 
-		return { uploaded, skipped, deleted, totalBytes, pendingDeletes, manifest };
+		return { uploaded, skipped, deleted, totalBytes: tracker.totalBytes, pendingDeletes, manifest };
 	} finally {
+		client.trackProgress();
 		client.close();
 	}
 }

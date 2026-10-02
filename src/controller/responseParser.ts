@@ -371,6 +371,53 @@ export interface ErrorCodeHint {
     category: ErrorCodeCategory;
 }
 
+/**
+ * GPL 에러 코드 **그룹** — 공식 문서의 범위 표가 정본이다.
+ * https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Error_Code/Error_Intro.htm
+ * (2026-09-21 확인. 개별 코드 페이지 `language_errors.htm` 등이 각 범위의 항목을 싣는다.)
+ *
+ * 종전에는 코드별 힌트 표(-782·-508·-2)에 있는 것만 "코드 오류"로 보고 **나머지 전부를 환경 경고**로 떨어뜨렸다.
+ * 그래서 `-757 Object not instantiated`·`-700 Thread execution aborted` 처럼 명백한 GPL 코드 오류가
+ * `⚠ 환경 경고` 로 표시됐다(2026-09-21 사용자 지적). 범위 표를 쓰면 코드가 하나 늘 때마다 표를 고칠 필요가 없다.
+ *
+ * `category` 는 **사람이 어디부터 봐야 하는가**다 — `code` 는 GPL 소스, `environment` 는 제어기 환경,
+ * `unknown` 은 문서 그룹만으로는 갈리지 않아(로봇·네트워크·비전) 단정하지 않는 자리다.
+ */
+export interface GplErrorGroup {
+    /** 포함 범위(둘 다 음수, min <= max). */
+    min: number;
+    max: number;
+    /** 문서의 그룹 이름(문서상 표기). */
+    title: string;
+    category: ErrorCodeCategory;
+}
+
+const GPL_ERROR_GROUPS: readonly GplErrorGroup[] = [
+    { min: -299, max: -200, title: 'Standard System Errors', category: 'environment' },
+    { min: -499, max: -300, title: 'Hardware Device Related Errors', category: 'environment' },
+    { min: -699, max: -500, title: 'Input and Output Errors', category: 'code' },
+    { min: -999, max: -700, title: 'Language Related Errors', category: 'code' },
+    { min: -1499, max: -1000, title: 'Robot Related Errors', category: 'unknown' },
+    { min: -1599, max: -1500, title: 'Configuration Parameter Database, Datalogger, and CPU Monitor Errors', category: 'environment' },
+    { min: -1699, max: -1600, title: 'Controller Errors', category: 'environment' },
+    { min: -1799, max: -1700, title: 'Network, Socket, and Communication Errors', category: 'unknown' },
+    { min: -2999, max: -2000, title: 'GPL 응용 프로그램 전용 범위(사용자 Throw)', category: 'code' },
+    { min: -3999, max: -3000, title: 'Servo Related Errors', category: 'environment' },
+    { min: -4100, max: -4000, title: 'Vision Related Errors', category: 'unknown' },
+];
+
+/** 분류의 사람이 읽는 라벨 — 트리 설명·오류 상세 보고서가 같은 말을 쓰게 하는 정본. */
+export function describeErrorCategory(category: ErrorCodeCategory): string {
+    return category === 'code' ? '코드 오류'
+        : category === 'environment' ? '제어기 환경'
+        : '분류 미상';
+}
+
+/** 코드가 속한 문서 그룹. 표에 없는 코드(예: 0 이상, 미정의 구간)는 undefined. */
+export function getGplErrorGroup(code: number): GplErrorGroup | undefined {
+    return GPL_ERROR_GROUPS.find(g => code >= g.min && code <= g.max);
+}
+
 const ERROR_CODE_HINTS: Record<number, Omit<ErrorCodeHint, 'code'>> = {
     [-1521]: {
         title: 'Controller 환경 이슈',
@@ -395,6 +442,14 @@ const ERROR_CODE_HINTS: Record<number, Omit<ErrorCodeHint, 'code'>> = {
         meaning: 'Parameter DB 버전 불일치',
         action: '컨트롤러/DB 버전 매칭 및 배포 환경 정합성 확인',
         category: 'environment',
+    },
+    [-757]: {
+        title: 'Object not instantiated',
+        meaning: '객체 블록이 할당되지 않은 상태에서 그 필드/멤버에 접근했다(문서: Language Related Errors)',
+        action: 'New 로 생성했는지, 생성 전에 쓰이지 않는지 확인. Start 직후 스택이 `Init` 한 프레임이면 원인은 '
+            + '클래스 메서드 이름 `Init` — 모듈 초기화가 시작 프로시저보다 먼저 이름으로 찾아 인스턴스 없이 부른다'
+            + '(문서 GPL/modules.htm · 2026-09-21 실기 재현 samples/init-probe). 다른 이름(InitDefaults 등)으로 바꿀 것',
+        category: 'code',
     },
     [-782]: {
         title: 'Object value is Nothing',
@@ -476,8 +531,15 @@ export function findKnownErrorChains(codes: number[]): string[] {
 }
 
 export interface ErrorEntryClassification {
-    /** true = 제어기 환경·시스템 문제 (GPL 코드와 무관) */
+    /**
+     * true = GPL 코드 오류로 **단정하지 않은** 항목 — 제어기 환경·시스템 문제이거나 분류 미상.
+     * 트리의 「코드 오류 / 환경 경고」 분리가 이 값을 쓴다. 정확한 분류는 `category` 를 본다.
+     */
     isControllerSystem: boolean;
+    /** 문서 범위 표 기준 분류(`getGplErrorGroup`). 코드를 못 읽었으면 'unknown'. */
+    category: ErrorCodeCategory;
+    /** 문서상 그룹 이름(있으면). */
+    groupTitle?: string;
     summary: string;
     detail?: string;
     parsedCode?: number;
@@ -496,35 +558,39 @@ export function classifyErrorEntry(entry: string): ErrorEntryClassification {
         const normalized = entry.replace(/\s+/g, ' ').trim();
         return {
             isControllerSystem: false,
+            category: 'unknown',
             summary: normalized.length > 140 ? `${normalized.slice(0, 137)}...` : normalized,
         };
     }
 
+    const summary = `${parsed.source} (${parsed.code}): ${parsed.message}`;
+    const group = getGplErrorGroup(parsed.code);
+    const hint = getErrorCodeHint(parsed.code);
+    // 분류 우선순위: 코드별 힌트(사람이 손으로 검토한 것) > 문서 범위 표 > 미상.
+    const category: ErrorCodeCategory = hint?.category ?? group?.category ?? 'unknown';
+    const base = { category, groupTitle: group?.title, parsedCode: parsed.code, summary };
+
     const knownDetail = CONTROLLER_SYSTEM_ERROR_CODES[parsed.code];
     if (knownDetail) {
-        return {
-            isControllerSystem: true,
-            summary: `${parsed.source} (${parsed.code}): ${parsed.message}`,
-            detail: `${knownDetail} — GPL 코드 오류로 분류하지 않음`,
-            parsedCode: parsed.code,
-        };
+        return { ...base, isControllerSystem: true, detail: `${knownDetail} — GPL 코드 오류로 분류하지 않음` };
     }
-
-    const hint = getErrorCodeHint(parsed.code);
-    if (hint && hint.category === 'code') {
-        return {
-            isControllerSystem: false,
-            summary: `${parsed.source} (${parsed.code}): ${parsed.message}`,
-            detail: `${hint.title} — ${hint.meaning}. 권장: ${hint.action}`,
-            parsedCode: parsed.code,
-        };
+    if (hint) {
+        return { ...base, isControllerSystem: category !== 'code', detail: `${hint.title} — ${hint.meaning}. 권장: ${hint.action}` };
+    }
+    if (group) {
+        // 그룹만 아는 경우 — 문서상 분류임을 밝히고, 코드 오류일 때만 GPL 소스를 먼저 보라고 한다.
+        const lead = category === 'code'
+            ? 'GPL 코드 오류 — 소스(위치·스택)부터 확인'
+            : category === 'environment'
+                ? '제어기 환경 문제 — GPL 코드 수정보다 제어기 진단 우선'
+                : '문서 그룹만으로는 코드/환경이 갈리지 않음 — 위치와 재현 조건부터 확인';
+        return { ...base, isControllerSystem: category !== 'code', detail: `${lead}. 문서상 ${group.title}.` };
     }
 
     return {
+        ...base,
         isControllerSystem: true,
-        summary: `${parsed.source} (${parsed.code}): ${parsed.message}`,
         detail: '제어기 ErrorLog 항목. 현재 실행 결과와 과거 누적 항목을 분리 확인 필요.',
-        parsedCode: parsed.code,
     };
 }
 
@@ -980,11 +1046,26 @@ export function latin1ToUtf8(latin1Text: string): string {
  *  - `<L>N</L>`의 N은 로그 레벨이 아니라 **메시지 청크의 바이트 길이**다.
  *  - 긴 줄은 128바이트 단위로 여러 프레임에 쪼개져 오며, 마지막 청크만 `\n`으로 끝난다.
  *    (청크 재조립은 RuntimeConsole.emitConsoleFrame에서 수행하고, 여기서는 단일 프레임만 정규화한다.)
- *  - `<E>1,N</E>`(숫자 상태 이벤트)는 로그가 아니므로 빈 문자열로 억제한다.
+ *  - 숫자만 든 프레임(`<E>1,N</E>`·`<E>2</E>` 등)은 로그가 아니라 상태 이벤트이므로 빈 문자열로 억제한다
+ *    (판정 정본은 `isConsoleStatusEventFrame`).
  */
+/**
+ * 숫자만 든 1403 프레임 = **상태 이벤트**(로그가 아님). `Start … -event` 가 보내는 쓰레드 상태 변화 신호다.
+ *
+ * GDE 캡처(`captures/gde_1403.pcapng`, 395프레임)에는 `<E>1,N</E>` 형태만 있었지만, 실기에서
+ * `<E>2</E>`·`<E>0</E>` 처럼 **숫자 하나짜리** 프레임도 온다(2026-09-21 사용자 관측, GPL 5.1D6).
+ * 종전 규칙이 두 숫자 형태만 알아서, 단일 숫자 프레임은 억제되지 않고 `</E>` 만 떨어져 나간
+ * `<E>2` 가 GPL Console 에 그대로 찍혔다. 숫자와 콤마만 있는 프레임은 전부 상태 이벤트로 본다 —
+ * 어차피 사람이 읽을 메시지가 없다(메시지는 `<L>len</L>` 뒤에 온다).
+ */
+export function isConsoleStatusEventFrame(line: string): boolean {
+    const s = line.replace(/\0/g, '').replace(/\r/g, '').trim();
+    return /^<E>\d+(?:,\d+)*<\/E>$/.test(s);
+}
+
 export function normalizeConsoleLine(line: string): string {
     const s = line.replace(/\0/g, '').replace(/\r/g, '').trim();
-    if (!s || s === '</E>' || /^<E>\d+,\d+<\/E>$/.test(s)) {
+    if (!s || s === '</E>' || isConsoleStatusEventFrame(s)) {
         return '';
     }
 

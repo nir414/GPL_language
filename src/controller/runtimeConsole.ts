@@ -18,7 +18,7 @@
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { getControllerConfig, getTrafficChannel, formatTrafficTimestamp, recordTrafficLine } from './controllerConnection';
-import { normalizeConsoleLine, latin1ToUtf8 } from './responseParser';
+import { isConsoleStatusEventFrame, normalizeConsoleLine, latin1ToUtf8 } from './responseParser';
 import { appendLiveLog } from '../log/liveLogTerminal';
 import {
     ConnectReason,
@@ -173,6 +173,8 @@ export class RuntimeConsole implements vscode.Disposable {
     private _sessionFrames = 0;
     /** 현재 세션에서 normalize 후 비어 있어 swallow된 프레임 수(heartbeat 등) */
     private _sessionFramesSwallowed = 0;
+    /** 세션 중 관측한 상태 이벤트 프레임 형식 — 캡처에 없던 것만 1회씩 상태 줄에 남기기 위한 것. */
+    private readonly _seenStatusEventForms = new Set<string>();
     /** 현재 세션에서 GPL Console에 실제 표시한 라인 수 */
     private _sessionLinesEmitted = 0;
     /** TEST ITERATION gap 진단용 현재 세션 관측값 */
@@ -633,7 +635,7 @@ export class RuntimeConsole implements vscode.Disposable {
                 : `${this._consecutiveNoPayloadAttempts}`;
             this.appendStateLine(`[Console][RC1403] STATE=UNSTABLE noPayloadStreak=${burstCount} reason=${reason}`);
             this.appendStateLine('[Console][RC1403] ACTION=CHECK_RUNTIME_CONSOLE_SOURCE');
-            this.appendRuntimeHint(`무출력 상태 지속(noPayloadStreak=${burstCount}) — 1403 서비스 상태 및 런타임 출력 경로 점검 권장`);
+            this.appendRuntimeHint(`무출력 상태 지속(noPayloadStreak=${burstCount}) — 런타임 콘솔 서비스 상태 및 출력 경로 점검 권장`);
         }
     }
 
@@ -736,13 +738,25 @@ export class RuntimeConsole implements vscode.Disposable {
         }
         // type-3가 아닌 프레임: 진행 중인 줄을 먼저 비우고 기존 경로로 처리.
         this.flushConsoleFrameBuffer();
-        // 숫자 상태 이벤트(<E>N,N</E>: 브레이크 도달/스텝 완료 등 상태 변화 신호)는
-        // 세션 최초 데이터가 아니어도 즉시 폴 트리거를 발사한다. 콘솔 텍스트(type-3)는
-        // 여기로 오지 않으므로 출력 폭주가 트리거 폭주로 이어지지 않는다.
-        if (/^<E>\d+,\d+<\/E>$/.test(clean.trim())) {
+        // 숫자 상태 이벤트(브레이크 도달/스텝 완료 등 상태 변화 신호)는 세션 최초 데이터가 아니어도
+        // 즉시 폴 트리거를 발사한다. 콘솔 텍스트(type-3)는 여기로 오지 않으므로 출력 폭주가
+        // 트리거 폭주로 이어지지 않는다. 판정은 normalizeConsoleLine 과 같은 정본을 쓴다(R7).
+        if (isConsoleStatusEventFrame(clean)) {
+            this.noteStatusEventForm(clean.trim());
             this._onDidReceiveData.fire();
         }
         this.emitConsoleLine(frame, true);
+    }
+
+    /**
+     * GDE 캡처에 없던 상태 이벤트 형식을 **세션당 형식마다 한 번** 상태 줄에 남긴다.
+     * 콘솔에는 찍지 않되(사용자에게는 소음) 관측 기록은 남겨야 의미를 나중에 확정할 수 있다 — 하드 규칙 3.
+     */
+    private noteStatusEventForm(frame: string): void {
+        if (/^<E>1,\d+<\/E>$/.test(frame)) { return; }   // 캡처로 확인된 형식은 조용히 지나간다
+        if (this._seenStatusEventForms.has(frame)) { return; }
+        this._seenStatusEventForms.add(frame);
+        this.appendStateLine(`[Console][RC1403] EVENT=STATUS_FRAME form=${frame} (캡처에 없는 형식 — 의미 미확정, 콘솔 출력은 억제)`);
     }
 
     /** 재조립 중이던 type-3 메시지를 한 줄로 내보낸다. */
@@ -1156,7 +1170,7 @@ export class RuntimeConsole implements vscode.Disposable {
                     // 에러로 인한 종료
                     const errCode = (this._lastError as any)?.code as string | undefined;
                     if (errCode === 'ECONNREFUSED') {
-                        this.updateStatus('socket-error', '연결 거부', '1403 포트가 연결을 거부했습니다 (ECONNREFUSED)');
+                        this.updateStatus('socket-error', '연결 거부', '런타임 콘솔 포트가 연결을 거부했습니다 (ECONNREFUSED)');
                     } else {
                         this.updateStatus('socket-error', '소켓 에러', this._lastError?.message ?? '알 수 없는 소켓 에러');
                     }
@@ -1239,7 +1253,7 @@ export class RuntimeConsole implements vscode.Disposable {
                 const errCode = (this._lastError as any)?.code as string | undefined;
                 this.logConsoleTraffic('---', `CLOSE (connect failed: ${errMsg}, connects=${this._connectStats.total})`);
                 if (errCode === 'ECONNREFUSED') {
-                    this.updateStatus('connect-failed', '연결 거부', '1403 포트가 연결을 거부했습니다 (ECONNREFUSED)');
+                    this.updateStatus('connect-failed', '연결 거부', '런타임 콘솔 포트가 연결을 거부했습니다 (ECONNREFUSED)');
                     this.appendStateLine('[Console][RC1403] STATE=CONNECT_FAILED reason=ECONNREFUSED');
                     this.handleNoPayloadAttempt('Connection refused');
                 } else {

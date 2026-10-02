@@ -23,10 +23,16 @@ import {
 	parseStatus,
 	parseThreadList,
 } from '../controller/responseParser';
+import { getGplErrorGroup } from '../controller/responseParser';
+import type { ErrorCodeCategory } from '../controller/responseParser';
 import { probeThreads } from '../controller/threadStop';
 import { isSettledState } from '../controller/threadActivity';
 import { createFileSourceLookup, diagnoseStuckThread } from '../controller/threadStuckDiagnosis';
-import { buildTargetCandidates } from '../controller/projectPicker';
+import { buildTargetCandidates, readGprProjectStart } from '../controller/projectPicker';
+import { describeStartProcedureMismatch } from '../controller/startProcedureCheck';
+import { renderErrorReport } from '../controller/errorReport';
+import { asThreadNode } from '../controller/threadArgs';
+import { EXTENSION_VERSION } from '../config';
 import { createThreadStopIo, showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
 import type { ExtensionHost } from './host';
 
@@ -123,11 +129,11 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		vscode.commands.registerCommand('gpl.controller.toggleTrafficResponseBody', async () => {
 			const next = !getTrafficLogOptions().responseBody;
 			await setTrafficResponseBodyEnabled(next);
-			const marker = `[${formatTrafficTimestamp()}] --- 1402 응답 본문 표시: ${next ? 'ON' : 'OFF'}`;
+			const marker = `[${formatTrafficTimestamp()}] --- 명령 콘솔 응답 본문 표시: ${next ? 'ON' : 'OFF'}`;
 			trafficChannel.appendLine(marker);
 			recordTrafficLine(marker);
 			host.controllerTree?.redraw();
-			vscode.window.setStatusBarMessage(`GPL Traffic: 1402 응답 본문 표시 ${next ? '켬' : '끔'}`, 3000);
+			vscode.window.setStatusBarMessage(`GPL Traffic: 명령 콘솔 응답 본문 표시 ${next ? '켬' : '끔'}`, 3000);
 		})
 	);
 
@@ -362,118 +368,194 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		})
 	);
 
-	// 에러 항목 복사
-	// inline view/item/context 명령은 VS Code가 TreeItem 자체를 arg[0]으로 주입하므로
-	// 문자열 직접 전달과 TreeItem 객체 전달 두 경우 모두 처리한다.
+	// ── 오류 상세 — 재료 수집(접착) + 렌더(controller/errorReport, 순수) ──────────────────────────
+	// 「오류 상세 보기」(Output + 위치 이동)와 「에러 복사」(클립보드)가 **같은 재료·같은 줄**을 쓴다(§1-EA).
+	// 종전 복사는 트리 항목 툴팁(쓰레드 행 4~6줄, 에러 항목 1~3줄)만 담아 스택·시각·분류·직전 사건이 빠졌다.
+	interface ErrorDetailPayload {
+		raw?: string;
+		code?: number;
+		category?: ErrorCodeCategory;
+		groupTitle?: string;
+		threadName?: string;
+		/** 재료가 없을 때 종전처럼 복사할 텍스트(툴팁/라벨) — 추정 체인 항목 등. */
+		fallbackText?: string;
+	}
+
+	/**
+	 * 트리 노드(InfoNode/ThreadNode)·문자열·payload 객체를 하나의 payload 로 정규화한다.
+	 * view/item/context 명령은 VS Code 가 트리 **요소**(우리 노드 객체)를 arg[0] 으로 준다.
+	 */
+	function toErrorDetailPayload(arg: unknown): ErrorDetailPayload {
+		if (typeof arg === 'string') {
+			return parseControllerErrorEntry(arg) ? { raw: arg } : { fallbackText: arg };
+		}
+		if (!arg || typeof arg !== 'object') { return {}; }
+		const o = arg as {
+			raw?: unknown; code?: unknown; category?: unknown; groupTitle?: unknown;
+			thread?: { name?: unknown; lastStatus?: unknown };
+			command?: { arguments?: unknown[] };
+			tooltip?: unknown; label?: unknown;
+		};
+		// 에러 항목 노드: 클릭 명령 인자에 payload 가 실려 있다.
+		const cmdArg = o.command?.arguments?.[0];
+		if (cmdArg && typeof cmdArg === 'object' && ('raw' in (cmdArg as object) || 'code' in (cmdArg as object))) {
+			return cmdArg as ErrorDetailPayload;
+		}
+		// payload 객체가 직접 온 경우(명령 인자).
+		if (typeof o.raw === 'string' || typeof o.code === 'number') {
+			return { raw: o.raw as string | undefined, code: o.code as number | undefined, category: o.category as ErrorCodeCategory | undefined, groupTitle: o.groupTitle as string | undefined };
+		}
+		// 쓰레드 노드(Error 쓰레드 행).
+		const tn = asThreadNode(arg);
+		if (tn?.thread?.name) {
+			const status = typeof o.thread?.lastStatus === 'string' ? o.thread.lastStatus : '';
+			const m = /^\s*(-?\d+)/.exec(status);
+			return { threadName: tn.thread.name, code: m ? Number(m[1]) : undefined };
+		}
+		const text = typeof o.tooltip === 'string' && o.tooltip.trim() ? o.tooltip : typeof o.label === 'string' ? o.label : '';
+		return text ? { fallbackText: text } : {};
+	}
+
+	interface GatheredErrorReport {
+		lines: string[];
+		location?: { file: string; line: number; procedure?: string };
+		threadName?: string;
+	}
+
+	/** 1402 읽기 명령(Show Thread/Show Stack)·.gpr·링버퍼에서 재료를 모아 보고서 줄을 만든다. 실패한 조회는 "(미확인)" 으로 남는다. */
+	async function gatherErrorReport(payload: ErrorDetailPayload): Promise<GatheredErrorReport> {
+		const raw = (payload.raw || '').trim();
+		const parsed = raw ? parseControllerErrorEntry(raw) : null;
+		const code = typeof payload.code === 'number'
+			? payload.code
+			: (parsed?.code ?? extractErrorCodeFromEntry(raw));
+		const hint = typeof code === 'number' ? getErrorCodeHint(code) : undefined;
+		const group = typeof code === 'number' ? getGplErrorGroup(code) : undefined;
+		const category: ErrorCodeCategory = payload.category ?? hint?.category ?? group?.category ?? 'unknown';
+		const groupTitle = payload.groupTitle ?? group?.title;
+
+		// 쓰레드 — 지정된 이름 > 디버그 이벤트가 알려 준 에러 쓰레드 > 목록에서 Error/Break/Paused 첫 항목.
+		let threadName = payload.threadName || host.lastRuntimeErrorContext?.threadName || '';
+		let thread: ReturnType<typeof parseThreadList>[number] | undefined;
+		try {
+			const threads = parseThreadList(await sendCommand(SHOW_THREAD_LIST_CMD));
+			thread = threadName ? threads.find(t => t.name === threadName) : undefined;
+			if (!thread) {
+				thread = threads.find(t => t.state === 'Error') || threads.find(t => t.state === 'Break' || t.state === 'Paused');
+				if (thread) { threadName = thread.name; }
+			}
+		} catch {
+			// 목록 조회 실패 — 쓰레드 상태는 (미확인) 으로 남긴다.
+		}
+
+		// 스택 — 디버그 이벤트가 같은 쓰레드의 프레임을 남겼으면 그것, 아니면 Show Stack, 그것도 없으면 목록의 위치.
+		const ctx = host.lastRuntimeErrorContext;
+		let stackLines: string[] = ctx && ctx.threadName === threadName && ctx.stackFrames ? [...ctx.stackFrames] : [];
+		let location: GatheredErrorReport['location'];
+		if (threadName && stackLines.length === 0) {
+			try {
+				const frames = parseStack(await sendCommand(`Show Stack ${threadName}`)).slice(0, 8);
+				stackLines = frames.map(f => `${f.process || '(unknown)'} @ ${f.file || '?'}:${f.fileLine || 0}`);
+				const top = frames[0];
+				if (top?.file && top.fileLine > 0) { location = { file: top.file, line: top.fileLine, procedure: top.process || undefined }; }
+			} catch {
+				// 스택 조회 실패 — "(스택 정보 없음)" 으로 남긴다.
+			}
+		}
+		if (!location && stackLines.length > 0) {
+			const m = /^(.*?)\s*@\s*(.+):(\d+)$/.exec(stackLines[0]);
+			if (m && m[2] !== '?' && Number(m[3]) > 0) { location = { file: m[2], line: Number(m[3]), procedure: m[1] || undefined }; }
+		}
+		if (!location && thread?.file && (thread.fileLine ?? 0) > 0) {
+			location = { file: thread.file, line: thread.fileLine as number, procedure: thread.func };
+		}
+
+		const relatedFunctions = stackLines
+			.map(line => line.split('@')[0].trim())
+			.filter(Boolean)
+			.filter((v, idx, arr) => arr.indexOf(v) === idx)
+			.slice(0, 6);
+
+		const projectStart = host.sessionTargetDir ? readGprProjectStart(host.sessionTargetDir) : undefined;
+		// 보고서를 만들기 **전에** 스냅샷을 뜬다. 출력은 host.report 로 나가 링버퍼를 건드리지 않으므로 보고서 자신이 섞이지 않는다(§1-EA).
+		const recentEvents = host.recentControllerEvents.recent(10);
+
+		const lines = renderErrorReport({
+			raw: raw || undefined,
+			code: typeof code === 'number' ? code : undefined,
+			category,
+			groupTitle,
+			hint,
+			threadName: threadName || undefined,
+			threadState: thread?.state,
+			threadStatus: thread?.lastStatus && thread.lastStatus !== '0' ? thread.lastStatus : undefined,
+			project: thread?.project || parsed?.source || undefined,
+			projectStart,
+			lastCommand: ctx?.lastCommand,
+			firstSeenAt: parsed?.timestamp || ctx?.firstSeenAt,
+			location,
+			stackLines,
+			relatedFunctions,
+			// 진입점 대조 — 스택 최하단이 .gpr 의 ProjectStart 와 다르면 시작 프로시저가 돌지 않은 것(controller/startProcedureCheck).
+			startMismatch: describeStartProcedureMismatch(projectStart, stackLines),
+			recentEvents,
+			extensionVersion: EXTENSION_VERSION,
+		});
+		return { lines, location, threadName: threadName || undefined };
+	}
+
+	/** 에러 위치로 이동 + 붉은 강조. 파일을 못 찾으면 조용히 건너뛴다(보고서는 그대로 나간다). */
+	async function revealErrorLocation(location: GatheredErrorReport['location']): Promise<boolean> {
+		if (!location) { return false; }
+		const filePath = host.project.resolveGplFilePath(location.file);
+		if (!filePath) {
+			host.log(`[Error Detail] 파일 "${location.file}" 을 워크스페이스에서 찾을 수 없어 위치 이동을 건너뜁니다.`);
+			return false;
+		}
+		try {
+			const doc = await vscode.workspace.openTextDocument(filePath);
+			const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+			const lineIndex = Math.min(Math.max(0, location.line - 1), Math.max(0, doc.lineCount - 1));
+			const range = doc.lineAt(lineIndex).range;
+			editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+			editor.selection = new vscode.Selection(range.start, range.start);
+			host.decorations.showError(editor, range);
+			return true;
+		} catch (err: any) {
+			host.log(`[Error Detail] 위치 이동 실패: ${err?.message ?? err}`);
+			return false;
+		}
+	}
+
+	// 에러 복사 — 상세 보기와 같은 보고서를 마크다운으로 클립보드에. 재료가 없는 항목(추정 체인 등)은 종전처럼 툴팁/라벨.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.copyError', async (arg: unknown) => {
-			let text: string;
-			if (typeof arg === 'string') {
-				text = arg;
-			} else if (arg && typeof (arg as { label?: unknown }).label === 'string') {
-				text = (arg as { label: string }).label;
-			} else {
+			const payload = toErrorDetailPayload(arg);
+			if (!payload.raw && payload.code === undefined && !payload.threadName) {
+				if (!payload.fallbackText) { return; }
+				await vscode.env.clipboard.writeText(payload.fallbackText);
+				vscode.window.showInformationMessage('에러 텍스트를 클립보드에 복사했습니다.');
 				return;
 			}
-			if (!text) { return; }
-			await vscode.env.clipboard.writeText(text);
-			vscode.window.showInformationMessage('에러 텍스트가 클립보드에 복사되었습니다.');
+			const report = await gatherErrorReport(payload);
+			await vscode.env.clipboard.writeText(report.lines.join('\n'));
+			vscode.window.showInformationMessage(`오류 상세 ${report.lines.length}줄을 클립보드에 복사했습니다 (마크다운 — 채팅·이슈에 그대로 붙일 수 있습니다).`);
 		})
 	);
 
+	// 오류 상세 보기 — 에러 위치로 이동(붉은 강조)하고 같은 보고서를 Output 에 찍는다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.showErrorDetail', async (arg: unknown) => {
-			const payload = (arg && typeof arg === 'object')
-				? (arg as { raw?: string; code?: number; category?: string })
-				: {};
-			const raw = (payload.raw || '').trim();
-			const parsed = raw ? parseControllerErrorEntry(raw) : null;
-			const code = typeof payload.code === 'number'
-				? payload.code
-				: (parsed?.code ?? extractErrorCodeFromEntry(raw));
-			const hint = typeof code === 'number' ? getErrorCodeHint(code) : undefined;
-
-			let errorThreadName = host.lastRuntimeErrorContext?.threadName || '';
-			let stackLines: string[] = host.lastRuntimeErrorContext?.stackFrames ? [...host.lastRuntimeErrorContext.stackFrames] : [];
-			if (!errorThreadName) {
-				try {
-					const showThreadResp = await sendCommand(SHOW_THREAD_LIST_CMD);
-					const threads = parseThreadList(showThreadResp);
-					const thread = threads.find(t => t.state === 'Error') || threads.find(t => t.state === 'Break' || t.state === 'Paused');
-					if (thread) {
-						errorThreadName = thread.name;
-					}
-				} catch {
-					// ignore detail fetch failures
-				}
-			}
-
-			if (errorThreadName && stackLines.length === 0) {
-				try {
-					const stackResp = await sendCommand(`Show Stack ${errorThreadName}`);
-					stackLines = parseStack(stackResp)
-						.slice(0, 8)
-						.map(f => `${f.process || '(unknown)'} @ ${f.file || '?'}:${f.fileLine || 0}`);
-				} catch {
-					// ignore stack read failures
-				}
-			}
-
-			const relatedFunctions = stackLines
-				.map(line => line.split('@')[0].trim())
-				.filter(Boolean)
-				.filter((v, idx, arr) => arr.indexOf(v) === idx)
-				.slice(0, 6);
-
-			const recentLines = host.recentDebugLogLines.slice(-10);
-
-			const lines: string[] = [];
-			lines.push('## 오류 상세');
-			lines.push(`- 원문: ${raw || '(없음)'}`);
-			lines.push(`- 코드: ${typeof code === 'number' ? code : '(미상)'}`);
-			lines.push(`- 분류: ${payload.category || hint?.category || '(미상)'}`);
-			lines.push(`- 에러 스레드: ${errorThreadName || '(미확인)'}`);
-			lines.push(`- 직전 실행 명령: ${host.lastRuntimeErrorContext?.lastCommand || '(미확인)'}`);
-			lines.push(`- 첫 에러 시각: ${parsed?.timestamp || host.lastRuntimeErrorContext?.firstSeenAt || '(미확인)'}`);
-			if (hint) {
-				lines.push(`- 해석: ${hint.title} — ${hint.meaning}`);
-				lines.push(`- 권장: ${hint.action}`);
-			}
-			if (code === -782) {
-				lines.push('- -782 후보: 초기화 안 된 필드, 생성자 누락, getter에서 Nothing 반환 경로 점검');
-			}
-
-			lines.push('');
-			lines.push('### 호출 경로/프레임');
-			if (stackLines.length === 0) {
-				lines.push('- (스택 정보 없음)');
-			} else {
-				for (const s of stackLines) { lines.push(`- ${s}`); }
-			}
-
-			lines.push('');
-			lines.push('### 관련 함수');
-			if (relatedFunctions.length === 0) {
-				lines.push('- (식별 실패)');
-			} else {
-				for (const fn of relatedFunctions) { lines.push(`- ${fn}`); }
-			}
-
-			lines.push('');
-			lines.push('### 직전 로그 (최근 10줄)');
-			if (recentLines.length === 0) {
-				lines.push('- (로그 없음)');
-			} else {
-				for (const l of recentLines) { lines.push(`- ${l}`); }
-			}
-
+			const report = await gatherErrorReport(toErrorDetailPayload(arg));
+			await revealErrorLocation(report.location);
 			outputChannel.show(true);
-			host.log('');
-			host.log('── [오류 상세 보기] ────────────────────────────────────');
-			for (const line of lines) {
-				host.log(line);
-			}
-			host.log('─────────────────────────────────────────────────────────');
+			// host.log 가 아니라 host.report 로 — 보고서는 링버퍼에 남기지 않는다(§1-EA).
+			host.report([
+				'',
+				'── [오류 상세 보기] ────────────────────────────────────',
+				...report.lines,
+				'─────────────────────────────────────────────────────────',
+			]);
 		})
 	);
 	// 전역변수 보기/편집 — Show Global → (편집) Execute name = value, project

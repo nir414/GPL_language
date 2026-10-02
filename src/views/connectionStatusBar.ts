@@ -7,18 +7,32 @@
  *
  * 연결 중에는 바로 오른쪽에 `$(dashboard)` 항목이 함께 떠서 제어기 대시보드 탭으로 바로 들어갈 수 있다
  * (GitHub #18 — 기존 항목 클릭은 연결 토글에 묶여 있어 대시보드 진입 경로가 없었다).
+ *
+ * 경고 배지("컴파일 검증 필요"·"소스 변경됨"·"스레드 잠금")는 **연결 항목과 별개의 항목**으로 띄운다 — 배지마다
+ * 클릭 동작이 다르기 때문이다(Quick Compile / 재배포 안내 / 잠금 해제). 종전에는 "컴파일 검증 필요"를 연결 항목의
+ * 글자에 덧붙여 놓아 배지를 누르면 연결이 끊겼다(2026-09-18 사용자 지적, ai-handoff §1-DV).
+ *
+ * 업로드 진행 바(`██████░░░░  3.2 MB / 10.7 MB`)도 별도 항목이다 — 상태바는 글자를 제자리에서 바꿀 수 있어
+ * 출력 패널(줄이 쌓이기만 함)과 달리 움직이는 바를 그릴 수 있다. 집계는 `controller/uploadProgress`, 바·문구 규칙은
+ * `views/uploadProgressBar`(둘 다 순수), 여기는 보이기/숨기기와 완료 뒤 잠시 남기는 타이밍만 안다(§1-EE).
  */
 
 import * as vscode from 'vscode';
 import { getControllerConfig } from '../controller/controllerConnection';
+import type { CompileStaleInfo } from '../controller/compileStale';
+import type { UploadProgressEvent, UploadSummary } from '../controller/uploadProgress';
+import { describeUploadProgress, renderUploadProgress, renderUploadSummary } from './uploadProgressBar';
 import { isGplDocument } from '../config';
+import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from './compileStaleBadge';
 
-/** "컴파일 필요" 표시 정보(controllerTreeProvider.CompileStaleState와 동일 형태). */
-export interface StatusBarCompileStale {
-    projectName: string;
-    since: number;
-    reason: string;
-}
+/** 업로드가 끝났을 때 상태바에 잠시 남기는 결과. 실패 문구는 배포 결과 알림이 따로 띄우므로 짧게만. */
+export type UploadEndOutcome =
+    | { ok: true; summary: UploadSummary }
+    | { ok: false; message: string };
+
+/** 완료/실패 문구를 상태바에 남겨 두는 시간(ms). 완료는 짧게, 실패는 읽을 만큼. */
+const UPLOAD_DONE_LINGER_MS = 2500;
+const UPLOAD_FAIL_LINGER_MS = 5000;
 
 /** 디버그 세션 중 "소스가 제어기 컴파일 코드보다 새로움" 상태(GitHub #21) — files 는 프로젝트 기준 상대 경로. */
 export interface StatusBarSourceStale {
@@ -32,26 +46,77 @@ export class ConnectionStatusBar implements vscode.Disposable {
     /** 대시보드 바로가기(연결 중에만 표시). */
     private dashboardItem: vscode.StatusBarItem;
     private _isConnected = false;
-    private compileStale: StatusBarCompileStale | undefined;
+    /** "컴파일 검증 필요" 배지 — 연결 중이고 미검증 프로젝트가 있을 때만. 클릭 = 그 프로젝트 Quick Compile. */
+    private compileStaleItem: vscode.StatusBarItem;
+    private compileStale: CompileStaleInfo | undefined;
     /** Attach only 디버깅 중 소스 stale 경고(GitHub #21) — 빈 목록이면 숨김. */
     private staleItem: vscode.StatusBarItem;
     private sourceStale: StatusBarSourceStale | undefined;
     /** 스레드 단일 실행 잠금 표시(디버그 중 잠금이 걸려 있을 때만). */
     private threadLockItem: vscode.StatusBarItem;
     private lockedThread: string | undefined;
+    /** 업로드 진행 바 — 업로드 중에만 보이고, 끝나면 결과를 잠시 남겼다가 숨긴다. */
+    private uploadItem: vscode.StatusBarItem;
+    private uploadLingerTimer: ReturnType<typeof setTimeout> | undefined;
+    /** 진행 표시가 한 번이라도 떴는지 — 시작도 못 한 실패(FTP 접속 불가)는 배포 알림에 맡기고 여기선 조용히 지나간다. */
+    private uploadShown = false;
     private disposables: vscode.Disposable[] = [];
 
     get isConnected(): boolean { return this._isConnected; }
 
     /**
+     * 업로드 진행 갱신 — 파일 완료·전송 중 바이트 갱신마다 불린다(초당 몇 번). 같은 항목의 글자만 바꾸므로
+     * 상태바에는 한 줄만 있고 움직인다. `projectName` 은 툴팁에만 쓴다(본문은 바와 크기만 — 짧게).
+     */
+    setUploadProgress(event: UploadProgressEvent, projectName?: string): void {
+        this.clearUploadLinger();
+        this.uploadShown = true;
+        this.uploadItem.text = `$(sync~spin) ${renderUploadProgress(event)}`;
+        this.uploadItem.tooltip = describeUploadProgress(event, projectName);
+        this.uploadItem.backgroundColor = undefined;
+        this.uploadItem.show();
+    }
+
+    /**
+     * 업로드 끝 — 완료면 요약을 잠시, 실패면 경고색으로 조금 더 남긴 뒤 숨긴다.
+     * 진행 표시가 없었던 실패(FTP 접속 불가 등)는 배포 알림에 맡기고 **아무것도 건드리지 않는다** — 직전 업로드의
+     * 완료 문구가 아직 남아 있으면 그 숨김 타이머도 그대로 돌아야 한다.
+     */
+    endUpload(outcome: UploadEndOutcome): void {
+        if (!outcome.ok && !this.uploadShown) { return; }
+        this.clearUploadLinger();
+        this.uploadShown = false;
+        if (outcome.ok) {
+            this.uploadItem.text = `$(check) ${renderUploadSummary(outcome.summary)}`;
+            this.uploadItem.tooltip = undefined;
+            this.uploadItem.backgroundColor = undefined;
+        } else {
+            this.uploadItem.text = '$(error) 업로드 실패';
+            this.uploadItem.tooltip = outcome.message;
+            this.uploadItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        }
+        this.uploadItem.show();
+        this.uploadLingerTimer = setTimeout(() => {
+            this.uploadLingerTimer = undefined;
+            this.uploadItem.hide();
+        }, outcome.ok ? UPLOAD_DONE_LINGER_MS : UPLOAD_FAIL_LINGER_MS);
+    }
+
+    private clearUploadLinger(): void {
+        if (this.uploadLingerTimer) {
+            clearTimeout(this.uploadLingerTimer);
+            this.uploadLingerTimer = undefined;
+        }
+    }
+
+    /**
      * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트(이슈 #17 재구성의 부수 상태).
      * Start 는 `-compile` 로 컴파일까지 하므로(ai-handoff §0.7) 소스 에러가 있으면 Start가 실패한다 — 놓치지 않게 상태바에
-     * 경고 배지로 보인다. undefined면 해제.
+     * **별도 항목**의 경고 배지로 보인다(연결 항목의 클릭 = 연결 해제와 섞이지 않게, §1-DV). undefined면 해제.
      */
-    setCompileStale(state?: StatusBarCompileStale): void {
+    setCompileStale(state?: CompileStaleInfo): void {
         this.compileStale = state;
-        this.updateDisplay(this._isConnected);
-        this.updateVisibility();
+        this.updateCompileStaleItem();
     }
 
     /**
@@ -84,13 +149,19 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.dashboardItem.command = 'gpl.controller.showDashboard';
         this.dashboardItem.tooltip = '제어기 대시보드 열기 — 연결·고전원·스레드·축 위치·에러를 새 탭에서 시각적으로 확인';
 
-        this.staleItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+        this.compileStaleItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+        this.compileStaleItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+
+        this.staleItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
         this.staleItem.command = 'gpl.debug.showSourceStale';
         this.staleItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
 
-        this.threadLockItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
+        this.threadLockItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 96);
         this.threadLockItem.command = 'gpl.debug.unlockThread';
         this.threadLockItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+
+        this.uploadItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 95);
+        this.uploadItem.name = 'GPL 업로드 진행';
 
         this.disposables.push(
             vscode.window.onDidChangeActiveTextEditor(() => this.updateVisibility())
@@ -107,14 +178,18 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.item.command = connected ? 'gpl.controller.disconnect' : 'gpl.controller.connect';
         this.updateDisplay(connected);
         this.updateVisibility();
+        this.updateCompileStaleItem();
     }
 
     dispose(): void {
+        this.clearUploadLinger();
         this.disposables.forEach(d => d.dispose());
         this.item.dispose();
         this.dashboardItem.dispose();
+        this.compileStaleItem.dispose();
         this.staleItem.dispose();
         this.threadLockItem.dispose();
+        this.uploadItem.dispose();
     }
 
     private updateThreadLockItem(): void {
@@ -129,6 +204,20 @@ export class ConnectionStatusBar implements vscode.Disposable {
             `${name} 스레드에만 나갑니다.\n다른 스레드가 정지해도 디버그 포커스를 가져가지 않습니다.\n\n` +
             '클릭하면 잠금을 해제합니다.';
         this.threadLockItem.show();
+    }
+
+    private updateCompileStaleItem(): void {
+        const stale = this.compileStale;
+        // 연결이 끊긴 동안은 숨긴다(상태 자체는 유지 — 재연결하면 미검증이 남아 있는 한 다시 뜬다).
+        if (!stale || !this._isConnected) {
+            this.compileStaleItem.hide();
+            return;
+        }
+        // 문구·클릭 대상은 트리와 같은 규칙(views/compileStaleBadge) — 폴더를 알면 Uri 인자로 선택 창 없이 그 프로젝트.
+        this.compileStaleItem.text = `$(warning) ${compileStaleBadgeLabel(stale)}`;
+        this.compileStaleItem.command = compileStaleBadgeCommand(stale, dir => vscode.Uri.file(dir));
+        this.compileStaleItem.tooltip = compileStaleBadgeTooltip(stale);
+        this.compileStaleItem.show();
     }
 
     private updateStaleItem(): void {
@@ -163,19 +252,10 @@ export class ConnectionStatusBar implements vscode.Disposable {
     private updateDisplay(connected: boolean): void {
         const cfg = getControllerConfig();
         if (connected) {
-            const stale = this.compileStale;
-            if (stale) {
-                this.item.text = `$(plug) GPL: ${cfg.ip} $(warning) 컴파일 검증 필요: ${stale.projectName}`;
-                this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-                this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect\n\n` +
-                    `컴파일 검증 필요: ${stale.projectName} — ${stale.reason}\n` +
-                    `${new Date(stale.since).toLocaleString()} 이후 /GPL 소스가 아직 Compile로 검증되지 않았습니다. ` +
-                    'Start는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 Start가 실패합니다 — Quick Compile로 먼저 확인하세요.';
-            } else {
-                this.item.text = `$(plug) GPL: ${cfg.ip}`;
-                this.item.backgroundColor = undefined;
-                this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect`;
-            }
+            // "컴파일 검증 필요"는 여기 덧붙이지 않는다 — 별도 항목(updateCompileStaleItem). 이 항목의 클릭은 연결 해제다.
+            this.item.text = `$(plug) GPL: ${cfg.ip}`;
+            this.item.backgroundColor = undefined;
+            this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect`;
         } else {
             this.item.text = `$(debug-disconnect) GPL: ${cfg.ip} (offline)`;
             this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');

@@ -228,7 +228,7 @@ test('describeReachability: REFUSED + TTL=64/Micro-Star → 판정 무효 가능
 
 test('describeReachability: ICMP만 응답(TCP timeout) → 부팅 중/소켓 점유 판정', () => {
     const v = describeReachability({ ip: '192.168.0.1', tcp1402: 'timeout', icmp: { alive: true, ttl: 255, ms: 5 }, arp: ARP_PRECISE });
-    assert.ok(v.startsWith('ICMP는 응답하나 1402 TCP가 실패(timeout)'), v);
+    assert.ok(v.startsWith('ICMP는 응답하나 명령 콘솔 TCP가 실패(timeout)'), v);
 });
 
 test('describeReachability: 전부 무응답 → 도달 불가 관측 + ping 세부 포함, 원인은 구분 불가로 남김', () => {

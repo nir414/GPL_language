@@ -403,6 +403,13 @@ export interface DocTarget {
     parameters?: readonly string[];
     /** 반환 타입(Function/Property). 있으면 `# Returns` 섹션을 만든다. */
     returnType?: string;
+    /**
+     * 형제 오버로드의 주석이 이미 설명한 매개변수 이름(대소문자 무시). 골격·보완은 이 항목을 만들지 않는다 —
+     * 오버로드 그룹은 공통 문서를 이름 단위로 공유하고 **차이만** 개별 문서화한다(docCommentOverloads.ts 가 채워 준다).
+     */
+    coveredParams?: readonly string[];
+    /** 반환 타입이 같은 형제가 `# Returns` 를 이미 썼으면 true — 골격·보완은 Returns 섹션을 만들지 않는다. */
+    coveredReturns?: boolean;
 }
 
 export interface DocGenerateOptions {
@@ -427,6 +434,11 @@ function placeholder(snippet: boolean, index: number, text: string): string {
     return snippet ? `\${${index}:${text}}` : text;
 }
 
+/** 형제 오버로드가 이미 설명한 매개변수인가(DocTarget.coveredParams, 대소문자 무시). */
+function isCovered(target: DocTarget, paramName: string): boolean {
+    return (target.coveredParams ?? []).some(n => n.toLowerCase() === paramName.toLowerCase());
+}
+
 /**
  * 선언에 맞는 문서화 주석 골격을 만든다. 반환값은 `'` 접두사가 붙은 줄 배열이며 **들여쓰기는 없다**
  * (호출부가 스니펫으로 삽입하면 VS Code가 삽입 위치의 들여쓰기를 이어 붙인다).
@@ -439,9 +451,11 @@ export function buildDocCommentBlock(target: DocTarget, options: DocGenerateOpti
     let tab = 1;
     const out: string[] = [`' ${placeholder(snippet, tab++, `${target.name} 설명`)}`];
 
-    const paramNames = (target.parameters ?? [])
+    const allParamNames = (target.parameters ?? [])
         .map(extractParamName)
         .filter((n): n is string => !!n);
+    // 형제 오버로드가 이미 설명한 매개변수는 항목을 만들지 않는다(차이만 문서화). 호출 예시는 전체 이름을 쓴다.
+    const paramNames = allParamNames.filter(n => !isCovered(target, n));
 
     if (paramNames.length) {
         out.push("'", `' # ${SECTION_TITLES.parameters}`);
@@ -450,7 +464,7 @@ export function buildDocCommentBlock(target: DocTarget, options: DocGenerateOpti
         }
     }
 
-    if (target.returnType) {
+    if (target.returnType && !target.coveredReturns) {
         out.push("'", `' # ${SECTION_TITLES.returns}`, `' ${placeholder(snippet, tab++, `${target.returnType} 반환값 설명`)}`);
     }
 
@@ -459,7 +473,7 @@ export function buildDocCommentBlock(target: DocTarget, options: DocGenerateOpti
             "'",
             `' # ${SECTION_TITLES.examples}`,
             "' ```",
-            `' ${placeholder(snippet, tab++, buildCallExample(target, paramNames))}`,
+            `' ${placeholder(snippet, tab++, buildCallExample(target, allParamNames))}`,
             "' ```"
         );
     }
@@ -500,7 +514,7 @@ export function isCommentLine(text: string): boolean {
 
 /** 한 선언이 문서화 주석을 붙일 만한 종류인지 (변수/상수도 포함 — 설명만 있는 골격이 나온다). */
 export function isDocumentableKind(kind: string): boolean {
-    return ['function', 'sub', 'property', 'class', 'module', 'variable', 'constant'].includes(kind);
+    return ['function', 'sub', 'property', 'class', 'module', 'variable', 'constant', 'delegate'].includes(kind);
 }
 
 /** 탐색 상한 — 주석 블록이 아무리 길어도 이 범위 밖의 선언은 대상으로 보지 않는다. */
@@ -577,9 +591,10 @@ export function mergeDocComment(existing: ParsedDocComment, target: DocTarget): 
     const insertions: DocInsertion[] = [];
     const added: string[] = [];
 
+    // 형제 오버로드가 이미 설명한 매개변수는 빠진 것으로 세지 않는다(차이만 문서화).
     const paramNames = (target.parameters ?? [])
         .map(extractParamName)
-        .filter((n): n is string => !!n);
+        .filter((n): n is string => !!n && !isCovered(target, n));
 
     const paramSection = findSection(existing, 'parameters');
     const returnsSection = findSection(existing, 'returns');
@@ -616,7 +631,7 @@ export function mergeDocComment(existing: ParsedDocComment, target: DocTarget): 
         }
     }
 
-    if (target.returnType && !returnsSection) {
+    if (target.returnType && !returnsSection && !target.coveredReturns) {
         const at = examplesSection ? examplesSection.range.start : existing.lines.length;
         insertions.push({
             atIndex: at,

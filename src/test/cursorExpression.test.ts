@@ -127,6 +127,7 @@ import {
     buildDebugExpression,
     extractIndexIdentifierTokens,
     replaceIndexIdentifierTokens,
+    isTypeNamePosition,
 } from '../language/cursorExpression';
 
 function exprAt(line: string, ch: number): string | undefined {
@@ -206,4 +207,42 @@ test('extractQualifierChainBefore: 연달아 붙은 괄호 그룹도 한 세그�
     assert.deepStrictEqual(
         extractQualifierChainBefore('    x = obj.items(i).name'),
         { chain: ['obj', 'items(i)'], partial: 'name' });
+});
+
+// ─── 타입 자리 판정 (디버그 hover 규칙 0-b, §1-DS) ────────────────────────────────────
+// 사용자 스크린샷(2026-09-17): `theSystem = New System("/flash/data/system.dat")` 의 `System` 위 hover 가
+// 클래스 이름을 -eval 로 보내 `(평가 실패 -729: *Undefined symbol*)` 팝업을 띄웠다.
+test('isTypeNamePosition: New/As/Inherits/Class/Module 뒤의 이름은 타입 자리', () => {
+    const l1 = '\t\ttheSystem = New System("/flash/data/system.dat")';
+    assert.strictEqual(isTypeNamePosition(l1, l1.indexOf('System(')), true);
+    assert.strictEqual(isTypeNamePosition(l1, l1.indexOf('theSystem')), false, '대입 좌변 변수는 값');
+    const l2 = '\t\tDim errorLogFile As New StreamWriter("/NVRAM/file1", True)';
+    assert.strictEqual(isTypeNamePosition(l2, l2.indexOf('StreamWriter')), true);
+    assert.strictEqual(isTypeNamePosition(l2, l2.indexOf('errorLogFile')), false);
+    const l3 = '\t\tPrivate Dim rt1Datafile As DataFile';
+    assert.strictEqual(isTypeNamePosition(l3, l3.indexOf('DataFile')), true);
+    assert.strictEqual(isTypeNamePosition(l3, l3.indexOf('rt1Datafile')), false);
+    const l4 = '\tPublic Class RT1ItemList';
+    assert.strictEqual(isTypeNamePosition(l4, l4.indexOf('RT1ItemList')), true);
+    const l5 = '\t\tInherits BaseArm';
+    assert.strictEqual(isTypeNamePosition(l5, l5.indexOf('BaseArm')), true);
+    const l6 = 'Module GPL';
+    assert.strictEqual(isTypeNamePosition(l6, l6.indexOf('GPL')), true);
+});
+
+test('isTypeNamePosition: 키워드가 식별자 일부이거나 공백이 없으면 타입 자리가 아니다', () => {
+    const l = 'x = renew Foo';           // `renew` 는 New 가 아니다
+    assert.strictEqual(isTypeNamePosition(l, l.indexOf('Foo')), false);
+    const l2 = 'y = isAs Bar';           // `isAs` 도 As 가 아니다
+    assert.strictEqual(isTypeNamePosition(l2, l2.indexOf('Bar')), false);
+    assert.strictEqual(isTypeNamePosition('theMoveEx = New MoveEx()', 0), false);
+    assert.strictEqual(isTypeNamePosition('', 0), false);
+});
+
+test('isTypeNamePosition: 체인 시작 컬럼으로 판정하면 중첩 클래스 `New Outer.Inner()` 도 타입 자리', () => {
+    const l = '\t\tp = New ZeroPlan.StepBatch(3)';
+    const c = extractDebugExpressionAt(l, l.indexOf('StepBatch') + 2);
+    assert.ok(c);
+    assert.strictEqual(buildDebugExpression(c!.segments), 'ZeroPlan.StepBatch(3)');
+    assert.strictEqual(isTypeNamePosition(l, c!.startColumn), true);
 });

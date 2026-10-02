@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GPLParser } from '../language/gplParser';
+import { findInitHookFindings, InitHookSeverity } from '../language/initHook';
 import { isGplFile } from '../config';
 
 export class GPLDiagnosticProvider {
@@ -72,6 +73,9 @@ export class GPLDiagnosticProvider {
 
         // 함수/서브 명명 규칙 검사 (첫 글자 대문자)
         diagnostics.push(...this.detectFunctionNameCasingIssues(document));
+
+        // `Init` 모듈 초기화 훅 충돌 — 클래스 멤버 Init(-757 사고 경로)·_Init·모듈 수준 Init(hint). 규칙은 language/initHook.
+        diagnostics.push(...this.detectInitHookIssues(document));
 
         this.diagnosticCollection.set(document.uri, diagnostics);
     }
@@ -461,6 +465,32 @@ export class GPLDiagnosticProvider {
         }
 
         return diagnostics;
+    }
+
+    /**
+     * `Init` 이름 규칙 — GPL 모듈 초기화가 `Init` 을 이름으로 찾아 시작 프로시저보다 먼저 자동 호출한다(문서 modules.htm).
+     * 클래스 멤버까지 잡아채 인스턴스 없이 부르는 것을 2026-09-21 실기로 재현했다(samples/init-probe, ai-handoff §1-EA).
+     * 판정은 순수 모듈 `language/initHook` 이 하고 여기서는 vscode.Diagnostic 으로 옮기기만 한다.
+     */
+    private detectInitHookIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const severityOf: Record<InitHookSeverity, vscode.DiagnosticSeverity> = {
+            error: vscode.DiagnosticSeverity.Error,
+            warning: vscode.DiagnosticSeverity.Warning,
+            hint: vscode.DiagnosticSeverity.Hint,
+        };
+        const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+        return findInitHookFindings(symbols).map(f => {
+            const start = Math.max(0, f.symbol.range?.start ?? 0);
+            const end = Math.max(start + 1, f.symbol.range?.end ?? (start + f.symbol.name.length));
+            const diagnostic = new vscode.Diagnostic(
+                new vscode.Range(f.symbol.line, start, f.symbol.line, end),
+                f.message,
+                severityOf[f.severity],
+            );
+            diagnostic.source = 'GPL Init Hook';
+            diagnostic.code = f.code;
+            return diagnostic;
+        });
     }
 
     /**

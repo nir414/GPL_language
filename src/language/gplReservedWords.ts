@@ -27,6 +27,8 @@ const DECLARATION_WORDS = [
     'readonly', 'writeonly', 'const', 'static', 'optional', 'paramarray',
     'new', 'me', 'mybase', 'call', 'delegate', 'event',
     'inherits', 'implements', 'overloads', 'overrides', 'stop',
+    // `Lib`: 실기 컴파일러가 `Module Lib` 을 -719 *Illegal use of keyword* 로 거부(2026-09-21, samples/init-probe).
+    'lib',
     'string', 'integer', 'long', 'short', 'byte', 'single', 'double',
     'boolean', 'object', 'date',
 ] as const;

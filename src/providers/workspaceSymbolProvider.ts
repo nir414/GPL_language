@@ -40,6 +40,7 @@ export class GPLWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProvide
         switch (symbolKind) {
             case GPLSymbolKind.Module: return vscode.SymbolKind.Module;
             case GPLSymbolKind.Class: return vscode.SymbolKind.Class;
+            case GPLSymbolKind.Delegate: return vscode.SymbolKind.Class;
             case GPLSymbolKind.Function: return vscode.SymbolKind.Function;
             case GPLSymbolKind.Sub: return vscode.SymbolKind.Method;
             case GPLSymbolKind.Variable: return vscode.SymbolKind.Variable;

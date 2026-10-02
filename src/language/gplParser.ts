@@ -1,11 +1,19 @@
 import { escapeRegExp, splitParameters } from './cursorExpression';
 import { Declarator, parseDeclaratorList } from './declarationList';
+import { GetterBranch, parseGetterBranch } from './getterBranch';
 
 export interface GPLSymbol {
     name: string;
     kind: GPLSymbolKind;
     range: { start: number; end: number };
     line: number;
+    /**
+     * 블록 선언(Module/Class/Sub/Function/Property)의 짝 `End …` 가 있는 물리 줄 번호(0-기준).
+     * 짝을 만나기 전이면(입력 중·비정상 소스) undefined — 소비자(개요 등)는 휴리스틱으로 대체한다.
+     * 다음 심볼 위치로 끝을 추정하던 종전 방식은 중첩 클래스·클래스 뒤 모듈 멤버에서 범위가
+     * 겹쳐, 개요의 「커서 따르기」가 엉뚱한 심볼로 튀는 원인이었다.
+     */
+    endLine?: number;
     filePath: string;
     module?: string;
     className?: string;
@@ -35,6 +43,11 @@ export interface GPLSymbol {
      * -780(프로퍼티 참조 평가 불가)을 백킹 필드 평가로 우회하는 근거(GitHub #26). 분기·계산이 있는 getter는 undefined.
      */
     getterReturnExpr?: string;
+    /**
+     * Property 전용. Get 본문이 `If <조건> Then Return A Else Return B` 꼴(블록/한 줄)이면 그 골격(`getterBranch.ts`).
+     * 디버거가 조건의 필드 값을 부모 덤프에서 읽어 분기를 계산하는 근거(ai-handoff §1-DS). 그 외 형태는 undefined.
+     */
+    getterBranch?: GetterBranch;
     /** Property 전용. `Get … End Get` 블록이 있으면 true, WriteOnly(Set만)면 false. 블록을 못 훑었으면 undefined. */
     hasGetter?: boolean;
     isXmlRelated?: boolean;
@@ -55,7 +68,12 @@ export enum GPLSymbolKind {
     Sub = 'sub',
     Variable = 'variable',
     Property = 'property',
-    Constant = 'constant'
+    Constant = 'constant',
+    /**
+     * `Delegate Sub|Function name(params) [As type]` — 한 줄 **타입** 선언(본문 블록 없음). 인스턴스는 `New name(AddressOf proc)`,
+     * 타입 표기는 `As name`. `parameters`·`returnType`(Function 이면)에 시그니처를 담는다(ai-handoff §1-DU).
+     */
+    Delegate = 'delegate'
 }
 
 export class GPLParser {
@@ -112,6 +130,12 @@ export class GPLParser {
         // 중첩 클래스 지원: End Class에서 바깥 클래스로 복귀하기 위한 스택.
         // (단일 변수만 쓰면 안쪽 End Class가 바깥 문맥까지 지워, 이후 멤버가 모듈 직속으로 오분류된다)
         const classStack: string[] = [];
+        // endLine 기록용 — 아직 짝 `End …` 를 만나지 않은 열린 블록의 심볼 객체.
+        // (이름 스택(classStack)과 별도인 이유: End 를 만난 시점에 그 블록의 심볼에
+        //  끝 줄을 되적어야 하기 때문. 짝이 안 맞는 소스는 endLine 이 undefined 로 남는다)
+        let openModule: GPLSymbol | undefined;
+        const openClasses: GPLSymbol[] = [];
+        const openProcs: GPLSymbol[] = [];
         // Accumulates the contiguous leading `'` comment block for the *next* declaration.
         let pendingDoc: string[] = [];
         // Track procedure-body depth (Sub/Function/Property body).
@@ -177,8 +201,10 @@ export class GPLParser {
                 currentClass = undefined;
                 classStack.length = 0;
                 blockDepth = 0;
+                openClasses.length = 0;
+                openProcs.length = 0;
                 const startIndex = GPLParser.findNameColumn(line, moduleMatch[1]);
-                symbols.push({
+                const moduleSymbol: GPLSymbol = {
                     name: moduleMatch[1],
                     kind: GPLSymbolKind.Module,
                     range: { start: startIndex, end: startIndex + moduleMatch[1].length },
@@ -186,7 +212,9 @@ export class GPLParser {
                     filePath,
                     module: currentModule,
                     docComment
-                });
+                };
+                symbols.push(moduleSymbol);
+                openModule = moduleSymbol;
                 continue;
             }
 
@@ -199,7 +227,7 @@ export class GPLParser {
                 blockDepth = 0;
                 const isXmlRelated = GPLParser.isXmlRelatedIdentifier(classMatch[2]);
                 const startIndex = GPLParser.findNameColumn(line, classMatch[2]);
-                symbols.push({
+                const classSymbol: GPLSymbol = {
                     name: classMatch[2],
                     kind: GPLSymbolKind.Class,
                     range: { start: startIndex, end: startIndex + classMatch[2].length },
@@ -211,7 +239,10 @@ export class GPLParser {
                     parentClassName,
                     isXmlRelated: isXmlRelated,
                     docComment
-                });
+                };
+                symbols.push(classSymbol);
+                openClasses.push(classSymbol);
+                openProcs.length = 0;
                 continue;
             }
 
@@ -220,13 +251,24 @@ export class GPLParser {
                 classStack.pop();
                 currentClass = classStack.length ? classStack[classStack.length - 1] : undefined;
                 blockDepth = 0;
+                const closedClass = openClasses.pop();
+                if (closedClass) { closedClass.endLine = i; }
+                openProcs.length = 0;
                 continue;
             }
 
             // Check for End Sub/Function/Property to end local-scope block
-            if (trimmedLine.match(/^End\s+(Function|Sub|Property)/i)) {
+            const endProcMatch = trimmedLine.match(/^End\s+(Function|Sub|Property)/i);
+            if (endProcMatch) {
                 if (blockDepth > 0) {
                     blockDepth--;
+                }
+                // 종류가 맞는 짝일 때만 끝 줄을 기록한다 — 짝이 어긋난 소스(End 누락 등)에서
+                // 엉뚱한 블록을 닫아 범위를 오염시키지 않기 위해서다.
+                const openProc = openProcs[openProcs.length - 1];
+                if (openProc && openProc.kind === endProcMatch[1].toLowerCase()) {
+                    openProcs.pop();
+                    openProc.endLine = i;
                 }
                 continue;
             }
@@ -237,6 +279,42 @@ export class GPLParser {
                 currentClass = undefined;
                 classStack.length = 0;
                 blockDepth = 0;
+                if (openModule) { openModule.endLine = i; }
+                openModule = undefined;
+                openClasses.length = 0;
+                openProcs.length = 0;
+                continue;
+            }
+
+            // Parse Delegate: `[Public|Private|…] Delegate Sub|Function name(params) [As type]` — 한 줄 타입 선언이라
+            // 블록에 들어가지 않고(End 없음) 파라미터 로컬도 만들지 않는다. Sub/Function 매처보다 앞에 둔다 —
+            // 저 매처들은 `Delegate` 를 수식어로 받지 않아 이 줄을 통째로 놓쳤고, 그래서 `New LogSinkSub(...)`·`As LogSinkSub`
+            // 의 정의 찾기·호버가 안 됐다(사용자 신고 2026-09-17, §1-DU).
+            const delegateMatch = trimmedLine.match(/^(?:(?:Public|Private|Protected|Friend|Shared|Shadows)\b\s+)*Delegate\s+(Sub|Function)\s+(\w+)/i);
+            if (delegateMatch) {
+                const name = delegateMatch[2];
+                const header = GPLParser.extractHeaderParts(trimmedLine, (delegateMatch.index ?? 0) + delegateMatch[0].length);
+                const params = splitParameters(header.paramText);
+                const returnMatch = /^function$/i.test(delegateMatch[1])
+                    ? header.afterParams.match(/^\s*As\s+(\w+)\s*(\(\s*\))?/i)
+                    : null;
+                const returnType = returnMatch ? returnMatch[1] + (returnMatch[2] ? '[]' : '') : undefined;
+                const startIndex = GPLParser.findNameColumn(line, name, line.toLowerCase().indexOf('delegate'));
+                const { accessModifier, isShared } = GPLParser.procedureModifiers(trimmedLine);
+                symbols.push({
+                    name,
+                    kind: GPLSymbolKind.Delegate,
+                    range: { start: startIndex, end: startIndex + name.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    accessModifier,
+                    isShared,
+                    parameters: params,
+                    returnType,
+                    docComment,
+                });
                 continue;
             }
 
@@ -259,7 +337,7 @@ export class GPLParser {
 
                 const { accessModifier, isShared } = GPLParser.procedureModifiers(trimmedLine);
 
-                symbols.push({
+                const functionSymbol: GPLSymbol = {
                     name,
                     kind: GPLSymbolKind.Function,
                     range: { start: startIndex, end: startIndex + name.length },
@@ -274,7 +352,9 @@ export class GPLParser {
                     isXmlRelated: isXmlRelated,
                     hasXmlIssues: xmlIssues.length > 0 ? xmlIssues : undefined,
                     docComment
-                });
+                };
+                symbols.push(functionSymbol);
+                openProcs.push(functionSymbol);
 
                 pushParameterSymbols(line, i, name, startIndex, params);
 
@@ -295,7 +375,7 @@ export class GPLParser {
 
                 const { accessModifier, isShared } = GPLParser.procedureModifiers(trimmedLine);
 
-                symbols.push({
+                const subSymbol: GPLSymbol = {
                     name,
                     kind: GPLSymbolKind.Sub,
                     range: { start: startIndex, end: startIndex + name.length },
@@ -307,7 +387,9 @@ export class GPLParser {
                     isShared: isShared,
                     parameters: params,
                     docComment
-                });
+                };
+                symbols.push(subSymbol);
+                openProcs.push(subSymbol);
 
                 pushParameterSymbols(line, i, name, startIndex, params);
 
@@ -331,7 +413,7 @@ export class GPLParser {
                 const propNameStart = Math.max(0, GPLParser.findNameColumn(
                     line, propertyMatch[2], line.toLowerCase().indexOf('property') + 'property'.length
                 ));
-                symbols.push({
+                const propertySymbol: GPLSymbol = {
                     name: propertyMatch[2],
                     kind: GPLSymbolKind.Property,
                     range: { start: propNameStart, end: propNameStart + propertyMatch[2].length },
@@ -346,7 +428,10 @@ export class GPLParser {
                     docComment,
                     hasGetter: getter.hasGetter,
                     ...(getter.returnExpr ? { getterReturnExpr: getter.returnExpr } : {}),
-                });
+                    ...(getter.branch ? { getterBranch: getter.branch } : {}),
+                };
+                symbols.push(propertySymbol);
+                openProcs.push(propertySymbol);
 
                 // Enter property block (if it has Get/Set); End Property will decrement.
                 blockDepth++;
@@ -527,13 +612,15 @@ export class GPLParser {
     private static extractSimpleGetterReturn(
         logicalLines: Array<{ line: number; text: string }>,
         from: number,
-    ): { hasGetter: boolean; returnExpr?: string } {
+    ): { hasGetter: boolean; returnExpr?: string; branch?: GetterBranch } {
         const declStart = /^(?:(?:Public|Private|Protected|Friend|Shared|ReadOnly|WriteOnly|Default|Overrides|Overridable|NotOverridable|MustOverride|Shadows|Overloads)\b\s+)*(?:Sub|Function|Property|Class|Module)\b/i;
         let inGet = false;
         let inSet = false;
         let hasGetter = false;
         let stmtCount = 0;
         let returnExpr: string | undefined;
+        // Get 본문 문장(주석 제거) — 단순 `Return` 이 아니면 분기형 골격(`If … Return A Else Return B`)인지 본다(§1-DS).
+        const getStatements: string[] = [];
         for (let k = from; k < logicalLines.length && k < from + 400; k++) {
             const t = logicalLines[k].text.trim();
             if (!t || t.startsWith("'")) { continue; }
@@ -545,13 +632,17 @@ export class GPLParser {
             if (/^End\s+Set\b/i.test(t)) { inSet = false; continue; }
             if (!inGet || inSet) { continue; }
             stmtCount++;
+            const stmt = GPLParser.stripTrailingComment(t).trim();
+            if (stmt) { getStatements.push(stmt); }
             const rm = t.match(/^Return\s+(.+)$/i);
             if (rm && stmtCount === 1) {
                 const expr = GPLParser.stripTrailingComment(rm[1]).trim();
                 returnExpr = expr || undefined;
             }
         }
-        return { hasGetter, ...(stmtCount === 1 && returnExpr ? { returnExpr } : {}) };
+        if (stmtCount === 1 && returnExpr) { return { hasGetter, returnExpr }; }
+        const branch = stmtCount > 1 ? parseGetterBranch(getStatements) : undefined;
+        return { hasGetter, ...(branch ? { branch } : {}) };
     }
 
     /** 문자열 리터럴 밖의 첫 `'`부터 잘라 낸다(줄 끝 주석 제거). */

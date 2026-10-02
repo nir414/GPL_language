@@ -435,6 +435,22 @@ export function parseChainSegment(raw: string): DebugExpressionSegment | undefin
     return m[2] !== undefined ? { name: m[1], args: m[2] } : { name: m[1] };
 }
 
+/**
+ * 이 키워드 바로 뒤의 식별자는 값이 아니라 **타입 이름**이다 — `New X(...)`, `As X`, `Inherits X`, `Class X`, `Module X`.
+ * (`Sub X`/`Function X`/`Property X` 의 이름은 프로시저라 provider 규칙 1이 이미 막는다.)
+ */
+const TYPE_POSITION_KEYWORDS = /(?:^|[^A-Za-z0-9_])(?:New|As|Inherits|Class|Module)\s+$/i;
+
+/**
+ * lineText 의 wordStart 에서 시작하는 식별자(체인 포함)가 **타입 자리**인지 — 바로 앞 토큰이 `New`/`As`/`Inherits`/
+ * `Class`/`Module` 이면 참(순수 함수). 타입 이름에는 평가할 값이 없으므로 디버그 hover 대상이 아니다 —
+ * `theSystem = New System(...)` 의 `System` 위 hover 가 클래스 이름을 -eval 로 보내 -729 팝업을 띄웠다(§1-DS).
+ * 문자열/주석 판정은 호출자 몫(`extractDebugExpressionAt` 이 먼저 거른다).
+ */
+export function isTypeNamePosition(lineText: string, wordStart: number): boolean {
+    return TYPE_POSITION_KEYWORDS.test(lineText.slice(0, Math.max(0, wordStart)));
+}
+
 /** 커서 위치의 디버그 평가 후보 식 (안전성 판단은 호출자 몫 — 세그먼트 구조를 그대로 노출). */
 export interface DebugExpressionCandidate {
     /** 앞 체인 + 커서 세그먼트. 예) `armList(i).isCanFlip`의 isCanFlip 커서 → 2개 세그먼트 */

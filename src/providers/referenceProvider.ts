@@ -3,9 +3,9 @@ import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
 import { ciEq } from '../language/identifiers';
-import { elementTypeOf } from '../language/receiverType';
+import { elementTypeOf, enclosingClassName, enclosingModuleName } from '../language/receiverType';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
-import { buildConstructorUsagePattern, isSymbolicStringReferenceAt } from '../language/referenceSyntax';
+import { buildConstructorUsagePattern, isSymbolicStringReferenceAt, isTypeUsageAt } from '../language/referenceSyntax';
 import { PROJECT_EXCLUDE_GLOB, resolveProjectFileScope } from '../project/projectFileScope';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
@@ -156,6 +156,27 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const anyPrivate = pool.some(s => s.accessModifier === 'private');
         const chosen = anyPrivate ? (pool.find(s => s.accessModifier === 'private') || pool[0]) : pool[0];
         return chosen;
+    }
+
+    /**
+     * `As MachineRobot` / `New MachineRobot(...)`처럼 **타입 이름 사용부**에서 실행했을 때
+     * 그 타입 선언(Class/Module)을 캐시에서 복원한다.
+     *
+     * 이렇게 해야 선언에서 실행하든 사용부에서 실행하든 같은 스코프(정의 파일·모듈·접근제한자)를
+     * 쓰고 결과가 일치한다. 복원하지 않으면 사용부 실행은 스코프 없는 이름 전역 검색이 되어
+     * 컴파일 단위 기준점이 정의 파일이 아니라 현재 문서가 된다.
+     */
+    private recoverTypeUsageDeclaration(
+        word: string,
+        document: vscode.TextDocument,
+        lineText: string,
+        character: number
+    ): GPLSymbol | undefined {
+        if (!isTypeUsageAt(lineText, character)) {
+            return undefined;
+        }
+        const sym = this.symbolCache.findDefinition(word, document.uri.fsPath);
+        return sym?.kind === 'class' || sym?.kind === 'module' ? sym : undefined;
     }
 
     private isQualifiedAt(text: string, matchIndex: number): boolean {
@@ -349,12 +370,18 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // 단, 같은 이름이 서로 다른 스코프에 흩어져 모호하면(예: 다른 클래스의 동명 멤버) 복원을 포기하고
         // 기존의 이름 기반 광역 검색으로 남겨, 참조가 누락되지 않도록 한다(false negative 방지 우선).
         if (!defSymbol) {
-            defSymbol = this.recoverDefinitionScope(word, qualifier, document);
+            defSymbol = this.recoverTypeUsageDeclaration(word, document, lineText, wordRange.start.character)
+                ?? this.recoverDefinitionScope(word, qualifier, document);
         }
 
         const targetFilePath = defSymbol?.filePath;
-        const targetModule = defSymbol?.module;
-        const targetClass = defSymbol?.className;
+        // 소속(스코프)은 공용 정본(receiverType)으로 구한다. 파서는 Class/Module 심볼의
+        // `className`/`module`에 **자기 이름**을 넣으므로(자기-참조 필드), 그대로 읽으면
+        // `Class MachineRobot` 선언이 "MachineRobot 클래스의 멤버"로 분류된다.
+        // 그러면 비한정 검색이 정의 파일 안으로 묶이고 다른 파일의 `As MachineRobot`·
+        // `New MachineRobot(...)`이 통째로 빠진다(2026-09-22 확인).
+        const targetModule = defSymbol ? enclosingModuleName(defSymbol) : undefined;
+        const targetClass = defSymbol ? enclosingClassName(defSymbol) : undefined;
         const targetAccess = defSymbol?.accessModifier;
 
         this.log(
@@ -405,6 +432,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // - Module members are effectively global; *public* module procedures are frequently called unqualified
         //   from other files, so restricting to the defining file causes false negatives.
         // - Private module-level members, however, should remain file-local.
+        // - Type declarations (Class/Module) are referenced by their bare name across files
+        //   (`As MachineRobot`, `New MachineRobot(...)`), so they follow the module-level rules —
+        //   enclosingClassName()이 자기 이름을 돌려주지 않으므로 여기서 자동으로 그렇게 된다.
         const shouldRestrictUnqualifiedToDefFile =
             !!targetFilePath && (isClassMember || isPrivateModuleLevelMember);
 

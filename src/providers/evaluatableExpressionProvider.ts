@@ -6,10 +6,14 @@
  *
  * 안전 규칙 (중요 — 제어기 콘솔의 `Show Variable -eval`은 Sub/Function도 "실행"한다):
  * 0. 커서 이름이 예약어면 차단 — 제어기가 -712(*Invalid syntax*)로 거부해 오류 팝업만 남는다.
+ *    0-b. 타입 자리(`New X(...)`/`As X`/`Inherits X`/`Class X`)의 이름은 값이 아니므로 차단(구문 판정, §1-DS).
+ *    0-c. 수신자 없는 단독 이름이 사용자 Class/Module 또는 (동명 변수 없는) 내장 클래스로만 해석되면 차단.
  * 1. 커서 이름이 Sub/Function이면 디버그 hover 자체를 차단(undefined) —
  *    기본 동작(단어 전송)이 오히려 파라미터 없는 Sub를 실행할 수 있던 위험도 함께 제거.
  * 2. 괄호 그룹(`name(...)`)은 그 이름이 로컬/파라미터/모듈 변수로 **확인될 때만** 포함 —
  *    호출식(`SetGripTypeIndex(...)`)이 hover로 실행되는 사고 방지. 미확인이면 단어만.
+ *    인자 있는 Property 는 커서(마지막) 세그먼트일 때만 프로시저로 본다 — 어댑터가 치환하지 못해 -780 팝업만
+ *    남기 때문. 체인 중간이면 제어기가 getter 를 실행해 주므로 종전대로 허용(#26 실측, §1-DS).
  *
  * 수신자 타입(GitHub #32): 멤버 접근(`obj.member`)의 `member`는 `.` 앞 체인의 클래스를 정적으로 해석해
  * **그 클래스의 멤버만**으로 판정한다(다른 클래스의 동명 Function 때문에 해석 가능한 Property hover가
@@ -25,9 +29,11 @@ import { GPLSymbolKind, GPLSymbol } from '../language/gplParser';
 import {
     extractDebugExpressionAt,
     buildDebugExpression,
+    isTypeNamePosition,
     DebugExpressionSegment,
 } from '../language/cursorExpression';
 import { isGplReservedWord } from '../language/gplReservedWords';
+import { getterBranchIdentifiers } from '../language/getterBranch';
 import {
     membersNamed,
     resolveReceiverHolder,
@@ -59,10 +65,20 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
         // 읽는 내내 따라붙었다(사용자 보고 2026-08-31). 문서 파싱보다 앞에 둬서 비용도 없앤다.
         if (isGplReservedWord(cand.segments[cand.cursorSegment].name)) { return undefined; }
 
+        // 규칙 0-b: 타입 자리(`New X(...)`, `As X`, `Inherits X`, `Class X`)의 이름은 값이 아니다 — 구문만으로
+        // 판정하므로 심볼 조회 없이 먼저 거른다. `theSystem = New System(...)` 의 `System` 위 hover 가 클래스
+        // 이름을 -eval 로 보내 -729 팝업을 띄웠다(사용자 스크린샷 2026-09-17, §1-DS).
+        if (isTypeNamePosition(lineText, cand.startColumn)) { return undefined; }
+
         // 현재 문서를 로컬/파라미터 포함으로 파싱 (parseDocument는 내용 기준 메모이즈 —
         // 반복 hover 비용 낮음). 워크스페이스 캐시는 로컬을 인덱싱하지 않아 별도 필요.
         const { lookup, docSymbols } = buildReceiverContext(
             document, position.line, name => this.symbolCache.findAllByName(name));
+
+        // 규칙 0-c: 수신자 없는 단독 이름이 **타입으로만** 해석되면(사용자 Class/Module, 또는 동명 변수 없는 GPL 내장
+        // 클래스) 차단 — `Thread.Sleep(100)` 의 `Thread`, `DataFile.Count` 의 `DataFile` 처럼 Shared 멤버 접근의
+        // 수신자 위 hover 가 클래스 이름 단독 평가로 흘러가던 것을 막는다. 체인이 있으면 홀더 해석이 맡는다.
+        if (cand.segments.length === 1 && this._isTypeOnlyName(cand.segments[0].name, docSymbols)) { return undefined; }
 
         // 세그먼트 i의 수신자 홀더(i=0은 수신자 없음). 해석 실패 → undefined(이름 기반 폴백).
         const holderOf = (index: number): ReceiverHolder | undefined =>
@@ -103,10 +119,16 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
                 // 수신자 클래스에 그 이름의 멤버가 없다(상속·미색인) → 종전 이름 전체로 보수 판정
                 all = [...named.filter(s => !s.isLocal), ...this.symbolCache.findAllByName(name)];
             }
-            if (all.some(s => this._isCallable(s, docSymbols))) { return 'callable'; }
+            // 인자 있는 Property(`arm(a-1)`)가 **커서(마지막) 세그먼트**면 어댑터가 백킹 필드로 치환하지 못해(-780 그대로 —
+            // `_propertyBackingCandidates` 는 인자 있는 프로퍼티를 제외) 오류 팝업만 남는다 → 프로시저로 취급해 hover 를
+            // 막는다(사용자 스크린샷 2026-09-17, §1-DS). 체인 **중간**의 Property 는 제어기가 getter 를 실행해 주므로
+            // (`myRobot(r-1).arm(a-1).isUseCrashDetectSensor` 는 평가됨 — #26 실측 "체인 중간은 실행") 종전대로 둔다.
+            const indexedAtCursor = index === cand.cursorSegment && cand.segments[index].args !== undefined;
+            if (all.some(s => this._isCallable(s, docSymbols, indexedAtCursor))) { return 'callable'; }
             if (all.some(s => this._isVariable(s))) { return 'variable'; }
             // 백킹 필드로 해석 가능한 Property는 변수처럼 평가를 허용한다(디버그 어댑터가 -780을 치환해 값을 얻는다)
-            if (all.some(s => s.kind === GPLSymbolKind.Property && this._isResolvableProperty(s, docSymbols))) { return 'variable'; }
+            if (!indexedAtCursor
+                && all.some(s => s.kind === GPLSymbolKind.Property && this._isResolvableProperty(s, docSymbols))) { return 'variable'; }
             return 'unknown';
         };
 
@@ -131,33 +153,61 @@ export class GPLEvaluatableExpressionProvider implements vscode.EvaluatableExpre
         return new vscode.EvaluatableExpression(range, buildDebugExpression(segments));
     }
 
-    private _isCallable(s: GPLSymbol, docSymbols: GPLSymbol[]): boolean {
+    /**
+     * @param indexedAtCursor 커서 세그먼트가 인자 있는 Property 접근(`arm(a-1)`)인가 — 어댑터의 백킹 필드 치환은
+     *   인자 없는 프로퍼티만 다루므로, 이 경우 해석 가능 여부와 무관하게 프로시저로 본다(§1-DS).
+     */
+    private _isCallable(s: GPLSymbol, docSymbols: GPLSymbol[], indexedAtCursor = false): boolean {
         // Property 포함 이유(실기기 2026-07-22): 이 제어기의 -eval은 프로퍼티를 인자 유무와
         // 무관하게 평가하지 못한다(-780/-205). 프로퍼티 이름 위 hover가 단어 평가로 폴백되면
         // 엉뚱한 -729("ints" 단독 평가)가 떠서, 디버그 팝업을 차단하는 쪽이 정확하다.
         // 예외(GitHub #26): 백킹 필드로 해석 가능한 Property는 디버그 어댑터가 -780을 치환해 값을 보여주므로 허용.
         return s.kind === GPLSymbolKind.Sub
             || s.kind === GPLSymbolKind.Function
-            || (s.kind === GPLSymbolKind.Property && !this._isResolvableProperty(s, docSymbols));
+            || (s.kind === GPLSymbolKind.Property && (indexedAtCursor || !this._isResolvableProperty(s, docSymbols)));
     }
 
     /**
      * Property가 백킹 필드로 해석 가능한가 — ① 파서가 기록한 Get 반환식(`getterReturnExpr`)이 있거나
-     * ② 같은 클래스에 관례 이름 `m_<프로퍼티>` 필드가 있으면(문서 또는 워크스페이스 캐시). WriteOnly는 불가.
+     * ② 같은 클래스에 관례 이름 `m_<프로퍼티>` 필드가 있거나(문서 또는 워크스페이스 캐시)
+     * ③ 분기형 getter(`getterBranch`)의 피연산자가 모두 같은 클래스의 필드이면. WriteOnly는 불가.
      */
     private _isResolvableProperty(s: GPLSymbol, docSymbols: GPLSymbol[]): boolean {
         if (s.hasGetter === false) { return false; }
         if (s.getterReturnExpr) { return true; }
         if (!s.className) { return false; }
-        const backing = `m_${s.name}`.toLowerCase();
         const cls = s.className.toLowerCase();
-        const isBacking = (m: GPLSymbol) => m.kind === GPLSymbolKind.Variable && !m.isLocal
-            && m.name.toLowerCase() === backing && (m.className ?? '').toLowerCase() === cls;
-        return docSymbols.some(isBacking) || this.symbolCache.getClassMembers(s.className).some(isBacking);
+        const isClassField = (m: GPLSymbol, fieldName: string) => m.kind === GPLSymbolKind.Variable && !m.isLocal
+            && m.name.toLowerCase() === fieldName && (m.className ?? '').toLowerCase() === cls;
+        const classMembers = [...docSymbols, ...this.symbolCache.getClassMembers(s.className)];
+        // ③ 분기형 getter(§1-DS): 조건·분기에 쓰인 이름이 모두 같은 클래스의 필드면 어댑터가 부모 덤프 값으로 계산한다.
+        if (s.getterBranch) {
+            const idents = getterBranchIdentifiers(s.getterBranch);
+            if (idents && idents.every(id => classMembers.some(m => isClassField(m, id.toLowerCase())))) { return true; }
+        }
+        const backing = `m_${s.name}`.toLowerCase();
+        return classMembers.some(m => isClassField(m, backing));
     }
 
     private _isVariable(s: GPLSymbol): boolean {
         return s.kind === GPLSymbolKind.Variable || s.kind === GPLSymbolKind.Constant;
+    }
+
+    /**
+     * 수신자 없는 단독 이름이 **타입 이름으로만** 해석되는가(규칙 0-c) — 현재 문서·워크스페이스의 동명 심볼이 전부
+     * Class/Module 이거나, 동명 심볼이 하나도 없는데 GPL 내장 클래스 이름과 같으면 참. 동명 변수/상수/프로시저가
+     * 하나라도 있으면 거짓(그 판정은 기존 규칙 1·2가 맡는다 — 로컬 `File` 이 내장 `File` 클래스를 가리는 경우 등).
+     */
+    private _isTypeOnlyName(name: string, docSymbols: GPLSymbol[]): boolean {
+        const lower = name.toLowerCase();
+        const all = [
+            ...docSymbols.filter(s => s.name.toLowerCase() === lower),
+            ...this.symbolCache.findAllByName(name),
+        ];
+        if (all.length > 0) {
+            return all.every(s => s.kind === GPLSymbolKind.Class || s.kind === GPLSymbolKind.Module || s.kind === GPLSymbolKind.Delegate);
+        }
+        return isGplBuiltinClassName(name);
     }
 }
 

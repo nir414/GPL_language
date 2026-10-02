@@ -3,7 +3,8 @@ import { SymbolCache } from '../symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import { findGplBuiltin, GPLBuiltinEntry } from '../language/gplBuiltins';
 import { splitParameters } from '../language/cursorExpression';
-import { extractParamName, getParamDoc, ParsedDocComment, parseDocComment, renderDocCommentMarkdown } from '../language/docComment';
+import { extractParamName, getParamDoc, ParsedDocComment, renderDocCommentMarkdown } from '../language/docComment';
+import { resolveOverloadDoc } from '../language/docCommentOverloads';
 import { ciEq } from '../language/identifiers';
 
 /**
@@ -142,7 +143,8 @@ export class GPLSignatureHelpProvider implements vscode.SignatureHelpProvider {
         const out: { info: vscode.SignatureInformation; paramCount: number }[] = [];
         const seen = new Set<string>();
         for (const s of ordered) {
-            const built = this.buildUserSignature(s);
+            // 문서화 주석은 형제 오버로드에서 빠진 조각을 채운다(공통 문서는 이름 단위로 공유, 차이만 개별 문서화).
+            const built = this.buildUserSignature(s, this.symbolCache.findOverloadSiblings(s, syms));
             if (seen.has(built.info.label)) {
                 continue;
             }
@@ -164,7 +166,10 @@ export class GPLSignatureHelpProvider implements vscode.SignatureHelpProvider {
         return { info, paramCount: params.length };
     }
 
-    private buildUserSignature(sym: GPLSymbol): { info: vscode.SignatureInformation; paramCount: number } {
+    private buildUserSignature(
+        sym: GPLSymbol,
+        siblings: readonly GPLSymbol[] = []
+    ): { info: vscode.SignatureInformation; paramCount: number } {
         const params = sym.parameters ?? [];
         const paramList = params.join(', ');
         const label = sym.kind === GPLSymbolKind.Function
@@ -173,7 +178,7 @@ export class GPLSignatureHelpProvider implements vscode.SignatureHelpProvider {
 
         const info = new vscode.SignatureInformation(label);
         // 문서화 주석의 `# Parameters` 항목은 해당 파라미터에 붙여, 활성 파라미터 설명으로 뜨게 한다.
-        const parsedDoc = sym.docComment ? parseDocComment(sym.docComment) : undefined;
+        const parsedDoc = resolveOverloadDoc(sym, siblings)?.doc;
         info.parameters = this.makeParameters(label, params, parsedDoc);
 
         if (parsedDoc) {

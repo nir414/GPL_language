@@ -11,10 +11,13 @@ import {
     mergeDocComment,
     parseDocComment,
 } from '../language/docComment';
+import { describeOverloadCoverage, filterOverloadSiblings } from '../language/docCommentOverloads';
 
 /** 문서화 주석을 붙일 선언과, 그 위에 이미 있는 주석 블록의 위치. */
 export interface DocCommentTarget {
     symbol: GPLSymbol;
+    /** 같은 문서 안의 오버로드 형제(자기 제외) — 골격·보완이 형제가 이미 설명한 매개변수를 빼는 근거. */
+    siblings: GPLSymbol[];
     /** 선언이 시작하는 문서 줄(0-based). */
     declLine: number;
     /** 선언 줄의 들여쓰기 문자열 — 생성한 주석에 그대로 쓴다. */
@@ -76,6 +79,8 @@ export function findDocCommentTarget(
 
     return {
         symbol,
+        // GPL 은 모듈/클래스가 한 파일에 담기므로 오버로드 형제는 현재 문서 파싱 결과 안에 있다.
+        siblings: filterOverloadSiblings(symbol, symbols),
         declLine,
         indent,
         docStartLine: block?.startLine,
@@ -83,18 +88,25 @@ export function findDocCommentTarget(
     };
 }
 
-function toDocTarget(symbol: GPLSymbol): DocTarget {
+/**
+ * 골격·보완 대상. 오버로드면 형제 주석이 이미 설명한 매개변수·Returns 를 표시해 골격이 **차이만** 만들게 한다
+ * (공통 문서는 이름 단위로 공유 — docCommentOverloads.ts).
+ */
+function toDocTarget(symbol: GPLSymbol, siblings: readonly GPLSymbol[] = []): DocTarget {
+    const coverage = describeOverloadCoverage(symbol, siblings);
     return {
         kind: symbol.kind,
         name: symbol.name,
         parameters: symbol.parameters,
         returnType: symbol.returnType,
+        coveredParams: coverage.coveredParams,
+        coveredReturns: coverage.coveredReturns,
     };
 }
 
 /** 선언에 맞는 골격을 스니펫 문자열로 만든다(들여쓰기 없음 — 삽입 위치의 들여쓰기를 VS Code가 이어 붙인다). */
-export function buildDocCommentSnippet(symbol: GPLSymbol, includeExamples: boolean): vscode.SnippetString {
-    const lines = buildDocCommentBlock(toDocTarget(symbol), { snippet: true, includeExamples });
+export function buildDocCommentSnippet(target: DocCommentTarget, includeExamples: boolean): vscode.SnippetString {
+    const lines = buildDocCommentBlock(toDocTarget(target.symbol, target.siblings), { snippet: true, includeExamples });
     return new vscode.SnippetString(lines.join('\n') + '\n');
 }
 
@@ -158,14 +170,14 @@ export async function insertDocComment(args?: DocCommentCommandArgs): Promise<Do
 
     // 기존 주석 없음 → 골격 삽입.
     if (target.docStartLine === undefined || !target.docRaw?.trim()) {
-        const snippet = buildDocCommentSnippet(target.symbol, includeExamples);
+        const snippet = buildDocCommentSnippet(target, includeExamples);
         await editor.insertSnippet(snippet, new vscode.Position(target.declLine, target.indent.length));
         return { ok: true, action: 'inserted', ...where };
     }
 
     // 기존 주석 있음 → 빠진 항목만 보완(기존 서술은 건드리지 않는다).
     const parsed = parseDocComment(target.docRaw);
-    const { insertions, added } = mergeDocComment(parsed, toDocTarget(target.symbol));
+    const { insertions, added } = mergeDocComment(parsed, toDocTarget(target.symbol, target.siblings));
     if (!insertions.length) {
         vscode.window.showInformationMessage(`GPL: \`${target.symbol.name}\` 문서화 주석에 추가할 항목이 없습니다.`);
         return { ok: true, action: 'up-to-date', ...where };
@@ -218,14 +230,21 @@ export class GPLDocCommentCompletionProvider implements vscode.CompletionItemPro
         }
 
         const { includeExamples } = getDocCommentConfig(vscode.workspace);
-        const docTarget = toDocTarget(target.symbol);
+        const docTarget = toDocTarget(target.symbol, target.siblings);
         const lines = buildDocCommentBlock(docTarget, { snippet: true, includeExamples });
         const preview = buildDocCommentBlock(docTarget, { includeExamples });
+
+        // 오버로드면 "차이만 쓴다"는 규칙과 무엇을 뺐는지 알려 준다.
+        const covered = docTarget.coveredParams ?? [];
+        const overloadNote = target.siblings.length
+            ? `\n\n오버로드가 ${target.siblings.length}개 더 있습니다 — 공통 문서는 이름 단위로 공유되므로 **차이만** 씁니다`
+              + (covered.length ? ` (형제가 이미 설명한 ${covered.map(n => `\`${n}\``).join(', ')} 은 뺐습니다).` : '.')
+            : '';
 
         const item = new vscode.CompletionItem("'''", vscode.CompletionItemKind.Snippet);
         item.detail = `GPL 문서화 주석 (${target.symbol.name})`;
         item.documentation = new vscode.MarkdownString(
-            `설명 · \`# Parameters\` · \`# Returns\` 골격을 만듭니다.\n\n\`\`\`gpl\n${preview.join('\n')}\n\`\`\``
+            `설명 · \`# Parameters\` · \`# Returns\` 골격을 만듭니다.${overloadNote}\n\n\`\`\`gpl\n${preview.join('\n')}\n\`\`\``
         );
         // 들여쓰기 다음(첫 `'` 위치)부터 교체해야 스니펫 2번째 줄부터의 자동 들여쓰기가 어긋나지 않는다.
         item.range = new vscode.Range(position.line, indentMatch[1].length, position.line, position.character);

@@ -1,0 +1,42 @@
+' init-probe / Stage B — 클래스의 `Private Sub Init` 이 인스턴스 없이 불리는가? (GenAdp -757 재현)
+'
+' 공식 문서(GPL/modules.htm): "If a user Sub procedure named Init is defined within a module, it is executed
+' as part of the module initialization, before the startup procedure begins." — 모듈 수준 Init 은 문서화된 동작.
+' 여기서 묻는 것은 그 규칙이 **모듈 안 클래스의 Private 메서드**까지 잡아채는가다(GenAdp 의 LineBuffer.Init 꼴).
+' GenAdp 처럼 시작 프로시저(Module Main)와 클래스(Module ProbeLib)를 다른 모듈에 둔다.
+'
+' 판정:   H1 참 → "PROBE B: Main" 이 찍히기 전에 스레드가 -757 로 Error,
+'                 Show Stack 은 `Init` 프레임 하나(호출자 없음) — GenAdp 와 같은 모양.
+'         H0    → "PROBE B: Main" → "PROBE B: Probe.Init with instance" → "PROBE B: Probe constructed" 순서.
+' 모션 없음 — 콘솔 출력만.
+
+
+Module ProbeLib
+
+    Private Class Probe
+        Private Dim m_buf As String
+
+        Public Sub New()
+            Init()
+        End Sub
+
+        ' GenAdp LineBuffer.Init 와 같은 꼴 — 첫 문장이 필드 접근.
+        Private Sub Init()
+            ' m_buf = ""
+            Console.WriteLine("PROBE B: Probe.Init with instance")
+        End Sub
+    End Class
+
+End Module
+
+
+' Module Main
+
+'     ' 프로젝트 시작점(ProjectStart="Main").
+'     Public Sub Main()
+'         Console.WriteLine("PROBE B: Main called")
+'         Dim p As New Probe()
+'         Console.WriteLine("PROBE B: Probe constructed")
+'     End Sub
+
+' End Module

@@ -31,28 +31,36 @@ export class GPLDocumentSymbolProvider implements vscode.DocumentSymbolProvider 
                 const line = Math.max(0, Math.min(symbol.line ?? 0, lineCount - 1));
                 const declLen = document.lineAt(line).text.length;
 
-                // 블록 구문(Module/Class/Function/Sub)만 여러 줄 범위를 갖고,
-                // 변수/상수/속성 등 한 줄 선언은 해당 줄로 범위를 한정한다.
+                // 블록 구문(Module/Class/Function/Sub/Property)만 여러 줄 범위를 갖고,
+                // 변수/상수 등 한 줄 선언은 해당 줄로 범위를 한정한다.
                 const isBlockSymbol =
                     symbol.kind === GPLSymbolKind.Module ||
                     symbol.kind === GPLSymbolKind.Class ||
                     symbol.kind === GPLSymbolKind.Function ||
-                    symbol.kind === GPLSymbolKind.Sub;
+                    symbol.kind === GPLSymbolKind.Sub ||
+                    symbol.kind === GPLSymbolKind.Property;
 
                 // selectionRange 컬럼을 선언 줄 안으로 보정.
                 const selStart = Math.max(0, Math.min(symbol.range?.start ?? 0, declLen));
                 const selEnd = Math.max(selStart, Math.min(symbol.range?.end ?? declLen, declLen));
                 const selectionRange = new vscode.Range(line, selStart, line, selEnd);
 
-                // range 계산. 블록 심볼은 다음 동급 심볼 직전까지 확장하되,
-                // 끝줄이 시작줄과 같아지면(= 빈 범위) 선언 줄 전체로 대체한다.
+                // range 계산. 블록 심볼은 파서가 기록한 짝 `End …` 줄(endLine)까지가 정확한 범위다.
+                // endLine 이 없으면(입력 중·End 누락) 다음 동급 심볼 직전까지의 휴리스틱으로 대체한다.
+                // 범위가 정확해야 개요의 「커서 따르기」가 커서를 감싸는 심볼을 올바르게 찾는다 —
+                // 종전 휴리스틱-단독 방식은 중첩 클래스·클래스 뒤 모듈 멤버에서 형제 범위가 겹쳐
+                // 클릭 직후 선택이 엉뚱한 심볼로 되돌아갔다.
                 // ⚠ VSCode는 selectionRange가 range에 포함되지 않으면 개요 결과 '전체'를
                 //   폐기하므로, 빈/역전 범위는 반드시 피해야 한다.
                 let range: vscode.Range;
                 if (isBlockSymbol) {
-                    const endLine = this.findSymbolEndLine(symbols, symbol, document);
+                    const parsedEnd = typeof symbol.endLine === 'number' && symbol.endLine >= line
+                        ? Math.min(symbol.endLine, lineCount - 1)
+                        : undefined;
+                    const endLine = parsedEnd ?? this.findSymbolEndLine(symbols, symbol, document);
                     range = endLine > line
-                        ? new vscode.Range(line, 0, endLine, 0)
+                        // 끝 컬럼은 `End …` 줄 끝까지 — 그 줄에 커서가 있어도 이 블록으로 인식되게.
+                        ? new vscode.Range(line, 0, endLine, document.lineAt(endLine).text.length)
                         : new vscode.Range(line, 0, line, Math.max(declLen, selEnd));
                 } else {
                     range = new vscode.Range(line, 0, line, Math.max(declLen, selEnd));
@@ -75,13 +83,17 @@ export class GPLDocumentSymbolProvider implements vscode.DocumentSymbolProvider 
                     documentSymbols.push(documentSymbol);
                     moduleSymbols.set(symbol.name, documentSymbol);
                 } else if (symbol.kind === GPLSymbolKind.Class) {
-                    if (symbol.module && moduleSymbols.has(symbol.module)) {
+                    // 중첩 클래스는 바깥 클래스 아래로 — GPL은 Class 안 Class 선언을 허용하고
+                    // (samples/syntax-tour/Shapes.gpl), 파서가 parentClassName으로 알려 준다.
+                    const parentClass = symbol.parentClassName ? classSymbols.get(symbol.parentClassName) : undefined;
+                    if (parentClass) {
+                        parentClass.children.push(documentSymbol);
+                    } else if (symbol.module && moduleSymbols.has(symbol.module)) {
                         moduleSymbols.get(symbol.module)!.children.push(documentSymbol);
-                        classSymbols.set(symbol.name, documentSymbol);
                     } else {
                         documentSymbols.push(documentSymbol);
-                        classSymbols.set(symbol.name, documentSymbol);
                     }
+                    classSymbols.set(symbol.name, documentSymbol);
                 } else {
                     // Functions, subs, properties, variables
                     if (symbol.className && classSymbols.has(symbol.className)) {
@@ -137,6 +149,8 @@ export class GPLDocumentSymbolProvider implements vscode.DocumentSymbolProvider 
         switch (symbolKind) {
             case GPLSymbolKind.Module: return vscode.SymbolKind.Module;
             case GPLSymbolKind.Class: return vscode.SymbolKind.Class;
+            // Delegate 는 한 줄 타입 선언 — 개요에서 클래스 아이콘으로, 범위는 선언 줄(블록 심볼 아님, §1-DU)
+            case GPLSymbolKind.Delegate: return vscode.SymbolKind.Class;
             case GPLSymbolKind.Function: return vscode.SymbolKind.Function;
             case GPLSymbolKind.Sub: return vscode.SymbolKind.Method;
             case GPLSymbolKind.Variable: return vscode.SymbolKind.Variable;

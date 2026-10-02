@@ -1,4 +1,5 @@
 import { escapeRegExp, isInCommentOrString } from './cursorExpression';
+import { findSymbolStringConsumerAt } from './referenceSyntax';
 
 /**
  * Rename(F2) 텍스트 스캔 정본 — vscode 비의존 순수 모듈.
@@ -162,8 +163,12 @@ export interface StringLiteralRenameTarget {
  * `New Thread("DataFile.SaveThread")`) 프로시저 이름을 바꾸면 이런 문자열도
  * 함께 바꿔야 런타임(-스레드 생성)이 깨지지 않는다.
  *
- * 정의 이동(definitionProvider.resolveStringLiteralReference)과 같은 기준을 쓴다:
- * F12로 대상에 점프되는 문자열만 F2로 함께 바뀐다.
+ * 바꾸는 범위는 **런타임이 실제로 프로시저를 찾는 자리**로 좁힌다(`referenceSyntax.SYMBOL_STRING_CONSUMERS`
+ * — 현재 `New Thread(procedure_name, …)` 의 첫 인자). 모양만 같은 로그·태그 문자열
+ * (`LOG.WriteEx(ex, "STA.ClearError")`)은 건드리지 않는다 — 이름 바꾸기는 되돌리기 어려운 편집이라
+ * 애매하면 남겨 두는 쪽이 옳다(2026-09-22). 정의 이동(F12)은 사용자가 그 자리를 직접 누르는
+ * 읽기 전용 동작이라 종전대로 모양만 맞으면 점프한다 — 그래서 "F12 가 가는 문자열 = F2 가 바꾸는
+ * 문자열" 이 더는 아니다.
  *   - 리터럴 전체가 식별자 형태(`Name` 또는 `Qual.Name`...)일 때만 대상.
  *   - proc: 마지막 세그먼트가 word와 일치하고, 한정자가 있으면 containerName과
  *     일치해야 한다(무관한 동명 문자열 오변경 방지). 한정자 없는 단일 식별자
@@ -190,9 +195,15 @@ export function findStringLiteralRenameOccurrences(
             }
             const content = lineText.substring(strStart + 1, i);
             const contentStart = strStart + 1;
+            const quoteIndex = strStart;
             strStart = -1;
 
             if (!identShaped.test(content.trim())) {
+                continue;
+            }
+
+            // 프로시저 이름으로 소비되는 인자 자리만 — 로그 메시지 안의 같은 모양은 그대로 둔다.
+            if (!findSymbolStringConsumerAt(lineText, quoteIndex)) {
                 continue;
             }
 

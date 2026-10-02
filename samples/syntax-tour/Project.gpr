@@ -1,0 +1,8 @@
+ProjectBegin
+ProjectName="syntax_tour"
+ProjectStart="Main"
+ProjectSource="Main.gpl"
+ProjectSource="Declarations.gpl"
+ProjectSource="Shapes.gpl"
+ProjectSource="Faults.gpl"
+ProjectEnd

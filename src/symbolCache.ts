@@ -6,7 +6,7 @@ import { ciEq } from './language/identifiers';
 import { getParameterArity, argCountMatchesArity } from './language/cursorExpression';
 import { CallContext, toCallContext, rankOverloadMatches } from './language/overloadResolution';
 import { buildSymbolNameIndex } from './language/symbolNameIndex';
-import { renderDocCommentMarkdown } from './language/docComment';
+import { filterOverloadSiblings, renderResolvedDocMarkdown, resolveOverloadDoc } from './language/docCommentOverloads';
 import { isDeclaredIn, ReceiverHolder } from './language/receiverType';
 import { PROJECT_EXCLUDE_GLOB, findWorkspaceGprPaths } from './project/projectFileScope';
 import { collectProjectSourcePaths, pickOwningGprPath } from './project/projectSources';
@@ -93,15 +93,94 @@ export class SymbolCache {
         if (document.uri.scheme !== 'file') {
             return;
         }
-
         // Do not rely on languageId: *.gpl can be opened as 'vb'.
         const fsPath = document.uri.fsPath;
-        const lower = fsPath.toLowerCase();
-        if (!lower.endsWith('.gpl') && !lower.endsWith('.gpo')) {
+        const count = this.updateFileText(fsPath, document.getText());
+        if (count === undefined) {
             return;
         }
+        this.rebuildNameIndex();
+        this.log(`[SymbolCache] Updated ${path.basename(fsPath)}: ${count} symbols`);
+    }
 
-        const text = document.getText();
+    /**
+     * 워처가 알린 파일들을 디스크에서 읽어 **한 묶음**으로 갱신한다 — SVN update 처럼 수백 개가 한꺼번에
+     * 바뀌어도 이름 인덱스는 끝에 한 번만 다시 만든다(§1-DX). 에디터에 열린 문서는 그 버퍼를 쓴다(미저장 편집분이 최신).
+     */
+    public async updateFilesFromDisk(uris: readonly vscode.Uri[]): Promise<void> {
+        if (uris.length === 0) {
+            return;
+        }
+        const openDocs = this.openFileDocuments();
+        const updated: string[] = [];
+        try {
+            for (const uri of uris) {
+                if (uri.scheme !== 'file') {
+                    continue;
+                }
+                try {
+                    const open = openDocs.get(normalizePathKey(uri.fsPath));
+                    const text = open ? open.getText() : await this.readSourceText(uri);
+                    if (this.updateFileText(uri.fsPath, text) !== undefined) {
+                        updated.push(uri.fsPath);
+                    }
+                } catch (error) {
+                    this.log(`[SymbolCache] Error loading ${uri.fsPath}: ${error}`);
+                }
+            }
+        } finally {
+            if (updated.length > 0) {
+                this.rebuildNameIndex();
+            }
+        }
+        if (updated.length === 1) {
+            this.log(`[SymbolCache] Updated ${path.basename(updated[0])} (watcher)`);
+        } else if (updated.length > 1) {
+            this.log(`[SymbolCache] Updated ${updated.length} files (watcher batch)`);
+        }
+    }
+
+    /** 에디터에 열린 file 스킴 문서를 정규화 경로로 찾을 수 있게 모은다. */
+    private openFileDocuments(): Map<string, vscode.TextDocument> {
+        const map = new Map<string, vscode.TextDocument>();
+        for (const doc of vscode.workspace.textDocuments) {
+            if (doc.uri.scheme === 'file') {
+                map.set(normalizePathKey(doc.uri.fsPath), doc);
+            }
+        }
+        return map;
+    }
+
+    /**
+     * 디스크의 소스를 문자열로 읽는다 — `openTextDocument` 대신. 문서 객체를 만들면 파일 수만큼 문서가
+     * 상주하고 `onDidOpenTextDocument` 가 설치된 모든 확장에 발송되며 언어 감지·`gpl` 언어 정규화까지
+     * 따라붙는다(2026-09-18 실측: 567개 파일 인덱싱에서 그 비용이 파싱 자체보다 컸다 — §1-DX).
+     * 인코딩은 `files.encoding` 이 UTF-8 계열(기본)이면 직접 디코딩(BOM 제거)하고, 그 외로 설정된
+     * 리소스만 VS Code 의 디코더를 빌리기 위해 문서로 연다.
+     */
+    private async readSourceText(uri: vscode.Uri): Promise<string> {
+        const encoding = vscode.workspace.getConfiguration('files', uri).get<string>('encoding', 'utf8');
+        if (!/^utf-?8(bom)?$/i.test(encoding)) {
+            return (await vscode.workspace.openTextDocument(uri)).getText();
+        }
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const text = Buffer.from(bytes).toString('utf8');
+        return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+    }
+
+    /**
+     * 파일 하나의 심볼을 텍스트로 갱신한다 — 문서 객체 없이(인덱싱·워처·열린 문서 경로가 모두 이 길을 탄다).
+     * **이름 인덱스는 다시 만들지 않는다** — 호출자가 묶음이 끝난 뒤 `rebuildNameIndex()` 를 한 번 부른다.
+     * 파일마다 재구축하면 그때까지 누적된 심볼 전체를 매번 훑어 O(n²) 가 된다(2026-09-18 실측: 567개
+     * 파일·21,747 심볼에서 624만 회 순회·798 ms — 읽기+파싱 465 ms 보다 컸다).
+     * @returns 파싱한 심볼 수. 대상이 아니거나(확장자·바이너리 .gpo) 건너뛰면 undefined.
+     */
+    private updateFileText(fsPath: string, text: string): number | undefined {
+        const lower = fsPath.toLowerCase();
+        if (!lower.endsWith('.gpl') && !lower.endsWith('.gpo')) {
+            return undefined;
+        }
+
         // 바이너리 .gpo가 텍스트로 열린 경우(NUL 문자 포함) 심볼 갱신을 건너뛴다 — 쓰레기 심볼 방지.
         if (text.includes('\u0000')) {
             return;
@@ -109,12 +188,9 @@ export class SymbolCache {
 
         const symbols = GPLParser.parseDocument(text, fsPath);
         // 키는 정규화 경로 — 같은 파일이 다른 표기로 다시 들어와도 항목은 하나로 유지된다.
-        // 표기가 바뀌었으면 방금 열린 문서의 표기를 정본으로 삼는다(디스크 표기에 더 가깝다).
+        // 표기가 바뀌었으면 방금 들어온 표기를 정본으로 삼는다(디스크 표기에 더 가깝다).
         this.symbols.set(normalizePathKey(fsPath), { filePath: fsPath, symbols });
-        this.rebuildNameIndex();
-
-        const fileName = path.basename(fsPath);
-        this.log(`[SymbolCache] Updated ${fileName}: ${symbols.length} symbols`);
+        return symbols.length;
     }
 
     /**
@@ -574,6 +650,18 @@ export class SymbolCache {
         return out;
     }
 
+    /**
+     * 오버로드 형제 — 같은 이름·Sub/Function·같은 모듈/클래스·같은 컴파일 단위의 다른 선언(자기 제외).
+     * 캐시 밖 심볼(현재 문서를 파싱한 결과)을 `extra` 로 합칠 수 있고, 같은 선언의 사본은 하나로 접힌다.
+     * 문서화 주석 병합(docCommentOverloads)이 쓰는 형제 후보의 정본.
+     */
+    public findOverloadSiblings(target: GPLSymbol, extra?: readonly GPLSymbol[]): GPLSymbol[] {
+        const pool = extra && extra.length
+            ? [...this.findAllByName(target.name), ...extra]
+            : this.findAllByName(target.name);
+        return filterOverloadSiblings(target, pool, { isSameUnit: (c, t) => this.isSameCompileUnit(c, t) });
+    }
+
     public getAllSymbols(): GPLSymbol[] {
         const allSymbols: GPLSymbol[] = [];
         for (const { symbols: fileSymbols } of this.symbols.values()) {
@@ -673,16 +761,22 @@ export class SymbolCache {
                 ? `Function ${symbol.name}(${params})${symbol.returnType ? ` As ${symbol.returnType}` : ''}`
                 : `Sub ${symbol.name}(${params})`;
             md.appendCodeblock(sig, 'gpl');
+        } else if (symbol.kind === 'delegate') {
+            // Delegate 는 시그니처가 본질 — 반환 타입이 있으면 Function 형(§1-DU)
+            const params = symbol.parameters?.join(', ') ?? '';
+            md.appendCodeblock(symbol.returnType
+                ? `Delegate Function ${symbol.name}(${params}) As ${symbol.returnType}`
+                : `Delegate Sub ${symbol.name}(${params})`, 'gpl');
         } else if (symbol.returnType) {
             md.appendMarkdown(`\`${symbol.name}\` : \`${symbol.returnType}\``);
         }
-        if (symbol.docComment) {
-            // 구조화된 문서화 주석(`# Parameters` 등)은 섹션째, 옛 주석은 서술 그대로 렌더링된다.
-            const doc = renderDocCommentMarkdown(symbol.docComment, { descriptionMode: 'full' });
-            if (doc) {
-                // Module/Class처럼 앞에 붙일 시그니처·타입 줄이 없는 종류는 구분용 빈 줄을 넣지 않는다.
-                md.appendMarkdown(md.value ? `\n\n${doc}` : doc);
-            }
+        // 구조화된 문서화 주석(`# Parameters` 등)은 섹션째, 옛 주석은 서술 그대로 렌더링된다.
+        // 오버로드면 빠진 조각을 형제 주석에서 채운다(docCommentOverloads — 공통 문서는 이름 단위로 공유, 차이만 개별 문서화).
+        const resolved = resolveOverloadDoc(symbol, this.findOverloadSiblings(symbol));
+        const doc = resolved ? renderResolvedDocMarkdown(resolved, { descriptionMode: 'full' }) : undefined;
+        if (doc) {
+            // Module/Class처럼 앞에 붙일 시그니처·타입 줄이 없는 종류는 구분용 빈 줄을 넣지 않는다.
+            md.appendMarkdown(md.value ? `\n\n${doc}` : doc);
         }
         md.isTrusted = false;
         return md;
@@ -692,6 +786,7 @@ export class SymbolCache {
         switch (symbolKind) {
             case 'module': return vscode.CompletionItemKind.Module;
             case 'class': return vscode.CompletionItemKind.Class;
+            case 'delegate': return vscode.CompletionItemKind.Class; // Delegate 는 타입 선언(§1-DU)
             case 'function': return vscode.CompletionItemKind.Function;
             case 'sub': return vscode.CompletionItemKind.Method;
             case 'variable': return vscode.CompletionItemKind.Variable;
@@ -718,19 +813,45 @@ export class SymbolCache {
             this.log(`[SymbolCache] Workspace glob: found ${filesToIndex.length} .gpl files`);
         }
 
-        for (const file of filesToIndex) {
-            const fsPath = file.fsPath;
-            try {
-                // Skip .gpo files during indexing — they are compiled binary objects
+        // 확장 호스트 스레드를 독점하지 않도록 이 개수마다 이벤트 루프에 한 번 양보한다 —
+        // 인덱싱 중에도 호버·자동완성·정의 이동 요청이 사이에 처리될 틈을 준다.
+        const YIELD_EVERY_FILES = 32;
+        const started = Date.now();
+        // 에디터에 이미 열린 문서는 그 버퍼를 쓴다 — 미저장 편집분이 디스크보다 최신이다.
+        const openDocs = this.openFileDocuments();
+        let indexed = 0;
+        let failed = 0;
+        try {
+            for (let i = 0; i < filesToIndex.length; i++) {
+                const file = filesToIndex[i];
+                const fsPath = file.fsPath;
+                // .gpo 는 컴파일 산출물(바이너리) — 인덱싱하지 않는다.
                 if (fsPath.toLowerCase().endsWith('.gpo')) {
                     continue;
                 }
-                const document = await vscode.workspace.openTextDocument(file);
-                this.updateDocument(document);
-            } catch (error) {
-                this.log(`[SymbolCache] Error loading ${fsPath}: ${error}`);
+                try {
+                    const open = openDocs.get(normalizePathKey(fsPath));
+                    const text = open ? open.getText() : await this.readSourceText(file);
+                    if (this.updateFileText(fsPath, text) !== undefined) {
+                        indexed++;
+                    }
+                } catch (error) {
+                    failed++;
+                    this.log(`[SymbolCache] Error loading ${fsPath}: ${error}`);
+                }
+                if ((i + 1) % YIELD_EVERY_FILES === 0) {
+                    await new Promise<void>(resolve => setImmediate(resolve));
+                }
             }
+        } finally {
+            // 이름 인덱스는 묶음이 끝난 뒤 한 번만 — 파일마다 만들면 O(n²)(updateFileText 주석).
+            this.rebuildNameIndex();
         }
+        // 파일당 한 줄(수백 줄)이 아니라 요약 한 줄 — verbose 트레이스에서도 출력 채널 부담을 주지 않는다.
+        this.log(
+            `[SymbolCache] Indexed ${indexed} files in ${Date.now() - started} ms`
+            + (failed > 0 ? ` (${failed} failed)` : ''),
+        );
     }
 
     /**

@@ -12,8 +12,9 @@ import {
     resolveReceiverTypeName,
     ReceiverSegment,
 } from '../language/receiverType';
-import { renderDocCommentMarkdown } from '../language/docComment';
+import { ResolvedOverloadDoc, renderResolvedDocMarkdown, resolveOverloadDoc } from '../language/docCommentOverloads';
 import { buildReceiverContext } from './receiverContext';
+import { findGplKeyword, GplKeyword, GplKeywordKind } from '../language/gplStatements';
 import {
     findGplBuiltin,
     findGplBuiltinMember,
@@ -74,11 +75,11 @@ export class GPLHoverProvider implements vscode.HoverProvider {
      *  - off: 호출부에서 표시 자체를 생략.
      *  섹션은 작성자가 스스로 길이를 정한 구조이므로 두 모드 모두 그대로 표시한다.
      */
-    private formatDocComment(doc: string, config: HoverConfig): string | undefined {
+    private formatDocComment(doc: ResolvedOverloadDoc, config: HoverConfig): string | undefined {
         if (config.docComment === 'off') {
             return undefined;
         }
-        return renderDocCommentMarkdown(doc, {
+        return renderResolvedDocMarkdown(doc, {
             descriptionMode: config.docComment === 'full' ? 'full' : 'summary',
             maxDescriptionLines: config.docCommentMaxLines,
         });
@@ -92,6 +93,12 @@ export class GPLHoverProvider implements vscode.HoverProvider {
     /** Function/Sub 심볼의 표시용 시그니처 문자열 생성 (`Function name(params) As T` / `Sub name(params)`). */
     private buildCallableSignature(sym: GPLSymbol): string {
         const params = sym.parameters?.join(', ') ?? '';
+        if (sym.kind === GPLSymbolKind.Delegate) {
+            // Delegate 는 반환 타입이 있으면 Function 형, 없으면 Sub 형(§1-DU)
+            return sym.returnType
+                ? `Delegate Function ${sym.name}(${params}) As ${sym.returnType}`
+                : `Delegate Sub ${sym.name}(${params})`;
+        }
         return sym.kind === GPLSymbolKind.Function
             ? `Function ${sym.name}(${params})${sym.returnType ? ` As ${sym.returnType}` : ''}`
             : `Sub ${sym.name}(${params})`;
@@ -103,6 +110,8 @@ export class GPLHoverProvider implements vscode.HoverProvider {
                 return 'Module';
             case GPLSymbolKind.Class:
                 return 'Class';
+            case GPLSymbolKind.Delegate:
+                return 'Delegate';
             case GPLSymbolKind.Function:
                 return 'Function';
             case GPLSymbolKind.Sub:
@@ -218,6 +227,34 @@ export class GPLHoverProvider implements vscode.HoverProvider {
                 md.appendMarkdown(`\n\n---\n\n**멤버**: ${names}`);
             }
             md.appendMarkdown(`\n\n[Reference](${doc.sourceUrl})`);
+        }
+        md.isTrusted = false;
+        return new vscode.Hover(md, range);
+    }
+
+    /** 키워드 종류 → 카드 머리말 (내장 항목 카드의 `GPL Built-in · <category>` 와 같은 자리). */
+    private static readonly KEYWORD_KIND_TITLE: Record<GplKeywordKind, string> = {
+        keyword: 'Keyword',
+        type: 'Primitive Type',
+        operator: 'Operator',
+        constant: 'Constant',
+    };
+
+    /**
+     * 키워드·원시 타입·낱말 연산자·상수의 호버 카드. 정본은 `gplStatements.GPL_KEYWORDS` — 완성 목록이 쓰는 표와 같다.
+     * 한 줄 설명은 항상, 문서 근거 설명(`documentation`)과 Reference 링크는 compact 가 아닐 때만 보인다(내장 항목 카드와 같은 규칙).
+     * 종전에는 `ByVal`/`ByRef` 같은 낱말 위에서 호버가 아예 비어 문서 링크도 없었다(2026-09-21 사용자 지적, §1-EA ⑦).
+     */
+    private buildKeywordHover(kw: GplKeyword, compact: boolean, range: vscode.Range): vscode.Hover {
+        const md = new vscode.MarkdownString();
+        md.appendMarkdown(`**GPL ${GPLHoverProvider.KEYWORD_KIND_TITLE[kw.kind]}** \`${kw.name}\`\n\n${kw.detail}`);
+        if (!compact) {
+            if (kw.documentation) {
+                md.appendMarkdown(`\n\n---\n\n${kw.documentation}`);
+            }
+            if (kw.sourceUrl) {
+                md.appendMarkdown(`\n\n[Reference](${kw.sourceUrl})`);
+            }
         }
         md.isTrusted = false;
         return new vscode.Hover(md, range);
@@ -424,6 +461,16 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             }
         }
 
+        // 키워드·원시 타입·낱말 연산자·상수 — 완성 목록과 같은 표(`GPL_KEYWORDS`)를 마지막 폴백으로 본다(§1-EA ⑦).
+        // 사용자 심볼·내장 클래스 문서(`String`) 뒤에 두어 더 풍부한 카드를 가리지 않고, 수신자가 있는 멤버 이름
+        // (`obj.Step`)이나 점 표기에는 띄우지 않는다 — 키워드는 체인 안에 오지 않는다.
+        if (!sym && !receiverSegs && !word.includes('.')) {
+            const keyword = findGplKeyword(word);
+            if (keyword) {
+                return this.buildKeywordHover(keyword, compact, wordRange);
+            }
+        }
+
         if (!sym) {
             return undefined;
         }
@@ -440,9 +487,23 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             return new vscode.Hover(md, wordRange);
         }
 
-        md.appendMarkdown(`**${kindTitle}** \`${sym.name}\``);
-
+        // 오버로드 형제(같은 이름·모듈/클래스·컴파일 단위) — 개수 표시와 문서화 주석 병합에 쓴다.
+        let siblings: GPLSymbol[] = [];
         if (isCallable) {
+            try {
+                siblings = this.symbolCache.findOverloadSiblings(sym, this.getDocumentSymbols(document));
+            } catch (e) {
+                this.log(`[Hover Overload Siblings Error] ${e}`);
+            }
+        }
+
+        md.appendMarkdown(`**${kindTitle}** \`${sym.name}\``);
+        if (siblings.length) {
+            md.appendMarkdown(` · +${siblings.length} 오버로드`);
+        }
+
+        if (isCallable || sym.kind === GPLSymbolKind.Delegate) {
+            // Delegate 도 시그니처(매개변수·반환 타입)가 본질이라 코드 블록으로 보인다(§1-DU). 오버로드 병합은 프로시저만.
             md.appendMarkdown('\n\n');
             md.appendCodeblock(this.buildCallableSignature(sym), 'gpl');
         } else {
@@ -473,8 +534,10 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             }
         }
 
-        if (!compact && sym.docComment) {
-            const docMd = this.formatDocComment(sym.docComment, config);
+        if (!compact) {
+            // 오버로드면 빠진 조각을 형제 주석에서 채운다(공통 문서는 이름 단위로 공유, 차이만 개별 문서화 — docCommentOverloads).
+            const resolved = resolveOverloadDoc(sym, siblings);
+            const docMd = resolved ? this.formatDocComment(resolved, config) : undefined;
             if (docMd) {
                 md.appendMarkdown(`\n\n---\n\n${docMd}`);
             }

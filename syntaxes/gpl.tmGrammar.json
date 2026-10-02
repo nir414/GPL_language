@@ -1,10 +1,11 @@
 {
 	"name": "GPL",
 	"scopeName": "source.gpl",
+	"comment": "GPL 전용 규칙을 앞에 두고 나머지는 VS Code 내장 VB(ASP) 문법에 위임한다. 내장 문법은 VBScript 수준이라 Delegate·AddressOf·Shared·Overrides·Try/Catch·Me/MyBase·Inherits 등을 모른다(ai-handoff §1-DT). 규칙을 더할 때 지킬 것 세 가지 — (1) **선언 규칙은 `^\\s*` 로 줄 머리에 고정한다.** TextMate 는 줄 안 아무 곳에서나 매치를 찾으므로 `\\s*` 만 두면 `Public SyncSub As X` 의 `SyncSub` 안 `Sub` 같은 낱말 조각에 걸려 식별자 중간부터 색이 바뀐다(§1-DZ). (2) 줄 머리가 아닌 규칙은 `\\b` 로 낱말 전체를 요구한다. (3) 타입 **정의** 이름만 `entity.name.type.*`, 타입을 **참조**하는 자리(`As X`·`New X`·`Inherits X`)는 모두 `storage.type.gpl` 로 통일한다. 선언 패턴의 수식어 집합은 파서 GPL_PROC_MODIFIERS(cursorExpression.ts)와 같아야 하며 src/test/grammar.test.ts 가 강제한다.",
 	"patterns": [
 		{
 			"comment": "Class declaration — highlight modifiers, keyword, and class name",
-			"match": "(?i)\\s*((?:(?:Public|Private)\\s+)*)((Class))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"match": "(?i)^\\s*((?:(?:Public|Private|Protected|Friend|Shared|Partial|MustInherit|NotInheritable)\\s+)*)(Class)\\s+([A-Za-z_][A-Za-z0-9_]*)",
 			"captures": {
 				"1": { "name": "storage.modifier.gpl" },
 				"2": { "name": "storage.type.class.gpl" },
@@ -13,15 +14,26 @@
 		},
 		{
 			"comment": "Module declaration — highlight module name",
-			"match": "(?i)\\s*((Module))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"match": "(?i)^\\s*((?:(?:Public|Private|Friend)\\s+)*)(Module)\\s+([A-Za-z_][A-Za-z0-9_]*)",
 			"captures": {
-				"1": { "name": "storage.type.namespace.gpl" },
-				"2": { "name": "entity.name.namespace.gpl" }
+				"1": { "name": "storage.modifier.gpl" },
+				"2": { "name": "storage.type.namespace.gpl" },
+				"3": { "name": "entity.name.namespace.gpl" }
 			}
 		},
 		{
-			"comment": "Sub declaration — highlight modifiers, keyword, and sub name",
-			"match": "(?i)\\s*((?:(?:Public|Private|Shared)\\s+)*)((Sub))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"comment": "Delegate declaration — a Delegate defines a *type* (used later as `As Name` / `New Name(AddressOf …)`), so the name gets the type color",
+			"match": "(?i)^\\s*((?:(?:Public|Private|Protected|Friend|Shared|Shadows)\\s+)*)(Delegate)\\s+(Sub|Function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "storage.modifier.gpl" },
+				"2": { "name": "storage.type.delegate.gpl" },
+				"3": { "name": "storage.type.function.gpl" },
+				"4": { "name": "entity.name.type.delegate.gpl" }
+			}
+		},
+		{
+			"comment": "Sub declaration — highlight modifiers, keyword, and sub name (modifier set = GPL_PROC_MODIFIERS)",
+			"match": "(?i)^\\s*((?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial|ReadOnly|WriteOnly|Default)\\s+)*)(Sub)\\s+([A-Za-z_][A-Za-z0-9_]*)",
 			"captures": {
 				"1": { "name": "storage.modifier.gpl" },
 				"2": { "name": "storage.type.function.gpl" },
@@ -29,8 +41,8 @@
 			}
 		},
 		{
-			"comment": "Function declaration — highlight modifiers, keyword, and function name",
-			"match": "(?i)\\s*((?:(?:Public|Private|Shared)\\s+)*)((Function))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"comment": "Function declaration — highlight modifiers, keyword, and function name (modifier set = GPL_PROC_MODIFIERS)",
+			"match": "(?i)^\\s*((?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial|ReadOnly|WriteOnly|Default)\\s+)*)(Function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
 			"captures": {
 				"1": { "name": "storage.modifier.gpl" },
 				"2": { "name": "storage.type.function.gpl" },
@@ -38,8 +50,8 @@
 			}
 		},
 		{
-			"comment": "Property declaration — highlight modifiers, keyword, and property name",
-			"match": "(?i)\\s*((?:(?:Public|Private|Shared|ReadOnly|WriteOnly)\\s+)*)((Property))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"comment": "Property declaration — highlight modifiers, keyword, and property name (modifier set = GPL_PROC_MODIFIERS)",
+			"match": "(?i)^\\s*((?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial|ReadOnly|WriteOnly|Default)\\s+)*)(Property)\\s+([A-Za-z_][A-Za-z0-9_]*)",
 			"captures": {
 				"1": { "name": "storage.modifier.gpl" },
 				"2": { "name": "storage.type.function.gpl" },
@@ -48,7 +60,7 @@
 		},
 		{
 			"comment": "Const declaration — highlight constant names",
-			"match": "(?i)\\s*((?:(?:Public|Private|Shared|Static)\\s+)*)((Const))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"match": "(?i)^\\s*((?:(?:Public|Private|Protected|Friend|Shared|Static)\\s+)*)(Const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
 			"captures": {
 				"1": { "name": "storage.modifier.gpl" },
 				"2": { "name": "storage.type.constant.gpl" },
@@ -56,19 +68,63 @@
 			}
 		},
 		{
-			"comment": "Type annotation — highlight type names after As",
-			"match": "(?i)\\b(As)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"comment": "Block terminators the built-in grammar does not know (it has End Sub/Function/Class/Property only)",
+			"match": "(?i)\\b(End\\s+(?:Module|Get|Set|Try|While|Select|If))\\b",
 			"captures": {
-				"1": { "name": "keyword.operator.type.gpl" },
+				"1": { "name": "keyword.control.end.gpl" }
+			}
+		},
+		{
+			"comment": "Control-flow keywords missing from the built-in grammar (Try/Catch/Finally/Throw, GoTo, Step, Exit While/Try/Select, Case Else)",
+			"match": "(?i)\\b(Try|Catch|Finally|Throw|GoTo|Step|Exit\\s+(?:While|Try|Select)|Case\\s+Else)\\b",
+			"captures": {
+				"1": { "name": "keyword.control.gpl" }
+			}
+		},
+		{
+			"comment": "Declaration modifiers and parameter modifiers missing from the built-in grammar",
+			"match": "(?i)\\b(Shared|ReadOnly|WriteOnly|Friend|Protected|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial|Static|Optional|ParamArray|ByVal|ByRef|Preserve|Delegate)\\b",
+			"captures": {
+				"1": { "name": "storage.modifier.gpl" }
+			}
+		},
+		{
+			"comment": "Inheritance keywords — the following name is a type reference",
+			"match": "(?i)\\b(Inherits|Implements)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+			"captures": {
+				"1": { "name": "keyword.other.inherits.gpl" },
 				"2": { "name": "storage.type.gpl" }
 			}
 		},
 		{
-			"comment": "Constructor type usage — highlight type names after New",
-			"match": "(?i)\\b(New)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+			"comment": "Operators missing from the built-in grammar — AddressOf (delegate target), Is/IsNot (reference comparison)",
+			"match": "(?i)\\b(AddressOf|IsNot|Is)\\b",
+			"captures": {
+				"1": { "name": "keyword.operator.gpl" }
+			}
+		},
+		{
+			"comment": "Object self references",
+			"match": "(?i)\\b(Me|MyBase)\\b",
+			"captures": {
+				"1": { "name": "variable.language.gpl" }
+			}
+		},
+		{
+			"comment": "Type annotation — `As <Type>` 와 `As New <Type>`. New 를 따로 잡지 않으면 `Dim ex As New Exception` 에서 키워드 New 가 타입 색을 먹고 정작 Exception 은 색이 없다.",
+			"match": "(?i)\\b(As)\\s+(?:(New)\\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+			"captures": {
+				"1": { "name": "keyword.operator.type.gpl" },
+				"2": { "name": "keyword.operator.new.gpl" },
+				"3": { "name": "storage.type.gpl" }
+			}
+		},
+		{
+			"comment": "Constructor type usage — `New <Type>` (`As New` 는 위 규칙이 먼저 잡는다)",
+			"match": "(?i)\\b(New)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
 			"captures": {
 				"1": { "name": "keyword.operator.new.gpl" },
-				"2": { "name": "entity.name.type.gpl" }
+				"2": { "name": "storage.type.gpl" }
 			}
 		},
 		{ "include": "source.asp.vb.net" }

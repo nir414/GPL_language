@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "GPL Language Support",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.9.1",
+    "version": "0.9.11",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -342,7 +342,7 @@
             },
             {
                 "command": "gpl.console.ensure",
-                "title": "Ensure Runtime Console (1403 연결 확인)",
+                "title": "Ensure Runtime Console (런타임 콘솔 연결 확인)",
                 "category": "GPL",
                 "icon": "$(refresh)"
             },
@@ -372,7 +372,7 @@
             },
             {
                 "command": "gpl.controller.toggleTrafficResponseBody",
-                "title": "Toggle Traffic Response Body (1402 응답 본문 표시)",
+                "title": "Toggle Traffic Response Body (명령 콘솔 응답 본문 표시)",
                 "category": "GPL",
                 "icon": "$(eye)"
             },
@@ -427,6 +427,12 @@
             {
                 "command": "gpl.controller.copySituationForChat",
                 "title": "Copy Situation for Chat (상황 복사)",
+                "category": "GPL",
+                "icon": "$(copy)"
+            },
+            {
+                "command": "gpl.controller.copyThreads",
+                "title": "Copy All Threads (전체 쓰레드 복사)",
                 "category": "GPL",
                 "icon": "$(copy)"
             },
@@ -557,6 +563,12 @@
                 "command": "gpl.debug.toggleThreadLock",
                 "title": "Toggle Thread Lock (스레드 실행 잠금 토글)",
                 "category": "GPL"
+            },
+            {
+                "command": "gpl.debug.stopSession",
+                "title": "Stop Debugging (디버그 중지 · 프로그램 정지)",
+                "category": "GPL",
+                "icon": "$(debug-stop)"
             },
             {
                 "command": "gpl.controller.threadStart",
@@ -704,6 +716,13 @@
             ]
         },
         "menus": {
+            "debug/toolBar": [
+                {
+                    "command": "gpl.debug.stopSession",
+                    "when": "debugType == 'brooks-gpl'",
+                    "group": "navigation@71"
+                }
+            ],
             "debug/callstack/context": [
                 {
                     "command": "gpl.debug.lockThread",
@@ -727,6 +746,10 @@
                 },
                 {
                     "command": "gpl.debug.toggleThreadLock",
+                    "when": "inDebugMode && debugType == 'brooks-gpl'"
+                },
+                {
+                    "command": "gpl.debug.stopSession",
                     "when": "inDebugMode && debugType == 'brooks-gpl'"
                 },
                 {
@@ -1195,6 +1218,11 @@
                     "group": "threadSection@5"
                 },
                 {
+                    "command": "gpl.controller.copyThreads",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "threadSection@6"
+                },
+                {
                     "command": "gpl.controller.refreshFtp",
                     "when": "view == gplThreads && viewItem == section-ftp",
                     "group": "inline"
@@ -1226,12 +1254,12 @@
                 },
                 {
                     "command": "gpl.controller.copyError",
-                    "when": "view == gplThreads && viewItem == errorItem",
+                    "when": "view == gplThreads && viewItem =~ /^(errorItem|sysErrorItem|errorChainItem|gplThread-error)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.copyError",
-                    "when": "view == gplThreads && viewItem == errorItem",
+                    "when": "view == gplThreads && viewItem =~ /^(errorItem|sysErrorItem|errorChainItem|gplThread-error)$/",
                     "group": "error@1"
                 },
                 {
@@ -1326,13 +1354,13 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Auto-start runtime console (port 1403) after successful deploy."
+                    "description": "Auto-start the runtime console after a successful deploy."
                 },
                 "gpl.runtimeConsole.autoStartOnDebug": {
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Auto-start runtime console (port 1403) when a brooks-gpl debug session starts."
+                    "description": "Auto-start the runtime console when a brooks-gpl debug session starts."
                 },
                 "gpl.runtimeConsole.linePrefix": {
                     "scope": "window",
@@ -1350,25 +1378,25 @@
                         "message",
                         "[RT] [MyProject] message (legacy format)"
                     ],
-                    "description": "Prefix prepended to each GPL Console (port 1403) output line."
+                    "description": "Prefix prepended to each runtime console output line."
                 },
                 "gpl.runtimeConsole.showStateInOutputChannel": {
                     "scope": "window",
                     "type": "boolean",
                     "default": false,
-                    "description": "Mirror RC1403 state logs (CONNECTED/DISCONNECTED/no_payload) to output channels. Keep false to show payload-only logs in GPL Console."
+                    "description": "Mirror runtime console state logs (CONNECTED/DISCONNECTED/no_payload) to output channels. Keep false to show payload-only logs in GPL Console."
                 },
                 "gpl.runtimeConsole.noPayloadWarnThreshold": {
                     "scope": "window",
                     "type": "number",
                     "default": 10,
-                    "description": "Consecutive anomalous no-payload attempts before 1403 unstable warning is shown. Immediate EOF polling is treated separately."
+                    "description": "Consecutive anomalous no-payload attempts before the runtime console unstable warning is shown. Immediate EOF polling is treated separately."
                 },
                 "gpl.runtimeConsole.unstableWarnCooldownMs": {
                     "scope": "window",
                     "type": "number",
                     "default": 60000,
-                    "description": "Cooldown for repeated 1403 unstable warnings in milliseconds."
+                    "description": "Cooldown for repeated runtime console unstable warnings in milliseconds."
                 },
                 "gpl.runtimeConsole.emptyNoticeEvery": {
                     "scope": "window",
@@ -1380,32 +1408,32 @@
                     "scope": "window",
                     "type": "number",
                     "default": 1000,
-                    "description": "Base polling delay for 1403 sessions that close immediately without payload because the event queue is empty (Immediate EOF)."
+                    "description": "Base polling delay for runtime console sessions that close immediately without payload because the event queue is empty (Immediate EOF)."
                 },
                 "gpl.runtimeConsole.immediateEofReconnectMaxMs": {
                     "scope": "window",
                     "type": "number",
                     "default": 15000,
-                    "description": "Maximum polling delay for repeated Immediate EOF 1403 sessions."
+                    "description": "Maximum polling delay for repeated Immediate EOF runtime console sessions."
                 },
                 "gpl.runtimeConsole.batchReconnectDelayMs": {
                     "scope": "window",
                     "type": "number",
                     "default": 250,
                     "minimum": 50,
-                    "description": "1403 이벤트 배치를 받고 제어기가 세션을 닫은 뒤 다시 연결하기까지 대기(ms). 작을수록 런타임 이벤트 반응이 빠르지만 제어기 TCP 접속 횟수가 늘어납니다(GitHub #22 — 접속 churn). 디버거의 정지 감지는 1402 백업 폴이 보완합니다."
+                    "description": "런타임 콘솔 이벤트 배치를 받고 제어기가 세션을 닫은 뒤 다시 연결하기까지 대기(ms). 작을수록 런타임 이벤트 반응이 빠르지만 제어기 TCP 접속 횟수가 늘어납니다(GitHub #22 — 접속 churn). 디버거의 정지 감지는 명령 콘솔 백업 폴이 보완합니다."
                 },
                 "gpl.runtimeConsole.idleReconnectBaseMs": {
                     "scope": "window",
                     "type": "number",
                     "default": 5000,
-                    "description": "Base reconnect delay for idle/no-payload 1403 sessions (adaptive)."
+                    "description": "Base reconnect delay for idle/no-payload runtime console sessions (adaptive)."
                 },
                 "gpl.runtimeConsole.idleReconnectMaxMs": {
                     "scope": "window",
                     "type": "number",
                     "default": 30000,
-                    "description": "Maximum reconnect delay for idle/no-payload 1403 sessions (adaptive)."
+                    "description": "Maximum reconnect delay for idle/no-payload runtime console sessions (adaptive)."
                 },
                 "gpl.hover.enabled": {
                     "scope": "window",
@@ -1503,7 +1531,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Prefer IPv4 when connecting to controller ports (1402/1403) to avoid address-family issues in some environments."
+                    "description": "Prefer IPv4 when connecting to the controller command/runtime console ports (1402/1403) to avoid address-family issues in some environments."
                 },
                 "gpl.controller.timeoutMs": {
                     "scope": "window",
@@ -1516,7 +1544,7 @@
                     "type": "number",
                     "default": 8000,
                     "minimum": 1000,
-                    "description": "연결 끊김 감지용 프로브(Show Thread 폴링·재프로브)의 응답 대기 시간(ms). 명령 타임아웃(timeoutMs)과 별개입니다. 프로브가 연속 3회(연결 거부·도달 불가는 2회) 실패하면 연결 유실로 판정해 연결 상태를 끊습니다(자동 재접속 없음 — 다시 Connect). 첫 실패나 1403 콘솔 오류·keep-alive 소켓 오류·대시보드 프로브 실패 뒤에는 정규 폴링 간격을 기다리지 않고 1초 간격으로 재프로브합니다."
+                    "description": "연결 끊김 감지용 프로브(Show Thread 폴링·재프로브)의 응답 대기 시간(ms). 명령 타임아웃(timeoutMs)과 별개입니다. 프로브가 연속 3회(연결 거부·도달 불가는 2회) 실패하면 연결 유실로 판정해 연결 상태를 끊습니다(자동 재접속 없음 — 다시 Connect). 첫 실패나 런타임 콘솔 오류·keep-alive 소켓 오류·대시보드 프로브 실패 뒤에는 정규 폴링 간격을 기다리지 않고 1초 간격으로 재프로브합니다."
                 },
                 "gpl.controller.defaultProject": {
                     "scope": "window",
@@ -1529,13 +1557,13 @@
                     "scope": "window",
                     "type": "number",
                     "default": 180000,
-                    "description": "채널 교란 뒤 복구 대기 상한(ms). Unload/Load/Compile/Start처럼 실행 중 1402 명령 채널을 일시적으로 못 쓰게 만들 수 있는 명령이 응답 없이 끝나면, 그 뒤의 연결 거부(ECONNREFUSED)를 연결 유실로 세지 않고 이 시간만큼 복구를 기다립니다(5초 간격 Show Thread 재프로브). 실측 2026-08-31: Unload 뒤 약 2.5분간 1402 재접속이 거부되다가 재부팅 없이 정상 복귀했고, 종전 판정에서는 거부 2회로 3초 만에 유실이 확정됐습니다. 이 시간 안에 응답이 오면 연결을 유지하고, 넘기면 종전과 같은 임계 판정(연속 3회·거부 2회)으로 넘어갑니다. 0으로 두면 이 기능을 끄고 종전 판정만 씁니다. 대가: 실제 제어기 다운을 최대 이 시간만큼 늦게 감지합니다."
+                    "description": "채널 교란 뒤 복구 대기 상한(ms). Unload/Load/Compile/Start처럼 실행 중 명령 콘솔 채널을 일시적으로 못 쓰게 만들 수 있는 명령이 응답 없이 끝나면, 그 뒤의 연결 거부(ECONNREFUSED)를 연결 유실로 세지 않고 이 시간만큼 복구를 기다립니다(5초 간격 Show Thread 재프로브). 실측 2026-08-31: Unload 뒤 약 2.5분간 명령 콘솔 재접속이 거부되다가 재부팅 없이 정상 복귀했고, 종전 판정에서는 거부 2회로 3초 만에 유실이 확정됐습니다. 이 시간 안에 응답이 오면 연결을 유지하고, 넘기면 종전과 같은 임계 판정(연속 3회·거부 2회)으로 넘어갑니다. 0으로 두면 이 기능을 끄고 종전 판정만 씁니다. 대가: 실제 제어기 다운을 최대 이 시간만큼 늦게 감지합니다."
                 },
                 "gpl.agentBridge.enabled": {
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 1402 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. 끄면 MCP는 제어기에 직접 접속합니다."
+                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 명령 콘솔 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. 끄면 MCP는 제어기에 직접 접속합니다."
                 },
                 "gpl.controller.commandPolicyEnabled": {
                     "scope": "window",
@@ -1561,21 +1589,21 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "1402 명령 연결을 명령마다 새로 열지 않고 유지(keep-alive)합니다. 트리/상태바 폴링·디버그 백업 폴·BP 동기화가 모두 이 경로를 지나므로 제어기 TCP accept 부하(접속 churn)가 크게 줄어듭니다(GitHub #22). 응답이 </STATUS>로 깨끗하게 끝난 경우에만 연결을 재사용하고, 그 외(타임아웃·불완전 응답·오류)에는 닫고 다시 연결합니다. 문제가 있으면 끄면 종전처럼 명령마다 단명 연결을 사용합니다."
+                    "description": "명령 콘솔 연결을 명령마다 새로 열지 않고 유지(keep-alive)합니다. 트리/상태바 폴링·디버그 백업 폴·BP 동기화가 모두 이 경로를 지나므로 제어기 TCP accept 부하(접속 churn)가 크게 줄어듭니다(GitHub #22). 응답이 </STATUS>로 깨끗하게 끝난 경우에만 연결을 재사용하고, 그 외(타임아웃·불완전 응답·오류)에는 닫고 다시 연결합니다. 문제가 있으면 끄면 종전처럼 명령마다 단명 연결을 사용합니다."
                 },
                 "gpl.controller.keepAliveIdleCloseMs": {
                     "scope": "window",
                     "type": "number",
                     "default": 30000,
                     "minimum": 1000,
-                    "description": "keep-alive 1402 연결을 명령 없이 유지하는 최대 시간(ms). 지나면 닫고 다음 명령에서 다시 연결합니다. 유휴 ping(keepAliveIdlePingMs)이 켜져 있으면 명령 공백이 이 시간에 이르기 전에 ping 이 나가므로 사실상 닫히지 않습니다."
+                    "description": "keep-alive 로 유지하는 명령 콘솔 연결을 명령 없이 두는 최대 시간(ms). 지나면 닫고 다음 명령에서 다시 연결합니다. 유휴 ping(keepAliveIdlePingMs)이 켜져 있으면 명령 공백이 이 시간에 이르기 전에 ping 이 나가므로 사실상 닫히지 않습니다."
                 },
                 "gpl.controller.keepAliveIdlePingMs": {
                     "scope": "window",
                     "type": "number",
                     "default": 5000,
                     "minimum": 0,
-                    "description": "제어기에 연결된 동안 1402 명령이 이 시간(ms) 동안 없으면 가벼운 읽기 전용 명령(keepAliveIdlePingCommand)을 보내 1402 세션을 유지합니다. 0이면 끕니다. GDE는 유휴 시 5초마다 파라미터 읽기를 보내는데(2026-06-23 캡처), 제어기는 1402 세션을 쥔 클라이언트에게 1403 런타임 스트림을 계속 열어 두는 것으로 관측되어(단명 1402 시절엔 1403이 배치마다 끊김) 1403 안정성을 위해 GDE와 같은 동작을 따릅니다. keepAlive1402가 꺼져 있으면 동작하지 않습니다."
+                    "description": "제어기에 연결된 동안 명령 콘솔 명령이 이 시간(ms) 동안 없으면 가벼운 읽기 전용 명령(keepAliveIdlePingCommand)을 보내 명령 콘솔 세션을 유지합니다. 0이면 끕니다. GDE는 유휴 시 5초마다 파라미터 읽기를 보내는데(2026-06-23 캡처), 제어기는 명령 콘솔 세션을 쥔 클라이언트에게 런타임 콘솔 스트림을 계속 열어 두는 것으로 관측되어(단명 연결 시절엔 런타임 콘솔이 배치마다 끊김) 런타임 콘솔 안정성을 위해 GDE와 같은 동작을 따릅니다. keepAlive1402가 꺼져 있으면 동작하지 않습니다."
                 },
                 "gpl.controller.keepAliveIdlePingCommand": {
                     "scope": "window",
@@ -1587,7 +1615,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "GPL Traffic 출력 채널에 1402 명령 응답의 본문을 줄 단위(' | ' 라인)로 실시간 표시합니다. 끄면 '<<<' STATUS 요약만 남깁니다. GPL Controller 트리의 '1402 통신 모니터' 항목에서도 켜고 끌 수 있습니다."
+                    "description": "GPL Traffic 출력 채널에 명령 콘솔 응답의 본문을 줄 단위(' | ' 라인)로 실시간 표시합니다. 끄면 '<<<' STATUS 요약만 남깁니다. GPL Controller 트리의 '통신 모니터' 항목에서도 켜고 끌 수 있습니다."
                 },
                 "gpl.controller.trafficLogMaxResponseChars": {
                     "scope": "window",
@@ -1673,7 +1701,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "`Start`에 `-event`를 붙입니다(기본 켜짐). 공식 문서상 `-event`는 쓰레드 상태 변경을 콘솔 메시지가 아니라 **이벤트로** 보내며, GDE도 캡처 2회 모두 `Start <프로젝트> -event`를 사용했습니다(2026-06-23) — 1403 스트림으로 상태 변경을 받아 폴링 의존을 줄이는 표준 방식입니다. 끄면 `-noevent`를 붙여 종전 콘솔 메시지 방식으로 되돌립니다. `-compile`은 항상 붙습니다 — 제어기의 Start는 스위치 없이는 컴파일하지 않고 옛 바이너리를 실행하기 때문입니다(2026-09-10 실기 관측, ai-handoff §0.7)."
+                    "description": "`Start`에 `-event`를 붙입니다(기본 켜짐). 공식 문서상 `-event`는 쓰레드 상태 변경을 콘솔 메시지가 아니라 **이벤트로** 보내며, GDE도 캡처 2회 모두 `Start <프로젝트> -event`를 사용했습니다(2026-06-23) — 런타임 콘솔 스트림으로 상태 변경을 받아 폴링 의존을 줄이는 표준 방식입니다. 끄면 `-noevent`를 붙여 종전 콘솔 메시지 방식으로 되돌립니다. `-compile`은 항상 붙습니다 — 제어기의 Start는 스위치 없이는 컴파일하지 않고 옛 바이너리를 실행하기 때문입니다(2026-09-10 실기 관측, ai-handoff §0.7)."
                 },
                 "gpl.debug.jumpToCursor": {
                     "scope": "window",
@@ -1695,7 +1723,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": false,
-                    "description": "조건부 브레이크포인트·히트 조건·로그포인트를 확장이 흉내냅니다(기본 꺼짐). 제어기 `Set Break`에는 조건·히트·로그 스위치가 없으므로(공식 문서 확인) BP가 적중할 때마다 확장이 조건을 평가하고 **불일치하면 자동으로 Continue를 보냅니다** — 자동 재개는 모션을 다시 움직이는 행위이므로 기본값을 꺼짐으로 둡니다. 켜면 VS Code의 조건·히트 수·로그 메시지 입력 UI가 나타납니다. 조건 평가에 실패하면 지나치지 않고 정지를 유지합니다. 적중마다 1402 왕복이 늘어납니다."
+                    "description": "조건부 브레이크포인트·히트 조건·로그포인트를 확장이 흉내냅니다(기본 꺼짐). 제어기 `Set Break`에는 조건·히트·로그 스위치가 없으므로(공식 문서 확인) BP가 적중할 때마다 확장이 조건을 평가하고 **불일치하면 자동으로 Continue를 보냅니다** — 자동 재개는 모션을 다시 움직이는 행위이므로 기본값을 꺼짐으로 둡니다. 켜면 VS Code의 조건·히트 수·로그 메시지 입력 UI가 나타납니다. 조건 평가에 실패하면 지나치지 않고 정지를 유지합니다. 적중마다 명령 콘솔 왕복이 늘어납니다."
                 },
                 "gpl.debug.integerHex": {
                     "scope": "window",
@@ -1708,7 +1736,7 @@
                     "type": "number",
                     "default": 1000,
                     "minimum": 250,
-                    "description": "디버그 중 Running 쓰레드가 있을 때 1403 런타임 스트림이 끊겨 있으면 이 간격(ms)으로 Show Thread 백업 폴링을 합니다. 1403이 정상이면 gpl.controller.threadPollIntervalMs(기본 5000)로 완화됩니다(GitHub #22 — 1Hz 백업 폴이 77분간 922회 접속)."
+                    "description": "디버그 중 Running 쓰레드가 있을 때 런타임 콘솔 스트림이 끊겨 있으면 이 간격(ms)으로 Show Thread 백업 폴링을 합니다. 런타임 콘솔이 정상이면 gpl.controller.threadPollIntervalMs(기본 5000)로 완화됩니다(GitHub #22 — 1Hz 백업 폴이 77분간 922회 접속)."
                 },
                 "gpl.keybindings.gdeStyle": {
                     "scope": "window",

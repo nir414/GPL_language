@@ -6,7 +6,7 @@ PreciseFlex 제어기의 프로그램은 [GPL(Guidance Programming Language)](ht
 VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐색·자동완성 같은 현대적 편집
 기능이 부족합니다. 이 확장은 그 간극을 메웁니다:
 
-- **제어기 연동** — TCP(1402 명령)·FTP(업로드)·1403(런타임 출력) 통신으로 VS Code 안에서
+- **제어기 연동** — 명령 콘솔·런타임 콘솔·FTP(업로드) 통신으로 VS Code 안에서
   업로드 → 컴파일 → 실행 → 모니터링까지 수행
 - **디버깅** — `brooks-gpl` 디버그 어댑터(DAP)로 브레이크포인트, 스텝 실행, 변수 조회
 - **AI 에이전트 연동** — AI가 확장 명령만으로 배포/디버깅 루프를 돌릴 수 있는 명령 API 제공
@@ -57,7 +57,7 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 
 - `Start`에는 기본으로 `-compile`과 `-event`가 붙습니다(`-event`는 `gpl.controller.startEventMode`로 조절).
   `-compile`이 없으면 제어기는 컴파일하지 않고 직전에 컴파일된 **옛 바이너리를 그대로 실행**하므로, 방금 올린
-  소스가 반영되지 않습니다. `-event`는 쓰레드 상태 변경을 콘솔 메시지가 아니라 **이벤트로** 보내며(1403 스트림),
+  소스가 반영되지 않습니다. `-event`는 쓰레드 상태 변경을 콘솔 메시지가 아니라 **이벤트로** 보내며(런타임 콘솔 스트림),
   GDE도 항상 이 형태를 사용합니다.
 
 ### 언어 기능
@@ -95,6 +95,13 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
   ' 범위가 적용된 값
   Public Function Clamp(value As Number, min As Number, max As Number) As Number
   ```
+
+- 오버로드(같은 이름의 Sub/Function 여럿)는 주석을 복붙하지 않아도 됩니다 — **공통 문서는 이름 단위로 공유되고,
+  오버로드별 차이만 개별 문서화**합니다. 가장 완전한 시그니처 하나에 전체 문서를 쓰고 나머지에는 차이 한 줄과
+  그 오버로드에만 있는 매개변수만 쓰면, 호버·자동완성·시그니처 도움말이 빠진 조각(공통 설명·같은 이름의
+  매개변수·같은 반환 타입의 Returns)을 형제 오버로드에서 채워 출처와 함께 표시합니다. `'''` 골격도 형제가 이미
+  설명한 매개변수는 뺍니다. 어느 오버로드의 문서를 공통으로 삼을지는 선언 순서가 아니라 문서의 풍부함·매개변수
+  유사도로 정합니다.
 
 ## 명령어
 
@@ -135,9 +142,9 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 | `GPL: Sync Breakpoints` | 제어기를 에디터 기준으로 맞춥니다(에디터에 없는 잔재는 해제, 빠진 것은 설정) |
 | `GPL: Pull Breakpoints from Controller` | 반대 방향 — 제어기에 걸린 중단점을 에디터로 가져옵니다 |
 | `GPL: Promote Source for Breakpoint` | 라이브러리로 딸려 온 소스에 중단점을 걸 수 있게 메인 `.gpr` 의 `ProjectSource` 로 올립니다(`.gpl` 우클릭). 빠지는 파일도 중복 컴파일도 없는지 검증한 뒤 diff 미리보기와 확인을 거쳐서만 저장 |
-| `GPL: Start/Stop Runtime Console` | 1403 런타임 콘솔 시작/중지 — 패널 트리의 `런타임 콘솔` 항목 우클릭 |
-| `GPL: Start/Stop Live Log Terminal` | 1402/1403 실시간 로그 터미널 — 같은 항목 우클릭 |
-| `GPL: Show Traffic Monitor` | 1402 송신 명령·수신 응답 본문(실시간, 줄 단위)과 1403 트래픽 모니터 — 패널 트리의 `1402 통신 모니터` 항목에서 열고 본문 표시 켜기/끄기·지우기 |
+| `GPL: Start/Stop Runtime Console` | 런타임 콘솔 시작/중지 — 패널 트리의 `런타임 콘솔` 항목 우클릭 |
+| `GPL: Start/Stop Live Log Terminal` | 명령 콘솔·런타임 콘솔 실시간 로그 터미널 — 같은 항목 우클릭 |
+| `GPL: Show Traffic Monitor` | 명령 콘솔 송신 명령·수신 응답 본문(실시간, 줄 단위)과 런타임 콘솔 트래픽 모니터 — 패널 트리의 `통신 모니터` 항목에서 열고 본문 표시 켜기/끄기·지우기 |
 | `GPL: Send Command to Controller` | 콘솔 명령 직접 전송 |
 | `GPL: Show/Set Global` / `Show DIO` / `Set DIO` | 전역변수·DIO 조회/변경 |
 | `GPL: Refresh All` | 쓰레드·FTP·시스템 정보 전체 새로고침 — 패널 상단 아이콘 |
@@ -159,11 +166,16 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 | `gpl.controller.connect({ ip?, port?, save?, silent? })` | 인자를 주면 입력 상자 없이 연결하고 결과를 반환(인자 없으면 종전 대화형) |
 | URI `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>` | 외부 진입점(`code --open-url`) — 이 확장의 **모든 명령**을 실행(`?key=value` 평면 인자, `/command?id=…`도 가능). 별칭 `/connect?ip&port`, `/disconnect`, `/getState`, `/dashboard`. 결과는 Output `[URI]`로 확인 |
 
-**MCP 서버(`controller-mcp`)는 이 확장을 통해 제어기를 다룹니다.** 확장이 실행 중이면 MCP의 1402 명령이 확장 세션으로
+**MCP 서버(`controller-mcp`)는 이 확장을 통해 제어기를 다룹니다.** 확장이 실행 중이면 MCP의 명령 콘솔 명령이 확장 세션으로
 라우팅되어(Agent Bridge, `gpl.agentBridge.enabled`) 세션 경쟁이 없고, MCP 도구 `extension_command`로 Deploy·Quick Compile·
 브레이크포인트 동기화 같은 **확장 기능 자체**를 쓸 수 있습니다. 현재 경로는 `extension_status`로 확인합니다.
 
-접근은 제한하지 않습니다. 제어기 안전 조건(Step/Continue 연타 방지, 정지 정착 전 Compile/Start 금지, Compile 직후
+`GPL: Export AI Agent Setup`은 설정 파일을 만들고 자동 점검합니다. 프로젝트가 여럿이면 열린 파일로 대상을 추측하지
+않고 **설정 정상 · 작업 대상 미확정**으로 표시하며, `프로젝트 선택`에서 작업할 폴더를 지정할 수 있습니다.
+선택한 이름과 폴더는 재실행해도 유지됩니다. 새 설정의 MCP 세션에서는 먼저 `project_target`에 `projectDir`을
+지정해 대상을 확인해야 프로젝트 도구를 사용할 수 있습니다. CLAUDE/AGENTS 안내가 서로 다르면 점검 결과로 알립니다.
+
+제어기 안전 조건(Step/Continue 연타 방지, 정지 정착 전 Compile/Start 금지, Compile 직후
 Start 완충)은 어느 경로로 명령을 보내든 확장의 **명령 정책**이 대신 기다려서 충족시킵니다(`gpl.controller.commandPolicyEnabled`,
 개입 내용은 GPL Traffic `--- policy:` 줄). 한도 안에 충족되지 않으면 명령을 보내지 않고 `{ ok: false, error: "policy-hold" }`로 알립니다.
 
@@ -178,16 +190,16 @@ AI 에이전트는 직접 FTP/TCP 자동화로 확장 경로를 우회하지 않
 | 설정 | 기본값 | 설명 |
 | --- | --- | --- |
 | `gpl.controller.ip` | `192.168.0.1` | Brooks 제어기 IP |
-| `gpl.controller.port` | `1402` | TCP 명령 포트 |
-| `gpl.controller.consolePort` | `1403` | 런타임 출력 이벤트 포트 |
+| `gpl.controller.port` | `1402` | 명령 콘솔 포트 |
+| `gpl.controller.consolePort` | `1403` | 런타임 콘솔(출력 이벤트) 포트 |
 | `gpl.controller.timeoutMs` | `10000` | 명령 타임아웃 (ms) |
 | `gpl.controller.ftpBasePath` | `/GPL` | FTP 기본 경로 |
 | `gpl.trace.server` | `off` | 로그 수준 (`off` / `messages` / `verbose`) |
 
-이 외 전체 설정(1403 재연결 튜닝 `gpl.runtimeConsole.*`, 자동 시작, 폴링 간격 등)은
+이 외 전체 설정(런타임 콘솔 재연결 튜닝 `gpl.runtimeConsole.*`, 자동 시작, 폴링 간격 등)은
 Settings UI에서 `gpl.` 검색으로 확인할 수 있습니다.
 
-- 제어기 연결 성공 시 1403 출력 이벤트 소비자도 함께 연결되고, 연결 해제 시 함께 정리됩니다.
+- 제어기 연결 성공 시 런타임 콘솔 소비자도 함께 연결되고, 연결 해제 시 함께 정리됩니다.
 
 ## 문제 해결 빠른 체크리스트
 
@@ -198,7 +210,7 @@ Settings UI에서 `gpl.` 검색으로 확인할 수 있습니다.
   - 명령 팔레트에서 `GPL: Refresh Symbols` 실행
   - 워크스페이스 루트에 `Project.gpr` 존재 여부 확인
 - 제어기 연결 실패
-  - `gpl.controller.ip`, 포트(기본 1402/1403/21) 확인
+  - `gpl.controller.ip`, 포트(명령 콘솔 1402 · 런타임 콘솔 1403 · FTP 21) 확인
   - 네트워크 연결 및 방화벽 점검
 - 배포/컴파일 실패
   - 먼저 Deploy(Build Only)로 실패 단계(STOP/UPLOAD/COMPILE) 분리 확인

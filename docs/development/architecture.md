@@ -57,17 +57,17 @@ flowchart BT
 
 | 계층(폴더) | 역할 | import 가능 | vscode |
 | --- | --- | --- | --- |
-| `util/` | 어느 도메인에도 속하지 않는 순수 헬퍼 (`pathKey`) | — | 금지 |
-| `language/` | GPL 언어 분석 전부 — 파서·문 사전·GPL Dictionary 데이터/조회·문서화 주석·스코프·이름 바꾸기 규칙·식별자 규칙 | `util` | **금지** (11+6 모듈 전부 순수) |
+| `util/` | 어느 도메인에도 속하지 않는 순수 헬퍼 (`pathKey`·`formatBytes`) | — | 금지 |
+| `language/` | GPL 언어 분석 전부 — 파서·문 사전·GPL Dictionary 데이터/조회·문서화 주석(+오버로드 병합)·분기형 getter 계산·스코프·이름 바꾸기 규칙·식별자 규칙 | `util` | **금지** (20 모듈 전부 순수) |
 | `project/` | Project.gpr 모델 — 소스 목록·라이브러리 해석·컴파일 단위·소스 승격·.gpr 동기화 순수 로직 | `language`, `util` | 허용 목록 2개만 (`projectFileScope`·`promoteSourceCommand`) |
 | `log/` | 1402/1403 트래픽 미러 터미널 | — | 허용 (단일 파일) |
 | `config.ts` | 설정 값 정규화 단일 출처, `EXTENSION_VERSION` | `language` | 허용 |
-| `controller/` | 제어기 축 — 소켓·명령 정책·응답 파서·배포 파이프라인·잠금·중단점·상태 판정·AI 정책 | `project`, `util`, `log` | 허용 목록 9개만 (아래 §3) |
+| `controller/` | 제어기 축 — 소켓·명령 정책·응답 파서·배포 파이프라인(업로드 진행 집계 `uploadProgress` 포함)·잠금·중단점·상태 판정·AI 정책 | `project`, `util`, `log` | 허용 목록 9개만 (아래 §3) |
 | `symbolCache.ts` | 워크스페이스 심볼 인덱스 — providers 와 activation 이 공유하는 언어 서비스 호스트 | `language`, `project`, `util`, `config` | 허용 |
 | `debug/` | DAP 어댑터(`gplDebugSession`)·구성 provider·정지/스텝 판정·launch.json 편집 | `controller`, `project`, `language`, `util` | 허용 목록 2개만 |
 | `views/` | 트리·상태바·대시보드와 그 표시 규칙 | `controller`, `util`, `config` | 허용 목록 3개만 |
 | `providers/` | VS Code 언어 provider 구현 13종 | `language`, `project`, `util`, `config`, `symbolCache` | 전부 허용(접착 계층) |
-| `ai/` | AI 에이전트 설정 내보내기 | — | 허용 (단일 파일) |
+| `ai/` | AI 에이전트 설정 내보내기·점검. 대상 해석은 `controller/projectTarget`, 경로 비교는 `util/pathKey` 사용 | `controller`, `util` | `exportAgentSetup`만 허용 (`agentSetupChecks`는 순수) |
 | `activation/` | 명령 그룹별 `activateXxx(host)` 14개 + `ExtensionHost` + 공용 제어기 조작(`controllerOps`) | 위 전부 | 전부 허용(접착 계층) |
 | `extension.ts` | `activate()`/`deactivate()` — 배선만(195줄) | 전부 | 허용 |
 | `test/` | Node 단독 러너(`harness.ts`) + 순수 모듈 테스트 + 구조 테스트 | 전부 | **금지** (러너가 vscode 없이 돈다) |
@@ -91,7 +91,7 @@ flowchart BT
 | `controller/projectPicker` · `gprSyncCommand` | QuickPick·WorkspaceEdit 를 쓰는 명령 래퍼 — 규칙은 `projectPickerCore`·`project/gprSync`(순수) |
 | `debug/gplDebugSession` · `activateDebug` | DAP 세션 자체(`vscode.debug`)·구성 provider |
 | `project/projectFileScope` · `promoteSourceCommand` | `workspace.findFiles`·명령 등록 |
-| `views/*` 3개 | TreeDataProvider·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`(순수) |
+| `views/*` 3개 | TreeDataProvider·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`compileStaleBadge`·`uploadProgressBar`(순수) |
 | `ai/exportAgentSetup` · `log/liveLogTerminal` | 파일 대화상자·터미널 |
 | `config` · `symbolCache` · `extension` | 루트 모듈 |
 
@@ -159,6 +159,11 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 수신자 체인 → 타입/홀더 | `language/receiverType.ts` (순수) | — |
 | 그 해석기에 넘길 컨텍스트 조립 | `providers/receiverContext.ts` (vscode 접착) | `buildDocumentReceiverLookup(` 직접 호출 |
 | 배열 표기·요소 타입 | `language/receiverType.ts` (`elementTypeOf`·`isArrayTypeName`) | `replace(/\[\]$/…)` |
+| "컴파일 검증 필요" 상태의 설명 문장(배지 툴팁·Start 확인 모달·자동화 오류) | `controller/compileStale.ts` (`describeCompileStale`) — 배지 라벨·툴팁·클릭 대상은 `views/compileStaleBadge.ts` | `소스가 아직 Compile 로 검증되지 않았습니다` 직접 조립 |
+| 쓰레드 목록 표·상태 집계(「전체 쓰레드 복사」·상황 스냅샷) | `controller/threadReport.ts` (`renderThreadTable`·`countThreadStates`·`summarizeThreadStates`) | `\| 이름 \| 상태 \|` 표 직접 조립 / `state === 'Paused' \|\| … 'Break'` |
+| 에러 코드 → 코드/환경 분류(트리 버킷·오류 상세·배포 요약) | `controller/responseParser.ts` (`classifyErrorEntry`·`describeErrorCategory`·`getGplErrorGroup`) | `category: 'code'/'environment'` 직접 판정 |
+| 바이트 → 사람이 읽는 크기(트리 FTP 목록·업로드 진행 바·완료 요약) | `util/formatBytes.ts` (`formatBytes`·`formatBytesAs`·`byteUnitFor`) | `.toFixed(1)} KB/MB/GB` 직접 조립 |
+| 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / `업로드 완료 …` 직접 조립 |
 
 새 정본을 세우면 `SSOT_RULES` 에 한 줄을 더한다(무엇을·정본은 어디·우회 표식·대신 쓸 것).
 규칙을 늘리는 비용이 낮아야 실제로 늘어난다.

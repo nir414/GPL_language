@@ -39,7 +39,7 @@ const ALLOWED_DEPENDENCIES: Record<Layer, readonly Layer[]> = {
     debug: ['controller', 'project', 'language', 'util'],
     views: ['controller', 'util', 'config'],
     providers: ['language', 'project', 'util', 'config', 'symbolCache'],
-    ai: [],
+    ai: ['controller', 'util'],
     activation: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'symbolCache'],
     extension: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'symbolCache', 'activation'],
     test: ['util', 'language', 'log', 'project', 'config', 'controller', 'symbolCache', 'debug', 'views', 'providers', 'ai', 'activation'],
@@ -210,6 +210,16 @@ test('구조 R5: package.json 이 선언·참조하는 명령은 모두 소스�
     assert.deepStrictEqual(missing, [], `메뉴/키바인딩/activationEvents 가 가리키지만 등록되지 않은 명령: ${missing.join(', ')}`);
 });
 
+test('구조 R8: 사용자 대면 명령 제목은 포트 번호가 아니라 채널 이름으로 부른다', () => {
+    // 2026-09-22 사용자 결정: `1402`·`1403` 은 번호를 외운 사람에게만 뜻이 통한다.
+    // 용어 정본과 표기 규칙은 controller/channelNames.ts — 번호는 설정 값·엔드포인트·진단 상세에서만 덧붙인다.
+    const offenders = (pkg.contributes?.commands ?? [])
+        .filter(c => /\b140[23]\b/.test(c.title ?? ''))
+        .map(c => `${c.command}: "${c.title}"`);
+    assert.deepStrictEqual(offenders, [],
+        `명령 제목에 포트 번호가 남아 있다 — 채널 이름(명령 콘솔/런타임 콘솔)으로 쓸 것:\n  ${offenders.join('\n  ')}`);
+});
+
 test('구조 R6: 코드가 읽는 gpl.* 설정 키는 package.json 에 선언돼 있다', () => {
     const cfg = pkg.contributes?.configuration;
     const props = Array.isArray(cfg)
@@ -263,6 +273,41 @@ const SSOT_RULES: readonly SsotRule[] = [
         ownedBy: ['language/receiverType'],
         requires: ['elementTypeOf', 'isArrayTypeName'],
         use: 'language/receiverType.elementTypeOf / isArrayTypeName',
+    },
+    {
+        what: '"컴파일 검증 필요" 상태의 설명 문장 (배지 툴팁·Start 확인 모달·자동화 COMPILE_UNVERIFIED 가 공유)',
+        pattern: /소스가 아직 Compile ?로 검증되지 않았습니다/,
+        ownedBy: ['controller/compileStale'],
+        requires: ['describeCompileStale'],
+        use: 'controller/compileStale.describeCompileStale (배지 라벨·툴팁·클릭은 views/compileStaleBadge)',
+    },
+    {
+        what: '쓰레드 목록 표·상태 집계 (「전체 쓰레드 복사」와 상황 스냅샷이 공유 — 보이는 것과 복사되는 것을 같게)',
+        pattern: /\|\s*이름\s*\|\s*상태\s*\||state === 'Paused' \|\| \w+\.state === 'Break'/,
+        ownedBy: ['controller/threadReport'],
+        requires: ['countThreadStates', 'renderThreadTable', 'summarizeThreadStates'],
+        use: 'controller/threadReport.renderThreadTable / countThreadStates',
+    },
+    {
+        what: '에러 코드 → 코드/환경 분류 (트리 버킷·오류 상세 보고서·배포 요약이 공유). 공식 범위 표가 근거',
+        pattern: /category:\s*'(code|environment)'/,
+        ownedBy: ['controller/responseParser'],
+        requires: ['getGplErrorGroup', 'describeErrorCategory', 'classifyErrorEntry'],
+        use: 'controller/responseParser.classifyErrorEntry (라벨은 describeErrorCategory, 범위는 getGplErrorGroup)',
+    },
+    {
+        what: '바이트 → 사람이 읽는 크기 (트리 FTP 목록·업로드 진행 바·완료 요약이 공유 — B 정수, 그 위는 소수 1자리)',
+        pattern: /\.toFixed\(1\)\}\s*(KB|MB|GB)\b/,
+        ownedBy: ['util/formatBytes'],
+        requires: ['formatBytes', 'formatBytesAs', 'byteUnitFor'],
+        use: 'util/formatBytes.formatBytes (같은 단위로 나란히 쓸 때는 formatBytesAs + byteUnitFor)',
+    },
+    {
+        what: '업로드 진행 바·완료 요약 문구 (상태바 본문·툴팁·완료 표시 — 다른 표면이 바를 다시 그리지 않게)',
+        pattern: /[█▏▎▍▌▋▊▉░]|업로드 완료 (—|\d)/,
+        ownedBy: ['views/uploadProgressBar'],
+        requires: ['renderBar', 'renderUploadProgress', 'renderUploadSummary'],
+        use: 'views/uploadProgressBar.renderUploadProgress / renderUploadSummary (집계는 controller/uploadProgress, 보이기·타이밍은 views/connectionStatusBar)',
     },
 ];
 

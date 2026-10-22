@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-23** · 현재 package 버전 **0.15.2** (PR #36 병합 과정의 Linux CI 경로 fixture 수정. 검증과 범위는 §1-FR 참조.)
-- **직전 세션: §1-FR** — Linux CI의 경로 관련 실패 2건을 OS에 맞는 테스트 fixture로 수정했다. Windows 전체 1222/1222 통과. 운영 코드·버전은 유지하며 GitHub CI 및 main 병합의 최종 상태는 PR #36이 정본이다.
+- **최종 갱신: 2026-10-23** · 현재 package 버전 **0.15.4** (PR #36 병합 CI와 Flash·진입점·Rename 리뷰 수정. 검증·패키징 결과는 §1-FR 참조.)
+- **직전 세션: §1-FR** — Linux CI 경로 fixture와 리뷰에서 확인된 Flash 미완결 응답 승인·진입점 오진·다른 프로젝트 Rename 충돌을 수정했다. Windows 확장 1228/1228·MCP 137/137 통과. 최종 GitHub 검사·main 병합 상태는 PR #36이 정본이다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -1044,7 +1044,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-FN | 10-22 | **매개변수 Hover 누락** — 공통 식별자 해석·개별 범위와 내장 한정 이름 조회, 회귀 6건. 0.15.1 | 본문 ↓ |
 | §1-FO | 10-22 | **README 이용자 안내 개편** — 기능·지원 환경·시작 방법과 배포·디버깅·모니터링·AI 연동 정리, 개발·게시·내부 API 설명 제거. 0.15.2 | 본문 ↓ |
 | §1-FP | 10-22 | **누적 변경 커밋·푸시** — 확장 1222/1222·MCP 137/137·문서 빌드, 기존 VSIX 167개 파일 일치, 사용자 확인 뒤 codex/domain-modules 원격 반영 | 본문 ↓ |
-| §1-FR | 10-23 | **PR #36 병합 CI** — Windows 전용 경로 fixture 2곳을 OS에 맞게 변경, 운영 코드 유지·Windows 전체 1222/1222. GitHub 검사·병합 상태는 PR 참조 | 본문 ↓ |
+| §1-FR | 10-23 | **PR #36 병합 검증** — Linux CI fixture와 Flash 안전·진입점·Rename 리뷰 수정, 회귀 6건·전체 1228/1228·MCP 137/137. 0.15.4 | 본문 ↓ |
 
 ---
 
@@ -1288,23 +1288,28 @@ README에 Marketplace 게시 예정 문구, 로컬 패키지 상태, 확장 개�
 
 푸시 완료 후 원격 작업 브랜치의 4f20480과 원격 main의 기존 0ac3978을 직접 확인했다. 확인 대기 중 생긴 docCommentOverloads.ts·해당 테스트 수정과 scripts/dev/hover-performance.js는 별도 작업 변경으로 보존했다. 이 완료 기록만 후속 문서 커밋으로 반영한다. 새 VSIX 설치·F5 UI·실제 제어기 동작 검증은 이번에 수행하지 않았으며 기존 §3 항목을 유지한다.
 
-## 1-FR. 2026-10-23 세션 — PR #36 병합과 Linux CI 경로 fixture 수정
+## 1-FR. 2026-10-23 세션 — PR #36 병합 CI와 리뷰 수정
 
 ### 증상·원인
 
-사용자가 원격 codex/domain-modules의 누적 변경을 main에 병합하도록 요청했다. PR #36의 Linux CI는 compile을 통과했지만 1220/1222로 실패했다. 오버로드 사본 제외와 심볼 경로 갱신 테스트가 Windows 드라이브·역슬래시 표기를 Linux에서도 같은 파일로 취급했다. 경로 정규화의 기존 Windows 계약과 테스트 입력의 실행 OS가 맞지 않았다.
+사용자가 원격 codex/domain-modules의 누적 변경을 main에 병합하도록 요청했다. PR #36의 Linux CI는 compile을 통과했지만 Windows 경로를 전제한 fixture 2건 때문에 1220/1222로 실패했다. 자동 리뷰에서 미완결 Sync STATUS를 성공으로 처리하는 Flash 안전 경계, 작업 쓰레드·잘린 스택의 진입점 오진, 다른 프로젝트를 포함하는 Rename 충돌 검사도 확인했다.
 
 ### 조치·범위
 
-- 운영 경로 정규화나 심볼 코드는 바꾸지 않았다. 테스트 fixture를 path.resolve·dirname·basename·sep로 만들고 Windows에서만 대소문자·구분자 차이를 함께 검사한다. 다른 컴파일 단위의 fixture도 OS에 맞는 다른 폴더로 표현한다.
-- 로컬의 별도 0.15.3 작업을 보존하기 위해 f1a26fd에서 만든 독립 worktree에서 수정했다. 이번 범위는 원격 0.15.2의 병합 CI와 테스트 fixture 두 파일이며, 버전·운영 VSIX 포함 파일은 그대로 유지한다.
-- 최근 10개 세션을 유지하도록 §1-FG를 원문 그대로 아카이브로 이동했다. 별도 로컬 작업에서 사용 중인 §1-FQ 번호는 재사용하지 않는다.
+- fixture를 실행 OS의 path.resolve·dirname·basename·sep로 만들고 Windows에서만 대소문자·구분자 차이도 검사한다. 운영 경로 정규화 계약은 유지한다.
+- Flash 안전 판정에 기존 isCleanlyTerminated 종결자 규칙을 재사용했다. 숫자 STATUS 0이 있더라도 종결 응답이 없으면 unknown으로 남고 안정화 카운트다운·경고 해제로 넘어가지 않는다.
+- 진입점 대조는 대상 프로젝트·메인 쓰레드와 완결된 전체 스택이 확인될 때만 수행한다. 캐시된 디버그 이벤트의 축약 프레임은 완결 스택으로 간주하지 않고, Show Stack 결과는 전체로 비교하되 표시만 8개로 제한한다.
+- Rename 충돌은 기존 isSameCompileUnit 판정을 재사용한다. 같은 단위의 프로젝트·라이브러리 충돌은 계속 차단하고 무관한 프로젝트의 동명 모듈은 제외한다.
+- 원래 checkout의 진행 중인 0.15.3 작업을 건드리지 않고 f1a26fd에서 만든 독립 worktree에서 수정했다. 별도 작업 버전과 겹치지 않도록 버그 수정 patch 0.15.4를 선택했다. §1-FQ 번호도 재사용하지 않는다.
+- 최근 10개 세션을 유지하도록 §1-FG를 원문 그대로 아카이브로 이동했다.
 
 ### 검증·결과 확인
 
-- 독립 Windows worktree에서 npm test(compile 포함) **1222/1222** 통과. git diff --check 통과.
+- 수정 전 모의 입력에서 잘린 Sync 응답이 ok:true가 되고 작업 쓰레드가 시작 프로시저 불일치로 표시되는 것을 재현했다. 실제 제어기 명령은 보내지 않았다.
+- 독립 Windows worktree의 npm test(compile 포함) **1228/1228**, MCP **137/137** 통과. Flash·진입점·실제 Rename Provider의 경계 회귀 6건을 추가했다. git diff --check 통과.
+- npm run package:no-bump 성공. dist/gpl-language-support-0.15.4.vsix **1,364,300 bytes**, SHA-256 **5CD0631386F3A49A8D3AA8DB7BBCA6E3E46C2E2F6F020B9E385B96AAD98F87B7**. 내부 manifest·운영 코드·리소스 168개가 현재 파일과 일치하고 임시 파일·내부 지침·테스트 소스가 없음을 확인했다. 초회 ZIP 검사에서 임시 커밋 메시지 포함을 찾아 제외 폴더로 옮긴 뒤 같은 버전으로 재생성했다. 최종 산출물은 원래 checkout의 dist에도 보존했다. 기존 Node DEP0190·JavaScript 번들링 권고가 있고 최종 패키징 실패는 없다.
 - Linux CI·MCP·VSIX smoke 검사의 최종 결과와 main 병합 상태는 [PR #36](https://github.com/nir414/GPL_language/pull/36)에서 확인한다. 원격 head SHA가 달라지면 이전 검사 결과를 새 커밋의 검증으로 취급하지 않는다.
 
 ### 남은 일
 
-F5 UI·실제 제어기·새 VSIX 설치 검증은 이번 병합 작업에 포함하지 않았으며 기존 §3 항목을 유지한다.
+새 0.15.4 VSIX의 F5 UI·실제 제어기·Flash 안전 경고 실물 확인은 수행하지 않았으며 기존 §3 항목을 유지한다. 패키징·회귀 검증은 실제 장비의 Flash 쓰기 안전성을 증명하지 않는다.

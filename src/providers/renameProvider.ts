@@ -312,6 +312,7 @@ export class GPLRenameProvider implements vscode.RenameProvider {
         const symModule = enclosingModuleName(sym);
         const symClass = enclosingClassName(sym);
         const clash = this.symbolCache.findAllByName(newName).find(s =>
+            this.symbolCache.isSameCompileUnit(s.filePath, sym.filePath) &&
             ciEq(enclosingModuleName(s) ?? '', symModule ?? '') &&
             ciEq(enclosingClassName(s) ?? '', symClass ?? '')
         );

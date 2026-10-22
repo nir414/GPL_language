@@ -8,6 +8,7 @@ import {
 	getControllerConfig,
 	getTrafficLogOptions,
 	isPolicyError,
+	isCleanlyTerminated,
 	recordTrafficLine,
 	sendCommand,
 	sendCommandDetailed,
@@ -28,7 +29,7 @@ import type { ErrorCodeCategory } from '../controller/protocol/responseParser';
 import { probeThreads } from '../controller/threads/threadStop';
 import { isSettledState } from '../controller/threads/threadActivity';
 import { createFileSourceLookup, diagnoseStuckThread } from '../controller/threads/threadStuckDiagnosis';
-import { buildTargetCandidates, readGprProjectStart } from '../controller/projects/projectPicker';
+import { buildTargetCandidates, projectNameOf, readGprProjectStart } from '../controller/projects/projectPicker';
 import { describeStartProcedureMismatch } from '../controller/commands/startProcedureCheck';
 import { renderErrorReport } from '../controller/diagnostics/errorReport';
 import { asThreadNode } from '../controller/threads/threadArgs';
@@ -474,10 +475,13 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		// 스택 — 디버그 이벤트가 같은 쓰레드의 프레임을 남겼으면 그것, 아니면 Show Stack, 그것도 없으면 목록의 위치.
 		const ctx = host.lastRuntimeErrorContext;
 		let stackLines: string[] = ctx && ctx.threadName === threadName && ctx.stackFrames ? [...ctx.stackFrames] : [];
+		let stackComplete = false;
 		let location: GatheredErrorReport['location'];
 		if (threadName && stackLines.length === 0) {
 			try {
-				const frames = parseStack(await sendCommand(`Show Stack ${threadName}`)).slice(0, 8);
+				const stackRaw = await sendCommand(`Show Stack ${threadName}`);
+				const frames = parseStack(stackRaw);
+				stackComplete = isCleanlyTerminated(stackRaw) && isSuccess(stackRaw);
 				stackLines = frames.map(f => `${f.process || '(unknown)'} @ ${f.file || '?'}:${f.fileLine || 0}`);
 				const top = frames[0];
 				if (top?.file && top.fileLine > 0) { location = { file: top.file, line: top.fileLine, procedure: top.process || undefined }; }
@@ -499,7 +503,9 @@ export function activateControllerCommands(host: ExtensionHost): void {
 			.filter((v, idx, arr) => arr.indexOf(v) === idx)
 			.slice(0, 6);
 
-		const projectStart = host.sessionTargetDir ? readGprProjectStart(host.sessionTargetDir) : undefined;
+		const targetProject = host.sessionTargetDir ? projectNameOf(host.sessionTargetDir) : undefined;
+		const projectStart = host.sessionTargetDir && targetProject?.toLowerCase() === thread?.project.toLowerCase()
+			? readGprProjectStart(host.sessionTargetDir) : undefined;
 		// 보고서를 만들기 **전에** 스냅샷을 뜬다. 출력은 host.report 로 나가 링버퍼를 건드리지 않으므로 보고서 자신이 섞이지 않는다(§1-EA).
 		const recentEvents = host.recentControllerEvents.recent(10);
 
@@ -517,10 +523,12 @@ export function activateControllerCommands(host: ExtensionHost): void {
 			lastCommand: ctx?.lastCommand,
 			firstSeenAt: parsed?.timestamp || ctx?.firstSeenAt,
 			location,
-			stackLines,
+			stackLines: stackLines.slice(0, 8),
 			relatedFunctions,
-			// 진입점 대조 — 스택 최하단이 .gpr 의 ProjectStart 와 다르면 시작 프로시저가 돌지 않은 것(controller/commands/startProcedureCheck).
-			startMismatch: describeStartProcedureMismatch(projectStart, stackLines),
+			// 완결된 전체 스택과 대상 프로젝트의 메인 쓰레드가 확인될 때만 대조한다.
+			startMismatch: describeStartProcedureMismatch(projectStart, stackLines, {
+				threadName, threadProject: thread?.project, targetProject, stackComplete,
+			}),
 			recentEvents,
 			extensionVersion: EXTENSION_VERSION,
 		});

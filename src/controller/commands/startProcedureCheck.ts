@@ -34,6 +34,13 @@ export function outermostProcedure(stackLines: readonly string[]): string | unde
     return undefined;
 }
 
+export interface StartProcedureCheckContext {
+    threadName?: string;
+    threadProject?: string;
+    targetProject?: string;
+    stackComplete: boolean;
+}
+
 /**
  * 진입점이 `ProjectStart` 와 다르면 보고할 한 줄. 같거나 판단 재료가 없으면 undefined
  * (모르는 것을 경고로 바꾸지 않는다 — 스택을 못 읽었을 때 매번 경고가 뜨면 신호가 죽는다).
@@ -42,7 +49,14 @@ export function outermostProcedure(stackLines: readonly string[]): string | unde
 export function describeStartProcedureMismatch(
     projectStart: string | undefined,
     stackLines: readonly string[],
+    context?: StartProcedureCheckContext,
 ): string | undefined {
+    if (context) {
+        const project = context.targetProject?.trim().toLowerCase();
+        if (!context.stackComplete || !project
+            || context.threadProject?.trim().toLowerCase() !== project
+            || context.threadName?.trim().toLowerCase() !== project) { return undefined; }
+    }
     const expected = startProcedureName(projectStart);
     const actual = outermostProcedure(stackLines);
     if (!expected || !actual) { return undefined; }

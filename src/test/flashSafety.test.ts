@@ -65,3 +65,17 @@ test('flashSafety: 단계별 상태바 문구가 전원 차단 금지를 명시�
 		assert.ok(shown.tooltip.includes('Probe'));
 	}
 });
+
+test('flashSafety: 잘린 성공 STATUS와 종결자 뒤 추가 데이터는 안전 경고를 유지한다', async () => {
+	for (const raw of ['<DATA></DATA><STATUS>0,"Success"', '<STATUS>0,""</STATUS>trailing']) {
+		const phases: string[] = [];
+		let slept = false;
+		const result = await waitForFlashSafe({
+			sendSync: async () => raw, onState: state => phases.push(state.phase),
+			sleep: async () => { slept = true; },
+		});
+		assert.strictEqual(result.ok, false);
+		assert.deepStrictEqual(phases, ['syncing', 'unknown']);
+		assert.strictEqual(slept, false);
+	}
+});

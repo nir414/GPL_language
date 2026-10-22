@@ -30,6 +30,7 @@ import './symbolCacheIntegration.test';
 import './buildOutputs.test';
 import './symbolLocations.test';
 import './renameCore.test';
+import './renameProvider.test';
 import './declarationList.test';
 import './symbolScope.test';
 import './referenceSyntax.test';

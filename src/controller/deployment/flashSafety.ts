@@ -9,6 +9,7 @@
  */
 
 import { parseStatus } from '../protocol/responseParser';
+import { isCleanlyTerminated } from '../connection/consoleSocket';
 
 export const FLASH_SETTLE_MS = 10_000;
 export const FLASH_SYNC_TIMEOUT_MS = 120_000;
@@ -57,8 +58,10 @@ export async function waitForFlashSafe(options: WaitForFlashSafeOptions): Promis
 	}
 
 	const status = parseStatus(raw);
-	if (status.code !== 0) {
-		const detail = `Sync STATUS ${status.code}: ${status.message || 'Unknown error'}`;
+	const complete = isCleanlyTerminated(raw);
+	if (!complete || status.code !== 0) {
+		const detail = !complete ? 'Sync 응답의 종결 STATUS 미수신'
+			: `Sync STATUS ${status.code}: ${status.message || 'Unknown error'}`;
 		options.onState?.({ phase: 'unknown', detail });
 		return { ok: false, statusCode: status.code, detail };
 	}

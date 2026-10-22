@@ -47,3 +47,20 @@ test('startProcedureCheck: 일치하거나 재료가 없으면 조용하다 (모
     assert.strictEqual(describeStartProcedureMismatch(undefined, ['Init @ LineBuffer.gpl:69']), undefined);
     assert.strictEqual(describeStartProcedureMismatch('ORCH_Main.MAIN', []), undefined);
 });
+
+test('startProcedureCheck: 작업 쓰레드·다른 프로젝트·미완결 스택은 진입점 불일치로 단정하지 않는다', () => {
+    const context = { threadName: 'App', threadProject: 'App', targetProject: 'App', stackComplete: true };
+    const stack = ['Init @ Module.gpl:1'];
+    assert.ok(describeStartProcedureMismatch('Main.Main', stack, context));
+    for (const uncertain of [{...context, threadName:'LOG_WORKER'}, {...context, threadProject:'Other'},
+        {...context, targetProject:undefined}, {...context, stackComplete:false}]) {
+        assert.strictEqual(describeStartProcedureMismatch('Main.Main', stack, uncertain), undefined);
+    }
+});
+
+test('startProcedureCheck: 깊은 스택은 전체 프레임의 진입점을 비교한다', () => {
+    const frames = [...Array.from({length: 10}, (_, i) => `Nested${i} @ App.gpl:1`), 'Main @ Main.gpl:1'];
+    const context = { threadName: 'app', threadProject: 'APP', targetProject: 'App', stackComplete: true };
+    assert.strictEqual(describeStartProcedureMismatch('Main.Main', frames, context), undefined);
+    assert.strictEqual(describeStartProcedureMismatch('Main.Main', frames.slice(0, 8), {...context, stackComplete:false}), undefined);
+});

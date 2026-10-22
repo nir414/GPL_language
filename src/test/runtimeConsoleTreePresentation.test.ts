@@ -10,7 +10,7 @@ import {
     isRuntimeConsolePollingState,
     isRuntimeConsoleUnstable,
 } from '../views/runtimeConsoleTreePresentation';
-import type { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+import type { RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 
 // 트리(GPL Controller 뷰)의 1403 콘솔 행 문구 — controllerTreeProvider.ts 에서 분리한 순수 함수의 회귀 테스트.
 
@@ -90,7 +90,7 @@ test('1403 트리 툴팁: 머리 2줄 + 선택 줄(연결 시도·payload·오�
         state: 'reconnecting', reason: 'ECONNRESET', detail: 'D', lastConnectAt: 1, lastPayloadAt: 2, lastPayloadBytes: 9,
         lastErrorCode: 'ECONNRESET', reconnectDelayMs: 700, reconnectAttempt: 3,
     }), '192.168.0.1', 1403).split('\n');
-    assert.strictEqual(lines[0], '1403 콘솔: 재연결 대기 (192.168.0.1:1403)');
+    assert.strictEqual(lines[0], '런타임 콘솔: 재연결 대기 (192.168.0.1:1403)');
     assert.strictEqual(lines[1], '상세: ECONNRESET / D / reconnect=700ms');
     assert.ok(lines[2].startsWith('마지막 연결 시도: '), lines[2]);
     assert.ok(lines[3].startsWith('마지막 payload: ') && lines[3].endsWith(' (9B)'), lines[3]);

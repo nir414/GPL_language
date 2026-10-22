@@ -14,7 +14,7 @@ import {
     ConsoleSendOptions,
     ConsoleEndpoint,
     TrafficDirection,
-} from '../controller/consoleSocket';
+} from '../controller/connection/consoleSocket';
 
 // ── 순수 헬퍼 ──────────────────────────────────────────────────────────────
 

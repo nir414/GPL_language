@@ -5,6 +5,7 @@ import * as path from 'path';
 import { test } from './harness';
 import {
     AGENT_BRIDGE_VERSION,
+    BRIDGE_STALL_MS,
     AgentBridgeServer,
     bridgeDirs,
     electLeaderInstanceId,
@@ -17,7 +18,7 @@ import {
     sanitizeInstanceId,
     sanitizeIpForPath,
     validateBridgeRequest,
-} from '../controller/agentBridge';
+} from '../controller/automation/agentBridge';
 
 const IP = '192.168.0.1';
 
@@ -254,6 +255,42 @@ function writeRequest(reqDir: string, id: string, createdAt: number, command = '
     }));
 }
 
+test('agentBridge: console buffer wait does not block Stop and keeps independent responses', async () => {
+    const dir = tmpDir();
+    let release!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const calls: string[] = [];
+    const server = new AgentBridgeServer({
+        ip: IP, port: 1402, extensionVersion: 'test', dir,
+        heartbeatIntervalMs: 0, scanIntervalMs: 0,
+        execute: async command => {
+            calls.push(command);
+            if (command === 'gpl.ai.debug.runtimeConsoleRead') { entered(); await gate; }
+            return { command };
+        },
+    });
+    server.start();
+    try {
+        writeRequest(server.requestDir, 'read', Date.now(), 'gpl.ai.debug.runtimeConsoleRead');
+        await server.drain();
+        await waiting;
+        writeRequest(server.requestDir, 'stop', Date.now(), 'gpl.stopAll');
+        await server.drain();
+        assert.deepStrictEqual(calls, ['gpl.ai.debug.runtimeConsoleRead', 'gpl.stopAll']);
+        const presence = JSON.parse(fs.readFileSync(server.presencePath, 'utf8'));
+        assert.strictEqual(presence.bridge.busy, true);
+        assert.strictEqual(presence.bridge.activeRequest.command, 'gpl.ai.debug.runtimeConsoleRead');
+        assert.ok(fs.existsSync(path.join(presence.bridge.resDir, 'stop.json')));
+        assert.ok(!fs.existsSync(path.join(presence.bridge.resDir, 'read.json')));
+        release();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.ok(fs.existsSync(path.join(presence.bridge.resDir, 'read.json')));
+        assert.strictEqual(JSON.parse(fs.readFileSync(server.presencePath, 'utf8')).bridge.busy, false);
+    } finally { release(); server.stop(); }
+});
+
 test('agentBridge: 두 인스턴스는 서로의 요청을 집어 가지 않는다(§5 — 창이 뒤섞이던 원인)', async () => {
     const dir = tmpDir();
     const { a, b, calls } = makeTwoInstances(dir);
@@ -327,5 +364,59 @@ test('agentBridge: listInstancePresences 는 살아 있는 것만·ip 로 거른
     } finally {
         a.stop();
         b.stop();
+    }
+});
+
+test('agentBridge: heartbeat가 살아 있어도 대기 요청이 오래 수거되지 않으면 정체 상태를 노출한다', async () => {
+    const dir = tmpDir();
+    let now = 1_000;
+    let releaseFirst!: () => void;
+    let enteredFirst!: () => void;
+    const firstEntered = new Promise<void>(resolve => { enteredFirst = resolve; });
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let calls = 0;
+    const server = new AgentBridgeServer({
+        ip: IP,
+        port: 1402,
+        extensionVersion: '0.0.0-test',
+        dir,
+        instanceId: 'stall-test',
+        now: () => now,
+        pid: process.pid,
+        heartbeatIntervalMs: 0,
+        scanIntervalMs: 0,
+        execute: async () => {
+            calls++;
+            if (calls === 1) {
+                enteredFirst();
+                await firstGate;
+            }
+            return { ok: true };
+        },
+    });
+    server.start();
+    try {
+        writeRequest(server.requestDir, 'first', now, 'gpl.quickCompile');
+        const draining = server.drain();
+        await firstEntered;
+        writeRequest(server.requestDir, 'second', now, 'gpl.extensionStatus');
+        now += BRIDGE_STALL_MS + 1;
+        server.writePresence();
+        const presence = JSON.parse(fs.readFileSync(server.presencePath, 'utf8'));
+        assert.strictEqual(presence.bridge.busy, true);
+        assert.strictEqual(presence.bridge.activeRequest.id, 'first');
+        assert.strictEqual(presence.bridge.pendingRequests, 1);
+        assert.strictEqual(presence.bridge.bridgeStalled, true);
+        assert.strictEqual(presence.bridge.lastRequestCollectedAt, 1_000);
+        releaseFirst();
+        await draining;
+        const done = JSON.parse(fs.readFileSync(server.presencePath, 'utf8'));
+        assert.strictEqual(done.bridge.busy, false);
+        assert.strictEqual(done.bridge.pendingRequests, 0);
+        assert.strictEqual(done.bridge.bridgeStalled, false);
+        assert.strictEqual(done.bridge.lastResponseWrittenAt, now);
+    } finally {
+        releaseFirst();
+        server.stop();
     }
 });

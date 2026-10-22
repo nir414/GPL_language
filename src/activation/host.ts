@@ -13,30 +13,30 @@
  *   함수 안에서 이 필드를 **구조 분해로 복사하지 말고** 호출 시점에 `host.project.x()` 로 읽는다.
  */
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLDiagnosticProvider } from '../providers/diagnosticProvider';
-import { getControllerConfig, setIdlePingActive } from '../controller/controllerConnection';
-import { AgentBridgeServer, newExtensionInstanceId } from '../controller/agentBridge';
-import { ConnectionHealthMonitor, ConnectionHealthProber } from '../controller/connectionHealth';
-import { EditorBreakpointSync } from '../controller/breakpointSync';
-import { ControllerBreakpointMirror } from '../controller/breakpointMirror';
-import { checkProjectName, checkRemotePath, describeProjectNameProblem } from '../controller/projectNameGuard';
-import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controller/deployLock';
-import { CompileStaleInfo, CompileStaleTracker } from '../controller/compileStale';
-import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+import { getControllerConfig, setIdlePingActive } from '../controller/connection/controllerConnection';
+import { isControllerSessionConnected, setControllerSessionConnected } from '../controller/connection/connectionSession';
+import { AgentBridgeServer, newExtensionInstanceId } from '../controller/automation/agentBridge';
+import { createRevealGate } from '../controller/automation/agentCommandLog';
+import { ConnectionHealthMonitor, ConnectionHealthProber } from '../controller/connection/connectionHealth';
+import { EditorBreakpointSync } from '../controller/debugging/breakpointSync';
+import { ControllerBreakpointMirror } from '../controller/debugging/breakpointMirror';
+import { checkProjectName, checkRemotePath, describeProjectNameProblem } from '../controller/projects/projectNameGuard';
+import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controller/deployment/deployLock';
+import { CompileStaleInfo, CompileStaleTracker } from '../controller/deployment/compileStale';
+import { ControllerEventLog } from '../controller/diagnostics/recentEvents';
+import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext } from '../views/controllerTreeProvider';
-import type { SituationDeploySnapshot } from '../controller/deployOutcome';
+import type { SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
 import { ConnectionStatusBar } from '../views/connectionStatusBar';
 import { appendLiveLog } from '../log/liveLogTerminal';
-import { fireDebugPollTrigger } from '../controller/debugBridge';
+import { fireDebugPollTrigger } from '../controller/debugging/debugBridge';
 import { EXTENSION_VERSION } from '../config';
 import type { ProjectContextApi } from './projectContext';
 import type { ConnectionApi } from './connection';
 import type { DeployApi } from './deploy';
 import type { ExecutionDecorations } from './debugDecorations';
-
-// recentDebugLogLines 보관 상한 — 초과 시 오래된 라인부터 잘라낸다
-const RECENT_DEBUG_LOG_MAX = 240;
 
 export class ExtensionHost {
 	// ── 서비스(불변) ──────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ export class ExtensionHost {
 	statusBar: ConnectionStatusBar | undefined;
 	/** 제어기 트리 — activate() 가 언어 기능 배선 직후 만든다(그 전에는 markCompileStale 등이 `?.` 로 건너뛴다). */
 	controllerTree!: ControllerTreeProvider;
-	/** 연결 건강 모니터/재프로브(controller/connectionHealth.ts) — 연결 유실 판정의 단일 출처(2026-08-28). */
+	/** 연결 건강 모니터/재프로브(controller/connection/connectionHealth.ts) — 연결 유실 판정의 단일 출처(2026-08-28). */
 	healthMonitor: ConnectionHealthMonitor | undefined;
 	healthProber: ConnectionHealthProber | undefined;
 	isDebugSessionActive = false;
@@ -68,16 +68,23 @@ export class ExtensionHost {
 	 * (제어기 연결 해제가 이 세션을 끝내야 1402 폴이 멎고 소켓이 실제로 비워진다).
 	 */
 	gplDebugSession: vscode.DebugSession | undefined;
+	/**
+	 * 세션 대상 프로젝트 **폴더**(단일 출처, 메모리 전용) — 자동화 대상 해석(`project_target`·`gpl.automation.target`,
+	 * `controller/projects/projectTarget.ts` 규칙 3), 사람의 QuickPick 선택, 디버그 세션의 `projectDir` 가 갱신한다.
+	 * 배포 대상이면서 **동명 소스 해석의 1순위 기준**이다(`project/compileUnitTarget.ts`) — 제어기는 파일명만
+	 * 주므로, 과제별 동명 프로젝트가 여럿인 워크스페이스에서 이 값이 없으면 어느 사본을 열지 임의로 갈린다.
+	 */
+	sessionTargetDir: string | undefined;
 	lastDeploySnapshot: SituationDeploySnapshot | undefined;
 	/** 디버그 어댑터가 gpl.sourceStale 이벤트로 알린 "소스가 제어기 컴파일 코드보다 새로움" 상태(GitHub #21). */
 	lastSourceStale: { projectName: string; files: string[]; compiledAt?: number } | undefined;
 	sourceStaleNotifiedSessionId: string | undefined;
 	lastRuntimeErrorContext: RuntimeErrorContext | undefined;
-	/** `[main]` 로그의 최근 라인 — 오류 상세 보기에서 "직전 로그"로 보여 준다. */
-	readonly recentDebugLogLines: string[] = [];
+	/** 제어기 사건 링버퍼 — 오류 상세 보기의 "직전 제어기 사건". 규칙·접기는 `controller/diagnostics/recentEvents`. */
+	readonly recentControllerEvents = new ControllerEventLog();
 	/**
 	 * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
-	 * 상태와 규칙은 `controller/compileStale.ts`(순수 모듈)에 있고, 여기서는 로그·UI 반영만 얹는다.
+	 * 상태와 규칙은 `controller/deployment/compileStale.ts`(순수 모듈)에 있고, 여기서는 로그·UI 반영만 얹는다.
 	 * 해제는 `onDidRecordCompiled` 구독으로도 일어나므로 F5(deployBeforeAttach)·MCP 경로에서도 배지가 남지 않는다.
 	 */
 	readonly compileStaleProjects = new CompileStaleTracker();
@@ -106,22 +113,33 @@ export class ExtensionHost {
 
 	// ── 로그 ─────────────────────────────────────────────────────────────────────
 	/**
-	 * 확장 로그 한 줄 — Output 채널 + 라이브 로그 터미널 + 최근 라인 링버퍼.
+	 * 확장 로그 한 줄 — Output 채널 + 라이브 로그 터미널 + 제어기 사건 링버퍼.
 	 * 콜백 인자로 그대로 넘길 수 있게(`{ log: host.log }`) 화살표 프로퍼티다.
+	 *
+	 * 링버퍼에 담는 것은 **제어기 사건뿐**이다(판정은 `controller/diagnostics/recentEvents`). 보고서처럼 이미 렌더된
+	 * 블록은 `report()` 로 내보내 버퍼를 거치지 않게 한다 — 섞이면 보고서가 자기 출력을 다시 먹는다(§1-EA).
 	 */
 	readonly log = (msg: string): void => {
-		this.recentDebugLogLines.push(`[main] ${msg}`);
-		if (this.recentDebugLogLines.length > RECENT_DEBUG_LOG_MAX) {
-			this.recentDebugLogLines.splice(0, this.recentDebugLogLines.length - RECENT_DEBUG_LOG_MAX);
-		}
+		this.recentControllerEvents.record(msg);
 		this.outputChannel.appendLine(msg);
 		appendLiveLog(`[main] ${msg}`);
+	};
+
+	/**
+	 * 이미 렌더된 블록(오류 상세 보고서 등)을 그대로 출력한다 — `log()` 와 달리 **링버퍼에 남기지 않는다.**
+	 * 보고서가 "직전 제어기 사건"의 재료가 되면 누를 때마다 자기 출력이 한 겹씩 쌓인다(§1-EA 의 원인).
+	 */
+	readonly report = (lines: readonly string[]): void => {
+		for (const line of lines) {
+			this.outputChannel.appendLine(line);
+			appendLiveLog(`[main] ${line}`);
+		}
 	};
 
 	// ── 배포 잠금 / 프로젝트명 가드 ───────────────────────────────────────────────
 	// 배포 잠금 — 구 boolean `deployInFlight`를 대체(2026-08-25, 이슈 #15·#17). 획득/해제는 deploy()(deployService)와
 	// gpl.saveToFlash가 하고, 여기서는 조회만 한다. 잠금 파일(%TEMP%/gpl-controller/<ip>.lock.json)은 다른 VS Code 창과
-	// controller-mcp도 읽으므로 "업로드 도중 Compile/Start" 차단이 프로세스 경계를 넘는다 (controller/deployLock.ts).
+	// controller-mcp도 읽으므로 "업로드 도중 Compile/Start" 차단이 프로세스 경계를 넘는다 (controller/deployment/deployLock.ts).
 	/** 현재 배포 잠금 보유자(이 창·다른 창·살아 있는 다른 프로세스). 없으면 undefined. */
 	currentDeployLockHolder(): DeployLockRecord | undefined {
 		return getDeployLock(getControllerConfig().ip).current()?.record;
@@ -264,8 +282,16 @@ export class ExtensionHost {
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.debugging', this.isDebugSessionActive);
 	}
 
+	/** 이 창이 제어기에 연결된 상태인가 — 정본은 controller/connection/connectionSession(뷰가 아니라). */
+	get isControllerConnected(): boolean {
+		return isControllerSessionConnected();
+	}
+
 	setControllerConnected(connected: boolean, options?: { refreshTree?: boolean; reason?: 'disconnect' | 'lost' }): void {
-		const wasConnected = this.controllerTree?.isConnected ?? false;
+		const wasConnected = isControllerSessionConnected();
+		// 정본을 먼저 갱신한다 — 아래 소비자와 세션 구독자(대시보드 폴링 등)가 같은 값을 보게.
+		// 해제 뒤에는 전송 계층이 1402 소켓을 보관하지 않는다(connectionSession.effectiveKeepAlive).
+		setControllerSessionConnected(connected, options?.reason);
 		this.statusBar?.setConnected(connected);
 		this.updateUiContexts(connected);
 		this.controllerTree?.setConnected(connected, { refresh: options?.refreshTree, reason: options?.reason });
@@ -284,7 +310,7 @@ export class ExtensionHost {
 
 	// ── Agent Bridge (MCP → 확장 명령 호출, §1-BQ) ─────────────────────────────────
 	// MCP 서버가 제어기에 직접 붙는 대신 이 브리지로 확장 명령을 호출하면 1402 트래픽이 확장의 단일 세션/직렬 큐/명령 정책을
-	// 그대로 타므로 세션 경쟁("1402를 VS Code가 점유 중")이 사라진다. 파일 계약은 controller/agentBridge.ts 머리말 참조.
+	// 그대로 타므로 세션 경쟁("1402를 VS Code가 점유 중")이 사라진다. 파일 계약은 controller/automation/agentBridge.ts 머리말 참조.
 	private agentBridge: AgentBridgeServer | undefined;
 	private agentBridgeKey = '';
 	/**
@@ -292,6 +318,16 @@ export class ExtensionHost {
 	 * 브리지를 다시 만들어도 같은 값을 넘겨, MCP 가 보는 인스턴스 정체성이 흔들리지 않게 한다.
 	 */
 	readonly extensionInstanceId = newExtensionInstanceId();
+
+	/**
+	 * AI 요청이 **조용한 뒤 처음** 올 때 Output 「GPL Language Support」를 연다(포커스는 유지) — 사용자의 배포·명령은
+	 * 패널을 열어 로그가 보였는데 AI 경유 동작은 보이지 않았다(§1-EO). 판단(`createRevealGate`)은 순수 모듈에 있다.
+	 */
+	private readonly agentRevealDue = createRevealGate();
+	private revealOutputForAgentRequest(): void {
+		if (vscode.workspace.getConfiguration('gpl.agentBridge').get<boolean>('revealOutput', true) !== true) { return; }
+		if (this.agentRevealDue(Date.now())) { this.outputChannel.show(true); }
+	}
 
 	ensureAgentBridge(): AgentBridgeServer | undefined {
 		if (vscode.workspace.getConfiguration('gpl.agentBridge').get<boolean>('enabled', true) === false) {
@@ -311,17 +347,20 @@ export class ExtensionHost {
 			workspace: vscode.workspace.workspaceFolders?.[0]?.name,
 			// MCP 가 projectDir 로 어느 창에 보낼지 고르는 근거(§6).
 			workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath),
-			execute: (command, args) => Promise.resolve(
-				args === undefined
-					? vscode.commands.executeCommand(command)
-					: vscode.commands.executeCommand(command, args),
-			),
+			execute: (command, args) => {
+				this.revealOutputForAgentRequest();
+				return Promise.resolve(
+					args === undefined
+						? vscode.commands.executeCommand(command)
+						: vscode.commands.executeCommand(command, args),
+				);
+			},
 			isKnownCommand: async command => (await vscode.commands.getCommands(true)).includes(command),
 			log: this.log,
 		});
 		this.agentBridgeKey = key;
 		this.agentBridge.start();
-		this.agentBridge.setState({ connected: this.controllerTree?.isConnected ?? false, debugSessionActive: this.isDebugSessionActive });
+		this.agentBridge.setState({ connected: isControllerSessionConnected(), debugSessionActive: this.isDebugSessionActive });
 		return this.agentBridge;
 	}
 

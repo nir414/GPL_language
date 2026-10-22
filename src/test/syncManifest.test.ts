@@ -15,7 +15,7 @@ import {
     nextStamp,
     normalizeRemoteDir,
     syncManifestKey,
-} from '../controller/syncManifest';
+} from '../controller/files/syncManifest';
 
 const LOCAL = { size: 100, sha1: 'aaa' };
 

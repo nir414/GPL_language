@@ -1,0 +1,87 @@
+/** `Set Break` / `Set Nobreak` 명령 생성·해석과 미러 에코 차단. */
+
+export type BreakpointCommandKind = 'Break' | 'Nobreak';
+
+export interface ParsedBreakpointCommand {
+	kind: BreakpointCommandKind;
+	project: string;
+	/** 따옴표 안의 project-relative 파일 표기(`\` 정규화). */
+	file: string;
+	/** UI 표시나 basename 기반 로컬 검색이 필요할 때만 사용한다. */
+	basename: string;
+	/** 1-based */
+	line: number;
+}
+
+/** 제어기에 보내는 표준 표기 — 따옴표와 줄번호 사이에 공백이 없다(GDE 실측). */
+export function formatBreakpointCommand(
+	kind: BreakpointCommandKind,
+	project: string,
+	file: string,
+	line: number,
+): string {
+	return `Set ${kind} ${project} "${file}"${line}`;
+}
+
+const BP_COMMAND_RE = /^\s*set\s+(break|nobreak)\s+(\S+)\s+"([^"]+)"\s*(\d+)\s*$/i;
+
+function baseName(file: string): string {
+	return file.replace(/^.*[\\/]/, '').trim();
+}
+
+/** 제어기 BP identity 비교용 project-relative 경로 정규화. */
+export function normalizeBreakpointCommandFile(file: string): string {
+	return file.trim().replace(/[\\/]+/g, '\\');
+}
+
+/** BP 설정/해제 명령을 해석한다. BP 명령이 아니거나 형식이 어긋나면 `undefined`. */
+export function parseBreakpointCommand(command: string): ParsedBreakpointCommand | undefined {
+	const m = BP_COMMAND_RE.exec(command);
+	if (!m) { return undefined; }
+	const line = Number(m[4]);
+	if (!Number.isInteger(line) || line <= 0) { return undefined; }
+	const file = normalizeBreakpointCommandFile(m[3]);
+	if (!file) { return undefined; }
+	return {
+		kind: m[1].toLowerCase() === 'break' ? 'Break' : 'Nobreak',
+		project: m[2],
+		file,
+		basename: baseName(file),
+		line,
+	};
+}
+
+/** 파일 경로 대소문자와 구분자 차이를 흡수한 비교 키. */
+export function breakpointEchoKey(kind: BreakpointCommandKind, file: string, line: number): string {
+	return `${kind}\u0000${normalizeBreakpointCommandFile(file).toLowerCase()}\u0000${line}`;
+}
+
+/** 미러가 만든 에디터 변경을 잠시 기억해 제어기로 되쏘지 않게 한다. */
+export class MirrorEchoMemory {
+	private readonly _entries = new Map<string, number>();
+
+	constructor(private readonly ttlMs = 3000, private readonly now: () => number = Date.now) { }
+
+	note(kind: BreakpointCommandKind, file: string, line: number): void {
+		this._entries.set(breakpointEchoKey(kind, file, line), this.now() + this.ttlMs);
+	}
+
+	consume(kind: BreakpointCommandKind, file: string, line: number): boolean {
+		const key = breakpointEchoKey(kind, file, line);
+		const expiry = this._entries.get(key);
+		if (expiry === undefined) { return false; }
+		this._entries.delete(key);
+		return expiry > this.now();
+	}
+
+	prune(): void {
+		const t = this.now();
+		for (const [key, expiry] of this._entries) {
+			if (expiry <= t) { this._entries.delete(key); }
+		}
+	}
+
+	get size(): number { return this._entries.size; }
+
+	clear(): void { this._entries.clear(); }
+}

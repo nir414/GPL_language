@@ -1,0 +1,6 @@
+ProjectBegin
+ProjectName="init_probe"
+ProjectStart="Main"
+ProjectSource="StageA_ModuleInit.gpl"
+ProjectSource="StageB_ClassInit.gpl"
+ProjectEnd

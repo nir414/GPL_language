@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { XmlUtils } from '../language/xmlUtils';
 import {
     getAllGplBuiltins,

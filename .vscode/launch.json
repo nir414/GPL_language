@@ -7,6 +7,9 @@
     // - 마지막 인자(열 폴더)는 확장 저장소 자체가 아니라 샘플 프로젝트다. `--profile`은 "폴더 ↔ 프로필"
     //   연결을 기억하므로, 저장소 폴더를 열면 평소 창에서도 그 프로필로 열리게 되어 혼선이 생긴다.
     //   제어기 연동 시험은 실제 프로젝트 폴더로 바꿔 쓰면 된다.
+    // - "Run Extension (syntax tour)"는 `samples/syntax-tour`를 연다 — GPL 문(statement)을 전부 한 번씩
+    //   쓴 대조용 프로젝트다. 문법 하이라이트·완성·호버·개요·진단을 한 화면에서 훑을 때 쓴다
+    //   (커버리지는 `src/test/sampleSyntaxCoverage.test.ts`가 강제한다).
     // - 프로필 방식은 VS Code 문서가 권장하는 격리 방법이다. (`--user-data-dir`은 F5 개발 호스트에서
     //   무시된다 — 개발 호스트는 별도 프로세스가 아니라 현재 VS Code 프로세스 안의 새 창이기 때문.)
     "version": "0.2.0",
@@ -20,6 +23,25 @@
                 "--extensionDevelopmentPath=${workspaceFolder}",
                 "--profile=GPL-DevHost",
                 "${workspaceFolder}/samples/hello-project"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/out/**/*.js"
+            ],
+            "preLaunchTask": "npm: compile",
+            "resolveSourceMapLocations": [
+                "${workspaceFolder}/**",
+                "!**/node_modules/**"
+            ]
+        },
+        {
+            "name": "Run Extension (syntax tour)",
+            "type": "extensionHost",
+            "request": "launch",
+            "runtimeExecutable": "${execPath}",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}",
+                "--profile=GPL-DevHost",
+                "${workspaceFolder}/samples/syntax-tour"
             ],
             "outFiles": [
                 "${workspaceFolder}/out/**/*.js"

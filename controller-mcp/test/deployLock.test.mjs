@@ -41,6 +41,21 @@ test('readDeployLock: 살아 있는 pid + 신선한 heartbeat → 레코드 반�
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('readDeployLock: v2 작업 식별 필드를 보존한다', () => {
+  const dir = tmpDir();
+  try {
+    writeLock(dir, '192.168.0.1', {
+      version: 2, owner: 'Upload & Start', stage: 'UPLOAD+STOP', since: NOW - 5000,
+      heartbeat: NOW - 1000, pid: 4242, host: 'PC', operationId: 'deploy-1',
+      extensionInstanceId: 'window-a', projectDir: 'C:/workspace/P',
+    });
+    const rec = readDeployLock('192.168.0.1', { dir, now: NOW, pidAlive: () => true });
+    assert.equal(rec.operationId, 'deploy-1');
+    assert.equal(rec.extensionInstanceId, 'window-a');
+    assert.equal(rec.projectDir, 'C:/workspace/P');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('readDeployLock: 죽은 pid → null (stale)', () => {
   const dir = tmpDir();
   try {

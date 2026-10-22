@@ -14,7 +14,7 @@ import {
     formatCompiledAt,
     isCompiledRecord,
     snapshotProjectFiles,
-} from '../controller/deployRecordCore';
+} from '../controller/deployment/deployRecordCore';
 
 /** 임시 프로젝트 폴더: .gpl/.gpo/.gpr(대상) + .txt/dot 폴더/node_modules(제외 대상). */
 function makeProject() {

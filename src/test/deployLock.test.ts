@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from './harness';
-import { DeployLock, DeployLockRecord, describeDeployLock, deployLockFileName, DEPLOY_LOCK_STALE_MS, DEPLOY_LOCK_VERSION } from '../controller/deployLock';
+import { DeployLock, DeployLockRecord, describeDeployLock, deployLockFileName, DEPLOY_LOCK_STALE_MS, DEPLOY_LOCK_VERSION } from '../controller/deployment/deployLock';
 
 /** 테스트 전용 임시 디렉터리 + 주입 가능한 시계/pid/생존 판정. */
 function makeEnv(overrides: { pid?: number; alive?: Set<number>; startAt?: number } = {}) {

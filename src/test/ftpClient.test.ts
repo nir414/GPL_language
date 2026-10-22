@@ -4,7 +4,7 @@
  */
 import * as assert from 'assert';
 import { test } from './harness';
-import { clearRemoteDir, normalizeAbsoluteRemoteDir } from '../controller/ftpClient';
+import { clearRemoteDir, mirrorProject, normalizeAbsoluteRemoteDir, uploadProject } from '../controller/files/ftpClient';
 
 test('normalizeAbsoluteRemoteDir: 후행/중복 슬래시를 정리한다', () => {
     assert.strictEqual(normalizeAbsoluteRemoteDir('/GPL'), '/GPL');
@@ -29,4 +29,13 @@ test('clearRemoteDir: 루트·빈 경로는 연결 전에 거부한다', async (
             `"${bad}"는 거부되어야 한다`,
         );
     }
+});
+
+test('uploadProject/mirrorProject: 이미 취소됐으면 FTP 연결 전에 중단한다', async () => {
+	for (const run of [
+		() => uploadProject('192.0.2.1', '.', '/GPL/P', { isCancelled: () => true }),
+		() => mirrorProject('192.0.2.1', '.', '/GPL/P', { isCancelled: () => true }),
+	]) {
+		await assert.rejects(run, /업로드가 취소되었습니다/);
+	}
 });

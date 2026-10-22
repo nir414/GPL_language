@@ -1,0 +1,162 @@
+' syntax-tour — 선언 문법 편 (Dim · Const · ReDim · Delegate).
+'
+' 모듈 레벨 변수는 암묵적으로 Shared다(모든 스레드가 같은 복사본을 본다).
+' 수식어 순서는 자유롭고, 모듈·클래스 레벨에서는 `Dim`을 생략할 수 있다 —
+' `Public gA, gB As Integer`와 `Public Shared Dim buf As New XmlDoc`가 모두 유효하다.
+
+Module Declarations
+
+    ' 로그 한 줄을 받는 Sub 대리자.
+    '
+    ' # Parameters
+    ' - `text`: 출력할 문자열
+    '
+    ' # Remarks
+    ' Delegate는 Class 선언과 동등하며 Module 레벨·Class 레벨 어디에나 둘 수 있다.
+    ' 대리자 객체는 `New LogSink(AddressOf 프로시저)`로 만들고, `sink("text")`처럼
+    ' 객체 뒤에 괄호를 붙여 호출한다(`Invoke` 메서드가 아니다).
+    Public Delegate Sub LogSink(ByVal text As String)    ' [syntax] Delegate Sub ...
+
+    ' 두 정수를 받아 하나를 돌려주는 Function 대리자.
+    '
+    ' # Parameters
+    ' - `a`: 왼쪽 피연산자
+    ' - `b`: 오른쪽 피연산자
+    '
+    ' # Returns
+    ' 연결된 프로시저의 계산 결과
+    Public Delegate Function BinaryOp(ByVal a As Integer, ByVal b As Integer) As Integer    ' [syntax] Delegate Function ...
+
+    ' 슬롯 배열의 초기 상한. Module·Class 레벨의 Const는 암묵적 Shared다.
+    Public Const SlotLimit As Integer = 3    ' [syntax] Const ... As ... = ...
+
+    ' 진단 출력에 붙일 접두사.
+    Private Const Tag As String = "decl: "
+
+    ' 모듈 레벨 배열 — 괄호 안의 값은 각 차원의 **최대 인덱스**다(원소 수가 아니다).
+    Private slots(SlotLimit) As Integer
+
+    ' 한 줄에 여러 변수를 선언하는 표기. 타입은 마지막 `As`가 전부에 적용된다.
+    Private hits, misses As Integer
+
+    ' 이름이 키워드로 끝나는 필드 — 강조 표시 회귀 대조용이다.
+    '
+    ' # Remarks
+    ' `SyncSub`의 `Sub`, `TraceClass`의 `Class`처럼 식별자 **안**의 키워드에 색이 칠해지면
+    ' 문법 규칙이 줄 머리 고정을 잃은 것이다(`syntaxes/gpl.tmGrammar.json`, src/test/grammar.test.ts).
+    Private SyncSub, AsyncSub As LogSink
+
+    ' 선언 문법을 한 번씩 쓴다.
+    '
+    ' # Remarks
+    ' `ReDim`은 차원 **수**는 바꾸지 못하고 상한만 바꾼다. `Preserve` 없이 실행하면
+    ' 기존 내용이 사라지고, `Preserve`를 쓰면 마지막(가장 오른쪽) 차원만 바꿀 수 있다.
+    Public Sub DeclarationTour()
+        Dim message As String
+        Dim ratio As Double
+        Dim gain As Single
+        Dim flags As Byte
+        Dim offset As Short
+        Dim enabled As Boolean
+        Dim verbose As Boolean
+        Dim fault As New Exception    ' [syntax] Dim ... As New ...
+        Dim samples(4) As Double    ' [syntax] Dim (array)
+        Dim grid(2, 3) As Integer
+        Dim idx As Integer
+
+        Const Scale As Double = 0.5
+
+        message = Tag & "start"
+        ratio = Math.PI * Scale
+        gain = CSng(ratio)
+        flags = 3
+        offset = -12
+        enabled = True
+        verbose = False
+        hits = 0
+        misses = 0
+
+        ' 낱말 연산자 — And/Or는 모든 항을 평가하고, AndAlso/OrElse는 결과가 정해지면 멈춘다.
+        If enabled AndAlso ratio > 1.0 Then
+            hits = hits + 1
+        ElseIf Not verbose OrElse ratio < 0.0 Then
+            misses = misses + 1
+        End If
+
+        If enabled And Not verbose Then
+            hits = hits + 1
+        End If
+
+        ' 수치에 쓰면 비트 연산이 된다.
+        flags = CByte((flags And 1) Or 4)
+
+        ' Is 연산자는 객체 참조를 비교한다. New로 만들었으므로 Nothing이 아니다.
+        If fault Is Nothing Then
+            misses = misses + 1
+        End If
+
+        ' Xor·Mod는 수치 연산자다.
+        idx = (7 Mod SlotLimit) Xor 1
+
+        For idx = 0 To SlotLimit
+            slots(idx) = idx * idx
+        Next idx
+
+        For idx = 0 To 4
+            samples(idx) = CDbl(idx) * Scale
+        Next idx
+
+        grid(1, 2) = 12
+
+        ReDim slots(SlotLimit + 2)    ' [syntax] ReDim ...
+        ReDim Preserve slots(SlotLimit + 4)    ' [syntax] ReDim Preserve ...
+
+        Console.WriteLine(message & ", ratio=" & CStr(ratio) & ", grid=" & CStr(grid(1, 2)))
+        Console.WriteLine(Tag & "hits=" & CStr(hits) & " misses=" & CStr(misses) & " last=" & CStr(samples(4)))
+        Console.WriteLine(Tag & "gain=" & CStr(gain) & " flags=" & CStr(flags) & " offset=" & CStr(offset))
+
+        DelegateTour()
+    End Sub
+
+    ' 대리자 객체를 만들어 간접 호출한다.
+    '
+    ' # Remarks
+    ' `AddressOf`로 연결할 프로시저는 대리자 선언의 매개변수 개수·타입과 반환 타입이 정확히 같아야 한다.
+    Private Sub DelegateTour()
+        Dim sink As New LogSink(AddressOf WriteTagged)
+        Dim op As New BinaryOp(AddressOf AddInts)
+        Dim result As Integer
+
+        result = op(20, 22)
+        sink("delegate result = " & CStr(result))
+    End Sub
+
+    ' 접두사를 붙여 콘솔에 한 줄 출력한다 — LogSink 대리자의 대상.
+    '
+    ' # Parameters
+    ' - `text`: 출력할 문자열
+    Private Sub WriteTagged(ByVal text As String)
+        Console.WriteLine(Tag & text)
+    End Sub
+
+    ' 두 정수를 더한다 — BinaryOp 대리자의 대상.
+    '
+    ' # Parameters
+    ' - `a`: 왼쪽 피연산자
+    ' - `b`: 오른쪽 피연산자
+    '
+    ' # Returns
+    ' 두 값의 합
+    Private Function AddInts(ByVal a As Integer, ByVal b As Integer) As Integer
+        Return a + b
+    End Function
+
+    ' 호출자의 변수를 직접 바꾸는 ByRef 매개변수 예시.
+    '
+    ' # Parameters
+    ' - `value`: 두 배로 만들 변수. ByRef이므로 호출자의 값이 바뀐다.
+    Public Sub DoubleInPlace(ByRef value As Integer)
+        value = value * 2
+    End Sub
+
+End Module

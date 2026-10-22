@@ -381,18 +381,43 @@ export function isSameSourcePath(a: string, b: string): boolean {
  * 기준점은 중첩 참조를 따라 내려갈 때 **누적된다**(`resolveProjectLibraryDirs`) — 값이 projects 루트
  * 기준이라면 라이브러리 안의 `ProjectLibrary`도 같은 루트를 기준으로 읽어야 하기 때문이다.
  */
-function libraryDirCandidates(bases: readonly string[], raw: string): string[] {
+/**
+ * 제어기가 돌려준 상대 경로를 프로젝트 폴더부터 조상 폴더 순으로 푼다.
+ *
+ * Sample Prep V2처럼 도구 프로젝트가 `V2/tools/EM2RS_Probe`에 있고 `.gpr`가
+ * `ProjectLibrary="Lib\\Lib_Device"`를 쓰면 기준점은 프로젝트의 부모가 아니라 `V2`다.
+ * 고정된 "부모 한 단계" 규칙 대신 가까운 조상부터 실제 파일/`.gpr` 존재 여부로 결정한다.
+ * 드라이브 루트 자체는 후보에서 제외해 우연한 `C:\\Lib` 같은 폴더를 잡지 않는다.
+ */
+export function ancestorRelativePathCandidates(projectDir: string, raw: string): string[] {
     const native = raw.replace(/[\\/]+/g, path.sep).replace(/[\\/]+$/, '').trim();
     if (!native) { return []; }
     if (path.isAbsolute(native)) { return [path.resolve(native)]; }
     const out: string[] = [];
     const seen = new Set<string>();
-    for (const base of bases) {
+    let base = path.resolve(projectDir);
+    while (path.dirname(base) !== base) {
         const full = path.resolve(base, native);
         const key = normalizeDirKey(full);
-        if (seen.has(key)) { continue; }
-        seen.add(key);
-        out.push(full);
+        if (!seen.has(key)) {
+            seen.add(key);
+            out.push(full);
+        }
+        base = path.dirname(base);
+    }
+    return out;
+}
+
+function libraryDirCandidates(bases: readonly string[], raw: string): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const base of bases) {
+        for (const full of ancestorRelativePathCandidates(base, raw)) {
+            const key = normalizeDirKey(full);
+            if (seen.has(key)) { continue; }
+            seen.add(key);
+            out.push(full);
+        }
     }
     return out;
 }

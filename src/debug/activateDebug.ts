@@ -4,7 +4,7 @@
 
 import * as vscode from 'vscode';
 import { GPLDebugSession } from './gplDebugSession';
-import { pickProjectDirDetailed, projectNameOf } from '../controller/projectPicker';
+import { pickProjectDirDetailed, projectNameOf } from '../controller/projects/projectPicker';
 
 export function activateDebug(context: vscode.ExtensionContext): void {
     context.subscriptions.push(

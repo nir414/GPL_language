@@ -5,8 +5,8 @@ import {
     describeProvenance,
     provenanceKey,
     revisionOf,
-} from '../controller/deployProvenance';
-import type { ProvenanceStamp } from '../controller/deployProvenance';
+} from '../controller/deployment/deployProvenance';
+import type { ProvenanceStamp } from '../controller/deployment/deployProvenance';
 
 const stamp = (sha1: string, size = 100): ProvenanceStamp => ({ sha1, size });
 

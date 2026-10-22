@@ -1,0 +1,86 @@
+' syntax-tour — 예외 처리 편.
+'
+' `Catch`가 받을 Exception 객체는 **미리 인스턴스화되어 있어야** 한다 — `Dim ex As New Exception`.
+' DataID 307("Break on exception code")이 설정돼 있거나 GDE에서 "Break on exception"으로 시작했다면
+' Try 구조는 무시된다(디버깅용 동작이며, 이 샘플을 제어기에서 돌릴 때도 마찬가지다).
+
+Module Faults
+
+    ' 프로젝트가 직접 던져도 되는 오류 코드.
+    '
+    ' # Remarks
+    ' `ErrorCode`는 반드시 음수여야 한다 — `New Exception`의 기본값 0을 그대로 던지면
+    ' -807 "Invalid exception"이 발생한다. 애플리케이션용으로 예약된 코드는 두 개다:
+    ' -786(Project generated error), -1038(Project generated robot error).
+    Private Const ProjectError As Integer = -786
+
+    ' 예외 처리 문법을 한 번씩 쓴다.
+    Public Sub FaultTour()
+        Call CatchTour()
+        Call FinallyTour()
+        Console.WriteLine("fault: done")
+    End Sub
+
+    ' 던진 예외를 받아 코드와 메시지를 읽는다.
+    Private Sub CatchTour()
+        Dim ex As New Exception
+        Dim value As Integer
+
+        Try    ' [syntax] Try ... Catch ... End Try
+            value = Divide(0)
+            Console.WriteLine("fault: value = " & CStr(value))
+        Catch ex    ' [syntax] Catch ...
+            Console.WriteLine("fault: caught " & CStr(ex.ErrorCode) & " " & ex.Message())
+        End Try
+    End Sub
+
+    ' 정리 블록이 경로와 무관하게 실행되는 것을 보인다.
+    '
+    ' # Remarks
+    ' `Exit Try`로 Try 구조를 빠져나가도 `Finally` 블록은 그대로 실행된다.
+    Private Sub FinallyTour()
+        Dim ex As New Exception
+        Dim ready As Boolean
+
+        ready = True
+
+        Try    ' [syntax] Try ... Catch ... Finally ... End Try
+            If ready Then
+                Console.WriteLine("fault: nothing to do")
+                Exit Try    ' [syntax] Exit Try
+            End If
+            Console.WriteLine("fault: value = " & CStr(Divide(0)))
+        Catch ex
+            Console.WriteLine("fault: caught " & CStr(ex.ErrorCode))
+        Finally    ' [syntax] Finally
+            Console.WriteLine("fault: finally runs either way")
+        End Try
+    End Sub
+
+    ' 100을 나눈 몫을 돌려준다.
+    '
+    ' # Parameters
+    ' - `divisor`: 나누는 값. 0이면 예외를 던진다.
+    '
+    ' # Returns
+    ' `100 / divisor`를 정수로 자른 값
+    '
+    ' # Examples
+    ' ```
+    ' Dim q As Integer
+    ' q = Divide(4)
+    ' ' q = 25
+    ' ```
+    Private Function Divide(ByVal divisor As Integer) As Integer
+        Dim fault As New Exception
+
+        If divisor = 0 Then
+            fault.ErrorCode = ProjectError
+            fault.Qualifier = "syntax-tour divide by zero"
+            Throw fault    ' [syntax] Throw ...
+        End If
+
+        Return CInt(100 / divisor)
+    End Function
+
+End Module

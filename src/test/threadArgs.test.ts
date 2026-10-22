@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { asThreadNode } from '../controller/threadArgs';
+import { asThreadNode } from '../controller/threads/threadArgs';
 
 test('threadArgs: 트리 노드({ thread: { name, project } })는 그대로 돌려준다', () => {
     const node = { thread: { name: 'Main', project: 'GPL_Code' }, extra: 1 };

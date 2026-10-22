@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { buildRuntimeConsoleUserMessage, formatRuntimeConsoleStateLabel } from '../controller/runtimeConsolePresentation';
-import type { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+import { buildRuntimeConsoleUserMessage, formatRuntimeConsoleStateLabel } from '../controller/runtime/runtimeConsolePresentation';
+import type { RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 
 function snap(partial: Partial<RuntimeConsoleStatusSnapshot>): RuntimeConsoleStatusSnapshot {
     return {

@@ -8,11 +8,21 @@ import {
     comparisonNoteFor,
     controllerSystemErrorEntries,
     describeDeployFailure,
+    errorLogEntryKey,
     makeDeploySnapshot,
     parsedErrorCodes,
+    selectErrorLogNotice,
     summarizeCompileAttempts,
-} from '../controller/deployOutcome';
-import type { CompileAttemptLog, DeployResult } from '../controller/deployService';
+} from '../controller/deployment/deployOutcome';
+import type { CompileAttemptLog, DeployResult } from '../controller/deployment/deployService';
+import { assessMemory } from '../controller/diagnostics/memoryGuard';
+
+test('deployOutcome: memory precheck rejection is not described as FTP or compile failure', () => {
+    const described = describeDeployFailure(result({ failedPhase: 'UPLOAD', memoryPrecheck: assessMemory('') }), [], undefined);
+    assert.ok(described.message.includes('메모리 사전 검사로 중단'));
+    assert.ok(!described.message.includes('FTP'));
+    assert.strictEqual(described.jumpToCompileErrors, false);
+});
 
 // deployOutcome 은 deployService 를 `import type` 으로만 참조하므로 vscode 없이 로드된다.
 // 이 테스트는 runDeployCore 결과 보고부(Output 줄·알림 문구·스냅샷)의 문구·순서 회귀를 잡는다.
@@ -161,6 +171,34 @@ test('deployOutcome 실패 문구 ①: COMPILE 단계 + 시스템 에러 = 환�
     assert.strictEqual(d.jumpToCompileErrors, false);
 });
 
+test('deployOutcome 실패 문구: UPLOAD의 FTP 452는 컴파일 로그가 아니라 저장 공간·메모리 점검을 안내한다', () => {
+    const r = result({
+        failedPhase: 'UPLOAD',
+        failedCommand: 'FTP upload',
+        failedStatusMessage: '452 Error writing file',
+    });
+    const d = describeDeployFailure(r, [], undefined);
+    assert.strictEqual(
+        d.message,
+        '업로드 실패 / FTP upload / 452 Error writing file — FTP 452는 제어기 저장 공간 또는 메모리 부족 가능성이 있으므로 Show Memory와 /GPL 사용량 확인',
+    );
+    assert.strictEqual(d.lastStage, 'UPLOAD');
+    assert.strictEqual(d.jumpToCompileErrors, false);
+});
+
+test('deployOutcome 실패 문구: 일반 UPLOAD 실패는 FTP 및 원격 경로 로그를 가리킨다', () => {
+    const r = result({
+        failedPhase: 'UPLOAD',
+        failedCommand: 'Probe /GPL',
+        failedStatusMessage: '/GPL 목록 조회 실패',
+    });
+    const d = describeDeployFailure(r, [], undefined);
+    assert.strictEqual(
+        d.message,
+        '업로드 실패 / Probe /GPL / /GPL 목록 조회 실패 — FTP 및 원격 경로 로그 확인',
+    );
+});
+
 test('deployOutcome 실패 문구 ②: 컴파일 에러가 있으면 개수 표기 + 첫 에러로 점프, 접미(회귀 주석·경로) 순서', () => {
     const r = result({
         failedPhase: 'COMPILE', compileErrors: [{ file: 'a.gpl', line: 1, code: -760, message: 'x' }, { file: 'b.gpl', line: 2, code: -730, message: 'y' }],
@@ -170,6 +208,22 @@ test('deployOutcome 실패 문구 ②: 컴파일 에러가 있으면 개수 표�
     assert.strictEqual(d.message, '2개 컴파일 에러 (COMPILE 단계) — COMPILE 원문 로그 확인 / 회귀 아님: 동일 실패 패턴 2회 관측 / 경로: /GPL/MergeCode');
     assert.strictEqual(d.jumpToCompileErrors, true);
     assert.strictEqual(d.unverifiableReason, undefined);
+});
+
+test('deployOutcome 실패 문구 ②-1: Start -compile 에러는 원문 출처를 Start로 표시한다', () => {
+    const r = result({
+        failedPhase: 'START',
+        failedCommand: 'Start MergeCode -compile -event',
+        failedStatusCode: -742,
+        failedStatusMessage: 'Compilation errors',
+        compileErrors: [{ file: 'Main.gpl', line: 12, code: -506, message: 'Input too long' }],
+    });
+    const d = describeDeployFailure(r, [], undefined);
+    assert.strictEqual(
+        d.message,
+        '1개 컴파일 에러 (START 단계) / Start MergeCode -compile -event / STATUS -742 (Compilation errors) — START -compile 원문 로그 확인',
+    );
+    assert.strictEqual(d.jumpToCompileErrors, true);
 });
 
 test('deployOutcome 실패 문구 ③: ErrorLog 전체가 시스템 에러면 "GPL 코드 오류 없음" 명시', () => {
@@ -187,4 +241,40 @@ test('deployOutcome 실패 문구 ④: 그 외는 미상 — 단계가 없으면
     const mixed = describeDeployFailure(result({ failedPhase: 'START', errorLog: [SYS_1521, FREE_TEXT] }), [SYS_1521], undefined);
     assert.strictEqual(mixed.message, '알 수 없는 오류 (START 단계) / 제어기 시스템 경고 1건 (배포 원인 아님) — COMPILE 원문 로그 확인',
         '시스템 에러가 섞였지만 전체가 아니면 ③이 아니라 ④');
+});
+
+// 성공 배포 알림 선별(2026-10-21 Sample Prep — 같은 ErrorLog 4건이 배포마다 경고로 반복됐다).
+const SAMPLE_PREP_ERRORLOG = [
+    '10-21-2026 22:25:27.101, s01, -3122, "*Soft envelope error* Robot 1: 1"',
+    '10-21-2026 22:25:27.135, s01, -3147, "*Abnormal envelope error* Robot 1: 1"',
+    '10-21-2026 23:01:17.123, Trj, -1600, "*Power off requested*"',
+    '10-21-2026 23:17:42.535, Trj, -1600, "*Power off requested*"',
+];
+
+test('selectErrorLogNotice: 처음 본 항목은 알림 대상, 의도된 동작 코드(-1600)는 정보로 낮춘다', () => {
+    const notice = selectErrorLogNotice(SAMPLE_PREP_ERRORLOG, new Set(), [-1600]);
+    assert.strictEqual(notice.quiet.length, 2, '-1600 두 건은 quiet');
+    assert.strictEqual(notice.newSys.length + notice.newDeployErr.length, 2, 'envelope 두 건만 알림 대상');
+    assert.strictEqual(notice.repeated, 0);
+});
+
+test('selectErrorLogNotice: 직전 배포에서 본 항목은 다시 알리지 않고 새 항목만 남긴다', () => {
+    const seen = new Set(SAMPLE_PREP_ERRORLOG.map(errorLogEntryKey));
+    const next = [...SAMPLE_PREP_ERRORLOG, '10-21-2026 23:40:00.000, s01, -3122, "*Soft envelope error* Robot 1: 2"'];
+    const notice = selectErrorLogNotice(next, seen, [-1600]);
+    assert.strictEqual(notice.repeated, 4);
+    assert.strictEqual(notice.quiet.length, 0);
+    assert.deepStrictEqual([...notice.newSys, ...notice.newDeployErr], [next[4]]);
+});
+
+test('selectErrorLogNotice: 같은 항목 판정은 앞뒤·연속 공백 차이를 무시한다', () => {
+    const seen = new Set([errorLogEntryKey(SAMPLE_PREP_ERRORLOG[0])]);
+    const notice = selectErrorLogNotice([`  ${SAMPLE_PREP_ERRORLOG[0].replace(', ', ',   ')} `], seen, []);
+    assert.strictEqual(notice.repeated, 1);
+});
+
+test('selectErrorLogNotice: quiet 코드가 비어 있으면 -1600 도 알림 대상이다', () => {
+    const notice = selectErrorLogNotice(SAMPLE_PREP_ERRORLOG, new Set(), []);
+    assert.strictEqual(notice.quiet.length, 0);
+    assert.strictEqual(notice.newSys.length + notice.newDeployErr.length, 4);
 });

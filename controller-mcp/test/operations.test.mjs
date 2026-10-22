@@ -1,5 +1,5 @@
 // 작업 기록(Operation) 읽기 단위 테스트 — 확장 없이 파일 계약만으로 검증한다.
-// 확장 쪽 정본은 src/controller/operationStore.ts (src/test/operationStore.test.ts).
+// 확장 쪽 정본은 src/controller/automation/operationStore.ts (src/test/operationStore.test.ts).
 // 실행: npm test (node --test)
 
 import test from 'node:test';
@@ -113,4 +113,96 @@ test('사람이 읽는 한 줄에 종류·상태·단계·경과가 담긴다', 
   assert.match(line, /RUNNING/);
   assert.match(line, /COMPILE/);
   assert.match(line, /1분 39초/);
+});
+
+// ── 결과 전달 기억 · 요약 · 축약 (§1-EP) ───────────────────────────────────────────────
+import {
+  DeliveredResultMemory,
+  isTerminalOperationState,
+  summarizeOperationResult,
+  compactOperationResult,
+  compactOperation,
+  compactOperationRecord,
+} from '../src/operations.js';
+
+const deployResult = {
+  success: true,
+  projectName: 'MergeCode',
+  compileErrorCount: 0,
+  uploadStats: { uploaded: 71, skipped: 0, totalBytes: 896253, deleted: 0 },
+  remoteProjectPath: '/GPL/MergeCode',
+  compiledSnapshotFiles: 71,
+  provenance: {
+    inSync: true,
+    localRevision: '0db0ea25d87caa2642edb3e2bbfa8a0f41474579',
+    uploadedRevision: '0db0ea25d87caa2642edb3e2bbfa8a0f41474579',
+    changedSinceUpload: [],
+    notUploaded: [],
+    fileCount: 71,
+    verifiedBy: 'upload-manifest',
+  },
+};
+
+test('전달 기억: 완료 결과는 한 번 전달하면 재조회가 redundant, 진행 중은 기록하지 않는다', () => {
+  const mem = new DeliveredResultMemory();
+  assert.equal(mem.check('op-1', 'COMPLETED').redundant, false);
+  mem.mark('op-1', 'RUNNING');
+  assert.equal(mem.check('op-1', 'RUNNING').redundant, false, '진행 중 상태는 다음 조회에 새 정보가 있다');
+  mem.mark('op-1', 'COMPLETED', 5000);
+  const c = mem.check('op-1', 'COMPLETED');
+  assert.equal(c.redundant, true);
+  assert.equal(c.deliveries, 1);
+  assert.equal(c.firstAt, 5000);
+  mem.mark('op-1', 'COMPLETED');
+  assert.equal(mem.check('op-1', 'COMPLETED').deliveries, 2);
+  // 상태가 바뀌면(이론상 FAILED 재기록) 새 결과로 본다.
+  assert.equal(mem.check('op-1', 'FAILED').redundant, false);
+  assert.equal(isTerminalOperationState('UNKNOWN'), false, 'UNKNOWN 은 미확정이라 다시 봐야 한다');
+});
+
+test('결과 요약 한 줄: 업로드/컴파일/동기화 상태가 목록에서 읽힌다', () => {
+  assert.equal(summarizeOperationResult({ result: deployResult }), 'uploaded 71 · skipped 0 · compileErrors 0 · inSync');
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, compileErrorCount: 2, provenance: { inSync: false, changedSinceUpload: ['a', 'b', 'c'] } } }),
+    'uploaded 71 · skipped 0 · compileErrors 2 · notInSync (changed 3)',
+  );
+  assert.equal(summarizeOperationResult({ error: { message: '컴파일 실패' } }), 'error: 컴파일 실패');
+  assert.equal(summarizeOperationResult({ result: { anything: 1 } }), null);
+});
+
+test('결과 축약: 내부 해시·식별자는 빠지고 긴 배열은 잘리며 나머지 구조는 보존된다', () => {
+  const c = compactOperationResult({ ...deployResult, provenance: { ...deployResult.provenance, changedSinceUpload: Array.from({ length: 13 }, (_, i) => `f${i}.gpl`) } });
+  assert.equal(c.compiledSnapshotFiles, undefined);
+  assert.equal(c.provenance.localRevision, undefined);
+  assert.equal(c.provenance.inSync, true);
+  assert.equal(c.uploadStats.uploaded, 71);
+  assert.equal(c.provenance.changedSinceUpload.length, 11);
+  assert.equal(c.provenance.changedSinceUpload[10], '…(+3)');
+  assert.equal(compactOperationResult(null), null);
+});
+
+test('목록 항목·상세 축약: 식별/상태/요약만 남고 pid·host·heartbeat 는 빠진다', () => {
+  const rec = {
+    version: 1, operationId: 'deploy-1', type: 'DEPLOY', state: 'COMPLETED', phase: 'ERROR_CHECK', pid: 1, host: 'PC',
+    heartbeat: 2000, controllerId: '192.168.0.1', extensionInstanceId: 'win', projectDir: 'C:/ws/MergeCode', projectName: 'MergeCode',
+    idempotencyKey: 'k', createdAt: 1000, startedAt: 1000, finishedAt: 2000, result: deployResult,
+  };
+  const item = compactOperation(rec, 3000);
+  assert.deepEqual(Object.keys(item), ['operationId', 'type', 'state', 'phase', 'projectName', 'createdAt', 'finishedAt', 'summary', 'resultSummary']);
+  assert.match(item.resultSummary, /uploaded 71/);
+  const detail = compactOperationRecord(rec);
+  assert.equal(detail.pid, undefined);
+  assert.equal(detail.heartbeat, undefined);
+  assert.equal(detail.idempotencyKey, undefined);
+  assert.equal(detail.projectDir, 'C:/ws/MergeCode');
+  assert.equal(detail.result.provenance.uploadedRevision, undefined);
+});
+
+// ── Start 뒤 메인 쓰레드 Error 요약(§1-EU) ──────────────────────────────────────
+
+import { summarizeOperationResult as summarizeOperationResultForRuntimeError } from '../src/operations.js';
+
+test('summarizeOperationResult: runtimeError 가 있으면 목록 요약에 코드·위치가 붙는다', () => {
+  const rec = { result: { success: true, compileErrorCount: 0, runtimeError: { threadName: 'AntiBodyR2', statusCode: -1509, file: '_robot_ExtraModuleHandler.gpl', line: 484 } } };
+  assert.equal(summarizeOperationResultForRuntimeError(rec), 'compileErrors 0 · runtimeError -1509 @ _robot_ExtraModuleHandler.gpl:484');
 });

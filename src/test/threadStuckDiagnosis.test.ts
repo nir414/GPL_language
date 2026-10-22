@@ -1,11 +1,11 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { ThreadStopIo, ThreadStopResponse } from '../controller/threadStop';
+import { ThreadStopIo, ThreadStopResponse } from '../controller/threads/threadStop';
 import {
     buildRecoveryCandidates,
     diagnoseStuckThread,
     extractCallTarget,
-} from '../controller/threadStuckDiagnosis';
+} from '../controller/threads/threadStuckDiagnosis';
 
 /** `Show Thread  -web` 파이프 형식 한 줄. */
 function row(name: string, state: string, file: string, fileLine: number): string {

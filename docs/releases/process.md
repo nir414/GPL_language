@@ -1,6 +1,6 @@
 # 릴리즈 프로세스 표준화 가이드
 
-이 문서는 이 저장소에서 **버전 관리, 커밋, 태그, VSIX 패키징, GitHub Release**를 어떻게 운영하는지 정리한 현행 문서다.
+이 문서는 이 저장소에서 **버전 관리, 커밋, 태그, VSIX 패키징, GitHub Release, Marketplace 게시**를 어떻게 운영하는지 정리한 현행 문서다.
 예전 문서/명령 예시 중 현재 스크립트와 맞지 않는 내용이 있었으므로, **실제 구현 기준**으로 다시 정리한다.
 
 ## 무엇이 기준 파일인가
@@ -9,7 +9,7 @@
 
 - `package.json` — 확장의 실제 버전
 - `CHANGELOG.md` — GitHub Release 노트 원본
-- `README.md` — 상단 현재 버전 표기와 주요 변경 이력
+- `README.md` — 이용자용 기능·사용 안내. 버전은 CHANGELOG와 Releases로 연결하고 중복 표기하지 않는다
 - `docs/ai-handoff.md` — 작업 인계/세션 기록
 
 이 저장소에서 릴리즈 태그 `vX.Y.Z`는 반드시 `package.json`의 `version`과 일치해야 한다.
@@ -31,6 +31,12 @@ SemVer를 따른다.
 ## 현재 스크립트가 실제로 하는 일
 
 이 절이 가장 중요하다. 스크립트 이름만 보고 동작을 추측하면 버전이 의도와 다르게 변경될 수 있다.
+
+### `npm run compile`
+
+- `scripts/prune-build-outputs.js`가 현재 tsconfig의 출력 목록에서 빠진 `out/`의 JavaScript·소스맵을 먼저 제거한다.
+- 현재 소스의 산출물과 별도 MCP 번들(`.cjs`)·리소스는 보존한다. 프로젝트 밖 경로·소스와 겹친 출력 폴더·junction/심볼릭 링크는 삭제 전에 거부한다.
+- 이어서 TypeScript를 컴파일한다. 테스트·prepublish·패키징은 이 공통 경로를 사용한다.
 
 ### `npm run package`
 
@@ -82,7 +88,7 @@ SemVer를 따른다.
 
 1. `node scripts/bump-version.js patch`
 2. `CHANGELOG.md` 정리
-3. `README.md` / `docs/ai-handoff.md` 버전 반영
+3. `README.md` 사용 안내 반영 / `docs/ai-handoff.md` 버전 갱신
 4. 커밋
 5. `npm run pre-release-check`
 6. `npm run package:no-bump`
@@ -100,7 +106,7 @@ SemVer를 따른다.
 
 1. `node scripts/bump-version.js minor` 또는 `major`
 2. `CHANGELOG.md` 내용 보강 + 빈 섹션 제거
-3. `README.md` 현재 버전 갱신
+3. `README.md` 기능·사용법 변경 반영
 4. `docs/ai-handoff.md` 세션 기록/현재 버전 갱신
 5. `git add ...` / `git commit ...`
 6. `npm run pre-release-check`
@@ -116,7 +122,9 @@ SemVer를 따른다.
 
 ### 3) 프리릴리즈 (`-alpha`, `-beta`, `-rc`)
 
-프리릴리즈는 SemVer suffix를 수동으로 맞춘다.
+이 절의 SemVer suffix는 **GitHub Release 전용**이다. Marketplace는 `-beta`/`-rc` suffix를 받지 않는다.
+Marketplace Pre-release는 숫자 버전과 `vsce --pre-release`를 사용하며, 현재 자동 게시 대상에서는 제외한다.
+GitHub 프리릴리즈는 SemVer suffix를 수동으로 맞춘다.
 
 예:
 
@@ -136,7 +144,7 @@ SemVer를 따른다.
 8. `git tag v0.9.0-beta.1`
 9. `git push origin v0.9.0-beta.1`
 
-릴리즈 워크플로는 태그에 `alpha`, `beta`, `rc`가 들어 있으면 GitHub Release를 자동으로 **Pre-release**로 표시한다.
+릴리즈 워크플로는 버전에 `-` suffix가 있으면 GitHub Release를 **Pre-release**로 표시하고 Marketplace 게시를 건너뛴다.
 
 ## 표준 릴리즈 절차
 
@@ -175,8 +183,8 @@ node scripts/bump-version.js patch
   - 실제 변경 내용 채우기
   - 빈 `### Added/Changed/Fixed/Removed` 삭제
 - `README.md`
-  - 상단 `현재 버전` 반영
-  - 필요 시 주요 변경 이력 최신화
+  - 기능·지원 범위·사용법 변경 반영
+  - 버전·릴리스별 변경 사항은 CHANGELOG와 Releases에서 관리하고 중복 표기하지 않음
 - `docs/ai-handoff.md`
   - 최종 갱신 / 현재 package 버전 / 세션 기록 추가
 
@@ -231,18 +239,60 @@ git push origin vX.Y.Z
 
 ## GitHub Release가 만들어지는 방식
 
-`release.yml`은 태그 푸시 후 대략 아래 순서로 동작한다.
+`release.yml`은 태그 버전과 package 버전 일치를 먼저 검사하고 확장·MCP 테스트를 실행한다.
+테스트를 통과하면 VSIX를 한 번 패키징해 SHA-256과 함께 Actions artifact 및 GitHub Release에 보관한다.
+기존 Release는 삭제하지 않고 갱신한다. `CHANGELOG.md`가 릴리스 노트의 정본이다.
 
-1. 소스 체크아웃
-2. 의존성 설치
-3. TypeScript 컴파일
-4. VSIX 패키징
-5. 태그 버전과 `package.json` 버전 일치 확인
-6. `scripts/extract-changelog.js <version>`로 릴리즈 노트 추출
-7. GitHub Release 생성
-8. VSIX 첨부
+### Marketplace 최초 등록
 
-즉, `CHANGELOG.md` 형식이 깨지면 Release 노트가 빈약해질 수 있다.
+1. [게시자 관리](https://marketplace.visualstudio.com/manage/publishers/)에 게시용 Microsoft 계정으로 로그인한다.
+2. `package.json`의 `publisher`와 같은 ID인 `nir414`의 소유권/게시 권한을 확인한다.
+   아직 등록되지 않았다면 해당 ID로 게시자를 만든다. 다른 소유자가 사용 중이면 ID와 기존 설치의 전환을 먼저 결정한다.
+3. **New extension → Visual Studio Code**에서 검증된 VSIX를 올린다.
+   업데이트는 기존 확장의 **Update**를 사용한다. 게시된 버전을 덮어쓰지 말고 새 버전을 사용한다.
+4. 게시 처리 완료 후 `@id:nir414.gpl-language-support` 검색과 상세 페이지 버전을 확인한다.
+   업로드 접수와 Marketplace 공개 완료는 구분한다.
+
+### Marketplace 자동 게시 연결 (Microsoft Entra ID / OIDC)
+
+최초 업로드는 관리 화면에서 할 수 있다. 이후 자동 게시에는 다음 계정 설정이 필요하다.
+이 저장소는 장기 PAT를 저장하지 않고 GitHub OIDC → Entra ID → `vsce --azure-credential` 경로를 사용한다.
+
+Entra tenant가 없는 계정은 먼저 [Microsoft의 tenant 준비 안내](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-create-new-tenant)를 따른다.
+현재 공식 경로는 [Azure 무료 계정 가입](https://azure.microsoft.com/free/)을 안내하며 전화/카드 확인과 약관 동의는 계정 소유자가 직접 처리한다.
+가입 후 생성/연결된 기본 디렉터리에서 앱 등록 권한을 확인한다. 이를 관리 센터에서 추가 Workforce tenant를 생성하는 절차와 혼동하지 않는다.
+추가 Workforce tenant 생성에는 유료 고객 조건이 있으며, 무료 체험 가입이 추가 tenant 생성을 허용한다는 의미는 아니다.
+무료 체험 종료와 종량제 전환 시점의 조건은 가입 화면에서 확인한다. 게시용 identity에는 컴퓨트/스토리지 리소스가 필요하지 않다.
+
+1. 게시에 사용할 Entra 애플리케이션(service principal) 또는 user-assigned managed identity를 준비한다.
+   기존 조직의 게시용 identity가 있으면 재사용한다. 조직 정책상 identity 생성/수정 권한이 없으면 관리자에게 요청한다.
+2. GitHub 저장소에 `marketplace` Environment를 만든다. 필요한 경우 승인자와 릴리스 태그 배포 규칙을 설정한다.
+3. identity에 GitHub Actions용 federated credential을 연결한다.
+   - Issuer: `https://token.actions.githubusercontent.com`
+   - Subject: `repo:<owner>/<repository>:environment:marketplace` (현재 저장소의 실제 owner/name 사용)
+   - Audience: `api://AzureADTokenExchange`
+4. 해당 identity를 Marketplace 게시자의 멤버로 추가하고 **Contributor** 권한을 부여한다.
+   [공식 게시 안내](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#secure-automated-publishing-to-visual-studio-marketplace)의
+   profile 조회 절차로 Marketplace에서 사용하는 identity ID를 확인한다. client ID와 혼동하지 않는다.
+5. GitHub `marketplace` Environment secrets에 `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`를 설정한다.
+   비밀번호/인증서/PAT는 필요하지 않다. 워크플로는 subscription 없이 로그인하도록 설정했다.
+6. 저장소 Actions variable `MARKETPLACE_PUBLISH`를 문자열 `true`로 설정하면 **이후 정식 태그**에서 게시가 활성화된다.
+   미설정이면 GitHub Release까지만 생성한다. 설정을 켜도 과거 태그는 소급 실행되지 않는다.
+
+게시 job은 같은 workflow run의 VSIX를 내려받아 SHA-256을 확인하고 **재빌드 없이** 게시한다.
+태그의 `publisher.name`은 기존 확장 ID와 유지해야 같은 확장의 업데이트로 전달된다.
+실패 시 Release workflow의 실패한 job을 재실행할 수 있다. 이미 같은 버전이 게시된 경우
+`--skip-duplicate`로 건너뛰므로, 재실행 성공만으로 새 업로드를 증명하지 말고 Marketplace 버전을 직접 확인한다.
+Marketplace에는 기존 설치보다 높은 버전을 게시해야 한다.
+
+### 사용자의 자동 업데이트
+
+Marketplace 게시와 사용자의 자동 업데이트 설정은 별개다. VS Code에서 해당 확장의 **Auto Update**가 켜져 있어야 한다.
+VSIX로 설치한 확장은 Auto Update가 기본 비활성화되므로 Marketplace 공개 뒤 해당 설정을 확인하도록 안내한다.
+조직의 VS Code 정책에 따라 업데이트가 제한될 수 있다.
+
+참고: [Azure Login OIDC](https://github.com/Azure/login#login-with-openid-connect-oidc-recommended),
+[VS Code 자동 업데이트](https://code.visualstudio.com/docs/configure/extensions/extension-marketplace#extension-auto-update).
 
 ## 커밋 메시지/태그 규칙
 

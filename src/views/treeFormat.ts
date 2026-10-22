@@ -2,7 +2,7 @@
  * 제어기 트리(GPL Controller 뷰)의 표시용 포맷 함수 — vscode 무의존.
  * controllerTreeProvider.ts 하단에 있던 함수를 그대로 옮겼다(2026-09-07 §1-DB, 동작 동일) — 테스트 가능하게 하는 것이 목적.
  */
-import type { ConnectionStats } from '../controller/consoleSocket';
+import type { ConnectionStats } from '../controller/connection/consoleSocket';
 
 /**
  * 1402 keep-alive 연결 통계 한 줄(GitHub #22): `keep-alive 유지 중 · 연결 3회 · 재사용 412회`.
@@ -15,11 +15,7 @@ export function formatConnectionStats(s: ConnectionStats | undefined): string {
 	return parts.join(' · ');
 }
 
-export function formatSize(bytes: number): string {
-	if (bytes < 1024) { return `${bytes} B`; }
-	if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)} KB`; }
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+// 크기 표기(`formatSize`)는 util/formatBytes.formatBytes 로 옮겼다(2026-09-30 §1-EE) — 업로드 진행 바와 규칙을 공유한다.
 
 export function formatDate(date: Date): string {
 	const y = date.getFullYear();

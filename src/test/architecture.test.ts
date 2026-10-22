@@ -11,13 +11,14 @@ import { test } from './harness';
  * ① 코드를 규칙에 맞추거나 ② 규칙을 바꾸되 architecture.md 에 이유를 함께 적는다 — 둘 중 하나를 **의식적으로** 고르게 하는 것이 목적.
  *
  * 검사 항목:
- *  R1 vscode 의존 허용 목록 — activation/·providers/ 밖에서 vscode 를 import 하는 모듈은 명시 목록과 정확히 일치해야 한다.
+ *  R1 vscode 의존 허용 목록 — activation/·providers/·language/vscode/ 밖에서 vscode 를 import 하는 모듈은 명시 목록과 정확히 일치해야 한다.
  *  R2 계층 의존 방향 — 폴더(계층)별로 import 해도 되는 계층만 허용한다(같은 계층은 항상 허용).
  *  R3 런타임 import 순환 없음 — `import type` 은 지워지므로 제외.
  *  R4 테스트 등록 누락 없음 — src/test/*.test.ts 는 모두 index.ts 가 import 한다(수동 등록이라 잊기 쉽다).
  *  R5 package.json ↔ 코드 — 선언된 명령·메뉴/키바인딩/활성화 이벤트가 가리키는 명령은 소스에서 등록돼 있어야 한다.
  *  R6 설정 키 — 코드가 읽는 `gpl.*` 설정 키는 package.json 에 선언돼 있어야 한다(오타 방지).
  *  R7 판정 정본(SSOT) 우회 금지 — "이 판단은 여기서만 한다"고 정한 규칙을 다른 모듈이 손으로 다시 구현하지 않는다.
+ *  R9 controller 기능 분류 — 파일은 책임에 맞는 하위 폴더에 두고 루트에 다시 쌓지 않는다.
  */
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -25,7 +26,7 @@ const SRC = path.join(ROOT, 'src');
 
 type Layer =
     | 'util' | 'language' | 'project' | 'log' | 'controller' | 'debug' | 'views' | 'providers' | 'activation' | 'ai'
-    | 'config' | 'symbolCache' | 'extension' | 'test';
+    | 'config' | 'languageVscode' | 'extension' | 'test';
 
 /** 계층별로 import 해도 되는 다른 계층(같은 계층은 항상 허용). 근거는 docs/development/architecture.md §계층 규칙. */
 const ALLOWED_DEPENDENCIES: Record<Layer, readonly Layer[]> = {
@@ -35,25 +36,25 @@ const ALLOWED_DEPENDENCIES: Record<Layer, readonly Layer[]> = {
     project: ['language', 'util'],
     config: ['language'],
     controller: ['project', 'util', 'log'],
-    symbolCache: ['language', 'project', 'util', 'config'],
+    languageVscode: ['language', 'project', 'util', 'config'],
     debug: ['controller', 'project', 'language', 'util'],
     views: ['controller', 'util', 'config'],
-    providers: ['language', 'project', 'util', 'config', 'symbolCache'],
-    ai: [],
-    activation: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'symbolCache'],
-    extension: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'symbolCache', 'activation'],
-    test: ['util', 'language', 'log', 'project', 'config', 'controller', 'symbolCache', 'debug', 'views', 'providers', 'ai', 'activation'],
+    providers: ['language', 'project', 'util', 'config', 'languageVscode'],
+    ai: ['controller', 'util'],
+    activation: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'languageVscode'],
+    extension: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'languageVscode', 'activation'],
+    test: ['util', 'language', 'log', 'project', 'config', 'controller', 'languageVscode', 'debug', 'views', 'providers', 'ai', 'activation'],
 };
 
-/** activation/·providers/ 는 VS Code 접착 계층이라 전부 vscode 를 써도 된다. 그 밖은 여기 있는 모듈만. */
-const ALWAYS_VSCODE_LAYERS: ReadonlySet<Layer> = new Set<Layer>(['activation', 'providers']);
+/** activation/·providers/·language/vscode/ 는 VS Code 접착 계층이라 전부 vscode 를 써도 된다. 그 밖은 여기 있는 모듈만. */
+const ALWAYS_VSCODE_LAYERS: ReadonlySet<Layer> = new Set<Layer>(['activation', 'providers', 'languageVscode']);
 const VSCODE_ALLOWED_MODULES: ReadonlySet<string> = new Set([
     // 루트
-    'extension', 'config', 'symbolCache',
+    'extension', 'config',
     // controller — 전송/UI 접착. 나머지 controller/ 모듈은 순수(Node 단독 테스트 대상)
-    'controller/breakpointMirror', 'controller/breakpointSync', 'controller/controllerConnection', 'controller/debugBridge',
-    'controller/deployRecord', 'controller/deployService', 'controller/gprSyncCommand', 'controller/projectPicker',
-    'controller/runtimeConsole',
+    'controller/debugging/breakpointMirror', 'controller/debugging/breakpointSync', 'controller/connection/controllerConnection', 'controller/debugging/debugBridge',
+    'controller/deployment/deployRecord', 'controller/deployment/deployService', 'controller/projects/gprSyncCommand', 'controller/projects/projectPicker',
+    'controller/runtime/runtimeConsole',
     // debug — DAP 세션과 구성 provider
     'debug/activateDebug', 'debug/gplDebugSession',
     // project — 워크스페이스 검색·명령 래퍼
@@ -75,13 +76,31 @@ function walk(dir: string, acc: string[] = []): string[] {
 }
 
 const posix = (p: string): string => p.split(path.sep).join('/');
-/** src 기준 모듈 이름(확장자 없음): `controller/deployService`, 루트는 `config`. */
+/** src 기준 모듈 이름(확장자 없음): `controller/deployment/deployService`, 루트는 `config`. */
 const moduleOf = (abs: string): string => posix(path.relative(SRC, abs)).replace(/\.ts$/, '');
-const layerOf = (mod: string): Layer => (mod.includes('/') ? mod.slice(0, mod.indexOf('/')) : mod) as Layer;
+const layerOf = (mod: string): Layer => mod.startsWith('language/vscode/')
+    ? 'languageVscode'
+    : (mod.includes('/') ? mod.slice(0, mod.indexOf('/')) : mod) as Layer;
 
 const files = walk(SRC);
 const modules = new Set(files.map(moduleOf));
 const sources = new Map(files.map(f => [moduleOf(f), fs.readFileSync(f, 'utf8')] as const));
+
+/** 기능별 분류 정본은 architecture.md §2.1. 중첩 깊이는 제한하지 않는다. */
+const CONTROLLER_AREAS: ReadonlySet<string> = new Set([
+    'connection', 'commands', 'protocol', 'runtime', 'deployment', 'files',
+    'projects', 'threads', 'debugging', 'automation', 'diagnostics', 'io',
+]);
+
+test('구조 R9: controller 모듈은 기능별 하위 폴더에 속한다', () => {
+    const unclassified = [...modules].filter(mod => {
+        if (!mod.startsWith('controller/')) { return false; }
+        const parts = mod.split('/');
+        return parts.length < 3 || !CONTROLLER_AREAS.has(parts[1]);
+    });
+    assert.deepStrictEqual(unclassified, [],
+        `기능 분류가 없는 controller 모듈: ${unclassified.join(', ')} — architecture.md §2.1 과 CONTROLLER_AREAS 를 함께 갱신할 것`);
+});
 
 function importsOf(mod: string): { edges: ImportEdge[]; vscode: boolean; specs: string[] } {
     const src = sources.get(mod)!;
@@ -108,7 +127,7 @@ function importsOf(mod: string): { edges: ImportEdge[]; vscode: boolean; specs: 
 
 const graph = new Map([...modules].map(mod => [mod, importsOf(mod)] as const));
 
-test('구조 R1: vscode 를 import 하는 모듈은 접착 계층(activation·providers) 또는 명시 목록과 정확히 일치한다', () => {
+test('구조 R1: vscode 를 import 하는 모듈은 접착 계층(activation·providers·language/vscode) 또는 명시 목록과 정확히 일치한다', () => {
     const actual = [...graph].filter(([, g]) => g.vscode).map(([mod]) => mod).filter(mod => !ALWAYS_VSCODE_LAYERS.has(layerOf(mod)));
     const unexpected = actual.filter(mod => !VSCODE_ALLOWED_MODULES.has(mod));
     const stale = [...VSCODE_ALLOWED_MODULES].filter(mod => !actual.includes(mod));
@@ -210,6 +229,16 @@ test('구조 R5: package.json 이 선언·참조하는 명령은 모두 소스�
     assert.deepStrictEqual(missing, [], `메뉴/키바인딩/activationEvents 가 가리키지만 등록되지 않은 명령: ${missing.join(', ')}`);
 });
 
+test('구조 R8: 사용자 대면 명령 제목은 포트 번호가 아니라 채널 이름으로 부른다', () => {
+    // 2026-09-22 사용자 결정: `1402`·`1403` 은 번호를 외운 사람에게만 뜻이 통한다.
+    // 용어 정본과 표기 규칙은 controller/protocol/channelNames.ts — 번호는 설정 값·엔드포인트·진단 상세에서만 덧붙인다.
+    const offenders = (pkg.contributes?.commands ?? [])
+        .filter(c => /\b140[23]\b/.test(c.title ?? ''))
+        .map(c => `${c.command}: "${c.title}"`);
+    assert.deepStrictEqual(offenders, [],
+        `명령 제목에 포트 번호가 남아 있다 — 채널 이름(명령 콘솔/런타임 콘솔)으로 쓸 것:\n  ${offenders.join('\n  ')}`);
+});
+
 test('구조 R6: 코드가 읽는 gpl.* 설정 키는 package.json 에 선언돼 있다', () => {
     const cfg = pkg.contributes?.configuration;
     const props = Array.isArray(cfg)
@@ -251,6 +280,13 @@ interface SsotRule {
 
 const SSOT_RULES: readonly SsotRule[] = [
     {
+        what: '파일별 심볼의 이름 인덱스 조립 (Provider와 문서 로더에 별도 이름 캐시를 만들지 않는다)',
+        pattern: /buildSymbolNameIndex\s*\(/,
+        ownedBy: ['language/symbolNameIndex', 'language/symbols/symbolIndex'],
+        requires: ['buildSymbolNameIndex', 'SymbolIndex'],
+        use: 'language/symbols/symbolIndex.SymbolIndex.findAllByName / findDefinitionMatches',
+    },
+    {
         what: '수신자(receiver) 해석 컨텍스트 조립 — 문서 파싱 + 프로시저 범위 + 내장 사전 훅',
         pattern: /buildDocumentReceiverLookup\s*\(/,
         ownedBy: ['language/receiverType', 'providers/receiverContext'],
@@ -263,6 +299,62 @@ const SSOT_RULES: readonly SsotRule[] = [
         ownedBy: ['language/receiverType'],
         requires: ['elementTypeOf', 'isArrayTypeName'],
         use: 'language/receiverType.elementTypeOf / isArrayTypeName',
+    },
+    {
+        what: '"컴파일 검증 필요" 상태의 설명 문장 (배지 툴팁·Start 확인 모달·자동화 COMPILE_UNVERIFIED 가 공유)',
+        pattern: /소스가 아직 Compile ?로 검증되지 않았습니다/,
+        ownedBy: ['controller/deployment/compileStale'],
+        requires: ['describeCompileStale'],
+        use: 'controller/deployment/compileStale.describeCompileStale (배지 라벨·툴팁·클릭은 views/compileStaleBadge)',
+    },
+    {
+        what: '쓰레드 목록 표·상태 집계 (「전체 쓰레드 복사」와 상황 스냅샷이 공유 — 보이는 것과 복사되는 것을 같게)',
+        pattern: /\|\s*이름\s*\|\s*상태\s*\||state === 'Paused' \|\| \w+\.state === 'Break'/,
+        ownedBy: ['controller/threads/threadReport'],
+        requires: ['countThreadStates', 'renderThreadTable', 'summarizeThreadStates'],
+        use: 'controller/threads/threadReport.renderThreadTable / countThreadStates',
+    },
+    {
+        what: '에러 코드 → 코드/환경 분류 (트리 버킷·오류 상세 보고서·배포 요약이 공유). 공식 범위 표가 근거',
+        pattern: /category:\s*'(code|environment)'/,
+        ownedBy: ['controller/protocol/responseParser'],
+        requires: ['getGplErrorGroup', 'describeErrorCategory', 'classifyErrorEntry'],
+        use: 'controller/protocol/responseParser.classifyErrorEntry (라벨은 describeErrorCategory, 범위는 getGplErrorGroup)',
+    },
+    {
+        what: '바이트 → 사람이 읽는 크기 (트리 FTP 목록·업로드 진행 바·완료 요약이 공유 — B 정수, 그 위는 소수 1자리)',
+        pattern: /\.toFixed\(1\)\}\s*(KB|MB|GB)\b/,
+        ownedBy: ['util/formatBytes'],
+        requires: ['formatBytes', 'formatBytesAs', 'byteUnitFor'],
+        use: 'util/formatBytes.formatBytes (같은 단위로 나란히 쓸 때는 formatBytesAs + byteUnitFor)',
+    },
+    {
+        what: '업로드 진행 바·완료 요약 문구 (상태바 본문·툴팁·완료 표시 — 다른 표면이 바를 다시 그리지 않게)',
+        pattern: /[█▏▎▍▌▋▊▉░]|업로드 완료 (— 변경 없음|\$\{)/,
+        ownedBy: ['views/uploadProgressBar'],
+        requires: ['renderBar', 'renderUploadProgress', 'renderUploadSummary'],
+        use: 'views/uploadProgressBar.renderUploadProgress / renderUploadSummary (집계는 controller/deployment/uploadProgress, 보이기·타이밍은 views/connectionStatusBar)',
+    },
+    {
+        what: 'Flash 쓰기 전원 차단 금지 상태바 문구 (쓰기·Sync·안정화·미확인 단계가 공유)',
+        pattern: /FLASH (저장 중|쓰기 완료 대기|안정화|안전 상태 미확인)/,
+        ownedBy: ['views/flashSafetyPresentation'],
+        requires: ['presentFlashSafety'],
+        use: 'views/flashSafetyPresentation.presentFlashSafety (절차·시간은 controller/deployment/flashSafety)',
+    },
+    {
+        what: 'GPL 심볼 → VS Code SymbolKind 대응 (개요·워크스페이스 심볼이 공유 — 같은 심볼이 두 곳에서 다른 종류로 보이지 않게)',
+        pattern: /vscode\.SymbolKind\.(Module|Class|Method|Function|Property|Field|Constant|Variable)\b/,
+        ownedBy: ['providers/symbolKinds'],
+        requires: ['toVsCodeSymbolKind'],
+        use: 'providers/symbolKinds.toVsCodeSymbolKind (분류·detail·계층은 language/outlineModel)',
+    },
+    {
+        what: '제어기 연결 세션 상태 (쓰기는 host.setControllerConnected 한 곳, 읽기는 정본 — 뷰의 연결 플래그를 상태 출처로 쓰지 않게)',
+        pattern: /setControllerSessionConnected\s*\(|controllerTree\??\.isConnected\b/,
+        ownedBy: ['controller/connection/connectionSession', 'activation/host'],
+        requires: ['isControllerSessionConnected', 'setControllerSessionConnected', 'onControllerSessionChange', 'effectiveKeepAlive'],
+        use: 'host.isControllerConnected / controller/connection/connectionSession.isControllerSessionConnected · onControllerSessionChange',
     },
 ];
 

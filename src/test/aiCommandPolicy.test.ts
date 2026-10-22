@@ -6,8 +6,8 @@ import {
     aiBlockReasonFor,
     aiBlockedDetail,
     findAiBlockedCommand,
-} from '../controller/aiCommandPolicy';
-import { validateBridgeRequest, AGENT_BRIDGE_VERSION } from '../controller/agentBridge';
+} from '../controller/automation/aiCommandPolicy';
+import { validateBridgeRequest, AGENT_BRIDGE_VERSION } from '../controller/automation/agentBridge';
 
 // AI 경로 차단(2026-09-07 사용자 결정) — 되돌릴 수 없는 명령만 막고 사람의 UI 경로는 그대로 둔다.
 

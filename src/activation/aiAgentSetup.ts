@@ -1,82 +1,120 @@
-/**
- * AI Agent Setup — `.mcp.json`/CLAUDE.md 내보내기·점검(GitHub #23) + 활성화 시 MCP 사본 자동 갱신.
- */
-
+/** AI Agent Setup 내보내기·점검 + MCP 사본 자동 갱신. */
 import * as vscode from 'vscode';
-import { exportAiAgentSetup, inspectAiAgentSetup, syncStableBundleIfStale } from '../ai/exportAgentSetup';
-import { getControllerConfig } from '../controller/controllerConnection';
+import {
+	exportAiAgentSetup, inspectAiAgentSetup, syncStableBundleIfStale, AiAgentSetupReport,
+} from '../ai/exportAgentSetup';
+import { sameSetupPath, findMcpHostMismatch } from '../ai/agentSetupChecks';
+import { getControllerConfig } from '../controller/connection/controllerConnection';
+import { onControllerSessionChange } from '../controller/connection/connectionSession';
 import type { ExtensionHost } from './host';
+
+type SetupRequest = { workspaceRoot?: string; nonInteractive?: boolean };
 
 export function activateAiAgentSetup(host: ExtensionHost): void {
 	const { context, outputChannel } = host;
 
-	// AI Agent Setup 내보내기 — 현재 워크스페이스에 .mcp.json(동봉 MCP 서버 등록) +
-	// CLAUDE.md 가드 섹션을 생성해, 외부 AI(Claude Code)가 제어기를 안전하게 다룰 수 있게 한다.
-	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.ai.exportAgentSetup', async () => {
-			const config = getControllerConfig();
-			const projectName = (await host.project.detectWorkspaceProjectName())?.trim() || undefined;
-			const result = await exportAiAgentSetup(context, { ip: config.ip, port: config.port, projectName });
-			host.log(`[AI Setup] gpl.ai.exportAgentSetup => ${JSON.stringify(result)}`);
-			// Export 직후 같은 점검을 자동으로 돌린다 — 종전에는 사용자가 `Check AI Agent Setup` 을 따로
-			// 눌러야 결과를 알 수 있어 버튼이 둘로 나뉘어 있었다(2026-09-10 사용자 지적, §1-DQ).
-			// 점검 명령 자체는 남아 있다(팔레트·재점검용).
-			const report = inspectAiAgentSetup(context);
-			host.log(`[AI Setup] export 후 자동 점검 => ${JSON.stringify(report, null, 2)}`);
-			if (!report.ok) {
-				const pick = await vscode.window.showWarningMessage(
-					`GPL AI Agent Setup 내보내기 완료 — 점검에서 ${report.problems.length}건: ${report.problems.join(' / ')}`,
-					'출력 보기',
-				);
-				if (pick === '출력 보기') { outputChannel.show(true); }
-			}
-			return result;
-		})
-	);
+	async function workspaceRoot(request: SetupRequest): Promise<string | undefined> {
+		const folders = vscode.workspace.workspaceFolders ?? [];
+		if (request.workspaceRoot) { return folders.find(f => sameSetupPath(f.uri.fsPath, request.workspaceRoot!))?.uri.fsPath; }
+		if (folders.length === 1) { return folders[0].uri.fsPath; }
+		if (request.nonInteractive || folders.length === 0) { return undefined; }
+		return (await vscode.window.showWorkspaceFolderPick({ placeHolder: 'AI Agent Setup을 저장할 워크스페이스 폴더' }))?.uri.fsPath;
+	}
 
-	// AI Agent Setup 점검(GitHub #23) — .mcp.json 등록 경로, globalStorage 사본/동봉 번들 sha256 일치, CLAUDE.md 안내 블록 버전을
-	// 한 번에 보고한다. 문제가 있으면 Export 재실행 버튼을 함께 준다.
-	context.subscriptions.push(
-		vscode.commands.registerCommand('gpl.ai.checkAgentSetup', async () => {
-			const report = inspectAiAgentSetup(context);
-			host.log(`[AI Setup] gpl.ai.checkAgentSetup => ${JSON.stringify(report, null, 2)}`);
-			const bundleVer = report.bundled.build?.version ?? report.extensionVersion;
-			const summary = report.ok
-				? `GPL AI Agent Setup 정상 — MCP 번들 v${bundleVer}${report.stableCopy.exists ? ', globalStorage 사본 최신' : ''}${report.mcpJson.registered ? ', .mcp.json 등록됨' : ''}${report.claudeMd.hasBlock ? ', CLAUDE.md 안내 최신' : ''}.`
-				: `GPL AI Agent Setup 점검 ${report.problems.length}건: ${report.problems.join(' / ')}`;
+	/** 점검 기준이 되는 현재 제어기 주소 — 세션 오버라이드 포함(§1-ES). */
+	function currentController(): { ip: string; port: number } {
+		const cfg = getControllerConfig();
+		return { ip: cfg.ip, port: cfg.port };
+	}
+
+	function summary(report: AiAgentSetupReport): string {
+		const settings = report.settingsOk ? '설정 정상' : `설정 문제 ${report.problems.length}건`;
+		const detail = [...report.problems, ...report.warnings].slice(0, 2).join(' / ');
+		return `GPL AI Agent Setup — ${settings}${report.warnings.length ? ` · 안내 확인 ${report.warnings.length}건` : ''}${detail ? ` — ${detail}` : ''}`;
+	}
+
+	context.subscriptions.push(vscode.commands.registerCommand('gpl.ai.exportAgentSetup', async (args?: SetupRequest) => {
+		const request = args ?? {};
+		const root = await workspaceRoot(request);
+		if (!root) { return { ok: false, error: 'WORKSPACE_REQUIRED', detail: 'Export할 워크스페이스 폴더를 지정해야 합니다.' }; }
+		const config = getControllerConfig();
+		const result = await exportAiAgentSetup(context, {
+			ip: config.ip, port: config.port, workspaceRoot: root,
+		});
+		host.log(`[AI Setup] gpl.ai.exportAgentSetup => ${JSON.stringify(result)}`);
+		if (!result.ok) { return result; }
+		const report = inspectAiAgentSetup(context, { workspaceRoot: root, currentController: currentController() });
+		host.log(`[AI Setup] export 후 자동 점검 => ${JSON.stringify(report, null, 2)}`);
+		if (!report.ok && !request.nonInteractive) {
+			const pick = await vscode.window.showWarningMessage(summary(report), '출력 보기');
+			if (pick === '출력 보기') { outputChannel.show(true); }
+		}
+		return { ...result, report };
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('gpl.ai.checkAgentSetup', async (args?: SetupRequest) => {
+		const request = args ?? {};
+		const root = await workspaceRoot(request);
+		if (!root) { return { ok: false, error: 'WORKSPACE_REQUIRED' }; }
+		const report = inspectAiAgentSetup(context, {
+			workspaceRoot: root, currentController: currentController(),
+		});
+		host.log(`[AI Setup] gpl.ai.checkAgentSetup => ${JSON.stringify(report, null, 2)}`);
+		if (!request.nonInteractive) {
 			const pick = report.ok
-				? await vscode.window.showInformationMessage(summary, '출력 보기')
-				: await vscode.window.showWarningMessage(summary, 'Export 재실행', '출력 보기');
-			if (pick === 'Export 재실행') {
-				await vscode.commands.executeCommand('gpl.ai.exportAgentSetup');
-			} else if (pick === '출력 보기') {
-				outputChannel.show(true);
-			}
-			return report;
-		})
-	);
+				? await vscode.window.showInformationMessage(summary(report), '출력 보기')
+				: await vscode.window.showWarningMessage(summary(report), 'Export 재실행', '출력 보기');
+			if (pick === 'Export 재실행') { await vscode.commands.executeCommand('gpl.ai.exportAgentSetup', { workspaceRoot: root }); }
+			else if (pick === '출력 보기') { outputChannel.show(true); }
+		}
+		return report;
+	}));
 
-	// 활성화 시 globalStorage MCP 사본 자동 갱신(GitHub #23): Export를 한 번이라도 실행한 PC에서 확장이 업데이트되면
-	// 사본이 구버전으로 남아 Claude Code가 옛 서버(keep-alive·debug_snapshot 없는 08-05판 등)를 계속 띄우던 문제.
-	// 사본이 없으면 아무것도 하지 않는다. 실행 중인 MCP 프로세스는 다음 시작 때 새 파일을 읽으므로 /mcp 재연결을 안내한다.
+	// 연결이 확립될 때 `.mcp.json` 의 GPL_HOST 가 지금 연결 주소와 다르면 알린다(2026-10-19, §1-ES).
+	// 왜: Export 뒤 다른 IP 로 연결하면 그 워크스페이스의 MCP 는 옛 주소로 접속하고 이 창의 presence 도 못 찾아
+	// "확장 미실행" 으로 보고했다 — 배포·콘솔이 전부 막혔는데 확장 쪽에는 아무 표시가 없었다. 같은 (폴더, 주소)는 한 번만 알린다.
+	const warnedHostMismatch = new Set<string>();
+	context.subscriptions.push(onControllerSessionChange(change => {
+		if (!change.connected) { return; }
+		const current = currentController();
+		for (const folder of vscode.workspace.workspaceFolders ?? []) {
+			const root = folder.uri.fsPath;
+			const mismatch = findMcpHostMismatch(root, current);
+			if (!mismatch) { continue; }
+			host.log(`[AI Setup] .mcp.json 제어기 주소 불일치: GPL_HOST ${mismatch.configured.host}:${mismatch.configured.port} ≠ 현재 연결 ${current.ip}:${current.port} (${mismatch.path})`);
+			const key = `${root}|${current.ip}:${current.port}`;
+			if (warnedHostMismatch.has(key)) { continue; }
+			warnedHostMismatch.add(key);
+			void (async () => {
+				const pick = await vscode.window.showWarningMessage(
+					`AI(MCP) 설정의 제어기 주소(${mismatch.configured.host}:${mismatch.configured.port})가 현재 연결(${current.ip}:${current.port})과 다릅니다 — `
+						+ '이 상태의 MCP 서버는 옛 주소로 접속하고 이 창을 찾지 못합니다. Export를 다시 실행하면 .mcp.json을 현재 주소로 갱신합니다(이후 Claude Code에서 /mcp 재연결).',
+					'Export 재실행', '무시',
+				);
+				if (pick === 'Export 재실행') { await vscode.commands.executeCommand('gpl.ai.exportAgentSetup', { workspaceRoot: root }); }
+			})().catch(err => host.log(`[AI Setup] 주소 불일치 안내 실패: ${String(err)}`));
+		}
+	}));
+
 	if (vscode.workspace.getConfiguration('gpl.ai').get<boolean>('autoRefreshMcpBundle', true)) {
 		const sync = syncStableBundleIfStale(context);
-		if (sync.action !== 'absent' && sync.action !== 'up-to-date') {
-			host.log(`[AI Setup] MCP 사본 동기화: ${JSON.stringify(sync)}`);
-		}
+		if (sync.action !== 'absent' && sync.action !== 'up-to-date') { host.log(`[AI Setup] MCP 사본 동기화: ${JSON.stringify(sync)}`); }
 		if (sync.action === 'updated') {
-			const report = inspectAiAgentSetup(context);
-			const from = sync.previous?.version ? `v${sync.previous.version}` : '구버전(스탬프 없음)';
-			const to = sync.current?.version ? `v${sync.current.version}` : '현재 번들';
-			const needExport = report.claudeMd.hasBlock && report.claudeMd.upToDate === false;
-			const buttons = needExport ? ['Export 재실행', '확인'] : ['확인'];
-			void vscode.window.showInformationMessage(
-				`gpl-controller MCP 서버 사본을 ${from} → ${to}로 갱신했습니다. 실행 중인 Claude Code에서는 /mcp로 gpl-controller를 재연결해야 새 서버가 뜹니다.` +
-				(needExport ? ' 워크스페이스 CLAUDE.md의 안내 블록은 구버전입니다 — Export 재실행을 권장합니다.' : ''),
-				...buttons,
-			).then(pick => {
-				if (pick === 'Export 재실행') { void vscode.commands.executeCommand('gpl.ai.exportAgentSetup'); }
-			});
+			void (async () => {
+				const reports = (vscode.workspace.workspaceFolders ?? []).map(folder => inspectAiAgentSetup(context, {
+					workspaceRoot: folder.uri.fsPath, currentController: currentController(),
+				}));
+				for (const report of reports) { host.log(`[AI Setup] MCP 갱신 후 점검 => ${JSON.stringify(report)}`); }
+				const from = sync.previous?.version ? `v${sync.previous.version}` : '구버전(스탬프 없음)';
+				const to = sync.current?.version ? `v${sync.current.version}` : '현재 번들';
+				const needExport = reports.some(r => r.claudeMd.hasBlock && r.claudeMd.upToDate === false);
+				const pick = await vscode.window.showInformationMessage(
+					`gpl-controller MCP 사본을 ${from} → ${to}로 갱신했습니다. Claude Code에서 /mcp로 재연결하세요.`
+						+ (needExport ? ' 워크스페이스 안내는 Export를 다시 실행해 갱신하세요.' : ''),
+					...(needExport ? ['Export 재실행', '확인'] : ['확인']),
+				);
+				if (pick === 'Export 재실행') { await vscode.commands.executeCommand('gpl.ai.exportAgentSetup'); }
+			})().catch(err => host.log(`[AI Setup] MCP 갱신 후 점검 실패: ${String(err)}`));
 		}
 	}
 }

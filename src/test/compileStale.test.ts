@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { CompileStaleTracker } from '../controller/compileStale';
+import { CompileStaleTracker } from '../controller/deployment/compileStale';
 
 test('compileStale: mark 한 프로젝트를 대소문자·공백 무시로 찾는다', () => {
     const t = new CompileStaleTracker();
@@ -33,6 +33,10 @@ test('compileStale: clear 는 지운 항목과 배지에 남길 다음 항목을
     const t = new CompileStaleTracker();
     t.mark('First', 'a');
     t.mark('Second', 'b');
+    const newest = t.clear('second');
+    assert.strictEqual(newest?.cleared.projectName, 'Second');
+    assert.strictEqual(newest?.next?.projectName, 'First', '최근 것을 지우면 그 앞의 미검증 항목이 배지에 남아야 한다');
+    t.mark('Second', 'b');
     const done = t.clear('first');
     assert.strictEqual(done?.cleared.projectName, 'First');
     assert.strictEqual(done?.next?.projectName, 'Second', '남은 항목이 있으면 배지를 그것으로 바꿔야 한다');
@@ -50,13 +54,14 @@ test('compileStale: 없는 항목의 clear 는 undefined (같은 Compile 로 두
     assert.strictEqual(t.clear('NeverMarked'), undefined);
 });
 
-test('compileStale: current 는 가장 먼저 등록된 항목, list 는 등록 순 전체', () => {
+test('compileStale: current 는 가장 최근에 표시된 항목, list 는 오래된 → 최근 순', () => {
     const t = new CompileStaleTracker();
     t.mark('A', 'a');
     t.mark('B', 'b');
-    // 갱신은 등록 순서를 바꾸지 않고, 표시 이름은 마지막에 관측된 표기를 쓴다(종전 동작 유지).
+    assert.strictEqual(t.current()?.projectName, 'B', '방금 미검증이 된 쪽이 배지에 와야 한다');
+    // 다시 표시하면 "가장 최근" 자리로 올라오고, 표시 이름은 마지막에 관측된 표기를 쓴다.
     t.mark('a', 'a2');
     assert.strictEqual(t.current()?.projectName, 'a');
     assert.strictEqual(t.current()?.reason, 'a2');
-    assert.deepStrictEqual(t.list().map(i => i.projectName), ['a', 'B']);
+    assert.deepStrictEqual(t.list().map(i => i.projectName), ['B', 'a']);
 });

@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
 import { ciEq } from '../language/identifiers';
-import { elementTypeOf } from '../language/receiverType';
+import { elementTypeOf, enclosingClassName, enclosingModuleName } from '../language/receiverType';
 import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
-import { buildConstructorUsagePattern, isSymbolicStringReferenceAt } from '../language/referenceSyntax';
+import { buildConstructorUsagePattern, isSymbolicStringReferenceAt, isTypeUsageAt } from '../language/referenceSyntax';
 import { PROJECT_EXCLUDE_GLOB, resolveProjectFileScope } from '../project/projectFileScope';
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
@@ -158,6 +158,27 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         return chosen;
     }
 
+    /**
+     * `As MachineRobot` / `New MachineRobot(...)`처럼 **타입 이름 사용부**에서 실행했을 때
+     * 그 타입 선언(Class/Module)을 캐시에서 복원한다.
+     *
+     * 이렇게 해야 선언에서 실행하든 사용부에서 실행하든 같은 스코프(정의 파일·모듈·접근제한자)를
+     * 쓰고 결과가 일치한다. 복원하지 않으면 사용부 실행은 스코프 없는 이름 전역 검색이 되어
+     * 컴파일 단위 기준점이 정의 파일이 아니라 현재 문서가 된다.
+     */
+    private recoverTypeUsageDeclaration(
+        word: string,
+        document: vscode.TextDocument,
+        lineText: string,
+        character: number
+    ): GPLSymbol | undefined {
+        if (!isTypeUsageAt(lineText, character)) {
+            return undefined;
+        }
+        const sym = this.symbolCache.findDefinition(word, document.uri.fsPath);
+        return sym?.kind === 'class' || sym?.kind === 'module' ? sym : undefined;
+    }
+
     private isQualifiedAt(text: string, matchIndex: number): boolean {
         // True if the identifier at matchIndex is preceded (ignoring whitespace) by a dot.
         for (let i = matchIndex - 1; i >= 0; i--) {
@@ -199,7 +220,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
     }
 
     private shouldAcceptByMemberScope(
-        doc: vscode.TextDocument,
+        uri: vscode.Uri,
         text: string,
         identifierIndex: number,
         targetClass?: string
@@ -215,7 +236,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             return true;
         }
 
-        const qSym = this.symbolCache.findDefinition(qualifier, doc.uri.fsPath);
+        const qSym = this.symbolCache.findDefinition(qualifier, uri.fsPath);
         if (!qSym) {
             // Local variables may not be indexed in cache; keep to avoid false negatives.
             return true;
@@ -349,12 +370,18 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // 단, 같은 이름이 서로 다른 스코프에 흩어져 모호하면(예: 다른 클래스의 동명 멤버) 복원을 포기하고
         // 기존의 이름 기반 광역 검색으로 남겨, 참조가 누락되지 않도록 한다(false negative 방지 우선).
         if (!defSymbol) {
-            defSymbol = this.recoverDefinitionScope(word, qualifier, document);
+            defSymbol = this.recoverTypeUsageDeclaration(word, document, lineText, wordRange.start.character)
+                ?? this.recoverDefinitionScope(word, qualifier, document);
         }
 
         const targetFilePath = defSymbol?.filePath;
-        const targetModule = defSymbol?.module;
-        const targetClass = defSymbol?.className;
+        // 소속(스코프)은 공용 정본(receiverType)으로 구한다. 파서는 Class/Module 심볼의
+        // `className`/`module`에 **자기 이름**을 넣으므로(자기-참조 필드), 그대로 읽으면
+        // `Class MachineRobot` 선언이 "MachineRobot 클래스의 멤버"로 분류된다.
+        // 그러면 비한정 검색이 정의 파일 안으로 묶이고 다른 파일의 `As MachineRobot`·
+        // `New MachineRobot(...)`이 통째로 빠진다(2026-09-22 확인).
+        const targetModule = defSymbol ? enclosingModuleName(defSymbol) : undefined;
+        const targetClass = defSymbol ? enclosingClassName(defSymbol) : undefined;
         const targetAccess = defSymbol?.accessModifier;
 
         this.log(
@@ -405,6 +432,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // - Module members are effectively global; *public* module procedures are frequently called unqualified
         //   from other files, so restricting to the defining file causes false negatives.
         // - Private module-level members, however, should remain file-local.
+        // - Type declarations (Class/Module) are referenced by their bare name across files
+        //   (`As MachineRobot`, `New MachineRobot(...)`), so they follow the module-level rules —
+        //   enclosingClassName()이 자기 이름을 돌려주지 않으므로 여기서 자동으로 그렇게 된다.
         const shouldRestrictUnqualifiedToDefFile =
             !!targetFilePath && (isClassMember || isPrivateModuleLevelMember);
 
@@ -460,7 +490,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 ? [targetModule]
                 : [];
         const shouldAcceptOccurrence = (
-            doc: vscode.TextDocument,
+            uri: vscode.Uri,
             line: string,
             character: number,
         ): boolean => {
@@ -474,7 +504,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             // Class 멤버의 단독 `"Proc"` 표기는 정의 파일 안에서만 허용한다.
             // `"Class.Proc"` / `"Module.Proc"`는 컨테이너까지 일치해야 한다.
             const allowUnqualified = !targetClass
-                || (!!targetFilePath && doc.uri.fsPath === targetFilePath);
+                || (!!targetFilePath && uri.fsPath === targetFilePath);
             return isSymbolicStringReferenceAt(line, character, {
                 name: word,
                 containerNames: symbolicStringContainers,
@@ -491,7 +521,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const MAX_SEARCH_RESULTS = 5000; // 워크스페이스 텍스트 검색 결과 상한
         const MAX_SCOPE_FALLBACK_FILES = 1000; // 프로젝트 범위 폴백에서 스캔할 최대 파일 수
 
-        const shouldSkipAsDeclaration = (uri: vscode.Uri, range: vscode.Range, doc: vscode.TextDocument): boolean => {
+        const shouldSkipAsDeclaration = (uri: vscode.Uri, range: vscode.Range, lineText: string): boolean => {
             if (context.includeDeclaration) {
                 return false;
             }
@@ -506,7 +536,6 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             }
 
             // Best-effort: skip the first occurrence of the word on the defining line.
-            const lineText = doc.lineAt(defSymbol.line).text;
             const firstIdx = lineText.toLowerCase().indexOf(word.toLowerCase());
             if (firstIdx < 0) {
                 return false;
@@ -514,15 +543,26 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             return range.start.character === firstIdx;
         };
 
-        const scanDocumentText = (doc: vscode.TextDocument, re: RegExp, opts: { unqualifiedOnly?: boolean }): number => {
-            const text = doc.getText();
+        const scanSourceText = (uri: vscode.Uri, text: string, re: RegExp, opts: { unqualifiedOnly?: boolean }): number => {
             let added = 0;
-            const lineCount = doc.lineCount;
-            for (let lineIdx = 0; lineIdx < lineCount; lineIdx++) {
+            // VS Code 문서를 열지 않고도 물리 줄의 절대 오프셋을 보존한다(CRLF/LF/CR 혼합 허용).
+            // 폴백 스캔에서 openTextDocument를 반복하면 문서 열림 이벤트 → 심볼 캐시 재구축이 파일마다 발생한다.
+            const lineStarts = [0];
+            for (let i = 0; i < text.length; i++) {
+                if (text[i] === '\n') {
+                    lineStarts.push(i + 1);
+                } else if (text[i] === '\r' && text[i + 1] !== '\n') {
+                    lineStarts.push(i + 1);
+                }
+            }
+
+            for (let lineIdx = 0; lineIdx < lineStarts.length; lineIdx++) {
                 if (token.isCancellationRequested) {
                     break;
                 }
-                const lineText = doc.lineAt(lineIdx).text;
+                const lineStart = lineStarts[lineIdx];
+                const nextStart = lineStarts[lineIdx + 1] ?? text.length;
+                const lineText = text.slice(lineStart, nextStart).replace(/[\r\n]+$/, '');
                 if (lineText.length === 0 || lineText.length > MAX_SCAN_LINE_LENGTH) {
                     continue;
                 }
@@ -540,38 +580,37 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     const memberOffset = full.toLowerCase().lastIndexOf(word.toLowerCase());
                     const colInLine = match.index + (memberOffset >= 0 ? memberOffset : 0);
                     const startPos = new vscode.Position(lineIdx, colInLine);
-                    const startIndex = doc.offsetAt(startPos);
-                    const endIndex = startIndex + word.length;
+                    const startIndex = lineStart + colInLine;
 
                     if (opts.unqualifiedOnly && this.isQualifiedAt(text, startIndex)) {
                         continue;
                     }
 
-                    if (!this.shouldAcceptByMemberScope(doc, text, startIndex, targetClass)) {
+                    if (!this.shouldAcceptByMemberScope(uri, text, startIndex, targetClass)) {
                         continue;
                     }
 
-                    const range = new vscode.Range(startPos, doc.positionAt(endIndex));
+                    const range = new vscode.Range(startPos, new vscode.Position(lineIdx, colInLine + word.length));
 
                     // 일반 문자열/주석은 제외하되, `"Class.Proc"`처럼 GPL 런타임이
                     // 프로시저 이름으로 소비하는 정확한 symbol-valued string은 참조다.
-                    if (!shouldAcceptOccurrence(doc, lineText, range.start.character)) {
+                    if (!shouldAcceptOccurrence(uri, lineText, range.start.character)) {
                         continue;
                     }
 
                     // 함수 본문의 반환값 대입문(FunctionName = ...)은 참조에서 제외.
                     if (
                         defSymbol?.kind === 'function' &&
-                        doc.uri.fsPath === defSymbol.filePath &&
+                        uri.fsPath === defSymbol.filePath &&
                         this.isStatementLeadingAssignmentLHS(text, startIndex, word.length)
                     ) {
                         continue;
                     }
 
-                    if (shouldSkipAsDeclaration(doc.uri, range, doc)) {
+                    if (shouldSkipAsDeclaration(uri, range, lineText)) {
                         continue;
                     }
-                    if (addLocation(doc.uri, range)) {
+                    if (addLocation(uri, range)) {
                         added += 1;
                     }
                 }
@@ -583,7 +622,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         // We keep the old local scan semantics but limit it to the most relevant patterns.
         try {
             const scanLocal = (re: RegExp, opts: { unqualifiedOnly?: boolean }) => {
-                localHits += scanDocumentText(document, re, opts);
+                localHits += scanSourceText(document.uri, document.getText(), re, opts);
             };
 
             if (isConstructorTarget && constructorRegex) {
@@ -662,13 +701,13 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     doc.positionAt(memberEndOffset)
                 );
 
-                if (!this.shouldAcceptByMemberScope(doc, text, memberStartOffset, targetClass)) {
+                if (!this.shouldAcceptByMemberScope(uri, text, memberStartOffset, targetClass)) {
                     return;
                 }
 
                 const lineText = doc.lineAt(normalizedRange.start.line).text;
                 // local scan과 동일한 문자열 참조 규칙을 workspace 검색에도 적용한다.
-                if (!shouldAcceptOccurrence(doc, lineText, normalizedRange.start.character)) {
+                if (!shouldAcceptOccurrence(uri, lineText, normalizedRange.start.character)) {
                     return;
                 }
 
@@ -684,7 +723,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 if (opts.unqualifiedOnly && this.isQualifiedAt(text, memberStartOffset)) {
                     return;
                 }
-                if (shouldSkipAsDeclaration(uri, normalizedRange, doc)) {
+                if (shouldSkipAsDeclaration(uri, normalizedRange, lineText)) {
                     return;
                 }
                 if (addLocation(uri, normalizedRange)) {
@@ -699,6 +738,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             };
 
             const runQuery = async (pattern: string, opts: { unqualifiedOnly?: boolean }) => {
+                if (targetAccess === 'private') {
+                    return false;
+                }
                 const ok = await this.findTextInWorkspace(
                     { pattern, isRegExp: true, isCaseSensitive: false },
                     token,
@@ -763,8 +805,8 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     `hasNonDocumentLocations=${hasNonDocumentLocations}, target=${targetUri.fsPath}, doc=${document.uri.fsPath}`
             );
             
-            // Run project-scope fallback if no external references were found yet
-            if (!token.isCancellationRequested && !hasNonDocumentLocations) {
+            // Private 심볼은 정의 파일(현재 문서) 스캔으로 충분하다. 파일 밖 검색은 결과도 없고 비용만 든다.
+            if (!token.isCancellationRequested && !hasNonDocumentLocations && targetAccess !== 'private') {
                 scopeFallbackRan = true;
                 // .gpo는 컴파일 산출물(바이너리)이라 텍스트 검색 대상이 아니다 — .gpl만.
                 const scope = await resolveProjectFileScope(targetUri.fsPath, {
@@ -772,11 +814,13 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     maxFiles: MAX_SCOPE_FALLBACK_FILES,
                 });
                 const gplFiles = scope.files;
-
-                this.log(
-                    `[References] No external references yet; running project-scope fallback: origin=${scope.origin}` +
-                        `${scope.projectDir ? ` dir=${scope.projectDir}` : ''} (files=${gplFiles.length})` +
-                        (scope.truncated ? ` ⚠ 상한 ${MAX_SCOPE_FALLBACK_FILES}개 초과 — 일부 파일은 스캔하지 않음` : '')
+                const fallbackStartedAt = Date.now();
+                let scannedFiles = 0;
+                let unreadableFiles = 0;
+                const openDocuments = new Map(
+                    vscode.workspace.textDocuments
+                        .filter(d => d.uri.scheme === 'file')
+                        .map(d => [d.uri.fsPath.toLowerCase(), d] as const)
                 );
 
                 // 현재 문서는 이미 스캔했다. Windows 경로는 대소문자가 다를 수 있어(.gpr에서 해석한 경로 vs
@@ -790,43 +834,53 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                         continue;
                     }
 
-                    let doc: vscode.TextDocument;
+                    let sourceText: string;
                     try {
-                        doc = await vscode.workspace.openTextDocument(uri);
+                        // 열린 문서는 저장 전 편집분을 존중하고, 나머지는 디스크에서 직접 읽는다.
+                        // openTextDocument를 쓰면 onDidOpenTextDocument → SymbolCache.updateDocument가 파일마다
+                        // 실행되어 이름 인덱스 재구축과 verbose 로그가 폭주한다.
+                        sourceText = openDocuments.get(uri.fsPath.toLowerCase())?.getText()
+                            ?? await this.symbolCache.readSourceText(uri);
                     } catch {
-                        // Skip files that cannot be opened (binary, encoding issues, etc.)
+                        unreadableFiles++;
                         continue;
                     }
+                    scannedFiles++;
 
                     if (isConstructorTarget && constructorRegex) {
-                        scopeFallbackHits += scanDocumentText(doc, constructorRegex(), {});
+                        scopeFallbackHits += scanSourceText(uri, sourceText, constructorRegex(), {});
                         continue;
                     }
 
                     if (shouldPreferQualifiedOnly && escapedQualifier) {
-                        scopeFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedQualifier), {});
+                        scopeFallbackHits += scanSourceText(uri, sourceText, qualifiedRegex(escapedQualifier), {});
                         continue;
                     }
 
                     if (shouldAlsoSearchModuleQualified && escapedModule) {
-                        scopeFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedModule), {});
+                        scopeFallbackHits += scanSourceText(uri, sourceText, qualifiedRegex(escapedModule), {});
                     }
                     if (shouldAlsoSearchClassQualified && escapedClass) {
-                        scopeFallbackHits += scanDocumentText(doc, qualifiedRegex(escapedClass), {});
+                        scopeFallbackHits += scanSourceText(uri, sourceText, qualifiedRegex(escapedClass), {});
                     }
                     if (isClassMember) {
-                        scopeFallbackHits += scanDocumentText(doc, new RegExp(anyQualifierPattern, 'gi'), {});
+                        scopeFallbackHits += scanSourceText(uri, sourceText, new RegExp(anyQualifierPattern, 'gi'), {});
                     }
 
                     // Unqualified scans: follow the same restriction rules.
                     if (shouldRestrictUnqualifiedToDefFile && targetFilePath) {
-                        if (doc.uri.fsPath === targetFilePath) {
-                            scopeFallbackHits += scanDocumentText(doc, unqualifiedRegex, { unqualifiedOnly: true });
+                        if (uri.fsPath === targetFilePath) {
+                            scopeFallbackHits += scanSourceText(uri, sourceText, unqualifiedRegex, { unqualifiedOnly: true });
                         }
                     } else if (!isClassMember) {
-                        scopeFallbackHits += scanDocumentText(doc, unqualifiedRegex, { unqualifiedOnly: false });
+                        scopeFallbackHits += scanSourceText(uri, sourceText, unqualifiedRegex, { unqualifiedOnly: false });
                     }
                 }
+                this.log(
+                    `[References] fallback origin=${scope.origin}${scope.projectDir ? ` dir=${scope.projectDir}` : ''} ` +
+                        `scanned=${scannedFiles}/${gplFiles.length} hits=${scopeFallbackHits} unreadable=${unreadableFiles} ` +
+                        `elapsed=${Date.now() - fallbackStartedAt}ms truncated=${scope.truncated}`
+                );
             }
         } catch {
             // ignore folder fallback errors

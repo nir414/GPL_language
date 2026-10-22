@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
-import { elementTypeOf } from '../language/receiverType';
+import { elementTypeOf, enclosingClassName, enclosingModuleName } from '../language/receiverType';
 import { GPLReferenceProvider } from './referenceProvider';
 import { getQualifiedWordAtPosition, isInCommentOrString, isTraceVerbose } from '../config';
 import { ciEq } from '../language/identifiers';
@@ -306,13 +306,19 @@ export class GPLRenameProvider implements vscode.RenameProvider {
         }
 
         const sym = target.symbol;
+        // 범위 비교는 공용 정본(receiverType)으로 한다 — Class/Module 심볼의 `className`/`module`은
+        // 자기 이름이라 그대로 비교하면 "자기 안"을 자기 범위로 보고, 클래스 이름 바꾸기에서
+        // 엉뚱한(그 클래스의 멤버) 충돌을 보고하거나 진짜 모듈 레벨 충돌을 놓친다.
+        const symModule = enclosingModuleName(sym);
+        const symClass = enclosingClassName(sym);
         const clash = this.symbolCache.findAllByName(newName).find(s =>
-            ciEq(s.module ?? '', sym.module ?? '') &&
-            ciEq(s.className ?? '', sym.className ?? '')
+            this.symbolCache.isSameCompileUnit(s.filePath, sym.filePath) &&
+            ciEq(enclosingModuleName(s) ?? '', symModule ?? '') &&
+            ciEq(enclosingClassName(s) ?? '', symClass ?? '')
         );
         if (clash) {
             throw new Error(
-                `같은 범위(${sym.module ?? '전역'}${sym.className ? '.' + sym.className : ''})에 이미 "${newName}"이(가) 있습니다.`
+                `같은 범위(${symModule ?? '전역'}${symClass ? '.' + symClass : ''})에 이미 "${newName}"이(가) 있습니다.`
             );
         }
     }

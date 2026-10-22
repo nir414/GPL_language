@@ -4,7 +4,7 @@ import {
     selectProjectFromCandidates,
     ProjectCandidate,
     pickSourceCandidate,
-} from '../controller/responseParser';
+} from '../controller/protocol/responseParser';
 
 /** 소문자 basename 집합 헬퍼. */
 function S(...names: string[]): Set<string> {

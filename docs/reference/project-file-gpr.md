@@ -23,7 +23,7 @@ GDS·Controller Software 문서 어디에도 `ProjectBegin` 등의 리터럴이 
 - **[문서]** GDS가 내용을 자동 관리하므로 GDS 안에서는 보통 감춰져 있으나, **텍스트 편집기로 열람 가능**하다.
 - **[문서]** 프로젝트를 메모리에 올려 실행하면 GPL이 **`Project.gpr`를 가장 먼저 읽는다**.
 - **[문서]** 폴더 이름과 프로젝트 이름은 동의어다. 제어기 플래시에서는 `/flash/projects/` 아래에 놓인다.
-  (이 확장의 FTP 배포 경로는 `/GPL/<ProjectName>` — `src/controller/deployService.ts` 참조.)
+  (이 확장의 FTP 배포 경로는 `/GPL/<ProjectName>` — `src/controller/deployment/deployService.ts` 참조.)
 
 ## 2. 최소 형식 **[실측]**
 
@@ -143,7 +143,7 @@ graph LR
 - GDS는 파일명의 금지 문자(예: `-`)를 `_`로, 대문자를 소문자로 **자동 변경**한다.
 - 위와 별개로, 이 확장은 **공백·제어 문자**를 별도로 차단한다 — 1402 콘솔 명령
   (`Compile`/`Load`/`Start`/`Unload`)은 인자를 공백으로 구분하고 인용 문법이 없기 때문
-  (`src/controller/projectNameGuard.ts`).
+  (`src/controller/projects/projectNameGuard.ts`).
 
 ## 6. 프로젝트에 들어가는 파일 종류 **[문서]**
 
@@ -162,7 +162,7 @@ graph LR
 
 | 항목 | 상태 | 위치 |
 | --- | --- | --- |
-| `ProjectName`/`ProjectStart`/`ProjectSource` 파싱 | 지원 | `src/project/gprSync.ts`, `src/controller/responseParser.ts` |
+| `ProjectName`/`ProjectStart`/`ProjectSource` 파싱 | 지원 | `src/project/gprSync.ts`, `src/controller/protocol/responseParser.ts` |
 | 하위 폴더 상대 경로(`T1\T2\T2.gpl`) | 지원 | `src/project/projectSources.ts` |
 | 첫 줄 타임스탬프 주석 보존·갱신 | 지원 | `formatGprTimestamp` |
 | 알 수 없는 줄 보존 | 지원 | `applyGprSync` (매칭 안 되는 줄은 그대로 통과) |

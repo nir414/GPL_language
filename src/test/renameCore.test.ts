@@ -103,18 +103,26 @@ test('renameCore: 문자열 참조 — "Mod.Proc"에서 proc 세그먼트 (한�
     assert.strictEqual(miss.length, 0);
 });
 
-test('renameCore: 문자열 참조 — 단일 식별자 리터럴은 전체 일치만', () => {
+test('renameCore: 문자열 참조 — 프로시저 이름으로 소비되는 인자만 바꾼다', () => {
+    // 첫 인자(procedure_name)만 참조다. 세 번째 인자는 thread_name(런타임 라벨)이라 건드리지 않는다.
     const line = 'th = New Thread("Mod.SaveThread",, "SaveThread")';
     const hits = findStringLiteralRenameOccurrences(line, 'SaveThread', {
         kind: 'proc', containerName: 'Mod'
     });
-    // "Mod.SaveThread"의 tail + 단독 "SaveThread" 둘 다
-    assert.strictEqual(hits.length, 2);
+    assert.strictEqual(hits.length, 1);
+    assert.strictEqual(hits[0].character, line.indexOf('SaveThread"'));
 
     // 식별자 형태가 아닌 문자열(문장)은 이름이 포함돼도 제외
     const sentence = 'Console.WriteLine("SaveThread started at boot")';
     assert.strictEqual(
         findStringLiteralRenameOccurrences(sentence, 'SaveThread', { kind: 'proc' }).length,
+        0
+    );
+
+    // 모양은 같지만 프로시저를 찾는 자리가 아닌 로그 문자열도 제외 (2026-09-22)
+    const log = 'LOG.WriteEx(ex, "STA.ClearError")';
+    assert.strictEqual(
+        findStringLiteralRenameOccurrences(log, 'ClearError', { kind: 'proc', containerName: 'STA' }).length,
         0
     );
 });

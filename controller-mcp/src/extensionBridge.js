@@ -11,7 +11,7 @@
 // presence 도 서로 덮어써 어느 창인지 알 수 없었다. 이제 확장이 창마다 `extensionInstanceId` 로 presence 와
 // 큐를 분리하고, 이쪽은 대상 인스턴스를 먼저 고른 뒤(§6) 그 큐로만 보낸다.
 //
-// 파일 계약(확장 src/controller/agentBridge.ts와 동일하게 유지):
+// 파일 계약(확장 src/controller/automation/agentBridge.ts와 동일하게 유지):
 //   presence(인스턴스) : <dir>/extensions/<instanceId>.json
 //   presence(레거시)   : <dir>/<ip>.extension.json          — 리더 인스턴스만 쓴다(구버전 호환)
 //   요청     : <dir>/bridge/inst/<instanceId>/req/<id>.json  (레거시: <dir>/bridge/<ip>/req/<id>.json)
@@ -103,6 +103,73 @@ export function listExtensionInstances(ip, { dir, now = Date.now(), staleMs = PR
     .sort((a, b) => a.since - b.since);
 }
 
+/** presence의 가변 브리지 상태를 MCP 응답에 싣기 좋은 고정 모양으로 줄인다(구버전 presence도 허용). */
+export function bridgeHealthSummary(presence) {
+  const bridge = presence?.bridge ?? {};
+  return {
+    busy: bridge.busy === true,
+    activeRequest: bridge.activeRequest ?? null,
+    lastRequestCollectedAt: Number.isFinite(bridge.lastRequestCollectedAt) ? bridge.lastRequestCollectedAt : null,
+    lastResponseWrittenAt: Number.isFinite(bridge.lastResponseWrittenAt) ? bridge.lastResponseWrittenAt : null,
+    pendingRequests: Number.isFinite(bridge.pendingRequests) ? bridge.pendingRequests : 0,
+    oldestPendingRequestAt: Number.isFinite(bridge.oldestPendingRequestAt) ? bridge.oldestPendingRequestAt : null,
+    oldestPendingRequestAgeMs: Number.isFinite(bridge.oldestPendingRequestAgeMs) ? bridge.oldestPendingRequestAgeMs : null,
+    bridgeStalled: bridge.bridgeStalled === true,
+  };
+}
+
+/** 손상되거나 예상 밖인 브리지 응답도 `undefined: undefined` 대신 진단 가능한 문구로 만든다. */
+export function describeBridgeFailure(response) {
+  const nested = response?.result && typeof response.result === 'object' ? response.result : null;
+  const error = [response?.error, nested?.error, response?.code]
+    .find((v) => typeof v === 'string' && v.trim()) ?? 'unexpected-bridge-response';
+  let detail = [response?.detail, nested?.detail, nested?.message]
+    .find((v) => typeof v === 'string' && v.trim());
+  if (!detail && response?.result !== undefined) {
+    try { detail = JSON.stringify(response.result).slice(0, 500); } catch { /* noop */ }
+  }
+  return {
+    error: String(error),
+    detail: detail ? String(detail) : '브리지 응답에 실패 상세가 없습니다.',
+  };
+}
+
+/**
+ * 이 MCP 의 제어기 IP(`ip`)를 보는 창은 없는데 **다른 IP 를 보는 살아 있는 창**이 있는가(2026-10-19, ai-handoff §1-ES).
+ *
+ * 왜: 확장은 192.168.0.102 에 연결돼 있는데 `.mcp.json` 의 GPL_HOST 가 Export 시점 값 192.168.0.1 로 남아 있으면,
+ * 종전에는 presence 를 IP 로만 찾아 `presence-missing`("확장이 실행 중이 아니다") 로 보고했다 — 사실과 달라 AI 가
+ * 확장 재시작·/mcp 재연결 같은 엉뚱한 조치를 요청했고 배포·콘솔이 전부 막혔다. `projectDir` 를 주면 그 폴더를 품은
+ * 워크스페이스의 창에 `workspaceMatch:true` 를 붙여 "같은 작업의 창" 임을 드러낸다.
+ * @returns {null | { mcp: string, extensions: Array<object>, workspaceMatched: boolean }}
+ */
+export function describeHostMismatch(ip, { projectDir, dir, now, staleMs, pidAlive } = {}) {
+  const others = listExtensionInstances(undefined, { dir, now, staleMs, pidAlive }).filter((p) => p.ip !== ip);
+  if (others.length === 0) return null;
+  const extensions = others.map((p) => ({
+    extensionInstanceId: p.extensionInstanceId,
+    ip: p.ip,
+    port: p.port ?? null,
+    pid: p.pid,
+    workspace: p.workspace ?? null,
+    workspaceFolders: p.workspaceFolders ?? [],
+    connected: !!p.connected,
+    workspaceMatch: !!projectDir && (p.workspaceFolders ?? []).some((f) => pathIsInside(projectDir, f)),
+  }));
+  return { mcp: ip, extensions, workspaceMatched: extensions.some((e) => e.workspaceMatch) };
+}
+
+/** host-mismatch 의 조치 문구 — IP 를 이름으로 박아 "확장 미실행" 으로 읽히지 않게 한다. */
+export function hostMismatchFix(hm) {
+  const ips = [...new Set((hm?.extensions ?? []).map((e) => e.ip))];
+  const matched = (hm?.extensions ?? []).filter((e) => e.workspaceMatch).map((e) => e.ip);
+  const target = matched.length > 0 ? [...new Set(matched)].join(' / ') : ips.length === 1 ? ips[0] : `${ips.join(' / ')} 중 작업 창의 IP`;
+  return `살아 있는 확장 창은 ${ips.join(', ')} 에 연결돼 있고 이 MCP 의 GPL_HOST 는 ${hm?.mcp} 다 — 확장 미실행이 아니라 주소 불일치다. `
+    + `.mcp.json 의 GPL_HOST 를 ${target} 로 바꾸고 Claude Code 에서 /mcp 로 재연결할 것`
+    + '(또는 VS Code 에서 「GPL: Export AI Agent Setup」 을 다시 실행하면 현재 연결 주소로 다시 쓴다). '
+    + '확장 재시작이나 /mcp 재연결만으로는 해결되지 않는다.';
+}
+
 /** 레거시(IP) 큐를 맡은 인스턴스 — 확장 `electLeaderInstanceId` 와 같은 규칙(가장 먼저 뜬 것, 동률이면 id 순). */
 export function electLeaderInstanceId(presences) {
   const live = (presences || []).filter((p) => p?.bridge?.enabled && typeof p.extensionInstanceId === 'string');
@@ -114,6 +181,36 @@ export function electLeaderInstanceId(presences) {
     }
   }
   return best.extensionInstanceId;
+}
+
+/**
+ * 1402 콘솔 명령(과 창을 특정하지 않은 확장 명령)을 보낼 인스턴스 — **리더가 아니라 제어기에 연결된 창**을 우선한다.
+ *
+ * 왜(2026-10-14 실측, ai-handoff §1-EK): 1402 는 단일 클라이언트다. 리더(가장 먼저 뜬 창)가 미접속이고 다른 창이
+ * 세션을 쥐고 있으면, 리더 창의 확장이 새로 접속을 열다 `ECONNREFUSED` 가 났고 AI 는 이를 제어기 이상으로 읽기 쉬웠다.
+ * 리더는 레거시(IP) 큐 담당이라는 뜻일 뿐 접속과 무관하므로 콘솔 경로의 기준이 될 수 없다.
+ *
+ * 우선순위: 명시 instanceId → 창이 하나 → connected(여럿이면 그중 리더, 없으면 가장 먼저 뜬 것) → 리더 → 첫 번째.
+ * 연결된 창이 없으면 어느 창이 접속해도 경쟁이 없으므로 종전대로 리더에 맡긴다(양쪽이 같은 규칙으로 계산한 값).
+ * @returns {{instance, via:'explicit-instance'|'sole-instance'|'connected'|'leader'|'first'}|null}
+ */
+export function pickConsoleRouteInstance(instances, { instanceId } = {}) {
+  if (!Array.isArray(instances) || instances.length === 0) return null;
+  if (instanceId) {
+    const hit = instances.find((p) => p.extensionInstanceId === instanceId);
+    if (hit) return { instance: hit, via: 'explicit-instance' };
+  }
+  if (instances.length === 1) return { instance: instances[0], via: 'sole-instance' };
+  const bySince = (a, b) => (a.since ?? 0) - (b.since ?? 0)
+    || String(a.extensionInstanceId).localeCompare(String(b.extensionInstanceId));
+  const connected = instances.filter((p) => p.connected === true);
+  if (connected.length > 0) {
+    const instance = connected.find((p) => p.leader) ?? [...connected].sort(bySince)[0];
+    return { instance, via: 'connected' };
+  }
+  const leader = instances.find((p) => p.leader);
+  if (leader) return { instance: leader, via: 'leader' };
+  return { instance: [...instances].sort(bySince)[0], via: 'first' };
 }
 
 /** 경로 비교용 정규화 — Windows 대소문자·구분자 차이를 없앤다. */
@@ -148,6 +245,17 @@ export function resolveExtensionInstance(ip, { instanceId, projectDir, dir, now,
     leader: !!p.leader,
   }));
   if (all.length === 0) {
+    // 다른 IP 를 보는 창이 살아 있으면 "확장 없음" 이 아니라 주소 불일치다(§1-ES) — 원인을 이름으로 돌려준다.
+    const hostMismatch = describeHostMismatch(ip, { projectDir, dir, now, staleMs, pidAlive });
+    if (hostMismatch) {
+      return {
+        ok: false,
+        error: 'EXTENSION_HOST_MISMATCH',
+        detail: hostMismatchFix(hostMismatch),
+        hostMismatch,
+        candidates: hostMismatch.extensions,
+      };
+    }
     return {
       ok: false,
       error: 'EXTENSION_NOT_FOUND',
@@ -352,23 +460,21 @@ export function wakeExtension({ cli = process.env.GPL_VSCODE_CLI || 'code', time
  * 브리지 사용 가능 여부 판정 + (필요하면) 확장 깨우기.
  * mode: 'auto'(기본, 없으면 직접 접속) | 'only'(브리지 필수) | 'off'(항상 직접 접속)
  */
-export async function resolveBridge(ip, { dir, mode = 'auto', wake = true, wakeWaitMs = 4000, now = Date.now, instanceId } = {}) {
+export async function resolveBridge(ip, { dir, mode = 'auto', wake = true, wakeWaitMs = 4000, now = Date.now, instanceId, projectDir } = {}) {
   if (mode === 'off') {
     return { available: false, reason: 'bridge-off', presence: null, instances: [] };
   }
   /**
-   * 인스턴스 presence 가 있으면 그쪽이 정본이다. 여러 창이 떠 있어도 **기본 경로는 리더**로 정해 둔다 —
-   * 임의 선택이 아니라 확장과 같은 규칙으로 계산한 값이라 양쪽이 같은 창을 가리킨다. 1402 콘솔 명령은
-   * 어느 창을 거치든 같은 제어기로 나가므로 이것으로 충분하고, **대상이 중요한 배포/프로젝트 명령은**
-   * 호출측이 `resolveExtensionInstance(projectDir)` 로 창을 특정한다(§6).
+   * 인스턴스 presence 가 있으면 그쪽이 정본이다. 여러 창이 떠 있으면 **기본 경로는 제어기에 연결된 창**이다
+   * (`pickConsoleRouteInstance` — 연결된 창이 없을 때만 리더). 1402 는 단일 클라이언트라 "어느 창을 거치든 같다"
+   * 는 종전 전제가 틀렸다: 다른 창이 세션을 쥔 채 리더가 새로 접속하면 ECONNREFUSED 다(2026-10-14 실측).
+   * **대상이 중요한 배포/프로젝트 명령은** 호출측이 `resolveExtensionInstance(projectDir)` 로 창을 특정한다(§6).
    */
   const pick = () => {
     const instances = listExtensionInstances(ip, { dir });
-    if (instances.length === 0) return null;
-    const chosen = (instanceId && instances.find((p) => p.extensionInstanceId === instanceId))
-      || instances.find((p) => p.leader)
-      || instances[0];
-    return { available: true, reason: null, presence: chosen, instances };
+    const chosen = pickConsoleRouteInstance(instances, { instanceId });
+    if (!chosen) return null;
+    return { available: true, reason: null, presence: chosen.instance, routeVia: chosen.via, instances };
   };
 
   const first = pick();
@@ -379,7 +485,19 @@ export async function resolveBridge(ip, { dir, mode = 'auto', wake = true, wakeW
     // 구버전 확장(인스턴스 presence 없음) — 레거시 경로로 계속 동작한다.
     return { available: true, reason: null, presence: read.presence, instances: [], legacy: true };
   }
-  if (wake && (read.reason === 'presence-missing' || read.reason === 'presence-stale' || read.reason === 'presence-dead-pid')) {
+  /**
+   * 이 IP 를 보는 창은 없지만 다른 IP 를 보는 창이 살아 있으면 사유는 `host-mismatch` 다(§1-ES) — "확장 미실행" 이 아니다.
+   * 같은 작업(projectDir)의 창이 다른 IP 에 떠 있으면 깨우지도 않는다: 확장은 이미 떠 있고, 깨워도 presence 의 IP 는 바뀌지 않는다.
+   */
+  const unavailable = (extra = {}) => {
+    const hostMismatch = describeHostMismatch(ip, { projectDir, dir });
+    return hostMismatch
+      ? { available: false, reason: 'host-mismatch', presence: null, instances: [], hostMismatch, ...extra }
+      : { available: false, reason: read.reason, presence: null, instances: [], ...extra };
+  };
+  const sameWorkspaceElsewhere = describeHostMismatch(ip, { projectDir, dir })?.workspaceMatched === true;
+  if (wake && !sameWorkspaceElsewhere
+    && (read.reason === 'presence-missing' || read.reason === 'presence-stale' || read.reason === 'presence-dead-pid')) {
     // 확장이 아직 활성화되지 않았을 수 있다 — URI로 깨우고 잠깐 기다린다.
     const woke = await wakeExtension();
     if (woke.ok) {
@@ -394,10 +512,10 @@ export async function resolveBridge(ip, { dir, mode = 'auto', wake = true, wakeW
         }
       }
     } else {
-      return { available: false, reason: read.reason, presence: null, instances: [], wakeError: woke.detail };
+      return unavailable({ wakeError: woke.detail });
     }
   }
-  return { available: false, reason: read.reason, presence: null, instances: [] };
+  return unavailable();
 }
 
 /**
@@ -422,6 +540,10 @@ export function bridgeUnavailableHint(reason) {
     case 'presence-stale':
     case 'presence-dead-pid':
       return 'VS Code에서 GPL 확장이 실행 중이 아니거나 활성화되지 않았다. VS Code를 열어 두면 확장 명령(Deploy/Quick Compile/디버그)까지 MCP로 쓸 수 있다. 직접 접속으로도 1402 명령은 가능하다.';
+    case 'host-mismatch':
+      return '살아 있는 확장 창은 있으나 이 MCP 의 GPL_HOST 와 다른 제어기 IP 에 연결돼 있다(hostMismatch 필드에 창과 IP). '
+        + '확장 재시작·/mcp 재연결로는 해결되지 않는다 — .mcp.json 의 GPL_HOST 를 확장의 연결 IP 로 고친 뒤 /mcp 재연결'
+        + '(또는 VS Code 에서 「GPL: Export AI Agent Setup」 재실행이 현재 연결 주소로 다시 쓴다).';
     default:
       return '확장 브리지를 쓸 수 없어 제어기에 직접 접속했다. 1402는 단일 채널이므로 확장이 동시에 폴링 중이면 응답이 늦을 수 있다 — extension_status로 확인할 것.';
   }

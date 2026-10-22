@@ -9,7 +9,7 @@ import {
     describeResolution,
     describeCandidates,
     TargetCandidate,
-} from '../controller/projectTarget';
+} from '../controller/projects/projectTarget';
 
 // ── 픽스처 — 사용자 저장소 구조(개선안 §21)를 그대로 옮긴 것 ────────────────
 // GPL_Code (ProjectStart="ORCH_Main.MAIN") + Lib_* 4개(라이브러리) + MyProject(별개 runnable)
@@ -152,26 +152,6 @@ test('resolveProjectTarget: 실행 가능 프로젝트가 유일하면 라이브
     assert.strictEqual(r.projectName, 'GPL_Code');
 });
 
-test('resolveProjectTarget: 실행 가능이 여럿이면 설정 기본값을 쓴다', () => {
-    const r = resolveProjectTarget(undefined, TWO_MAINS, { configuredDefault: 'MyProject' });
-    assert.ok(r.ok);
-    assert.strictEqual(r.dir, OTHER.dir);
-    assert.strictEqual(r.via, 'configured-default');
-});
-
-test('resolveProjectTarget: 설정 기본값 오타는 무시하고 애매함으로 — 설정 하나로 자동화를 세우지 않는다', () => {
-    const r = resolveProjectTarget(undefined, TWO_MAINS, { configuredDefault: 'Typo' });
-    assert.ok(!r.ok);
-    assert.strictEqual(r.error, 'PROJECT_AMBIGUOUS');
-});
-
-test('resolveProjectTarget: 세션 대상이 설정 기본값보다 우선한다', () => {
-    const r = resolveProjectTarget(undefined, TWO_MAINS, { sessionTargetDir: MAIN.dir, configuredDefault: 'MyProject' });
-    assert.ok(r.ok);
-    assert.strictEqual(r.via, 'session-target');
-    assert.strictEqual(r.dir, MAIN.dir);
-});
-
 test('resolveProjectTarget: 후보가 하나뿐이면 ProjectStart 가 없어도 그것 (단일 프로젝트 워크스페이스)', () => {
     const r = resolveProjectTarget(undefined, [LIB_CORE]);
     assert.ok(r.ok, describeResolution(r));
@@ -186,7 +166,7 @@ test('resolveProjectTarget: 실행 가능이 여럿이면 PROJECT_AMBIGUOUS — 
     assert.strictEqual(r.candidates.length, 4);
     assert.strictEqual(r.candidates.filter(c => c.runnable).length, 2);
     assert.ok(r.detail.includes('실행 가능한 후보가 2개'), r.detail);
-    assert.ok(r.detail.includes('defaultProject'), r.detail);
+    assert.ok(r.detail.includes('첫 호출에 대상을 지정'), r.detail);
 });
 
 test('resolveProjectTarget: 실행 가능이 하나도 없고 후보가 여럿이면 그 사실을 문구에 밝힌다', () => {

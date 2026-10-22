@@ -59,3 +59,39 @@
 
 > 주의: 실제 장비 구성(리미트/홈 센서/하드스톱)과 안전 요구사항에 따라 적절한 방법 선택이 달라질 수 있습니다. 운영 표준은 현장 매뉴얼/사양서와 함께 확정하세요.
 
+## 실기 메모: GPL에서 홈 관련 PDB 읽기·쓰기 (2026-10-21)
+
+출처: Sample Prep Binder 4Ch 로봇 1(절대값 엔코더, GPL 4.2K5)에서 읽고 실행한 결과다. 공식 문서가 아니라 한 장비의 관측이므로,
+다른 로봇·펌웨어에서는 값을 먼저 읽어 확인한다.
+
+### 접근 형식
+
+- 로봇 단위 값: `Controller.PDbNum(id, robot)`
+- 축 단위 값: `Controller.PDbNum(id, robot, 0, axis)` — robot·axis는 1부터([arrays.md](../gpl-language/arrays.md) 표 참고)
+
+### 이번에 확인한 DataID
+
+| DataID | 이름(PDB 표기) | 단위 | 관측값·뜻 |
+| --- | --- | --- | --- |
+| 2800 | Robot homed | 로봇 | 홈 완료 여부 |
+| 2802 | Homing sequence | 로봇 | 1 |
+| 2803 | Homing method | 축 | 35 = 현재 위치를 홈으로 정의(움직이지 않음) |
+| 10106 / 10107 | Positive / Negative overtravel DIN signal | 축 | 오버트래블 입력 신호 번호 |
+| 10201 | Encoder type | 축 | 44·40 = 절대값, 41 = 인크리멘탈 (이 장비는 44) |
+| 12252 | Raw absolute position, ecnt | 축 | 엔코더 원시 절대 위치 |
+| 16120 | Calibration home offset, mcnt | 축 | 홈 오프셋 |
+| 901 | (PDB flash 저장) | — | `Controller.PDbNum(901, robot, 0, 0) = 1`로 저장(기존 코드 근거, 이번엔 실행 안 함) |
+
+### Factory Zero(현위치 = 0) 절차
+
+절대값 엔코더 축에서 "지금 자세를 0도로" 만드는 절차다. 실기에서 X·Y·Z가 0.000이 되는 것을 확인했다(축 정지 상태에서 실행).
+
+1. 바꿀 축의 2803(Homing method)과 16120(Calibration home offset)을 백업한다.
+2. 2803을 35로 둔다(현재 위치를 홈으로 정의 — 축이 움직이지 않는다).
+3. `16120 = -12252`(원시 절대 위치의 부호 반전)로 쓴다.
+4. `Robot.Home`을 실행한다.
+5. `Finally`에서 2803을 원래 방식으로 복원한다.
+6. 결과를 유지하려면 901로 PDB를 flash에 저장한다. **되돌릴 수 없으므로 마지막에, 사람이 판단해 실행한다.**
+
+구현 참고: Sample Prep 라이브러리 `Robot.gpl`의 `JointRobot.SetFactoryZeroHere`.
+

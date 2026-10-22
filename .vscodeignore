@@ -21,4 +21,15 @@ samples/**
 controller-mcp/**
 captures/**
 dist/**
+.tmp/**
 scripts/dev/**
+*.log
+
+# Local agent instructions and work notes are not extension assets
+AGENTS.md
+CLAUDE.md
+REQUESTS.md
+.agents/**
+.codex/**
+.env
+.env.*

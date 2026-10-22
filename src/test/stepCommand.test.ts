@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { buildStepCommand } from '../controller/stepCommand';
+import { buildStepCommand } from '../controller/commands/stepCommand';
 
 test('stepCommand: over — GDE 캡처 `Step <thread> -over -noerror`', () => {
     assert.strictEqual(buildStepCommand('Main', 'over'), 'Step Main -over -noerror');

@@ -7,7 +7,7 @@ import {
     loadProject,
     startProject,
     unloadProject,
-} from '../controller/projectCommands';
+} from '../controller/commands/projectCommands';
 
 const OK = '<DATA></DATA><STATUS>0,"Success"</STATUS>';
 
@@ -166,8 +166,26 @@ test('projectCommands Start: 실패 STATUS 는 failure 로 그대로 옮긴다',
     );
 });
 
+test('projectCommands Start: -compile 응답의 컴파일 에러를 구조화해 돌려준다', async () => {
+    const io = makeIo({ 'Start P -compile -event': compileError() });
+    const out = await startProject(io, { projectName: 'P' });
+    assert.strictEqual(out.ok, false);
+    assert.strictEqual(out.errors.length, 1);
+    assert.deepStrictEqual(
+        { file: out.errors[0].file, line: out.errors[0].line, code: out.errors[0].code },
+        { file: 'Main.gpl', line: 12, code: -303 },
+    );
+});
+
+test('projectCommands Start: -compile을 끈 Start는 에러 모양 텍스트를 컴파일 진단으로 해석하지 않는다', async () => {
+    const raw = '<DATA>Main.gpl:12:(-303): Undefined symbol: foo</DATA><STATUS>-303,"runtime error"</STATUS>';
+    const io = makeIo({ 'Start P -event': raw });
+    const out = await startProject(io, { projectName: 'P', compile: false });
+    assert.deepStrictEqual(out.errors, []);
+});
+
 // 비차단 STATUS 집합은 controllerStatusCodes 가 정본이라 테스트에서 직접 가져와 대조한다.
-import { isControllerNonBlockingStatus } from '../controller/responseParser';
+import { isControllerNonBlockingStatus } from '../controller/protocol/responseParser';
 function isNonBlocking(code: number): boolean {
     return isControllerNonBlockingStatus(code);
 }

@@ -97,6 +97,7 @@ nav:
   - 레퍼런스:
       - GPL Dictionary: reference/dictionary.md
       - 콘솔 명령: reference/console-commands.md
+      - 제어기 상태·온도: reference/controller-telemetry.md
       - 로봇 호밍 방법: reference/robot-homing-methods.md
       - Project.gpr 형식: reference/project-file-gpr.md
       - 네트워크 DataID: reference/network-dataids.md

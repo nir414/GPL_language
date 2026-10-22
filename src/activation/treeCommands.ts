@@ -3,11 +3,11 @@
  */
 
 import * as vscode from 'vscode';
-import { sendCommand } from '../controller/controllerConnection';
-import { isControllerNonBlockingStatus, parseStack, parseStatus, parseThreadDetail } from '../controller/responseParser';
-import { buildStepCommand } from '../controller/stepCommand';
-import type { StepMode } from '../controller/stepCommand';
-import { asThreadNode } from '../controller/threadArgs';
+import { sendCommand } from '../controller/connection/controllerConnection';
+import { isControllerNonBlockingStatus, parseStack, parseStatus, parseThreadDetail } from '../controller/protocol/responseParser';
+import { buildStepCommand } from '../controller/commands/stepCommand';
+import type { StepMode } from '../controller/commands/stepCommand';
+import { asThreadNode } from '../controller/threads/threadArgs';
 import { stopThreadWithRecovery, waitForThreadPause } from './controllerOps';
 import type { ExtensionHost } from './host';
 
@@ -248,8 +248,8 @@ export function activateTreeCommands(host: ExtensionHost): void {
 				editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
 				editor.selection = new vscode.Selection(line, 0, line, 0);
 
-				// Apply stopped-line decoration
-				host.decorations.showStopped(editor, doc.lineAt(line).range);
+				// Apply stopped-line decoration — 주인 쓰레드를 붙여 Continue/Step/재시작으로 떠나면 자동으로 지워진다(§1-EP).
+				host.decorations.showStopped(editor, doc.lineAt(line).range, { threadName });
 
 				outputChannel.appendLine(
 					`[Thread] ${threadName} 정지 위치: ${topFrame.file}:${topFrame.fileLine} (${topFrame.process})`,

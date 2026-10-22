@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { deployPhaseCode, hasRecovery, recoveryCodes, recoveryFor } from '../controller/automationRecovery';
+import { deployPhaseCode, hasRecovery, recoveryCodes, recoveryFor } from '../controller/automation/automationRecovery';
 
 test('automationRecovery: 모르는 코드는 되풀이 금지 쪽으로 떨어진다', () => {
     const unknown = recoveryFor('SOMETHING_NEW');
@@ -50,7 +50,7 @@ test('automationRecovery: 배포 단계 → 코드 변환, 모든 단계가 표�
     assert.strictEqual(deployPhaseCode('LOCKED'), 'DEPLOY_LOCKED');
     assert.strictEqual(deployPhaseCode(undefined), undefined);
     // DeployPhase 전체 — 새 단계를 추가하면 이 테스트가 표 누락을 잡는다.
-    const phases = ['LOCKED', 'IN_PROGRESS', 'AUTO_GATE', 'UPLOAD', 'STOP', 'THREAD_CHECK', 'COMPILE_DEFERRED', 'COMPILE', 'START', 'ERROR_CHECK'];
+    const phases = ['LOCKED', 'IN_PROGRESS', 'CANCELLED', 'AUTO_GATE', 'UPLOAD', 'STOP', 'THREAD_CHECK', 'COMPILE_DEFERRED', 'COMPILE', 'START', 'ERROR_CHECK'];
     for (const p of phases) {
         assert.ok(hasRecovery(`DEPLOY_${p}`), `DEPLOY_${p} 의 복구 지시가 없다 — automationRecovery.ts 표에 추가할 것`);
     }

@@ -9,7 +9,7 @@ import {
     isTransientCompileStatus,
     isProjectAlreadyLoaded,
     isProjectNotLoaded,
-} from '../controller/controllerStatusCodes';
+} from '../controller/protocol/controllerStatusCodes';
 
 // 펌웨어 의존 매직넘버가 리팩터링 중 바뀌지 않도록 값 자체를 고정한다.
 test('status code 상수 값 고정', () => {

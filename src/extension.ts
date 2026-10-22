@@ -13,12 +13,12 @@
  */
 import * as vscode from 'vscode';
 import { EXTENSION_VERSION, getTraceServerLevel, isTraceOn } from './config';
-import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection } from './controller/controllerConnection';
-import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployRecord';
-import { attachSyncManifestStore } from './controller/syncManifest';
-import { setRuntimeConsoleHealthProvider, RuntimeConsoleHealth } from './controller/debugBridge';
-import { activateProjectPicker } from './controller/projectPicker';
-import { activateGprSync } from './controller/gprSyncCommand';
+import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection } from './controller/connection/controllerConnection';
+import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployment/deployRecord';
+import { attachSyncManifestStore } from './controller/files/syncManifest';
+import { setRuntimeConsoleHealthProvider, RuntimeConsoleHealth } from './controller/debugging/debugBridge';
+import { activateProjectPicker } from './controller/projects/projectPicker';
+import { activateGprSync } from './controller/projects/gprSyncCommand';
 import { activatePromoteSource } from './project/promoteSourceCommand';
 import { ControllerTreeProvider } from './views/controllerTreeProvider';
 import { ConnectionStatusBar } from './views/connectionStatusBar';
@@ -148,6 +148,8 @@ export function activate(context: vscode.ExtensionContext) {
 	// 실행 위치 데코레이션(정지 줄·에러 줄) — 트리 명령과 디버그 이벤트가 함께 쓴다.
 	h.decorations = new ExecutionDecorations();
 	context.subscriptions.push(h.decorations);
+	// 강조는 제어기 상태의 표시 — 쓰레드 목록이 갱신될 때마다 주인 쓰레드가 그 상태를 벗어났으면 지운다(§1-EP).
+	context.subscriptions.push(controllerTree.onDidChangeRuntimeState(snapshot => h.decorations.reconcile(snapshot)));
 	activateTreeCommands(h);
 	activateFtpCommands(h);
 

@@ -20,6 +20,25 @@
 
 VB6의 `Option Base 1` 또는 임의 인덱스 범위(예: `10 to 20`) 개념은 GPL에서 지원되지 않습니다.
 
+### 주의: 배열은 0부터, 로봇·축 번호는 1부터
+
+배열은 0부터 세지만 **Brooks 로봇 API의 로봇·축 번호는 대부분 1부터** 센다. 한 함수에서 둘이 섞이면 off-by-one이 생기기 쉽다
+(예: `For i = 0 To n` 배열 루프 안에서 `Angle(i)`를 부르는 경우).
+
+| 대상 | 시작 | 0의 뜻 |
+| --- | --- | --- |
+| 배열 인덱스 | 0 | 첫 원소 |
+| `Mid`·`InStr` 문자 위치 | 1 ([strings.md](strings.md)) | `InStr`의 0 = 찾지 못함 |
+| `Robot.Attached = n` 로봇 번호 | 1 | 0 = detach |
+| `Controller.PDbNum(id, robot, card, axis)`의 robot·axis | 1 | 세 번째 인자 card는 보통 0 |
+| `Robot.WhereAngles(robot).Angle(axis)` | 1 | — |
+| `Controller.ErrorLog(i)` | 1 (= 가장 최근) | — |
+| `Move.SetJogCommand(mode, axis, …)`의 axis | 1 | — |
+| 앱 관례(예: `setFactoryZero(0)`) | — | "축 0 = 전 축"은 라이브러리 관례이고 API 규칙이 아님 |
+
+근거: 2026-10-21 Sample Prep 실기(`PDbNum(10201, 1, 0, 1..3)`이 축 1~3 값을 돌려줌)와 라이브러리 `Robot.gpl`의
+`For i = 1 To AxisCount` 관례. 표에 없는 API는 레퍼런스에서 시작 번호를 확인할 것.
+
 ## 선언 vs 할당
 
 - `Dim MyArray(3, 4) As Integer`

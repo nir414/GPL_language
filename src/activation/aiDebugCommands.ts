@@ -6,23 +6,29 @@
  */
 
 import * as vscode from 'vscode';
-import * as path from 'path';
 import {
 	getCommandPolicySnapshot,
 	getConnectionProbeTimeoutMs,
 	getControllerConfig,
 	isPolicyError,
 	sendCommand,
-} from '../controller/controllerConnection';
-import { describeDeployLock } from '../controller/deployLock';
-import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThreadList } from '../controller/responseParser';
-import { buildStepCommand } from '../controller/stepCommand';
-import type { StepMode } from '../controller/stepCommand';
+	sendCommandDetailed,
+} from '../controller/connection/controllerConnection';
+import { AI_BLOCKED_ERROR } from '../controller/automation/aiCommandPolicy';
+import { describeDeployLock } from '../controller/deployment/deployLock';
+import { listRemoteDir, listRemoteDirs, normalizeAbsoluteRemoteDir } from '../controller/files/ftpClient';
+import { classifyRemoteClearRoot, clearRemoteFolderEntries, selectRemoteClearTargets } from '../controller/files/remoteFolderClear';
+import { getCompiledRecord } from '../controller/deployment/deployRecord';
+import { compileUntilPattern } from '../controller/runtime/runtimeConsoleBuffer';
+import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThreadList } from '../controller/protocol/responseParser';
+import { buildStepCommand } from '../controller/commands/stepCommand';
+import type { StepMode } from '../controller/commands/stepCommand';
 import { waitForThreadPause } from './controllerOps';
-import { isPausedState } from '../controller/threadActivity';
+import { describeThreadActivity, isPausedState } from '../controller/threads/threadActivity';
 import { normalizeEvalValue } from '../debug/showVariableParser';
-import type { SituationDeploySnapshot } from '../controller/deployOutcome';
-import { formatBreakpointCommand } from '../controller/breakpointCommand';
+import type { SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
+import { formatBreakpointCommand, normalizeBreakpointCommandFile } from '../controller/debugging/breakpointCommand';
+import { isResolvedBreakpointRecord } from '../controller/debugging/breakpointReconcile';
 import type { ConnectArgs } from './connection';
 import type { ExtensionHost } from './host';
 
@@ -38,7 +44,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 				[
 					{ label: '진단만 (연결 + 스냅샷)', description: '상태만 수집하고 코드 변경 실행은 하지 않음', mode: 'diagnose-only' as AssistMode },
 					{ label: 'Build Only + 진단', description: '최신 로컬 코드 업로드/컴파일 검증 후 스냅샷', mode: 'build-only' as AssistMode },
-					{ label: 'Build Only + 콘솔', description: 'Build Only 후 1403 콘솔 연결 확인', mode: 'build-and-console' as AssistMode },
+					{ label: 'Build Only + 콘솔', description: 'Build Only 후 런타임 콘솔 연결 확인', mode: 'build-and-console' as AssistMode },
 					{ label: 'Build Only + Attach', description: 'Build Only 성공 시 빠른 Attach 시작', mode: 'build-and-attach' as AssistMode },
 				],
 				{ placeHolder: 'AI 디버그 어시스트 실행 모드를 선택하세요' },
@@ -71,12 +77,12 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 			try {
 				recordStep('시작');
 
-				if (!(host.controllerTree?.isConnected ?? false)) {
+				if (!host.isControllerConnected) {
 					recordStep('제어기 연결 시도');
 					await vscode.commands.executeCommand('gpl.controller.connect');
 				}
 
-				if (!(host.controllerTree?.isConnected ?? false)) {
+				if (!host.isControllerConnected) {
 					throw new Error('제어기 연결이 완료되지 않았습니다.');
 				}
 				recordStep('제어기 연결 확인 완료');
@@ -182,7 +188,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 				try {
 					result = await handler(args);
 				} catch (err: any) {
-					// 명령 정책(controller/commandPolicy.ts)이 한도 안에 안전 조건을 충족시키지 못해 제어기에 보내지 않은 경우는
+					// 명령 정책(controller/commands/commandPolicy.ts)이 한도 안에 안전 조건을 충족시키지 못해 제어기에 보내지 않은 경우는
 					// 통신 실패와 구분해 알린다 — 호출자(AI)가 "기다렸다 다시" 판단을 할 수 있게.
 					result = isPolicyError(err)
 						? { ok: false, error: 'policy-hold', code: err.code, detail: err.message, sentToController: false }
@@ -194,7 +200,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		);
 	}
 	registerAiDebugCommand('gpl.ai.debug.getState', async (args?: { includeStackForThread?: string; includeBreakpoints?: boolean }) => {
-		if (!(host.controllerTree?.isConnected ?? false)) {
+		if (!host.isControllerConnected) {
 			return { ok: false, error: 'not-connected' };
 		}
 
@@ -214,7 +220,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		return {
 			ok: true,
 			timestamp: Date.now(),
-			connected: host.controllerTree?.isConnected ?? false,
+			connected: host.isControllerConnected,
 			threads,
 			stack,
 			breakpoints,
@@ -233,20 +239,61 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		if (!projectName) {
 			return { ok: false, error: 'missing-projectName' };
 		}
-		const fileName = path.basename(args.file);
 		const line = Math.max(1, Math.floor(args.line));
-		const cmd = formatBreakpointCommand(clear ? 'Nobreak' : 'Break', projectName, fileName, line);
-		const raw = await sendCommand(cmd);
-		const status = parseStatus(raw);
-		const ok = status.code === 0;
+		const target = host.project.resolveBreakpointTarget(args.file, line, projectName);
+		if (!target) {
+			return { ok: false, error: 'breakpoint-source-unresolved', file: args.file, line };
+		}
+		if (target.kind === 'library-source') {
+			return {
+				ok: false,
+				error: 'library-source-breakpoint-unsupported',
+				file: args.file,
+				line,
+				message: target.message,
+				suggestedCommand: 'gpl.project.promoteSourceForBreakpoint',
+			};
+		}
+		if (target.kind !== 'direct-source' || !target.file) {
+			return { ok: false, error: 'outside-project', file: args.file, line, message: target.message };
+		}
+
+		const fileName = target.file;
+		const cmd = formatBreakpointCommand(clear ? 'Nobreak' : 'Break', target.projectName, fileName, line);
+		let raw = await sendCommand(cmd);
+		let status = parseStatus(raw);
+		let ok = status.code === 0;
+		let controllerBreakpoint: ReturnType<typeof parseBreakList>[number] | undefined;
+		if (!clear && (ok || status.code === -775)) {
+			const fileKey = normalizeBreakpointCommandFile(fileName).toLowerCase();
+			const readControllerBreakpoint = async () => {
+				const list = parseBreakList(await sendCommand('Show Break'));
+				return list.find(bp => bp.project.toLowerCase() === target.projectName.toLowerCase()
+					&& normalizeBreakpointCommandFile(bp.file).toLowerCase() === fileKey
+					&& bp.fileLine === line);
+			};
+			controllerBreakpoint = await readControllerBreakpoint();
+			const resolved = !!controllerBreakpoint && isResolvedBreakpointRecord(controllerBreakpoint);
+			if (status.code === -775 && !resolved) {
+				await sendCommand(formatBreakpointCommand('Nobreak', target.projectName, fileName, line));
+				raw = await sendCommand(cmd);
+				status = parseStatus(raw);
+				controllerBreakpoint = status.code === 0 ? await readControllerBreakpoint() : undefined;
+			}
+			ok = status.code === 0
+				&& !!controllerBreakpoint
+				&& isResolvedBreakpointRecord(controllerBreakpoint);
+		}
 		// 제어기가 받아들였을 때만 에디터에 반영한다 — 실패한 BP를 빨간 점으로 남기면 거짓 표시가 된다.
 		const mirror = ok && args.mirror !== false
 			? host.breakpointMirror.apply(clear ? 'Nobreak' : 'Break', fileName, line)
 			: undefined;
 		return {
 			ok,
+			...(!ok && !clear && status.code === 0 ? { error: 'breakpoint-unresolved' } : {}),
 			command: cmd,
 			status,
+			...(controllerBreakpoint ? { controllerBreakpoint } : {}),
 			...(mirror ? { editorBreakpoint: mirror.mirrored ? 'updated' : mirror.reason } : {}),
 		};
 	}
@@ -350,7 +397,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		return {
 			ok: true,
 			timestamp: Date.now(),
-			connected: host.controllerTree?.isConnected ?? false,
+			connected: host.isControllerConnected,
 			ip: cfg.ip,
 			port: cfg.port,
 			consolePort: cfg.consolePort,
@@ -369,6 +416,212 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		};
 	});
 
+	// ── 런타임 콘솔 스트림 읽기 (§1-EP) — MCP `runtime_console_read` 의 뒷단 ─────────────────────
+	// 확장이 수신한 런타임 콘솔(1403) 줄을 커서로 읽고, 패턴/새 줄을 여기서 기다렸다가 한 번에 돌려준다.
+	// 호출자(AI)가 "언제 읽을지" 를 정하려고 1402 조회나 이 명령을 반복하지 않게 하는 것이 목적이다.
+	registerAiDebugCommand('gpl.ai.debug.runtimeConsoleRead', async (args?: { cursor?: number; maxLines?: number; waitMs?: number; untilPattern?: string }) => {
+		const pattern = compileUntilPattern(args?.untilPattern);
+		if (pattern === null) {
+			return { ok: false, error: 'bad-pattern', detail: `untilPattern 이 올바른 정규식이 아닙니다: ${args?.untilPattern}` };
+		}
+		let runtimeConsole = host.runtimeConsole;
+		if (!runtimeConsole && host.isControllerConnected) {
+			try {
+				runtimeConsole = host.ensureRuntimeConsole();
+			} catch (err: any) {
+				return { ok: false, error: 'runtime-console-unavailable', detail: err?.message ?? String(err) };
+			}
+		}
+		if (!runtimeConsole) {
+			return {
+				ok: true,
+				lines: [], nextCursor: 0, dropped: 0, buffered: 0, matched: false, timedOut: false, waitedMs: 0,
+				status: { active: false, state: 'idle', reason: '런타임 콘솔이 시작되지 않았습니다 — 제어기에 연결되어 있지 않습니다' },
+				captureFile: undefined,
+				note: '제어기에 연결되면 런타임 콘솔이 자동으로 시작됩니다(gpl.ai.debug.connect 또는 사용자 연결).',
+			};
+		}
+		const waitMs = Math.min(Math.max(0, Math.floor(args?.waitMs ?? 0)), 120_000);
+		const r = await runtimeConsole.lineBuffer.waitFor({
+			cursor: args?.cursor,
+			maxLines: args?.maxLines,
+			untilPattern: pattern ?? undefined,
+			timeoutMs: waitMs,
+		});
+		const rc = runtimeConsole.getStatusSnapshot();
+		return {
+			ok: true,
+			...r,
+			status: { active: rc.connected, state: rc.state, reason: rc.reason, lastPayloadAt: rc.lastPayloadAt },
+			captureFile: runtimeConsole.captureFilePath,
+			...(r.dropped > 0 ? { note: `커서 이후 ${r.dropped}줄이 버퍼에서 밀려 빠졌습니다 — 더 자주 읽거나 captureFile 을 보십시오.` } : {}),
+		};
+	});
+
+	// ── 제어기 /GPL 폴더 목록 (§1-EP, 개선 요청 §8) — MCP `list_remote_projects` 의 뒷단 ───────────
+	// Unload 뒤에도 메모리가 모자라 Start 가 -200 이던 사건의 원인은 /GPL 에 남아 있던 다른 프로젝트였다. 콘솔에는
+	// 로드/잔존 프로젝트를 보는 명령이 없으므로(`Show Project` 는 -714) FTP LIST 로 폴더 목록을 읽는다(읽기 전용).
+	registerAiDebugCommand('gpl.ai.debug.listRemoteProjects', async (args?: { root?: string }) => {
+		const cfg = getControllerConfig();
+		const root = normalizeAbsoluteRemoteDir((args?.root ?? '').trim() || cfg.ftpBasePath);
+		const lock = host.currentDeployLockHolder();
+		if (lock) {
+			return {
+				ok: false,
+				error: 'deploy-busy',
+				detail: `배포/업로드 중(${describeDeployLock(lock)})이라 FTP 를 추가로 열지 않습니다. 끝난 뒤 다시 호출하십시오.`,
+				recovery: { action: 'CHECK_OPERATION', retryCurrentCommand: false, detail: 'wait_operation 으로 진행 중 작업이 끝나길 기다린 뒤 다시 호출할 것.' },
+			};
+		}
+		let entries;
+		try {
+			entries = await listRemoteDir(cfg.ip, root);
+		} catch (err: any) {
+			return { ok: false, error: 'ftp-failed', detail: `${root} 목록 조회 실패: ${err?.message ?? String(err)}`, host: cfg.ip, root };
+		}
+		const dirs = entries.filter(e => e.isDirectory);
+		const listings = dirs.length > 0 ? await listRemoteDirs(cfg.ip, dirs.map(d => `${root}/${d.name}`)) : [];
+		const projects = dirs.map((d, i) => {
+			const listing = listings[i];
+			const files = listing?.entries?.filter(e => !e.isDirectory) ?? [];
+			const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+			const newest = files.reduce<number>((max, f) => Math.max(max, f.modifiedAt?.getTime() ?? 0), 0);
+			const rec = getCompiledRecord(cfg.ip, d.name);
+			return {
+				name: d.name,
+				path: `${root}/${d.name}`,
+				fileCount: listing?.entries ? files.length : null,
+				totalBytes: listing?.entries ? totalBytes : null,
+				recursive: false,
+				sizeScope: 'immediate-files-only',
+				newestModifiedAt: newest > 0 ? new Date(newest).toISOString() : null,
+				...(listing?.error ? { error: listing.error } : {}),
+				// 확장이 이 창에서 마지막으로 컴파일 확정한 출처 — 다른 과제 폴더의 동명 프로젝트인지 가린다.
+				lastCompiledFrom: rec ? { projectDir: rec.projectDir, compiledAt: new Date(rec.compiledAt).toISOString() } : null,
+			};
+		});
+		const looseFiles = entries.filter(e => !e.isDirectory).map(e => e.name);
+		return {
+			ok: true,
+			host: cfg.ip,
+			root,
+			projectCount: projects.length,
+			projects,
+			looseFiles,
+			hint: projects.length > 1
+				? `${root} 에 프로젝트 폴더가 ${projects.length}개 있습니다 — 로드되지 않은 폴더도 메모리를 차지할 수 있습니다. `
+					+ '정리가 필요하면 사용자 동의를 받은 뒤 clear_remote_folder 로 지웁니다(/GPL 만 — flash 는 사람 전용).'
+				: undefined,
+		};
+	});
+
+	// ── 제어기 /GPL 비우기 (2026-10-21 사용자 결정) — MCP `clear_remote_folder` 의 뒷단 ─────────────
+	// 사람의 트리 명령(gpl.controller.ftpClearFolder)은 모달로 확인받지만, 이 경로는 모달을 띄우지 않는다 — 동의는 AI 가
+	// 사용자에게 받고 `confirm:true` 로 넘긴다(모달이 떠 있는 동안 브리지가 멈추는 문제도 피한다). `confirm` 이 없으면 지울
+	// 목록만 돌려준다(dry run). 범위는 설정된 로드 폴더(/GPL)뿐이고, flash 영구 사본은 되돌릴 수 없으므로 AI_BLOCKED 다.
+	// 쓰레드 게이트는 묻지 않고 거절한다 — 정지는 별개의 동의가 필요한 조작이라 AI 가 stop_threads 로 따로 한다.
+	registerAiDebugCommand('gpl.ai.debug.clearRemoteFolder', async (args?: { root?: string; names?: string[]; confirm?: boolean }) => {
+		const cfg = getControllerConfig();
+		const root = normalizeAbsoluteRemoteDir((args?.root ?? '').trim() || cfg.ftpBasePath);
+		const kind = classifyRemoteClearRoot(root, { gplBasePath: cfg.ftpBasePath, flashBasePath: cfg.ftpFlashProjectsPath });
+		if (kind === 'flash') {
+			return {
+				ok: false,
+				error: AI_BLOCKED_ERROR,
+				root,
+				sentToController: false,
+				detail: `${root} 는 flash 영구 사본이라 AI 가 지울 수 없습니다(재부팅으로도 복구되지 않음). 필요하면 사용자에게 제어기 트리 Flash Projects 섹션의 「폴더 비우기」를 요청하십시오.`,
+				recovery: { action: 'ASK_USER', retryCurrentCommand: false },
+			};
+		}
+		if (kind !== 'gpl') {
+			return {
+				ok: false,
+				error: 'root-not-allowed',
+				root,
+				detail: `비우기는 설정된 로드 폴더(${normalizeAbsoluteRemoteDir(cfg.ftpBasePath)})만 허용합니다. 그 안의 일부만 지우려면 names 로 고르십시오.`,
+			};
+		}
+		const lock = host.currentDeployLockHolder();
+		if (lock) {
+			return {
+				ok: false,
+				error: 'deploy-busy',
+				detail: `배포/업로드 중(${describeDeployLock(lock)})에는 원격 파일을 지우지 않습니다 — 반쯤 지워진 소스가 컴파일됩니다.`,
+				recovery: { action: 'CHECK_OPERATION', retryCurrentCommand: false, detail: 'wait_operation 으로 진행 중 작업이 끝나길 기다린 뒤 다시 호출할 것.' },
+			};
+		}
+		let entries;
+		try {
+			entries = await listRemoteDir(cfg.ip, root);
+		} catch (err: any) {
+			return { ok: false, error: 'ftp-failed', detail: `${root} 목록 조회 실패: ${err?.message ?? String(err)}`, host: cfg.ip, root };
+		}
+		const { targets, missing } = selectRemoteClearTargets(entries, args?.names);
+		const targetNames = targets.map(e => (e.isDirectory ? `${e.name}/` : e.name));
+		if (targets.length === 0) {
+			return { ok: true, root, dryRun: args?.confirm !== true, targets: [], deleted: [], failed: [], missing, note: `${root} 에 지울 항목이 없습니다.` };
+		}
+		if (args?.confirm !== true) {
+			return {
+				ok: true,
+				dryRun: true,
+				root,
+				targets: targetNames,
+				missing,
+				next: '이 목록을 사용자에게 보여 주고 동의를 받은 뒤 confirm:true 와 동의받은 names 로 다시 호출하십시오. 동의 없이 confirm 하지 마십시오.',
+			};
+		}
+
+		// 쓰레드 게이트 — 트리 명령과 같은 기준(Show Thread 에 쓰레드가 하나라도 있으면 동작 중). 확인 불가도 거절한다(§0.2).
+		if (!host.isControllerConnected) {
+			return { ok: false, error: 'not-connected', root, detail: '쓰레드 상태를 확인할 수 없어 지우지 않았습니다 — 제어기에 연결한 뒤 다시 호출하십시오.' };
+		}
+		let threads: ReturnType<typeof parseThreadList> | null = null;
+		try {
+			const resp = await sendCommandDetailed(SHOW_THREAD_LIST_CMD);
+			threads = resp.meta.statusTagReceived ? parseThreadList(resp.raw) : null;
+		} catch {
+			threads = null;
+		}
+		if (threads === null) {
+			return { ok: false, error: 'thread-state-unknown', root, detail: 'Show Thread 에 응답이 없어 지우지 않았습니다(동작 중일 수 있음). show_threads 로 확인한 뒤 다시 호출하십시오.' };
+		}
+		if (threads.length > 0) {
+			return {
+				ok: false,
+				error: 'threads-running',
+				root,
+				threads: threads.map(t => ({ name: t.name, state: t.state })),
+				detail: `${describeThreadActivity(threads)} — 실행 중에 원격 파일을 지우면 파일 충돌·자원 누수가 생길 수 있습니다.`,
+				recovery: { action: 'ASK_USER', retryCurrentCommand: false, detail: '정지도 사용자 동의를 받아 stop_threads 로 한 뒤 다시 호출할 것.' },
+			};
+		}
+
+		host.log(`[FTP] AI 요청으로 ${root} 비우기 시작 — 대상 ${targets.length}개: ${targetNames.join(', ')}`);
+		const result = await clearRemoteFolderEntries(cfg.ip, root, targets, (name, isDirectory) => {
+			host.log(`[FTP] − del ${root}/${name}${isDirectory ? '/' : ''}`);
+		});
+		for (const f of result.failed) {
+			host.log(`[FTP] ✘ ${root}/${f.name} 삭제 실패: ${f.error}`);
+		}
+		void host.controllerTree?.refreshFtp();
+		// 사람이 모르는 사이에 지워지지 않게 결과를 알림으로도 남긴다(모달 아님 — 브리지를 막지 않는다).
+		void vscode.window.showInformationMessage(result.failed.length > 0
+			? `AI 요청: ${root} 비우기 부분 완료 — 삭제 ${result.deleted.length}개, 실패 ${result.failed.length}개`
+			: `AI 요청: ${root} 비우기 완료 — ${result.deleted.length}개 삭제`);
+		return {
+			ok: result.failed.length === 0,
+			...(result.failed.length > 0 ? { error: 'partial' } : {}),
+			root,
+			targets: targetNames,
+			deleted: result.deleted,
+			failed: result.failed,
+			missing,
+			next: 'none',
+		};
+	});
+
 	registerAiDebugCommand('gpl.ai.debug.loop', async (args?: {
 		threadName?: string;
 		stepMode?: StepMode;
@@ -377,11 +630,11 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		stopWhen?: { expression: string; equals?: string; contains?: string; matches?: string };
 		stepWaitTimeoutMs?: number;
 	}) => {
-		if (!(host.controllerTree?.isConnected ?? false)) {
+		if (!host.isControllerConnected) {
 			// AI 자율 루프에서 입력 상자가 뜨면 멈춰 버린다 — 현재 설정으로 비대화형 연결(GitHub #25).
 			await host.connection.connectControllerWithArgs({ silent: true });
 		}
-		if (!(host.controllerTree?.isConnected ?? false)) {
+		if (!host.isControllerConnected) {
 			return { ok: false, error: 'not-connected' };
 		}
 

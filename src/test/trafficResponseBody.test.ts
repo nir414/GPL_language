@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { ResponseBodyStreamer } from '../controller/trafficResponseBody';
+import { ResponseBodyStreamer } from '../controller/connection/trafficResponseBody';
 
 function collect(maxChars = 0): { lines: string[]; s: ResponseBodyStreamer } {
     const lines: string[] = [];

@@ -1,0 +1,170 @@
+' syntax-tour — 클래스·Property 편.
+'
+' Property는 **Class 안에서만** 선언할 수 있다(Module 레벨에는 둘 수 없다).
+' 이 파일 끝의 `Describe` 3형제는 오버로드 문서화 주석 병합(ai-handoff §1-DR) 확인용이다 —
+' 공통 문서는 첫 번째 선언에만 쓰고, 나머지는 차이만 적었다.
+
+Module Shapes
+
+    ' 상한이 있는 호출 횟수 카운터.
+    '
+    ' # Remarks
+    ' Class는 파일 최상위·Module 안·다른 Class 안에 둘 수 있다. 접근 수식어를 생략하면
+    ' **Private**이 기본이고, `Friend`/`Protected`는 GPL에 없다.
+    Public Class Counter    ' [syntax] Class ... End Class
+
+        ' 카운터가 가질 수 있는 최댓값. 클래스 안의 Const는 암묵적 Shared다.
+        Public Const Ceiling As Integer = 1000
+
+        ' 지금까지 초기화된 Counter 개수 — Shared라 모든 인스턴스가 한 복사본을 공유한다.
+        Private Shared created As Integer
+
+        ' 현재 값의 저장소. Count Property가 읽고 쓴다.
+        Private current As Integer
+
+        ' 이 카운터에 붙은 이름.
+        Private name As String
+
+        ' 마지막 Bump 결과.
+        Private last As Snapshot
+
+        ' 한 번의 증가를 기록한 값 — 중첩 Class 예시.
+        Public Class Snapshot
+
+            ' 증가 후의 값.
+            Public taken As Integer
+
+            ' 카운터 이름을 옮겨 둔 것.
+            Public note As String
+
+        End Class
+
+        ' 현재 값. 상한을 넘겨 쓰면 상한으로 잘린다.
+        '
+        ' # Remarks
+        ' GPL의 Set 절은 `Set (newValue As Integer)`처럼 **괄호 절이 필수**이고,
+        ' 그 타입이 Property 타입과 정확히 같아야 한다(VB.NET과 다른 점).
+        Public Property Count As Integer    ' [syntax] Property (Get/Set) ... End Property
+            Get    ' [syntax] Get ... End Get
+                Return current
+            End Get
+            Set (newValue As Integer)    ' [syntax] Set ... End Set
+                If newValue > Ceiling Then
+                    current = Ceiling
+                    Exit Property    ' [syntax] Exit Property
+                End If
+                current = newValue
+            End Set
+        End Property
+
+        ' 지금까지 초기화된 Counter 개수.
+        '
+        ' # Returns
+        ' `Init`이 호출된 횟수
+        '
+        ' # Remarks
+        ' `ReadOnly`를 붙이면 Set 절을 둘 수 없다.
+        Public ReadOnly Property CreatedCount As Integer    ' [syntax] Property (ReadOnly) ... End Property
+            Get
+                Return created
+            End Get
+        End Property
+
+        ' 카운터 이름 — 쓰기 전용.
+        '
+        ' # Remarks
+        ' `WriteOnly`를 붙이면 Get 절을 둘 수 없다.
+        Public WriteOnly Property Label As String
+            Set (text As String)
+                name = text
+            End Set
+        End Property
+
+        ' 카운터를 0으로 되돌리고 이름을 붙인다.
+        '
+        ' # Parameters
+        ' - `text`: 이 카운터에 붙일 이름
+        Public Sub Init(ByVal text As String)
+            current = 0
+            name = text
+            created = created + 1
+        End Sub
+
+        ' 값을 1 올리고 그 시점을 기록한다.
+        '
+        ' # Returns
+        ' 증가 후의 값
+        '
+        ' # Remarks
+        ' `Me`는 이 메서드를 실행 중인 객체 자신을 가리킨다.
+        Public Function Bump() As Integer
+            Dim shot As New Snapshot
+
+            Me.Count = Me.Count + 1
+            shot.taken = Me.Count
+            shot.note = name
+            last = shot
+            Return shot.taken
+        End Function
+
+        ' 마지막 Bump의 기록을 한 줄로 만든다.
+        '
+        ' # Returns
+        ' `이름=값` 형식의 문자열. 아직 Bump한 적이 없으면 `"(none)"`.
+        Public Function LastLine() As String
+            If last Is Nothing Then
+                Return "(none)"
+            End If
+            Return last.note & "=" & CStr(last.taken)
+        End Function
+
+    End Class
+
+    ' 클래스·Property 문법을 한 번씩 쓴다.
+    Public Sub ShapeTour()
+        Dim c As New Counter
+        Dim i As Integer
+
+        c.Init("tour")
+        c.Label = "tour-counter"
+
+        For i = 0 To 2
+            c.Bump()
+        Next i
+
+        ' 상한 초과 대입은 Set 절이 잘라 낸다.
+        c.Count = Counter.Ceiling + 50
+
+        Console.WriteLine("shape: count = " & CStr(c.Count) & ", created = " & CStr(c.CreatedCount))
+        Console.WriteLine("shape: last = " & c.LastLine())
+        Console.WriteLine("shape: " & Describe(7, "id-", 3))
+    End Sub
+
+    ' 값을 사람이 읽을 문자열로 만든다.
+    '
+    ' # Parameters
+    ' - `a`: 설명할 정수
+    '
+    ' # Returns
+    ' 값을 옮긴 문자열
+    '
+    ' # Remarks
+    ' 오버로드 그룹의 공통 문서는 이 선언 하나에만 쓴다 — 나머지 오버로드에는 차이만 적는다.
+    ' 호버·시그니처 도움말은 형제의 문서에서 빠진 조각을 채워 보여 준다.
+    Public Function Describe(ByVal a As Integer) As String
+        Return CStr(a)
+    End Function
+
+    ' 접두사를 앞에 붙인다.
+    '
+    ' # Parameters
+    ' - `b`: 앞에 붙일 접두사
+    Public Function Describe(ByVal a As Integer, ByVal b As String) As String
+        Return b & CStr(a)
+    End Function
+
+    Public Function Describe(ByVal a As Integer, ByVal b As String, ByVal c As Integer) As String
+        Return b & CStr(a) & "/" & CStr(c)
+    End Function
+
+End Module

@@ -16,7 +16,7 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 
 ## 자주 쓰는 명령
 
-- `npm run compile` — TypeScript 컴파일 (`out/`)
+- `npm run compile` — tsconfig 기준 이전 JS·소스맵 정리 후 TypeScript 컴파일 (`out/`)
 - `npm run package` — patch 버전 bump + VSIX 패키징 (`dist/gpl-language-support-<ver>.vsix`, 실패 시 버전 자동 롤백)
 - `npm run package:no-bump` — 버전 그대로 패키징
 - `npm test` — 컴파일 + 테스트
@@ -48,6 +48,13 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 
 ## 작업을 마칠 때 반드시 남길 기록 (기록 규칙)
 
+- **사용자 대면 기능 변경을 마치면 별도 요청을 기다리지 말고 검증·버전 결정·VSIX 패키징까지 완료한다.** 사용자가
+  패키징하지 말라고 명시한 경우만 생략한다. 버전은 `docs/releases/process.md`의 SemVer 정본에 따라 호환되는 기능 추가는
+  minor, 버그 수정·안정화·문서/내부 개선은 patch로 올린다. 하위 호환을 깨는 major 변경은 범위와 전환 방법을 사용자에게
+  먼저 알린다. `npm run package`는 patch만 올리므로 minor/major에는 사용하지 않는다. 패키징 뒤 포함 파일을 고쳤다면
+  `npm run package:no-bump`로 같은 버전을 다시 만든다. package/package-lock, CHANGELOG, 버전을 표시하는 README와
+  `docs/ai-handoff.md`를 함께 맞추고, 생성된 VSIX 경로·크기·SHA-256과 패키징 경고/실패 여부를 최종 보고한다.
+  Git 커밋·태그·push·공식 릴리즈는 사용자가 명시적으로 요청한 경우에만 수행한다.
 - **`docs/ai-handoff.md`에 세션 항목 추가**: 날짜 섹션(§1-X 형식)으로 증상 → 원인 → 조치(의도와
   방법) → 검증 → 남은 일을 적는다. 헤더의 "최종 갱신"과 "현재 package 버전"도 갱신한다.
 - 해결한 미해결 항목은 §2/§3 체크리스트에서 지우거나 완료 표시하고, 새로 발견한 문제는 추가한다.

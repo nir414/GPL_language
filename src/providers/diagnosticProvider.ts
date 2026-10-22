@@ -1,16 +1,18 @@
 import * as vscode from 'vscode';
 import { GPLParser } from '../language/gplParser';
+import { findInitHookFindings, InitHookSeverity } from '../language/initHook';
 import { isGplFile } from '../config';
+import { findTryCatchFindings } from '../language/tryCatch';
 
 export class GPLDiagnosticProvider {
     private diagnosticCollection: vscode.DiagnosticCollection;
     private pendingTimers: Map<string, NodeJS.Timeout> = new Map();
 
     /**
-     * 진단은 실험 기능 — gpl.diagnostics.experimental 설정(기본 false = 꺼짐)이 켜진
-     * 경우에만 동작한다. 호출 시마다 읽으므로 설정 변경이 재시작 없이 반영된다.
+     * XML/성능/호환성 등 기존 진단은 실험 설정이 켜진 경우에만 동작한다.
+     * Try/Finally 호환성 안내는 별도 설정으로 선택 활성화한다.
      */
-    private static isDiagnosticsEnabled(): boolean {
+    private static isExperimentalDiagnosticsEnabled(): boolean {
         return vscode.workspace.getConfiguration('gpl').get<boolean>('diagnostics.experimental', false) === true;
     }
 
@@ -26,13 +28,25 @@ export class GPLDiagnosticProvider {
             return;
         }
 
-        // 실험 설정(gpl.diagnostics.experimental)이 꺼져 있으면 기존 진단을 지우고 종료.
-        if (!GPLDiagnosticProvider.isDiagnosticsEnabled()) {
-            this.diagnosticCollection.delete(document.uri);
-            return;
+        const diagnostics: vscode.Diagnostic[] = [];
+        if (vscode.workspace.getConfiguration('gpl', document.uri).get<boolean>('diagnostics.tryWithoutCatch', false)) {
+            diagnostics.push(...findTryCatchFindings(document.getText()).map(finding => {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(finding.line, finding.start, finding.line, finding.end),
+                    finding.message,
+                    vscode.DiagnosticSeverity.Information,
+                );
+                diagnostic.source = 'GPL Compatibility';
+                diagnostic.code = finding.code;
+                return diagnostic;
+            }));
         }
 
-        const diagnostics: vscode.Diagnostic[] = [];
+        // 선택 활성화한 호환성 안내는 실험 진단과 독립적으로 표시한다.
+        if (!GPLDiagnosticProvider.isExperimentalDiagnosticsEnabled()) {
+            this.diagnosticCollection.set(document.uri, diagnostics);
+            return;
+        }
         const content = document.getText();
         const lines = content.split('\n');
 
@@ -73,6 +87,9 @@ export class GPLDiagnosticProvider {
         // 함수/서브 명명 규칙 검사 (첫 글자 대문자)
         diagnostics.push(...this.detectFunctionNameCasingIssues(document));
 
+        // `Init` 모듈 초기화 훅 충돌 — 클래스 멤버 Init(-757 사고 경로)·_Init·모듈 수준 Init(hint). 규칙은 language/initHook.
+        diagnostics.push(...this.detectInitHookIssues(document));
+
         this.diagnosticCollection.set(document.uri, diagnostics);
     }
 
@@ -80,7 +97,7 @@ export class GPLDiagnosticProvider {
      * Debounced diagnostics scheduling to avoid frequent recomputation
      */
     public scheduleDiagnostics(document: vscode.TextDocument, delayMs: number = 500): void {
-        if (!isGplFile(document) || !GPLDiagnosticProvider.isDiagnosticsEnabled()) {
+        if (!isGplFile(document)) {
             return;
         }
 
@@ -461,6 +478,32 @@ export class GPLDiagnosticProvider {
         }
 
         return diagnostics;
+    }
+
+    /**
+     * `Init` 이름 규칙 — GPL 모듈 초기화가 `Init` 을 이름으로 찾아 시작 프로시저보다 먼저 자동 호출한다(문서 modules.htm).
+     * 클래스 멤버까지 잡아채 인스턴스 없이 부르는 것을 2026-09-21 실기로 재현했다(samples/init-probe, ai-handoff §1-EA).
+     * 판정은 순수 모듈 `language/initHook` 이 하고 여기서는 vscode.Diagnostic 으로 옮기기만 한다.
+     */
+    private detectInitHookIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const severityOf: Record<InitHookSeverity, vscode.DiagnosticSeverity> = {
+            error: vscode.DiagnosticSeverity.Error,
+            warning: vscode.DiagnosticSeverity.Warning,
+            hint: vscode.DiagnosticSeverity.Hint,
+        };
+        const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+        return findInitHookFindings(symbols).map(f => {
+            const start = Math.max(0, f.symbol.range?.start ?? 0);
+            const end = Math.max(start + 1, f.symbol.range?.end ?? (start + f.symbol.name.length));
+            const diagnostic = new vscode.Diagnostic(
+                new vscode.Range(f.symbol.line, start, f.symbol.line, end),
+                f.message,
+                severityOf[f.severity],
+            );
+            diagnostic.source = 'GPL Init Hook';
+            diagnostic.code = f.code;
+            return diagnostic;
+        });
     }
 
     /**

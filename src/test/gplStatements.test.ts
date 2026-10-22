@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { GPL_STATEMENT_SNIPPETS, GPL_KEYWORDS, getApplicableStatements } from '../language/gplStatements';
+import { GPL_STATEMENT_SNIPPETS, GPL_KEYWORDS, getApplicableStatements, findGplKeyword } from '../language/gplStatements';
 import { GplBlockContext, GplBlockKind, GplScope } from '../language/blockContext';
 
 /**
@@ -189,6 +189,31 @@ test('keywords: 이름이 중복되지 않고 설명이 붙어 있다', () => {
         seen.add(key);
         assert.ok(/^[A-Za-z]+$/.test(kw.name), `키워드 표기: ${kw.name}`);
         assert.ok(kw.detail.trim().length > 0, `${kw.name}: 설명 없음`);
+    }
+});
+
+test('keywords: findGplKeyword 는 대소문자를 가리지 않고, 표에 없는 낱말은 undefined 다', () => {
+    assert.strictEqual(findGplKeyword('byref')?.name, 'ByRef');
+    assert.strictEqual(findGplKeyword('BYVAL')?.name, 'ByVal');
+    assert.strictEqual(findGplKeyword('Sub'), undefined, '문 머리(Sub)는 이 표가 아니라 문 스니펫의 몫');
+    assert.strictEqual(findGplKeyword('robot'), undefined);
+});
+
+test('keywords: ByVal/ByRef 는 문서 근거 설명 + Sub 문서 링크를 갖는다 (호버 카드 재료, §1-EA ⑦)', () => {
+    for (const name of ['ByVal', 'ByRef']) {
+        const kw = findGplKeyword(name);
+        assert.ok(kw, `${name} 없음`);
+        assert.ok(kw.documentation && kw.documentation.length > 40, `${name}: documentation 없음`);
+        assert.ok(kw.sourceUrl?.endsWith('/Statement_Dictionary/Sub.htm'), `${name}: sourceUrl=${kw.sourceUrl}`);
+        assert.ok(kw.documentation.includes('objectsasprocedurearguments.htm'), `${name}: 객체 인자 문서 링크 없음`);
+    }
+    assert.ok(findGplKeyword('ByVal')!.documentation!.includes('생략하면 ByVal'), 'ByVal 이 기본값이라는 문서 규칙');
+});
+
+test('keywords: 모든 항목이 공식 문서 페이지를 Reference 로 가리킨다', () => {
+    for (const kw of GPL_KEYWORDS) {
+        assert.ok(kw.sourceUrl?.startsWith('https://www2.brooksautomation.com/Controller_Software/'), `${kw.name}: sourceUrl=${kw.sourceUrl}`);
+        assert.ok(/[.]htm$/.test(kw.sourceUrl ?? ''), `${kw.name}: 페이지 파일이 아니다`);
     }
 });
 

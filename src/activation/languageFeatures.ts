@@ -353,6 +353,18 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 		})
 	);
 
+	// 진단 설정을 바꾸면 열린 문서에도 바로 반영한다.
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration(event => {
+			if (!event.affectsConfiguration('gpl.diagnostics')) { return; }
+			for (const document of vscode.workspace.textDocuments) {
+				if (isGplDocument(document)) {
+					diagnosticProvider.scheduleDiagnostics(document, 0);
+				}
+			}
+		}),
+	);
+
 	// 문서 저장 시 진단 업데이트
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument((document) => {
@@ -364,24 +376,43 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 
 	// 파일시스템 워처: 에디터 밖에서 바뀐 .gpl/.gpo(예: git pull, 외부 도구, 빌드 산출물)도
 	// 심볼 캐시에 반영해 "정의를 찾을 수 없음"이 수동 새로고침 전까지 발생하지 않도록 한다.
+	// 변경을 짧게 모아 한 묶음으로 갱신한다(.gpr 워처와 같은 디바운스 방식) — SVN update 로 수백 개가 한꺼번에
+	// 바뀌어도 이름 인덱스 재구축은 한 번이다. 종전에는 파일마다 openTextDocument + 전체 재구축이어서
+	// 시작 시 인덱싱과 같은 O(n²) 경로를 다시 탔다(§1-DX). 디스크 읽기는 SymbolCache 가 맡는다(문서 객체 없이).
 	const gplFileWatcher = vscode.workspace.createFileSystemWatcher('**/*.{gpl,gpo}');
-	const reindexFromWatcher = async (uri: vscode.Uri) => {
-		try {
-			const document = await vscode.workspace.openTextDocument(uri);
-			if (isGplDocument(document) && !symbolCache.isRefreshing) {
-				symbolCache.updateDocument(document);
-			}
-		} catch (e) {
-			outputChannel.appendLine(`[Watcher] Failed to index ${uri.fsPath}: ${e}`);
+	const WATCHER_BATCH_MS = 300;
+	const pendingWatcherFiles = new Map<string, vscode.Uri>();
+	let watcherFlushTimer: ReturnType<typeof setTimeout> | undefined;
+	const flushWatcherFiles = (): void => {
+		watcherFlushTimer = undefined;
+		if (pendingWatcherFiles.size === 0) { return; }
+		// 전체 재인덱싱이 돌고 있으면 끝난 뒤 다시 시도한다 — 지금 갱신하면 refresh 가 비운 캐시와 경합한다.
+		if (symbolCache.isRefreshing) {
+			watcherFlushTimer = setTimeout(flushWatcherFiles, WATCHER_BATCH_MS);
+			return;
 		}
+		const uris = Array.from(pendingWatcherFiles.values());
+		pendingWatcherFiles.clear();
+		void symbolCache.updateFilesFromDisk(uris).catch((e) => {
+			outputChannel.appendLine(`[Watcher] Failed to index ${uris.length} file(s): ${e}`);
+		});
+	};
+	const reindexFromWatcher = (uri: vscode.Uri): void => {
+		pendingWatcherFiles.set(normalizePathKey(uri.fsPath), uri);
+		if (watcherFlushTimer) { clearTimeout(watcherFlushTimer); }
+		watcherFlushTimer = setTimeout(flushWatcherFiles, WATCHER_BATCH_MS);
 	};
 	gplFileWatcher.onDidCreate(reindexFromWatcher);
 	gplFileWatcher.onDidChange(reindexFromWatcher);
 	gplFileWatcher.onDidDelete((uri) => {
+		pendingWatcherFiles.delete(normalizePathKey(uri.fsPath));
 		symbolCache.removeFile(uri.fsPath);
 		diagnosticProvider.clearDiagnostics(uri);
 	});
-	context.subscriptions.push(gplFileWatcher);
+	context.subscriptions.push(
+		gplFileWatcher,
+		{ dispose: () => { if (watcherFlushTimer) { clearTimeout(watcherFlushTimer); watcherFlushTimer = undefined; } pendingWatcherFiles.clear(); } },
+	);
 
 	// .gpr 워처: `.gpr`는 "어떤 파일이 같은 컴파일 단위인가"(ProjectSource·ProjectLibrary)를 정의한다.
 	// 이게 바뀌면 정의 이동·참조 검색의 프로젝트 경계 캐시가 낡은 관계를 계속 쓰게 되므로 버린다.

@@ -30,7 +30,6 @@ npm install
 | --- | --- | --- |
 | `GPL_HOST` | `192.168.0.1` | 제어기 IP |
 | `GPL_PORT` | `1402` | ASCII 콘솔 포트 |
-| `GPL_PROJECT` | `MergeCode` | 기본 프로젝트명(도구에서 생략 시 사용) |
 | `GPL_LOCK_WAIT_MS` | `20000` | **배포 잠금 대기 상한(ms)**. VS Code 확장이 FTP 업로드/배포 중이면 `%TEMP%\gpl-controller\<ip>.lock.json`을 잡는다. 이때 `compile_project`/`start_project`/`unload_project`와 `controller_command`의 Compile/Start/Load/Unload는 잠금이 풀릴 때까지 이 시간만 기다렸다 진행하고, 초과 시 보유자 정보와 함께 거부한다(업로드 도중 Compile/Start는 제어기 이상 유발 — GitHub #17) |
 | `GPL_LOCK_DIR` | `%TEMP%\gpl-controller` | 배포 잠금 파일 디렉터리 재지정(테스트/특수 환경용. 확장과 같은 경로여야 한다) |
 | `GPL_TIMEOUT_MS` | `15000` | 명령 타임아웃(ms). compile은 최소 60s로 자동 상향 |
@@ -41,7 +40,7 @@ npm install
 
 | 변수 | 기본 | 설명 |
 | --- | --- | --- |
-| `GPL_BRIDGE` | `auto` | VS Code 확장 브리지 사용. `auto`=확장이 있으면 확장 세션으로, 없으면 직접 접속 / `only`=브리지 필수(세션 단일화 보장) / `off`=항상 직접 접속 |
+| `GPL_BRIDGE` | `auto` | VS Code 확장 브리지 사용. `auto`=확장이 있으면 확장 세션으로, 없으면 직접 접속 / `only`=브리지 필수(세션 단일화 보장) / `off`=항상 직접 접속. 확장의 `GPL: Export AI Agent Setup`은 사람과 AI의 동시 사용을 위해 `only`를 명시한다. |
 | `GPL_VSCODE_CLI` | `code` | 확장이 비활성일 때 깨우는 데 쓸 VS Code CLI 경로 |
 | `GPL_LOCK_DIR` | `%TEMP%\gpl-controller` | 배포 잠금·브리지 파일 디렉터리(확장과 같은 값이어야 한다) |
 
@@ -50,7 +49,7 @@ npm install
 MCP 클라이언트가 보통 자동으로 실행하지만, 수동 점검도 가능하다.
 
 ```bash
-GPL_HOST=192.168.0.1 GPL_PROJECT=MergeCode npm start
+GPL_HOST=192.168.0.1 npm start
 # stderr 에 "[gpl-controller-mcp] ready — v0.8.19 <sha> (<빌드시각>) — target 192.168.0.1:1402 ..." 가 뜨면 정상
 # (소스 직접 실행이면 "vdev (unbundled source)". 번들 버전은 get_session_log / controller_status 의 server 필드에도 나온다)
 ```
@@ -67,7 +66,7 @@ npm test
 
 ```bash
 claude mcp add gpl-controller \
-  --env GPL_HOST=192.168.0.1 --env GPL_PORT=1402 --env GPL_PROJECT=MergeCode \
+  --env GPL_HOST=192.168.0.1 --env GPL_PORT=1402 \
   -- node "C:/Users/Doyun/Documents/GitHub/GPL_language/controller-mcp/src/index.js"
 ```
 
@@ -79,13 +78,14 @@ claude mcp add gpl-controller \
     "gpl-controller": {
       "command": "node",
       "args": ["C:\\Users\\Doyun\\Documents\\GitHub\\GPL_language\\controller-mcp\\src\\index.js"],
-      "env": { "GPL_HOST": "192.168.0.1", "GPL_PORT": "1402", "GPL_PROJECT": "MergeCode" }
+      "env": { "GPL_HOST": "192.168.0.1", "GPL_PORT": "1402" }
     }
   }
 }
 ```
 
-연결 후 Claude 에서 "MergeCode 컴파일해줘", "ProtocolModule.gpl 479줄에 브레이크포인트 걸고 stopOnEntry로 실행해줘" 처럼 자연어로 지시하면 아래 도구를 호출한다.
+연결 후 먼저 `project_target({projectDir: "정확한 프로젝트 폴더"})`로 세션 대상을 확정한다. 그다음 "컴파일해줘",
+"ProtocolModule.gpl 479줄에 브레이크포인트 걸고 stopOnEntry로 실행해줘"처럼 자연어로 지시하면 아래 도구를 호출한다.
 
 ---
 
@@ -125,15 +125,46 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 
 **VS Code 확장 연동 (Agent Bridge)** — MCP가 제어기에 직접 붙는 대신 **확장의 명령을 실제로 실행**하는 통로.
 확장이 실행 중이면 1402 명령이 자동으로 확장 세션으로 나가므로 세션 경쟁("1402를 VS Code가 점유 중")이 없다.
+확장 Export 설정은 `GPL_BRIDGE=only`라 브리지 감지가 실패해도 두 번째 TCP 연결을 열지 않는다. 사람의 명령과 AI 요청은
+확장 내부의 같은 큐에서 순서대로 처리되며, GDE 등 브리지를 사용하지 않는 별도 클라이언트만 동시에 쓰지 않는다.
 
 - `extension_status(wake?)` — 확장 실행 여부·버전·pid·연결 상태·디버그 세션과 **지금 명령이 나가는 경로**
   (`extension-bridge` / `direct-tcp`). *"1402를 VS Code가 점유 중"이라고 추측하지 말고 이 도구로 확인할 것.*
   `wake:true`면 확장이 비활성일 때 `code --open-url`로 활성화를 시도한다.
+  `available:false` 에 `reason:"host-mismatch"` 와 `hostMismatch{ mcp, extensions[{ip, workspace, workspaceMatch}] }` 가 오면
+  **확장은 떠 있고 이 서버의 `GPL_HOST` 와 다른 제어기 IP 에 연결된 것**이다(Export 뒤 연결 주소를 바꾼 경우) — 확장 재시작·wake 가
+  아니라 `.mcp.json` 의 `GPL_HOST` 를 고치고 `/mcp` 재연결(또는 VS Code 에서 `GPL: Export AI Agent Setup` 재실행)이 조치다.
+  같은 사실은 `controller_status.hostMismatch`·`project_target`·`extension_resolve(EXTENSION_HOST_MISMATCH)`·`diagnostic_snapshot` 에도 실린다.
 - `extension_command(command, args?, timeoutMs?)` — 확장 명령(`gpl.*`) 실행. 제어기 콘솔 명령이 아니라 **확장 기능**을 쓴다:
   `gpl.deploy`(/GPL 업로드+Compile) · `gpl.quickCompile` · `gpl.uploadStart`(업로드+Start) · `gpl.start` · `gpl.controller.pushBreakpoints`/`pullBreakpoints` ·
   `gpl.ai.debug.getState`/`getConnectionState`/`setBreakpoint`/`evaluate`/`loop` · `gpl.diagnosticSnapshot` ·
   `gpl.controller.threadBreak({threadName})` 등. 인자 형식은 확장 런북의 Command ID 표를 따른다.
   Deploy처럼 오래 걸리는 명령은 `timeoutMs`를 크게(예: 180000) 준다.
+
+**장시간 작업 · 런타임 콘솔 · 원격 폴더 (2026-10-14)** — "상태 확인을 보내고 → 읽고 → 다시 보내고" 를 AI 가 반복하지 않게 하는 도구들.
+- `deploy_project(...)` 는 완료 결과를 **동기로** 돌려주며 성공 응답에 `next:"none"` 이 붙는다 — 그 뒤 `operation_status` 재조회·`Show Memory`
+  확인은 하지 않는다. 결과 본문은 기본 축약(해시·내부 식별자 제거, 긴 배열은 앞 10개 + 개수), `verbose:true` 면 원문.
+  응답 전달이 끊겨도(`BRIDGE_REQUEST_TIMEOUT`) 그 요청 뒤에 끝난 같은 대상의 작업 기록이 있으면 **그 결과를 바로 돌려준다**(`recoveredFrom:"operation-record"`).
+- `operation_status(operationId?, activeOnly?, limit?, verbose?)` — 목록 항목에 `resultSummary`(`uploaded 71 · skipped 0 · compileErrors 0 · inSync`)가
+  있어 상세 재조회가 필요 없다. **이미 본문까지 전달한 완료 결과를 다시 조회하면 `redundant:true` 와 요약 한 줄만** 온다(정보 손실 없음 —
+  처음 응답에 본문이 있었다). 응답의 `next` 는 `none`(끝) · `wait_operation`(진행 중) · `observe`(UNKNOWN).
+- `wait_operation(operationId?, timeoutMs?, pollMs?, verbose?)` — 작업이 끝날 때까지 **서버가 대신 기다렸다가** 결과를 한 번에.
+  기록 파일만 읽으므로 제어기에는 아무것도 보내지 않는다. 시간 안에 안 끝나면 `WAIT_TIMEOUT` + 현재 상태(실패 아님 — 다시 부른다).
+- `runtime_console_read(cursor?, maxLines?, waitMs?, untilPattern?)` — 확장이 수신한 **런타임 콘솔(1403) 출력**을 커서로 읽는다.
+  `untilPattern`(정규식, 대소문자 무시)을 주면 그 줄이 올 때까지(최대 `waitMs`) 확장이 기다렸다가 누적 줄을 한 번에 돌려준다 —
+  "프로그램이 X 를 출력할 때까지" 를 반복 조회하지 않는다. 응답 `{lines:[{seq,at,text,project?}], nextCursor, dropped, matched, timedOut, status, captureFile}`.
+  같은 줄을 확장이 `%TEMP%\gpl-controller\runtime-console-<ip>.log` 에도 남긴다(설정 `gpl.runtimeConsole.captureFile`, 사람이 통째로 열어 보는 용도 —
+  판단 근거는 이 도구의 응답이지 파일이 아니다).
+- `runtime_console_search(pattern?, since?, until?, project?, maxLines?)` — 링버퍼 밖의 **지난 런타임 콘솔 출력**을 확장의 캡처 파일
+  (`%TEMP%\gpl-controller\runtime-console-<GPL_HOST>.log` + 직전 `.1.log`, 각 2 MB 에서 교체 — 그보다 오래된 기록은 없다)에서 찾는다.
+  제어기·확장 브리지 없이 이 서버가 파일을 직접 읽는다. `--- capture start / reconnected … not listening … / capture paused ---` 마커가
+  확장이 듣지 않은 구간을 표시한다. 같은 IP 로 실물 제어기를 바꿔 끼우면 기록이 섞이므로 project·시각으로 가른다.
+- `list_remote_projects(root?)` — 제어기 `/GPL`(기본) 아래 프로젝트 폴더(이름·파일 수·바이트·최근 수정·이 창의 마지막 컴파일 출처). 콘솔에는
+  로드/잔존 프로젝트를 보는 명령이 없어(`Show Project` 는 -714) 확장 FTP LIST 로 읽는다(읽기 전용). "Unload 했는데 메모리가 안 풀린다 / Start -200"
+  이면 먼저 이것으로 **다른 프로젝트가 /GPL 에 남아 있는지** 본다. 정리는 사용자가 트리의 「/GPL 비우기」로.
+- `show_threads`·`debug_snapshot` 의 연결 실패도 `controller_command` 와 같은 구조(`ok:false, outcome, recommendedAction`)로 온다(문자열 `ERROR` 아님).
+- `project_target` 성공 응답은 후보 목록을 싣지 않는다(`candidateCount` 만) — 후보는 `PROJECT_AMBIGUOUS` 때만. 브리지 요청이 수거되지 않으면
+  `extensionInstances`(창·pid·connected·leader)를 함께 준다.
 
 **기본**
 - `controller_command(command)` 또는 `controller_command(commands: string[], stopOnError?)` — 임의 콘솔 명령(에스케이프 해치).
@@ -153,7 +184,9 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   선택 인자(공식 문서 구문 `Pd dataid, unit, unit2, array_index, node`): `hex:true` → `pdx`로 읽어 **정수를 16진수로**
   표시(비트마스크 DataID 예: 2003 Axis mask), `unit` / `unit2` / `arrayIndex`(0 = 전체 값) / `node`(서보 네트워크 노드 —
   문서가 테스트·디버깅 용도로 명시). 뒤 인자만 지정하면 앞 인자를 문서 기본값(unit 1 / unit2 1 / index 0)으로 자동 보완한다.
-- `controller_status(detail?)` — 상태 요약 1회: 연결(1402 도달성) · 스레드 상태별 개수와 정지 스레드 위치 ·
+- `controller_status(detail?)` — 상태 요약 1회: 연결(1402 도달성) · 스레드 상태별 개수와 정지 스레드 위치(`pausedThreads` = Paused/Break,
+  `errorThreads` = Error, `stoppedThreads` = 정지 계열 전체) · 연결 실패 시 `observations.localConnections`(이 PC 에서 같은 포트로 맺어진 연결의
+  pid·프로세스명, `foreignOwners` = 이 서버·확장 창이 아닌 ESTABLISHED — 있으면 그 점유가 1순위 원인 후보, `measured:false` 는 조회 못 함) ·
   고전원(`Execute Controller.PowerEnabled`) · 배포 잠금 · `server`(빌드 스탬프). **연결 실패 시** ICMP/TCP를 구분해
   "재부팅 중 / 서비스 다운(ECONNREFUSED) / 완전 무응답" verdict를 돌려준다(단명 연결 반복 금지). `detail:true`면
   스레드 전체 목록(compact)과 최근 `ErrorLog` 10줄, 그리고 **`resources`**(GitHub #22): 읽기 전용 `Show Memory` / `Show Network -tcp` /
@@ -162,6 +195,8 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   `acceptedPerSec`는 서버 메모리의 직전 `detail` 호출 대비 accept 카운터 증가율(첫 호출·재부팅 후 `null`) — 제어기 TCP 접속 churn 관찰(가설 1 검증)용.
   원문 형식은 GPL 4.2K5 실측(2026-08-25) 1회분 기준이라 다른 펌웨어에선 필드가 `null`일 수 있다 — 그때는 `raw` 참고.
   시뮬레이션/실기 판별 명령은 미확인이라 `simulation`은 항상 `null`.
+- `controller_status` 연결 실패 응답은 `observations/assessment/controllerHealth/recommendedAction/verdict` 를 한 번만 싣고(종전엔 `reachable{}` 아래 중복),
+  배포 잠금이 있으면 `likelyCause`("확장이 배포/업로드 중 — 그동안 1402 거부 가능")를 1순위 원인으로 표시한다.
 - `get_session_log(tail?)` — 이 세션의 도구 호출/1402 명령 로그(왕복 낭비 분석·공유용).
   같은 내용이 파일(`GPL_MCP_LOG_DIR`, 서버 시작 시 stderr에 경로 출력)에도 기록되며,
   사용자는 `Get-Content "<로그파일>" -Wait`로 AI의 제어기 조작을 실시간 관찰할 수 있다.
@@ -169,7 +204,16 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 **컴파일 · 실행**
 - `compile_project(project?)` — `Compile`. STATUS로만 성공 판정, 실패 시 에러 라인 파싱
 - `start_project(project?, stopOnEntry?)` — `Start` (`-break -bex` 시 진입점 정지)
-- `unload_project(project?)` — `Unload`
+- `unload_project(project?, timeoutMs?, skipThreadCheck?)` — `Unload`. 보내기 전에 `Show Thread -web`로 그 프로젝트의
+  활성 스레드를 확인하고, 있으면 -750이 뻔하므로 보내지 않고 `refused:"threads-active"`와 목록을 돌려준다.
+- `stop_threads(thread?, project?, timeoutMs?)` — 정지. `thread` → `Stop <thread>`, `project` → 그 프로젝트의 활성 스레드를
+  열거해 이름별 `Stop`, 둘 다 생략 → `Stop -all`. STATUS 0/-752는 "접수"로만 보고 `Show Thread -web` 폴링으로 정지를
+  확인하며, 미정착이면 1회 자동 재전송한다(확장 `controller/threads/threadStop.ts`와 같은 규약).
+  범위 없는 전체 정지는 같은 제어기의 실행 중·대기 중 업로드/배포에도 취소를 요청해 이후 Compile/Start를 막는다.
+  **제어기의 `Stop <이름>`은 스레드 이름 단위**다 — `Stop <project>`는 동명 스레드 하나만 멈추고 프로젝트가 다른 이름으로
+  띄운 스레드(`LOG_SOCKET` 등)는 남아 Unload/Compile이 -750이 된다(2026-10-14 실측). `TCPCLI[0]`처럼 대괄호가 든 이름은
+  공식 Stop 구문에 인용/이스케이프 형식이 없어 `skipped`로 보고하며,
+  전체 정지는 호출자가 범위 없는 `stop_threads()`를 명시해야 한다(자동 확대 없음).
 
 **실행 제어(디버그)** — Break/Step/Continue는 STATUS 0이 "접수"일 수 있어(접수≠완료),
 서버가 `Show Thread <thread>` 폴링으로 **실제 정지를 확인한 뒤 정지 위치까지 반환**한다.
@@ -243,7 +287,8 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   세션·명령 정책**(Step 연타 방지 / 정지 정착 대기 / Compile→Start 완충)을 그대로 타고 GPL Traffic·Output에도 함께 남는다.
   - 전송 수단은 `%TEMP%\gpl-controller\`의 요청/응답 파일 한 쌍(배포 잠금과 같은 계약 — 새 포트·서버 없음).
     확장 상태는 `<ip>.extension.json`(heartbeat 5초, 15초 이상이면 죽은 것으로 판정).
-  - `GPL_BRIDGE=auto`(기본)는 확장이 없으면 직접 접속으로 자동 폴백, `only`는 브리지 필수(세션 단일화 보장), `off`는 종전 동작.
+  - `GPL_BRIDGE=auto`(서버 자체 기본)는 확장이 없으면 직접 접속으로 자동 폴백, `only`는 브리지 필수(세션 단일화 보장), `off`는 종전 동작.
+    확장의 Export는 `only`를 쓰며, 헤드리스 MCP가 꼭 필요한 개발 환경만 `auto`/`off`를 수동 선택한다.
   - **폴백 규칙**: 브리지가 명령을 *실행하지 않았음이 확실한* 실패(요청 거부·확장 없음)면 직접 전송으로 넘어가고,
     모호한 실패(타임아웃·확장 내부 오류)는 **조회 명령만** 재전송한다 — 상태 변경 명령의 중복 전송(Step 두 줄 진행, Start 컴파일 중복)을 막는다.
   - 확장의 명령 정책이 안전 조건을 채우지 못해 보류하면(`policy-hold`) 직접 접속으로 **우회하지 않고** 그대로 알린다.

@@ -7,7 +7,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { isRuntimeConsoleAutoStartOnDebug } from '../config';
-import { setSessionControllerOverride } from '../controller/controllerConnection';
+import { setSessionControllerOverride } from '../controller/connection/controllerConnection';
+import { requestActiveDeployCancellation } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 function formatDebugErrorSummary(errorMessage: unknown, errorCode: unknown, fallback: string): string {
@@ -66,7 +67,17 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 				return;
 			}
 			const session = vscode.debug.activeDebugSession;
-			type Pick = vscode.QuickPickItem & { action: 'restart' | 'dismiss' | 'open'; file?: string };
+			type Pick = vscode.QuickPickItem & { action: 'restart' | 'compile' | 'dismiss' | 'open'; file?: string };
+			// 재시작(Run)까지 가지 않고 "컴파일까지만" — BP 를 실제 코드 줄에 맞추는 데 필요한 것은 재컴파일뿐이고,
+			// 프로그램을 처음부터 다시 돌리는 것은 별개의 결정이라 둘을 나눠 놓는다(모션 영향, 하드 규칙 6).
+			// 덜 침습적인 쪽을 먼저 놓아 기본 선택이 재시작이 되지 않게 한다.
+			const compileItem: Pick = {
+				action: 'compile',
+				label: '$(zap) Upload + Compile 만 (재시작 없음)',
+				description: '변경분만 업로드하고 Compile — 디버그 세션 유지, Start 는 보내지 않음',
+				detail: '제어기에 쓰레드가 남아 있으면 Compile 전에 Stop -all 여부를 먼저 묻습니다(거부하면 업로드만 됩니다).'
+					+ ' 컴파일 기록이 갱신되면 이 배지와 BP 신뢰 상태는 자동으로 다시 계산됩니다.',
+			};
 			const restartItem: Pick = {
 				action: 'restart',
 				label: '$(debug-restart) Stop + Upload + Run 으로 재시작',
@@ -75,13 +86,24 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 			};
 			const dismissItem: Pick = { action: 'dismiss', label: '$(eye-closed) 이 세션 동안 배지 숨기기' };
 			const fileItems: Pick[] = s.files.map(f => ({ action: 'open', label: `$(file-code) ${f}`, description: '열기', file: f }));
-			const pick = await vscode.window.showQuickPick<Pick>([restartItem, ...fileItems, dismissItem], {
+			const pick = await vscode.window.showQuickPick<Pick>([compileItem, restartItem, ...fileItems, dismissItem], {
 				placeHolder: `${s.projectName}: 제어기 컴파일 코드보다 새로운 소스 ${s.files.length}개 — BP가 실제 코드 줄에 걸리지 않을 수 있습니다` +
 					(s.compiledAt ? ` (마지막 Compile ${new Date(s.compiledAt).toLocaleString()})` : ''),
 			});
 			if (!pick) { return; }
 			if (pick.action === 'dismiss') {
 				host.statusBar?.setSourceStale(undefined);
+				return;
+			}
+			if (pick.action === 'compile') {
+				// 업로드 + Compile 까지만. 세션을 끊지 않고 Start 도 보내지 않는다.
+				// 컴파일 성공 기록이 갱신되면 어댑터가 stale 을 재평가해(_onRecordCompiled → 'recompiled')
+				// 배지와 BP 신뢰 상태를 스스로 갱신하므로 여기서 따로 이벤트를 만들지 않는다.
+				const dir = typeof session?.configuration?.projectDir === 'string'
+					? session.configuration.projectDir.trim()
+					: '';
+				host.log(`[Debug] 소스 변경 → Upload + Compile 만 실행${dir ? ` (${dir})` : ' (대상 프로젝트는 배포 경로가 해석)'}`);
+				await vscode.commands.executeCommand('gpl.quickCompile', dir ? vscode.Uri.file(dir) : undefined);
 				return;
 			}
 			if (pick.action === 'restart') {
@@ -216,6 +238,23 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 			} catch { /* 상태 조회 실패 시 잠금 시도로 진행 */ }
 			await vscode.commands.executeCommand(locked ? 'gpl.debug.unlockThread' : 'gpl.debug.lockThread');
 		}),
+		// ── 디버그 툴바 정지 버튼 ─────────────────────────────────
+		// GPL 세션은 attach 라 VS Code 툴바에는 Disconnect(플러그)만 놓인다. 정지(Stop)는
+		// 어댑터가 supportTerminateDebuggee 를 알린 뒤에도 드롭다운/Alt 안에만 있어 눈에 띄지 않으므로
+		// 같은 동작을 툴바 버튼으로 직접 노출한다(package.json: menus."debug/toolBar").
+		// 내장 Stop(workbench.action.debug.stop)을 그대로 호출한다 — attach 세션에서는
+		// disconnect{terminateDebuggee:true} 로 내려가고, 어댑터가 그 플래그를 보고 Stop -all 까지 한다.
+		// (vscode.debug.stopDebugging 은 attach 면 플래그 없는 분리로 내려가므로 쓰지 않는다.)
+		vscode.commands.registerCommand('gpl.debug.stopSession', async () => {
+			const session = gplDebugSessionForLock();
+			if (!session) {
+				vscode.window.showWarningMessage('중지할 GPL 디버그 세션이 없습니다.');
+				return;
+			}
+			host.log('[Debug] 정지 버튼 — 디버그 세션 종료 + 제어기 프로그램 정지(Stop -all)');
+			requestActiveDeployCancellation(host, '디버그 정지 버튼 요청');
+			await vscode.commands.executeCommand('workbench.action.debug.stop');
+		}),
 	);
 	// 디버그 세션 중 사이드바 폴링 일시 중지 (TCP 충돌 방지)
 	context.subscriptions.push(
@@ -223,7 +262,15 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 			if (session.type === 'brooks-gpl') {
 				host.isDebugSessionActive = true;
 				host.gplDebugSession = session;
-				host.updateUiContexts(host.controllerTree?.isConnected ?? host.statusBar?.isConnected ?? false);
+				// 디버그 구성이 폴더까지 정했으면 세션 대상 폴더로 삼는다 — 이후 트리·이벤트의 파일명 해석이 그 사본을 연다.
+				const dirFromDebugConfig = typeof session.configuration?.projectDir === 'string'
+					? session.configuration.projectDir.trim()
+					: '';
+				if (dirFromDebugConfig) {
+					host.sessionTargetDir = dirFromDebugConfig;
+					host.log(`[ProjectContext] session target (debug config): ${dirFromDebugConfig}`);
+				}
+				host.updateUiContexts(host.isControllerConnected);
 				host.ensureAgentBridge()?.setState({ debugSessionActive: true });
 				const projectFromDebugConfig = (session.configuration?.projectName || '').toString().trim();
 				if (projectFromDebugConfig) {
@@ -245,7 +292,7 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 			if (session.type === 'brooks-gpl') {
 				host.isDebugSessionActive = false;
 				if (host.gplDebugSession?.id === session.id) { host.gplDebugSession = undefined; }
-				host.updateUiContexts(host.controllerTree?.isConnected ?? host.statusBar?.isConnected ?? false);
+				host.updateUiContexts(host.isControllerConnected);
 				host.ensureAgentBridge()?.setState({ debugSessionActive: false });
 				host.controllerTree?.exitDebugMode();
 				host.lastSourceStale = undefined;
@@ -361,10 +408,13 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 			if (targetPath && line > 0) {
 				try {
 					const doc = await vscode.workspace.openTextDocument(targetPath);
-					const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+					// 런타임 에러는 비동기로 도착한다 — 사용자가 다른 곳(채팅 등)에 입력 중일 수 있으므로 보여 주기만 하고
+					// 키보드 포커스는 옮기지 않는다(2026-10-21, 채팅 입력이 소스에 섞인 사례).
+					const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
 					const lineIndex = Math.max(0, line - 1);
 					const targetLine = doc.lineAt(Math.min(lineIndex, Math.max(0, doc.lineCount - 1))).range;
-					host.decorations.showError(editor, targetLine);
+					// 주인 쓰레드를 붙여 두면 재시작·Stop 으로 Error 를 벗어날 때 강조가 자동으로 지워진다(§1-EP).
+					host.decorations.showError(editor, targetLine, { threadName: body.threadName });
 					editor.selection = new vscode.Selection(targetLine.start, targetLine.start);
 					editor.revealRange(targetLine, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 

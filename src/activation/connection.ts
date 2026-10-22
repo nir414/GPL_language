@@ -8,6 +8,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { EXTENSION_VERSION, isGplDocument } from '../config';
+import { ciEq } from '../language/identifiers';
+import { readGprIdentityInDir } from '../project/compileUnitTarget';
 import {
 	ConnectionHealthMonitor,
 	DEFAULT_CONNECTION_HEALTH_POLICY,
@@ -17,7 +19,7 @@ import {
 	LossSummary,
 	describeLoss,
 	describeRecovering,
-} from '../controller/connectionHealth';
+} from '../controller/connection/connectionHealth';
 import {
 	ControllerConfig,
 	clearSessionControllerOverride,
@@ -34,12 +36,12 @@ import {
 	setIdlePingObserver,
 	setSessionControllerOverride,
 	testConnection,
-} from '../controller/controllerConnection';
-import { onDebugProbeResult } from '../controller/debugBridge';
-import { DEPLOY_LOCK_DIR_NAME, describeDeployLock, getDeployLock } from '../controller/deployLock';
-import { projectNameOf } from '../controller/projectPicker';
-import { probeReachability } from '../controller/reachability';
-import { SHOW_THREAD_LIST_CMD } from '../controller/responseParser';
+} from '../controller/connection/controllerConnection';
+import { onDebugProbeResult } from '../controller/debugging/debugBridge';
+import { DEPLOY_LOCK_DIR_NAME, describeDeployLock, getDeployLock } from '../controller/deployment/deployLock';
+import { projectNameOf } from '../controller/projects/projectPicker';
+import { probeReachability } from '../controller/connection/reachability';
+import { SHOW_THREAD_LIST_CMD } from '../controller/protocol/responseParser';
 import { setDashboardConnectionObserver } from '../views/controllerDashboardPanel';
 import type { ExtensionHost } from './host';
 
@@ -83,9 +85,9 @@ async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: Controlle
 		const reach = await probeReachability(cfg.ip, cfg.port);
 		const lines: string[] = [
 			`# GPL Controller 연결 유실 사후 스냅샷 — ${lostAt.toISOString()} (local ${lostAt.toLocaleString()})`,
-			`target: ${cfg.ip}:${cfg.port} (1403: ${cfg.consolePort})  extension: v${EXTENSION_VERSION}  pid: ${process.pid}`,
+			`target: 명령 콘솔 ${cfg.ip}:${cfg.port} · 런타임 콘솔 ${cfg.consolePort}  extension: v${EXTENSION_VERSION}  pid: ${process.pid}`,
 			'',
-			'## 판정: 1402 명령 채널 유실 (connectionHealth) — 제어기 런타임 상태는 이 파일만으로 확정되지 않는다',
+			'## 판정: 명령 콘솔 채널 유실 (connectionHealth) — 제어기 런타임 상태는 이 파일만으로 확정되지 않는다',
 			loss ? describeLoss(loss) : '(요약 없음)',
 			loss ? JSON.stringify(loss, null, 1) : '',
 			'',
@@ -100,15 +102,15 @@ async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: Controlle
 			`verdict: ${reach.verdict}`,
 			JSON.stringify(reach, null, 1),
 			'',
-			'## 1402 연결 통계 (keep-alive)',
+			'## 명령 콘솔 연결 통계 (keep-alive)',
 			JSON.stringify(stats, null, 1),
 			'',
-			'## 1403 런타임 콘솔 상태',
+			'## 런타임 콘솔 상태',
 			JSON.stringify(rc, null, 1),
 			'',
 			`## 배포 잠금: ${lock ? describeDeployLock(lock) : '(없음)'}`,
 			'',
-			`## 최근 트래픽 (마지막 ${recent.length}줄 — 1402 >>>/ | /<<< 및 1403 라인, 오래된 순)`,
+			`## 최근 트래픽 (마지막 ${recent.length}줄 — 명령 콘솔 >>>/ | /<<< 및 런타임 콘솔 라인, 오래된 순)`,
 			...recent,
 			'',
 		];
@@ -118,7 +120,7 @@ async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: Controlle
 		const file = path.join(dir, `postmortem-${stamp}.log`);
 		fs.writeFileSync(file, lines.join('\n'), 'utf8');
 		host.log(`[Controller] reachability: ${reach.verdict}`);
-		host.log(`[Controller] 사후 스냅샷 저장: ${file} (트래픽 ${recent.length}줄, 1402 connects=${stats.connects} reuses=${stats.reuses})`);
+		host.log(`[Controller] 사후 스냅샷 저장: ${file} (트래픽 ${recent.length}줄, 명령 콘솔 connects=${stats.connects} reuses=${stats.reuses})`);
 		return file;
 	} catch (err: any) {
 		host.log(`[Controller] 사후 스냅샷 저장 실패: ${err?.message ?? err}`);
@@ -174,7 +176,7 @@ async function stopDebugSessionAndWait(
 export function activateConnection(host: ExtensionHost): ConnectionApi {
 	const { context, outputChannel } = host;
 
-	// ── 연결 건강 모니터 (2026-08-28, controller/connectionHealth.ts) ──────────────────────────────
+	// ── 연결 건강 모니터 (2026-08-28, controller/connection/connectionHealth.ts) ──────────────────────────────
 	// 연결 유실 판정의 단일 출처. 프로브(트리 Show Thread 폴·디버그 어댑터 폴·재프로브) 결과와 힌트(1403 connect-failed/
 	// socket-error·keep-alive 소켓 error·대시보드 프로브 실패·어댑터 실패 종료)를 받아 connected → suspect → lost 로 판정한다.
 	// 힌트는 단정하지 않고 재프로브(connectionProbeTimeoutMs 기본 8 s, 1 s 간격)로 확인한다. 유실 확정 시 연결 상태를 끊고
@@ -196,12 +198,12 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		host.controllerTree?.setRuntimeErrorContext(undefined);
 		// 문구 원칙(2026-08-31): 확장이 "1402 명령 채널을 놓았다"는 것이 우리가 아는 사실이고, 제어기/런타임이 죽었다는
 		// 것은 여러 독립 증거를 종합해야 하는 판단이다. 알림에서 후자를 단정하지 않는다.
-		host.log(`[Controller] 1402 명령 채널 유실 — ${cfg.ip}:${cfg.port} @ ${lostAt.toLocaleTimeString()} — ${describeLoss(summary)} (제어기 런타임 상태는 미확정)`);
+		host.log(`[Controller] 명령 콘솔 채널 유실 — ${cfg.ip}:${cfg.port} @ ${lostAt.toLocaleTimeString()} — ${describeLoss(summary)} (제어기 런타임 상태는 미확정)`);
 		// 사후 스냅샷(#22 제안 4): 알림은 스냅샷이 준비된 뒤 한 번만 — 파일 열기 버튼 제공.
 		void writeConnectionLostPostmortem(host, cfg, lostAt, summary, healthSnapshotAtLoss).then(file => {
 			const actions = file ? ['사후 스냅샷 열기', '출력 보기'] : ['출력 보기'];
 			void vscode.window.showWarningMessage(
-				`GPL Controller 1402 명령 채널을 놓았습니다 (${cfg.ip}) — ${summary.failures}회 연속 무응답으로 연결 상태를 해제했습니다. `
+				`GPL Controller 명령 콘솔 연결을 놓았습니다 (${cfg.ip}) — ${summary.failures}회 연속 무응답으로 연결 상태를 해제했습니다. `
 				+ '제어기가 다운됐다는 뜻은 아닙니다(런타임 상태 미확정) — 다시 Connect 해 보세요. '
 				+ (file ? '마지막 트래픽·도달성 판정은 사후 스냅샷 파일에 있습니다.' : ''),
 				...actions,
@@ -352,7 +354,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		const launchInfo = host.project.readLaunchControllerInfo();
 		const cancelled = (): ConnectResult => ({
 			ok: false, ip: currentCfg.ip, port: currentCfg.port,
-			connected: host.controllerTree?.isConnected ?? false, error: 'cancelled', mode: 'interactive',
+			connected: host.isControllerConnected, error: 'cancelled', mode: 'interactive',
 		});
 		// 기본값 우선순위: launch.json > 현재 cfg(세션 오버라이드 포함) > settings
 		const defaultIp = launchInfo?.ip || currentCfg.ip;
@@ -472,6 +474,12 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		const projectName = await host.project.resolveExpectedProjectName();
 		const launchInfo = host.project.readLaunchControllerInfo();
 		const label = opts.deployBeforeAttach ? 'GPL Quick Attach' : 'GPL Attach Only';
+		// 세션 대상 폴더가 이 프로젝트의 것이면 함께 넘긴다 — 동명 프로젝트가 여럿인 워크스페이스에서 디버거의
+		// 소스 매핑이 이름 일치 폴더 전부가 아니라 그 폴더로 좁혀진다(project/compileUnitTarget.ts).
+		const targetIdentity = readGprIdentityInDir(host.sessionTargetDir);
+		const projectDir = targetIdentity && (!projectName || ciEq(targetIdentity.projectName, projectName))
+			? host.sessionTargetDir
+			: undefined;
 
 		const dynamicConfig: vscode.DebugConfiguration = {
 			type: 'brooks-gpl',
@@ -480,6 +488,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			controllerIp: launchInfo?.ip || cfg.ip,
 			controllerPort: launchInfo?.port || cfg.port,
 			projectName,
+			...(projectDir ? { projectDir } : {}),
 			deployBeforeAttach: opts.deployBeforeAttach,
 			// 붙기만 하는 경로에서는 실행 중인 프로그램을 건드리지 않는다 — Stop 도 Start 도 보내지 않는다.
 			// (제어기 쪽 잔재 브레이크포인트 정리는 세션 기본값 clearProjectBreakpointsOnAttach 가 담당한다.)
@@ -568,7 +577,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 						+ (stopOutcome === 'failed'
 							? 'stopDebugging 요청이 거부됐습니다(이미 사라진 세션일 수 있음).'
 							: `${DEBUG_SESSION_STOP_TIMEOUT_MS}ms 안에 terminated 이벤트가 오지 않았습니다.`)
-						+ ' 해제는 계속하지만 폴이 남아 있으면 1402 가 다시 열릴 수 있습니다.');
+						+ ' 해제는 계속하지만 폴이 남아 있으면 명령 콘솔이 다시 열릴 수 있습니다.');
 				}
 			}
 

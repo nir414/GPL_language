@@ -70,8 +70,8 @@ GPL Dictionary 기준 각 선언문 앞에 올 수 있는 수식어 (대소문�
 
 ## 변경 후 확인
 
-- 코드 수정 시 `package.json` 버전 patch +1
-- `README.md` 현재 버전과 동기화
+- 코드 수정 시 `docs/releases/process.md`의 SemVer 정책에 맞는 버전 결정
+- `README.md`에 현재 버전 표기가 있다면 동기화
 - `npm run pre-release-check`
 - `npm run compile`
 

@@ -1,12 +1,13 @@
-// 배포 잠금(Deploy Lock) 읽기 — VS Code 확장(src/controller/deployLock.ts)과 파일 계약을 공유한다.
+// 배포 잠금(Deploy Lock) 읽기 — VS Code 확장(src/controller/deployment/deployLock.ts)과 파일 계약을 공유한다.
 //
 // 확장이 FTP 업로드/배포 중이면 `%TEMP%/gpl-controller/<ip>.lock.json`을 잡는다. 업로드 도중
 // Compile/Start(그리고 /GPL 폴더를 건드리는 Load/Unload)가 겹치면 제어기가 죽을 수 있어
 // (2026-08-20 사용자 관찰, GitHub #17), MCP는 이 파일을 읽어 해당 명령을 유한 대기 후 진행하거나 거부한다.
 // MCP 서버는 FTP 업로드를 하지 않으므로 잠금을 *쓰지* 않고 *읽기만* 한다.
 //
-// 파일 계약(양쪽 동일 유지):
-//   { version: 1, owner, stage, since(ms), heartbeat(ms), pid, host }
+// 파일 계약(양쪽 동일 유지, v2의 식별 필드는 선택 사항):
+//   { version, owner, stage, since(ms), heartbeat(ms), pid, host,
+//     operationId?, extensionInstanceId?, projectDir? }
 //   stale = (pid > 0 && 프로세스 없음) || now - heartbeat > STALE_MS
 // 이 파일은 로그가 아니라 조정 프리미티브다 — 제어기 상태 판단에는 쓰지 않는다.
 
@@ -80,6 +81,9 @@ export function readDeployLock(ip, { dir, now = Date.now(), pidAlive = isPidAliv
     heartbeat,
     pid,
     host: typeof rec.host === 'string' ? rec.host : '',
+    ...(typeof rec.operationId === 'string' ? { operationId: rec.operationId } : {}),
+    ...(typeof rec.extensionInstanceId === 'string' ? { extensionInstanceId: rec.extensionInstanceId } : {}),
+    ...(typeof rec.projectDir === 'string' ? { projectDir: rec.projectDir } : {}),
     file,
   };
 }

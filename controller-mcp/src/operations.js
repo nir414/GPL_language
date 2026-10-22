@@ -1,4 +1,4 @@
-// 장시간 작업 기록(Operation) 읽기 — 확장 `src/controller/operationStore.ts` 와 파일 계약을 공유한다.
+// 장시간 작업 기록(Operation) 읽기 — 확장 `src/controller/automation/operationStore.ts` 와 파일 계약을 공유한다.
 //
 // 왜(2026-09-10 개선안 §8~§11): Deploy/Quick Compile 은 브리지 RPC 한 번으로 수 분을 기다렸고, 응답 대기가
 // 끝나면 **결과 불명**이 됐다. 그 상태에서 같은 명령을 다시 보내면 중복 배포이고, 잠금에 막히면 "LOCKED" 만
@@ -150,4 +150,129 @@ export function operationRecovery(rec) {
     default:
       return { action: 'NONE', retryCurrentCommand: false, detail: '알 수 없는 상태.' };
   }
+}
+
+// ── 결과 전달 기억 · 요약 · 축약 (2026-10-14 §1-EP) ─────────────────────────────────────
+//
+// 배경: deploy_project 가 완료 결과를 동기로 돌려줬는데도 AI 가 operation_status 목록 → 상세 → Show Memory 로
+// 같은 사실을 세 번 더 확인하는 패턴이 반복됐다(호출당 고정 오버헤드 ≈1.5 s + 응답마다 수천 토큰). 데이터가
+// 없어서가 아니라 "확인 습관"이 낭비를 만든 것이라, 서버가 **이미 전달한 완료 결과**를 기억해 두고 재조회에는
+// 본문 없는 짧은 응답(`redundant:true`)을 돌려준다. 정보 손실은 없다 — 처음 전달 때 본문을 이미 받았다.
+
+/** 더 바뀌지 않는 상태 — 이 상태의 결과는 한 번 전달하면 다시 읽을 이유가 없다. */
+export function isTerminalOperationState(state) {
+  return state === 'COMPLETED' || state === 'FAILED' || state === 'CANCELLED';
+}
+
+export class DeliveredResultMemory {
+  constructor() {
+    /** @type {Map<string, {state: string, firstAt: number, deliveries: number}>} */
+    this._map = new Map();
+  }
+
+  /** 완료 결과 본문을 호출자에게 돌려줬음을 기록한다(진행 중 상태는 기록하지 않는다 — 다음 조회에 새 정보가 있다). */
+  mark(operationId, state, now = Date.now()) {
+    if (!operationId || !isTerminalOperationState(state)) return;
+    const prev = this._map.get(operationId);
+    if (prev && prev.state === state) {
+      prev.deliveries += 1;
+    } else {
+      this._map.set(operationId, { state, firstAt: now, deliveries: 1 });
+    }
+  }
+
+  /**
+   * 같은 완료 결과를 이미 전달했는가.
+   * @returns {{ redundant: boolean, deliveries: number, firstAt: number|null }}
+   */
+  check(operationId, state) {
+    const prev = operationId ? this._map.get(operationId) : undefined;
+    if (!prev || prev.state !== state || !isTerminalOperationState(state)) {
+      return { redundant: false, deliveries: 0, firstAt: null };
+    }
+    return { redundant: true, deliveries: prev.deliveries, firstAt: prev.firstAt };
+  }
+}
+
+/**
+ * 결과 한 줄 요약 — 목록에서 상세를 다시 조회하지 않아도 "무엇이 어떻게 끝났는지" 읽히게(개선 요청 §7).
+ * 확장 DeployResult 의 필드명을 그대로 쓴다. 모르는 모양이면 null.
+ */
+export function summarizeOperationResult(rec) {
+  const r = rec?.result;
+  if (!r || typeof r !== 'object') {
+    return rec?.error?.message ? `error: ${rec.error.message}` : null;
+  }
+  const parts = [];
+  if (r.uploadStats && typeof r.uploadStats === 'object') {
+    const u = r.uploadStats;
+    parts.push(`uploaded ${u.uploaded ?? '?'} · skipped ${u.skipped ?? '?'}${u.deleted ? ` · deleted ${u.deleted}` : ''}`);
+  }
+  if (typeof r.compileErrorCount === 'number') parts.push(`compileErrors ${r.compileErrorCount}`);
+  if (r.provenance && typeof r.provenance === 'object' && typeof r.provenance.inSync === 'boolean') {
+    const changed = Array.isArray(r.provenance.changedSinceUpload) ? r.provenance.changedSinceUpload.length : null;
+    parts.push(r.provenance.inSync ? 'inSync' : `notInSync${changed != null ? ` (changed ${changed})` : ''}`);
+  }
+  if (typeof r.failedPhase === 'string') parts.push(`failedPhase ${r.failedPhase}`);
+  // Start 뒤 메인 쓰레드 Error(§1-EU) — 목록만 보고도 "성공했지만 프로그램은 멈췄다" 를 알 수 있게.
+  if (r.runtimeError && typeof r.runtimeError === 'object') {
+    const e = r.runtimeError;
+    parts.push(`runtimeError ${e.statusCode ?? '?'}${e.file ? ` @ ${e.file}:${e.line ?? '?'}` : ''}`);
+  }
+  if (typeof r.success === 'boolean' && parts.length === 0) parts.push(r.success ? 'success' : 'failed');
+  return parts.length ? parts.join(' · ') : null;
+}
+
+/** 축약에서 버리는 키 — 사람이 읽을 일이 없는 내부 식별자/해시(결과 본문의 1/3 을 차지했다). */
+const RESULT_DROP_KEYS = new Set(['localRevision', 'uploadedRevision', 'compiledSnapshotFiles', 'idempotencyKey', 'requestId']);
+const RESULT_ARRAY_LIMIT = 10;
+
+/**
+ * 결과 본문 축약 — 알려진 잡음 키를 빼고 긴 배열은 앞 N개 + 개수로 줄인다. 구조·나머지 키는 그대로라
+ * 어떤 모양의 결과든(DEPLOY/QUICK_COMPILE/확장이 새로 추가한 필드) 안전하다. `verbose` 요청이면 쓰지 않는다.
+ */
+export function compactOperationResult(result, { arrayLimit = RESULT_ARRAY_LIMIT } = {}) {
+  if (!result || typeof result !== 'object') return result ?? null;
+  if (Array.isArray(result)) {
+    return result.length > arrayLimit
+      ? [...result.slice(0, arrayLimit).map((v) => compactOperationResult(v, { arrayLimit })), `…(+${result.length - arrayLimit})`]
+      : result.map((v) => compactOperationResult(v, { arrayLimit }));
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(result)) {
+    if (RESULT_DROP_KEYS.has(k)) continue;
+    out[k] = v && typeof v === 'object' ? compactOperationResult(v, { arrayLimit }) : v;
+  }
+  return out;
+}
+
+/** 목록 한 항목 — 식별·상태·요약만(projectDir·pid·host·instance 는 verbose 에서만). */
+export function compactOperation(rec, now = Date.now()) {
+  return {
+    operationId: rec.operationId,
+    type: rec.type,
+    state: rec.state,
+    phase: rec.phase,
+    projectName: rec.projectName ?? null,
+    createdAt: rec.createdAt,
+    finishedAt: rec.finishedAt ?? null,
+    summary: describeOperation(rec, now),
+    resultSummary: summarizeOperationResult(rec),
+  };
+}
+
+/** 상세 기록 축약 — 생존 신호·식별자 같은 내부 필드를 빼고 결과 본문은 compactOperationResult 로. */
+export function compactOperationRecord(rec) {
+  return {
+    operationId: rec.operationId,
+    type: rec.type,
+    state: rec.state,
+    phase: rec.phase,
+    projectName: rec.projectName ?? null,
+    projectDir: rec.projectDir ?? null,
+    createdAt: rec.createdAt,
+    finishedAt: rec.finishedAt ?? null,
+    ...(rec.result !== undefined ? { result: compactOperationResult(rec.result) } : {}),
+    ...(rec.error !== undefined ? { error: rec.error } : {}),
+  };
 }

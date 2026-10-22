@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { classifyPolicyCommand, ControllerCommandPolicy, isPolicyError, PolicyIo } from '../controller/commandPolicy';
-import type { ThreadInfo } from '../controller/responseParser';
+import { classifyPolicyCommand, ControllerCommandPolicy, isPolicyError, PolicyIo } from '../controller/commands/commandPolicy';
+import type { ThreadInfo } from '../controller/protocol/responseParser';
 
 // ── 가짜 I/O: 가상 시계 + 스크립트된 Show Thread 응답 ─────────────────────
 

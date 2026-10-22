@@ -1,0 +1,188 @@
+' syntax-tour — GPL 문법 투어 프로젝트 (제어 흐름 편).
+'
+' 목적: 확장이 다루는 GPL 문(statement)을 **빠짐없이 한 번씩** 실제 코드로 써 두는 것.
+' 새 문법을 지원하거나 하이라이트 규칙을 고칠 때, 이 프로젝트를 개발 호스트에서 열어
+' 완성·호버·개요·정의 이동·진단이 그대로 동작하는지 눈으로 확인한다.
+'
+' 정본은 `src/language/gplStatements.ts`(공식 GPL Statement Dictionary + Exception Handling 절)다.
+' 각 문이 처음 등장하는 줄 끝에 `' [syntax] <스니펫 라벨>` 마커를 달아 두었고,
+' `src/test/sampleSyntaxCoverage.test.ts`가 "정본에 있는 문 = 샘플에 있는 마커"를 강제한다.
+' 정본에 문이 추가되면 테스트가 먼저 깨지므로 이 샘플은 낡지 않는다.
+'
+' GPL에 없는 VB 문법(Enum·Inherits·Implements·With·Type)은 일부러 쓰지 않는다 —
+' 2026-09-18 공식 Statement Dictionary 디렉터리 열거로 부재를 확인했다.
+'
+' 모션을 일으키는 API(Move·Robot·Signal 등)도 쓰지 않는다. 실기에 배포해 실행해도
+' 남는 것은 콘솔 출력뿐이다.
+
+Module Main    ' [syntax] Module ... End Module
+
+    ' 문법 투어 진입점(Project.gpr의 ProjectStart="Main").
+    '
+    ' # Remarks
+    ' 각 편을 순서대로 호출하기만 한다. 실행 결과는 GPL 콘솔 출력으로만 확인한다.
+    Public Sub Main()    ' [syntax] Sub ... End Sub
+        Call BranchTour()    ' [syntax] Call ...
+        LoopTour()
+        DoLoopTour()
+        JumpTour()
+        DeclarationTour()
+        ShapeTour()
+        FaultTour()
+        Console.WriteLine("syntax-tour: done")
+    End Sub
+
+    ' 조건 분기 문법을 한 번씩 쓴다.
+    '
+    ' # Remarks
+    ' GPL의 다중 분기는 `Select match_value`로 시작한다 — VB.NET의 `Select Case`가 아니다.
+    ' `match_value`는 한 번만 평가된다.
+    Private Sub BranchTour()
+        Dim level As Integer    ' [syntax] Dim ... As ...
+        Dim label As String
+
+        level = 2
+        label = ""
+
+        If level > 0 Then    ' [syntax] If ... Then ... End If
+            Console.WriteLine("branch: level is positive")
+        End If
+
+        If level = 0 Then    ' [syntax] If ... Then ... Else ... End If
+            label = "zero"
+        ElseIf level = 1 Then    ' [syntax] ElseIf ... Then
+            label = "one"
+        Else    ' [syntax] Else
+            label = "many"
+        End If
+
+        Select level    ' [syntax] Select ... Case ... End Select
+            Case 0, 1    ' [syntax] Case ...
+                Console.WriteLine("branch: small (" & label & ")")
+            Case 2
+                Console.WriteLine("branch: exactly two")
+                Exit Select    ' [syntax] Exit Select
+            Case Else    ' [syntax] Case Else
+                Console.WriteLine("branch: large (" & label & ")")
+        End Select
+    End Sub
+
+    ' For·While 반복과 그 탈출을 한 번씩 쓴다.
+    '
+    ' # Remarks
+    ' GPL의 While 종결어는 `End While`다 — `Wend`는 정본 문법이 아니다.
+    ' For의 상한식은 진입 시 한 번만 평가되므로 루프 안에서 바꿔도 반복 횟수는 그대로다.
+    Private Sub LoopTour()
+        Dim i As Integer
+        Dim total As Integer
+
+        total = 0
+        For i = 0 To 4    ' [syntax] For ... Next
+            total = total + i
+        Next i
+
+        For i = 10 To 0 Step -2    ' [syntax] For ... Step ... Next
+            If i < 6 Then
+                Exit For    ' [syntax] Exit For
+            End If
+            total = total + i
+        Next i
+
+        i = 0
+        While i < 5    ' [syntax] While ... End While
+            i = i + 1
+            If i >= 3 Then
+                Exit While    ' [syntax] Exit While
+            End If
+        End While
+
+        Console.WriteLine("loop: total = " & CStr(total) & ", i = " & CStr(i))
+    End Sub
+
+    ' Do 계열 네 가지 표기와 Exit Do를 한 번씩 쓴다.
+    '
+    ' # Remarks
+    ' 조건을 뒤에 두는 `Do … Loop While`·`Do … Loop Until`은 본문이 최소 한 번은 실행된다.
+    Private Sub DoLoopTour()
+        Dim n As Integer
+
+        n = 0
+        Do While n < 3    ' [syntax] Do While ... Loop
+            n = n + 1
+        Loop
+
+        Do Until n >= 6    ' [syntax] Do Until ... Loop
+            n = n + 1
+        Loop
+
+        Do    ' [syntax] Do ... Loop While
+            n = n + 1
+        Loop While n < 8
+
+        Do    ' [syntax] Do ... Loop Until
+            n = n + 1
+            If n > 20 Then
+                Exit Do    ' [syntax] Exit Do
+            End If
+        Loop Until n >= 10
+
+        Console.WriteLine("do/loop: n = " & CStr(n))
+    End Sub
+
+    ' 라벨 분기와 프로시저 탈출을 한 번씩 쓴다.
+    '
+    ' # Remarks
+    ' 라벨은 같은 프로시저 안에 있어야 하고, 제어 구조 밖에서 안으로 뛰어들면 안 된다.
+    ' 공식 문서도 GoTo 대신 다른 제어 구조를 권한다 — 여기서는 문법 확인용으로만 쓴다.
+    Private Sub JumpTour()
+        Dim attempt As Integer
+
+        attempt = 0
+
+Retry:
+        attempt = attempt + 1
+        If attempt < 2 Then
+            GoTo Retry    ' [syntax] GoTo ...
+        End If
+
+        Console.WriteLine("jump: attempts = " & CStr(attempt))
+        Console.WriteLine("jump: clamped = " & CStr(Clamp(120, 0, 100)))
+
+        If attempt >= 2 Then
+            Exit Sub    ' [syntax] Exit Sub
+        End If
+
+        Console.WriteLine("jump: fell through")
+    End Sub
+
+    ' 값을 지정한 범위로 제한한다.
+    '
+    ' # Parameters
+    ' - `value`: 제한할 값
+    ' - `low`: 최솟값
+    ' - `high`: 최댓값
+    '
+    ' # Returns
+    ' `low` 이상 `high` 이하로 잘린 값
+    '
+    ' # Examples
+    ' ```
+    ' Dim r As Integer
+    ' r = Clamp(120, 0, 100)
+    ' ' r = 100
+    ' ```
+    '
+    ' # Remarks
+    ' `Exit Function`으로 끝내면 함수 이름 변수에 대입된 값이 반환된다 — `Return value`와 둘 다 쓸 수 있다.
+    Public Function Clamp(ByVal value As Integer, ByVal low As Integer, ByVal high As Integer) As Integer    ' [syntax] Function ... End Function
+        If value < low Then
+            Clamp = low
+            Exit Function    ' [syntax] Exit Function
+        End If
+        If value > high Then
+            Return high    ' [syntax] Return
+        End If
+        Return value
+    End Function
+
+End Module

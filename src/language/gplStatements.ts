@@ -1,3 +1,4 @@
+import { TRY_CATCH_COMPATIBILITY_NOTE } from './tryCatch';
 import { GplBlockContext, GplBlockKind, GplScope } from './blockContext';
 
 /**
@@ -15,6 +16,8 @@ import { GplBlockContext, GplBlockKind, GplScope } from './blockContext';
 
 const STATEMENT_BASE = 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Statement_Dictionary/';
 const EXCEPTION_BASE = 'https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/';
+/** GPL 소개(Introduction To The Software) 절 — 키워드 호버의 Reference 가 가리키는 개념 페이지들. */
+const INTRO_BASE = 'https://www2.brooksautomation.com/Controller_Software/Introduction_To_The_Software/Guidance_Programming_Language/';
 
 export interface GplStatementSnippet {
     /** 완성 목록에 보이는 이름. 키워드로 시작해야 접두사 입력으로 걸러진다. */
@@ -189,6 +192,7 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
         detail: 'Try … Catch exception_object … End Try',
         documentation: [
             '블록 실행 중의 예외를 잡아 스레드 종료 없이 처리한다.',
+            TRY_CATCH_COMPATIBILITY_NOTE,
             '',
             '`Catch`의 예외 객체는 **미리 인스턴스화되어 있어야** 한다:',
             '',
@@ -209,6 +213,7 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
         documentation: [
             '예외 처리와 정리(cleanup) 블록을 함께 만든다. `Finally` 블록은 예외 발생 여부와',
             '무관하게 실행된다.',
+            TRY_CATCH_COMPATIBILITY_NOTE,
             '',
             '`Catch`의 예외 객체는 미리 `Dim ex As New Exception`으로 인스턴스화해야 한다.'
         ].join('\n'),
@@ -228,7 +233,7 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
     {
         label: 'Finally',
         detail: 'Finally',
-        documentation: '예외 발생 여부와 무관하게 마지막에 실행되는 정리 블록이다.',
+        documentation: '예외 발생 여부와 무관하게 마지막에 실행되는 정리 블록이다. ' + TRY_CATCH_COMPATIBILITY_NOTE,
         body: ['Finally', '\t$0'],
         scopes: ['procedure'],
         requiresOpen: 'try',
@@ -583,7 +588,15 @@ export type GplKeywordKind = 'keyword' | 'type' | 'operator' | 'constant';
 export interface GplKeyword {
     name: string;
     kind: GplKeywordKind;
+    /** 한 줄 설명 — 완성 목록의 detail 이자 호버 카드의 첫 줄. */
     detail: string;
+    /**
+     * 호버 카드에 덧붙이는 마크다운 설명. 문서에 근거가 있는 규칙만 적는다(예: 생략 시 ByVal, 객체는 포인터로 전달).
+     * 완성 목록에는 쓰지 않는다 — 그 자리는 짧은 detail 의 몫이다.
+     */
+    documentation?: string;
+    /** 이 낱말을 설명하는 공식 문서 페이지(2026-09-21 존재·본문 언급 확인). 호버 카드의 Reference 링크. */
+    sourceUrl?: string;
 }
 
 /**
@@ -593,46 +606,81 @@ export interface GplKeyword {
  * 낱말 연산자는 공식 "Arithmetic Expressions" 우선순위 표를 근거로 한다.
  */
 export const GPL_KEYWORDS: readonly GplKeyword[] = [
-    // 원시 타입 (Sub/Function/Dim 문서의 primitive type keywords)
-    { name: 'Boolean', kind: 'type', detail: '원시 타입 — True/False' },
-    { name: 'Byte', kind: 'type', detail: '원시 타입 — 8비트 정수' },
-    { name: 'Short', kind: 'type', detail: '원시 타입 — 16비트 정수' },
-    { name: 'Integer', kind: 'type', detail: '원시 타입 — 32비트 정수' },
-    { name: 'Single', kind: 'type', detail: '원시 타입 — 단정도 실수' },
-    { name: 'Double', kind: 'type', detail: '원시 타입 — 배정도 실수' },
-    { name: 'String', kind: 'type', detail: '문자열 클래스' },
+    // 원시 타입 (Sub/Function/Dim 문서의 primitive type keywords · 소개 "Basic Data Types" 표)
+    { name: 'Boolean', kind: 'type', detail: '원시 타입 — True/False', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
+    { name: 'Byte', kind: 'type', detail: '원시 타입 — 8비트 정수', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
+    { name: 'Short', kind: 'type', detail: '원시 타입 — 16비트 정수', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
+    { name: 'Integer', kind: 'type', detail: '원시 타입 — 32비트 정수', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
+    { name: 'Single', kind: 'type', detail: '원시 타입 — 단정도 실수', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
+    { name: 'Double', kind: 'type', detail: '원시 타입 — 배정도 실수', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
+    // `String` 의 호버는 내장 클래스 문서(GPL_CLASS_DOCS)가 먼저 잡으므로 여기 링크는 완성 목록 폴백용이다.
+    { name: 'String', kind: 'type', detail: '문자열 클래스', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
 
     // 선언 수식어
-    { name: 'Public', kind: 'keyword', detail: '외부 접근 허용' },
-    { name: 'Private', kind: 'keyword', detail: '정의된 Module/Class 안에서만 접근 (기본값)' },
-    { name: 'Shared', kind: 'keyword', detail: '모든 스레드가 공유하는 단일 복사본' },
-    { name: 'ReadOnly', kind: 'keyword', detail: 'Property에 Set 절을 두지 않음' },
-    { name: 'WriteOnly', kind: 'keyword', detail: 'Property에 Get 절을 두지 않음' },
-    { name: 'ByVal', kind: 'keyword', detail: '값 전달 (매개변수 기본값)' },
-    { name: 'ByRef', kind: 'keyword', detail: '참조 전달 — 호출자의 값이 바뀐다' },
-    { name: 'New', kind: 'keyword', detail: '객체 데이터 영역 생성' },
-    { name: 'AddressOf', kind: 'keyword', detail: 'Delegate 객체에 넣을 프로시저 주소' },
-    { name: 'Preserve', kind: 'keyword', detail: 'ReDim 시 기존 배열 내용 유지' },
-    { name: 'As', kind: 'keyword', detail: '타입 지정' },
-    { name: 'To', kind: 'keyword', detail: 'For 루프 상한' },
-    { name: 'Step', kind: 'keyword', detail: 'For 루프 증감량' },
-    { name: 'Then', kind: 'keyword', detail: 'If 조건 뒤' },
+    { name: 'Public', kind: 'keyword', detail: '외부 접근 허용', sourceUrl: INTRO_BASE + 'scope_names.htm' },
+    { name: 'Private', kind: 'keyword', detail: '정의된 Module/Class 안에서만 접근 (기본값)', sourceUrl: INTRO_BASE + 'scope_names.htm' },
+    { name: 'Shared', kind: 'keyword', detail: '모든 스레드가 공유하는 단일 복사본', sourceUrl: STATEMENT_BASE + 'Dim.htm' },
+    { name: 'ReadOnly', kind: 'keyword', detail: 'Property에 Set 절을 두지 않음', sourceUrl: STATEMENT_BASE + 'Property.htm' },
+    { name: 'WriteOnly', kind: 'keyword', detail: 'Property에 Get 절을 두지 않음', sourceUrl: STATEMENT_BASE + 'Property.htm' },
+    {
+        name: 'ByVal', kind: 'keyword', detail: '값 전달 (매개변수 기본값)',
+        documentation: [
+            '호출자 값의 **복사본**을 받는다 — 프로시저 안에서 바꿔도 호출자의 값은 그대로다.',
+            '`ByVal`·`ByRef` 를 모두 생략하면 ByVal 이다.',
+            '',
+            '객체 변수는 항상 **값의 포인터**로 넘어가므로, ByVal 이어도 `Loc.X = 20` 처럼 객체의 내용을 바꾸면',
+            '호출자에게 보인다. 호출자가 못 보는 것은 `Loc = New Location` 처럼 **변수 자체**를 갈아 끼우는 것뿐이다',
+            '([Objects as Procedure Arguments](' + INTRO_BASE + 'objectsasprocedurearguments.htm)).'
+        ].join('\n'),
+        sourceUrl: STATEMENT_BASE + 'Sub.htm'
+    },
+    {
+        name: 'ByRef', kind: 'keyword', detail: '참조 전달 — 호출자의 값이 바뀐다',
+        documentation: [
+            '호출자의 **변수를 직접 참조**한다 — 프로시저 안에서 바꾼 값이 호출자에게 그대로 반영된다.',
+            '한 매개변수에 `ByVal` 과 함께 쓸 수 없다.',
+            '',
+            '객체 변수는 **변수의 포인터**가 넘어가므로 `Loc = New Location` 처럼 변수 자체를 갈아 끼워도 호출자 변수가 바뀐다',
+            '([Objects as Procedure Arguments](' + INTRO_BASE + 'objectsasprocedurearguments.htm)).',
+            '',
+            '문서 예: `Sub add_sub(x As Integer, y As Integer, ByRef result As Integer)` → `add_sub(4, 5, a)` 뒤 `a` 는 9.'
+        ].join('\n'),
+        sourceUrl: STATEMENT_BASE + 'Sub.htm'
+    },
+    { name: 'New', kind: 'keyword', detail: '객체 데이터 영역 생성', sourceUrl: INTRO_BASE + 'objectvariablenewclause.htm' },
+    { name: 'AddressOf', kind: 'keyword', detail: 'Delegate 객체에 넣을 프로시저 주소', sourceUrl: STATEMENT_BASE + 'Delegate.htm' },
+    { name: 'Preserve', kind: 'keyword', detail: 'ReDim 시 기존 배열 내용 유지', sourceUrl: STATEMENT_BASE + 'redim.htm' },
+    { name: 'As', kind: 'keyword', detail: '타입 지정', sourceUrl: STATEMENT_BASE + 'Dim.htm' },
+    { name: 'To', kind: 'keyword', detail: 'For 루프 상한', sourceUrl: STATEMENT_BASE + 'ForNext.htm' },
+    { name: 'Step', kind: 'keyword', detail: 'For 루프 증감량', sourceUrl: STATEMENT_BASE + 'ForNext.htm' },
+    { name: 'Then', kind: 'keyword', detail: 'If 조건 뒤', sourceUrl: STATEMENT_BASE + 'IfThenElse.htm' },
 
-    // 낱말 연산자
-    { name: 'And', kind: 'operator', detail: '논리/비트 AND (모든 항 평가)' },
-    { name: 'AndAlso', kind: 'operator', detail: '논리 AND (결과가 정해지면 평가 중단)' },
-    { name: 'Or', kind: 'operator', detail: '논리/비트 OR (모든 항 평가)' },
-    { name: 'OrElse', kind: 'operator', detail: '논리 OR (결과가 정해지면 평가 중단)' },
-    { name: 'Xor', kind: 'operator', detail: '논리/비트 XOR' },
-    { name: 'Not', kind: 'operator', detail: '논리 NOT — False(0)↔True(-1)' },
-    { name: 'Mod', kind: 'operator', detail: '나머지 — `x Mod y`' },
-    { name: 'Is', kind: 'operator', detail: '객체 참조 동일성 — `obj Is Nothing`' },
+    // 낱말 연산자 (소개 "Arithmetic Expressions" 우선순위 표)
+    { name: 'And', kind: 'operator', detail: '논리/비트 AND (모든 항 평가)', sourceUrl: INTRO_BASE + 'arithmeticexpressions.htm' },
+    { name: 'AndAlso', kind: 'operator', detail: '논리 AND (결과가 정해지면 평가 중단)', sourceUrl: INTRO_BASE + 'arithmeticexpressions.htm' },
+    { name: 'Or', kind: 'operator', detail: '논리/비트 OR (모든 항 평가)', sourceUrl: INTRO_BASE + 'arithmeticexpressions.htm' },
+    { name: 'OrElse', kind: 'operator', detail: '논리 OR (결과가 정해지면 평가 중단)', sourceUrl: INTRO_BASE + 'arithmeticexpressions.htm' },
+    { name: 'Xor', kind: 'operator', detail: '논리/비트 XOR', sourceUrl: INTRO_BASE + 'arithmeticexpressions.htm' },
+    { name: 'Not', kind: 'operator', detail: '논리 NOT — False(0)↔True(-1)', sourceUrl: INTRO_BASE + 'arithmeticexpressions.htm' },
+    { name: 'Mod', kind: 'operator', detail: '나머지 — `x Mod y`', sourceUrl: INTRO_BASE + 'arithmeticexpressions.htm' },
+    { name: 'Is', kind: 'operator', detail: '객체 참조 동일성 — `obj Is Nothing`', sourceUrl: INTRO_BASE + 'arithmeticexpressions.htm' },
 
     // 상수
-    { name: 'True', kind: 'constant', detail: '참 (-1)' },
-    { name: 'False', kind: 'constant', detail: '거짓 (0)' },
-    { name: 'Nothing', kind: 'constant', detail: '객체 참조 없음' }
+    { name: 'True', kind: 'constant', detail: '참 (-1)', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
+    { name: 'False', kind: 'constant', detail: '거짓 (0)', sourceUrl: INTRO_BASE + 'data_type_and_variables.htm' },
+    { name: 'Nothing', kind: 'constant', detail: '객체 참조 없음', sourceUrl: INTRO_BASE + 'objectvariablenewclause.htm' }
 ];
+
+const KEYWORD_INDEX: ReadonlyMap<string, GplKeyword> = new Map(GPL_KEYWORDS.map(k => [k.name.toLowerCase(), k] as const));
+
+/**
+ * 낱말이 키워드 표에 있으면 그 항목(대소문자 무시).
+ * 호버가 내장 항목·사용자 심볼·내장 클래스 문서를 다 못 찾았을 때 마지막으로 본다 — 예약어는 사용자 심볼이 될 수 없지만,
+ * `String` 처럼 같은 이름의 내장 클래스 문서가 있으면 그쪽이 더 풍부하므로 순서를 뒤에 둔다.
+ */
+export function findGplKeyword(name: string): GplKeyword | undefined {
+    return KEYWORD_INDEX.get(name.toLowerCase());
+}
 
 /**
  * 현재 블록 컨텍스트에서 제안할 문 스니펫만 골라낸다.

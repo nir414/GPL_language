@@ -29,11 +29,14 @@ const functions = [
 
 test('SymbolIndex: 경로 표기만 바뀐 갱신은 파일 하나로 유지하고 옛 이름을 제거한다', () => {
     const index = setup();
-    index.updateFileText('C:\\symbols\\Main.gpl', 'Public Sub Before()\nEnd Sub');
+    const originalPath = path.resolve('symbols', 'Main.gpl');
+    const aliasPath = `${path.dirname(originalPath)}${path.sep}.${path.sep}${path.basename(originalPath)}`;
+    const updatedPath = process.platform === 'win32' ? aliasPath.replace(/\\/g, '/').toUpperCase() : aliasPath;
+    index.updateFileText(originalPath, 'Public Sub Before()\nEnd Sub');
     index.rebuildNameIndex();
-    index.updateFileText('c:/SYMBOLS/./Main.gpl', 'Public Sub After()\nEnd Sub');
+    index.updateFileText(updatedPath, 'Public Sub After()\nEnd Sub');
     index.rebuildNameIndex();
-    assert.deepStrictEqual(index.listIndexedFiles(), ['c:/SYMBOLS/./Main.gpl']);
+    assert.deepStrictEqual(index.listIndexedFiles(), [updatedPath]);
     assert.strictEqual(index.findAllByName('BEFORE').length, 0);
     assert.strictEqual(index.findDefinition('after')?.name, 'After');
 });

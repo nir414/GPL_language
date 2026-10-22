@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-22** · 현재 package 버전 **0.15.2** (누적 변경 커밋·작업 브랜치 푸시와 확장·MCP·문서 검증 완료. 결과는 §1-FP 참조.)
-- **직전 세션: §1-FP** — 누적 변경을 4f20480으로 커밋하고 사용자 확인 뒤 origin/codex/domain-modules로 푸시했다. 전체 확장·MCP 테스트·문서 빌드와 기존 0.15.2 VSIX의 파일 일치를 확인했다. 확인 대기 중 생긴 별도 작업 변경 3개는 커밋하지 않고 보존했다.
+- **최종 갱신: 2026-10-23** · 현재 package 버전 **0.15.2** (PR #36 병합 과정의 Linux CI 경로 fixture 수정. 검증과 범위는 §1-FR 참조.)
+- **직전 세션: §1-FR** — Linux CI의 경로 관련 실패 2건을 OS에 맞는 테스트 fixture로 수정했다. Windows 전체 1222/1222 통과. 운영 코드·버전은 유지하며 GitHub CI 및 main 병합의 최종 상태는 PR #36이 정본이다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -856,7 +856,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-FG ~ §1-FP)만 둔다.
+본문에는 **최근 10개 세션**(§1-FH ~ §1-FR)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -865,8 +865,8 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FF (2026-10-02 ~ 10-22) | 27 |
-| (본문 아래) | §1-FG ~ §1-FP (2026-10-22) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FG (2026-10-02 ~ 10-22) | 28 |
+| (본문 아래) | §1-FH ~ §1-FR (2026-10-22) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -1033,7 +1033,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-FD | 10-21 | **Save to Flash 전원 차단 금지 경고** — FTP 시작부터 상태바 경고, `Sync` 종결 STATUS 0 뒤 10초 안정화가 끝나야 해제. 실패·취소 경로도 확인하며 안전 미확정이면 경고 유지. 순수 상태/표시 테스트 4건, 전체 1139/1139, 0.13.1 VSIX | [10월 아카이브](archive/handoff/2026-10.md#1-fd-2026-10-21-세션--save-to-flash-중-전원-차단-금지-경고와-안전-확인) |
 | §1-FE | 10-21 | **Stop All이 업로드/배포를 남기던 충돌 차단** — 명시적 전체 정지를 실행 중·대기 중 작업 취소로 전파, FTP 파일 경계 뒤 삭제·Compile·Start 차단, 내부 배포 Stop 제외, Save to Flash 안전 확인 유지. 확장 1139/1139 · MCP 131/131 · 0.13.1 VSIX | [10월 아카이브](archive/handoff/2026-10.md) |
 | §1-FF | 10-22 | Marketplace 게시 준비 — Release 테스트·동일 VSIX/체크섬 전달·Entra OIDC 게시, 개발용 지침/메모 패키지 제외. 0.13.2 | [10월 아카이브](archive/handoff/2026-10.md#1-ff-2026-10-22-세션--marketplace-등록과-업데이트-배포-경로-준비) |
-| §1-FG | 10-22 | 수신함 8개 대조: 메모리 사전 검사·콘솔 대기 분리·Try 안내 정정·MCP Stop 및 응답 요약 | 본문 ↓ |
+| §1-FG | 10-22 | 수신함 8개 대조: 메모리 사전 검사·콘솔 대기 분리·Try 안내 정정·MCP Stop 및 응답 요약 | [10월 아카이브](archive/handoff/2026-10.md#1-fg-2026-10-22-세션--개선-요청-수신함-정리와-안전-검사) |
 | §1-FH | 10-22 | **hello-project 간단한 기능 예제** — 최초 5개 소스 확장은 복잡하다는 사용자 피드백으로 축소. Main.gpl 69줄의 Add·Clamp·작은 Counter·For와 README 14줄로 핵심 편집 기능 체험. 정적 검사·진단 0건·관련 테스트 55/55, 0.14.0 유지 | 본문 ↓ |
 | §1-FI | 10-22 | **구조 개편 1단계** — 0.14.0 기준 커밋·작업 브랜치, controller 64개 파일을 12개 기능 폴더로 분류, 실행 로직 보존·구조 R9 추가. 0.14.1 | 본문 ↓ |
 | §1-FJ | 10-22 | **구조 개편 2단계** — SymbolIndex·SymbolProjectScope·WorkspaceSourceLoader·표현 분리, 공개 메서드 28개 유지, 관련 28/28·동등성 비교 2064건. 0.14.2 | 본문 ↓ |
@@ -1044,30 +1044,11 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-FN | 10-22 | **매개변수 Hover 누락** — 공통 식별자 해석·개별 범위와 내장 한정 이름 조회, 회귀 6건. 0.15.1 | 본문 ↓ |
 | §1-FO | 10-22 | **README 이용자 안내 개편** — 기능·지원 환경·시작 방법과 배포·디버깅·모니터링·AI 연동 정리, 개발·게시·내부 API 설명 제거. 0.15.2 | 본문 ↓ |
 | §1-FP | 10-22 | **누적 변경 커밋·푸시** — 확장 1222/1222·MCP 137/137·문서 빌드, 기존 VSIX 167개 파일 일치, 사용자 확인 뒤 codex/domain-modules 원격 반영 | 본문 ↓ |
+| §1-FR | 10-23 | **PR #36 병합 CI** — Windows 전용 경로 fixture 2곳을 OS에 맞게 변경, 운영 코드 유지·Windows 전체 1222/1222. GitHub 검사·병합 상태는 PR 참조 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-FG ~ §1-FP (2026-10-22).** 이 아래부터는 세션 원문이다.
-
-## 1-FG. 2026-10-22 세션 — 개선 요청 수신함 정리와 안전 검사
-
-### 증상·원인
-
-수신함 8개에 이미 반영한 요청과 신규 요청이 섞여 있었다. runtimeConsoleRead가 브리지 순차 루프를 점유했고, Catch 누락 경고는 새 실측과 달리 Catch 추가를 예방책으로 제시했다. Compile/Start와 배포에 Free 메모리 사전 검사가 없었다.
-
-### 조치
-
-- `memoryGuard.ts`로 종결 STATUS와 Free 값을 검사하고, Compile/Start 직렬 전송 직전 및 배포 업로드 전에 적용. 기본 warn=4 MB, block=2.5 MB는 운영 정책이며 절대 안전 보장이 아니다. 낮거나 미확인이면 전송 중단. 결과·작업 기록에 측정값을 남기고 자동 재시도를 권하지 않는다. Upload Only의 FTP 전용 계약 유지.
-- runtimeConsoleRead만 독립 처리하고 일반 명령은 순차 유지. 대기 중 Stop 응답이 먼저 완료되고 수신 응답이 분리되는 테스트 추가.
-- Catch 누락 안내를 기본 해제·선택 Information으로 변경. Finally 재실행은 Error 정지 후 Continue 조건으로 정정하고 Object 정보 유실 단정을 제거. MCP Continue 결과에도 주의 표시.
-- 콜론 포함 Stop 이름 skip, 정지 문맥 hint, 대상 오류 candidateCount, 원격 크기의 recursive:false/sizeScope, 업로드 trace의 라이브러리 범위 문구.
-- 요청별 기존 반영·이번 반영·보류는 `REQUESTS.md`에 기록. 기존 변경은 유지. 기능 추가로 0.14.0 minor.
-
-### 검증과 남은 일
-
-Windows 로컬 `npm test` 1157/1157, controller-mcp `npm test` 137/137 통과. 샌드박스 첫 실행의 13개 실패는 loopback TCP EACCES와 임시 파일 rename EPERM이었으며 제한 밖 로컬 실행으로 확인했다. `pre-release-check`는 16/17: 기존 및 이번 미커밋 변경 때문에 clean-tree 항목만 실패(커밋하지 않음). 설치·F5·제어기 접속·모션·원격 삭제·Unload·Git 커밋/게시를 수행하지 않았다. 상세 미구현 항목은 REQUESTS.md 표에 있으며 완료로 표시하지 않는다.
-
-- 패키징: dist/gpl-language-support-0.14.0.vsix, 1403389 bytes, SHA-256 6D3F1525AE0D3D720261FCD15C7BDE8B9FEA06BE01BAF4A528AA7A4C78EFC8CE. 생성 성공 및 ZIP 내부 0.14.0·memoryGuard.js·MCP bundle·Try 기본 해제 확인. vsce의 JS 파일 번들링 권고 경고 1건, 패키징 실패 없음.
+**최근 세션 본문 — §1-FH ~ §1-FR (2026-10-22).** 이 아래부터는 세션 원문이다.
 
 ## 1-FH. 2026-10-22 세션 — hello-project를 간단한 기능 예제로 정리
 
@@ -1306,3 +1287,24 @@ README에 Marketplace 게시 예정 문구, 로컬 패키지 상태, 확장 개�
 ### 남은 일
 
 푸시 완료 후 원격 작업 브랜치의 4f20480과 원격 main의 기존 0ac3978을 직접 확인했다. 확인 대기 중 생긴 docCommentOverloads.ts·해당 테스트 수정과 scripts/dev/hover-performance.js는 별도 작업 변경으로 보존했다. 이 완료 기록만 후속 문서 커밋으로 반영한다. 새 VSIX 설치·F5 UI·실제 제어기 동작 검증은 이번에 수행하지 않았으며 기존 §3 항목을 유지한다.
+
+## 1-FR. 2026-10-23 세션 — PR #36 병합과 Linux CI 경로 fixture 수정
+
+### 증상·원인
+
+사용자가 원격 codex/domain-modules의 누적 변경을 main에 병합하도록 요청했다. PR #36의 Linux CI는 compile을 통과했지만 1220/1222로 실패했다. 오버로드 사본 제외와 심볼 경로 갱신 테스트가 Windows 드라이브·역슬래시 표기를 Linux에서도 같은 파일로 취급했다. 경로 정규화의 기존 Windows 계약과 테스트 입력의 실행 OS가 맞지 않았다.
+
+### 조치·범위
+
+- 운영 경로 정규화나 심볼 코드는 바꾸지 않았다. 테스트 fixture를 path.resolve·dirname·basename·sep로 만들고 Windows에서만 대소문자·구분자 차이를 함께 검사한다. 다른 컴파일 단위의 fixture도 OS에 맞는 다른 폴더로 표현한다.
+- 로컬의 별도 0.15.3 작업을 보존하기 위해 f1a26fd에서 만든 독립 worktree에서 수정했다. 이번 범위는 원격 0.15.2의 병합 CI와 테스트 fixture 두 파일이며, 버전·운영 VSIX 포함 파일은 그대로 유지한다.
+- 최근 10개 세션을 유지하도록 §1-FG를 원문 그대로 아카이브로 이동했다. 별도 로컬 작업에서 사용 중인 §1-FQ 번호는 재사용하지 않는다.
+
+### 검증·결과 확인
+
+- 독립 Windows worktree에서 npm test(compile 포함) **1222/1222** 통과. git diff --check 통과.
+- Linux CI·MCP·VSIX smoke 검사의 최종 결과와 main 병합 상태는 [PR #36](https://github.com/nir414/GPL_language/pull/36)에서 확인한다. 원격 head SHA가 달라지면 이전 검사 결과를 새 커밋의 검증으로 취급하지 않는다.
+
+### 남은 일
+
+F5 UI·실제 제어기·새 VSIX 설치 검증은 이번 병합 작업에 포함하지 않았으며 기존 §3 항목을 유지한다.

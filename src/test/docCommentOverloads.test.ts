@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as path from 'path';
 import { test } from './harness';
 import {
     describeOverloadCoverage,
@@ -18,7 +19,7 @@ type Sym = {
 };
 
 function sym(line: number, parameters: string[], docComment?: string, extra: Partial<Sym> = {}): Sym {
-    return { name: 'getWafer', kind: 'sub', filePath: 'C:\\p\\RobotModule.gpl', module: 'RobotModule', line, parameters, docComment, ...extra };
+    return { name: 'getWafer', kind: 'sub', filePath: path.resolve('overload-fixture', 'RobotModule.gpl'), module: 'RobotModule', line, parameters, docComment, ...extra };
 }
 
 // RobotModule.gpl 의 getWafer 오버로드 사례 — 전체 문서는 스칼라 버전 하나에만, 나머지는 차이만.
@@ -42,7 +43,8 @@ const withOpt = sym(3810, ['stage As Integer', 'slot As Integer', 'armlist() As 
 ].join('\n'));
 
 test('filterOverloadSiblings: 같은 이름·모듈/클래스·호출 가능만, 자기 자신과 사본은 제외', () => {
-    const copyOfScalar = { ...scalar, filePath: 'c:/P/RobotModule.gpl' }; // 표기만 다른 같은 선언(캐시 + 문서 파싱)
+    const aliasPath = `${path.dirname(scalar.filePath)}${path.sep}.${path.sep}${path.basename(scalar.filePath)}`;
+    const copyOfScalar = { ...scalar, filePath: process.platform === 'win32' ? aliasPath.replace(/\\/g, '/').toUpperCase() : aliasPath };
     const otherModule = sym(10, [], undefined, { module: 'Other' });
     const variable = sym(20, [], undefined, { kind: 'variable' });
     const got = filterOverloadSiblings(scalar, [scalar, copyOfScalar, array, withOpt, otherModule, variable]);
@@ -50,9 +52,9 @@ test('filterOverloadSiblings: 같은 이름·모듈/클래스·호출 가능만,
 });
 
 test('filterOverloadSiblings: 컴파일 단위 판정이 주어지면 다른 단위는 형제가 아니다', () => {
-    const farCopy = { ...array, filePath: 'D:\\other\\RobotModule.gpl' };
+    const farCopy = { ...array, filePath: path.resolve('other-overload-fixture', 'RobotModule.gpl') };
     const got = filterOverloadSiblings(scalar, [array, farCopy], {
-        isSameUnit: (c, t) => c.toLowerCase().startsWith('c:') === t.toLowerCase().startsWith('c:')
+        isSameUnit: (c, t) => path.dirname(c) === path.dirname(t)
     });
     assert.deepStrictEqual(got.map(s => s.filePath), [array.filePath]);
 });

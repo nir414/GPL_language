@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as vm from 'vm';
 import { test } from './harness';
-import type { TargetCandidate } from '../controller/projectTarget';
+import type { TargetCandidate } from '../controller/projects/projectTarget';
 import { GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, GUIDE_TOPIC } from '../ai/agentSetupChecks';
 
 /** 실제 명령을 실행하되 VS Code와 파일 쓰기는 메모리 안으로 한정한다. */
@@ -135,7 +135,7 @@ test('AI Setup 명령: 연결 시 .mcp.json 주소가 다르면 한 번 알리�
 	(env.vscode.window as any).showWarningMessage = async (message: string) => { warnings.push(message); return answer; };
 	const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 	// setup() 마다 새 vm 컨텍스트라 연결 세션 정본도 새 인스턴스(초기 상태 false)다 — reset 은 구독까지 지우므로 부르지 않는다.
-	const session = env.module('../controller/connectionSession.js');
+	const session = env.module('../controller/connection/connectionSession.js');
 	// 이 테스트의 getControllerConfig 는 192.168.0.1 이므로, 지금 연결 주소(.1)와 .mcp.json(.102)이 어긋난 상태다.
 	session.setControllerSessionConnected(true);
 	await settle();

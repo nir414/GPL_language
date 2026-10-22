@@ -18,7 +18,7 @@ import {
     sanitizeInstanceId,
     sanitizeIpForPath,
     validateBridgeRequest,
-} from '../controller/agentBridge';
+} from '../controller/automation/agentBridge';
 
 const IP = '192.168.0.1';
 

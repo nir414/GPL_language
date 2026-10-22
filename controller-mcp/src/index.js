@@ -534,7 +534,7 @@ function tool(name, description, shape, handler) {
 /**
  * 프로젝트명 인자. 제어기 콘솔 명령(Compile/Load/Start/Unload)은 인자를 공백으로 구분하고 인용 문법이
  * 없으므로(Brooks 문서) 공백·제어 문자가 든 이름은 명령이 끊긴다 — 보내기 전에 오류로 돌려준다
- * (확장의 controller/projectNameGuard.ts와 같은 규칙).
+ * (확장의 controller/projects/projectNameGuard.ts와 같은 규칙).
  */
 // ── 세션 대상 프로젝트 (2026-08-31 개선안 §18·§19, 2026-09-10 개선안 §3) ────
 // 종전에는 프로젝트명 인자를 생략하면 환경변수 기본값(GPL_PROJECT)으로 떨어졌고, 확장 명령(gpl.deploy 등)은
@@ -724,7 +724,7 @@ function pingOnce(host, timeoutMs = 2500) {
  * Unload 타임아웃 뒤 약 2.5분간 refused 였다가 재부팅 없이 복귀했다(복귀 직후 ErrorLog/Show Thread/Show Memory
  * 모두 STATUS 0). 즉 refused 는 "지금 새 연결을 만들 수 없다"는 관측일 뿐이고, 제어기 런타임 상태는 이것만으로
  * 확정할 수 없다. `controllerHealth` 는 이 프로브만으로는 절대 'healthy' 가 되지 않는다 — 살아 있음의 증거는
- * 명령의 `<STATUS>` 응답이다(확장 controller/reachability.ts assessReachability 와 같은 규칙).
+ * 명령의 `<STATUS>` 응답이다(확장 controller/connection/reachability.ts assessReachability 와 같은 규칙).
  *
  * 전원 재투입·재부팅 같은 강한 권고는 만들지 않는다 — 여러 독립 증거를 종합해야 하는 판단이다.
  */
@@ -1460,7 +1460,7 @@ function deployOutcome(mode, command, res) {
 }
 
 /**
- * 배포 단계별 복구 지시 — 확장 `controller/automationRecovery.ts` 의 표와 **같은 결론**을 유지할 것.
+ * 배포 단계별 복구 지시 — 확장 `controller/automation/automationRecovery.ts` 의 표와 **같은 결론**을 유지할 것.
  * (확장을 거치지 않는 응답 경로에서도 같은 지시를 줘야 호출자가 경로마다 다르게 행동하지 않는다.)
  */
 function deployPhaseRecovery(failedPhase) {
@@ -1878,7 +1878,7 @@ tool('unload_project',
 // 프로젝트가 `New Thread(…, "LOG_SOCKET")` 처럼 다른 이름으로 띄운 쓰레드는 그대로 Running 으로 남는다(2026-10-14 실측:
 // 그 상태의 `Unload` 는 -750 "Invalid when thread active" 가 반복됐고, `Stop -all` 한 번에 즉시 정지했다).
 // 그래서 이 도구는 프로젝트 단위 요청을 Show Thread -web 로 열거한 쓰레드 이름별 Stop 으로 풀어 보내고,
-// STATUS 0/-752(접수)를 정지 완료로 보지 않고 Show Thread -web 폴링으로 확인한다 — 확장 controller/threadStop.ts 와
+// STATUS 0/-752(접수)를 정지 완료로 보지 않고 Show Thread -web 폴링으로 확인한다 — 확장 controller/threads/threadStop.ts 와
 // 같은 규약(접수 → settle → 1회 자동 재시도). GPL 에는 강제 kill 이 없으므로 재시도 뒤에도 남으면 진단으로 넘긴다.
 const SETTLED_STATES = new Set(['Idle', 'Stopped', 'Error']);
 const STOP_ACCEPTED_STATUS = new Set([0, -752]); // -752 "Timeout stopping thread" = 정지 진행 중(비치명)

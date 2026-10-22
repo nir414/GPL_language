@@ -15,8 +15,8 @@ import {
     readOperation,
     sweepOperations,
     withObservedState,
-} from '../controller/operationStore';
-import type { OperationRecord } from '../controller/operationStore';
+} from '../controller/automation/operationStore';
+import type { OperationRecord } from '../controller/automation/operationStore';
 
 function tmpDir(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'gpl-operation-test-'));

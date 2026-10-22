@@ -6,11 +6,11 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { EXTENSION_VERSION } from '../config';
-import { getControllerConfig, sendCommand, sendCommandDetailed } from '../controller/controllerConnection';
-import { isBusyStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from '../controller/controllerStatusCodes';
-import { applyCompileDiagnostics, findProjectDirs, jumpToFirstCompileError } from '../controller/deployService';
-import { compileProject, loadProject, startProject, unloadProject } from '../controller/projectCommands';
-import type { ProjectCommandIo } from '../controller/projectCommands';
+import { getControllerConfig, sendCommand, sendCommandDetailed } from '../controller/connection/controllerConnection';
+import { isBusyStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from '../controller/protocol/controllerStatusCodes';
+import { applyCompileDiagnostics, findProjectDirs, jumpToFirstCompileError } from '../controller/deployment/deployService';
+import { compileProject, loadProject, startProject, unloadProject } from '../controller/commands/projectCommands';
+import type { ProjectCommandIo } from '../controller/commands/projectCommands';
 import {
 	FtpEntry,
 	downloadProject,
@@ -18,12 +18,12 @@ import {
 	normalizeAbsoluteRemoteDir,
 	removeRemoteDir,
 	removeRemoteFile,
-} from '../controller/ftpClient';
-import { NO_STATUS_CODE, SHOW_THREAD_LIST_CMD, parseThreadList } from '../controller/responseParser';
-import { clearRemoteFolderEntries, selectRemoteClearTargets } from '../controller/remoteFolderClear';
-import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../controller/remoteProjectPath';
-import { forgetSyncManifest } from '../controller/syncManifest';
-import { describeThreadActivity } from '../controller/threadActivity';
+} from '../controller/files/ftpClient';
+import { NO_STATUS_CODE, SHOW_THREAD_LIST_CMD, parseThreadList } from '../controller/protocol/responseParser';
+import { clearRemoteFolderEntries, selectRemoteClearTargets } from '../controller/files/remoteFolderClear';
+import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../controller/projects/remoteProjectPath';
+import { forgetSyncManifest } from '../controller/files/syncManifest';
+import { describeThreadActivity } from '../controller/threads/threadActivity';
 import {
 	ControllerProjectMode,
 	chooseAvailableDownloadDir,
@@ -197,7 +197,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 
 	/**
 	 * 원격 파일 삭제 전 쓰레드 게이트 — 업로드 게이트(하드 규칙 §0.6)와 같은 규약이다.
-	 * `Show Thread -web` 목록에 쓰레드가 하나라도 있으면 동작 중으로 보고(controller/threadActivity.ts),
+	 * `Show Thread -web` 목록에 쓰레드가 하나라도 있으면 동작 중으로 보고(controller/threads/threadActivity.ts),
 	 * 사용자가 승인할 때만 Stop -all + 정지 확인까지 마친 뒤 true를 돌려준다.
 	 * 상태를 확인할 수 없으면(STATUS 미수신) 정지 상태로 추정하지 않고 사용자에게 판단을 넘긴다(하드 규칙 2).
 	 */
@@ -224,7 +224,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			'모두 정지 후 계속',
 		);
 		if (pick !== '모두 정지 후 계속') { return false; }
-		// 전송·STATUS 판정(-752 = 정지 진행 중)·정지 확인 폴링·재시도는 controller/threadStop.ts 가 한다(§1-DD).
+		// 전송·STATUS 판정(-752 = 정지 진행 중)·정지 확인 폴링·재시도는 controller/threads/threadStop.ts 가 한다(§1-DD).
 		const outcome = await stopAllThreads(host, { logTo: (line: string) => host.log(`[Stop] ${line}`) });
 		if (outcome.send.kind === 'failed') {
 			const code = outcome.send.statusCode;
@@ -244,7 +244,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	// 파일 하나씩 지우는 ftpDelete와 달리 "폴더 안을 전부" 지우므로 게이트를 더 두껍게 건다:
 	// 배포 잠금 → 지울 목록 확인 → 쓰레드 정지 게이트 → 목록을 보여주는 모달 확인 → 삭제.
 	// 반환값은 자동화 호출자(extension_command)가 "모달 취소"와 "삭제 완료"를 가릴 수 있게 구조로 준다(2026-10-21).
-	// AI 가 모달 없이 비우는 경로는 `gpl.ai.debug.clearRemoteFolder`(/GPL 만, 동의는 AI 가 받는다)이고 절차는 controller/remoteFolderClear.ts 를 같이 쓴다.
+	// AI 가 모달 없이 비우는 경로는 `gpl.ai.debug.clearRemoteFolder`(/GPL 만, 동의는 AI 가 받는다)이고 절차는 controller/files/remoteFolderClear.ts 를 같이 쓴다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpClearFolder', async (node: any) => {
 			const cfg = getControllerConfig();
@@ -367,7 +367,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 
 			outputChannel.show(true);
 
-			// 어느 원격 사본을 실행할지 — 규칙은 controller/remoteProjectPath.ts 가 정본이다(§1-DE).
+			// 어느 원격 사본을 실행할지 — 규칙은 controller/projects/remoteProjectPath.ts 가 정본이다(§1-DE).
 			// 종전에는 이 파일과 배포 경로가 각자 점수식을 갖고 있어 같은 프로젝트에 다른 폴더를 고를 수 있었다.
 			const resolveFtpRunPath = () => resolveRemoteProjectPath({
 				projectFolderName: name,
@@ -398,7 +398,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			}
 			host.log(`│ Load before Compile: ${loadBeforeCompile ? 'enabled' : 'skipped'}`);
 
-			// Compile/Load/Unload/Start 절차는 controller/projectCommands.ts 가 정본이다(§1-DE).
+			// Compile/Load/Unload/Start 절차는 controller/commands/projectCommands.ts 가 정본이다(§1-DE).
 			// 여기서는 전송(1402)과 로그 목적지만 물린다 — 종전에는 이 파일이 같은 절차를 따로 구현하면서
 			// `-event` 누락 · 상태 코드 하드코딩 · 재시도 범위 축소 같은 차이를 만들었다.
 			const projectIo: ProjectCommandIo = {
@@ -414,7 +414,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 
 			const ensureStoppedBeforeCompile = async (): Promise<boolean> => {
 				host.log('│ Phase: Stop before Compile');
-				// 정지 절차는 controller/threadStop.ts 가 정본 — 진행 로그만 이 실행 로그(`│ `)에 합류시킨다(§1-DD).
+				// 정지 절차는 controller/threads/threadStop.ts 가 정본 — 진행 로그만 이 실행 로그(`│ `)에 합류시킨다(§1-DD).
 				const outcome = await stopAllThreads(host, { logPrefix: '│ ', logTo: host.log });
 				if (outcome.send.kind === 'failed') {
 					const code = outcome.send.statusCode;
@@ -542,7 +542,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			try {
 				// 하드 규칙 2: 성공/실패는 그 명령의 STATUS 로 판정한다. 종전에는 응답을 보지 않고 무조건
 				// "Unload 완료"를 띄워, 쓰레드가 살아 있어 거부된(-750) 경우에도 성공으로 보고했다(§1-DD).
-				// 판정 자체는 controller/projectCommands.unloadProject 가 한다(FTP Run 과 같은 절차, §1-DE).
+				// 판정 자체는 controller/commands/projectCommands.unloadProject 가 한다(FTP Run 과 같은 절차, §1-DE).
 				const outcome = await unloadProject(
 					{ send: async command => ({ raw: await sendCommand(command) }), log: line => host.log(`[Unload] ${line}`) },
 					name,

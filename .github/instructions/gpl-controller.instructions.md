@@ -24,7 +24,7 @@ applyTo:
 
 ## 응답 파싱 단일화
 
-- 응답 파싱은 `src/controller/responseParser.ts` 한 곳에서만 수행한다.
+- 응답 파싱은 `src/controller/protocol/responseParser.ts` 한 곳에서만 수행한다.
 - 새 파싱 로직이 필요하면 `responseParser.ts`에 추가한다.
 - 서비스/프로바이더/디버거 코드에서 임의 XML/문자열 파싱을 중복 구현하지 않는다.
 

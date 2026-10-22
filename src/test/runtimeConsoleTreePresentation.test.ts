@@ -10,7 +10,7 @@ import {
     isRuntimeConsolePollingState,
     isRuntimeConsoleUnstable,
 } from '../views/runtimeConsoleTreePresentation';
-import type { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+import type { RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 
 // 트리(GPL Controller 뷰)의 1403 콘솔 행 문구 — controllerTreeProvider.ts 에서 분리한 순수 함수의 회귀 테스트.
 

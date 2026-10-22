@@ -9,7 +9,7 @@
 
 - `package.json` — 확장의 실제 버전
 - `CHANGELOG.md` — GitHub Release 노트 원본
-- `README.md` — 상단 현재 버전 표기와 주요 변경 이력
+- `README.md` — 이용자용 기능·사용 안내. 버전은 CHANGELOG와 Releases로 연결하고 중복 표기하지 않는다
 - `docs/ai-handoff.md` — 작업 인계/세션 기록
 
 이 저장소에서 릴리즈 태그 `vX.Y.Z`는 반드시 `package.json`의 `version`과 일치해야 한다.
@@ -31,6 +31,12 @@ SemVer를 따른다.
 ## 현재 스크립트가 실제로 하는 일
 
 이 절이 가장 중요하다. 스크립트 이름만 보고 동작을 추측하면 버전이 의도와 다르게 변경될 수 있다.
+
+### `npm run compile`
+
+- `scripts/prune-build-outputs.js`가 현재 tsconfig의 출력 목록에서 빠진 `out/`의 JavaScript·소스맵을 먼저 제거한다.
+- 현재 소스의 산출물과 별도 MCP 번들(`.cjs`)·리소스는 보존한다. 프로젝트 밖 경로·소스와 겹친 출력 폴더·junction/심볼릭 링크는 삭제 전에 거부한다.
+- 이어서 TypeScript를 컴파일한다. 테스트·prepublish·패키징은 이 공통 경로를 사용한다.
 
 ### `npm run package`
 
@@ -82,7 +88,7 @@ SemVer를 따른다.
 
 1. `node scripts/bump-version.js patch`
 2. `CHANGELOG.md` 정리
-3. `README.md` / `docs/ai-handoff.md` 버전 반영
+3. `README.md` 사용 안내 반영 / `docs/ai-handoff.md` 버전 갱신
 4. 커밋
 5. `npm run pre-release-check`
 6. `npm run package:no-bump`
@@ -100,7 +106,7 @@ SemVer를 따른다.
 
 1. `node scripts/bump-version.js minor` 또는 `major`
 2. `CHANGELOG.md` 내용 보강 + 빈 섹션 제거
-3. `README.md` 현재 버전 갱신
+3. `README.md` 기능·사용법 변경 반영
 4. `docs/ai-handoff.md` 세션 기록/현재 버전 갱신
 5. `git add ...` / `git commit ...`
 6. `npm run pre-release-check`
@@ -177,8 +183,8 @@ node scripts/bump-version.js patch
   - 실제 변경 내용 채우기
   - 빈 `### Added/Changed/Fixed/Removed` 삭제
 - `README.md`
-  - 상단 `현재 버전` 반영
-  - 필요 시 주요 변경 이력 최신화
+  - 기능·지원 범위·사용법 변경 반영
+  - 버전·릴리스별 변경 사항은 CHANGELOG와 Releases에서 관리하고 중복 표기하지 않음
 - `docs/ai-handoff.md`
   - 최종 갱신 / 현재 package 버전 / 세션 기록 추가
 

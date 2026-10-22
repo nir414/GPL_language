@@ -2,13 +2,13 @@
  * 런타임 콘솔(1403) 상태의 **트리 행** 표시 규칙(라벨·description·아이콘·툴팁·불안정 판정·가설) — vscode 무의존.
  * controllerTreeProvider.ts 하단에 있던 함수를 그대로 옮겼다(2026-09-07 §1-DB, 동작 동일).
  *
- * 같은 상태 enum 의 다른 표현이 `controller/runtimeConsolePresentation.ts` 에도 있다 — 그쪽은 알림 메시지용
+ * 같은 상태 enum 의 다른 표현이 `controller/runtime/runtimeConsolePresentation.ts` 에도 있다 — 그쪽은 알림 메시지용
  * (영문 라벨 `formatRuntimeConsoleStateLabel` + `buildRuntimeConsoleUserMessage`), 여기는 트리용 한국어 문구다.
  * 두 곳의 "폴링 상태" 판정 정규식은 서로 다르다(`isRuntimeConsolePollingState` vs 메시지 쪽 인라인 정규식).
  * 옮기면서 통일하지 않았다 — 통일은 실기기 관측 문구를 대조한 뒤 결정할 일이라 동작을 바꾸지 않았다(ai-handoff §3).
  */
-import type { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
-import { channelName } from '../controller/channelNames';
+import type { RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
+import { channelName } from '../controller/protocol/channelNames';
 import { formatDateTimeFromTs } from './treeFormat';
 
 export function formatRuntimeConsoleStatusDetail(status: RuntimeConsoleStatusSnapshot): string {

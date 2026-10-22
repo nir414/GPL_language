@@ -9,7 +9,7 @@ import {
     projectThreads,
     threadBelongsToProject,
     ThreadLike,
-} from '../controller/threadActivity';
+} from '../controller/threads/threadActivity';
 
 const t = (name: string, state = 'Running', project = ''): ThreadLike => ({ name, state, project });
 

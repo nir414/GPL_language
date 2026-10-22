@@ -12,7 +12,7 @@ import {
 	sendCommand,
 	sendCommandDetailed,
 	setTrafficResponseBodyEnabled,
-} from '../controller/controllerConnection';
+} from '../controller/connection/controllerConnection';
 import {
 	SHOW_THREAD_LIST_CMD,
 	extractErrorCodeFromEntry,
@@ -22,20 +22,20 @@ import {
 	parseStack,
 	parseStatus,
 	parseThreadList,
-} from '../controller/responseParser';
-import { getGplErrorGroup } from '../controller/responseParser';
-import type { ErrorCodeCategory } from '../controller/responseParser';
-import { probeThreads } from '../controller/threadStop';
-import { isSettledState } from '../controller/threadActivity';
-import { createFileSourceLookup, diagnoseStuckThread } from '../controller/threadStuckDiagnosis';
-import { buildTargetCandidates, readGprProjectStart } from '../controller/projectPicker';
-import { describeStartProcedureMismatch } from '../controller/startProcedureCheck';
-import { renderErrorReport } from '../controller/errorReport';
-import { asThreadNode } from '../controller/threadArgs';
-import { formatAgentCommandFailure, formatAgentCommandLines } from '../controller/agentCommandLog';
-import { buildSetDioCommand, describeDioForce, DioForceValue } from '../controller/dio';
+} from '../controller/protocol/responseParser';
+import { getGplErrorGroup } from '../controller/protocol/responseParser';
+import type { ErrorCodeCategory } from '../controller/protocol/responseParser';
+import { probeThreads } from '../controller/threads/threadStop';
+import { isSettledState } from '../controller/threads/threadActivity';
+import { createFileSourceLookup, diagnoseStuckThread } from '../controller/threads/threadStuckDiagnosis';
+import { buildTargetCandidates, readGprProjectStart } from '../controller/projects/projectPicker';
+import { describeStartProcedureMismatch } from '../controller/commands/startProcedureCheck';
+import { renderErrorReport } from '../controller/diagnostics/errorReport';
+import { asThreadNode } from '../controller/threads/threadArgs';
+import { formatAgentCommandFailure, formatAgentCommandLines } from '../controller/automation/agentCommandLog';
+import { buildSetDioCommand, describeDioForce, DioForceValue } from '../controller/io/dio';
 import { EXTENSION_VERSION } from '../config';
-import { isStopAllCommand } from '../controller/deployCancellation';
+import { isStopAllCommand } from '../controller/deployment/deployCancellation';
 import { createThreadStopIo, requestActiveDeployCancellation, showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
 import type { ExtensionHost } from './host';
 
@@ -258,7 +258,7 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		vscode.commands.registerCommand('gpl.controller.stopAll', async () => {
 			try {
 				const cancellations = requestActiveDeployCancellation(host, 'GPL 전체 정지 요청');
-				// 전송·STATUS 판정·정지 확인 폴링·자동 재시도는 controller/threadStop.ts 가 한다(§1-DD).
+				// 전송·STATUS 판정·정지 확인 폴링·자동 재시도는 controller/threads/threadStop.ts 가 한다(§1-DD).
 				// -752(정지 진행 중)는 실패가 아니라는 판정도 그 안에 있다 — 여기서는 결과만 사용자에게 옮긴다.
 				const outcome = await stopAllThreads(host, { logTo: line => host.log(`[Stop] ${line}`) });
 				if (outcome.send.kind === 'failed') {
@@ -391,7 +391,7 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		})
 	);
 
-	// ── 오류 상세 — 재료 수집(접착) + 렌더(controller/errorReport, 순수) ──────────────────────────
+	// ── 오류 상세 — 재료 수집(접착) + 렌더(controller/diagnostics/errorReport, 순수) ──────────────────────────
 	// 「오류 상세 보기」(Output + 위치 이동)와 「에러 복사」(클립보드)가 **같은 재료·같은 줄**을 쓴다(§1-EA).
 	// 종전 복사는 트리 항목 툴팁(쓰레드 행 4~6줄, 에러 항목 1~3줄)만 담아 스택·시각·분류·직전 사건이 빠졌다.
 	interface ErrorDetailPayload {
@@ -519,7 +519,7 @@ export function activateControllerCommands(host: ExtensionHost): void {
 			location,
 			stackLines,
 			relatedFunctions,
-			// 진입점 대조 — 스택 최하단이 .gpr 의 ProjectStart 와 다르면 시작 프로시저가 돌지 않은 것(controller/startProcedureCheck).
+			// 진입점 대조 — 스택 최하단이 .gpr 의 ProjectStart 와 다르면 시작 프로시저가 돌지 않은 것(controller/commands/startProcedureCheck).
 			startMismatch: describeStartProcedureMismatch(projectStart, stackLines),
 			recentEvents,
 			extensionVersion: EXTENSION_VERSION,

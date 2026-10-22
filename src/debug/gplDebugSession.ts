@@ -36,20 +36,20 @@ import {
     ControllerConfig,
     probeControllerCommand,
     getConnectionProbeTimeoutMs,
-} from '../controller/controllerConnection';
-import type { ProbeOutcome } from '../controller/controllerConnection';
-import { deploy, findProjectDirs, jumpToFirstCompileError } from '../controller/deployService';
-import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
+} from '../controller/connection/controllerConnection';
+import type { ProbeOutcome } from '../controller/connection/controllerConnection';
+import { deploy, findProjectDirs, jumpToFirstCompileError } from '../controller/deployment/deployService';
+import { checkProjectName, describeProjectNameProblem } from '../controller/projects/projectNameGuard';
 import { gprPathInDir, resolveGprSourcePaths, resolveProjectLibraryDirs, walkTree } from '../project/projectSources';
 import { chooseCompileUnitGprs, GprIdentity, readGprIdentity, readGprIdentityInDir } from '../project/compileUnitTarget';
 import { ResolvedBreakpointTarget, resolveBreakpointTarget } from '../project/breakpointTarget';
-import { normalizeBreakpointCommandFile } from '../controller/breakpointCommand';
-import { isResolvedBreakpointRecord } from '../controller/breakpointReconcile';
-import { getDeployLock, describeDeployLock } from '../controller/deployLock';
-import { requestDeployCancellation } from '../controller/deployCancellation';
-import { activeOperations } from '../controller/operationStore';
-import { stopAllAndSettle } from '../controller/threadStop';
-import type { ThreadStopIo } from '../controller/threadStop';
+import { normalizeBreakpointCommandFile } from '../controller/debugging/breakpointCommand';
+import { isResolvedBreakpointRecord } from '../controller/debugging/breakpointReconcile';
+import { getDeployLock, describeDeployLock } from '../controller/deployment/deployLock';
+import { requestDeployCancellation } from '../controller/deployment/deployCancellation';
+import { activeOperations } from '../controller/automation/operationStore';
+import { stopAllAndSettle } from '../controller/threads/threadStop';
+import type { ThreadStopIo } from '../controller/threads/threadStop';
 import {
     parseThreadList,
     parseThreadDetail,
@@ -65,17 +65,17 @@ import {
     parseStatus,
     NO_STATUS_CODE,
     StackFrameInfo,
-} from '../controller/responseParser';
+} from '../controller/protocol/responseParser';
 import { GPLParser, GPLSymbolKind, GPLSymbol } from '../language/gplParser';
-import { isReadOnlyConsoleCommand } from '../controller/consoleCommandClassifier';
-import { fireDebugThreadsUpdated, fireDebugProbeResult, onDebugPollTrigger, getRuntimeConsoleHealth } from '../controller/debugBridge';
+import { isReadOnlyConsoleCommand } from '../controller/commands/consoleCommandClassifier';
+import { fireDebugThreadsUpdated, fireDebugProbeResult, onDebugPollTrigger, getRuntimeConsoleHealth } from '../controller/debugging/debugBridge';
 import {
     getCompiledRecord,
     compareWithLocal,
     onDidRecordCompiled,
     formatCompiledAt,
-} from '../controller/deployRecord';
-import type { CompiledRecord, SnapshotDiff } from '../controller/deployRecord';
+} from '../controller/deployment/deployRecord';
+import type { CompiledRecord, SnapshotDiff } from '../controller/deployment/deployRecord';
 import { shouldGateStepRequest, StepGateReason } from './stepGate';
 import { formatEvalError, describeNestedExpandFailure, UNDEFINED_SYMBOL_STATUS } from './evalMessages';
 import {
@@ -91,7 +91,7 @@ import {
     resolveExecutionThread,
     shouldPreserveFocus,
 } from './threadLock';
-import { buildStartCommand, commandRunsCompiler } from '../controller/startCommand';
+import { buildStartCommand, commandRunsCompiler } from '../controller/commands/startCommand';
 import {
     breakpointCandidateLines,
     buildProcedureRanges,
@@ -487,7 +487,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _knownThreadNames = new Set<string>();
 
     // Consecutive poll failures — auto-terminate after threshold.
-    // 2026-08-28: 5 → 3 으로, 확장의 연결 건강 모니터(controller/connectionHealth.ts failureThreshold=3)와 맞춘다 —
+    // 2026-08-28: 5 → 3 으로, 확장의 연결 건강 모니터(controller/connection/connectionHealth.ts failureThreshold=3)와 맞춘다 —
     // 폴 결과는 debugBridge.fireDebugProbeResult 로도 보고되므로 어댑터의 세션 종료와 확장의 유실 판정이 같은 시점에 난다.
     // 폴은 명령 timeoutMs(10 s) 대신 프로브 타임아웃(gpl.controller.connectionProbeTimeoutMs, 기본 8 s)을 쓴다.
     private _pollFailures = 0;
@@ -895,7 +895,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             const terminateDebuggee = args.terminateDebuggee === true;
             if (terminateDebuggee || this._stopAllOnDisconnect) {
                 // 제어기 측 프로그램도 정지한다(정지 버튼, 또는 stopAllOnDisconnect=true).
-                // STATUS 0 은 "정지 요청 접수"일 뿐이므로 정지 완료까지 확인한다(§0.6, controller/threadStop.ts).
+                // STATUS 0 은 "정지 요청 접수"일 뿐이므로 정지 완료까지 확인한다(§0.6, controller/threads/threadStop.ts).
                 const trigger = terminateDebuggee ? '정지 버튼' : 'stopAllOnDisconnect';
 				const controllerId = this._config?.ip;
 				if (controllerId) {
@@ -4372,7 +4372,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     /**
      * Show Thread 폴을 연결 건강 프로브로 보낸다(프로브 타임아웃·실패 종류 분류, 예외 없음). 세션이 끊겨 있으면 null.
      * 결과는 호출측이 debugBridge.fireDebugProbeResult 로 확장에 보고한다 — 디버그 중엔 트리 폴링이 꺼져 있어
-     * 확장의 유실 판정(controller/connectionHealth.ts)은 이 경로에 의존한다(2026-08-28).
+     * 확장의 유실 판정(controller/connection/connectionHealth.ts)은 이 경로에 의존한다(2026-08-28).
      */
     private async _probeThreadList(): Promise<ProbeOutcome | null> {
         if (!this._config || !this._isConnected) { return null; }
@@ -5199,7 +5199,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     }
 
     /**
-     * 전체 정지 절차(controller/threadStop.ts)에 이 세션의 전송·로그를 물린다.
+     * 전체 정지 절차(controller/threads/threadStop.ts)에 이 세션의 전송·로그를 물린다.
      *
      * 종전에는 `Stop -all` 을 한 번 보내고 **응답 문자열이 있기만 하면** "완료"로 로그했다 — STATUS 도
      * 정지 완료도 보지 않아 §0.6 위반이었다(2026-09-10 §1-DD 조사). 이제 배포·패널·FTP 와 같은 절차를 쓴다.

@@ -1,6 +1,6 @@
 /** Flash 쓰기 안전 상태의 상태바 표현 정본(vscode 무의존). */
 
-import type { FlashSafetyState } from '../controller/flashSafety';
+import type { FlashSafetyState } from '../controller/deployment/flashSafety';
 
 export interface FlashSafetyPresentation {
 	text: string;

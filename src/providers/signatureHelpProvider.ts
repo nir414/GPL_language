@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import { findGplBuiltin, GPLBuiltinEntry } from '../language/gplBuiltins';
 import { splitParameters } from '../language/cursorExpression';

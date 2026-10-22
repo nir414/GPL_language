@@ -11,27 +11,30 @@
  * `pause {paused}`(자동 갱신 일시정지 — 새로고침 버튼은 여전히 1회 폴링), `showPage {page}`,
  * `setDio {signal,value}`. 확장 → 웹뷰: `status`, `dio`, `dioAction`, `config`, `navigate`, `error`.
  *
- * 자원 지표(GitHub #22 제안 8): 설정 `gpl.controller.dashboardResourceProbes`(기본 true)가 켜져 있으면 폴링마다
- * Show Memory / Show Network -tcp / -mbuf 를 함께 조회한다. 패널이 관측 이력(ResourceHistory, 120점 링 ≥ 5분)을
+ * 온도·자원·과거 에러는 dashboardDiagnosticIntervalMs(기본 10초)마다 조회하고 시각을 함께 보낸다.
+ * 자원 지표(GitHub #22 제안 8)는 설정 `gpl.controller.dashboardResourceProbes`(기본 true)가 켜져 있으면
+ * Show Memory / Show Network -tcp / -mbuf 를 조회한다. 패널이 관측 이력(ResourceHistory, 120점 링 ≥ 5분)을
  * 보관해 `status` 메시지에 `snapshot.resources.rates`(accepted/s·closed/s)와 `resourceHistory`(시계열),
  * `resourceProbes`(이번 폴링에 프로브가 포함됐는지)를 덧붙인다. 탭을 닫으면 이력은 사라진다.
  *
- * 연결 세션(controller/connectionSession)이 해제 상태면 폴링하지 않는다 — 자동 갱신도, 새로고침 버튼도 제어기에
+ * 연결 세션(controller/connection/connectionSession)이 해제 상태면 폴링하지 않는다 — 자동 갱신도, 새로고침 버튼도 제어기에
  * 명령을 보내지 않고 "연결 해제됨" 스냅샷만 그린다. 연결되면 세션 구독으로 즉시 재개한다. (2026-10-14: 해제 뒤에도
  * 이 패널이 1402 를 다시 열어 쥐고 있어 다른 창의 연결이 거부됐다.)
  */
 
 import * as vscode from 'vscode';
-import { emptyControllerStatusSnapshot, fetchControllerStatus, ControllerStatusSnapshot } from '../controller/controllerStatus';
-import { ResourceHistory, ResourceHistoryPoint, ResourceRates, ResourceSnapshot } from '../controller/resourceProbes';
-import { getConnectionStats, getControllerConfig, sendCommand, ConnectionStats } from '../controller/controllerConnection';
-import { isControllerSessionConnected, onControllerSessionChange } from '../controller/connectionSession';
-import { buildSetDioCommand, describeDioForce, DioForceValue, DioSignalState, parseDioSignals } from '../controller/dio';
-import { parseStatus } from '../controller/responseParser';
+import { emptyControllerStatusSnapshot, fetchControllerStatus, ControllerStatusSnapshot } from '../controller/diagnostics/controllerStatus';
+import { ResourceHistory, ResourceHistoryPoint, ResourceRates, ResourceSnapshot } from '../controller/diagnostics/resourceProbes';
+import { getConnectionStats, getControllerConfig, sendCommand, ConnectionStats } from '../controller/connection/controllerConnection';
+import { isControllerSessionConnected, onControllerSessionChange } from '../controller/connection/connectionSession';
+import { buildSetDioCommand, describeDioForce, DioForceValue, DioSignalState, parseDioSignals } from '../controller/io/dio';
+import { parseStatus } from '../controller/protocol/responseParser';
+import { ControllerStatusSampler, DEFAULT_DIAGNOSTIC_INTERVAL_MS } from '../controller/diagnostics/statusSampling';
+import { TemperatureHistory, TemperatureHistoryPoint } from '../controller/diagnostics/temperature';
 
 /**
  * 대시보드 폴링의 연결 판정(fetchControllerStatus.connected)을 밖으로 알리는 관찰자 — extension.ts 가 연결 건강 모니터
- * (controller/connectionHealth.ts)의 힌트로 쓴다(2026-08-28). 패널은 판정하지 않고 보고만 한다.
+ * (controller/connection/connectionHealth.ts)의 힌트로 쓴다(2026-08-28). 패널은 판정하지 않고 보고만 한다.
  */
 export type DashboardConnectionObserver = (connected: boolean, note?: string) => void;
 let _connectionObserver: DashboardConnectionObserver | undefined;
@@ -71,6 +74,9 @@ interface DashboardMessage {
 	resourceHistory?: ResourceHistoryPoint[];
 	/** 이번 폴링에 자원 프로브가 포함됐는지(false = 설정으로 꺼짐). */
 	resourceProbes?: boolean;
+	temperatureHistory?: TemperatureHistoryPoint[];
+	cpuTemperatureWarningC?: number;
+	diagnosticIntervalMs?: number;
 	/** 확장 측 1402 keep-alive 연결 통계(connects/reuses/retries) — 제어기 TCP accept 카운터와 대조용(GitHub #22). */
 	connectionStats?: ConnectionStats;
 	message?: string;
@@ -96,6 +102,13 @@ export class ControllerDashboardPanel {
 	private paused = false;
 	/** 자원 지표 관측 이력(증가율 기준 샘플 + 시계열 링). 패널 수명 동안 유지. */
 	private readonly resourceHistory = new ResourceHistory();
+	private readonly sampler = new ControllerStatusSampler();
+	private readonly temperatureHistory = new TemperatureHistory();
+	private lastResourceSampleAt: number | undefined;
+	private resourceRates: ResourceRates | null = null;
+	private targetKey = '';
+	private pollGeneration = 0;
+	private refreshRequested = false;
 
 	static show(context: vscode.ExtensionContext, log?: vscode.OutputChannel, page: DashboardPage = 'status'): void {
 		const column = vscode.ViewColumn.Beside;
@@ -132,6 +145,8 @@ export class ControllerDashboardPanel {
 
 		// 연결 세션 에지: 연결되면 즉시 1회 폴링 후 주기 재개, 해제·유실되면 타이머를 멈추고 해제 상태를 그린다.
 		this.disposables.push(onControllerSessionChange(change => {
+			this.pollGeneration++;
+			this.resetDiagnostics();
 			if (change.connected) {
 				this.scheduleNextPoll(0);
 			} else {
@@ -141,6 +156,7 @@ export class ControllerDashboardPanel {
 		}));
 
 		this.panel.onDidChangeViewState(() => {
+			this.pollGeneration++;
 			this.visible = this.panel.visible;
 			if (this.visible) {
 				this.scheduleNextPoll(0);
@@ -161,6 +177,7 @@ export class ControllerDashboardPanel {
 					this.scheduleNextPoll(0);
 					break;
 				case 'refresh':
+					this.refreshRequested = true;
 					// 일시정지 중에도 수동 새로고침은 1회 폴링한다(이후 자동 재예약은 paused가 막는다).
 					this.scheduleNextPoll(0);
 					break;
@@ -176,6 +193,7 @@ export class ControllerDashboardPanel {
 					break;
 				}
 				case 'pause':
+					this.pollGeneration++;
 					this.paused = !!msg.paused;
 					this.postConfig();
 					if (this.paused) {
@@ -241,7 +259,7 @@ export class ControllerDashboardPanel {
 			return;
 		}
 		this.stopPolling();
-		const interval = delayMs ?? this.pollIntervalMs();
+		const interval = this.refreshRequested ? 0 : delayMs ?? this.pollIntervalMs();
 		this.pollTimer = setTimeout(() => {
 			this.pollTimer = null;
 			void this.pollOnce().finally(() => this.scheduleNextPoll());
@@ -261,7 +279,7 @@ export class ControllerDashboardPanel {
 		}
 		const cfg = vscode.workspace.getConfiguration('gpl.controller');
 		const raw = cfg.get<number>('dashboardPollIntervalMs') ?? DEFAULT_POLL_MS;
-		return Math.max(MIN_POLL_MS, raw);
+		return Number.isFinite(raw) ? Math.min(MAX_POLL_MS, Math.max(MIN_POLL_MS, raw)) : DEFAULT_POLL_MS;
 	}
 
 	/** 웹뷰의 주기 선택/일시정지 버튼 표시를 확장 쪽 실제 상태와 맞춘다. */
@@ -272,6 +290,7 @@ export class ControllerDashboardPanel {
 	}
 
 	private selectPage(page: DashboardPage): void {
+		this.pollGeneration++;
 		this.activePage = page;
 		this.postNavigation();
 		this.scheduleNextPoll(0);
@@ -293,29 +312,62 @@ export class ControllerDashboardPanel {
 			return;
 		}
 		this.pollInFlight = true;
+		const generation = this.pollGeneration;
+		const cfg = getControllerConfig();
+		const page = this.activePage;
+		const active = (): boolean => !this.disposed && this.visible && isControllerSessionConnected()
+			&& this.pollGeneration === generation && this.activePage === page
+			&& getControllerConfig().ip === cfg.ip && getControllerConfig().port === cfg.port;
+		const forceDiagnostics = this.refreshRequested;
+		this.refreshRequested = false;
 		try {
 			if (this.activePage === 'io') {
 				await this.pollDio();
 				return;
 			}
 			// 설정은 폴링마다 읽는다 — 탭을 다시 열지 않고도 켜고 끌 수 있게.
+			const key = `${cfg.ip}:${cfg.port}`;
+			if (this.targetKey !== key) { this.resetDiagnostics(); this.targetKey = key; }
+			const settings = vscode.workspace.getConfiguration('gpl.controller');
+			const rawInterval = settings.get<number>('dashboardDiagnosticIntervalMs', DEFAULT_DIAGNOSTIC_INTERVAL_MS);
+			const diagnosticIntervalMs = Number.isFinite(rawInterval) ? Math.max(1000, Math.min(60000, rawInterval)) : DEFAULT_DIAGNOSTIC_INTERVAL_MS;
 			const includeResources = this.resourceProbesEnabled();
-			const snapshot = await fetchControllerStatus(undefined, { includeResources });
+			const snapshot = await fetchControllerStatus(cfg, { includeResources, includeTemperature: true, diagnosticIntervalMs, forceDiagnostics }, this.sampler, active);
+			if (!active()) { return; }
 			try { _connectionObserver?.(snapshot.connected, snapshot.note); } catch { /* 관찰자 예외가 폴링을 막지 않게 */ }
 			const { resources, ...rest } = snapshot;
-			const message: DashboardMessage = { type: 'status', snapshot: rest, resourceProbes: includeResources, connectionStats: getConnectionStats() };
+			const warningC = settings.get<number>('dashboardCpuTemperatureWarningC', 0);
+			const message: DashboardMessage = {
+				type: 'status', snapshot: rest, resourceProbes: includeResources, connectionStats: getConnectionStats(),
+				diagnosticIntervalMs, cpuTemperatureWarningC: Number.isFinite(warningC) ? Math.max(0, warningC) : 0,
+			};
+			if (snapshot.temperature) { message.temperatureHistory = this.temperatureHistory.record(snapshot.temperature); }
 			if (resources) {
-				const { rates, history } = this.resourceHistory.record(resources);
-				message.snapshot = { ...rest, resources: { ...resources, rates } };
-				message.resourceHistory = history;
+				if (resources.sampledAt !== this.lastResourceSampleAt) {
+					this.resourceRates = this.resourceHistory.record(resources).rates;
+					this.lastResourceSampleAt = resources.sampledAt;
+				}
+				message.snapshot = { ...rest, resources: { ...resources, rates: this.resourceRates } };
+				message.resourceHistory = this.resourceHistory.points();
 			}
 			this.post(message);
 		} catch (err) {
+			if (!active()) { return; }
 			this.log?.appendLine(`[Dashboard] 상태 수집 실패: ${err}`);
 			this.post({ type: 'error', message: String(err) });
 		} finally {
 			this.pollInFlight = false;
+			if (this.refreshRequested) { this.scheduleNextPoll(0); }
 		}
+	}
+
+	private resetDiagnostics(): void {
+		this.sampler.clear();
+		this.resourceHistory.clear();
+		this.temperatureHistory.clear();
+		this.lastResourceSampleAt = undefined;
+		this.resourceRates = null;
+		this.targetKey = '';
 	}
 
 	private async pollDio(): Promise<void> {
@@ -440,6 +492,7 @@ export class ControllerDashboardPanel {
 	}
 
 	private dispose(): void {
+		this.pollGeneration++;
 		this.disposed = true;
 		this.stopPolling();
 		ControllerDashboardPanel.current = undefined;

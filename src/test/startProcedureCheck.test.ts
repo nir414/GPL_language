@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { describeStartProcedureMismatch, outermostProcedure, startProcedureName } from '../controller/startProcedureCheck';
+import { describeStartProcedureMismatch, outermostProcedure, startProcedureName } from '../controller/commands/startProcedureCheck';
 
 // ─── 진입점 대조 — 스택 최하단 프레임 vs .gpr ProjectStart (§1-EA) ───
 // 근거: 2026-09-21 GenAdp 실측. ProjectStart="ORCH_Main.MAIN" 인데 스레드가 LineBuffer.Init 한 프레임만

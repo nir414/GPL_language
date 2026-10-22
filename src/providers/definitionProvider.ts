@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
 import { ciEq } from '../language/identifiers';

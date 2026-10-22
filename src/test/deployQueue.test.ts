@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { KeyedSerialQueue } from '../controller/deployQueue';
+import { KeyedSerialQueue } from '../controller/deployment/deployQueue';
 import { test } from './harness';
 
 test('deployQueue: 같은 제어기는 등록 순서대로, 다른 제어기는 병행한다', async () => {

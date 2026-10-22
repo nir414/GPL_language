@@ -4,7 +4,7 @@
  */
 import * as assert from 'assert';
 import { test } from './harness';
-import { clearRemoteDir, mirrorProject, normalizeAbsoluteRemoteDir, uploadProject } from '../controller/ftpClient';
+import { clearRemoteDir, mirrorProject, normalizeAbsoluteRemoteDir, uploadProject } from '../controller/files/ftpClient';
 
 test('normalizeAbsoluteRemoteDir: 후행/중복 슬래시를 정리한다', () => {
     assert.strictEqual(normalizeAbsoluteRemoteDir('/GPL'), '/GPL');

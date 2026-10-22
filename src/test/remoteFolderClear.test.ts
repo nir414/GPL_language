@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { classifyRemoteClearRoot, selectRemoteClearTargets } from '../controller/remoteFolderClear';
-import type { FtpEntry } from '../controller/ftpClient';
+import { classifyRemoteClearRoot, selectRemoteClearTargets } from '../controller/files/remoteFolderClear';
+import type { FtpEntry } from '../controller/files/ftpClient';
 
 // /GPL 비우기(사람의 트리 명령 + AI 의 clear_remote_folder)가 같이 쓰는 대상 판정 — 2026-10-21.
 

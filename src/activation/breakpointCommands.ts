@@ -3,10 +3,10 @@
  */
 
 import * as vscode from 'vscode';
-import { MirrorEchoMemory } from '../controller/breakpointCommand';
-import { ControllerBreakpointMirror } from '../controller/breakpointMirror';
-import { isResolvedBreakpointRecord } from '../controller/breakpointReconcile';
-import { EditorBreakpointSync } from '../controller/breakpointSync';
+import { MirrorEchoMemory } from '../controller/debugging/breakpointCommand';
+import { ControllerBreakpointMirror } from '../controller/debugging/breakpointMirror';
+import { isResolvedBreakpointRecord } from '../controller/debugging/breakpointReconcile';
+import { EditorBreakpointSync } from '../controller/debugging/breakpointSync';
 import type { ExtensionHost } from './host';
 
 export function activateBreakpointCommands(host: ExtensionHost): void {

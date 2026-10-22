@@ -11,7 +11,7 @@
 // presence 도 서로 덮어써 어느 창인지 알 수 없었다. 이제 확장이 창마다 `extensionInstanceId` 로 presence 와
 // 큐를 분리하고, 이쪽은 대상 인스턴스를 먼저 고른 뒤(§6) 그 큐로만 보낸다.
 //
-// 파일 계약(확장 src/controller/agentBridge.ts와 동일하게 유지):
+// 파일 계약(확장 src/controller/automation/agentBridge.ts와 동일하게 유지):
 //   presence(인스턴스) : <dir>/extensions/<instanceId>.json
 //   presence(레거시)   : <dir>/<ip>.extension.json          — 리더 인스턴스만 쓴다(구버전 호환)
 //   요청     : <dir>/bridge/inst/<instanceId>/req/<id>.json  (레거시: <dir>/bridge/<ip>/req/<id>.json)

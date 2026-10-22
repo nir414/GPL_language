@@ -1,7 +1,7 @@
 /**
  * 경로 동일성 키 — 파일·폴더 경로를 Map/Set 키나 비교에 쓸 때 거치는 **단일 규칙**(vscode 무의존).
  *
- * 종전에는 `controller/projectPickerCore.ts` 에 있었는데, language(`symbolLocations`)·project(`compileUnit`·
+ * 종전에는 `controller/projects/projectPickerCore.ts` 에 있었는데, language(`symbolLocations`)·project(`compileUnit`·
  * `projectSources`)·symbolCache 가 그 하나 때문에 controller 계층을 import 하고 있었다(2026-09-07 §1-DB 로 분리).
  * 어느 계층에도 속하지 않는 순수 헬퍼만 `util/` 에 둔다 — 도메인 규칙은 여기 두지 않는다.
  */

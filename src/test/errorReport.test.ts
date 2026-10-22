@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { renderErrorReport, ErrorReportInput } from '../controller/errorReport';
-import { getErrorCodeHint } from '../controller/responseParser';
+import { renderErrorReport, ErrorReportInput } from '../controller/diagnostics/errorReport';
+import { getErrorCodeHint } from '../controller/protocol/responseParser';
 
 // ─── 「오류 상세」 렌더러 — 보이는 것(Output)과 복사되는 것(클립보드)이 같은 재료·같은 줄 (§1-EA) ───
 

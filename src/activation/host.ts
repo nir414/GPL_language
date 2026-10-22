@@ -13,25 +13,25 @@
  *   함수 안에서 이 필드를 **구조 분해로 복사하지 말고** 호출 시점에 `host.project.x()` 로 읽는다.
  */
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLDiagnosticProvider } from '../providers/diagnosticProvider';
-import { getControllerConfig, setIdlePingActive } from '../controller/controllerConnection';
-import { isControllerSessionConnected, setControllerSessionConnected } from '../controller/connectionSession';
-import { AgentBridgeServer, newExtensionInstanceId } from '../controller/agentBridge';
-import { createRevealGate } from '../controller/agentCommandLog';
-import { ConnectionHealthMonitor, ConnectionHealthProber } from '../controller/connectionHealth';
-import { EditorBreakpointSync } from '../controller/breakpointSync';
-import { ControllerBreakpointMirror } from '../controller/breakpointMirror';
-import { checkProjectName, checkRemotePath, describeProjectNameProblem } from '../controller/projectNameGuard';
-import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controller/deployLock';
-import { CompileStaleInfo, CompileStaleTracker } from '../controller/compileStale';
-import { ControllerEventLog } from '../controller/recentEvents';
-import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+import { getControllerConfig, setIdlePingActive } from '../controller/connection/controllerConnection';
+import { isControllerSessionConnected, setControllerSessionConnected } from '../controller/connection/connectionSession';
+import { AgentBridgeServer, newExtensionInstanceId } from '../controller/automation/agentBridge';
+import { createRevealGate } from '../controller/automation/agentCommandLog';
+import { ConnectionHealthMonitor, ConnectionHealthProber } from '../controller/connection/connectionHealth';
+import { EditorBreakpointSync } from '../controller/debugging/breakpointSync';
+import { ControllerBreakpointMirror } from '../controller/debugging/breakpointMirror';
+import { checkProjectName, checkRemotePath, describeProjectNameProblem } from '../controller/projects/projectNameGuard';
+import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controller/deployment/deployLock';
+import { CompileStaleInfo, CompileStaleTracker } from '../controller/deployment/compileStale';
+import { ControllerEventLog } from '../controller/diagnostics/recentEvents';
+import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext } from '../views/controllerTreeProvider';
-import type { SituationDeploySnapshot } from '../controller/deployOutcome';
+import type { SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
 import { ConnectionStatusBar } from '../views/connectionStatusBar';
 import { appendLiveLog } from '../log/liveLogTerminal';
-import { fireDebugPollTrigger } from '../controller/debugBridge';
+import { fireDebugPollTrigger } from '../controller/debugging/debugBridge';
 import { EXTENSION_VERSION } from '../config';
 import type { ProjectContextApi } from './projectContext';
 import type { ConnectionApi } from './connection';
@@ -58,7 +58,7 @@ export class ExtensionHost {
 	statusBar: ConnectionStatusBar | undefined;
 	/** 제어기 트리 — activate() 가 언어 기능 배선 직후 만든다(그 전에는 markCompileStale 등이 `?.` 로 건너뛴다). */
 	controllerTree!: ControllerTreeProvider;
-	/** 연결 건강 모니터/재프로브(controller/connectionHealth.ts) — 연결 유실 판정의 단일 출처(2026-08-28). */
+	/** 연결 건강 모니터/재프로브(controller/connection/connectionHealth.ts) — 연결 유실 판정의 단일 출처(2026-08-28). */
 	healthMonitor: ConnectionHealthMonitor | undefined;
 	healthProber: ConnectionHealthProber | undefined;
 	isDebugSessionActive = false;
@@ -70,7 +70,7 @@ export class ExtensionHost {
 	gplDebugSession: vscode.DebugSession | undefined;
 	/**
 	 * 세션 대상 프로젝트 **폴더**(단일 출처, 메모리 전용) — 자동화 대상 해석(`project_target`·`gpl.automation.target`,
-	 * `controller/projectTarget.ts` 규칙 3), 사람의 QuickPick 선택, 디버그 세션의 `projectDir` 가 갱신한다.
+	 * `controller/projects/projectTarget.ts` 규칙 3), 사람의 QuickPick 선택, 디버그 세션의 `projectDir` 가 갱신한다.
 	 * 배포 대상이면서 **동명 소스 해석의 1순위 기준**이다(`project/compileUnitTarget.ts`) — 제어기는 파일명만
 	 * 주므로, 과제별 동명 프로젝트가 여럿인 워크스페이스에서 이 값이 없으면 어느 사본을 열지 임의로 갈린다.
 	 */
@@ -80,11 +80,11 @@ export class ExtensionHost {
 	lastSourceStale: { projectName: string; files: string[]; compiledAt?: number } | undefined;
 	sourceStaleNotifiedSessionId: string | undefined;
 	lastRuntimeErrorContext: RuntimeErrorContext | undefined;
-	/** 제어기 사건 링버퍼 — 오류 상세 보기의 "직전 제어기 사건". 규칙·접기는 `controller/recentEvents`. */
+	/** 제어기 사건 링버퍼 — 오류 상세 보기의 "직전 제어기 사건". 규칙·접기는 `controller/diagnostics/recentEvents`. */
 	readonly recentControllerEvents = new ControllerEventLog();
 	/**
 	 * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
-	 * 상태와 규칙은 `controller/compileStale.ts`(순수 모듈)에 있고, 여기서는 로그·UI 반영만 얹는다.
+	 * 상태와 규칙은 `controller/deployment/compileStale.ts`(순수 모듈)에 있고, 여기서는 로그·UI 반영만 얹는다.
 	 * 해제는 `onDidRecordCompiled` 구독으로도 일어나므로 F5(deployBeforeAttach)·MCP 경로에서도 배지가 남지 않는다.
 	 */
 	readonly compileStaleProjects = new CompileStaleTracker();
@@ -116,7 +116,7 @@ export class ExtensionHost {
 	 * 확장 로그 한 줄 — Output 채널 + 라이브 로그 터미널 + 제어기 사건 링버퍼.
 	 * 콜백 인자로 그대로 넘길 수 있게(`{ log: host.log }`) 화살표 프로퍼티다.
 	 *
-	 * 링버퍼에 담는 것은 **제어기 사건뿐**이다(판정은 `controller/recentEvents`). 보고서처럼 이미 렌더된
+	 * 링버퍼에 담는 것은 **제어기 사건뿐**이다(판정은 `controller/diagnostics/recentEvents`). 보고서처럼 이미 렌더된
 	 * 블록은 `report()` 로 내보내 버퍼를 거치지 않게 한다 — 섞이면 보고서가 자기 출력을 다시 먹는다(§1-EA).
 	 */
 	readonly log = (msg: string): void => {
@@ -139,7 +139,7 @@ export class ExtensionHost {
 	// ── 배포 잠금 / 프로젝트명 가드 ───────────────────────────────────────────────
 	// 배포 잠금 — 구 boolean `deployInFlight`를 대체(2026-08-25, 이슈 #15·#17). 획득/해제는 deploy()(deployService)와
 	// gpl.saveToFlash가 하고, 여기서는 조회만 한다. 잠금 파일(%TEMP%/gpl-controller/<ip>.lock.json)은 다른 VS Code 창과
-	// controller-mcp도 읽으므로 "업로드 도중 Compile/Start" 차단이 프로세스 경계를 넘는다 (controller/deployLock.ts).
+	// controller-mcp도 읽으므로 "업로드 도중 Compile/Start" 차단이 프로세스 경계를 넘는다 (controller/deployment/deployLock.ts).
 	/** 현재 배포 잠금 보유자(이 창·다른 창·살아 있는 다른 프로세스). 없으면 undefined. */
 	currentDeployLockHolder(): DeployLockRecord | undefined {
 		return getDeployLock(getControllerConfig().ip).current()?.record;
@@ -282,7 +282,7 @@ export class ExtensionHost {
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.debugging', this.isDebugSessionActive);
 	}
 
-	/** 이 창이 제어기에 연결된 상태인가 — 정본은 controller/connectionSession(뷰가 아니라). */
+	/** 이 창이 제어기에 연결된 상태인가 — 정본은 controller/connection/connectionSession(뷰가 아니라). */
 	get isControllerConnected(): boolean {
 		return isControllerSessionConnected();
 	}
@@ -310,7 +310,7 @@ export class ExtensionHost {
 
 	// ── Agent Bridge (MCP → 확장 명령 호출, §1-BQ) ─────────────────────────────────
 	// MCP 서버가 제어기에 직접 붙는 대신 이 브리지로 확장 명령을 호출하면 1402 트래픽이 확장의 단일 세션/직렬 큐/명령 정책을
-	// 그대로 타므로 세션 경쟁("1402를 VS Code가 점유 중")이 사라진다. 파일 계약은 controller/agentBridge.ts 머리말 참조.
+	// 그대로 타므로 세션 경쟁("1402를 VS Code가 점유 중")이 사라진다. 파일 계약은 controller/automation/agentBridge.ts 머리말 참조.
 	private agentBridge: AgentBridgeServer | undefined;
 	private agentBridgeKey = '';
 	/**

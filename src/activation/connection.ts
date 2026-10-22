@@ -19,7 +19,7 @@ import {
 	LossSummary,
 	describeLoss,
 	describeRecovering,
-} from '../controller/connectionHealth';
+} from '../controller/connection/connectionHealth';
 import {
 	ControllerConfig,
 	clearSessionControllerOverride,
@@ -36,12 +36,12 @@ import {
 	setIdlePingObserver,
 	setSessionControllerOverride,
 	testConnection,
-} from '../controller/controllerConnection';
-import { onDebugProbeResult } from '../controller/debugBridge';
-import { DEPLOY_LOCK_DIR_NAME, describeDeployLock, getDeployLock } from '../controller/deployLock';
-import { projectNameOf } from '../controller/projectPicker';
-import { probeReachability } from '../controller/reachability';
-import { SHOW_THREAD_LIST_CMD } from '../controller/responseParser';
+} from '../controller/connection/controllerConnection';
+import { onDebugProbeResult } from '../controller/debugging/debugBridge';
+import { DEPLOY_LOCK_DIR_NAME, describeDeployLock, getDeployLock } from '../controller/deployment/deployLock';
+import { projectNameOf } from '../controller/projects/projectPicker';
+import { probeReachability } from '../controller/connection/reachability';
+import { SHOW_THREAD_LIST_CMD } from '../controller/protocol/responseParser';
 import { setDashboardConnectionObserver } from '../views/controllerDashboardPanel';
 import type { ExtensionHost } from './host';
 
@@ -176,7 +176,7 @@ async function stopDebugSessionAndWait(
 export function activateConnection(host: ExtensionHost): ConnectionApi {
 	const { context, outputChannel } = host;
 
-	// ── 연결 건강 모니터 (2026-08-28, controller/connectionHealth.ts) ──────────────────────────────
+	// ── 연결 건강 모니터 (2026-08-28, controller/connection/connectionHealth.ts) ──────────────────────────────
 	// 연결 유실 판정의 단일 출처. 프로브(트리 Show Thread 폴·디버그 어댑터 폴·재프로브) 결과와 힌트(1403 connect-failed/
 	// socket-error·keep-alive 소켓 error·대시보드 프로브 실패·어댑터 실패 종료)를 받아 connected → suspect → lost 로 판정한다.
 	// 힌트는 단정하지 않고 재프로브(connectionProbeTimeoutMs 기본 8 s, 1 s 간격)로 확인한다. 유실 확정 시 연결 상태를 끊고

@@ -1,12 +1,12 @@
 /**
- * 상태바 업로드 진행 바 — 표시 규칙의 정본(vscode 무의존). 집계는 `controller/uploadProgress`.
+ * 상태바 업로드 진행 바 — 표시 규칙의 정본(vscode 무의존). 집계는 `controller/deployment/uploadProgress`.
  *
  * `views/compileStaleBadge` 와 같은 나눔이다: 무엇이 일어났는가(집계·이벤트)는 controller 에, **어떻게 보이는가**
  * (`██████████░░░░░░░░░░  3.2 MB / 10.7 MB`·툴팁·완료 요약)는 여기에. 상태바(`connectionStatusBar`)는 이 문자열을
  * 붙이고 보이기/숨기기 타이밍만 안다(ai-handoff §1-EE). 바이트 표기 자체는 트리 FTP 목록과 공유하는 `util/formatBytes`.
  */
 
-import type { UploadProgress, UploadProgressEvent, UploadSummary } from '../controller/uploadProgress';
+import type { UploadProgress, UploadProgressEvent, UploadSummary } from '../controller/deployment/uploadProgress';
 import { byteUnitFor, formatBytes, formatBytesAs } from '../util/formatBytes';
 
 /** 진행 바 칸 수. 상태바 한 항목에 들어가는 폭 기준. */

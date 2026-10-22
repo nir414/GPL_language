@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
-import { isTraceVerbose, EXTENSION_VERSION, isInCommentOrString, getHoverConfig, HoverConfig } from '../config';
+import { isTraceVerbose, EXTENSION_VERSION, isInCommentOrString, getHoverConfig, HoverConfig, getQualifiedWordAtPosition } from '../config';
 import { ciEq } from '../language/identifiers';
 import { findEnclosingProcedureRange, extractDebugExpressionAt } from '../language/cursorExpression';
 import {
@@ -320,38 +320,6 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         }
     }
 
-    private getIdentifierAtPosition(document: vscode.TextDocument, position: vscode.Position): { text: string; range: vscode.Range } | undefined {
-        const line = document.lineAt(position.line).text;
-        if (!line) {
-            return undefined;
-        }
-
-        const isIdentChar = (ch: string) => /[A-Za-z0-9_.]/.test(ch);
-        let start = position.character;
-        let end = position.character;
-
-        while (start > 0 && isIdentChar(line[start - 1])) {
-            start--;
-        }
-        while (end < line.length && isIdentChar(line[end])) {
-            end++;
-        }
-
-        if (start === end) {
-            return undefined;
-        }
-
-        const raw = line.slice(start, end);
-        const trimmed = raw.replace(/^\.+|\.+$/g, '');
-        if (!trimmed || !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(trimmed)) {
-            return undefined;
-        }
-
-        const leftTrim = raw.indexOf(trimmed);
-        const range = new vscode.Range(position.line, start + leftTrim, position.line, start + leftTrim + trimmed.length);
-        return { text: trimmed, range };
-    }
-
     async provideHover(
         document: vscode.TextDocument,
         position: vscode.Position,
@@ -377,12 +345,12 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         }
         const compact = debugActive && config.duringDebug === 'compact';
 
-        const ident = this.getIdentifierAtPosition(document, position);
+        const ident = getQualifiedWordAtPosition(document, position);
         if (!ident) {
             return undefined;
         }
 
-        const word = ident.text;
+        const word = ident.word;
         const wordRange = ident.range;
 
         const line = document.lineAt(position.line).text;
@@ -394,28 +362,28 @@ export class GPLHoverProvider implements vscode.HoverProvider {
 
         this.log(`\n[Hover Request] v${EXTENSION_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
 
-        // 1) Built-in hover (문서 기반)
-        const builtin = findGplBuiltin(word);
-        if (builtin) {
-            return this.buildBuiltinHover(builtin, compact, config, wordRange);
-        }
-
-        // 멤버 접근의 수신자 체인(GitHub #32). `word`는 `[\w.]`만 모으므로 `robotArmList(0).controlAxis`처럼
-        // 괄호가 끼면 `controlAxis`만 남는다 — 커서 식 추출기(괄호 그룹 인식)로 `.` 앞 체인을 되찾는다.
+        // 식별자 범위와 별도로 괄호를 포함한 수신자 체인을 해석한다.
         const cursorExpr = extractDebugExpressionAt(line, position.character);
-        // 조회 대상은 **커서가 놓인 세그먼트**의 이름이다(2026-08-31). 종전에는 점 표기 전체의 마지막
-        // 조각을 썼기 때문에 `Thread.CurrentThread.Name`의 `CurrentThread` 위에서도 `Name`을 찾아
-        // 엉뚱한 심볼 카드가 떴다. 커서 식 추출이 실패하면 종전 규칙으로 폴백한다.
+        // 조회 대상은 커서 아래 식별자이고, 그 앞의 세그먼트만 수신자로 사용한다.
         const cursorName = cursorExpr?.segments[cursorExpr.cursorSegment].name;
-        const lookupName = cursorName ?? (word.includes('.') ? word.split('.').pop()! : word);
+        const lookupName = cursorName ?? word;
         const receiverSegs = cursorExpr && cursorExpr.cursorSegment > 0
             ? cursorExpr.segments.slice(0, cursorExpr.cursorSegment)
             : undefined;
 
+        // 내장 이름도 커서 세그먼트까지만 조회한다(Thread.CurrentThread의 Thread는 클래스다).
+        const builtinName = cursorExpr
+            ? cursorExpr.segments.slice(0, cursorExpr.cursorSegment + 1).map(s => s.name).join('.')
+            : word;
+        const builtin = findGplBuiltin(builtinName);
+        if (builtin) {
+            return this.buildBuiltinHover(builtin, compact, config, wordRange);
+        }
+
         // 로컬 변수/파라미터가 동명의 모듈 레벨 캐시 심볼에 가려지지 않도록, 감싸는
         // 프로시저 스코프의 로컬을 먼저 해석한다(definitionProvider와 동일 규칙).
         // 멤버 접근(`obj.Member`)은 로컬 스코프 대상이 아니므로 제외.
-        let sym = !word.includes('.') && !receiverSegs
+        let sym = !receiverSegs
             ? this.findEnclosingLocalSymbol(document, lookupName, position.line)
             : undefined;
 
@@ -454,7 +422,7 @@ export class GPLHoverProvider implements vscode.HoverProvider {
         // 사용자 심볼이 전혀 없을 때만 내장 클래스 개요를 보여 준다(동명 사용자 심볼이 우선).
         // 수신자가 있는 멤버 이름에는 띄우지 않는다 — 커서가 체인 첫 세그먼트(`Thread.…`의 Thread)에
         // 있으면 receiverSegs가 없으므로 점이 있어도 클래스 개요가 맞다.
-        if (!sym && !receiverSegs && (cursorName !== undefined || !word.includes('.'))) {
+        if (!sym && !receiverSegs) {
             const classDoc = findGplClassDoc(lookupName);
             if (classDoc) {
                 return this.buildClassDocHover(classDoc, compact, config, wordRange);
@@ -463,8 +431,8 @@ export class GPLHoverProvider implements vscode.HoverProvider {
 
         // 키워드·원시 타입·낱말 연산자·상수 — 완성 목록과 같은 표(`GPL_KEYWORDS`)를 마지막 폴백으로 본다(§1-EA ⑦).
         // 사용자 심볼·내장 클래스 문서(`String`) 뒤에 두어 더 풍부한 카드를 가리지 않고, 수신자가 있는 멤버 이름
-        // (`obj.Step`)이나 점 표기에는 띄우지 않는다 — 키워드는 체인 안에 오지 않는다.
-        if (!sym && !receiverSegs && !word.includes('.')) {
+        // (`obj.Step`)에는 띄우지 않는다 — 키워드는 멤버 이름이 아니다.
+        if (!sym && !receiverSegs) {
             const keyword = findGplKeyword(word);
             if (keyword) {
                 return this.buildKeywordHover(keyword, compact, wordRange);

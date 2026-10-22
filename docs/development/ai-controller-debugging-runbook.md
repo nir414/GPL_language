@@ -151,7 +151,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | `gpl.automation.target` | `{}` → 현재 상태(`{ ok, target, candidates:[{project,dir,runnable,referencedAsLibraryBy?}], hint }`) · `{ projectDir: "…/projects/GPL_Code" }` → 세션 대상 고정 · `{ clear: true }` → 해제 |
 | `gpl.uploadOnly` / `gpl.deploy` / `gpl.quickCompile` | `{ project: "GPL_Code" }` 또는 `{ projectDir: "…/projects/GPL_Code" }` / `{ projectFile: "…/Main.gpl" }`. 선택: `saveDirty: true`(미저장 문서 저장 후 계속 — 기본은 `UNSAVED_FILES` 로 중단) |
 | `gpl.uploadStart` / `gpl.start` | 위와 같고 **Start 를 보내므로** `confirmStart: true` 가 필요하다(사용자 확인을 받았음을 단언 — 없으면 `INTERACTIVE_UI_REQUIRED`). 설정 `gpl.controller.requireStartConfirmation: false` 면 불필요. 선택: `ignoreCompileStale: true`(기본은 `COMPILE_UNVERIFIED` 로 중단) |
-| `gpl.saveToFlash` | **자동화 호출 불가** — `{ok:false, error:"AI_BLOCKED", detail}` 을 돌려주고 아무것도 올리지 않는다. 브리지는 `command-blocked`, URI 는 경고 후 무시. flash 영구 사본을 되돌릴 수 없게 덮어쓰므로 사용자가 UI 에서 직접 실행한다 (`src/controller/aiCommandPolicy.ts`, 2026-09-07) |
+| `gpl.saveToFlash` | **자동화 호출 불가** — `{ok:false, error:"AI_BLOCKED", detail}` 을 돌려주고 아무것도 올리지 않는다. 브리지는 `command-blocked`, URI 는 경고 후 무시. flash 영구 사본을 되돌릴 수 없게 덮어쓰므로 사용자가 UI 에서 직접 실행한다 (`src/controller/automation/aiCommandPolicy.ts`, 2026-09-07) |
 
 공통 규약:
 
@@ -169,21 +169,21 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
   사람이 QuickPick 에서 고른 값) ③ 실행 가능(`.gpr` 에 `ProjectStart`) 프로젝트가 유일할 때 그것 ④ 후보가 하나뿐이면
   그것 ⑤ 그 밖에는 `PROJECT_AMBIGUOUS`. 영구 기본 프로젝트 설정은 두지 않으며, MCP는 작업 시작 시
   `project_target({projectDir})`으로 정확한 폴더를 세션에 고정한다.
-  규칙 정본은 `src/controller/projectTarget.ts`(순수 로직, 단위 테스트 `src/test/projectTarget.test.ts`).
+  규칙 정본은 `src/controller/projects/projectTarget.ts`(순수 로직, 단위 테스트 `src/test/projectTarget.test.ts`).
 - **외부 진입점(URI, GitHub #25 → 2026-08-28 전체 개방)**: 이 확장의 **모든 `gpl.*` 명령**을 URI로 실행할 수 있다.
   `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>`(인자 1개를 JSON으로), `/<gpl.command.id>?key=value&…`(평면 인자 → 객체 1개,
   숫자/불리언/JSON 리터럴 자동 변환), `/command?id=<gpl.command.id>&args=…`. 별칭(종전 호환): `/connect?ip=192.168.0.1&port=1402[&save=settings]`,
   `/disconnect`, `/getState`(결과는 Output `[AI Debug]`), `/dashboard`. 터미널: `code --open-url "vscode://nir414.gpl-language-support/gpl.ai.debug.getState"`.
   결과는 URI로 돌려받을 수 없으므로 Output(`[URI] <id> => …`)과 `gpl.ai.debug.*`의 `[AI Debug]` 로그로 확인한다. `gpl.*` 밖의 명령은 실행하지
-  않는다(임의 VS Code 명령 프록시 방지 — 범위 한정이지 기능 제한이 아님). 해석 규칙: `src/controller/uriDispatch.ts`.
-- **명령 정책(`src/controller/commandPolicy.ts`, 2026-08-28)** — 모든 1402 명령은 `sendCommandDetailed`의 직렬 큐 한 곳을 지나며, 여기서 확장이
-  안전 조건을 **대신 기다려서** 충족시킨다(승인 모달·거부 목록 없음 — AI 접근을 막지 않는다는 사용자 결정. 예외는 되돌릴 수 없는 명령의 차단 목록 `controller/aiCommandPolicy.ts` 뿐 — 현재 `gpl.saveToFlash` 1건). R1 같은 쓰레드 Step/Continue는 직전
+  않는다(임의 VS Code 명령 프록시 방지 — 범위 한정이지 기능 제한이 아님). 해석 규칙: `src/controller/automation/uriDispatch.ts`.
+- **명령 정책(`src/controller/commands/commandPolicy.ts`, 2026-08-28)** — 모든 1402 명령은 `sendCommandDetailed`의 직렬 큐 한 곳을 지나며, 여기서 확장이
+  안전 조건을 **대신 기다려서** 충족시킨다(승인 모달·거부 목록 없음 — AI 접근을 막지 않는다는 사용자 결정. 예외는 되돌릴 수 없는 명령의 차단 목록 `controller/automation/aiCommandPolicy.ts` 뿐 — 현재 `gpl.saveToFlash` 1건). R1 같은 쓰레드 Step/Continue는 직전
   명령의 정지 확인 뒤·최소 간격(`gpl.debug.minStepIntervalMs`) 뒤에만 전송(#28), R2 Start/Compile/Load/Unload 전에 `Stopping` 쓰레드 정착 대기(§0.6),
   R3 Compile 완료 직후 같은 프로젝트 Start는 `gpl.controller.startAfterCompileGapMs`(기본 1.5 s) 완충(§0.7). `gpl.controller.transitionSettleWaitMs`(기본 8 s)
   안에 충족되지 않으면 제어기에 보내지 않고 `gpl.ai.debug.*`는 `{ ok: false, error: "policy-hold", code, detail, sentToController: false }`를,
   일반 명령은 오류 메시지를 돌려준다. 개입은 GPL Traffic `--- policy: R1/R2/R3 …` 줄로 남고 `getConnectionState().commandPolicy`에서 옵션을 볼 수 있다.
   따라서 외부 클라이언트는 이 조건들을 스스로 지킬 필요가 없다.
-- **Agent Bridge — MCP가 확장을 사용하는 통로(2026-08-28, `src/controller/agentBridge.ts` ↔ `controller-mcp/src/extensionBridge.js`)**:
+- **Agent Bridge — MCP가 확장을 사용하는 통로(2026-08-28, `src/controller/automation/agentBridge.ts` ↔ `controller-mcp/src/extensionBridge.js`)**:
   MCP 서버는 종전에 제어기 1402에 직접 붙어 확장 세션과 경쟁했고, AI가 "제어기는 정상인데 1402를 VS Code가 점유 중"이라고만 보고하며
   확장을 통한 테스트로 넘어가지 못했다. 이제 확장이 실행 중이면 MCP의 1402 명령이 **확장의 `gpl.controller.sendCommand`**로 라우팅되어
   같은 직렬 큐·keep-alive 세션·명령 정책을 그대로 탄다(따라서 MCP 경로에도 R1/R2/R3이 적용된다). 전송은 `%TEMP%\gpl-controller\`의
@@ -494,7 +494,7 @@ SoftEStop
 - Stop 정착 전 Compile/Start·Compile 직후 Start 연속 — 확장 경로는 명령 정책 R2/R3이 대신 기다린다(§0.6·§0.7). raw TCP/MCP로 직접 보낼 때만 스스로 `Show Thread -web`로 정착을 확인한다.
 - 제어기에 단명 TCP 연결을 반복해서 만들지 않는다(명령마다 connect/close 금지 — 확장은 1402 keep-alive(+유휴 5 s `Show Thread` ping으로 세션 유지 — GDE는 유휴 조건 없는 고정 주기이므로 같은 목적의 의도적 차이), 1403 배치 재연결 지연, FTP 세션 1회 조회로 접속 churn을 줄였다. GitHub #22, ai-handoff §1-BM).
 - 1403 스트림에 데이터를 보내 연결을 "유지"하려 하지 않는다 — GDE의 5 s NUL도 FIN을 막지 못했고(캡처 반례), 1403 수명은 1402 세션에 결부된 것으로 관측됐다(§1-BM). 끊김을 보면 1402 keep-alive/ping 로그를 먼저 본다.
-- **프로젝트명·Load 경로에 공백을 쓰지 않는다** — 1402 콘솔 명령(`Compile <name>`·`Load <path>`·`Start <name>`·`Unload <name>`)은 인자를 공백으로 구분하고 인용 문법이 없다(Brooks 문서상). `My project`는 `Compile My`+옵션 `project`로 읽혀 실패하거나 다른 프로젝트를 건드린다. 확장 경로(Deploy/Start/FTP Run·Unload/F5 attach)와 MCP `proj()`는 `controller/projectNameGuard.ts` 규칙으로 보내기 전에 막고 이름 변경(`My_project`)을 안내하며, 워크스페이스 프로젝트 감지 시에도 세션당 1회 경고한다(ai-handoff §1-BQ). raw TCP로 직접 보낼 때만 스스로 확인한다.
+- **프로젝트명·Load 경로에 공백을 쓰지 않는다** — 1402 콘솔 명령(`Compile <name>`·`Load <path>`·`Start <name>`·`Unload <name>`)은 인자를 공백으로 구분하고 인용 문법이 없다(Brooks 문서상). `My project`는 `Compile My`+옵션 `project`로 읽혀 실패하거나 다른 프로젝트를 건드린다. 확장 경로(Deploy/Start/FTP Run·Unload/F5 attach)와 MCP `proj()`는 `controller/projects/projectNameGuard.ts` 규칙으로 보내기 전에 막고 이름 변경(`My_project`)을 안내하며, 워크스페이스 프로젝트 감지 시에도 세션당 1회 경고한다(ai-handoff §1-BQ). raw TCP로 직접 보낼 때만 스스로 확인한다.
 <!-- end-of-runbook -->
 
 ## 부록 A. 변수 평가(`Show Variable -eval`) 규칙 요약 — 실측 2026-08-25 (GitHub #26·#27)

@@ -4,8 +4,8 @@ import {
 	exportAiAgentSetup, inspectAiAgentSetup, syncStableBundleIfStale, AiAgentSetupReport,
 } from '../ai/exportAgentSetup';
 import { sameSetupPath, findMcpHostMismatch } from '../ai/agentSetupChecks';
-import { getControllerConfig } from '../controller/controllerConnection';
-import { onControllerSessionChange } from '../controller/connectionSession';
+import { getControllerConfig } from '../controller/connection/controllerConnection';
+import { onControllerSessionChange } from '../controller/connection/connectionSession';
 import type { ExtensionHost } from './host';
 
 type SetupRequest = { workspaceRoot?: string; nonInteractive?: boolean };

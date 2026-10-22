@@ -108,6 +108,7 @@ RETR /GPL/MergeCode/MergeCode.gpl
 | `Show Stack` | thread 실행 stack 정보를 표시합니다. |
 | `Show StartupLog` | 컨트롤러 시작 시 콘솔에 출력된 메시지를 표시합니다. |
 | `Show Thread` | 하나 또는 전체 thread 정보를 표시합니다. |
+| `Show Temperature` | CPU·앰프 온도를 표시합니다. [System Console Panel](https://www2.brooksautomation.com/Controller_Software/Introduction_To_The_Software/Web_Interface/Control_Panels/systemconsole.htm)에 문서화되어 있으며, 모델별 센서 지원 제한은 [상태·온도](controller-telemetry.md)를 참조합니다. |
 | `Show Variable` | variable 값을 표시합니다. |
 | `Shutdown` | 컨트롤러 24V logic power off를 준비합니다. |
 | `SoftEStop` | motor power를 유지한 상태로 robot motion을 빠르게 정지합니다. |

@@ -7,11 +7,11 @@
  *
  * 강조는 제어기 상태의 표시이므로 상태가 끝나면 함께 지운다(§1-EP): 칠할 때 **주인 쓰레드**를 기억해 두고,
  * 트리가 쓰레드 목록을 갱신할 때마다 `reconcile` 로 "그 쓰레드가 아직 그 상태인가"를 확인한다(판정은
- * `controller/executionMarks` 순수 함수). 종전에는 편집·덮어칠하기 외에 지우는 경로가 없어 에러 난 쓰레드를
+ * `controller/debugging/executionMarks` 순수 함수). 종전에는 편집·덮어칠하기 외에 지우는 경로가 없어 에러 난 쓰레드를
  * 재시작해 에러가 사라진 뒤에도 붉은 줄이 남았다.
  */
 import * as vscode from 'vscode';
-import { ExecutionMarkOwner, isErrorMarkStale, isStoppedMarkStale, RuntimeStateSnapshot } from '../controller/executionMarks';
+import { ExecutionMarkOwner, isErrorMarkStale, isStoppedMarkStale, RuntimeStateSnapshot } from '../controller/debugging/executionMarks';
 
 export class ExecutionDecorations implements vscode.Disposable {
 	private readonly stoppedLine: vscode.TextEditorDecorationType;
@@ -78,7 +78,7 @@ export class ExecutionDecorations implements vscode.Disposable {
 
 	/**
 	 * 쓰레드 목록 갱신에 맞춰 낡은 강조를 지운다 — 트리의 `onDidChangeRuntimeState` 마다 호출된다
-	 * (폴링·디버그 브리지·연결 해제 모두 같은 경로). 판정 규칙은 `controller/executionMarks` 참조.
+	 * (폴링·디버그 브리지·연결 해제 모두 같은 경로). 판정 규칙은 `controller/debugging/executionMarks` 참조.
 	 */
 	reconcile(snapshot: RuntimeStateSnapshot): void {
 		if (this.errorEditor && isErrorMarkStale(this.errorOwner, snapshot)) { this.clearError(); }

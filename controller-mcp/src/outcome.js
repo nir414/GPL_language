@@ -15,8 +15,8 @@
 //    TCP connect 성공이나 ICMP 응답은 그 증거가 아니다(ai-handoff §0 하드 규칙 2의 취지).
 //  - **제어기 다운·전원 재투입 같은 강한 권고를 만들지 않는다.** 여러 독립 증거를 종합해야 하는 판단이다.
 //
-// 확장 쪽 대응 구현: src/controller/reachability.ts (assessReachability) · src/controller/commandPolicy.ts
-// (TRAITS_BY_KIND) · src/controller/connectionHealth.ts (recovering). 목록/근거를 함께 유지할 것.
+// 확장 쪽 대응 구현: src/controller/connection/reachability.ts (assessReachability) · src/controller/commands/commandPolicy.ts
+// (TRAITS_BY_KIND) · src/controller/connection/connectionHealth.ts (recovering). 목록/근거를 함께 유지할 것.
 
 /** 제어기에 아무것도 보내지 않았음이 확실 — 원인을 해소한 뒤 같은 명령을 다시 보내도 안전하다. */
 export const SEND_OUTCOME_NOT_SENT = 'not-sent';

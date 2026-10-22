@@ -208,7 +208,7 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   활성 스레드를 확인하고, 있으면 -750이 뻔하므로 보내지 않고 `refused:"threads-active"`와 목록을 돌려준다.
 - `stop_threads(thread?, project?, timeoutMs?)` — 정지. `thread` → `Stop <thread>`, `project` → 그 프로젝트의 활성 스레드를
   열거해 이름별 `Stop`, 둘 다 생략 → `Stop -all`. STATUS 0/-752는 "접수"로만 보고 `Show Thread -web` 폴링으로 정지를
-  확인하며, 미정착이면 1회 자동 재전송한다(확장 `controller/threadStop.ts`와 같은 규약).
+  확인하며, 미정착이면 1회 자동 재전송한다(확장 `controller/threads/threadStop.ts`와 같은 규약).
   범위 없는 전체 정지는 같은 제어기의 실행 중·대기 중 업로드/배포에도 취소를 요청해 이후 Compile/Start를 막는다.
   **제어기의 `Stop <이름>`은 스레드 이름 단위**다 — `Stop <project>`는 동명 스레드 하나만 멈추고 프로젝트가 다른 이름으로
   띄운 스레드(`LOG_SOCKET` 등)는 남아 Unload/Compile이 -750이 된다(2026-10-14 실측). `TCPCLI[0]`처럼 대괄호가 든 이름은

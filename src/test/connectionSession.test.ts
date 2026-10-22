@@ -7,7 +7,7 @@ import {
     onControllerSessionChange,
     resetControllerSessionForTest,
     setControllerSessionConnected,
-} from '../controller/connectionSession';
+} from '../controller/connection/connectionSession';
 
 test('connectionSession: 초기값은 해제 상태', () => {
     resetControllerSessionForTest();

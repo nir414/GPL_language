@@ -77,7 +77,7 @@ Brooks/Precise Automation 제어기(G2400C, GPL 4.2K5)를 1402 콘솔로 디버�
 | `-name <thread>` | 쓰레드 이름 지정(기본값은 프로젝트명) | 미사용 |
 | `-compile` | 시작 전 컴파일/재컴파일 | **절대 붙이지 않는다** — 실기기는 스위치 없이도 컴파일한다(하드 규칙 7). 이 대목은 문서가 부정확하다 |
 
-조립은 `src/controller/startCommand.ts` 한 곳에서 하고 스위치 순서는 문서 구문 순서를 따른다.
+조립은 `src/controller/commands/startCommand.ts` 한 곳에서 하고 스위치 순서는 문서 구문 순서를 따른다.
 
 **Stop 이후에는 Continue가 불가**하고 `Start`로만 재시작된다(문서). Paused 상태의 스레드는 Unload 전에
 Stop이 요구된다 — 저장소의 settle 게이트와 방향이 같다. 단 `-752/-753`(Timeout stopping thread)의

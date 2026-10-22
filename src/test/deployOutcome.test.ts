@@ -13,9 +13,9 @@ import {
     parsedErrorCodes,
     selectErrorLogNotice,
     summarizeCompileAttempts,
-} from '../controller/deployOutcome';
-import type { CompileAttemptLog, DeployResult } from '../controller/deployService';
-import { assessMemory } from '../controller/memoryGuard';
+} from '../controller/deployment/deployOutcome';
+import type { CompileAttemptLog, DeployResult } from '../controller/deployment/deployService';
+import { assessMemory } from '../controller/diagnostics/memoryGuard';
 
 test('deployOutcome: memory precheck rejection is not described as FTP or compile failure', () => {
     const described = describeDeployFailure(result({ failedPhase: 'UPLOAD', memoryPrecheck: assessMemory('') }), [], undefined);

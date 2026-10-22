@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { RuntimeConsoleBuffer, compileUntilPattern } from '../controller/runtimeConsoleBuffer';
+import { RuntimeConsoleBuffer, compileUntilPattern } from '../controller/runtime/runtimeConsoleBuffer';
 
 // ── 커서 읽기 ───────────────────────────────────────────────────────────────
 

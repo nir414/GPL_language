@@ -9,7 +9,7 @@ import {
     assessReachability,
     normalizeMac,
     vendorHintFor,
-} from '../controller/reachability';
+} from '../controller/connection/reachability';
 
 // ── ping 출력 샘플 ──────────────────────────────────────────────────────────
 

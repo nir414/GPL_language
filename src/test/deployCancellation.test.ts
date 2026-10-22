@@ -10,7 +10,7 @@ import {
 	isStopAllCommand,
 	readDeployCancellation,
 	requestDeployCancellation,
-} from '../controller/deployCancellation';
+} from '../controller/deployment/deployCancellation';
 
 function tempDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), 'gpl-deploy-cancel-test-'));

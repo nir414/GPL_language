@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { CompileStaleInfo, describeCompileStale } from '../controller/compileStale';
+import { CompileStaleInfo, describeCompileStale } from '../controller/deployment/compileStale';
 import {
     COMPILE_STALE_BADGE_COMMAND,
     compileStaleBadgeCommand,

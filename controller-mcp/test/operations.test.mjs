@@ -1,5 +1,5 @@
 // 작업 기록(Operation) 읽기 단위 테스트 — 확장 없이 파일 계약만으로 검증한다.
-// 확장 쪽 정본은 src/controller/operationStore.ts (src/test/operationStore.test.ts).
+// 확장 쪽 정본은 src/controller/automation/operationStore.ts (src/test/operationStore.test.ts).
 // 실행: npm test (node --test)
 
 import test from 'node:test';

@@ -10,21 +10,21 @@
  * `extension.ts` 의 activate() 클로저에서 분리(2026-09-07). 로그·알림이 필요한 함수는 host 를 첫 인자로 받는다.
  */
 import * as vscode from 'vscode';
-import { getControllerConfig, sendCommand, sendCommandDetailed } from '../controller/controllerConnection';
-import { DeployCancellationRequest, requestDeployCancellation } from '../controller/deployCancellation';
-import { activeOperations } from '../controller/operationStore';
-import { parseStatus } from '../controller/responseParser';
-import type { ThreadInfo } from '../controller/responseParser';
-import { isPausedState, isSettledState } from '../controller/threadActivity';
-import { probeThreads, stopAllAndSettle, stopThreadAndSettle, waitThreadsSettle } from '../controller/threadStop';
-import type { StopAllOutcome, ThreadStopIo, ThreadStopOptions } from '../controller/threadStop';
-import { isBusyStatus } from '../controller/controllerStatusCodes';
-import { buildRuntimeConsoleUserMessage } from '../controller/runtimeConsolePresentation';
-import type { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+import { getControllerConfig, sendCommand, sendCommandDetailed } from '../controller/connection/controllerConnection';
+import { DeployCancellationRequest, requestDeployCancellation } from '../controller/deployment/deployCancellation';
+import { activeOperations } from '../controller/automation/operationStore';
+import { parseStatus } from '../controller/protocol/responseParser';
+import type { ThreadInfo } from '../controller/protocol/responseParser';
+import { isPausedState, isSettledState } from '../controller/threads/threadActivity';
+import { probeThreads, stopAllAndSettle, stopThreadAndSettle, waitThreadsSettle } from '../controller/threads/threadStop';
+import type { StopAllOutcome, ThreadStopIo, ThreadStopOptions } from '../controller/threads/threadStop';
+import { isBusyStatus } from '../controller/protocol/controllerStatusCodes';
+import { buildRuntimeConsoleUserMessage } from '../controller/runtime/runtimeConsolePresentation';
+import type { RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 import type { ExtensionHost } from './host';
 
 /**
- * 접착 계층용 `ThreadStopIo` — 전체 정지 절차(controller/threadStop.ts)에 확장의 전송·로그·대기를 물린다.
+ * 접착 계층용 `ThreadStopIo` — 전체 정지 절차(controller/threads/threadStop.ts)에 확장의 전송·로그·대기를 물린다.
  *
  * 정지 절차 자체(전송·STATUS 판정·정지 확인 폴링·재시도)는 그 모듈이 정본이고, 여기서는 목적지만 정한다.
  * 진행 로그의 목적지(`log`)만 호출부가 정한다 — 확장 Output(`host.log`), FTP 실행 로그, 또는 버림.
@@ -82,7 +82,7 @@ export function requestActiveDeployCancellation(
  * **개별 쓰레드 정지 + 사용자 안내** — 트리의 「쓰레드 정지」와 FTP 폴더 「중지」가 함께 쓴다.
  *
  * 두 명령은 문구만 다르고 절차(Stop → 정지 확인 → 실패 시 SoftEStop 제안 → 트리 새로고침)가 같아
- * 같은 코드가 두 벌 있었다(2026-09-10 §1-DD). 정지 절차 자체는 controller/threadStop.ts 가 맡고,
+ * 같은 코드가 두 벌 있었다(2026-09-10 §1-DD). 정지 절차 자체는 controller/threads/threadStop.ts 가 맡고,
  * 여기서는 그 결과를 알림으로 옮기는 일만 한다.
  *
  * @param label 사용자에게 보일 대상 이름(쓰레드명·프로젝트명).
@@ -149,7 +149,7 @@ export async function sendCommandWithBusyRetry(
 
 /**
  * 지정 쓰레드가 정지될 때까지 `Show Thread` 폴링. 목록에서 사라져도 정지로 본다.
- * settled 판정은 `controller/threadActivity.isSettledState` 하나만 쓴다(집합을 여기 따로 두지 않는다).
+ * settled 판정은 `controller/threads/threadActivity.isSettledState` 하나만 쓴다(집합을 여기 따로 두지 않는다).
  */
 export async function verifyThreadStopped(host: ExtensionHost, threadName: string, maxAttempts = 6): Promise<boolean> {
 	const io = createThreadStopIo(host.log);

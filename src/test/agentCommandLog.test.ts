@@ -6,7 +6,7 @@ import {
     formatAgentCommandFailure,
     formatAgentCommandLines,
     formatAgentCommandSummary,
-} from '../controller/agentCommandLog';
+} from '../controller/automation/agentCommandLog';
 
 // ─── AI 경유 명령을 Output 에서 보이게 (§1-EO) ───
 

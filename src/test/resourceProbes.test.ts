@@ -10,8 +10,8 @@ import {
     ResourceHistory,
     ResourceSnapshot,
     RAW_KEEP_MAX_CHARS,
-} from '../controller/resourceProbes';
-import { NO_STATUS_CODE } from '../controller/responseParser';
+} from '../controller/diagnostics/resourceProbes';
+import { NO_STATUS_CODE } from '../controller/protocol/responseParser';
 
 const frame = (body: string, status = '0,""') => `<DATA>\r\n${body}\r\n</DATA>\r\n<STATUS>${status}</STATUS>\r\n`;
 

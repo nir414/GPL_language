@@ -1,42 +1,42 @@
 /**
  * 배포 계열 명령 — Deploy(Build Only)·업로드 스타트·Start·Save to Flash·Quick Compile·autoOnSave,
- * 그리고 자동화(비대화형) 경로의 대상 해석·게이트(개선안 §15~§27, controller/projectTarget.ts).
+ * 그리고 자동화(비대화형) 경로의 대상 해석·게이트(개선안 §15~§27, controller/projects/projectTarget.ts).
  *
  * `runDeploy`/`confirmStartWhenCompileStale`/`pickWorkspaceProjectDir` 는 다른 명령 그룹(연결·트리)도
  * 쓰므로 `host.deploy` 로 노출한다.
  */
 
 import * as vscode from 'vscode';
-import { formatRuntimeError } from '../controller/postStartWatch';
+import { formatRuntimeError } from '../controller/threads/postStartWatch';
 import * as path from 'path';
 import { isRuntimeConsoleAutoStartOnDeploy } from '../config';
-import { AI_BLOCKED_ERROR, aiBlockedDetail, findAiBlockedCommand } from '../controller/aiCommandPolicy';
-import { getControllerConfig, sendCommandDetailed } from '../controller/controllerConnection';
-import { FLASH_SYNC_TIMEOUT_MS, waitForFlashSafe } from '../controller/flashSafety';
-import { describeCompileStale } from '../controller/compileStale';
-import { describeDeployLock, getDeployLock } from '../controller/deployLock';
-import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, onDidUploadProgress } from '../controller/deployService';
-import { isUploadCancelledError, mirrorProject } from '../controller/ftpClient';
-import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
-import { buildTargetCandidates, pickProjectDir, readGprProjectName } from '../controller/projectPicker';
+import { AI_BLOCKED_ERROR, aiBlockedDetail, findAiBlockedCommand } from '../controller/automation/aiCommandPolicy';
+import { getControllerConfig, sendCommandDetailed } from '../controller/connection/controllerConnection';
+import { FLASH_SYNC_TIMEOUT_MS, waitForFlashSafe } from '../controller/deployment/flashSafety';
+import { describeCompileStale } from '../controller/deployment/compileStale';
+import { describeDeployLock, getDeployLock } from '../controller/deployment/deployLock';
+import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, onDidUploadProgress } from '../controller/deployment/deployService';
+import { isUploadCancelledError, mirrorProject } from '../controller/files/ftpClient';
+import { checkProjectName, describeProjectNameProblem } from '../controller/projects/projectNameGuard';
+import { buildTargetCandidates, pickProjectDir, readGprProjectName } from '../controller/projects/projectPicker';
 import { normalizeDirKey } from '../util/pathKey';
 import { getControllerProjectWriteBlock } from '../project/controllerProjectWorkspace';
-import { activeOperations, beginOperation, listOperations, readOperation, sweepOperations } from '../controller/operationStore';
-import { clearDeployCancellation, readDeployCancellation } from '../controller/deployCancellation';
-import { recoveryFor } from '../controller/automationRecovery';
-import type { RecoveryHint } from '../controller/automationRecovery';
+import { activeOperations, beginOperation, listOperations, readOperation, sweepOperations } from '../controller/automation/operationStore';
+import { clearDeployCancellation, readDeployCancellation } from '../controller/deployment/deployCancellation';
+import { recoveryFor } from '../controller/automation/automationRecovery';
+import type { RecoveryHint } from '../controller/automation/automationRecovery';
 import {
 	describeCandidates,
 	describeResolution,
 	isAutomationInvocation,
 	isProjectTargetRequest,
 	resolveProjectTarget,
-} from '../controller/projectTarget';
-import type { ProjectTargetRequest, TargetCandidateSummary } from '../controller/projectTarget';
-import { isControllerNonBlockingStatus, parseStatus } from '../controller/responseParser';
-import { RuntimeConsole } from '../controller/runtimeConsole';
-import { buildStartCommand, commandRunsCompiler } from '../controller/startCommand';
-import { getSyncManifest, recordSyncManifest } from '../controller/syncManifest';
+} from '../controller/projects/projectTarget';
+import type { ProjectTargetRequest, TargetCandidateSummary } from '../controller/projects/projectTarget';
+import { isControllerNonBlockingStatus, parseStatus } from '../controller/protocol/responseParser';
+import { RuntimeConsole } from '../controller/runtime/runtimeConsole';
+import { buildStartCommand, commandRunsCompiler } from '../controller/commands/startCommand';
+import { getSyncManifest, recordSyncManifest } from '../controller/files/syncManifest';
 import {
 	DeployOutcomeHistory,
 	buildCompileRawSectionLines,
@@ -50,8 +50,8 @@ import {
 	parsedErrorCodes,
 	selectErrorLogNotice,
 	summarizeCompileAttempts,
-} from '../controller/deployOutcome';
-import type { ErrorLogNotice, SituationDeploySnapshot } from '../controller/deployOutcome';
+} from '../controller/deployment/deployOutcome';
+import type { ErrorLogNotice, SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
 import type { ExtensionHost } from './host';
 
 export interface DeployApi {
@@ -76,7 +76,7 @@ export type QuickDeployOpts = {
 export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	const { context, outputChannel, consoleChannel, deployDiagnostics } = host;
 
-	// 배포 결과 이력 — signature 만 중복 알림 억제에 쓴다(상한 50, 규칙은 controller/deployOutcome.ts).
+	// 배포 결과 이력 — signature 만 중복 알림 억제에 쓴다(상한 50, 규칙은 controller/deployment/deployOutcome.ts).
 	const deployOutcomeHistory = new DeployOutcomeHistory(50);
 
 	// 성공 배포 알림에서 이미 본 ErrorLog 항목(제어기 IP별) — 제어기는 ErrorLog 를 지울 때까지 보존하므로 그대로 알리면
@@ -374,7 +374,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				return result;
 			}
 
-			// ErrorLog 분류·COMPILE 원문 섹션의 문구는 controller/deployOutcome.ts 가 만든다(테스트 대상) — 여기서는 줄만 찍는다.
+			// ErrorLog 분류·COMPILE 원문 섹션의 문구는 controller/deployment/deployOutcome.ts 가 만든다(테스트 대상) — 여기서는 줄만 찍는다.
 			const logErrorLogSections = (): { sysCount: number; deployErrCount: number } => {
 				const classified = classifyDeployErrorLog(result.errorLog);
 				for (const line of classified.lines) { host.log(line); }
@@ -572,7 +572,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				const signature = buildDeployOutcomeSignature(result, sysCodes);
 				const comparisonNote = comparisonNoteFor(deployOutcomeHistory.countSame(signature), 'failure');
 				deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: result.failedPhase ?? 'FAIL' });
-				// 실패 문구·검증 불가 사유·마지막 단계는 controller/deployOutcome.ts 의 순수 규칙이 정한다(테스트 대상).
+				// 실패 문구·검증 불가 사유·마지막 단계는 controller/deployment/deployOutcome.ts 의 순수 규칙이 정한다(테스트 대상).
 				const failure = describeDeployFailure(result, sysErrors, comparisonNote);
 				// 소스 줄에 붙는 컴파일 에러면 Problems 패널 + 에러 줄로 보내고, 그 외(제어기 시스템 에러 등
 				// 코드 위치가 없는 실패)에만 출력 패널을 띄운다.
@@ -616,7 +616,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	}
 
 	/**
-	 * 워크스페이스에서 .gpr 프로젝트 폴더를 선택한다 (공용 규칙: controller/projectPicker.ts).
+	 * 워크스페이스에서 .gpr 프로젝트 폴더를 선택한다 (공용 규칙: controller/projects/projectPicker.ts).
 	 * resource(탐색기 우클릭한 폴더/.gpr/소스 파일)가 있으면 QuickPick 없이 그 프로젝트로 확정,
 	 * 없으면 1개는 즉시·여러 개는 QuickPick(최근 선택 우선). 명령 인자의 첫 값은 VS Code가
 	 * 메뉴에서 넘기는 Uri이고 팔레트/트리에서는 undefined 또는 비-Uri일 수 있어 Uri만 인정한다.
@@ -628,7 +628,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		return dir;
 	}
 
-	// ── 자동화(비대화형) 경로 — 개선안 §15~§27 (규칙: controller/projectTarget.ts) ────────────────
+	// ── 자동화(비대화형) 경로 — 개선안 §15~§27 (규칙: controller/projects/projectTarget.ts) ────────────────
 	// 사람용 명령(팔레트·탐색기 우클릭·트리)은 종전대로 QuickPick/모달을 쓰고, **인자로 대상을 받은 호출**
 	// (MCP 브리지·URI·다른 확장)은 UI 를 절대 띄우지 않고 구조화된 결과를 돌려준다. 두 경로를 섞지 않는다.
 	// active editor 는 자동화 대상 결정에 쓰지 않는다 — 어느 탭을 열어 뒀는지는 사람의 UI 상태다(§22).
@@ -653,7 +653,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	type AutomationErrorCode =
 		| 'NO_GPL_PROJECT' | 'PROJECT_NOT_FOUND' | 'PROJECT_AMBIGUOUS'
 		| 'UNSAVED_FILES' | 'INTERACTIVE_UI_REQUIRED' | 'COMPILE_UNVERIFIED'
-		/** AI/자동화 경로에서 실행할 수 없는 명령(controller/aiCommandPolicy.ts). */
+		/** AI/자동화 경로에서 실행할 수 없는 명령(controller/automation/aiCommandPolicy.ts). */
 		| typeof AI_BLOCKED_ERROR;
 
 	interface AutomationFailure {
@@ -665,7 +665,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		files?: string[];
 		/**
 		 * 다음에 무엇을 할지 — 호출자(AI/MCP)가 detail 문장을 해석해 행동을 지어내지 않게 한다(개선안 §15~§17).
-		 * 규칙은 `controller/automationRecovery.ts` 가 정본이며 코드마다 하나로 정해져 있다.
+		 * 규칙은 `controller/automation/automationRecovery.ts` 가 정본이며 코드마다 하나로 정해져 있다.
 		 */
 		recovery?: RecoveryHint;
 	}
@@ -1033,7 +1033,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	// 제어기 상태는 건드리지 않는다 (Stop/Unload/Load/Compile 없음 — 2026-07-24 결정).
 	// 미러 동기화: 크기 다른 파일만 업로드 + 원격 전용 파일 삭제(낡은 소스가 이후 Load에 섞이는 것 방지).
 	// **사람 전용 명령** (2026-09-07 사용자 결정): flash 영구 사본을 되돌릴 수 없게 덮어쓰므로 AI/자동화 경로에서는
-	// 실행하지 않는다. 브리지·URI 는 앞단에서 이미 거부하고(controller/aiCommandPolicy.ts), 여기서는 그 두 곳을
+	// 실행하지 않는다. 브리지·URI 는 앞단에서 이미 거부하고(controller/automation/aiCommandPolicy.ts), 여기서는 그 두 곳을
 	// 거치지 않는 직접 호출까지 막는 마지막 관문이다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.saveToFlash', async (resource?: unknown) => {

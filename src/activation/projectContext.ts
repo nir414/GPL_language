@@ -8,10 +8,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getControllerConfig } from '../controller/controllerConnection';
-import { findProjectDirs } from '../controller/deployService';
-import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
-import { parseGpr, pickSourceCandidate } from '../controller/responseParser';
+import { getControllerConfig } from '../controller/connection/controllerConnection';
+import { findProjectDirs } from '../controller/deployment/deployService';
+import { checkProjectName, describeProjectNameProblem } from '../controller/projects/projectNameGuard';
+import { parseGpr, pickSourceCandidate } from '../controller/protocol/responseParser';
 import { parseJsonc, upsertLaunchConfiguration } from '../debug/launchJsonc';
 import { walkTree } from '../project/projectSources';
 import { chooseCompileUnitGprs, GprIdentity, readGprIdentity, readGprIdentityInDir } from '../project/compileUnitTarget';

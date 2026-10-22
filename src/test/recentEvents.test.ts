@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { ControllerEventLog, formatControllerEvent, isControllerEvent } from '../controller/recentEvents';
+import { ControllerEventLog, formatControllerEvent, isControllerEvent } from '../controller/diagnostics/recentEvents';
 
 // ─── 「오류 상세 보기」의 "직전 제어기 사건" — 되먹임 차단과 소음 제거 (§1-EA) ───
 

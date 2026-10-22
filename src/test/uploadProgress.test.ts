@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { UploadProgressTracker } from '../controller/uploadProgress';
-import type { UploadProgressEvent } from '../controller/uploadProgress';
+import { UploadProgressTracker } from '../controller/deployment/uploadProgress';
+import type { UploadProgressEvent } from '../controller/deployment/uploadProgress';
 
 // ─── 업로드 진행 집계(tracker) — ftpClient 가 지키는 규약(begin → transferred… → end / 스킵은 end 만) (§1-EE) ───
 // 표시(바·툴팁·완료 요약)는 views/uploadProgressBar → uploadProgressBar.test.ts.

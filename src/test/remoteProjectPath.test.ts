@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../controller/remoteProjectPath';
+import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../controller/projects/remoteProjectPath';
 
 const FLASH = '/flash/projects';
 const GPL = '/GPL';

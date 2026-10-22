@@ -102,6 +102,7 @@
 		.badge.err .v { color: var(--err); }
 		.badge.na   { border-left-color: var(--idle); }
 		.badge.na .v { color: var(--idle); }
+		.badge .v { overflow-wrap: anywhere; }
 		.badge.flash { animation: flash 0.9s ease-out 1; }
 		@keyframes flash {
 			0% { box-shadow: 0 0 0 0 rgba(55,148,255,0.0); background: rgba(55,148,255,0.25); }
@@ -184,6 +185,9 @@
 		.res-row .v.na.clickable { cursor: pointer; text-decoration: underline dotted; }
 		.res-row .v .d { font-size: 0.8em; margin-left: 4px; font-weight: 600; }
 		.res-row .v .d.down { color: var(--warn); }
+		.temperature-card h2 { flex-wrap: wrap; }
+		.temperature-readings .res-row { flex-direction: column; align-items: flex-start; gap: 4px; padding: 6px 0; }
+		.temperature-readings .v { text-align: left; }
 		.sparks { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--gap); margin-top: 10px; }
 		.spark-box .cap { display: flex; justify-content: space-between; gap: 8px; font-size: 0.75em; color: var(--idle); margin-bottom: 2px; font-variant-numeric: tabular-nums; }
 		.spark { width: 100%; height: 44px; display: block; border-radius: 6px; background: rgba(127,127,127,0.10); }
@@ -265,6 +269,7 @@
 		<div id="bPower" class="badge na"><span class="k">고전원 (서보)</span><span class="v">—</span><span class="s">Controller.PowerEnabled</span></div>
 		<div id="bThreads" class="badge na"><span class="k">스레드</span><span class="v">—</span><span class="s"></span></div>
 		<div id="bError" class="badge na"><span class="k">에러</span><span class="v">—</span><span class="s"></span></div>
+		<div id="bTemp" class="badge na"><span class="k">CPU 온도</span><span class="v">—</span><span class="s">Show Temperature</span></div>
 	</div>
 
 	<div class="grid">
@@ -305,6 +310,24 @@
 					<text x="8" y="14" id="xyLabel">X / Y</text>
 				</svg>
 			</div>
+		</div>
+
+		<div class="card full temperature-card">
+			<h2>온도 <span class="sub" id="tempSub">Show Temperature · 조회 대기</span></h2>
+			<div class="res temperature-readings" id="tempReadings"><span class="empty">온도 조회 대기</span></div>
+			<p id="tempSummary" class="updated"></p>
+			<div class="sparks">
+				<div class="spark-box">
+					<div class="cap"><span>CPU 최고 온도 추이 (°C)</span><span id="sparkCpuCap"></span></div>
+					<svg id="sparkCpu" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="CPU 최고 온도 추이"></svg>
+				</div>
+				<div class="spark-box">
+					<div class="cap"><span>앰프 최고 온도 추이 (°C)</span><span id="sparkAmpCap"></span></div>
+					<svg id="sparkAmp" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="앰프 최고 온도 추이"></svg>
+				</div>
+			</div>
+			<p class="updated">CPU 내부 센서값은 케이스·주변 온도와 다릅니다. 과열 여부는 모델별 허용 온도와 함께 확인하세요. 앰프 0°C는 센서 미지원일 수 있습니다.</p>
+			<details class="res-raw"><summary>온도 응답 원문</summary><pre id="tempRaw">—</pre></details>
 		</div>
 
 		<div class="card full">
@@ -401,6 +424,7 @@
 			xyTrail: [],                // 최근 XY 점
 			prevCart: null,
 			prevClustersFree: null,     // 직전 mbuf clusters free (감소 표시용)
+			targetKey: '',
 			page: 'status',
 			dioSignals: [],
 			dioFilter: 'all',
@@ -509,6 +533,7 @@
 			// 스레드
 			const sum = s.threadSummary || { running: 0, paused: 0, idle: 0, error: 0, total: 0 };
 			if (!s.connected) setBadge('bThreads', 'na', '—', '');
+			else if (s.threadsAvailable === false) setBadge('bThreads', 'na', '미확인', s.note || '쓰레드 조회 실패');
 			else if (sum.error > 0) setBadge('bThreads', 'err', sum.error + ' ERROR', `실행 ${sum.running} · 정지 ${sum.paused} · 전체 ${sum.total}`);
 			else if (sum.paused > 0) setBadge('bThreads', 'warn', sum.paused + ' PAUSED', `실행 ${sum.running} · 전체 ${sum.total}`);
 			else if (sum.running > 0) setBadge('bThreads', 'ok', sum.running + ' RUNNING', `전체 ${sum.total}`);
@@ -519,6 +544,7 @@
 			const fresh = state.firstErrors ? 0 : errs.filter((e) => !state.seenErrors.has(e)).length;
 			if (!s.connected) setBadge('bError', 'na', '—', '');
 			else if (sum.error > 0 || fresh > 0) setBadge('bError', 'err', (sum.error > 0 ? sum.error + ' 스레드' : '') + (fresh > 0 ? (sum.error > 0 ? ' · ' : '') + '새 로그 ' + fresh : ''), errs[0] ? String(errs[0]).slice(0, 80) : '');
+			else if (s.errorsNote) setBadge('bError', 'na', '미확인', s.errorsNote);
 			else setBadge('bError', 'ok', '없음', errs.length ? `최근 로그 ${errs.length}건(변화 없음)` : '로그 없음');
 		}
 
@@ -533,7 +559,7 @@
 			const threads = Array.isArray(s.threads) ? s.threads : [];
 			const body = $('threadBody');
 			if (threads.length === 0) {
-				body.innerHTML = '<tr><td class="na" colspan="5">' + (s.connected ? '스레드 없음' : '데이터 없음') + '</td></tr>';
+				body.innerHTML = '<tr><td class="na" colspan="5">' + esc(s.connected ? (s.threadsAvailable === false ? s.note || '쓰레드 조회 실패' : '스레드 없음') : '데이터 없음') + '</td></tr>';
 				state.prevThreads.clear();
 				return;
 			}
@@ -623,9 +649,10 @@
 
 		function renderLog(s) {
 			const log = $('log');
+			$('logSub').textContent = s.errorsNote || ('ErrorLog 최신 20건' + (s.errorsSampledAt ? ' · 조회 ' + new Date(s.errorsSampledAt).toLocaleTimeString() : ''));
 			const errs = Array.isArray(s.errors) ? s.errors : [];
 			if (errs.length === 0) {
-				log.innerHTML = '<div class="empty">로그 없음</div>';
+				log.innerHTML = '<div class="empty">' + esc(s.errorsNote || (s.connected ? '로그 없음' : '연결 끊김')) + '</div>';
 				state.firstErrors = false;
 				return;
 			}
@@ -644,6 +671,31 @@
 		const NO_STATUS_CODE = -9999;   // responseParser.NO_STATUS_CODE (STATUS 누락 — 잘린 응답)
 		const NA_TEXT = '—(형식 미확정, 원문 보기)';
 		const RES_SUB_DEFAULT = 'Show Memory · Show Network -tcp / -mbuf';
+
+		function renderTemperature(s, history, warningC, intervalMs) {
+			const temp = s.connected ? s.temperature : null;
+			const readings = temp && Array.isArray(temp.readings) ? temp.readings : [];
+			const pts = s.connected && Array.isArray(history) ? history : [];
+			const age = temp ? Math.max(0, (s.timestamp - temp.sampledAt) / 1000) : 0;
+			const stale = temp && age * 1000 > Math.max(1000, intervalMs || 10000) * 2;
+			$('tempSub').textContent = temp ? '조회 ' + new Date(temp.sampledAt).toLocaleTimeString() + ' · ' + age.toFixed(0) + '초 전 · 간격 ' + ((intervalMs || 10000) / 1000) + 's' + (stale ? ' · 오래된 값' : '') : (s.connected ? '조회 대기' : '연결 끊김');
+			$('tempReadings').innerHTML = readings.length ? readings.map(r => {
+				const valid = isNum(r.celsius);
+				const warning = valid && r.kind === 'cpu' && warningC > 0 && r.celsius >= warningC;
+				const value = valid ? r.celsius.toFixed(1) + ' °C' : (isNum(r.reportedCelsius) ? r.reportedCelsius.toFixed(1) + ' °C 반환 · 센서 지원 미확인' : '미확인');
+				return '<div class="res-row"><span class="l">' + esc(r.label) + '</span><span class="v ' + (valid ? (warning || stale ? 'warn' : '') : 'na') + '">' + esc(value) + '</span></div>';
+			}).join('') : '<span class="empty">' + esc(temp ? temp.note || '데이터 없음' : (s.connected ? '조회 대기' : '연결 끊김')) + '</span>';
+			const cpuValues = readings.filter(r => r.kind === 'cpu' && isNum(r.celsius)).map(r => r.celsius);
+			const cpu = cpuValues.length ? Math.max(...cpuValues) : null;
+			const peakValues = pts.map(p => p.cpuMaxC).filter(isNum);
+			const peak = peakValues.length ? Math.max(...peakValues) : null;
+			const limitText = warningC > 0 ? '사용자 주의 기준 ' + warningC + '°C (제조사 보호 한계와 별개)' : '주의 기준 미설정 · 과열 여부 미판정';
+			$('tempSummary').textContent = (peak === null ? '' : '관측 CPU 최고 ' + peak.toFixed(1) + '°C · ') + limitText;
+			setBadge('bTemp', cpu === null ? 'na' : stale || (warningC > 0 && cpu >= warningC) ? 'warn' : '', cpu === null ? '—' : cpu.toFixed(1) + ' °C', cpu === null ? (temp ? temp.note || 'CPU 온도 없음' : '조회 대기') : (stale ? '오래된 값 · ' : '') + limitText);
+			$('tempRaw').textContent = temp ? temp.raw || temp.note || '응답 없음' : '—';
+			renderSpark('sparkCpu', 'sparkCpuCap', pts, 'cpuMaxC', { digits: 1, unit: '°C' });
+			renderSpark('sparkAmp', 'sparkAmpCap', pts, 'amplifierMaxC', { digits: 1, unit: '°C' });
+		}
 
 		function setRes(id, text, cls, title) {
 			const el = $(id);
@@ -674,19 +726,24 @@
 
 		function renderResources(s, history, probesOn) {
 			const sub = $('resSub');
+			if (!s.connected) {
+				clearResourceValues();
+				sub.textContent = '연결 끊김 · 자원 상태 미확인';
+				return;
+			}
 			if (probesOn === false) {
 				// 마지막 값은 그대로 둔다(끄기 전 상태 참고용) — 부제만 바꿔 비활성임을 알린다.
-				sub.textContent = '비활성 — 설정 gpl.controller.dashboardResourceProbes 를 켜면 폴링마다 조회';
+				sub.textContent = s.connected ? '자원 조회 비활성 · 아래 값은 이전 관측값' : '연결 끊김 · 아래 값은 이전 관측값';
 				return;
 			}
 			const r = s.resources;
 			if (!r) {
-				sub.textContent = RES_SUB_DEFAULT + (s.connected ? ' · 이번 폴링에 수집되지 않음' : ' · 연결 끊김');
+				sub.textContent = RES_SUB_DEFAULT + (s.connected ? ' · 이번 폴링에 수집되지 않음' : ' · 연결 끊김 · 이전 관측값');
 				return;
 			}
 			const raw = r.raw || {}, st = r.status || {}, rates = r.rates || null;
 			const pts = Array.isArray(history) ? history : [];
-			sub.textContent = RES_SUB_DEFAULT + (rates && isNum(rates.elapsedMs) ? ' · 증가율 창 ' + (rates.elapsedMs / 1000).toFixed(1) + 's' : '') +
+			sub.textContent = '조회 ' + new Date(r.sampledAt).toLocaleTimeString() + ' · ' + Math.max(0, (s.timestamp - r.sampledAt) / 1000).toFixed(0) + '초 전' + (rates && isNum(rates.elapsedMs) ? ' · 증가율 창 ' + (rates.elapsedMs / 1000).toFixed(1) + 's' : '') +
 				(pts.length > 1 ? ' · 이력 ' + ((pts[pts.length - 1].t - pts[0].t) / 60000).toFixed(1) + '분' : '');
 
 			// 메모리 — 임계값 없음(기준선은 사용자가 재부팅 직후 잡음). Free 는 이력 시작점 대비 증감을 함께 보인다.
@@ -742,6 +799,15 @@
 				.join('\n\n');
 		}
 
+		function clearResourceValues() {
+			['rFree', 'rUsed', 'rSeg', 'rFd', 'rAccRate', 'rAcc', 'rEst', 'rClosed', 'rClFree', 'rMbuf', 'rDwd'].forEach(id => setRes(id, '—', 'na'));
+			$('rFdRow').style.display = 'none';
+			$('resRawPre').textContent = '—';
+			['sparkAcc', 'sparkCl'].forEach(id => { $(id).innerHTML = ''; });
+			['sparkAccCap', 'sparkClCap'].forEach(id => { $(id).textContent = ''; });
+			state.prevClustersFree = null;
+		}
+
 		// 작은 SVG 스파크라인: null 구간은 끊어 그리고, 임계선(옵션)과 마지막 점을 표시한다.
 		function renderSpark(svgId, capId, pts, key, opt) {
 			const svg = $(svgId), cap = $(capId);
@@ -749,10 +815,12 @@
 			const vals = pts.map((p) => p[key]);
 			const nums = vals.filter(isNum);
 			if (nums.length === 0) { svg.innerHTML = ''; cap.textContent = '데이터 없음'; return; }
-			let lo = Math.min(...nums), hi = Math.max(...nums);
+			const observedLo = Math.min(...nums), observedHi = Math.max(...nums);
+			let lo = observedLo, hi = observedHi;
 			if (opt.thresholds) { lo = Math.min(lo, 0); hi = Math.max(hi, opt.thresholds[0] * 1.1); }
 			if (hi - lo < 1e-9) hi = lo + 1;
-			const x = (i) => (pts.length > 1 ? PAD + (i / (pts.length - 1)) * (W - 2 * PAD) : W / 2);
+			const spanMs = pts.length > 1 ? pts[pts.length - 1].t - pts[0].t : 0;
+			const x = (i) => spanMs > 0 ? PAD + ((pts[i].t - pts[0].t) / spanMs) * (W - 2 * PAD) : W / 2;
 			const y = (v) => H - PAD - ((v - lo) / (hi - lo)) * (H - 2 * PAD);
 			let d = '', pen = false;
 			vals.forEach((v, i) => {
@@ -774,7 +842,7 @@
 			if (li >= 0) html += '<circle class="last" cx="' + x(li).toFixed(1) + '" cy="' + y(vals[li]).toFixed(1) + '" r="2"></circle>';
 			svg.innerHTML = html;
 			const spanMin = pts.length > 1 ? (pts[pts.length - 1].t - pts[0].t) / 60000 : 0;
-			cap.textContent = '최근 ' + last.toFixed(opt.digits) + (opt.unit || '') + ' · 범위 ' + lo.toFixed(opt.digits) + '~' + hi.toFixed(opt.digits) + ' · ' + pts.length + '점 / ' + spanMin.toFixed(1) + '분';
+			cap.textContent = '최근 ' + last.toFixed(opt.digits) + (opt.unit || '') + ' · 범위 ' + observedLo.toFixed(opt.digits) + '~' + observedHi.toFixed(opt.digits) + ' · ' + pts.length + '점 / ' + spanMin.toFixed(1) + '분';
 		}
 
 		// 확장 측 1402 연결 통계(GitHub #22): connects(누적 TCP 연결) / reuses(keep-alive 재사용) / retries(stale 재시도).
@@ -788,6 +856,8 @@
 		}
 
 		function render(s, resourceHistory, resourceProbes, connectionStats) {
+			const targetKey = s.target ? s.target.ip + ':' + s.target.port : '';
+			if (state.targetKey !== targetKey) { clearResourceValues(); state.targetKey = targetKey; }
 			renderConnStats(connectionStats);
 			renderHeader(s);
 			renderBadges(s);
@@ -822,6 +892,7 @@
 			if (!msg) { return; }
 			if (msg.type === 'status' && msg.snapshot) {
 				render(msg.snapshot, msg.resourceHistory, msg.resourceProbes, msg.connectionStats);
+				renderTemperature(msg.snapshot, msg.temperatureHistory, msg.cpuTemperatureWarningC, msg.diagnosticIntervalMs);
 			} else if (msg.type === 'dio' && msg.dio) {
 				renderDio(msg.dio);
 			} else if (msg.type === 'dioAction') {

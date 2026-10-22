@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { isErrorMarkStale, isStoppedMarkStale, RuntimeStateSnapshot } from '../controller/executionMarks';
-import { ThreadLike } from '../controller/threadActivity';
+import { isErrorMarkStale, isStoppedMarkStale, RuntimeStateSnapshot } from '../controller/debugging/executionMarks';
+import { ThreadLike } from '../controller/threads/threadActivity';
 
 // ─── 실행 위치 강조 유효성 (ai-handoff §1-EP, 2026-10-14) ──────────────────────────────
 // 에러 난 쓰레드를 재시작해 에러가 사라진 뒤에도 붉은 줄이 남던 문제 — "주인 쓰레드가 아직 그 상태인가"로 판정.

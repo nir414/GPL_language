@@ -2,8 +2,9 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.14.0",
+    "version": "0.15.2",
     "publisher": "nir414",
+    "icon": "resources/gpl-logo.png",
     "repository": {
         "type": "git",
         "url": "https://github.com/nir414/GPL_language"
@@ -1807,13 +1808,29 @@
                     "type": "number",
                     "default": 1500,
                     "minimum": 500,
+                    "maximum": 60000,
                     "description": "제어기 대시보드 실시간 상태 폴링 주기(ms). 최소 500. 대시보드 탭 상단의 주기 선택은 그 탭이 열려 있는 동안만 이 값을 덮어씁니다."
                 },
                 "gpl.controller.dashboardResourceProbes": {
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "제어기 대시보드 폴링에 자원 지표(Show Memory / Show Network -tcp / Show Network -mbuf — 읽기 전용 3명령)를 포함해 TCP accept 증가율·여유 메모리·mbuf 여유를 표시합니다(GitHub #22 TCP 자원 고갈 가설 관찰용). 파서는 G2400C(GPL 4.2K5) 실기기 응답 원문(2026-08-25 채록) 기준이며, 형식이 다른 항목은 원문으로 표시됩니다."
+                    "description": "대시보드에 자원 지표(Show Memory / Show Network -tcp / Show Network -mbuf)를 표시합니다. dashboardDiagnosticIntervalMs 간격으로 조회하며 수동 새로고침은 즉시 조회합니다. 온도 조회는 이 설정과 독립적으로 유지됩니다."
+                },
+                "gpl.controller.dashboardDiagnosticIntervalMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 10000,
+                    "minimum": 1000,
+                    "maximum": 60000,
+                    "description": "대시보드의 온도·자원·과거 에러 로그 조회 간격(ms). 연결·전원·위치·쓰레드는 dashboardPollIntervalMs 주기를 따릅니다. 수동 새로고침은 모든 항목을 즉시 조회합니다."
+                },
+                "gpl.controller.dashboardCpuTemperatureWarningC": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "CPU 온도의 사용자 주의 기준(°C). 0이면 기준 미설정으로 표시합니다. 제조사 보호 한계나 허용 온도를 의미하지 않으며, 설정값 이상일 때 대시보드에 주의 색상을 표시합니다. 제어기 설정·동작은 변경하지 않습니다."
                 },
                 "gpl.ai.autoRefreshMcpBundle": {
                     "scope": "application",
@@ -1888,7 +1905,7 @@
     },
     "scripts": {
         "vscode:prepublish": "npm run compile && npm run bundle:mcp",
-        "compile": "tsc -p ./",
+        "compile": "node scripts/prune-build-outputs.js && tsc -p ./",
         "bundle:mcp": "node scripts/bundle-mcp.js",
         "watch": "tsc -watch -p ./",
         "test": "npm run compile && node ./out/test/index.js",

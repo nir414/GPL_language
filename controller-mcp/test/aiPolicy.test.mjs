@@ -49,10 +49,10 @@ test('서버 instructions 가 flash 저장 금지를 알린다 (도구 호출 �
   assert.match(SERVER_INSTRUCTIONS, /AI_BLOCKED/);
 });
 
-// 확장(src/controller/aiCommandPolicy.ts)과 이 파일은 같은 목록을 들고 있어야 한다 —
+// 확장(src/controller/automation/aiCommandPolicy.ts)과 이 파일은 같은 목록을 들고 있어야 한다 —
 // 한쪽만 늘리면 "MCP 는 막는데 URI 는 뚫리는" 구멍이 생긴다.
 test('확장 쪽 차단 목록과 명령 ID 가 일치한다', () => {
-  const src = fs.readFileSync(path.join(REPO, 'src', 'controller', 'aiCommandPolicy.ts'), 'utf8');
+  const src = fs.readFileSync(path.join(REPO, 'src', 'controller', 'automation', 'aiCommandPolicy.ts'), 'utf8');
   const ids = [...src.matchAll(/command:\s*'([^']+)'/g)].map((m) => m[1]).sort();
   assert.deepEqual(AI_BLOCKED_COMMANDS.map((c) => c.command).sort(), ids);
 });

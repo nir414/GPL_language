@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { parseBreakList, BreakpointInfo } from '../controller/responseParser';
+import { parseBreakList, BreakpointInfo } from '../controller/protocol/responseParser';
 import {
     breakpointKey,
     controllerTargets,
@@ -8,7 +8,7 @@ import {
     isResolvedBreakpointRecord,
     orphanControllerBreakpoints,
     planReconcile,
-} from '../controller/breakpointReconcile';
+} from '../controller/debugging/breakpointReconcile';
 
 /** 실기기 `Show Break` 응답 형식 (2026-08-31 G2400C 캡처). */
 const SHOW_BREAK_LIVE = '<STATUS>0, "Success"</STATUS>\r\n'

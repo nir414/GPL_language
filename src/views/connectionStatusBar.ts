@@ -13,15 +13,15 @@
  * 글자에 덧붙여 놓아 배지를 누르면 연결이 끊겼다(2026-09-18 사용자 지적, ai-handoff §1-DV).
  *
  * 업로드 진행 바(`██████░░░░  3.2 MB / 10.7 MB`)도 별도 항목이다 — 상태바는 글자를 제자리에서 바꿀 수 있어
- * 출력 패널(줄이 쌓이기만 함)과 달리 움직이는 바를 그릴 수 있다. 집계는 `controller/uploadProgress`, 바·문구 규칙은
+ * 출력 패널(줄이 쌓이기만 함)과 달리 움직이는 바를 그릴 수 있다. 집계는 `controller/deployment/uploadProgress`, 바·문구 규칙은
  * `views/uploadProgressBar`(둘 다 순수), 여기는 보이기/숨기기와 완료 뒤 잠시 남기는 타이밍만 안다(§1-EE).
  */
 
 import * as vscode from 'vscode';
-import { getControllerConfig } from '../controller/controllerConnection';
-import type { CompileStaleInfo } from '../controller/compileStale';
-import type { FlashSafetyState } from '../controller/flashSafety';
-import type { UploadProgressEvent, UploadSummary } from '../controller/uploadProgress';
+import { getControllerConfig } from '../controller/connection/controllerConnection';
+import type { CompileStaleInfo } from '../controller/deployment/compileStale';
+import type { FlashSafetyState } from '../controller/deployment/flashSafety';
+import type { UploadProgressEvent, UploadSummary } from '../controller/deployment/uploadProgress';
 import { describeUploadProgress, renderUploadProgress, renderUploadSummary } from './uploadProgressBar';
 import { isGplDocument } from '../config';
 import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from './compileStaleBadge';

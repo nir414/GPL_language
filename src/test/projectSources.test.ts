@@ -15,7 +15,7 @@ import {
     resolveProjectLibraryDirs,
 } from '../project/projectSources';
 import { parseGprText, planGprSync } from '../project/gprSync';
-import { pickSourceCandidate } from '../controller/responseParser';
+import { pickSourceCandidate } from '../controller/protocol/responseParser';
 
 /**
  * 실제 파일 확인(2026-08-28, TEST_GPL)에서 온 중첩 구조 픽스처.

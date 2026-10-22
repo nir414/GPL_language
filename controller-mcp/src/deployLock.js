@@ -1,4 +1,4 @@
-// 배포 잠금(Deploy Lock) 읽기 — VS Code 확장(src/controller/deployLock.ts)과 파일 계약을 공유한다.
+// 배포 잠금(Deploy Lock) 읽기 — VS Code 확장(src/controller/deployment/deployLock.ts)과 파일 계약을 공유한다.
 //
 // 확장이 FTP 업로드/배포 중이면 `%TEMP%/gpl-controller/<ip>.lock.json`을 잡는다. 업로드 도중
 // Compile/Start(그리고 /GPL 폴더를 건드리는 Load/Unload)가 겹치면 제어기가 죽을 수 있어

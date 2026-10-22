@@ -21,6 +21,7 @@ samples/**
 controller-mcp/**
 captures/**
 dist/**
+.tmp/**
 scripts/dev/**
 *.log
 

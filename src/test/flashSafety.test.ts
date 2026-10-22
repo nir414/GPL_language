@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { waitForFlashSafe } from '../controller/flashSafety';
+import { waitForFlashSafe } from '../controller/deployment/flashSafety';
 import { presentFlashSafety } from '../views/flashSafetyPresentation';
 import { test } from './harness';
 

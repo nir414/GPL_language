@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { coerceUriValue, resolveUriRequest, summarizeUriResult } from '../controller/uriDispatch';
+import { coerceUriValue, resolveUriRequest, summarizeUriResult } from '../controller/automation/uriDispatch';
 
 test('uriDispatch: 별칭은 대소문자 무시, 쿼리 보존', () => {
     const r = resolveUriRequest('/Connect', 'ip=192.168.0.1&port=1402&save=settings');

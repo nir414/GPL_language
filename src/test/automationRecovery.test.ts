@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { deployPhaseCode, hasRecovery, recoveryCodes, recoveryFor } from '../controller/automationRecovery';
+import { deployPhaseCode, hasRecovery, recoveryCodes, recoveryFor } from '../controller/automation/automationRecovery';
 
 test('automationRecovery: 모르는 코드는 되풀이 금지 쪽으로 떨어진다', () => {
     const unknown = recoveryFor('SOMETHING_NEW');

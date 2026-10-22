@@ -1,4 +1,4 @@
-// AI 가 실행할 수 없는 확장 명령 — 확장 `src/controller/aiCommandPolicy.ts` 의 미러.
+// AI 가 실행할 수 없는 확장 명령 — 확장 `src/controller/automation/aiCommandPolicy.ts` 의 미러.
 //
 // 왜 여기에도 두는가: 차단의 정본은 확장(브리지·URI·명령 자체 3중)이지만, MCP 가 먼저 알고 있으면
 //  ① 왕복 없이 즉시 거부하고 ② "왜 안 되는지·사람이 어떻게 하는지"를 도구 응답으로 바로 알려 준다.

@@ -3,7 +3,7 @@ import { test } from './harness';
 import {
     classifyConsoleCommand,
     formatConsoleCommandClassification,
-} from '../controller/consoleCommandClassifier';
+} from '../controller/commands/consoleCommandClassifier';
 
 test('console command classifier marks observed packet commands', () => {
     assert.deepStrictEqual(classifyConsoleCommand('PD 234,-1,0,0'), {

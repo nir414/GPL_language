@@ -9,7 +9,7 @@ import {
     describeResolution,
     describeCandidates,
     TargetCandidate,
-} from '../controller/projectTarget';
+} from '../controller/projects/projectTarget';
 
 // ── 픽스처 — 사용자 저장소 구조(개선안 §21)를 그대로 옮긴 것 ────────────────
 // GPL_Code (ProjectStart="ORCH_Main.MAIN") + Lib_* 4개(라이브러리) + MyProject(별개 runnable)

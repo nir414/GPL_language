@@ -17,7 +17,7 @@ Module._load = function (request) {
     return origLoad.apply(this, arguments);
 };
 const OUT = path.join(__dirname, '..', '..', 'out');
-const { SymbolCache } = require(path.join(OUT, 'symbolCache.js'));
+const { SymbolCache } = require(path.join(OUT, 'language', 'vscode', 'symbolCache.js'));
 const { GPLHoverProvider } = require(path.join(OUT, 'providers', 'hoverProvider.js'));
 const { GPLCompletionProvider } = require(path.join(OUT, 'providers', 'completionProvider.js'));
 const { GPLParser } = require(path.join(OUT, 'language', 'gplParser.js'));

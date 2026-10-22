@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-22** · 현재 package 버전 **0.14.0** (hello-project를 단일 파일의 간단한 기능 예제로 정리. 정적 검사·관련 테스트 통과, F5·제어기 검증 미수행.)
-- **직전 세션: §1-FH** — 사용자 피드백에 따라 hello-project를 Main.gpl 한 파일과 짧은 README로 줄였다. Add·Clamp·작은 Counter·For 반복문으로 핵심 편집 기능을 체험하며 확장 버전·VSIX는 유지했다.
+- **최종 갱신: 2026-10-22** · 현재 package 버전 **0.15.2** (누적 변경 커밋 준비와 확장·MCP·문서 검증 완료. 결과는 §1-FP 참조.)
+- **직전 세션: §1-FP** — 사용자 요청으로 codex/domain-modules의 누적 변경을 커밋 대상으로 확정했다. 전체 확장·MCP 테스트와 문서 빌드를 통과했고 기존 0.15.2 VSIX의 현재 파일 일치를 확인했다. 푸시는 대상 브랜치에 대한 사용자 확인 뒤 진행한다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -42,7 +42,7 @@
 
 ---
 
-8. **제어기 채널은 번호가 아니라 이름으로 부른다 (2026-09-22 사용자 결정, §1-EB).** `1402`·`1403` 은 번호를 외운 사람에게만 뜻이 통한다 — 사용자 대면 문구(트리·알림·명령 제목·설정 설명·보고서)와 AI 대면 문구는 **명령 콘솔**·**런타임 콘솔**·**FTP** 로 쓴다. 번호는 ① 설정 값 ② `ip:port` 엔드포인트 ③ 원인을 가리는 진단 상세에서만 덧붙인다(`명령 콘솔(1402)`). 용어 정본과 헬퍼는 `controller/channelNames.ts`, 명령 제목은 구조 테스트 **R8** 이 지킨다. 그대로 두는 것: 로그 태그(`[1402]`·`[Console][RC1403]`)·설정 키(`keepAlive1402`)·포트가 주제인 프로토콜 문서(`docs/reference/console-commands.md`)·과거 기록(CHANGELOG·아카이브).
+8. **제어기 채널은 번호가 아니라 이름으로 부른다 (2026-09-22 사용자 결정, §1-EB).** `1402`·`1403` 은 번호를 외운 사람에게만 뜻이 통한다 — 사용자 대면 문구(트리·알림·명령 제목·설정 설명·보고서)와 AI 대면 문구는 **명령 콘솔**·**런타임 콘솔**·**FTP** 로 쓴다. 번호는 ① 설정 값 ② `ip:port` 엔드포인트 ③ 원인을 가리는 진단 상세에서만 덧붙인다(`명령 콘솔(1402)`). 용어 정본과 헬퍼는 `controller/protocol/channelNames.ts`, 명령 제목은 구조 테스트 **R8** 이 지킨다. 그대로 두는 것: 로그 태그(`[1402]`·`[Console][RC1403]`)·설정 키(`keepAlive1402`)·포트가 주제인 프로토콜 문서(`docs/reference/console-commands.md`)·과거 기록(CHANGELOG·아카이브).
 
 ## 2. 진행 중 / 코드 쪽 미결 (사용자 결정 대기)
 
@@ -66,17 +66,19 @@
     `confirmStart` 를 요구하게 됐는데, 대화형에도 모달을 넣을지 — 사람이 로켓 버튼을 누르는 것 자체가 의도
     표명이라 안 넣는 쪽도 일관된다. **사용자 결정 필요.**
 
-- **(2026-09-02, §1-CU) `symbolCache.indexWorkspace()` 에 전역 상한을 둘지 — 사용자 결정 대기.**
-  지금은 워크스페이스의 **모든** `.gpr` 프로젝트 소스를 `openTextDocument` 로 연다. 프로젝트별 상한은
-  이미 있지만(`collectProjectSourcePaths` 의 `truncated`) 전역 상한이 없어, 과제 폴더를 여러 개 담은
-  상위 폴더를 열면 활성화가 느려질 수 있다. 상한을 두면 **조용히** 일부 파일이 정의/참조/자동완성에서
-  빠진다 — "느리지만 완전" → "빠르지만 불완전" 으로 트레이드오프가 바뀐다. 실제로 느린지(실측)와
-  어느 쪽을 원하는지가 결정 사항이다. 중간안: 상한 대신 **인덱싱 파일 수·소요 시간을 Output 에 남겨**
-  먼저 관측 가능하게 만드는 것.
+- **(2026-09-02, §1-CU) `WorkspaceSourceLoader.indexWorkspace()`에 전역 상한을 둘지 — 사용자 결정 대기.**
+  워크스페이스의 모든 `.gpr` 프로젝트 소스를 수집하며 프로젝트별 상한(`collectProjectSourcePaths`의 `truncated`)은
+  있지만 전역 상한은 없다. UTF-8은 디스크에서 직접 읽고 다른 설정 인코딩만 VS Code 디코더로 연다.
+  파일 수·소요 시간 요약과 32파일마다 이벤트 루프 양보는 이미 구현돼 있다(§1-DX, §1-FK 재확인).
+  다수 프로젝트에서 실제 지연을 관측한 뒤 상한·진행 표시 등 추가 정책을 정한다. 일부 파일을 조용히 제외하는 상한은 도입하지 않았다.
 
 ---
 
 ## 3. 다음에 할 일 (체크리스트)
+
+- [ ] **(2026-10-22, §1-FN) Hover 수정 — 새 VSIX 편집기 확인.** PoseFile.gpl:132의 axes·table·AxisCount 위에서 각각 Integer 변수·JointPoseTable 매개변수·AxisCount() As Integer 시그니처가 표시되고 범위가 해당 식별자로 나뉘는지 확인한다. 자동 회귀 6건과 전체 1222건은 통과했다.
+
+- [ ] **(2026-10-22, §1-FK) 구조 개편 후속.** 0.14.3의 F5 활성화·정의/참조·완성·호버·워처 갱신을 확인한다. 다음 코드 작업은 GPLDebugSession의 중단점·변수·실행 제어·폴링 객체 합성이며, 전체 순서는 `docs/development/architecture.md` §2.3을 따른다. 연결·배포·디버그 실행 순서 변경은 별도 안전 시험에서 검증한다.
 
 - [ ] **(2026-10-22, §1-FH) 간단한 hello-project — F5 UI 및 제어기 컴파일·실행 확인.** Main.gpl의 Add·Clamp에서 F12·Shift+F12·F2·호버·시그니처 도움말, counter 객체 완성·Count Property·Outline·접기를 확인한다. 제어기에서는 출력 sum: 3 / clamped: 100 / count: 3과 Increment 호출 중단점의 스텝·변수를 확인한다. 정적 검사와 관련 테스트 55/55만 수행했다.
 
@@ -406,15 +408,14 @@
 
 - [ ] **(2026-09-07, §1-DB) 구조 정비 후속 — 저위험 정리 후보(하드웨어 무관, 각각 tsc + `npm test` 로 검증 가능).**
   ① `config.ts` 에 남은 언어 헬퍼 `getQualifiedWordAtPosition`·`isInCommentOrString`·`GPL_CONTROL_KEYWORDS` → `language/`
-  (vscode 타입을 받는 부분은 접착 쪽에 남기고 순수 부분만) ② `symbolCache.ts` 를 순수 인덱스 + vscode 로더로 나눠 인덱스는
-  `language/` 로 ③ 1403 상태 문구 두 표현(`controller/runtimeConsolePresentation` 알림용 영문 vs
+  (vscode 타입을 받는 부분은 접착 쪽에 남기고 순수 부분만) ② 1403 상태 문구 두 표현(`controller/runtime/runtimeConsolePresentation` 알림용 영문 vs
   `views/runtimeConsoleTreePresentation` 트리용 한국어)의 폴링 판정 정규식 차이 — **실기기에서 1403 reason/detail 문구를
-  캡처해 대조한 뒤** 하나로 합칠지 결정 ④ `controllerTreeProvider.ts`(1,537줄) 섹션별 노드 생성을 순수 함수로
-  ⑤ ESLint 도입 여부 — 지금은 tsconfig 엄격 플래그 5종이 대신한다. 계층 규칙·허용 목록을 바꾸면
+  캡처해 대조한 뒤** 하나로 합칠지 결정 ③ `controllerTreeProvider.ts`(1,537줄) 섹션별 노드 생성을 순수 함수로
+  ④ ESLint 도입 여부 — 지금은 tsconfig 엄격 플래그 5종이 대신한다. 계층 규칙·허용 목록을 바꾸면
   `docs/development/architecture.md` 와 `architecture.test.ts` 를 같이 고친다.
 
 - [ ] **(2026-09-07, §1-CY) 연결 진단에 Ethernet 카운터(DataID 430/431/432) 얹기 — 계층 분리.**
-  `src/controller/resourceProbes.ts`가 지금 `Show Memory`/`Show Network -tcp|-mbuf`만 본다. 여기에
+  `src/controller/diagnostics/resourceProbes.ts`가 지금 `Show Memory`/`Show Network -tcp|-mbuf`만 본다. 여기에
   `pd 430/431/432`(읽기 전용, 모션 무영향, `read_dataids` 1회 ≈ 1.5 s)를 같은 주기로 더하면
   "물리/링크(431·432) → 패킷(430 #3·#4) → 세션 끊김(430 #6) → 소켓 고갈(`Show Network -tcp`)"으로
   접속 문제를 계층별로 가를 수 있다. 판정 기준표는 `docs/reference/network-dataids.md` §3-1.
@@ -720,98 +721,101 @@
 .vscode/launch.json                      # F5 개발 호스트 — --profile=GPL-DevHost(기본 설정·확장 없는 격리 창). "Run Extension" = hello-project, "Run Extension (syntax tour)" = syntax-tour (§1-BP, §1-DW)
 samples/hello-project/                   # 기본 F5용 간단한 기능 예제(Main.gpl 69줄 + README 14줄 + Project.gpr). Add·Clamp·Counter·For, VSIX 미포함 (§1-FH)
 samples/syntax-tour/                     # GPL 문(statement)을 전부 한 번씩 쓴 대조용 프로젝트(Main/Declarations/Shapes/Faults.gpl). 각 문의 첫 등장 줄 끝에 ' [syntax] <라벨> 마커. 모션 API 없음, VSIX 미포함 (§1-DW)
-src/controller/controllerConnection.ts   # vscode 래퍼 — sendCommandDetailed(직렬 큐 + 명령 정책 before/after 적용, §1-BN) 옵션(keepAlive1402/idle) 전달, logTraffic(>>> / ' | ' / <<< / ---)·getTrafficLogOptions(§1-BG), closeControllerConnection/getConnectionStats/getRecentTraffic 재노출(§1-BI), probeControllerCommand/getConnectionProbeTimeoutMs(§1-BK), getCommandPolicySnapshot·isPolicyError 재노출(§1-BN)
-src/controller/commandPolicy.ts          # 제어기 명령 정책(vscode 무의존) — R1 Step/Continue 정지 확인 대기+최소 간격(#28), R2 Start/Compile/Load/Unload 전 Stopping 정착 대기(§0.6), R3 Compile→Start 완충(§0.7); 승인/거부 없음, 한도 초과 시 PolicyError(미전송) (§1-BN)
+src/controller/connection/controllerConnection.ts   # vscode 래퍼 — sendCommandDetailed(직렬 큐 + 명령 정책 before/after 적용, §1-BN) 옵션(keepAlive1402/idle) 전달, logTraffic(>>> / ' | ' / <<< / ---)·getTrafficLogOptions(§1-BG), closeControllerConnection/getConnectionStats/getRecentTraffic 재노출(§1-BI), probeControllerCommand/getConnectionProbeTimeoutMs(§1-BK), getCommandPolicySnapshot·isPolicyError 재노출(§1-BN)
+src/controller/commands/commandPolicy.ts          # 제어기 명령 정책(vscode 무의존) — R1 Step/Continue 정지 확인 대기+최소 간격(#28), R2 Start/Compile/Load/Unload 전 Stopping 정착 대기(§0.6), R3 Compile→Start 완충(§0.7); 승인/거부 없음, 한도 초과 시 PolicyError(미전송) (§1-BN)
 src/language/gplStatements.ts            # 문 스니펫·키워드 정본(vscode 무의존) — 공식 Statement Dictionary 구문 + 스코프 규칙(scopes/requiresOpen/forbidsOpen) + getApplicableStatements (§1-CB)
 src/language/blockContext.ts             # 커서 시점 열린 블록 스택(vscode 무의존) — analyzeBlockContext: file/type/procedure 스코프, 한 줄 If·Delegate·짝 없는 End 처리 (§1-CB)
 src/language/tryCatch.ts                 # Catch 누락 검사·GPL 4.2K5 호환성 안내 정본(vscode 무의존) — 중첩 Try·주석/문자열·줄 연속, Finally/End Try부터 보고 (§1-EH)
 src/language/gplDictionaryData.ts        # GPL Dictionary 데이터(vscode 무의존) — Class.Member 항목 + GPL_CLASS_DOCS(클래스 개요·생성자). Thread는 공식 18페이지 전수 (§1-BR)
 src/language/gplBuiltins.ts              # 사전 API — usage/details 필드, findGplClassDoc·getGplClassMembers·findGplBuiltinMember(내장 타입 멤버 조회) (§1-BR)
-src/controller/agentBridge.ts            # Agent Bridge 서버(vscode 무의존, 실행자 주입) — presence 파일·요청/응답 파일 IPC·gpl.* 범위 한정·순차 실행 (§1-BQ). **인스턴스별 분리**: extensionInstanceId 마다 extensions/<id>.json + bridge/inst/<id>/{req,res}, 레거시 IP 큐는 electLeaderInstanceId 로 뽑은 리더 하나만 서비스(구버전 MCP 호환) (§1-DK)
-src/controller/agentCommandLog.ts        # AI 경유 명령의 Output 표현 규칙(순수, §1-EO) — formatAgentCommandLines(요약 `[Command] >>> cmd (agent) → STATUS n · ms` + 들여쓴 본문, 상한은 trafficLogMaxResponseChars)·formatAgentCommandFailure(정책 보류/전송 실패)·createRevealGate(조용한 뒤 첫 요청만 패널 열기, 30 s). 접착은 activation/controllerCommands(sendCommand 에이전트 분기)·activation/host(execute 래퍼, 설정 gpl.agentBridge.revealOutput)
+src/controller/automation/agentBridge.ts            # Agent Bridge 서버(vscode 무의존, 실행자 주입) — presence 파일·요청/응답 파일 IPC·gpl.* 범위 한정·순차 실행 (§1-BQ). **인스턴스별 분리**: extensionInstanceId 마다 extensions/<id>.json + bridge/inst/<id>/{req,res}, 레거시 IP 큐는 electLeaderInstanceId 로 뽑은 리더 하나만 서비스(구버전 MCP 호환) (§1-DK)
+src/controller/automation/agentCommandLog.ts        # AI 경유 명령의 Output 표현 규칙(순수, §1-EO) — formatAgentCommandLines(요약 `[Command] >>> cmd (agent) → STATUS n · ms` + 들여쓴 본문, 상한은 trafficLogMaxResponseChars)·formatAgentCommandFailure(정책 보류/전송 실패)·createRevealGate(조용한 뒤 첫 요청만 패널 열기, 30 s). 접착은 activation/controllerCommands(sendCommand 에이전트 분기)·activation/host(execute 래퍼, 설정 gpl.agentBridge.revealOutput)
 controller-mcp/src/extensionBridge.js    # Agent Bridge 클라이언트 — presence 판정/깨우기(code --open-url)/요청·응답 왕복/재전송 안전 판정 (§1-BQ) + listExtensionInstances·resolveExtensionInstance(창 선택: 명시 id→projectDir 워크스페이스→connected→유일, 애매하면 EXTENSION_AMBIGUOUS)·takeLateResponse(타임아웃 뒤 결과 회수) (§1-DK) · pickConsoleRouteInstance(1402 콘솔 경로: 명시 id→창 하나→connected→리더 — 리더는 레거시 큐 담당일 뿐, §1-EK)
-src/controller/operationStore.ts         # **장시간 작업 기록**(vscode 무의존) — operations/<id>.json 에 종류·대상·phase·결과 영속. 잠금과 분리(잠금은 사라지고 기록은 남는다), QUEUED→RUNNING 전환·멱등키 중복 차단, **RUNNING/QUEUED인데 신호 끊김 = 읽을 때 UNKNOWN** (§1-DK, §1-FC)
-src/controller/deployQueue.ts            # 제어기별 프로세스 내부 FIFO(vscode 무의존) — 같은 제어기 요청은 등록 순서대로, 다른 제어기는 병행. 창/프로세스 간 상호 배제는 deployLock과 함께 사용 (§1-FC)
+src/controller/automation/operationStore.ts         # **장시간 작업 기록**(vscode 무의존) — operations/<id>.json 에 종류·대상·phase·결과 영속. 잠금과 분리(잠금은 사라지고 기록은 남는다), QUEUED→RUNNING 전환·멱등키 중복 차단, **RUNNING/QUEUED인데 신호 끊김 = 읽을 때 UNKNOWN** (§1-DK, §1-FC)
+src/controller/deployment/deployQueue.ts            # 제어기별 프로세스 내부 FIFO(vscode 무의존) — 같은 제어기 요청은 등록 순서대로, 다른 제어기는 병행. 창/프로세스 간 상호 배제는 deployLock과 함께 사용 (§1-FC)
 controller-mcp/src/operations.js         # 위 기록 읽기(읽기 전용 미러) + operationRecovery(상태별 다음 행동). 확장을 거치지 않으므로 확장이 배포로 바빠도·MCP 가 재시작돼도 조회된다 (§1-DK)
-src/controller/deployProvenance.ts       # **배포 증적**(vscode 무의존) — 로컬 소스 지문 vs 우리가 올린 내용 지문 대조: localRevision/uploadedRevision/inSync + changedSinceUpload·notUploaded·staleRemote. verifiedBy='upload-manifest'(원격을 직접 해시한 것이 아님을 밝힌다), 기록 없으면 inSync=false (§1-DK)
-src/controller/automationRecovery.ts     # **복구 지시 표**(vscode 무의존) — 오류 코드 → action·retryCurrentCommand·safeToRepeat. 잠금/타임아웃/진행 중은 전부 CHECK_OPERATION + 재시도 false, **표에 없는 코드는 재시도 금지**로 떨어진다 (§1-DK)
-src/controller/uriDispatch.ts            # 외부 진입점 URI 해석(vscode 무의존) — /<gpl.command.id>?args=JSON | ?key=value | /command?id=…, 별칭 4개, gpl.* 범위 한정 (§1-BN)
-src/controller/connectionSession.ts      # 제어기 연결 세션 상태 정본(vscode 무의존) — 쓰기는 host.setControllerConnected 만(R7), 구독 onControllerSessionChange(대시보드), effectiveKeepAlive(해제 상태 명령은 단발 연결) (§1-EM)
-src/controller/connectionHealth.ts       # 연결 건강 판정(vscode 무의존) — ConnectionHealthMonitor(connected→suspect→lost, 프로브 임계 3/거부 2·힌트는 suspect만)·ConnectionHealthProber(1 s 재프로브)·classifyCommandFailure·probeOutcomeFromResponse (§1-BK)
-src/controller/consoleSocket.ts          # 1402 소켓 계층(vscode 무의존) — keep-alive 소켓 1개, terminator-first 재사용 판정, stale 1회 재시도, 트래픽 링버퍼 600줄 (§1-BI, #22), reject code 부착·보관 소켓 관찰자(§1-BK)
+src/controller/deployment/deployProvenance.ts       # **배포 증적**(vscode 무의존) — 로컬 소스 지문 vs 우리가 올린 내용 지문 대조: localRevision/uploadedRevision/inSync + changedSinceUpload·notUploaded·staleRemote. verifiedBy='upload-manifest'(원격을 직접 해시한 것이 아님을 밝힌다), 기록 없으면 inSync=false (§1-DK)
+src/controller/automation/automationRecovery.ts     # **복구 지시 표**(vscode 무의존) — 오류 코드 → action·retryCurrentCommand·safeToRepeat. 잠금/타임아웃/진행 중은 전부 CHECK_OPERATION + 재시도 false, **표에 없는 코드는 재시도 금지**로 떨어진다 (§1-DK)
+src/controller/automation/uriDispatch.ts            # 외부 진입점 URI 해석(vscode 무의존) — /<gpl.command.id>?args=JSON | ?key=value | /command?id=…, 별칭 4개, gpl.* 범위 한정 (§1-BN)
+src/controller/connection/connectionSession.ts      # 제어기 연결 세션 상태 정본(vscode 무의존) — 쓰기는 host.setControllerConnected 만(R7), 구독 onControllerSessionChange(대시보드), effectiveKeepAlive(해제 상태 명령은 단발 연결) (§1-EM)
+src/controller/connection/connectionHealth.ts       # 연결 건강 판정(vscode 무의존) — ConnectionHealthMonitor(connected→suspect→lost, 프로브 임계 3/거부 2·힌트는 suspect만)·ConnectionHealthProber(1 s 재프로브)·classifyCommandFailure·probeOutcomeFromResponse (§1-BK)
+src/controller/connection/consoleSocket.ts          # 1402 소켓 계층(vscode 무의존) — keep-alive 소켓 1개, terminator-first 재사용 판정, stale 1회 재시도, 트래픽 링버퍼 600줄 (§1-BI, #22), reject code 부착·보관 소켓 관찰자(§1-BK)
 src/debug/sourceTargets.ts               # BP 유효 줄·프로시저 범위(End Sub 기준)·호출 후보 파싱(vscode 무의존) — BP 줄 보정(문서 규칙)·Jump to Cursor 검증·Step Into Target 후보 (§1-BU)
-src/controller/threadActivity.ts          # "동작 중" 판정(vscode 무의존) — 쓰레드 존재 = 활성, project 컬럼·기본 이름·`_Cmd_<project>`(Execute 쓰레드) 인정 (§1-BU). 상태 판정 단일 출처: isSettledState(Idle/Stopped/Error) · isPausedState/PAUSED_THREAD_STATES(Paused/Break/Error, §1-DD)
-src/controller/executionMarks.ts          # 실행 위치 강조(정지 줄·에러 줄)의 유효성 판정(vscode 무의존, §1-EP) — isErrorMarkStale/isStoppedMarkStale: 주인 쓰레드가 목록에 없거나 Error/정지 상태를 벗어나면 낡음, 주인 모르면 같은 종류 상태가 어디에도 없을 때. 소비자는 activation/debugDecorations.reconcile, 공급자는 views/controllerTreeProvider.onDidChangeRuntimeState
-src/controller/projectCommands.ts         # **Compile/Load/Unload/Start 의 정본**(vscode 무의존·주입형 IO) — compileProject(후보 순회·일시적 STATUS 1회 재시도·성공은 STATUS 0+에러 0 뿐)/loadProject(HTTP 응답=제어기 이상)/unloadProject(-750 쓰레드 실행 중)/startProject(항상 buildStartCommand). 배포·FTP Run 이 함께 쓴다 (§1-DE)
-src/controller/remoteProjectPath.ts       # 어느 원격 사본(/flash/projects vs /GPL)을 대상으로 삼을지 — 점수 규칙 단일 정본(존재+200/flash+80/선택+20, switched 로 전환 고지) (§1-DE)
-src/controller/threadStop.ts              # **쓰레드 정지의 정본**(vscode 무의존·주입형 IO) — probeThreads(잘린 응답=확인 불가) / waitThreadsSettle·waitThreadSettle / sendStop / stopAllAndSettle·stopThreadAndSettle(전송→STATUS 판정→폴링→자동 재시도, unconfirmed 노출). 배포·패널·FTP·디버그가 모두 이것을 쓴다 (§1-DD)
-src/controller/threadStuckDiagnosis.ts    # **정지 불가 쓰레드 진단**(vscode 무의존·주입형 IO, **읽기 전용**) — diagnoseStuckThread(위치 N회 샘플링→이동 판정→소스 문맥→수신자 식→복구 후보) / extractCallTarget(문장의 마지막 메서드 호출) / buildRecoveryCandidates(지역 변수 인덱스는 0..N 치환) / createFileSourceLookup(파일명만 아는 위치를 로컬에서 찾기). 후보는 **제시만 하고 보내지 않는다** (§1-DI)
-src/controller/startCommand.ts            # Start 명령 조립(vscode 무의존) — 문서 구문 순서, 기본 `-event`(GDE 동일), `-compile` 금지(하드 규칙 7) (§1-BU)
+src/controller/threads/threadActivity.ts          # "동작 중" 판정(vscode 무의존) — 쓰레드 존재 = 활성, project 컬럼·기본 이름·`_Cmd_<project>`(Execute 쓰레드) 인정 (§1-BU). 상태 판정 단일 출처: isSettledState(Idle/Stopped/Error) · isPausedState/PAUSED_THREAD_STATES(Paused/Break/Error, §1-DD)
+src/controller/debugging/executionMarks.ts          # 실행 위치 강조(정지 줄·에러 줄)의 유효성 판정(vscode 무의존, §1-EP) — isErrorMarkStale/isStoppedMarkStale: 주인 쓰레드가 목록에 없거나 Error/정지 상태를 벗어나면 낡음, 주인 모르면 같은 종류 상태가 어디에도 없을 때. 소비자는 activation/debugDecorations.reconcile, 공급자는 views/controllerTreeProvider.onDidChangeRuntimeState
+src/controller/commands/projectCommands.ts         # **Compile/Load/Unload/Start 의 정본**(vscode 무의존·주입형 IO) — compileProject(후보 순회·일시적 STATUS 1회 재시도·성공은 STATUS 0+에러 0 뿐)/loadProject(HTTP 응답=제어기 이상)/unloadProject(-750 쓰레드 실행 중)/startProject(항상 buildStartCommand). 배포·FTP Run 이 함께 쓴다 (§1-DE)
+src/controller/projects/remoteProjectPath.ts       # 어느 원격 사본(/flash/projects vs /GPL)을 대상으로 삼을지 — 점수 규칙 단일 정본(존재+200/flash+80/선택+20, switched 로 전환 고지) (§1-DE)
+src/controller/threads/threadStop.ts              # **쓰레드 정지의 정본**(vscode 무의존·주입형 IO) — probeThreads(잘린 응답=확인 불가) / waitThreadsSettle·waitThreadSettle / sendStop / stopAllAndSettle·stopThreadAndSettle(전송→STATUS 판정→폴링→자동 재시도, unconfirmed 노출). 배포·패널·FTP·디버그가 모두 이것을 쓴다 (§1-DD)
+src/controller/threads/threadStuckDiagnosis.ts    # **정지 불가 쓰레드 진단**(vscode 무의존·주입형 IO, **읽기 전용**) — diagnoseStuckThread(위치 N회 샘플링→이동 판정→소스 문맥→수신자 식→복구 후보) / extractCallTarget(문장의 마지막 메서드 호출) / buildRecoveryCandidates(지역 변수 인덱스는 0..N 치환) / createFileSourceLookup(파일명만 아는 위치를 로컬에서 찾기). 후보는 **제시만 하고 보내지 않는다** (§1-DI)
+src/controller/commands/startCommand.ts            # Start 명령 조립(vscode 무의존) — 문서 구문 순서, 기본 `-event`(GDE 동일), `-compile` 금지(하드 규칙 7) (§1-BU)
 src/debug/threadLock.ts                  # 스레드 단일 실행 잠금 판정(vscode 무의존) — resolveExecutionThread(대상 확정·staleLock)·shouldPreserveFocus·isAllThreadsResumeRequest. 어댑터의 StoppedEvent 는 전부 _stoppedEvent 경유(불변식) (§1-BS)
-src/controller/idlePing.ts               # 1402 유휴 ping 판정/스케줄러(vscode 무의존) — GDE 방식 세션 유지(유휴 5 s → 읽기 명령 1개), 1403 안정성의 열쇠 (§1-BM)
-src/controller/reachability.ts           # ping TTL·TCP·arp 도달성 판정 + 응답 장치 정체(제어기 vs 게이트웨이) 힌트 (§1-BI, #22)
-src/controller/resourceProbes.ts         # Show Memory / Show Network -tcp / -mbuf 파서(실기기 원문 기준)·증가율·이력 (§1-BI, #22 자원 카드)
-src/controller/runtimeConsoleGuards.ts   # 1403 접속 카운터(슬라이딩 윈도우)·워치독 판정(순수) (§1-BI)
-src/controller/runtimeConsoleBuffer.ts   # 1403 수신 줄 링버퍼(seq 커서 read·untilPattern/waitFor 대기·dropped 보고, 순수) — MCP runtime_console_read 의 뒷단 gpl.ai.debug.runtimeConsoleRead 가 읽는다; 파일 캡처(gpl.runtimeConsole.captureFile)는 runtimeConsole.ts 의 appendCapture (§1-EQ)
-src/controller/deployRecordCore.ts       # 컴파일 스냅샷(sha1) 기록/대조 순수 로직 + Memento 스토어 (§1-BI, #21)
-src/controller/deployRecord.ts           # deployRecordCore vscode 래퍼 — recordCompiled/getCompiledRecord/onDidRecordCompiled/attachDeployRecordStore (§1-BI)
-src/controller/compileStale.ts           # "컴파일 검증 필요" 배지 상태(CompileStaleTracker, vscode 무의존) — 해제는 onDidRecordCompiled 구독으로 경로 무관 (§1-CU)
-src/controller/flashSafety.ts            # Save to Flash 안전 확인 상태기계(순수) — Sync 종결 STATUS 0 뒤 10초 안정화, 실패 시 unknown 유지 (§1-FD)
+src/controller/connection/idlePing.ts               # 1402 유휴 ping 판정/스케줄러(vscode 무의존) — GDE 방식 세션 유지(유휴 5 s → 읽기 명령 1개), 1403 안정성의 열쇠 (§1-BM)
+src/controller/connection/reachability.ts           # ping TTL·TCP·arp 도달성 판정 + 응답 장치 정체(제어기 vs 게이트웨이) 힌트 (§1-BI, #22)
+src/controller/diagnostics/resourceProbes.ts         # Show Memory / Show Network -tcp / -mbuf 파서(실기기 원문 기준)·증가율·이력 (§1-BI, #22 자원 카드)
+src/controller/diagnostics/statusSampling.ts         # 상태 수집·대시보드별 저빈도 진단 캐시·실제 표본 시각(순수 IO 주입, §1-FM)
+src/controller/diagnostics/controllerStatus.ts       # 확장 명령 큐와 상태 수집기의 어댑터·기존 공개 API 재노출
+src/controller/diagnostics/temperature.ts            # Show Temperature 파서·센서 유효성·360점 온도 이력(§1-FM)
+src/controller/runtime/runtimeConsoleGuards.ts   # 1403 접속 카운터(슬라이딩 윈도우)·워치독 판정(순수) (§1-BI)
+src/controller/runtime/runtimeConsoleBuffer.ts   # 1403 수신 줄 링버퍼(seq 커서 read·untilPattern/waitFor 대기·dropped 보고, 순수) — MCP runtime_console_read 의 뒷단 gpl.ai.debug.runtimeConsoleRead 가 읽는다; 파일 캡처(gpl.runtimeConsole.captureFile)는 runtimeConsole.ts 의 appendCapture (§1-EQ)
+src/controller/deployment/deployRecordCore.ts       # 컴파일 스냅샷(sha1) 기록/대조 순수 로직 + Memento 스토어 (§1-BI, #21)
+src/controller/deployment/deployRecord.ts           # deployRecordCore vscode 래퍼 — recordCompiled/getCompiledRecord/onDidRecordCompiled/attachDeployRecordStore (§1-BI)
+src/controller/deployment/compileStale.ts           # "컴파일 검증 필요" 배지 상태(CompileStaleTracker, vscode 무의존) — 해제는 onDidRecordCompiled 구독으로 경로 무관 (§1-CU)
+src/controller/deployment/flashSafety.ts            # Save to Flash 안전 확인 상태기계(순수) — Sync 종결 STATUS 0 뒤 10초 안정화, 실패 시 unknown 유지 (§1-FD)
 src/debug/stepGate.ts                    # Step/Continue 게이트 순수 판정 shouldGateStepRequest(pending-entry/pending-same-thread/min-interval) (§1-BI, #28)
 src/debug/evalMessages.ts                # 평가 실패 문구 정본(vscode 무의존) — formatEvalError(hover/Watch/REPL 공용, 세션에서 이관)·describeNestedExpandFailure(중첩 객체 펼치기 실패 행: 코드·원인 앞, 대처 뒤, Debug Console 용 detail)·UNDEFINED_SYMBOL_STATUS/UNSUPPORTED_PROCEDURE_STATUS (§1-DS)
 src/debug/replInput.ts                   # Debug Console 여러 줄 입력 모델(vscode 무의존) — 줄 분해·`>` 접두사·상태 변경 명령 미전송 안내·입력별 결과 표시 (§1-ER)
 src/language/getterBranch.ts             # 분기형 Property getter(`If 필드 비교 Then Return A Else Return B`, 4형태) 파싱·계산 정본(순수) — parseGetterBranch(파서 → GPLSymbol.getterBranch)·getterBranchIdentifiers(hover 게이트 해석 가능 판정)·evaluateGetterBranch(어댑터 ②-c·가상 Property 자식, 결과는 제어기 표기 -1/0 + via) (§1-DS)
 src/debug/spontaneousPause.ts             # 사용자 액션 없이 관측된 Paused 판별(vscode 무의존) — GPL 의 Paused 는 Thread.Sleep 대기도 포함하므로 등록 BP 위치 일치 = 즉시 정지, 그 외 3폴·1500ms 연속 = 외부 정지, 나머지는 무시(가짜 브레이크 차단) (§1-CK)
-src/controller/debugBridge.ts            # 디버그 세션 ↔ 확장 이벤트 버스 + RuntimeConsoleHealth 공급자(1403 alive → 백업 폴 완화) (§1-BI) + onDebugProbeResult(어댑터 폴 결과 → 연결 건강 모니터, §1-BK)
+src/controller/debugging/debugBridge.ts            # 디버그 세션 ↔ 확장 이벤트 버스 + RuntimeConsoleHealth 공급자(1403 alive → 백업 폴 완화) (§1-BI) + onDebugProbeResult(어댑터 폴 결과 → 연결 건강 모니터, §1-BK)
 src/views/refreshThrottle.ts             # 트리 FTP/시스템 정보 자동 재조회 스로틀 판정(순수) (§1-BI, #22)
 src/debug/launchJsonc.ts                 # launch.json JSONC 읽기/부분 갱신(jsonc-parser) — 주석·포맷 보존 upsert (§1-BI, #30)
 controller-mcp/src/batch.js              # MCP controller_command 배치 runBatch/normalizeCommandInput (§1-BI, #16)
-src/controller/trafficResponseBody.ts    # ResponseBodyStreamer — 1402 응답 본문 줄 단위 스트리밍·상한 생략 요약(§1-BG, vscode 무의존 순수 모듈)
-src/controller/deployService.ts          # deploy() = 제어기별 QUEUED 대기→잠금 획득→일반은 UPLOAD ∥ STOP/THREAD_CHECK→COMPILE→START→ERROR CHECK, Upload Only는 UPLOAD만(원격 전용 삭제 보류). tryCompile, directGpl, COMPILE_DEFERRED, findProjectDirs, onDidUploadProgress (§1-BD, §1-EE, §1-FC)
-src/controller/projectPickerCore.ts      # 프로젝트 폴더 선택 순수 규칙 — orderProjectDirs(최근 선택 우선)·projectDirFromResource(폴더 자체/.gpr/포함 파일)·filterDirsByProjectName (§1-BL, vscode 무의존)
-src/controller/projectPicker.ts          # 공용 선택기 pickProjectDir(Detailed)(QuickPick·workspaceState 최근 선택)·readGprProjectName/projectNameOf·context key gpl.projectDirs(탐색기 메뉴) — 명령·F5 provider 공용 (§1-BL)
-src/controller/projectNameGuard.ts       # 프로젝트명/Load 경로 안전성 단일 규칙(vscode 무의존) — 1402 명령은 공백 구분·인용 불가 → 공백·제어 문자 검출 checkProjectName/checkRemotePath·안내 문구 describeProjectNameProblem; deploy/Start/ftpRun·Unload/F5 attach/MCP proj()가 공유 (§1-BQ)
+src/controller/connection/trafficResponseBody.ts    # ResponseBodyStreamer — 1402 응답 본문 줄 단위 스트리밍·상한 생략 요약(§1-BG, vscode 무의존 순수 모듈)
+src/controller/deployment/deployService.ts          # deploy() = 제어기별 QUEUED 대기→잠금 획득→일반은 UPLOAD ∥ STOP/THREAD_CHECK→COMPILE→START→ERROR CHECK, Upload Only는 UPLOAD만(원격 전용 삭제 보류). tryCompile, directGpl, COMPILE_DEFERRED, findProjectDirs, onDidUploadProgress (§1-BD, §1-EE, §1-FC)
+src/controller/projects/projectPickerCore.ts      # 프로젝트 폴더 선택 순수 규칙 — orderProjectDirs(최근 선택 우선)·projectDirFromResource(폴더 자체/.gpr/포함 파일)·filterDirsByProjectName (§1-BL, vscode 무의존)
+src/controller/projects/projectPicker.ts          # 공용 선택기 pickProjectDir(Detailed)(QuickPick·workspaceState 최근 선택)·readGprProjectName/projectNameOf·context key gpl.projectDirs(탐색기 메뉴) — 명령·F5 provider 공용 (§1-BL)
+src/controller/projects/projectNameGuard.ts       # 프로젝트명/Load 경로 안전성 단일 규칙(vscode 무의존) — 1402 명령은 공백 구분·인용 불가 → 공백·제어 문자 검출 checkProjectName/checkRemotePath·안내 문구 describeProjectNameProblem; deploy/Start/ftpRun·Unload/F5 attach/MCP proj()가 공유 (§1-BQ)
 src/debug/activateDebug.ts               # DebugConfigurationProvider — 중복 세션 처리 + fillProjectTarget(다중 프로젝트 QuickPick, projectDir/projectName 보충) (§1-BL), InlineDebugAdapterFactory
-src/controller/deployLock.ts             # 배포 잠금 — 메모리+파일(%TEMP%/gpl-controller/<ip>.lock.json), pid/heartbeat stale 자동 만료, describeDeployLock (§1-BD, 이슈 #15·#17)
-src/controller/ftpClient.ts              # uploadProject onlyFiles, mirrorProject deferDelete + removeRemoteFiles(§1-BD), 지문 스킵 판정(§1-BV), 진행 이벤트 onProgress(event) = 파일 완료 + basic-ftp trackProgress 바이트(§1-EE)
-src/controller/uploadProgress.ts         # 업로드 진행 집계(vscode 무의존) — UploadProgressTracker(파일 완료 + 전송 중 바이트, 스킵은 즉시 완료, 크기 클램프)·UploadProgressEvent; 표시는 views/uploadProgressBar (§1-EE)
+src/controller/deployment/deployLock.ts             # 배포 잠금 — 메모리+파일(%TEMP%/gpl-controller/<ip>.lock.json), pid/heartbeat stale 자동 만료, describeDeployLock (§1-BD, 이슈 #15·#17)
+src/controller/files/ftpClient.ts              # uploadProject onlyFiles, mirrorProject deferDelete + removeRemoteFiles(§1-BD), 지문 스킵 판정(§1-BV), 진행 이벤트 onProgress(event) = 파일 완료 + basic-ftp trackProgress 바이트(§1-EE)
+src/controller/deployment/uploadProgress.ts         # 업로드 진행 집계(vscode 무의존) — UploadProgressTracker(파일 완료 + 전송 중 바이트, 스킵은 즉시 완료, 크기 클램프)·UploadProgressEvent; 표시는 views/uploadProgressBar (§1-EE)
 src/util/formatBytes.ts                  # 바이트 → 사람이 읽는 크기 정본(vscode 무의존, R7) — formatBytes/formatBytesAs/byteUnitFor(B 정수·그 위 소수 1자리·GB 까지); 종전 views/treeFormat.formatSize 통합 (§1-EE)
-src/controller/syncManifest.ts           # 업로드 지문(SHA-1) 매니페스트 — 미러/skipUnchanged 스킵 판정(§1-BV, globalState)
-src/controller/breakpointReconcile.ts    # 에디터↔제어기 중단점 수렴 계획(vscode 무의존) — project-relative identity 비교, 미해석 proc=?/0 제외, planReconcile/orphan 표시 (§1-CJ, §1-EC)
-src/controller/breakpointCommand.ts      # BP 명령 문자열 계층(vscode 무의존) — 무공백 생성, project-relative 경로 보존 parser, MirrorEchoMemory (§1-CO, §1-EC)
-src/controller/breakpointMirror.ts       # 제어기→에디터 중단점 미러 — AI(MCP·URI·콘솔)가 건 BP를 빨간 점으로. 외부 진입점에서만 동작(DAP·EditorBreakpointSync 제외), 설정 mirrorAiBreakpoints (§1-CO)
-src/controller/responseParser.ts         # parseStatus, parseCompileErrors
+src/controller/files/syncManifest.ts           # 업로드 지문(SHA-1) 매니페스트 — 미러/skipUnchanged 스킵 판정(§1-BV, globalState)
+src/controller/debugging/breakpointReconcile.ts    # 에디터↔제어기 중단점 수렴 계획(vscode 무의존) — project-relative identity 비교, 미해석 proc=?/0 제외, planReconcile/orphan 표시 (§1-CJ, §1-EC)
+src/controller/debugging/breakpointCommand.ts      # BP 명령 문자열 계층(vscode 무의존) — 무공백 생성, project-relative 경로 보존 parser, MirrorEchoMemory (§1-CO, §1-EC)
+src/controller/debugging/breakpointMirror.ts       # 제어기→에디터 중단점 미러 — AI(MCP·URI·콘솔)가 건 BP를 빨간 점으로. 외부 진입점에서만 동작(DAP·EditorBreakpointSync 제외), 설정 mirrorAiBreakpoints (§1-CO)
+src/controller/protocol/responseParser.ts         # parseStatus, parseCompileErrors
 src/debug/showVariableParser.ts          # Show Variable 파싱 — 2열 Location 멤버(isTypeToken)·summarizeLocation·annotateLocationMember(§1-BF)
 src/language/receiverType.ts             # 멤버 접근 수신자 타입 정적 해석(resolveReceiverHolder·membersNamed·buildDocumentReceiverLookup) + 소속 판정 ownedByHolder·nestedTypesIn(정의찾기 전역 폴백 차단용, §1-CA) — 디버그 hover 게이트·정적 hover 공용(§1-BJ, #32, vscode 무의존)
 src/ai/exportAgentSetup.ts               # Export/Check AI Agent Setup — 번들 동기화·파일 생성·설정/대상 준비 상태(§1-EF)
 src/ai/agentSetupChecks.ts              # 실행 설정·폴더 대상·CLAUDE/AGENTS 안내 검사(vscode 무의존)
-src/controller/dio.ts                    # Show DIO `signal: 0|1 [*]` 순수 파서 + Set DIO 명령/동작 설명 정본(§1-FB)
+src/controller/io/dio.ts                    # Show DIO `signal: 0|1 [*]` 순수 파서 + Set DIO 명령/동작 설명 정본(§1-FB)
 src/views/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — 상태/I/O 탭, setInterval/pause/config, 확인 후 Set DIO(§1-BF·§1-FB); HTML은 media/dashboard.html
 controller-mcp/src/parse.js              # MCP 파서 — parseThreadList(이름 키)·compactThread·summarizeThreads·parseShowVariable(§1-BF)
 scripts/bundle-mcp.js                    # MCP 번들 + 빌드 스탬프(define __GPL_MCP_BUILD_JSON__, 사이드카 .build.json)(§1-BF)
 src/debug/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach(lockOwner 'F5 Deploy'), _waitDeployLockForStart, getDebugDeployDiagnostics
 src/extension.ts                         # activate()/deactivate() — 배선만(195줄). ExtensionHost 생성 → activation/*.ts 의 activateXxx(host) 를 종전 순서로 호출 (§1-CZ)
 src/activation/host.ts                   # ExtensionHost — 클로저가 공유하던 서비스(채널·심볼 캐시)·가변 상태(트리·상태바·런타임 콘솔·건강 모니터·디버그 여부·마지막 스냅샷)·헬퍼(log·배포 잠금·컴파일 검증 상태·런타임 콘솔 싱글톤·연결 상태 반영·Agent Bridge)·하위 API(project/connection/deploy/decorations). **가변 상태는 항상 host.x 로 읽는다** (§1-CZ)
-src/activation/deploy.ts                 # gpl.deploy/uploadStart/start/saveToFlash/quickCompile + autoOnSave + 자동화 대상 해석·게이트 — runDeploy/runDeployCore(결과 보고부는 controller/deployOutcome.ts) (§1-CZ, §1-DB) · onDidUploadProgress → 상태바 진행 바 구독, Save to Flash 는 직접 연결(§1-EE) + Sync/10초 안전 확인(§1-FD)
+src/activation/deploy.ts                 # gpl.deploy/uploadStart/start/saveToFlash/quickCompile + autoOnSave + 자동화 대상 해석·게이트 — runDeploy/runDeployCore(결과 보고부는 controller/deployment/deployOutcome.ts) (§1-CZ, §1-DB) · onDidUploadProgress → 상태바 진행 바 구독, Save to Flash 는 직접 연결(§1-EE) + Sync/10초 안전 확인(§1-FD)
 src/activation/connection.ts             # 연결 건강 모니터 배선·유실 처리·사후 스냅샷·connect/disconnect(대화형+비대화형)·launch.json·startQuickAttachSession(attachOnly=배포 없이 붙기, §1-DC)·debugProject(배포+붙기 — 대상은 QuickPick·우클릭, §1-DQ)
 src/activation/projectContext.ts         # 기대 프로젝트 감지·launch.json 읽기·GPL 파일명→경로·BP target 해석(resolveGplFilePath/resolveBreakpointTarget) — host.project (§1-CZ, §1-EC)
 src/activation/controllerOps.ts          # busy 재시도·정지 확인(§0.6)·SoftEStop 복구·정지 진입 대기(waitForThreadPause) — host 를 첫 인자로 (§1-CZ)
 src/activation/debugDecorations.ts       # ExecutionDecorations — 정지 줄/에러 줄 강조 한 객체 (§1-CZ). showError/showStopped 에 주인 쓰레드, reconcile(snapshot) 로 상태가 끝난 강조 자동 해제 (§1-EP)
 src/activation/{languageFeatures,xmlCommands,breakpointCommands,consoleCommands,aiAgentSetup,aiDebugCommands,controllerCommands,treeCommands,ftpCommands,debugIntegration,uriHandler}.ts  # 명령 그룹별 activateXxx(host) — 본문은 종전 extension.ts 그대로 (§1-CZ)
-src/controller/threadArgs.ts             # asThreadNode — 쓰레드 명령 인자 정규화(순수) (§1-CZ)
-src/controller/stepCommand.ts            # buildStepCommand — Step 명령 조립 정본(트리·AI API 공용, 순수) (§1-CZ)
-src/util/pathKey.ts                      # 경로 동일성 키 normalizePathKey·normalizeDirKey·isPathUnder(파일·폴더 공용 단일 규칙, vscode 무의존) — controller/projectPickerCore 에서 분리(§1-CQ, §1-DB)
+src/controller/threads/threadArgs.ts             # asThreadNode — 쓰레드 명령 인자 정규화(순수) (§1-CZ)
+src/controller/commands/stepCommand.ts            # buildStepCommand — Step 명령 조립 정본(트리·AI API 공용, 순수) (§1-CZ)
+src/util/pathKey.ts                      # 경로 동일성 키 normalizePathKey·normalizeDirKey·isPathUnder(파일·폴더 공용 단일 규칙, vscode 무의존) — controller/projects/projectPickerCore 에서 분리(§1-CQ, §1-DB)
 src/language/identifiers.ts              # ciEq — GPL 식별자 대소문자 무시 비교(vscode 무의존, 종전 config.ts) (§1-DB)
-src/project/gprSync.ts                   # Project.gpr 파싱/소스 목록 동기화 순수 로직(vscode 무의존, 종전 controller/) — 명령 래퍼는 controller/gprSyncCommand.ts (§1-BW, §1-DB)
-src/controller/deployOutcome.ts          # 배포 결과 보고 순수 규칙 — SituationDeploySnapshot 정의·결과 서명/이력·ErrorLog 분류 로그·COMPILE 원문 로그·실패 문구 4분기(vscode 무의존, 종전 activation/deploy.ts 클로저) (§1-DB)
+src/project/gprSync.ts                   # Project.gpr 파싱/소스 목록 동기화 순수 로직(vscode 무의존, 종전 controller/) — 명령 래퍼는 controller/projects/gprSyncCommand.ts (§1-BW, §1-DB)
+src/controller/deployment/deployOutcome.ts          # 배포 결과 보고 순수 규칙 — SituationDeploySnapshot 정의·결과 서명/이력·ErrorLog 분류 로그·COMPILE 원문 로그·실패 문구 4분기(vscode 무의존, 종전 activation/deploy.ts 클로저) (§1-DB)
 src/views/treeFormat.ts                  # 트리 표시 포맷(날짜·연결 통계, vscode 무의존 — 크기는 util/formatBytes 로 §1-EE) (§1-DB)
-src/views/uploadProgressBar.ts           # 상태바 업로드 진행 바 표시 규칙(vscode 무의존, R7) — renderBar(20칸 + 1/8 부분 블록)·formatBytesPair(total 단위 통일)·describeUploadProgress(전송 중/완료/동일)·renderUploadSummary; 집계는 controller/uploadProgress (§1-EE)
+src/views/uploadProgressBar.ts           # 상태바 업로드 진행 바 표시 규칙(vscode 무의존, R7) — renderBar(20칸 + 1/8 부분 블록)·formatBytesPair(total 단위 통일)·describeUploadProgress(전송 중/완료/동일)·renderUploadSummary; 집계는 controller/deployment/uploadProgress (§1-EE)
 src/views/connectionStatusBar.ts         # 상태바 — 연결 항목·대시보드·경고 배지(컴파일 검증 필요/소스 변경됨/스레드 잠금, 각각 별도 항목 §1-DV)·업로드 진행 바(§1-EE)·Flash 전원 차단 금지 경고(§1-FD)
 src/views/flashSafetyPresentation.ts     # Flash 안전 경고 문구·아이콘·툴팁의 표시 정본(순수, R7, §1-FD)
-src/views/runtimeConsoleTreePresentation.ts  # 1403 콘솔 트리 행 문구(라벨·description·아이콘·툴팁·불안정 판정·가설, vscode 무의존) — 알림용은 controller/runtimeConsolePresentation.ts (§1-DB)
+src/views/runtimeConsoleTreePresentation.ts  # 1403 콘솔 트리 행 문구(라벨·description·아이콘·툴팁·불안정 판정·가설, vscode 무의존) — 알림용은 controller/runtime/runtimeConsolePresentation.ts (§1-DB)
 src/test/architecture.test.ts            # 구조 회귀 테스트 — vscode 의존 허용 목록·계층 의존 방향·런타임 순환·테스트 등록·package.json↔명령/설정 키 (§1-DB, 규칙 근거는 docs/development/architecture.md)
 src/test/sampleSyntaxCoverage.test.ts    # samples/syntax-tour 가 문법 정본(gplStatements)을 빠짐없이 쓰는지 양방향 검사 — 마커↔라벨, 키워드, 비GPL 문법 금지, gpr 등재, 파서 심볼 (§1-DW)
-src/controller/aiCommandPolicy.ts        # AI/자동화 경로에서 거부할 명령 목록(정본) — 되돌릴 수 없는 명령만. 브리지·URI·명령 자체가 함께 본다 (§1-DA)
+src/controller/automation/aiCommandPolicy.ts        # AI/자동화 경로에서 거부할 명령 목록(정본) — 되돌릴 수 없는 명령만. 브리지·URI·명령 자체가 함께 본다 (§1-DA)
 controller-mcp/src/deployLock.js         # 잠금 파일 읽기 전용 구현(확장과 파일 계약 공유) — Compile/Start/Load/Unload 유한 대기·거부(§1-BD)
 src/language/gplParser.ts                # Property/Sub/Function 파싱 + parseDocument 메모이즈 캐시(§1-B E) + docComment 수집(§1-J) + Property getter 골격(getterReturnExpr 단순 Return #26 / getterBranch 분기형 §1-DS)
 syntaxes/gpl.tmGrammar.json              # 구문 강조 — GPL 전용 규칙(선언 6종·Delegate 타입 선언·내장 VB 문법이 모르는 키워드 5규칙) 뒤에 source.asp.vb.net 위임. 선언 규칙 수식어 집합 = GPL_PROC_MODIFIERS, src/test/grammar.test.ts 가 강제 (§1-DT)
@@ -825,7 +829,11 @@ src/providers/completionProvider.ts      # 정적 항목 캐시, 트리거('.', 
 src/providers/definitionProvider.ts      # token 확인 + parseDocument 재사용
 src/providers/hoverProvider.ts           # token 확인 + docComment 표시(§1-J)
 src/providers/signatureHelpProvider.ts   # Signature Help(빌트인+사용자 Sub/Function, §1-J 신설)
-src/symbolCache.ts                       # 심볼 캐시 + 완성 문서화(buildSymbolDocumentation, §1-J) — 파일 항목 키는 normalizePathKey(원본 표기는 항목에 보관), .gpr 소스 합집합도 같은 키(§1-CQ)
+src/language/symbols/symbolIndex.ts      # 심볼 저장·조회·오버로드·멤버·이름 인덱스 정본 — 프로젝트 판단은 SymbolResolutionContext로 주입 (§1-FJ)
+src/project/symbols/symbolProjectScope.ts # CompileUnitIndex·프로젝트 경계·경로 점수의 소유자 (§1-FJ)
+src/language/vscode/symbolCache.ts       # 기존 Provider API 28개와 refresh·로그·삭제 정리를 조립 (§1-FJ)
+src/language/vscode/workspaceSourceLoader.ts # 미저장 버퍼·인코딩·GPR 탐색·배치 로딩·참조 텍스트 읽기 (§1-FJ)
+src/language/vscode/symbolPresentation.ts # VS Code 완성 항목·문서·스니펫 표현 (§1-FJ)
 src/language/symbolLocations.ts          # 정의 peek 목록 정리(vscode 무의존) — dedupeSymbolLocations(같은 파일·줄 병합)/preferExistingFiles(없는 파일 제외, 전부 없으면 원본 유지) + 존재 판정 정본 isMissingFile(ENOENT만 삭제로 본다)·fileExists(§1-CQ)
 src/language/docComment.ts               # 문서화 주석 정본(vscode 무의존) — parseDocComment(섹션 별칭·펜스 인식)/renderDocCommentMarkdown(호버·완성·시그니처 공용)/buildDocCommentBlock·mergeDocComment(골격·머지, DocTarget.coveredParams/coveredReturns 로 "차이만" §1-DR). 원문은 손실 없이 보존하고 렌더에만 손보는 원칙: withFenceLanguage(펜스 언어 보정)·stripDecorativeRules(`====` 장식선 제거, §1-CS)
 src/language/docCommentOverloads.ts      # 오버로드 문서화 주석 병합 정본(vscode 무의존, §1-DR) — filterOverloadSiblings(형제 = 같은 이름·Sub/Function·모듈/클래스·컴파일 단위, 사본 접기)/resolveOverloadDoc(공통 설명은 유일하게 가장 풍부한 문서·자기 설명 없으면 Jaccard 로 가장 닮은 형제·이름별 매개변수·같은 타입 Returns — 선언 순서 무관, provenance 동반)/renderResolvedDocMarkdown/describeOverloadCoverage(골격 "차이만"). 호버·완성(symbolCache.buildSymbolDocumentation)·시그니처·''' 공용, 형제 후보는 symbolCache.findOverloadSiblings
@@ -848,7 +856,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-EP ~ §1-EY)만 둔다.
+본문에는 **최근 10개 세션**(§1-FG ~ §1-FP)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -857,8 +865,8 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-EX (2026-10-02 ~ 10-20) | 19 |
-| (본문 아래) | §1-EY ~ §1-FH (2026-10-20 ~ 10-22) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FF (2026-10-02 ~ 10-22) | 27 |
+| (본문 아래) | §1-FG ~ §1-FP (2026-10-22) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -925,7 +933,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-BH | 08-26 | GitHub 이슈 #20: VS Code 표준 디버그 키 복원 | [2026-08](archive/handoff/2026-08.md) |
 | §1-BI | 08-26 | GitHub 열린 이슈 14건 일괄 처리 (#15~#28) | [2026-08](archive/handoff/2026-08.md) |
 | §1-BJ | 08-27 | GitHub #32: 멤버 접근 hover의 수신자 타입 해석 (+ Property 디버깅 방향 논의) | [2026-08](archive/handoff/2026-08.md) |
-| §1-BK | 08-28 | 제어기 연결 끊김 자동 감지 재설계 (`controller/connectionHealth.ts`) | [2026-08](archive/handoff/2026-08.md) |
+| §1-BK | 08-28 | 제어기 연결 끊김 자동 감지 재설계 (`controller/connection/connectionHealth.ts`) | [2026-08](archive/handoff/2026-08.md) |
 | §1-BL | 08-28 | 프로젝트 선택 규칙 공용화 + F5 다중 프로젝트 QuickPick + 탐색기 우클릭 메뉴 | [2026-08](archive/handoff/2026-08.md) |
 | §1-BM | 08-28 | GDE 1403 캡처 프레임 단위 재판독 → 1402 유휴 ping(GDE 방식 세션 유지) + 1403 UTF-8 디코딩 | [2026-08](archive/handoff/2026-08.md) |
 | §1-BN | 08-28 | URI 외부 진입점 전체 개방 + 제어기 명령 정책(지침 → 확장 자체 강제) | [2026-08](archive/handoff/2026-08.md) |
@@ -970,12 +978,12 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-DA | 09-07 | flash 영구 저장(`gpl.saveToFlash`)을 AI/자동화 경로에서 차단 — 차단 목록 정본 `aiCommandPolicy.ts` + 브리지·URI·명령 3중 게이트, MCP 미러 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DB | 09-07 | 구조 기반 정비 — tsconfig 엄격 플래그·죽은 코드 제거·계층 경계(`util/pathKey`·`project/gprSync`·언어 모듈 `language/` 이동)·순수 분리(`deployOutcome`·`treeFormat`)·**계층 규칙 테스트 고정**(`architecture.test.ts`)·`docs/development/architecture.md` 신설 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DC | 09-10 | 「업로드 스타트」 시퀀스 정정 **(시퀀스 가설은 §1-DL 에서 기각·철회)** — 정지 확인 → 업로드 순차(`stopBeforeUpload`) + Start 직전 정지 재확인, 배포 없이 붙는 `gpl.debug.attachOnly` 신설·명령 제목 한국어화 + 원인 규명용 TEST 경로(`gpl.uploadStart.test`) + 빌드 완료 후 GPL Console 포커스 탈취 제거 | [2026-09](archive/handoff/2026-09.md) |
-| §1-DD | 09-10 | 제어기 조작 절차를 API 한 겹으로 묶기(1) — 전체/개별 쓰레드 정지 정본 `controller/threadStop.ts`(주입형 IO·테스트 17건) + 5곳 통합 + 정지/일시정지 상태 판정 단일화 + 무검증 성공 보고 2건 수정 + 중복 절차 전수 조사 | [2026-09](archive/handoff/2026-09.md) |
+| §1-DD | 09-10 | 제어기 조작 절차를 API 한 겹으로 묶기(1) — 전체/개별 쓰레드 정지 정본 `controller/threads/threadStop.ts`(주입형 IO·테스트 17건) + 5곳 통합 + 정지/일시정지 상태 판정 단일화 + 무검증 성공 보고 2건 수정 + 중복 절차 전수 조사 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DE | 09-10 | 제어기 조작 절차 API 통합(2) — Compile/Load/Unload/Start 정본 `projectCommands.ts` + 원격 사본 선택 `remoteProjectPath.ts` + Start 전 콘솔 준비 일원화, FTP Run 의 `-event` 누락·컴파일 에러 미표시 해소 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DF | 09-10 | 제어기 패널 섹션 기본 접힘 상태를 사용자가 쓰는 배치로 고정 — 섹션 `TreeItem.id` 부여(+`SECTION_LAYOUT_EPOCH` 세대)로 저장된 접기 상태가 기본값을 덮어쓰던 문제 해소, `GPL: Reset Panel Layout` 명령 신설 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DG | 09-10 | SoftEStop 확인 모달의 취소 버튼 중복 — `{ modal: true }` 가 자동으로 붙이는 취소와 명시 항목 `'취소'` 가 겹치던 문제 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DH | 09-10 | 컴파일 에러 시 Problems 패널로 전환되지 않던 문제 — 출력 채널 `show()` 가 패널 전환을 덮어쓰던 것을 점프 여부로 분기(`jumpToFirstCompileError` 가 boolean 반환) | [2026-09](archive/handoff/2026-09.md) |
-| §1-DI | 09-10 | 정지 불가 쓰레드 진단 `controller/threadStuckDiagnosis.ts` 신설(읽기 전용) — 위치 반복 샘플링·소스 문맥·수신자 식 추출로 복구 후보를 **제시**(전송 안 함), 배포 STOP 실패 시 자동 + `GPL: 정지 불가 쓰레드 진단` 명령 | [2026-09](archive/handoff/2026-09.md) |
+| §1-DI | 09-10 | 정지 불가 쓰레드 진단 `controller/threads/threadStuckDiagnosis.ts` 신설(읽기 전용) — 위치 반복 샘플링·소스 문맥·수신자 식 추출로 복구 후보를 **제시**(전송 안 함), 배포 STOP 실패 시 자동 + `GPL: 정지 불가 쓰레드 진단` 명령 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DJ | 09-10 | 연결을 해제해도 1402 소켓이 다시 열리던 문제 — 디버그 어댑터가 확장의 해제를 모른 채 1 s 폴로 재접속하던 것을 해제 전 세션 종료(terminated 대기)로 차단, `stopAllOnDisconnect` 는 모달 확인 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DK | 09-10 | MCP·확장 자동화 구조 개선 — 확장 인스턴스별 presence/큐 분리(창이 여럿일 때 요청이 뒤섞이던 원인), 배포를 Operation 모델로(타임아웃 뒤 결과 조회·멱등키), 배포 증적 대조, 구조화 복구 지시 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DL | 09-10 | 「업로드 스타트」 제어기 이상 가설(㉠ Stop 중 FTP 덮어쓰기 · ㉡ 정지 직후 Start) **실기기 기각** — 순차화(`stopBeforeUpload`)와 TEST 경로(`gpl.uploadStart.test`) 철회, 업로드는 다시 정지 게이트와 병행(속도 복귀) | [2026-09](archive/handoff/2026-09.md) |
@@ -993,11 +1001,11 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-DX | 09-18 | **시작 시 인덱싱 O(n²) 제거 + 동명 소스 해석을 세션 대상 폴더 기준으로 통일** — 사용자 분석 문서 2건 코드 대조. `symbolCache`: 파일마다 이름 인덱스 재구축(567개에서 798 ms) → 묶음 끝 1회, `openTextDocument` 567회 → 디스크 직접 읽기(`files.encoding` 비UTF-8 만 문서), 32 파일마다 양보, `.gpl` 워처 300 ms 묶음, 요약 로그 1줄. `project/compileUnitTarget.ts` 신설 — **세션 대상 폴더(`host.sessionTargetDir`, deploy 클로저 흡수) 1순위** 규칙을 트리/이벤트(`projectContext`)와 디버거(`_updateProjectDirs`, launch `projectDir` 힌트)가 공유, Quick Attach 가 `projectDir` 동봉. 배포 ERROR CHECK 문구 = Start 직후 스냅숏 명시. `-200` 은 확장 밖 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DY | 09-21 | **"컴파일 검증 필요" 배지가 방금 작업한 프로젝트 대신 가장 오래된 것을 가리키던 문제** — 대표 항목 `CompileStaleTracker.current()` 를 가장 먼저 등록된 것 → **가장 최근 표시된 것**으로, `mark()` 는 재표시 시 최근 자리로 승격(`since`·`projectDir` 보존). `markCompileStale`(방금 항목)과 `clearCompileStale`(`current()`)이 서로 다른 항목을 가리키던 편차도 함께 해소 | [2026-09](archive/handoff/2026-09.md) |
 | §1-DZ | 09-21 | **식별자 안의 키워드에 색이 칠해지던 문제(`Public SyncSub As TcpSyncCmdSub` 의 `Sub`)** — 선언 규칙 7개가 `(?i)\s*…` 로 시작해 줄 중간의 `Sub As …` 를 선언으로 읽고 있었다. 전부 `(?i)^\s*` 로 줄 머리 고정(Class·Module·Delegate·Sub·Function·Property·Const). 곁들여 `As New <Type>` 의 `New` 가 타입 색을 먹고 정작 타입은 무색이던 것, 한정 이름(`As Net.LogSink`)이 첫 마디만 칠해지던 것을 고치고 타입 참조 스코프를 `storage.type.gpl` 로 통일 | [2026-09](archive/handoff/2026-09.md) |
-| §1-EA | 09-21 | **「오류 상세 보기」 로그 `[main] - [main] - …` 겹침 + 에러 코드 분류 범위 표 + `Init` 충돌 실기 확정** — 보고서 되먹임 차단(`host.report`)·제어기 사건 링버퍼(`recentEvents.ts`)·`<E>N</E>` 단일 숫자 상태 프레임 억제; `classifyErrorEntry` 를 공식 `Error_Intro.htm` 범위 표로(`-757`/`-700` = 코드 오류), 라벨 정본 `describeErrorCategory` + R7; 진입점 대조 `startProcedureCheck.ts`; **`samples/init-probe` 실험으로 클래스 멤버 `Init` 이 모듈 초기화에 인스턴스 없이 불려 -757 나는 것 재현·확정** → 진단 `language/initHook.ts`, 예약어 `Lib`, `-757` 힌트; 에러 UI(강조 유지·항목 클릭 이동·복사=상세 보기, `controller/errorReport.ts`); 키워드 호버(`findGplKeyword`, `ByVal`/`ByRef` 문서 규칙) | [2026-09](archive/handoff/2026-09.md) |
-| §1-EB | 09-22 | **클래스 이름 참조 찾기가 선언 파일 밖을 놓치던 문제** — 파서의 자기-참조 필드(`Class` 심볼의 `className` = 자기 이름)를 `referenceProvider` 가 raw 로 읽어 클래스 선언을 "자기 자신의 멤버" 로 분류 → 비한정 검색이 정의 파일로 묶이고 다른 파일의 `As X`·`New X(...)` 가 전부 탈락(F2 도 같은 경로라 **클래스 이름 바꾸기가 선언 파일만 고쳤다**). 소속 판정을 정본 `enclosingClassName`/`enclosingModuleName` 으로 교체 + 사용부 실행도 타입 선언을 복원(`isTypeUsageAt`) + `renameProvider` 충돌 검사도 같은 정본. 같은 세션에 **문자열 참조를 소비 위치로 좁히고**(로그 문자열 오탐 — `SYMBOL_STRING_CONSUMERS`), **제어기 채널을 번호가 아니라 이름으로**(`channelNames.ts` · 하드 규칙 §0-8 · 구조 테스트 R8), 패널 「전체 쓰레드 복사」(`controller/threadReport.ts` — 상황 스냅샷과 같은 표, R7 규칙 추가로 `controllerStatus` 의 집계 사본도 정리) | [2026-09](archive/handoff/2026-09.md) |
+| §1-EA | 09-21 | **「오류 상세 보기」 로그 `[main] - [main] - …` 겹침 + 에러 코드 분류 범위 표 + `Init` 충돌 실기 확정** — 보고서 되먹임 차단(`host.report`)·제어기 사건 링버퍼(`recentEvents.ts`)·`<E>N</E>` 단일 숫자 상태 프레임 억제; `classifyErrorEntry` 를 공식 `Error_Intro.htm` 범위 표로(`-757`/`-700` = 코드 오류), 라벨 정본 `describeErrorCategory` + R7; 진입점 대조 `startProcedureCheck.ts`; **`samples/init-probe` 실험으로 클래스 멤버 `Init` 이 모듈 초기화에 인스턴스 없이 불려 -757 나는 것 재현·확정** → 진단 `language/initHook.ts`, 예약어 `Lib`, `-757` 힌트; 에러 UI(강조 유지·항목 클릭 이동·복사=상세 보기, `controller/diagnostics/errorReport.ts`); 키워드 호버(`findGplKeyword`, `ByVal`/`ByRef` 문서 규칙) | [2026-09](archive/handoff/2026-09.md) |
+| §1-EB | 09-22 | **클래스 이름 참조 찾기가 선언 파일 밖을 놓치던 문제** — 파서의 자기-참조 필드(`Class` 심볼의 `className` = 자기 이름)를 `referenceProvider` 가 raw 로 읽어 클래스 선언을 "자기 자신의 멤버" 로 분류 → 비한정 검색이 정의 파일로 묶이고 다른 파일의 `As X`·`New X(...)` 가 전부 탈락(F2 도 같은 경로라 **클래스 이름 바꾸기가 선언 파일만 고쳤다**). 소속 판정을 정본 `enclosingClassName`/`enclosingModuleName` 으로 교체 + 사용부 실행도 타입 선언을 복원(`isTypeUsageAt`) + `renameProvider` 충돌 검사도 같은 정본. 같은 세션에 **문자열 참조를 소비 위치로 좁히고**(로그 문자열 오탐 — `SYMBOL_STRING_CONSUMERS`), **제어기 채널을 번호가 아니라 이름으로**(`channelNames.ts` · 하드 규칙 §0-8 · 구조 테스트 R8), 패널 「전체 쓰레드 복사」(`controller/threads/threadReport.ts` — 상황 스냅샷과 같은 표, R7 규칙 추가로 `controllerStatus` 의 집계 사본도 정리) | [2026-09](archive/handoff/2026-09.md) |
 | §1-EC | 09-22 | **중첩 source/library breakpoint identity 수정** — `ProjectSource` 원문 상대경로를 전송하고 library source는 명령 전에 차단; parser/mirror/reconcile 경로 보존; `Show Break`의 procedure resolution까지 검증 | [2026-09](archive/handoff/2026-09.md) |
 | §1-ED | 09-29 | **개요 「커서 따르기」가 클릭한 심볼을 놓치던 문제** — 블록 심볼 범위를 "다음 동급 심볼 직전" 휴리스틱 → 파서가 기록한 짝 `End …` 줄(`endLine`)로. 마지막 클래스 범위가 문서 끝까지 늘어나고 중첩 클래스에서 바깥 클래스 범위가 조기 절단되던 겹침 해소, Property 를 블록 심볼로, 중첩 클래스를 바깥 클래스 children 으로(`parentClassName`) | [2026-09](archive/handoff/2026-09.md) |
-| §1-EE | 09-30 | **업로드 진행 바(상태바)** — FTP 업로드 중 상태바에 `██████░░░░  3.2 MB / 10.7 MB` 가 제자리에서 움직이고 완료 요약을 잠시 남김. 집계 `controller/uploadProgress.ts` · 표시 규칙 `views/uploadProgressBar.ts` · 바이트 표기 정본 `util/formatBytes.ts`(모두 순수, R7), 바이트는 basic-ftp `trackProgress`, 전파는 `deployService.onDidUploadProgress` 를 `activation/deploy.ts` 가 한 번 구독(모든 배포 경로 공통), Save to Flash 는 직접 연결 | [2026-09](archive/handoff/2026-09.md) |
+| §1-EE | 09-30 | **업로드 진행 바(상태바)** — FTP 업로드 중 상태바에 `██████░░░░  3.2 MB / 10.7 MB` 가 제자리에서 움직이고 완료 요약을 잠시 남김. 집계 `controller/deployment/uploadProgress.ts` · 표시 규칙 `views/uploadProgressBar.ts` · 바이트 표기 정본 `util/formatBytes.ts`(모두 순수, R7), 바이트는 basic-ftp `trackProgress`, 전파는 `deployService.onDidUploadProgress` 를 `activation/deploy.ts` 가 한 번 구독(모든 배포 경로 공통), Save to Flash 는 직접 연결 | [2026-09](archive/handoff/2026-09.md) |
 | §1-EF | 10-02 | **다중 프로젝트 AI Setup** — 활성 파일/최장 경로 추측 제거, 폴더 대상 저장·미확정 표시, 설정/안내 불일치 점검, multi-root 범위 지정, MCP 세션의 폴더 확인 가드 | [2026-10](archive/handoff/2026-10.md) |
 | §1-EG | 10-02 | **누적 작업 트리 커밋 정리** — §1-DR~§1-EF 변경을 대화·인계 기록과 diff로 대조하고 언어 분석 / 프로젝트·중단점 / 제어기 진단·업로드 / AI Setup / 문서·매니페스트의 5개 커밋으로 분리, 전체 테스트 재검증 | [2026-10](archive/handoff/2026-10.md) |
 | §1-EH | 10-02 | **Catch 누락 경고** — GPL 4.2K5 실기 관측에 따라 Catch 없는 Try를 기본 Warning으로 표시, 실험 진단과 분리·설정 즉시 갱신·문 완성 안내·회귀 테스트 | [2026-10](archive/handoff/2026-10.md) |
@@ -1005,425 +1013,41 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-EJ | 10-02 | **괄호 안 구문 강조 누락(`New X(AddressOf PRB.OnCfg)`)** — 내장 VB 문법의 `#round-brackets` 가 안쪽에 자기 자신만 include 해 괄호 안에서는 GPL 규칙이 전혀 적용되지 않았다. GPL 이 괄호 영역을 직접 열고 `$self` 적용, `AddressOf [한정자.]Proc` 대상에 `entity.name.function`, `New` 규칙을 공백부터 시작해 내장 `storage.type.asp` 와 동점에서 이기게, 낱말 연산자를 `keyword.operator.expression` 으로(Dark+ 키워드 색). 실제 vscode-textmate + 내장 VB 문법으로 전후 토큰 대조 | [2026-10](archive/handoff/2026-10.md) |
 | §1-EK | 10-14 | **MCP 1402 명령이 리더 창으로만 나가던 라우팅(창 2개 ECONNREFUSED)** — `resolveBridge` 가 레거시 큐 담당(리더)을 콘솔 경로로 썼다. 1402 는 단일 클라이언트라 리더가 미접속·다른 창이 접속 중이면 리더 창이 새로 접속하다 거부. `pickConsoleRouteInstance`(명시 id → 창 하나 → connected → 리더)로 분리, `transport.consoleRoute{id,via,connected}` 노출, 힌트 문구 수정. 테스트 107/107, 실기 재확인은 §3 | [2026-10](archive/handoff/2026-10.md) |
 | §1-EL | 10-14 | **「Stop 이 안 된다」= `Stop <project>` 범위 오해 → MCP `stop_threads` 신설 + `unload_project` 사전 쓰레드 확인** — `Stop <이름>` 은 쓰레드 이름 단위(`Stop MergeCode` 뒤 `LOG_SOCKET` 잔류 → Unload -750 반복, `Stop -all` 로 즉시 정지 실기 확인). 도구는 thread/project/전체 범위 → STATUS 0/-752 접수 → Show Thread -web settle → 1회 재시도 → 잔류 시 `diagnoseStuckThread` 안내; Unload 는 활성 쓰레드 있으면 `refused:"threads-active"`(전송 안 함); `statusHint` -750/-752, `SERVER_INSTRUCTIONS`·`exportAgentSetup` 안전 규칙·README. Unload 로 Free 0.635→4.356 Mb 실측 | [2026-10](archive/handoff/2026-10.md) |
-| §1-EM | 10-14 | **연결 해제 뒤에도 대시보드가 1402 를 다시 열어 쥐던 문제(다른 창 ECONNREFUSED)** — 연결 상태의 정본이 뷰(`controllerTree.isConnected`)였고 `host.setControllerConnected` 가 손으로 나눠 주는 목록에 대시보드가 없었다 + 전송 계층은 연결 의도를 몰라 해제 상태에서도 소켓을 보관. 정본 `controller/connectionSession.ts`(순수) 신설 — 쓰기는 host 한 곳, 대시보드는 구독해 멈춤/재개, `effectiveKeepAlive` 로 해제 상태 명령은 단발 연결, 뷰 플래그 읽기 14곳을 `host.isControllerConnected` 로, R7 규칙 추가. 1079/1079 | [2026-10](archive/handoff/2026-10.md) |
+| §1-EM | 10-14 | **연결 해제 뒤에도 대시보드가 1402 를 다시 열어 쥐던 문제(다른 창 ECONNREFUSED)** — 연결 상태의 정본이 뷰(`controllerTree.isConnected`)였고 `host.setControllerConnected` 가 손으로 나눠 주는 목록에 대시보드가 없었다 + 전송 계층은 연결 의도를 몰라 해제 상태에서도 소켓을 보관. 정본 `controller/connection/connectionSession.ts`(순수) 신설 — 쓰기는 host 한 곳, 대시보드는 구독해 멈춤/재개, `effectiveKeepAlive` 로 해제 상태 명령은 단발 연결, 뷰 플래그 읽기 14곳을 `host.isControllerConnected` 로, R7 규칙 추가. 1079/1079 | [2026-10](archive/handoff/2026-10.md) |
 | §1-EN | 10-14 | **타입 참조(`As X`·`New X`·`Inherits X`)가 키워드 색으로 칠해지던 구문 강조** — 타입 이름 스코프가 키워드용 `storage.type.gpl`(Dracula 분홍·Dark+ 파랑)이라 `New RobotArm` 이 한 색이었다(§1-EJ 뒤 `New` 뒤 이름까지 번져 드러남). 세 규칙을 `entity.name.type.gpl` 로 통일, 문법 머리 규칙 (3) 과 `grammar.test.ts` 통일 테스트를 뒤집음(storage.type 금지). 실제 토큰화 샘플 대조 103 토큰 모두 의도한 변화. 1079/1079 | [2026-10](archive/handoff/2026-10.md) |
-| §1-EO | 10-14 | **AI(MCP) 경유 제어기 동작이 Output 에 보이지 않던 문제(사용자 지적) + MCP `deploy_project` 가 작업 완료 뒤에도 300초 타임아웃하던 원인** — 브리지 `gpl.controller.sendCommand` 는 `[Command] >>> … (agent)` 한 줄만 남기고 응답은 GPL Traffic 에만, 패널도 열지 않았다 → 순수 `controller/agentCommandLog.ts`(요약 줄·본문 상한=Traffic 설정·실패 표기·조용한 뒤 첫 요청만 패널 열기)와 설정 `gpl.agentBridge.revealOutput`(기본 켬). 배포 완료 토스트를 `await` 해 비모달 알림을 닫을 때까지 명령 Promise 가 안 끝나던 것을 then 으로 교체. 1084/1084 | [2026-10](archive/handoff/2026-10.md) |
-| §1-EP | 10-14 | **에러 줄 붉은 강조가 쓰레드 재시작 뒤에도 남던 문제(사용자 보고, `_data_Station.gpl:257 Throw ex`)** — `ExecutionDecorations` 는 문서 편집·덮어칠하기로만 지워져 제어기 상태와 이어진 경로가 없었다. 순수 `controller/executionMarks.ts`(`isErrorMarkStale`/`isStoppedMarkStale`: 주인 쓰레드가 목록에 없거나 Error/정지 상태가 아니면 낡음, 주인 모르면 같은 종류 상태가 어디에도 없을 때) + `showError/showStopped(…, { threadName })` + `reconcile(snapshot)`, 트리 `onDidChangeRuntimeState`(doRefresh·enterDebugMode·clearCachedControllerState) 구독. 테스트 6건, 1098/1098 | [2026-10](archive/handoff/2026-10.md) |
+| §1-EO | 10-14 | **AI(MCP) 경유 제어기 동작이 Output 에 보이지 않던 문제(사용자 지적) + MCP `deploy_project` 가 작업 완료 뒤에도 300초 타임아웃하던 원인** — 브리지 `gpl.controller.sendCommand` 는 `[Command] >>> … (agent)` 한 줄만 남기고 응답은 GPL Traffic 에만, 패널도 열지 않았다 → 순수 `controller/automation/agentCommandLog.ts`(요약 줄·본문 상한=Traffic 설정·실패 표기·조용한 뒤 첫 요청만 패널 열기)와 설정 `gpl.agentBridge.revealOutput`(기본 켬). 배포 완료 토스트를 `await` 해 비모달 알림을 닫을 때까지 명령 Promise 가 안 끝나던 것을 then 으로 교체. 1084/1084 | [2026-10](archive/handoff/2026-10.md) |
+| §1-EP | 10-14 | **에러 줄 붉은 강조가 쓰레드 재시작 뒤에도 남던 문제(사용자 보고, `_data_Station.gpl:257 Throw ex`)** — `ExecutionDecorations` 는 문서 편집·덮어칠하기로만 지워져 제어기 상태와 이어진 경로가 없었다. 순수 `controller/debugging/executionMarks.ts`(`isErrorMarkStale`/`isStoppedMarkStale`: 주인 쓰레드가 목록에 없거나 Error/정지 상태가 아니면 낡음, 주인 모르면 같은 종류 상태가 어디에도 없을 때) + `showError/showStopped(…, { threadName })` + `reconcile(snapshot)`, 트리 `onDidChangeRuntimeState`(doRefresh·enterDebugMode·clearCachedControllerState) 구독. 테스트 6건, 1098/1098 | [2026-10](archive/handoff/2026-10.md) |
 | §1-EQ | 10-14 | **AI(MCP) 상태 확인 반복 낭비(사용자 지적) → 재확인 차단·대기 도구·런타임 콘솔 스트림** — deploy 완료 결과를 받고도 operation_status 목록→상세→Show Memory 로 재확인하던 것을 `DeliveredResultMemory`(재조회는 `redundant` 요약만)·`next:"none"` 으로 끊고, `wait_operation`(서버 대기)·`runtime_console_read`(확장 `RuntimeConsoleBuffer` 커서/패턴 대기 + 파일 캡처)·`list_remote_projects`(FTP LIST) 신설. 응답 축약(`compactOperationResult`·`project_target` 후보 제거·`controller_status` 중복 블록 제거), deploy 타임아웃 시 작업 기록으로 결과 복구, show_threads 실패 구조화. 다른 세션 증상 10건 중 8건 반영. MCP 114/114 · 확장 1098/1098 | [2026-10](archive/handoff/2026-10.md) |
 | §1-ER | 10-19 | **Debug Console 여러 줄 실행 + 상태 변경 명령 미전송 안내** — 붙여 넣은 입력을 줄별로 순차 처리하고, `>` 상태 변경 명령의 확인은 묶음당 한 번. `>` 없는 `Break`/`Stop`/`Execute`는 명령으로 인식했지만 원문 명령을 보내지 않았음을 명확히 표시. 순수 입력/표시 모델 `debug/replInput.ts`, 테스트 4건, 전체 1102/1102 | [2026-10](archive/handoff/2026-10.md) |
 | §1-ES | 10-19 | **확장이 다른 IP 에 연결돼 있는데 MCP 가 "확장 미실행" 으로 보고(Sample Prep 보고, 배포·콘솔 전부 막힘)** — presence 를 `GPL_HOST` 로만 찾아 `.mcp.json` 이 Export 시점 주소로 남으면 `presence-missing`. MCP `describeHostMismatch`/`hostMismatchFix` → `reason:"host-mismatch"`·`hostMismatch` 를 `extension_status`·`controller_status(likelyCause)`·`project_target`·`extension_resolve(EXTENSION_HOST_MISMATCH)`·`deploy_project`·`extension_list`·`diagnostic_snapshot` 에, 같은 작업 창이면 wake 생략. 확장은 `findMcpHostMismatch`(순수) + 연결 확립 시 경고(「Export 재실행」) + Check 의 `currentController` 대조. MCP 118/118 · 확장 1104/1104 | [2026-10](archive/handoff/2026-10.md) |
 | §1-ET | 10-19 | **「런타임 콘솔(1403)이 확장에서는 안 붙고 수동으로는 붙는다」(Sample Prep 보고) — 원인 미확정, Live Log 시작 명령의 결과 표시 보강** — 사후 스냅샷 2건(17:46·18:02)은 1402·1403 동시 ECONNRESET + ARP 가 MSI 게이트웨이 = 직결 경로 유실 패턴이고, 유실 확정 시 런타임 콘솔은 설계대로 STOP(자동 재접속 없음). 새 창의 `[1403]` Traffic 은 미입수. 「Start Live Log Terminal」이 대상 `ip:port`·명령 콘솔 연결 여부를 터미널에 적고 `forceImmediateReconnect` 로 즉시 붙어 본 뒤 결과를 알림+터미널에 표시(종전엔 결과 무관 "연결 시도" 토스트). 1104/1104 | [2026-10](archive/handoff/2026-10.md) |
-| §1-EU | 10-19 | **Upload & Start 는 성공인데 Start 뒤 메인 쓰레드가 -1509 로 Error 정지한 것을 알리지 않음(Sample Prep 보고) + MCP refused 때 로컬 소유 PID + `pausedThreads` 에 Error 혼입** — 순수 `controller/postStartWatch.ts`(Start 뒤 `postStartWatchMs` 동안 Show Thread 폴링 → Error 면 상세로 코드·메시지·file:line, -1509 힌트) → `DeployResult.runtimeError`(success 는 유지), 호출측은 에러 토스트(「오류 상세」)·줄 강조·오류 컨텍스트·스냅샷 요약. MCP `deploy_project` 에 `runtimeError`·`warning`, 목록 요약에 `runtimeError`. `controller_status` 실패 응답 `observations.localConnections`(Get-NetTCPConnection, foreignOwners → 추론 1순위·verdict). `summarizeThreads` 를 pausedThreads/errorThreads/stoppedThreads 로. MCP 121/121 · 확장 1108/1108 | [2026-10](archive/handoff/2026-10.md) |
+| §1-EU | 10-19 | **Upload & Start 는 성공인데 Start 뒤 메인 쓰레드가 -1509 로 Error 정지한 것을 알리지 않음(Sample Prep 보고) + MCP refused 때 로컬 소유 PID + `pausedThreads` 에 Error 혼입** — 순수 `controller/threads/postStartWatch.ts`(Start 뒤 `postStartWatchMs` 동안 Show Thread 폴링 → Error 면 상세로 코드·메시지·file:line, -1509 힌트) → `DeployResult.runtimeError`(success 는 유지), 호출측은 에러 토스트(「오류 상세」)·줄 강조·오류 컨텍스트·스냅샷 요약. MCP `deploy_project` 에 `runtimeError`·`warning`, 목록 요약에 `runtimeError`. `controller_status` 실패 응답 `observations.localConnections`(Get-NetTCPConnection, foreignOwners → 추론 1순위·verdict). `summarizeThreads` 를 pausedThreads/errorThreads/stoppedThreads 로. MCP 121/121 · 확장 1108/1108 | [2026-10](archive/handoff/2026-10.md) |
 | §1-EV | 10-20 | **매개변수 목록의 두 번째 이후 `ByVal`/`ByRef`만 본문색이던 구문 강조** — 내장 VB `variable.other.asp`가 쉼표 뒤 공백부터 먼저 시작해 GPL 낱말 규칙을 이기던 TextMate 경쟁. GPL 수식어 규칙도 `\s*`로 같은 위치에서 시작하고 캡처는 낱말만 유지, 경쟁 조건 회귀 테스트 추가. `EM2RS_Probe` 실제 토큰화 45/45 · 최종 1118/1118 · 0.9.15 VSIX | [2026-10 아카이브](archive/handoff/2026-10.md#1-ev-2026-10-20-세션--매개변수-목록에서-쉼표-뒤-byvalbyref만-본문색이던-구문-강조) |
 | §1-EW | 10-20 | **개선 메모 반영: 원격 경로 오판 차단·Start 컴파일 진단·FTP 452 안내·참조 폴백 경량화·MCP 대상 키 일치** — `/GPL` 조회 실패 시 `/flash/projects` 폴백 금지, 선택 후보 미확인 시 FTP 쓰기 전 중단. `Start -compile` 에러를 Problems/MCP 결과로 구조화. `.gpr` 없는 참조 검색은 현재 폴더 재귀 범위 + 디스크 직접 읽기 + private 파일 밖 검색 생략 + 요약 로그. 명시 `projectDir`에 세션 이름을 섞지 않음. -506 lint는 수치 근거 없어 보류. 확장 1118/1118 · MCP 123/123 | [2026-10](archive/handoff/2026-10.md) |
 | §1-EX | 10-20 | **Sample Prep Quick Compile/브리지 후속** — MCP Compile/Start의 `</STATUS>` 대기 전달, 배포 루트 기준 `Lib\...` 경로 해석, `confirmStart:true` 중복 모달 제거, 브리지 큐 정체 presence, 표현 불가 쓰레드 이름 skip, 실패 문구 보강. 확장 1121/1121 · MCP 129/129 | [2026-10](archive/handoff/2026-10.md) |
-| §1-EY | 10-20 | **VS Code 사람 연결과 AI 접근을 한 명령 콘솔 세션으로 강제** — 실제 Sample Prep 경로가 `extension-bridge`임을 확인하고, Export `.mcp.json`에 `GPL_BRIDGE=only`를 써 직접 TCP 폴백을 금지. Check가 누락·`auto`·`off`를 설정 문제로 보고하며 생성 가이드·README·런북을 같은 계약으로 정정. 확장 1122/1122 · MCP 129/129 · 0.9.17 VSIX | 본문 ↓ |
-| §1-EZ | 10-20 | **AI 영구 기본 프로젝트 제거** — `gpl.controller.defaultProject`와 Export의 `GPL_PROJECT*`를 제거하고 대상은 `project_target({projectDir})` 세션에만 유지. Check의 「작업 대상 미확정」 제거, 기존 AGENTS 자동 블록도 Export가 갱신. 확장 1117/1117 · MCP 128/128 · 0.9.18 VSIX | 본문 ↓ |
-| §1-FA | 10-21 | **제어기 FTP 프로젝트 로컬 작업공간** — 실측 뒤 Live/Snapshot manifest, staging 무결성, 저장된 `.code-workspace`, 중첩 `/GPL/Lib` 배포 루트, 공통 쓰기 게이트 구현. 새 테스트 6/6, VSIX/제어기 재확인은 §3 | 본문 ↓ |
-| §1-FB | 10-21 | **디지털 I/O 제어판** — 트리의 Show/Set DIO 두 단계 UI를 대시보드 `상태 / 디지털 I/O` 탭으로 통합. 상태등·FORCED·검색·필터·카드별 강제/해제, 확인 모달·중복 방지·성공 후 재조회. 순수 파서/명령 규칙 5건, 전체 1128/1128, 0.11.0 VSIX | 본문 ↓ |
-| §1-FC | 10-21 | **무정지 Upload Only + 다중 프로젝트 배포 큐** — Stop/Show Thread/Compile/Start 없이 `/GPL`만 갱신하고 원격 전용 삭제 보류·컴파일 필요 표시. 같은 제어기 요청은 `QUEUED`로 기록해 순차 실행, 실제 작업 잠금은 유지. 확장 1139/1139 · MCP 131/131 · 0.13.0 VSIX | 본문 ↓ |
-| §1-FD | 10-21 | **Save to Flash 전원 차단 금지 경고** — FTP 시작부터 상태바 경고, `Sync` 종결 STATUS 0 뒤 10초 안정화가 끝나야 해제. 실패·취소 경로도 확인하며 안전 미확정이면 경고 유지. 순수 상태/표시 테스트 4건, 전체 1139/1139, 0.13.1 VSIX | 본문 ↓ |
-| §1-FE | 10-21 | **Stop All이 업로드/배포를 남기던 충돌 차단** — 명시적 전체 정지를 실행 중·대기 중 작업 취소로 전파, FTP 파일 경계 뒤 삭제·Compile·Start 차단, 내부 배포 Stop 제외, Save to Flash 안전 확인 유지. 확장 1139/1139 · MCP 131/131 · 0.13.1 VSIX | 본문 ↓ |
-| §1-FF | 10-22 | Marketplace 게시 준비 — Release 테스트·동일 VSIX/체크섬 전달·Entra OIDC 게시, 개발용 지침/메모 패키지 제외. 0.13.2 | 본문 ↓ |
+| §1-EY | 10-20 | **VS Code 사람 연결과 AI 접근을 한 명령 콘솔 세션으로 강제** — 실제 Sample Prep 경로가 `extension-bridge`임을 확인하고, Export `.mcp.json`에 `GPL_BRIDGE=only`를 써 직접 TCP 폴백을 금지. Check가 누락·`auto`·`off`를 설정 문제로 보고하며 생성 가이드·README·런북을 같은 계약으로 정정. 확장 1122/1122 · MCP 129/129 · 0.9.17 VSIX | [2026-10](archive/handoff/2026-10.md) |
+| §1-EZ | 10-20 | **AI 영구 기본 프로젝트 제거** — `gpl.controller.defaultProject`와 Export의 `GPL_PROJECT*`를 제거하고 대상은 `project_target({projectDir})` 세션에만 유지. Check의 「작업 대상 미확정」 제거, 기존 AGENTS 자동 블록도 Export가 갱신. 확장 1117/1117 · MCP 128/128 · 0.9.18 VSIX | [2026-10](archive/handoff/2026-10.md) |
+| §1-FA | 10-21 | **제어기 FTP 프로젝트 로컬 작업공간** — 실측 뒤 Live/Snapshot manifest, staging 무결성, 저장된 `.code-workspace`, 중첩 `/GPL/Lib` 배포 루트, 공통 쓰기 게이트 구현. 새 테스트 6/6, VSIX/제어기 재확인은 §3 | [10월 아카이브](archive/handoff/2026-10.md#1-fa-2026-10-21-세션) |
+| §1-FB | 10-21 | **디지털 I/O 제어판** — 트리의 Show/Set DIO 두 단계 UI를 대시보드 `상태 / 디지털 I/O` 탭으로 통합. 상태등·FORCED·검색·필터·카드별 강제/해제, 확인 모달·중복 방지·성공 후 재조회. 순수 파서/명령 규칙 5건, 전체 1128/1128, 0.11.0 VSIX | [10월 아카이브](archive/handoff/2026-10.md#1-fb-2026-10-21-세션) |
+| §1-FC | 10-21 | **무정지 Upload Only + 다중 프로젝트 배포 큐** — Stop/Show Thread/Compile/Start 없이 `/GPL`만 갱신하고 원격 전용 삭제 보류·컴파일 필요 표시. 같은 제어기 요청은 `QUEUED`로 기록해 순차 실행, 실제 작업 잠금은 유지. 확장 1139/1139 · MCP 131/131 · 0.13.0 VSIX | [10월 아카이브](archive/handoff/2026-10.md) |
+| §1-FD | 10-21 | **Save to Flash 전원 차단 금지 경고** — FTP 시작부터 상태바 경고, `Sync` 종결 STATUS 0 뒤 10초 안정화가 끝나야 해제. 실패·취소 경로도 확인하며 안전 미확정이면 경고 유지. 순수 상태/표시 테스트 4건, 전체 1139/1139, 0.13.1 VSIX | [10월 아카이브](archive/handoff/2026-10.md#1-fd-2026-10-21-세션--save-to-flash-중-전원-차단-금지-경고와-안전-확인) |
+| §1-FE | 10-21 | **Stop All이 업로드/배포를 남기던 충돌 차단** — 명시적 전체 정지를 실행 중·대기 중 작업 취소로 전파, FTP 파일 경계 뒤 삭제·Compile·Start 차단, 내부 배포 Stop 제외, Save to Flash 안전 확인 유지. 확장 1139/1139 · MCP 131/131 · 0.13.1 VSIX | [10월 아카이브](archive/handoff/2026-10.md) |
+| §1-FF | 10-22 | Marketplace 게시 준비 — Release 테스트·동일 VSIX/체크섬 전달·Entra OIDC 게시, 개발용 지침/메모 패키지 제외. 0.13.2 | [10월 아카이브](archive/handoff/2026-10.md#1-ff-2026-10-22-세션--marketplace-등록과-업데이트-배포-경로-준비) |
 | §1-FG | 10-22 | 수신함 8개 대조: 메모리 사전 검사·콘솔 대기 분리·Try 안내 정정·MCP Stop 및 응답 요약 | 본문 ↓ |
 | §1-FH | 10-22 | **hello-project 간단한 기능 예제** — 최초 5개 소스 확장은 복잡하다는 사용자 피드백으로 축소. Main.gpl 69줄의 Add·Clamp·작은 Counter·For와 README 14줄로 핵심 편집 기능 체험. 정적 검사·진단 0건·관련 테스트 55/55, 0.14.0 유지 | 본문 ↓ |
+| §1-FI | 10-22 | **구조 개편 1단계** — 0.14.0 기준 커밋·작업 브랜치, controller 64개 파일을 12개 기능 폴더로 분류, 실행 로직 보존·구조 R9 추가. 0.14.1 | 본문 ↓ |
+| §1-FJ | 10-22 | **구조 개편 2단계** — SymbolIndex·SymbolProjectScope·WorkspaceSourceLoader·표현 분리, 공개 메서드 28개 유지, 관련 28/28·동등성 비교 2064건. 0.14.2 | 본문 ↓ |
+| §1-FK | 10-22 | **구조 개편 재검토** — 파일 갱신 경합·참조 인코딩 수정, 중복 refresh 직렬화, 빌드 잔여 JS·맵 자동 제거. 0.14.3 | 본문 ↓ |
+| §1-FL | 10-22 | **정식 로고 적용** — SVG 정본·PNG 확장 아이콘·사이드바 단색 심벌과 README 통일. 0.14.4 | 본문 ↓ |
+
+| §1-FM | 10-22 | **제어기 상태·온도** — 공식 조회 항목 조사, CPU·앰프 온도·실측 추이·원문·사용자 주의 기준, 기본 10초 진단 분리·취소·캐시 격리. 0.15.0 | 본문 ↓ |
+| §1-FN | 10-22 | **매개변수 Hover 누락** — 공통 식별자 해석·개별 범위와 내장 한정 이름 조회, 회귀 6건. 0.15.1 | 본문 ↓ |
+| §1-FO | 10-22 | **README 이용자 안내 개편** — 기능·지원 환경·시작 방법과 배포·디버깅·모니터링·AI 연동 정리, 개발·게시·내부 API 설명 제거. 0.15.2 | 본문 ↓ |
+| §1-FP | 10-22 | **누적 변경 커밋 준비** — 확장 1222/1222·MCP 137/137·문서 빌드, 기존 0.15.2 VSIX의 167개 파일 일치 확인, 푸시 대상 사용자 확인 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-EW ~ §1-FF (2026-10-20 ~ 10-22).** 이 아래부터는 세션 원문이다.
-
-## 1-EY. 2026-10-20 세션 — VS Code 사람 연결과 AI 접근을 한 명령 콘솔 세션으로 강제
-
-### 증상·현재 관측
-
-사용자가 "VS Code로 제어기에 연결하면 AI가 접근하지 못한다. 제어기는 연결 하나만 지원하므로 확장이 사람과 AI 접근을 통합할 수 없나"라고
-지적했다. 구조상 Agent Bridge가 이미 그 역할을 하지만, 실제 Sample Prep 환경은 다음 상태였다.
-
-- `C:\SVN\pa\trunk\develop\07. Others\34. Sample Prep\.mcp.json`은 `GPL_BRIDGE`를 쓰지 않아 MCP 기본 `auto`였다.
-- 살아 있는 Sample Prep 확장은 설치본 **0.9.13**, globalStorage MCP 번들도 **0.9.13**(2026-10-14 빌드)이었다. 작업 사본/직전 VSIX 0.9.16보다 오래됐다.
-- 사용자가 연결한 뒤 presence는 `connected:true`, MCP `extension_status`는 `transport.using:"extension-bridge"`,
-  `consoleRoute.via:"sole-instance"`를 돌려 현재 순간에는 **확장의 한 소켓·직렬 큐 공유가 실제로 선택됨**을 확인했다.
-- 이 확인은 presence와 MCP 로컬 브리지 상태 조회다. 제어기에는 `Show …`를 포함한 어떤 명령도 보내지 않았다.
-
-따라서 "공유 구조가 없다"가 원인은 아니다. 오늘 현재는 브리지로 정상 라우팅됐다. 다만 Export가 `GPL_BRIDGE`를 생략해 `auto` 직접 TCP
-폴백을 허용했고, 설치본과 실행 중 MCP 번들이 최신 수정 전 상태라 브리지 탐지/요청 수거가 어긋나는 순간 별도 TCP를 열 수 있었다. 단일 클라이언트
-제어기에서는 그 연결이 VS Code 세션에 거부돼 AI 접근 불가처럼 보인다. 과거 개별 실패의 정확한 시각별 분기는 로그가 없어 확정하지 않는다.
-
-### 설계 판단·조치
-
-- 물리 연결은 하나, 논리 클라이언트는 여러 개로 둔다. **VS Code 확장이 연결 소유자(connection owner)**이고 사람 명령과 AI 요청을
-  기존 `controllerConnection` 직렬 큐에서 순서대로 처리한다. 별도 상주 프록시를 새로 만들 필요는 없다.
-- `src/ai/agentSetupChecks.ts`: Export 안전 기본값의 정본 `SHARED_CONTROLLER_BRIDGE_MODE='only'`를 추가했다.
-  `inspectWorkspaceSetup`은 `.mcp.json`의 bridge mode를 노출하고 누락·`auto`·`off`를 "VS Code와 AI의 명령 콘솔 공유 미보장" 설정 문제로 본다.
-- `src/ai/exportAgentSetup.ts`: 생성/병합하는 env에 `GPL_BRIDGE: "only"`를 항상 쓴다. 기존 사용자 환경변수와 다른 MCP 서버는 보존한다.
-  브리지가 없거나 응답하지 않으면 AI는 직접 TCP로 우회하지 않고 원인을 보고한다.
-- Export가 만드는 AI 가이드의 낡은 "VS Code와 MCP 중 한쪽만 사용" 문구를 제거했다. VS Code+AI는 Agent Bridge로 함께 쓰고,
-  GDE 같은 브리지 밖 직접 클라이언트만 동시에 쓰지 않는다고 정정했다. 이미 제공된 `runtime_console_read` 설명도 현재 기능에 맞췄다.
-- README·MCP README·런북·`gpl.agentBridge.enabled` 설정 설명을 같은 계약으로 맞췄다. 헤드리스 MCP가 필요한 개발자는 수동으로
-  `auto`/`off`를 선택할 수 있지만 동시 사용 보장은 받지 않는다.
-
-### 검증
-
-- `npm test` **1122/1122** — Export가 `only`를 쓰고, Check가 누락/`auto`/`off`를 거부하며 대소문자·주변 공백은 정규화하는 회귀 포함.
-- `controller-mcp` `npm test` **129/129**.
-- `npm run package` 성공: `dist/gpl-language-support-0.9.17.vsix`(1,374,809 bytes, SHA-256
-  `56065F18153C60E2956EDE55EAF5BBE2094CB572F7774C5BDD1CDB7685456DD0`).
-- 패키징 전 live `extension_status`로 0.9.13 환경의 현재 경로가 `extension-bridge`임은 확인했지만, 0.9.17 설치·Export 재실행 뒤
-  `bridgeMode:"only"` 및 실제 읽기 명령의 공유 큐 통과는 아직 확인하지 않았다.
-
-### 남은 일
-
-- 0.9.17 VSIX 설치 → Sample Prep에서 `GPL: Export AI Agent Setup` 재실행 → AI의 `/mcp` 재연결이 필요하다. 실행 중 MCP 프로세스는
-  `.mcp.json`과 globalStorage 번들을 시작할 때 읽으므로 파일만 갱신해도 현재 프로세스에는 반영되지 않는다.
-- §3의 §1-EY 실기 항목으로, 사람이 연결한 상태에서 `extension_status`가 `mode:"only"`/`using:"extension-bridge"`이고 읽기 명령 한 건이
-  같은 Output/Traffic에 `(agent)`로 남으며 새 direct TCP 소유자가 생기지 않는지 확인한다.
-
----
-
-## 1-EZ. 2026-10-20 세션 — AI 작업 대상의 영구 기본 프로젝트 설정 제거
-
-### 증상·판단
-
-`GPL: Check AI Agent Setup`이 「설정 정상 · 작업 대상 미확정 · 안내 확인 2건」과 함께 구버전 `AGENTS.md`의
-`Lib_NetServer` 기본값과 `.mcp.json`의 미지정 상태가 다르다고 표시했다. 대상 미지정은 안전한 상태인데도 설정이 덜 끝난 것처럼 보이고,
-과거 작업 대상이 `gpl.controller.defaultProject`·`.mcp.json`·안내 문서 세 곳에 남아 다음 작업의 대상으로 재사용될 수 있었다.
-
-기본 프로젝트를 영구 설정하는 대신 **명시 대상 → 세션 대상 → 유일한 실행 가능 프로젝트 → 유일 후보**만 자동화 해석 규칙으로 유지한다.
-MCP 작업은 시작 시 `project_target({projectDir})`로 정확한 폴더를 한 번 확인하고 그 세션에서만 재사용한다. 열린 파일은 계속 대상 근거로 쓰지 않는다.
-
-### 조치
-
-- `package.json`의 `gpl.controller.defaultProject` 설정과 `projectTarget.resolveProjectTarget`의 configured-default 분기를 제거했다.
-  `gpl.automation.target` 응답에서도 `configuredDefault`를 없애고 세션 대상·후보만 보고한다.
-- AI Setup Export는 `.mcp.json`에 `GPL_PROJECT`/`GPL_PROJECT_DIR`을 쓰지 않으며, 기존 파일에 두 키가 있으면 재실행 때 삭제한다.
-  Check는 구버전 키를 설정 문제로 알려 Export 재실행을 안내하지만 프로젝트 미지정 자체는 검사 상태에 넣지 않는다.
-- 생성 안내는 「기본 프로젝트 미확정」 대신 「기본 프로젝트를 저장하지 않고 세션 시작 시 `project_target({projectDir})`」 계약을 쓴다.
-  Export는 `CLAUDE.md`와 함께 **이미 존재하는 `AGENTS.md` 자동 생성 블록**도 갱신한다. AGENTS 파일이나 자동 블록을 새로 만들지는 않고,
-  사용자 작성 본문과 다른 MCP 서버·환경변수·줄바꿈은 보존한다.
-- MCP 서버는 환경변수 기본값과 과거 `MergeCode` 폴백을 제거했다. compile/start/unload 등은 명시 `project` 또는 세션 대상만 쓰며,
-  대상 없는 `deploy_project`는 UI나 자동 선택으로 넘어가지 않고 `PROJECT_TARGET_REQUIRED`·`sent:false`를 돌려준다.
-- README·MCP README·AI 디버깅 런북·CHANGELOG를 같은 세션 전용 대상 계약으로 맞췄다.
-
-### 검증
-
-- 확장 `npm test` **1117/1117** — TypeScript 컴파일, 구버전 env 제거, 기존 AGENTS 자동 블록 갱신·CRLF/사용자 본문 보존,
-  Check의 대상 상태 제거, 대상 해석 우선순위 회귀 포함.
-- `controller-mcp` `npm test` **128/128**, `node --check controller-mcp/src/index.js` 통과.
-- `npm run package` 성공: `dist/gpl-language-support-0.9.18.vsix`(1,372,632 bytes, SHA-256
-  `A663BE066472DD70E179CF79124276BAEFD9C9C361CA5F65B9BA91F87B3A6108`). 포함 MCP 번들 937 KB, v0.9.18 빌드 스탬프.
-- F5 Extension Development Host, VSIX 설치, 실제 워크스페이스 Export, 제어기 명령은 수행하지 않았다.
-
-### 남은 일
-
-- §3의 §1-EZ 항목대로 구버전 Sample Prep 설정에서 Export/Check/UI와 `/mcp` 재연결 뒤 세션 대상 고정·해제를 확인한다.
-- 기존 사용자 `settings.json`에 남은 `gpl.controller.defaultProject`는 VS Code의 미등록 설정으로 남을 수 있으나 확장이 읽지 않는다.
-  사용자 설정 파일을 자동 편집하지는 않는다.
-
----
-
-## 1-FA. 2026-10-21 세션 — 제어기 FTP 프로젝트를 임시 스냅샷으로 내려받아 VS Code에서 디버깅하는 흐름 실측
-
-### 요청·안전 범위
-
-제어기 `/GPL`의 프로젝트를 임시 폴더로 가져와 VS Code에서 디버깅할 수 있는지 먼저 시험하고,
-가능하면 프로젝트 구조 개선점까지 검토하기로 했다. 초기 의도와 AI가 수행한 조작은 FTP LIST·다운로드까지였지만, 사용자가 내려받은
-`EM2RS_Probe/Main.gpl`을 편집·저장한 뒤 확장의 기본 autoOnSave가 원격 업로드를 수행했다. 따라서 이 세션은 결과적으로 읽기 전용 검증이 아니며,
-아래에는 실제 원격 변경과 확인되지 않은 범위를 분리해 기록한다.
-
-### 확인한 사실
-
-- 현재 작업 사본에서 확장 `npm test` **1117/1117**, `controller-mcp` `npm test` **128/128** 통과.
-- 읽기 전용 `/GPL` 조회에서 `COM_Probe`·`EM2RS_Probe`·`Lib` 세 폴더를 확인했다. `EM2RS_Probe`는 4개 파일·총 32,966 bytes였다.
-- 0.9.18 Extension Development Host에서 `EM2RS_Probe`를
-  `%TEMP%\gpl-controller-snapshot-20261021-105334\EM2RS_Probe`로 내려받았다. 결과는 `Commands.gpl` 28,078,
-  `Compile.log` 211, `Main.gpl` 2,990, `Project.gpr` 1,687 bytes로 총량이 원격 목록과 일치했고 네 파일의 SHA-256을 모두 읽을 수 있었다.
-- 같은 스냅샷 루트에 `Lib`를 내려받아 다중 루트 작업 영역에 두 번째로 추가했다. `Lib`는 79개 파일·714,408 bytes·`Project.gpr` 31개였고,
-  제어기 연결은 유지됐다(`extension_status`: 0.9.18, pid 34452, `connected:true`, consoleRoute `via:"connected"`).
-  `EM2RS_Probe/Main.gpl`의 `LOG.WriteEx` 정의·호버가 `Lib/Lib_Core/Log/Logger.gpl`로 연결돼 다중 루트 의존성 인덱싱이 실제로 동작했다.
-- 당시 로컬 개발 원본과 비교하면 `Project.gpr`는 같고 `Commands.gpl`·`Main.gpl`은 크기와 해시가 달랐다. 이는 스냅샷 비교가 실제로 필요함을 보여 주지만,
-  어느 사본이 최신·정본인지는 컴파일 이력과 대상 제어기를 함께 확인하기 전 단정하지 않는다.
-- `EM2RS_Probe/Main.gpl`을 저장하자 Output에 `[1/3] UPLOAD`, `변경 파일만 업로드(1개): Main.gpl`,
-  `Upload done: 1 sent, 0 skipped`가 기록됐다. 이어 활성 `TCPCMD(Running)`·`TCPLSN:8010(Running)` 때문에 Compile이 보류되고
-  「컴파일 검증 필요」가 표시됐다. 해당 `EM2RS_Probe` autoOnSave 흐름에는 Stop·Compile·Start 실행 결과가 없으므로 실행 바이너리 변경은 확인되지 않았지만,
-  `/GPL/EM2RS_Probe/Main.gpl` 소스 업로드는 완료된 것으로 판정한다.
-- `Lib/Lib_Core/Log/Logger.gpl` 저장은 `expected project: Lib_Log / ftp folder: Log`로 해석됐고,
-  `/GPL/Lib_Log`가 없다는 auto gate에서 건너뛰었다. 반면 `LOG.WriteEx` 정의 이동은 정상이다. 즉 **정적 언어 기능은 작동하지만
-  중첩 라이브러리의 배포 프로젝트/원격 경로 해석은 신뢰할 수 없다.**
-- 별도의 `Lib` 루트 Build 화면에는 `[3/3] ERROR CHECK`, raw `<STATUS>0,"Success"</STATUS>`, `Build complete: Lib`,
-  `/GPL/Lib`, `Start 미실행`이 기록됐다. 따라서 `Lib` 루트를 명시한 Build/Compile 성공은 확인됐고 모션·Start는 없었다. 같은 파일 계층을
-  수동 루트 경로는 `Lib`, 저장 이벤트는 `Lib_Log`로 다르게 해석한다는 것이 핵심 불일치다.
-
-### 재현된 UX·구조 문제
-
-1. **다운로드가 끝났는데 `Compile.log`에서 멈춘 것처럼 보인다.** 실제 파일은 모두 기록됐고 활성 FTP 연결도 없었다.
-   `activation/ftpCommands.ts`가 `withProgress` 콜백 안에서 완료 `showInformationMessage`의 사용자 선택까지 `await`하므로,
-   완료 알림을 선택하거나 닫기 전까지 진행 표시가 남는다. 전송 지연이 아니라 UI 수명주기 문제다.
-2. **「폴더 열기」와 첫 「워크스페이스에 추가」 모두 현재 연결을 유지하지 않는다.** 「폴더 열기」의 `vscode.openFolder(localDir)`는
-   Extension Development Host를 다시 열었다. 「워크스페이스에 추가」의 `updateWorkspaceFolders`는 같은 창에 `hello-project`와
-   `EM2RS_Probe`를 만들었지만, VS Code API가 명시한 단일 폴더→다중 루트 전환 재시작으로 확장이 비활성화됐다.
-   `extension.ts:176~181`의 `deactivate()`는 제어기 연결을 닫으므로 자동 연결 해제는 현재 구현상 정상 결과다.
-   전환 뒤의 제목 없는 다중 루트 작업 영역을 닫으면 `.code-workspace` 저장 여부를 묻고, 「저장 안 함」은 파일이 아니라 작업 영역 구성을 버린 뒤 창 닫기를 계속한다.
-3. **새 temp 폴더가 제한 모드로 열린다.** 타임스탬프 폴더를 계속 만들면 Workspace Trust를 매번 확인해야 한다.
-   두 번째 루트 `Lib` 추가 때도 「이 폴더에 있는 파일의 작성자를 신뢰합니까?」가 나타났다. `%TEMP%` 전체 신뢰는 범위가 너무 넓으므로,
-   전용 고정 스냅샷 루트를 한 번 신뢰하는 설계가 더 안전하다.
-4. **같은 다운로드 폴더를 재사용하면 잔여 파일이 섞일 수 있다.** `downloadProject`는 원격 파일을 덮어쓰지만 로컬에만 남은 파일은 지우지 않는다.
-   다른 제어기·다른 시점의 스냅샷은 새 디렉터리 또는 스테이징 디렉터리에 받아야 한다.
-5. **현재 다운로드 폴더는 읽기 전용 Snapshot이 아니라 제어기 `/GPL`과 왕복하는 Live Working Copy다.** `package.json`의 `gpl.quickCompile.autoOnSave` 기본값 `auto`는
-   `/GPL/<project>` 존재 시 저장 파일을 먼저 업로드하고, 제어기가 완전 STOP이 아닐 때 Compile만 보류한다. `deploy.ts`의
-   `onDidSaveTextDocument`도 연결 상태에서 모든 GPL 저장을 이 경로에 넣는다. 수동 저장뿐 아니라 VS Code Auto Save도 같은 위험이 있다.
-6. **중첩 프로젝트의 언어 범위와 배포 단위가 결합돼 있다.** autoOnSave 대상은 파일을 포함하는 가장 깊은 `.gpr` 폴더를 선택하므로,
-   원격의 단일 `/GPL/Lib` 스냅샷 안에 여러 내부 프로젝트가 있는 구조에서 `Lib_Log` 같은 존재하지 않는 최상위 원격 프로젝트를 만든다.
-
-### 설계 판단
-
-FTP 다운로드 흐름 자체에서 산출물을 **Live Working Copy**로 볼지 **Read-only Snapshot**으로 볼지 먼저 고르게 한다.
-현재처럼 `/GPL` 작업 소스에 변경을 왕복하는 시험 흐름에서는 autoOnSave가 의도에 맞고, 영구 저장은 별도의 Save to Flash 경계로 유지한다.
-재현·비교용 Snapshot은 manifest를 근거로 원격 쓰기를 막고 불변 원본을 보존한다. 두 모드는 제어기 주소·원격 경로·수집 시각·
-파일 수/크기/해시 manifest와 저장된 작업공간 흐름을 공유한다.
-현재 Attach는 기본값으로 제어기 프로젝트 브레이크포인트를 정리할 수 있으므로 “다운로드 후 자동 Attach”를 곧바로 묶지 않는다.
-
-### 구현
-
-- `project/controllerProjectWorkspace.ts`를 추가해 `.gpl-controller-project.json` 스키마, 파일 SHA-256 수집,
-  ancestor manifest 탐색, 중첩 프로젝트 루트 접기, 기존 사본 비덮어쓰기, staging 경계 삭제, 저장된 작업공간 생성을 한 곳에 모았다.
-- `ftpCommands.ts`는 Live Working Copy/Read-only Snapshot을 선택하고 빈 staging에서 다운로드한 뒤 manifest를 기록해 완성 폴더로
-  rename한다. 완료 알림은 `withProgress` 밖에서 띄운다. 작업공간은 프로젝트별 다중 루트가 아니라 선택한 상위 폴더 하나를 루트로 해,
-  다음 다운로드가 폴더 추가 이벤트 없이 보이게 했다.
-- `ftpClient.ts`는 안전하지 않은 상대 경로를 조용히 건너뛰지 않고 실패시키며, 원격 목록과 다운로드 파일 크기가 다르면 1회 재전송 후
-  다시 검증한다. 최종 파일 수도 원격 목록과 일치해야 성공이다.
-- `findProjectDirs()`는 manifest가 있는 다운로드 배치 안의 내부 `.gpr`들을 manifest 루트로 접는다. 정적 언어 인덱싱은 기존
-  `projectFileScope`/compile-unit 규칙을 그대로 사용하므로 내부 심볼 탐색 범위와 원격 배포 단위를 분리했다.
-- manifest 쓰기 게이트는 Deploy 서비스 진입점에서 잠금·FTP·명령 콘솔보다 먼저 실행돼 F5까지 포함하며,
-  autoOnSave와 Save to Flash도 같은 `getControllerProjectWriteBlock()` 판정을 공유한다.
-- 수동 Quick Compile/Deploy가 manifest 게이트에 막힌 경우 일반 `AUTO_GATE` 자동 스킵 로그로 삼키지 않고,
-  Snapshot 또는 제어기 주소 불일치라는 실제 사유를 경고로 표시한다. autoOnSave와 비대화형 자동화는 기존처럼 팝업 없이 결과만 남긴다.
-- 이후 작업은 사용자 요청을 기다리지 않고 검증 뒤 SemVer 분류와 VSIX 패키징까지 마치도록 `AGENTS.md`·`CLAUDE.md`와
-  release/TypeScript 작업 지침을 맞췄다. 호환 기능 추가는 minor, 버그 수정·안정화·문서/내부 개선은 patch이며,
-  major 영향과 Git 커밋·태그·push·공식 릴리즈는 먼저 사용자에게 알리거나 명시적 요청을 받는다.
-- 배포 파일 목록에서 로컬 Chromium crashpad의 `debug.log`가 발견돼 `.vscodeignore`에 `*.log`를 추가했다.
-
-### 검증
-
-- `npm run compile` 통과.
-- 새 `controllerProjectWorkspace.test.ts` **6/6**: manifest 해시, ancestor/중첩 루트, Snapshot·주소 불일치 쓰기 게이트,
-  비덮어쓰기 대상, 작업공간 설정 보존, staging 삭제 경계.
-- 최초 AppContainer 실행에서는 변경 전 **1104/1117**, 변경 후 **1110/1123**으로 동일한 환경 제한 13건
-  (localhost TCP `EACCES` 12 + 기존 deployLock temp rename `EPERM` 1)만 실패했다. 이후 현재 Windows 작업 환경에서
-  `npm test`를 다시 실행해 **1123/1123** 전체 통과를 확인했다.
-- 최초 `npm run package`가 0.9.18 → 0.9.19 patch로 만든 뒤, 이 변경이 호환 기능 추가라는 SemVer 판정에 따라
-  0.9.19를 로컬 중간 산출물로 두고 **0.10.0 minor**로 바로잡았다. `package.json`·`package-lock.json`과
-  `CHANGELOG.md`의 `[0.10.0]`을 일치시켰고, 최종 `package:no-bump`도 TypeScript compile·MCP bundle·VSIX 생성을 완료했다.
-  수동 manifest 차단 사유 표시 보완 뒤 `package:no-bump`로 다시 만든 최종 산출물은
-  `dist/gpl-language-support-0.10.0.vsix` 1,379,408 bytes, SHA-256
-  `C87BA09DBE1C4195ABCBFACE34E0C4DE9FEAC7769D4CC56A1CBBDB60D47754EB`이다. `debug.log`가 제외돼 261개 파일이다.
-  패키징 경고는 기존 JavaScript 다파일 성능 경고와 Node `DEP0190`이며 실패는 없었다.
-  VSIX 설치, F5 Extension Development Host, 새 다운로드 UI, 실제 제어기 쓰기 게이트/중첩 `/GPL/Lib` 업로드는 수행하지 않았다.
-
-### 남은 일
-
-- Live Working Copy 시험을 계속하면 `autoOnSave="auto"`를 유지해도 된다. 다만 「컴파일 검증 필요」를 누르면 활성 쓰레드 Stop 확인과 Compile 단계로 넘어간다는 점을 UI에서 더 분명히 표시할 필요가 있다. Read-only Snapshot은 manifest 게이트가 막으므로 전역 autoOnSave 설정을 끌 필요가 없다.
-- `/GPL/EM2RS_Probe/Main.gpl`은 현재 실행 바이너리와 불일치할 수 있으나 flash 영구 저장은 바뀌지 않았다. 이 상태를 시험 데이터로 유지할지 Quick Compile로 맞출지는 사용자가 정한다.
-- §3의 §1-FA 항목 순서로 새 VSIX의 다운로드 UI, 저장된 workspace 수명주기, Workspace Trust, 중첩 `/GPL/Lib` 쓰기 대상,
-  Read-only/주소 불일치 게이트, `.gpr`·`Lib` 의존성과 DAP 소스 매핑을 검증한다.
-- 화면에는 여전히 「프로젝트 상태 불일치 감지」와 `Logger.gpl` 문제 3건이 남았다. 다음 세션은 두 상세를 먼저 읽어 실제 불일치인지
-  다중 루트 대상 선택/진단 범위의 거짓 양성인지 구분하고, 그 뒤에만 DAP Attach 소스 매핑을 검토한다.
-- package 버전은 0.10.0으로 올리고 VSIX를 생성했다. 제품 코드·README·CHANGELOG·인계 문서와 이후 자동
-  패키징/버전 관리 규칙도 갱신했다.
-
----
-
-## 1-FB. 2026-10-21 세션 — 트리의 불편한 DIO 조회/설정을 대시보드 디지털 I/O 제어판으로 통합
-
-### 요청·판단
-
-사용자는 GPL Controller Status View의 I/O 조작이 불편하므로 커스텀 UI 패널로 옮기고 상태도 직관적으로 보이게 해 달라고 했다.
-기존 트리는 `Show DIO` 입력창과 `Set DIO`의 신호 입력 → 동작 QuickPick → 확인 모달을 각각 열어야 했고, 조회 결과도 Output 원문뿐이라
-여러 신호의 현재값과 강제 상태를 비교하기 어려웠다.
-
-별도 Webview를 하나 더 만들기보다 이미 상태·폴링 수명주기·연결 세션 게이트를 가진 제어기 대시보드에 `상태 / 디지털 I/O` 탭을 두었다.
-상태 탭과 I/O 탭 중 현재 탭의 데이터만 폴링해 `Show DIO`를 기존 자원 프로브에 추가로 계속 보내지 않으며, 트리에는 두 원시 명령 대신
-제어판 진입점 하나만 둔다. `showDio`·`setDio` 명령 ID는 팔레트·URI·외부 호출 호환성을 위해 유지했다.
-
-### 공식 명령 의미 확인
-
-- Brooks 문서 검색 스킬의 오프라인 topic cache에서 `Show DIO`·`Set DIO`를 검색해 공식 Console Command 페이지를 찾고,
-  두 페이지 본문을 직접 확인했다(검색 mode `cache`, direct URL access 성공, 의미 해석 신뢰 높음).
-- `Show DIO` 인자 생략은 설치된 모든 신호를 표시하고 행은 `signal_number: 0|1`, 뒤의 `*`는 특정 상태로 강제됐다는 표시다.
-- `Set DIO signal value`: `1`=강제 ON, `-1`=강제 OFF, `0`/생략=현재 신호값을 바꾸지 않고 강제 해제다. 명령은 출력뿐 아니라
-  디지털 입력 또는 출력 신호의 강제 상태를 바꿀 수 있으므로 기존 사용자 문구 「DIO 출력 설정」을 「DIO 강제 상태 설정」으로 바로잡았다.
-
-### 구현
-
-- `controller/dio.ts`(순수) 신설: `Show DIO` 행 파서(번호순·중복 마지막 값), 엄격한 Set 명령 빌더,
-  강제 ON/OFF/해제 설명을 정본으로 두고 대시보드와 기존 팔레트 명령이 공유한다.
-- `controllerDashboardPanel.ts`: `show(context, log, page)`로 기존 패널을 재사용하면서 I/O 탭을 직접 열고,
-  Webview `showPage`·`setDio` 메시지를 처리한다. 연결 해제 상태에는 명령을 보내지 않고 I/O OFFLINE 스냅샷만 표시한다.
-  Set 전 modal 확인, 확인 중부터 중복 요청 차단, STATUS 0 확인, Output 기록, 성공 후 즉시 Show DIO 재조회를 구현했다.
-- `media/dashboard.html`: 상태/I/O 탭, 전체·ON·OFF·강제 수 요약, 큰 ON/OFF 상태등, `FORCED` 배지,
-  신호 번호 검색, 전체/ON/OFF/강제됨 필터, 카드별 강제 ON·OFF·해제 버튼과 결과 메시지. VS Code 테마 변수를 사용한다.
-- 트리 `I/O · 전역변수`의 Show/Set 두 항목을 `디지털 I/O 제어판` 하나로 바꾸고 `gpl.controller.showIoPanel` 명령을 추가했다.
-  README·제어기 디버깅 런북·CHANGELOG를 같은 UI와 안전 의미로 맞췄다.
-
-### 검증·패키징
-
-- `npm run compile` 통과.
-- 신규 `dio.test.ts` **5/5**: CRLF/XML 응답, ON/OFF·`*`, 파이프 구분·중복 마지막 값·번호 정렬,
-  잡음 행 제외, Set 명령 인자 제한, 강제 해제 의미. `npm test` 전체 **1128/1128** 통과(R1~R8 포함).
-- `media/dashboard.html`의 인라인 JavaScript를 `new Function`으로 구문 검사하고 필수 DOM id 6개를 확인했다.
-- 호환 기능 추가라 SemVer minor **0.11.0**으로 올리고 `npm run package:no-bump` 성공.
-  `dist/gpl-language-support-0.11.0.vsix` **1,391,744 bytes**, SHA-256
-  `35043995F1F032434BAE8C04F292D04211B7225C5DAE9B19DAFA21DBCCCC9476`.
-  archive 목록에서 `media/dashboard.html`·`out/controller/dio.js`·`package.json`·`CHANGELOG.md` 포함을 확인했다.
-  패키징 경고는 기존 JavaScript 다파일 성능 경고와 Node `DEP0190`이며 실패는 없었다.
-
-### 남은 일
-
-- F5 Extension Development Host는 사용자 요청 없이 열지 않았고, 실제 제어기에 `Show DIO`/`Set DIO`를 보내거나 신호를 바꾸지 않았다.
-  새 VSIX 화면 렌더링과 실제 응답 대조, 안전한 시험 신호의 강제/해제는 §3 체크리스트로 남겼다.
-
----
-
-## 1-FC. 2026-10-21 세션 — 실행 중 프로그램을 건드리지 않는 Upload Only와 제어기별 순차 배포 큐
-
-### 요청·판단
-
-실행 중인 프로그램을 정지·컴파일·재시작하지 않고 `/GPL` 작업 소스만 갱신하는 명시적 경로와, 같은 제어기에 여러 프로젝트를
-연달아 요청했을 때 사용자가 다시 실행하지 않아도 등록 순서대로 처리하는 대기열이 필요했다. 기존 옵션 조합으로 뜻을 숨기지 않고
-`uploadOnly` 모드를 공개 계약으로 두었으며, 실행 중 원격 전용 파일 삭제는 안전성이 확인되지 않아 보류한다.
-
-### 구현
-
-- `gpl.uploadOnly`를 명령 팔레트·프로젝트 폴더·제어기 패널·자동화 진입점에 추가하고 MCP `deploy_project({mode:"upload"})`와 연결했다.
-  Stop·Show Thread·Compile·Start를 생략하고, 완료 뒤 현재 바이너리와 소스 차이를 「컴파일 필요」로 표시한다.
-- `controller/deployQueue.ts`의 제어기별 FIFO와 `operationStore`의 `QUEUED → RUNNING` 상태를 추가했다. 같은 Extension Host는
-  등록 순서를 보장하고, 다른 창·프로세스는 기존 배포 잠금이 풀릴 때까지 기다린다. 실제 업로드 중 잠금은 그대로 유지한다.
-- README·런북·MCP 설명·CHANGELOG와 테스트를 함께 갱신했다.
-
-### 검증·패키징
-
-- 기록된 검증은 확장 **1139/1139**, MCP **131/131**이며 구조 테스트 R1~R8를 포함한다.
-- 호환 기능 추가로 0.13.0 VSIX를 만들었다. 실제 제어기의 다중 프로젝트 FTP 순서와 실행 무정지 여부는 확인하지 않았다.
-
-### 남은 일
-
-- §3의 Upload Only·다중 프로젝트 대기열 항목에서 실제 순서, Stop/Compile/Start 미전송, 원격 전용 파일 보존을 확인한다.
-
----
-
-## 1-FD. 2026-10-21 세션 — Save to Flash 중 전원 차단 금지 경고와 안전 확인
-
-### 요청·판단
-
-사용자는 제어기가 flash 메모리를 저장하며 Busy인 동안 전원을 내리면 안 되므로 확장에도 경고를 눈에 띄게 표시해 달라고 했다.
-단순히 FTP 함수의 반환 시점에 경고를 지우면 제어기 내부 flash 쓰기가 끝났다는 증거가 없다. 공식 `Sync` 명령은 pending data가
-모두 flash에 기록되고 flash 장치가 busy가 아닐 때까지 기다리며 DataID 910 `Disk Busy`가 0인지 확인하는 것과 같다고 명시한다.
-또한 공식 FAQ·하드웨어 문서는 flash write/Flash Busy 뒤 전원 차단 전 최소 10초 대기를 안내한다. 따라서 안전 해제 조건을
-`Sync` 종결 `STATUS 0` + 10초 안정화로 두었다.
-
-### 구현
-
-- `controller/flashSafety.ts`(순수) 신설: `writing → syncing → settling → safe` 흐름을 주입형 `sendSync`와 1초 tick으로 실행한다.
-  `Sync`의 종결 STATUS가 없거나 0이 아니거나 전송·타임아웃 오류가 나면 `unknown`으로 끝내며 안전을 추정하지 않는다.
-- `views/flashSafetyPresentation.ts`(순수) 신설: 모든 진행 단계에 「전원 끄지 마세요」를 넣고, `unknown`에는 물리 Flash Busy 표시가
-  사라진 뒤 10초를 기다리라는 툴팁을 준다. `connectionStatusBar.ts`의 전용 high-priority 경고 항목이 이를 표시한다.
-- `activation/deploy.ts`의 Save to Flash는 FTP 미러 시작 전에 경고를 켜고, 성공·변경 없음·취소·부분 실패 모두에서 `Sync` 안전 확인을
-  시도한다. 확인 중에는 배포 잠금을 유지하고 `FLASH_SYNC`/`FLASH_SETTLE` 단계를 기록한다. 확인 성공 뒤에만 경고를 지우며,
-  실패하면 「FLASH 안전 상태 미확인」 상태로 남긴다.
-- 표시 문구가 여러 소비자에서 달라지지 않도록 architecture R7에 SSOT 규칙을 추가하고 README·런북·CHANGELOG를 맞췄다.
-
-### 검증·패키징
-
-- `npm run compile` 통과.
-- 신규 `flashSafety.test.ts` **4/4**: STATUS 0과 전체 카운트다운, STATUS 오류/누락, 전송 실패, 모든 경고 단계의 전원 차단 금지 문구.
-  `node ./out/test/index.js` 전체 **1139/1139** 통과(R1~R8 포함).
-- 현재 작업 트리의 0.13.1 VSIX에서도 포함을 확인했다.
-  `dist/gpl-language-support-0.13.1.vsix` **1,405,214 bytes**, SHA-256
-  `79A498B83AAE522666A90A7E530C9582F51063E93F0AB6B3BDF79289B94F9193`.
-  archive 목록에 `out/controller/flashSafety.js`·`out/views/flashSafetyPresentation.js`·`out/views/connectionStatusBar.js`·
-  `out/activation/deploy.js`·`package.json`·`CHANGELOG.md`가 들어 있다. 패키징 경고는 기존 JavaScript 다파일 성능 경고와
-  Node `DEP0190`이며 실패는 없었다.
-
-### 남은 일
-
-- F5 Extension Development Host는 사용자 요청 없이 열지 않았고 실제 제어기에 flash 쓰기나 전원 차단을 수행하지 않았다.
-  새 VSIX의 상태바 표시와 실제 Flash Busy 소멸 시점, `Sync` 종결 응답, 실패 시 경고 유지 여부는 §3 체크리스트로 남겼다.
-
----
-
-## 1-FE. 2026-10-21 세션 — Stop All이 업로드/배포를 남겨 Compile·Start와 충돌하던 문제
-
-### 증상·원인
-
-작업자가 업로드 중 `Stop -all`을 보내면 제어기 쓰레드는 정지하지만, 호스트의 FTP/배포 코루틴에는 취소 신호가 전달되지 않았다.
-화면은 정지 완료로 보인 뒤 업로드가 계속되고, `Upload & Start`는 나중에 `Start -compile`을 보내 컴파일·실행을 시도할 수 있었다.
-내부 배포의 `UPLOAD ∥ STOP`은 의도된 동작이므로, **사용자가 명시한 전체 정지**만 호스트 작업 취소로 전파해야 했다.
-
-### 구현
-
-- `deployCancellation.ts`를 정본으로 `%TEMP%/gpl-controller/cancellations/<operationId>.json` 계약을 추가했다.
-  VS Code의 Stop All·원시 `Stop -all`/`Stop -a`·디버그 중지와 MCP 전체 정지가 같은 제어기의 실행 중·대기 중 작업을 모두 취소한다.
-- FTP 업로드·미러는 전송 중인 파일을 강제로 절단하지 않고 파일 경계에서 멈춘다. 이후 파일·원격 삭제와 Load·Compile·Start·
-  Error Check 진입 전후에 취소 게이트를 두고 작업 기록을 `CANCELLED`로 끝낸다. 이미 제어기에 전송된 명령은 되돌리지 않고
-  그 응답을 정리한 뒤 다음 단계를 막는다.
-- 배포 파이프라인 내부의 쓰레드 정착용 Stop은 저수준 전송 경로를 그대로 써 자기 배포를 취소하지 않는다.
-  Save to Flash 취소는 부분 쓰기 가능성을 고려해 `Sync`·Disk Busy·10초 안정화 확인을 계속한다.
-
-### 검증·패키징
-
-- 취소 파일 계약·Stop 명령 판별, FTP 네트워크 연결 전 취소, MCP 계약/잠금 v2 필드 보존 테스트를 추가했다.
-- `npm test` **1139/1139**, `controller-mcp npm test` **131/131** 통과.
-- patch 버전 **0.13.1**로 `npm run package:no-bump` 성공. 산출물은
-  `dist/gpl-language-support-0.13.1.vsix` **1,405,214 bytes**, SHA-256
-  `79A498B83AAE522666A90A7E530C9582F51063E93F0AB6B3BDF79289B94F9193`이다. 신규 취소 모듈·배포 서비스·Stop 진입점과
-  CHANGELOG/package.json 포함을 확인했다. 경고는 기존 JavaScript 다파일 성능 경고와 Node `DEP0190`이며 실패는 없었다.
-
-### 남은 일
-
-- VSIX 설치, F5 Extension Development Host, 실제 제어기 업로드 중 Stop All은 수행하지 않았다. 파일 경계 취소, 대기 작업 취소,
-  이미 전송된 Compile/Start 응답 뒤 후속 단계 차단과 Save to Flash 안전 확인은 §3 체크리스트 순서로 검증한다.
-
----
-
-## 1-FF. 2026-10-22 세션 — Marketplace 등록과 업데이트 배포 경로 준비
-
-### 증상·원인
-
-기존 Release workflow는 GitHub Release에 VSIX를 첨부하고 끝나 Marketplace 업데이트를 전달하지 않았다.
-패키지 파일 목록에는 개발용 AGENTS.md·CLAUDE.md·REQUESTS.md가 포함되어 있었다.
-
-### 조치
-
-태그/버전 확인과 확장·MCP 테스트 뒤 VSIX·SHA-256을 보관하고, opt-in Marketplace job이 같은 파일을
-검증해 Entra ID/OIDC로 게시하도록 연결했다. GitHub Release 삭제 단계는 제거하고 갱신으로 바꿨다.
-suffix 프리릴리즈는 Marketplace 게시에서 제외한다. 내부 지침·작업 메모·로컬 AI 설정/환경 파일을
-패키지에서 제외하고 README 및 릴리스 절차에 설치·계정 설정·자동 업데이트 전환을 정리했다.
-내부 배포/패키지 개선으로 patch 0.13.2를 선택했다.
-
-### 검증
-
-- 게시자 `NIR (nir414)` 생성과 Owner 권한을 관리 화면에서 확인했다. 최초 VSIX 업로드는 표시 이름 유사성 제한으로 거절됐다.
-  사용자가 확정한 표시 이름 `Brooks GPL`로 변경하고 확장 ID는 유지하여 같은 0.13.2를 재패키징했다.
-- TypeScript compile 및 로컬 권한의 확장 테스트 **1150/1150**, MCP **136/136** 통과.
-- 최초 샌드박스 테스트의 13건 실패는 loopback EACCES/임시 파일 rename EPERM이었다. 같은 테스트를 로컬 권한으로 재실행해 모두 통과했다.
-- Release YAML parse 및 모든 run 단계의 bash -n 통과. 실제 GitHub Actions/OIDC/Marketplace 실행은 미수행.
-- pre-release-check **16/17**: 기존 미커밋 변경으로 clean working tree 검사만 실패. 커밋/태그/push는 수행하지 않았다.
-- 0.13.2 VSIX 패키징 성공: **1,399,383 bytes**, SHA-256
-  `FD6497901B205069D44686B05C527197697AFB193BE2860CF55982346899B26A`.
-  ZIP에서 확장 ID/버전과 내부 지침·작업 메모 제외를 확인했다. 기존 다파일 JavaScript 성능 경고와 Node DEP0190 경고가 있었고 실패는 없었다.
-- GitHub 로컬 인증은 정상이며 repository Actions secrets/variables 목록은 비어 있었다.
-  Marketplace 게시자 생성/Owner 권한을 확인했으며 최종 VSIX 업로드가 접수되어 관리 화면에 `Brooks GPL`, `0.13.2`, `Public`, `Verifying`가 표시됐다. 공개 상세 페이지는 아직 404이며 Microsoft 측 검증 완료 대기 중이다.
-
-### 남은 일
-
-자동 게시 연결을 조사했다. GitHub 저장소 admin 권한을 확인했고, 사용자 승인 뒤 `marketplace` Environment와 `v*.*.*` 태그 전용 배포 정책을 생성·재조회했다. secrets와 `MARKETPLACE_PUBLISH`는 미설정이다.
-현재 로그인 계정은 Entra 관리 센터에서 `AADSTS16000`(해당 tenant에 계정 없음)으로 앱 등록 접근이 막혀,
-사용 가능한 tenant 및 앱 등록 권한이 있는 계정 확인이 필요하다. 임의 tenant ID를 설정하지 않는다.
-GitHub 설정은 최초 자동 승인 검토 거절 뒤 사용자가 구체적으로 승인하여 적용 완료했다.
-사용자는 기존 tenant가 없음을 확인했다. Microsoft 공식 안내의 Azure 무료 계정 가입 경로를 확인했으며 전화/카드 확인과 약관 동의는 사용자가 직접 처리해야 한다. 추가 workforce tenant 생성과 최초 가입의 기본 디렉터리는 구분한다.
-앱 등록 가능한 tenant 확보 후 identity/OIDC, Marketplace Contributor, Environment secrets를 연결하고 게시를 활성화한다.
-
-최초 게시 완료 상태를 확인하고 OIDC 계정 연결을 완료한다.
-실제 GitHub Actions 실행과 Marketplace 공개/설치 업데이트는 로컬 검증만으로 완료 판정하지 않는다.
+**최근 세션 본문 — §1-FG ~ §1-FP (2026-10-22).** 이 아래부터는 세션 원문이다.
 
 ## 1-FG. 2026-10-22 세션 — 개선 요청 수신함 정리와 안전 검사
 
@@ -1458,3 +1082,227 @@ Main.gpl 69줄에 기존 Add·Clamp, 작은 Counter 클래스(Increment·ReadOnl
 ### 검증과 남은 일
 
 축소한 최종 샘플의 소스 등록·선언/블록 범위·Counter/Count 개요·Clamp 문서 주석·인코딩을 검사하고 실험 진단 활성화 상태의 실제 진단 provider에서 0건을 확인했다(VS Code API 부분만 대체). 기존 sampleSyntaxCoverage·grammar·gplParserDocComment·docCommentOverloads·blockEndLine·outlineModel 테스트 55/55를 다시 통과했다. git diff --check 통과. F5·제어기 접속·배포·GPL 컴파일·실행은 수행하지 않아 §3 확인 항목으로 남겼다. Git 커밋·게시 없음.
+
+## 1-FI. 2026-10-22 세션 — 기준 커밋과 controller 기능별 중첩 분류
+
+### 증상·원인
+
+프로젝트가 커져 기능 탐색과 책임 파악이 어려워졌고, 사용자는 폴더로 분류한 중첩 구조와 객체 지향 구성을 선호한다고 설명했다. 기존 계층 규칙은 유효하지만 controller의 64개 파일이 한 폴더에 평평하게 모여 있었다.
+
+### 조치·의도
+
+- 사용자가 요청한 현재 상태 스냅샷을 **98a61ad** (`chore: checkpoint 0.14.0 before modular restructuring`, 146파일)로 main에 로컬 커밋했다. 이후 **codex/domain-modules** 브랜치를 생성했다. 원격 push·태그·설치는 하지 않았다.
+- 기존 로직을 보존한 채 64개 파일을 connection·commands·protocol·runtime·deployment·files·projects·threads·debugging·automation·diagnostics·io로 분류했다. import와 현재 문서·MCP 계약 주석의 정본 경로를 함께 변경했다.
+- 기존 계층/순환/SSOT 검사를 유지하고 R9로 미분류 controller 파일의 재누적을 막는다. 하위 폴더 내부의 추가 중첩은 제한하지 않는다.
+- 객체 소유권과 수명주기를 바꾸는 리팩터링은 다음 단계로 분리했다. architecture.md §2.1은 현재 구조, §2.2는 아직 구현하지 않은 단계와 책임 객체 후보를 설명한다. 내부 구조 개선이므로 patch 0.14.1을 선택했다.
+
+### 검증
+
+- 변경 전: 일반 Windows 실행에서 확장 **1157/1157**, MCP **137/137** 통과. 샌드박스 실행의 13건 실패는 루프백 TCP EACCES와 임시 파일 교체 EPERM이었으며, 코드를 수정하지 않고 일반 Windows 실행으로 해소했다.
+- 변경 후: 확장 **1158/1158**(구조 R9 추가), MCP **137/137** 통과. MCP 차단 목록 대조 테스트의 조합 경로도 새 위치로 변경했다.
+- 운영 소스 155개 전체와 기존 테스트를 포함한 262개 파일에서 import 및 소스 경로 참조를 정규화한 코드 토큰이 변경 전과 동일했다(구조 검사 추가 파일 제외). BOM·파일별 줄바꿈 유지, 이전 위치의 out JS/소스맵 128개 제거, git diff --check 통과.
+- pre-release-check는 **15 통과 / 2 미충족**: codex/domain-modules 작업 브랜치와 미커밋 변경이 있어 main/clean 조건만 실패했다. 컴파일과 버전·필수 파일 검사는 통과했다.
+- VSIX **dist/gpl-language-support-0.14.1.vsix**, **1,342,718 bytes**, SHA-256 **11F51EA2B837EC569E4B02F0CAD38B8C8226A6BABF0046270641B54D4A666F91**. package:no-bump 성공. 경고는 vsce 하위 프로세스의 DEP0190과 JavaScript 번들링 권고이며 패키징 실패는 없다.
+- 첫 VSIX 검사에서 기존 빌드 잔여 JavaScript 10개와 대응 소스맵이 추가 발견되어 제거하고 같은 버전으로 재생성했다. 최종 VSIX는 controller 모듈 64개, 루트 잔여 0개, 현재 운영 소스 155개에 대응하는 JS의 누락·추가 0개를 확인했다.
+
+### 남은 일
+
+F5 활성화·실제 제어기·MCP 연결 동작은 별도 확인한다. 다음 코드 작업은 SymbolCache의 인덱스/VS Code 로더 분리이며 이후 DAP 객체 합성, 연결·배포 소유권 분리 순으로 진행한다.
+
+## 1-FJ. 2026-10-22 세션 — SymbolCache의 인덱스와 VS Code 연동 분리
+
+### 증상·원인
+
+구조 개편을 계속하라는 사용자 요청에 따라 2단계를 진행했다. 기존 SymbolCache 921줄은 심볼 저장·조회, 프로젝트 경계와 점수, 워크스페이스 I/O, 완성 표현을 한 클래스에 담아 VS Code 없이 검증하기 어려웠다.
+
+### 조치·설계
+
+- `language/symbols/symbolIndex.ts`가 심볼과 이름 인덱스를 소유하고 `SymbolResolutionContext`로 프로젝트 판단을 받는다. project 구현이나 vscode를 직접 참조하지 않는다.
+- `project/symbols/symbolProjectScope.ts`가 기존 CompileUnitIndex·경로 우선순위를 소유한다. `language/vscode/`는 SymbolCache 조립, WorkspaceSourceLoader, 상태 없는 표현 함수로 나뉜다.
+- 공개 메서드 28개와 매개변수를 유지하고 내부 import 9개·개발 스모크 경로만 새 위치로 옮겼다. 별도 루트 호환 래퍼는 만들지 않았다.
+- 문서 버퍼 우선·UTF-8 BOM 처리·기타 인코딩의 VS Code 디코더·배치 끝 이름 인덱스 갱신·ENOENT만 삭제하는 규칙·참조 검색 취소를 유지한다.
+- 구조 검사에서 language/vscode를 별도 접착 계층으로 분류하고, 순수 language→접착/project 의존 금지와 이름 인덱스 SSOT를 강제한다. 내부 개선이므로 patch 0.14.2를 선택했다.
+
+### 검증
+
+- TypeScript 컴파일 및 새 회귀·구조 검사 **28/28** 통과. 추가 케이스는 19개다.
+- 변경 전 JS를 보존해 hello-project와 3개 소스·프로젝트/라이브러리 fixture의 조회·완성·문서·참조·갱신·삭제를 **2064회** 비교했고 결과가 동일했다. 이 비교는 해당 fixture 범위의 정적/모의 실행 검증이며 실제 VS Code UI·제어기 검증은 아니다.
+- 전체 확장 **1177/1177**, MCP **137/137** 통과. hello-project의 Add 호버(시그니처·문서·매개변수)와 Counter 멤버 완성을 기존 개발 스모크 하니스에서 확인했다. 이는 모의 VS Code API 실행이며 F5 검증은 아니다.
+- 이전 루트 경로의 out/symbolCache.js와 소스맵을 제거해 새 VSIX에 옛 구현이 섞이지 않게 했다. 새 소스는 UTF-8 without BOM·LF이며 기존 변경 파일의 줄바꿈을 유지했다.
+- VSIX **dist/gpl-language-support-0.14.2.vsix**, **1,347,914 bytes**, SHA-256 **E20F9F1D5A03033A235B91F4778AA9D7DC2599D4302755CBD1D756049497F6E0**. package:no-bump 성공. 경고는 vsce 하위 프로세스 DEP0190과 JavaScript 번들링 권고이며 패키징 실패는 없다.
+- VSIX 운영 모듈 159개에 대해 누락·추가 0개, 새 심볼 모듈 5개 포함, 이전 루트 SymbolCache 미포함을 확인했다.
+- pre-release-check는 **15 통과 / 2 미충족**: codex/domain-modules의 미커밋 변경과 main이 아닌 브랜치 조건만 실패했다. git diff --check 통과. 별도 Git 커밋·태그·push·설치는 수행하지 않았다.
+
+### 남은 일
+
+새 VSIX의 F5 언어 기능을 확인한다. 다음 구조 단계는 DAP 세션의 책임 객체 분리이며 연결·배포·디버그의 실행 순서나 수명주기 변경은 안전 시험 검증이 필요하다.
+
+## 1-FK. 2026-10-22 세션 — 구조 개편 재검토와 심볼 갱신·빌드 안정화
+
+### 증상·원인
+
+사용자의 추가 검토·개선 요청에 따라 SymbolCache 분리와 파일 이동 이후의 호출·비동기 수명주기·패키징 경로를 점검했다.
+참조 검색은 인덱싱 로더를 우회해 UTF-8로 고정되어 있었고 file 외 문서도 같은 경로로 찾았다. 파일 읽기 중
+문서 변경·삭제·전체 refresh가 발생해도 완료된 옛 결과를 그대로 인덱스에 넣었으며 refresh도 동시에 실행될 수 있었다.
+또 TypeScript는 소스 이동 뒤 옛 JS·소스맵을 지우지 않아 수동 제거만으로는 다음 변경의 VSIX 혼입을 막지 못했다.
+
+### 조치·의도
+
+- SymbolIndex가 파일별 갱신 번호를 소유한다. 읽기 요청 시 예약하고 문서 갱신·파일/폴더 삭제·clear 또는 더 최신 읽기가 있으면 이전 결과를 버린다. clear 뒤에도 번호를 재사용하지 않는다.
+- SymbolCache의 refresh를 직렬화하고 진행 중 추가 요청은 후속 갱신으로 합친다. 실패 시 상태를 해제해 다음 재시도가 가능하다.
+- 소스 읽기 경로를 통일해 참조 검색도 설정 인코딩과 살아 있는 file 문서를 사용한다. 읽는 동안 새로 열린 미저장 버퍼와 검색 취소를 다시 확인한다.
+- compile에 tsconfig 기반 잔여 JS·소스맵 정리를 연결했다. 현재 산출물·MCP cjs 번들·리소스를 보존하고 프로젝트 밖/소스와 겹친 출력·출력 경로와 내부 junction/심볼릭 링크를 삭제 전에 거부한다.
+- 오래된 인계 문서의 "모든 파일을 openTextDocument로 연다"와 미구현처럼 남은 시간 요약 설명을 현재 동작으로 바로잡았다. 전역 상한은 기존 결정 대기 상태를 유지한다. 버그 수정·안정화이므로 patch 0.14.3을 선택했다.
+
+### 검증
+
+- 수정 전 제어된 Promise·모의 VS Code API로 재현: 통합 테스트 **8/15 통과, 7실패**. 실패는 UTF-16 참조 누락·file 외 문서의 가림·최신 문서 덮어쓰기·읽기 중 새 문서 누락·삭제 심볼 부활·refresh 이전 결과 혼입·중복 refresh였다.
+- 전체 확장 **1195/1195**(회귀 18건 추가), MCP **137/137** 통과. 모의 VS Code API의 hello-project Add 호버·Counter 멤버 완성도 통과했다. F5 UI 검증은 아니다.
+- 실제 패키징에 옛 JS·맵 fixture 2개를 넣었고 공통 compile이 자동 제거한 것을 확인했다. 첫 ZIP 검사에서 기존 `.tmp/brooks-temperature/` 조사 자료 1개가 포함된 것을 발견해 `.tmp/**`를 패키징 제외하고 같은 버전으로 다시 생성했다. 로컬 자료는 삭제하지 않았다.
+- pre-release-check는 **15 통과 / 2 미충족**: 미커밋 작업과 main이 아닌 codex/domain-modules 조건만 실패했다. 컴파일·버전·필수 파일은 통과했다.
+- VSIX **dist/gpl-language-support-0.14.3.vsix**, **1,348,609 bytes**, SHA-256 **520697AD76B76984A8BB40C06162824E351CE7C738E25D00B129C251B9A888C8**. package:no-bump 성공. 경고는 vsce 하위 프로세스 DEP0190과 JavaScript 번들링 권고이며 패키징 실패는 없다.
+- 최종 ZIP에서 운영 JS **159개**의 누락·추가 0개, controller **64개**와 새 심볼 모듈 **5개** 포함을 확인했다. 옛 root SymbolCache·잔여 fixture·.tmp·개발용 소스/문서는 없고 확장/MCP 빌드 버전은 모두 0.14.3이다.
+- git diff --check 통과. 기존 파일별 BOM·줄바꿈을 유지하고 신규 테스트·빌드 스크립트는 UTF-8 without BOM·LF로 작성했다. 최근 세션은 10개를 유지하고 §1-FA를 10월 아카이브로 원문 그대로 옮겼다.
+
+### 남은 일
+
+F5 Extension Development Host와 새 VSIX 설치·실제 제어기 검증은 수행하지 않았다. §3의 언어 기능 확인과 이후 구조 단계(DAP 책임 객체 분리)는 유지한다. 별도 Git 커밋·태그·push·설치 없이 codex/domain-modules의 변경으로 남긴다.
+
+---
+
+## 1-FL. 2026-10-22 세션 — Brooks GPL 정식 로고 적용
+
+### 요청·판단
+
+사용자가 흐르는 곡선형을 확장 로고로 확정했다. 두 곡선은 협조 운동, 중앙 점은 목표 위치를 상징하는 디자인 해석이다.
+기존 시안의 윤곽·비례·색 흐름을 유지한 SVG를 정본으로 삼는다. Marketplace 아이콘은 설치된 vsce가 SVG를 허용하지 않으므로 PNG를 사용한다.
+
+### 조치
+
+- `resources/gpl-logo.svg`를 정본으로 추가하고 여기서 256×256 `resources/gpl-logo.png`를 렌더링했다. 비트맵을 SVG 안에 삽입하지 않는다.
+- package의 `icon`과 README에 PNG를 적용했다. `resources/gpl-controller.svg`는 같은 두 경로와 중앙 점을 사용하는 `currentColor` 단색 아이콘으로 갱신했다. 전용 리소스가 VS Code 테마를 따르며 색상 로고의 배경판은 제외한다.
+- 브랜딩 변경이므로 patch 0.14.4로 올리고 package-lock·README·CHANGELOG를 맞췄다. 최근 세션 10개를 유지하기 위해 §1-FB를 10월 아카이브로 원문 그대로 이동했다.
+
+### 검증
+
+- `npm test` 전체 **1215/1215** 통과. 첫 샌드박스 실행은 임시 junction·로컬 TCP의 EPERM/EACCES로 실패했고 권한 제한 밖에서 다시 확인했다. 실제 제어기에 연결하지 않았다.
+- SVG XML·manifest icon 경로·256×256 PNG·색상 로고 및 어두운 배경의 단색 아이콘 렌더링을 확인했다. 실제 VS Code UI 확인은 아니다.
+- `npm run package:no-bump` 성공. **dist/gpl-language-support-0.14.4.vsix**, **1,384,442 bytes**, SHA-256 **DB0A73C7E1730C81723DD9A116FB3E928949F7FC02AEED9C993131D219B7A5C5**.
+- ZIP 내부의 SVG 정본·PNG·단색 아이콘이 작업 파일과 동일하고 manifest·README가 PNG를 참조하는 것을 확인했다.
+- 패키징 경고는 기존 Node DEP0190과 JavaScript 번들링 권고이며 패키징 실패는 없다. `git diff --check` 통과.
+
+### 남은 일
+
+실제 VS Code 확장 목록·사이드바 테마 표시, Marketplace 공개 화면은 미확인이다. 설치·게시·Git 커밋·태그·push는 수행하지 않는다.
+
+## 1-FM. 2026-10-22 세션 — 제어기 상태 정보 조사와 온도·갱신 개선
+
+### 요청·관측
+
+사용자는 조회 가능한 상태 정보를 먼저 조사·정리하고, 발열 검토 중 코드와 함께 온도를 볼 수 있게 개선해 달라고 요청했다.
+기존 대시보드는 기본 1.5초마다 8개 명령을 조회했고 온도는 없었다. 시스템 정보는 메모리·Flash·CPU Profile만 조회했다.
+
+- Brooks 검색 스킬은 셸 DNS 오류로 캐시를 사용했고, 공식 System Console Panel·Servo Errors·Motor Temperature Sensing·Pd/Pdx·Show Memory·Controller operation modes의 본문은 웹 도구로 확인했다. 조회 항목과 조건은 `docs/reference/controller-telemetry.md`에 정리했다.
+- 두 VS Code 창 모두 연결·디버깅 비활성임을 확인한 뒤 기존 MCP 확장 브리지로 읽기만 수행했다. `Show Temperature` STATUS 0에서 CPU 1은 첫 57.1°C, 후속 58.5°C였다. 앰프 4개는 0.0°C, `Pd 101`은 G2400C, `Pd 12605`는 0 배열, `Pd 10110`은 0 배열(모터 감시 비활성), `Pd 12110`도 0 배열이었다.
+- G2xxx 앰프는 공식 문서상 수치 조회 센서가 없다. PTC 모터 센서의 상태값과 °C도 구분해야 한다. G2400C CPU 허용·정지 온도 수치는 확인하지 못했으므로 과열을 판정하지 않는다. 후속 `ErrorLog -web ,10`은 빈 DATA·종결 STATUS 0이며 과거 과열 이력 부재를 증명하지 않는다.
+- 조사 중 근거 없이 선택한 `Version`은 STATUS -714로 거부됐다. 다른 추측 표기로 재시도하지 않고 문서의 `Pd 101`로 모델을 읽었다. 설정·모션·정지·실행·배포 명령은 보내지 않았다.
+
+### 조치·설계
+
+- `diagnostics/temperature.ts`에 온도 파서·360점 이력을 두고 CPU/Robot/Amp 번호와 센서값을 구분했다. 앰프 0은 원래 반환값을 보존하면서 유효 섭씨값은 null로 두며, 실패·불완전 응답은 숫자로 표시하지 않는다.
+- `diagnostics/statusSampling.ts`가 대시보드별 진단 캐시와 실제 표본 시각을 소유한다. 기존 `controllerStatus.ts`는 공개 상수·타입·호출을 재노출하며 확장 큐의 완결 응답을 순수 수집기에 전달하는 어댑터로 남겼다.
+- 빠른 갱신은 쓰레드·전원·축·직교 위치 4명령, 온도·자원·과거 에러는 기본 10초로 분리했다. 수동 갱신은 전체 조회하며 자원 비활성 설정과 온도는 독립이다. 명령을 한꺼번에 큐에 넣지 않고 하나씩 기다린다.
+- 패널 세대와 연결·대상·가시성을 매 명령 전후 확인해 뒤늦은 조회와 결과를 버린다. 연결 세션·대상 변경 시 진단 캐시와 이력을 초기화하고, 실패한 최신 조회는 이전 성공값으로 대체하지 않는다.
+- 온도 배지·센서 카드·조회 시각·최고값 추이·원문을 추가했다. 기본은 과열 미판정이며 선택 설정 `dashboardCpuTemperatureWarningC`는 제조사 보호 한계와 구별되는 사용자 기준이다. 시스템 정보의 온도는 기존 수동/조건부 조회 경로를 따른다.
+- 단일 표본의 그래프 범위가 축 보정으로 1°C 늘어나는 표시를 바로잡았다. 캐시 표본을 새 표본으로 중복 기록하지 않으며 그래프 X축은 실제 표본 시각을 따른다.
+- 기능 추가이므로 minor 0.15.0을 선택했다. 병행 로고 작업의 0.14.4와 리소스 변경을 보존했다.
+
+### 검증
+
+- 온도 파서·이력·주기 분리·강제 갱신·센서 미지원·미완결 응답·대상 전환·취소·순차 전송·실제 웹뷰 스크립트의 표시/HTML escaping·연결 해제 후 자원값 정리 회귀 **21/21** 통과. 전체 확장 **1222/1222**, MCP **137/137** 통과. 첫 샌드박스 실행의 기존 소켓·junction·임시 파일 오류 16건은 일반 Windows 권한 재실행에서 해소됐다.
+- npm run docs:build(strict)와 범위별 git diff --check 통과. 실제 HTML을 560px 폭 Chrome에서 렌더링해 58.5°C·센서 제한·실측 범위가 보이는 것을 확인했다. 캡처는 .tmp/temperature-preview.jpg(조회 기록 미리보기, 새 VSIX의 실제 VS Code 화면은 아님)에 남겼다. 임시 viewport는 복원했다.
+- minor 0.15.0의 온도 기능을 병행 Hover 수정 patch 0.15.1이 보존한 현재 버전으로 패키징했다. npm run package:no-bump 성공. dist/gpl-language-support-0.15.1.vsix, **1,384,937 bytes**, SHA-256 **CC7130D59863985A21C6AD8A79D4D2B47543B078B1B05D4571DB24F1273615BC**. 기존 Node DEP0190·JavaScript 번들링 권고 경고가 있고 패키징 실패는 없다.
+- ZIP의 package·대시보드 HTML·온도/수집기/어댑터·패널/트리 JavaScript가 현재 파일과 byte 단위로 일치하며 .tmp 자료 혼입은 없다. README·CHANGELOG의 버전도 확인했다. 기존 CRLF와 UTF-8 인코딩을 보존하고 신규 소스·테스트는 UTF-8 without BOM으로 작성했다.
+- 브라우저에서 실측 58.5°C와 앰프 0 반환·센서 미확인, 과열 미판정 표시를 확인했다. 새 VSIX의 실제 VS Code Webview 검증과 연속 온도 실측은 별도다.
+
+### 남은 일
+
+CPU 허용 온도는 모델별 하드웨어 자료나 제조사 확인이 필요하다. 지속 발열·장시간 통신 부하·실제 VS Code 표시와 새 VSIX 설치는 수행하지 않았다. 설치·Git 커밋·태그·push·게시 없이 변경으로 남긴다.
+
+## 1-FN. 2026-10-22 세션 — 멤버 접근의 매개변수 Hover 누락 수정
+
+### 증상·원인
+
+`V2/Lib/RobotData/PoseFile.gpl:132`의 `axes = table.AxisCount()`에서 Hover가 비었다는 제보다. 현재 소스에서 table은 JointPoseTable 매개변수이며 AxisCount는 Robot/Pose.gpl:483의 Integer 반환 Function이다. 실행 중인 Sample Prep 확장은 0.14.0이고 디버그 세션은 비활성이다. 기존 GPL Language Support 로그에는 AxisCount 수신자·함수를 찾은 기록과, 같은 표현식에서 수신자 조회 없이 끝난 요청이 함께 있었다.
+
+Hover만 자체 식별자 해석기로 점 표기 전체를 단어·범위로 사용했다. table 위에서는 커서 식이 table을 정확히 골라도 word에 점이 있어 로컬 조회가 생략됐다. 따라서 정의가 매개변수에만 있으면 undefined, 동명 전역 변수가 있으면 그 전역 변수가 표시됐다. 메서드 카드도 전체 점 표기 범위를 반환했다.
+
+### 조치·의도
+
+- 자체 해석기를 제거하고 정의·참조 Provider와 같은 getQualifiedWordAtPosition을 사용한다. 수신자는 기존 cursorExpression·receiverType 경로로 해석하고, Hover 범위는 커서 아래 식별자로 제한한다.
+- 내장 조회도 커서 세그먼트까지의 한정 이름을 사용한다. Math.Abs의 문서와 Thread.CurrentThread().Name 반환 타입 체이닝을 유지하면서 Thread 자체와 멤버를 각각 표시한다.
+- 실제 Hover Provider·공통 설정/식별자 해석·수신자 해석·SymbolIndex를 함께 실행하는 회귀 테스트 6건을 추가했다. VS Code 경계만 대체한다.
+- 병행 온도 작업의 minor 0.15.0을 보존하고 버그 수정 patch 0.15.1로 package·lock·README·CHANGELOG를 맞췄다. 최근 10세션 유지를 위해 §1-FD를 10월 아카이브로 원문 그대로 이동했다. 외부 GPL 소스는 수정하지 않았다.
+
+### 검증
+
+- 수정 전 새 회귀 테스트 6건 중 4건이 실패했고, 수정 후 6/6 통과했다. 매개변수 우선순위·로컬 변수·메서드 시그니처/문서·식별자별 범위·점 주위 공백·배열 인덱싱·내장 함수/클래스·주석/문자열·취소를 확인했다.
+- npm run compile 성공. 전체 테스트 첫 실행은 샌드박스의 junction·localhost·임시 파일 권한으로 16건이 실패했고, 제한 밖에서 Node 회귀 테스트를 실행해 1222/1222 통과했다. 제어기 명령은 보내지 않았다.
+- 실제 PoseFile.gpl:132 소스를 읽어 같은 Provider에 넣었을 때 axes: Integer, table: JointPoseTable, Function AxisCount() As Integer와 각 식별자의 개별 범위를 확인했다. VS Code API 경계는 대체했으며 실제 마우스 UI 검증은 아니다.
+- npm run package:no-bump 성공. dist/gpl-language-support-0.15.1.vsix, 1,384,937 bytes, SHA-256 CC7130D59863985A21C6AD8A79D4D2B47543B078B1B05D4571DB24F1273615BC.
+- ZIP의 Hover JavaScript·package manifest가 현재 작업 파일과 동일하며 문서 버전 0.15.1을 확인했다. README 이미지·CHANGELOG 이슈 링크는 vsce의 GitHub URL 변환으로 원본과 다르다. 경고는 기존 Node DEP0190과 JavaScript 번들링 권고이며 패키징 실패는 없다.
+- git diff --check 통과. 인코딩·기존 LF/CRLF를 유지했고 새 테스트 파일은 UTF-8 without BOM·LF다.
+
+### 남은 일
+
+새 VSIX를 설치한 뒤 실제 편집기에서 PoseFile.gpl:132의 axes·table·AxisCount 각 Hover 표시와 범위를 확인한다. 설치·F5 UI·제어기 동작 검증은 수행하지 않았다. Git 커밋·태그·push·게시도 수행하지 않는다.
+
+## 1-FO. 2026-10-22 세션 — README를 확장 이용자용 기능·지원 안내로 개편
+
+### 증상·원인
+
+README에 Marketplace 게시 예정 문구, 로컬 패키지 상태, 확장 개발·릴리스 절차와 AI 호출 API·제어기 명령 구문이 섞여 있었다.
+사용자는 이 파일이 개발자용 내부 자료가 아니라 확장 이용자가 기능과 지원 범위를 파악하는 문서임을 명확히 했다.
+
+### 조치·의도
+
+- 주요 기능·지원 환경·설치·시작 방법을 앞에 두고 언어 지원, 프로젝트·배포, 디버깅, 상태·로그, AI 연동을 이용자 관점으로 다시 썼다.
+- 게시 예정·로컬 패키지 버전·개발 환경 실행법·내부 프로토콜과 호출 API는 제거했다. 변경 이력과 GPL 언어·프로젝트·온도 참고 자료로 연결한다.
+- 명령 제목과 설정 기본값을 package.json과 대조했다. Upload & Start의 컴파일 오류가 Problems에 표시되는 현재 동작과 디버거 분리·프로그램 정지의 차이를 반영했다.
+- 문서 개선 patch **0.15.2**로 package·lock·CHANGELOG를 맞췄다. README에는 수시로 바뀌는 버전을 중복 표기하지 않는다.
+- 후속 피드백에 따라 설정 기본값 표도 제거하고 현재값은 VS Code 설정 화면으로 안내한다. 릴리스 절차의 README 버전 갱신 지시도 기능·사용 안내 갱신으로 바꿔 같은 중복을 다시 만들지 않게 했다.
+- 최근 10세션 유지를 위해 §1-FE를 10월 아카이브에 원문 그대로 옮기고 기존에 뒤처진 본문 범위·아카이브 집계도 실제 섹션 기준으로 맞췄다.
+
+### 검증
+
+- README의 명령 제목 **22개**, 설정 키 **6개**를 manifest와 대조했다. 로컬 링크·이미지 **5개**의 대상과 Markdown 표 **6개**의 파싱·HTML 변환을 확인했다. 확장 버전·설정 기본값·개발/내부 API 문구가 남지 않았음을 확인했다. 실제 확장 화면을 렌더링한 UI 검증은 아니다.
+- `npm run compile` 성공. `npm run pre-release-check`는 **15/17**로, 기존 미커밋 변경과 `codex/domain-modules` 브랜치 조건만 실패했다. 이를 통과시키기 위한 커밋·브랜치 변경은 하지 않았다. 문서만 수정해 전체 회귀 테스트는 반복하지 않았다.
+- `npm run package:no-bump` 성공. `dist/gpl-language-support-0.15.2.vsix` **1,380,010 bytes**, SHA-256 **EBB6DD8A52112E2CC0490E0D5D3EDD9D030B17F1B52196AC20946738CF77520A**. 기존 Node `DEP0190`과 JavaScript 번들링 권고가 있었고 패키징 실패는 없었다.
+- VSIX의 manifest가 현재 package.json과 일치하며 README도 vsce의 URL 변환 외에는 현재 파일과 동일하다. 로고·CHANGELOG 포함, 문서 링크의 GitHub URL 변환, 내부 지침·임시 파일 제외를 확인했다.
+- `git diff --check` 통과. 수정한 7개 파일의 UTF-8 without BOM·CRLF를 보존했고 §1-FE의 아카이브 이동은 원문 바이트와 일치한다. 외부 Marketplace·Releases 공개 상태 조회는 이 환경에서 성공하지 못했으며 게시 여부를 단정하지 않았다.
+
+### 남은 일
+
+실제 확장 화면에서의 README 표시와 외부 링크 접근은 별도 확인 대상이다. 실행 코드 변경, VSIX 설치, F5, 제어기 명령, Git 커밋·태그·push·게시를 수행하지 않는다.
+
+## 1-FP. 2026-10-22 세션 — 누적 변경 검증과 커밋 준비
+
+### 요청·범위
+
+사용자는 현재 변경을 커밋하고 푸시 전에 질문해 달라고 요청했다. 현재 브랜치는 codex/domain-modules이며 origin/main에는 기존 로컬 커밋 6개가 아직 없다. GitHub 조회로 원격 main이 0ac3978이고 같은 이름의 원격 작업 브랜치가 없음을 확인했다.
+
+### 조치·의도
+
+- 0.14.1~0.15.2에 해당하는 controller 분류·SymbolCache 역할 분리·갱신/빌드 안정화·온도·Hover·로고·README 변경을 하나의 누적 변경 커밋 대상으로 정리했다. 기능·버전 변경은 추가하지 않는다.
+- 스테이징한 새 symbolPresentation.ts의 빈 줄 공백 1건만 제거했다. 최근 10세션을 유지하도록 §1-FF를 10월 아카이브로 원문 그대로 이동하고 인덱스를 갱신했다.
+- 푸시는 사용자에게 브랜치와 포함 커밋을 확인한 뒤 진행하며, 태그·공식 Release·Marketplace 게시는 이번 요청에 포함하지 않는다.
+
+### 검증
+
+- 일반 Windows 권한에서 npm test(compile 포함) **1222/1222**, MCP **137/137** 통과. npm run docs:build(strict)도 성공했다. 문서 도구의 기존 안내 배너가 있었고 빌드 실패는 없다.
+- 기존 VSIX의 manifest·운영 JavaScript/소스맵·MCP 번들·media·resources **167개**를 현재 파일과 SHA-256으로 대조해 불일치 0개를 확인했다. 새 동작이나 포함 파일 변경이 없어 0.15.2와 기존 VSIX를 유지한다.
+- dist/gpl-language-support-0.15.2.vsix: **1,380,010 bytes**, SHA-256 **EBB6DD8A52112E2CC0490E0D5D3EDD9D030B17F1B52196AC20946738CF77520A**. 기존 패키징 기록의 Node DEP0190·JavaScript 번들링 권고는 유지되며 이번에 패키징을 다시 실행하지 않았다.
+
+### 남은 일
+
+푸시 대상에 대한 사용자 확인이 필요하다. 새 VSIX 설치·F5 UI·실제 제어기 동작 검증은 이번에 수행하지 않았으며 기존 §3 항목을 유지한다.

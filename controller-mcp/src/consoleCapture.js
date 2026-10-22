@@ -4,7 +4,7 @@
 //   %TEMP%\gpl-controller\runtime-console-<제어기 IP>.log   (2 MB 를 넘으면 .1.log 로 밀고 새로 씀 — 최근 + 직전 두 파일)
 // 줄 형식: `<PC 수신 시각 UTC ISO> [<프로젝트>] <정규화된 줄>` (프로젝트는 있을 때만),
 // 듣기 상태 마커: `<ISO> --- capture start … ---` / `--- reconnected … not listening for N s … ---` / `--- capture paused … ---`.
-// 링버퍼 밖의 지난 실행(에이징 등) 이력은 여기서만 찾을 수 있다. 확장 쪽 경로 규칙은 src/controller/runtimeConsole.ts captureFilePath.
+// 링버퍼 밖의 지난 실행(에이징 등) 이력은 여기서만 찾을 수 있다. 확장 쪽 경로 규칙은 src/controller/runtime/runtimeConsole.ts captureFilePath.
 
 import fs from 'node:fs';
 import os from 'node:os';

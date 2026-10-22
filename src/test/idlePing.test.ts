@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { IdlePingScheduler, shouldIdlePing } from '../controller/idlePing';
+import { IdlePingScheduler, shouldIdlePing } from '../controller/connection/idlePing';
 
 // ── shouldIdlePing (순수 판정) ─────────────────────────────────────────────
 

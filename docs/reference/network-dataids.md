@@ -71,7 +71,7 @@
 
 ### 3-1. 연결 진단 카드에 링크 계층 근거 추가 (가장 실효)
 
-지금 `src/controller/resourceProbes.ts`는 `Show Memory` / `Show Network -tcp|-mbuf`를 파싱해
+지금 `src/controller/diagnostics/resourceProbes.ts`는 `Show Memory` / `Show Network -tcp|-mbuf`를 파싱해
 자원 카드를 만든다. 여기에 **`pd 430/431/432`를 같은 주기로 얹으면** 접속 문제를 계층별로 가른다.
 
 | 관측 | 해석 |

@@ -5,7 +5,7 @@ import {
     formatBreakpointCommand,
     MirrorEchoMemory,
     parseBreakpointCommand,
-} from '../controller/breakpointCommand';
+} from '../controller/debugging/breakpointCommand';
 
 test('breakpointCommand: 표준 표기는 따옴표와 줄번호 사이에 공백이 없다 (GDE 실측)', () => {
     assert.strictEqual(

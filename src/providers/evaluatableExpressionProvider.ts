@@ -24,7 +24,7 @@
  * 동명 Sub/Function으로 보수 판정하면 `Thread.CurrentThread.Name`처럼 실제로 값이 나오는 hover가 막힌다.
  */
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLSymbolKind, GPLSymbol } from '../language/gplParser';
 import {
     extractDebugExpressionAt,

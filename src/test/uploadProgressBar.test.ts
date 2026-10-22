@@ -9,7 +9,7 @@ import {
     renderUploadSummary,
 } from '../views/uploadProgressBar';
 
-// ─── 상태바 업로드 진행 바 — 표시 규칙의 정본 (§1-EE, R7). 집계는 controller/uploadProgress → uploadProgress.test.ts ───
+// ─── 상태바 업로드 진행 바 — 표시 규칙의 정본 (§1-EE, R7). 집계는 controller/deployment/uploadProgress → uploadProgress.test.ts ───
 
 const MB = 1024 * 1024;
 

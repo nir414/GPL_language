@@ -8,7 +8,7 @@ import {
     stopAllAndSettle,
     stopThreadAndSettle,
     waitThreadsSettle,
-} from '../controller/threadStop';
+} from '../controller/threads/threadStop';
 
 const OK = '<DATA></DATA><STATUS>0,"Success"</STATUS>';
 const BUSY = '<DATA></DATA><STATUS>-752,"Timeout stopping thread"</STATUS>';

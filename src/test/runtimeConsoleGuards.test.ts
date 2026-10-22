@@ -10,7 +10,7 @@ import {
     formatRuntimeConsoleLine,
     LINE_PREFIX_MODES,
     DEFAULT_LINE_PREFIX,
-} from '../controller/runtimeConsoleGuards';
+} from '../controller/runtime/runtimeConsoleGuards';
 
 // ── SlidingWindowCounter ─────────────────────────────────────────────────────
 

@@ -3,10 +3,10 @@
  */
 
 import * as vscode from 'vscode';
-import { buildRuntimeConsoleUserMessage } from '../controller/runtimeConsolePresentation';
+import { buildRuntimeConsoleUserMessage } from '../controller/runtime/runtimeConsolePresentation';
 import { showRuntimeConsoleUserMessage } from './controllerOps';
 import { appendLiveLog, isLiveLogTerminalEnabled, startLiveLogTerminal, stopLiveLogTerminal } from '../log/liveLogTerminal';
-import { getControllerConfig } from '../controller/controllerConnection';
+import { getControllerConfig } from '../controller/connection/controllerConnection';
 import { ControllerDashboardPanel } from '../views/controllerDashboardPanel';
 import { hasOpenGplDocument } from '../config';
 import type { ExtensionHost } from './host';

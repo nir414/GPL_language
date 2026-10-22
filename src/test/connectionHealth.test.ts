@@ -15,7 +15,7 @@ import {
     ProberTimers,
     describeRecovering,
     describeDisruptiveOperation,
-} from '../controller/connectionHealth';
+} from '../controller/connection/connectionHealth';
 
 // ── 픽스처 ─────────────────────────────────────────────────────────────────
 

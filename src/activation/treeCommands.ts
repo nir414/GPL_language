@@ -3,11 +3,11 @@
  */
 
 import * as vscode from 'vscode';
-import { sendCommand } from '../controller/controllerConnection';
-import { isControllerNonBlockingStatus, parseStack, parseStatus, parseThreadDetail } from '../controller/responseParser';
-import { buildStepCommand } from '../controller/stepCommand';
-import type { StepMode } from '../controller/stepCommand';
-import { asThreadNode } from '../controller/threadArgs';
+import { sendCommand } from '../controller/connection/controllerConnection';
+import { isControllerNonBlockingStatus, parseStack, parseStatus, parseThreadDetail } from '../controller/protocol/responseParser';
+import { buildStepCommand } from '../controller/commands/stepCommand';
+import type { StepMode } from '../controller/commands/stepCommand';
+import { asThreadNode } from '../controller/threads/threadArgs';
 import { stopThreadWithRecovery, waitForThreadPause } from './controllerOps';
 import type { ExtensionHost } from './host';
 

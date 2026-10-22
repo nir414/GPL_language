@@ -1,12 +1,12 @@
 /**
  * "컴파일 검증 필요" 배지 — 트리(프로젝트 상태 섹션)와 상태바가 공유하는 표시 규칙. vscode 무의존.
  *
- * 상태의 정본은 `controller/compileStale`(host 가 보유·갱신)이고, 여기는 그 상태가 **어떻게 보이고 클릭하면
+ * 상태의 정본은 `controller/deployment/compileStale`(host 가 보유·갱신)이고, 여기는 그 상태가 **어떻게 보이고 클릭하면
  * 무엇을 하는가**만 정한다. 종전에는 두 뷰가 문구를 각자 조립하고 클릭 대상도 달랐다(트리는 인자 없음 → 선택 창,
  * 상태바는 폴더 Uri) — 같은 배지가 자리마다 다르게 동작하는 구현 편차(Implementation Drift). ai-handoff §1-DV.
  */
 
-import { CompileStaleInfo, describeCompileStale } from '../controller/compileStale';
+import { CompileStaleInfo, describeCompileStale } from '../controller/deployment/compileStale';
 
 /** 배지 클릭이 실행하는 명령 — 빠른 컴파일(변경분 업로드 + Compile, Stop/Start 없음). */
 export const COMPILE_STALE_BADGE_COMMAND = 'gpl.quickCompile';

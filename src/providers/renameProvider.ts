@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SymbolCache } from '../symbolCache';
+import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../language/gplParser';
 import { elementTypeOf, enclosingClassName, enclosingModuleName } from '../language/receiverType';
 import { GPLReferenceProvider } from './referenceProvider';

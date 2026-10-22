@@ -4,9 +4,9 @@
  */
 
 import * as vscode from 'vscode';
-import { trySendCommand, getControllerConfig, getTrafficLogOptions, getConnectionStats, probeControllerCommand } from '../controller/controllerConnection';
-import type { ProbeOutcome } from '../controller/controllerConnection';
-import { formatRuntimeConsoleStateLabel } from '../controller/runtimeConsolePresentation';
+import { trySendCommand, getControllerConfig, getTrafficLogOptions, getConnectionStats, probeControllerCommand } from '../controller/connection/controllerConnection';
+import type { ProbeOutcome } from '../controller/connection/controllerConnection';
+import { formatRuntimeConsoleStateLabel } from '../controller/runtime/runtimeConsolePresentation';
 import {
 	parseThreadList,
 	SHOW_THREAD_LIST_CMD,
@@ -19,20 +19,20 @@ import {
 	extractErrorCodeFromEntry,
 	getErrorCodeHint,
 	findKnownErrorChains,
-} from '../controller/responseParser';
+} from '../controller/protocol/responseParser';
 import { EXTENSION_VERSION } from '../config';
-import { channelName } from '../controller/channelNames';
-import { isPausedState } from '../controller/threadActivity';
-import type { RuntimeStateSnapshot } from '../controller/executionMarks';
-import { BreakpointTarget, breakpointKey, orphanControllerBreakpoints } from '../controller/breakpointReconcile';
-import { editorBreakpointTargets } from '../controller/breakpointSync';
-import { FtpEntry, listRemoteDirs } from '../controller/ftpClient';
-import { onDebugThreadsUpdated } from '../controller/debugBridge';
+import { channelName } from '../controller/protocol/channelNames';
+import { isPausedState } from '../controller/threads/threadActivity';
+import type { RuntimeStateSnapshot } from '../controller/debugging/executionMarks';
+import { BreakpointTarget, breakpointKey, orphanControllerBreakpoints } from '../controller/debugging/breakpointReconcile';
+import { editorBreakpointTargets } from '../controller/debugging/breakpointSync';
+import { FtpEntry, listRemoteDirs } from '../controller/files/ftpClient';
+import { onDebugThreadsUpdated } from '../controller/debugging/debugBridge';
 import { AUTO_REFRESH_MIN_INTERVAL_MS, decideAutoRefresh, formatLastRefreshTime } from './refreshThrottle';
 import { formatConnectionStats, formatDate, formatDateTimeFromTs } from './treeFormat';
 import { formatBytes } from '../util/formatBytes';
 import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from './compileStaleBadge';
-import type { CompileStaleInfo } from '../controller/compileStale';
+import type { CompileStaleInfo } from '../controller/deployment/compileStale';
 import {
 	buildRuntimeConsoleTreeDescription,
 	buildRuntimeConsoleTreeTooltip,
@@ -41,15 +41,16 @@ import {
 	getRuntimeConsoleTreeIcon,
 	isRuntimeConsoleUnstable,
 } from './runtimeConsoleTreePresentation';
-import type { SituationDeploySnapshot } from '../controller/deployOutcome';
+import type { SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
 import {
 	countThreadStates,
 	renderThreadListReport,
 	renderThreadTable,
 	summarizeThreadStates,
 	type ThreadStateCounts,
-} from '../controller/threadReport';
-import { RuntimeConsoleStatusSnapshot } from '../controller/runtimeConsole';
+} from '../controller/threads/threadReport';
+import { RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
+import { parseTemperatureResponse, PROBE_TEMPERATURE_CMD } from '../controller/diagnostics/temperature';
 
 export interface RuntimeErrorContext {
 	threadName: string;
@@ -122,7 +123,7 @@ const DETAIL_POLL_MULTIPLIER = 2;
  * 60초에 FTP passive 데이터 연결 66개 관측). 명시적 새로고침(refreshFtp/refreshAll)은 항상 조회한다.
  */
 const FTP_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
-/** 시스템 정보(Show Memory / Show Flash Free / Show CPU Profile — 1402 왕복 3회)도 같은 규칙으로 억제. */
+/** 시스템 정보(메모리·Flash·CPU·온도)도 같은 규칙으로 억제. */
 const SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
 
 export class ControllerTreeProvider implements vscode.TreeDataProvider<ControllerNode>, vscode.Disposable {
@@ -135,7 +136,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 	/**
 	 * Show Thread 폴(프로브) 결과 — 성공/실패 종류. 유실 판정은 트리가 하지 않고 extension.ts 의
-	 * ConnectionHealthMonitor(controller/connectionHealth.ts)가 한다(2026-08-28: 종전 "3회 연속 실패" 자체 판정을
+	 * ConnectionHealthMonitor(controller/connection/connectionHealth.ts)가 한다(2026-08-28: 종전 "3회 연속 실패" 자체 판정을
 	 * 이관 — 디버그 중 트리 폴링이 꺼져도 어댑터 폴·재프로브로 같은 판정이 이어지게).
 	 */
 	private readonly _onDidProbe = new vscode.EventEmitter<ProbeOutcome>();
@@ -325,7 +326,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		return sec;
 	}
 
-	/** 상태별 쓰레드 수 집계 (트리 루트 설명·상태 스냅샷 공용). 판정은 `controller/threadReport` 가 정본. */
+	/** 상태별 쓰레드 수 집계 (트리 루트 설명·상태 스냅샷 공용). 판정은 `controller/threads/threadReport` 가 정본. */
 	private countThreadStates(): ThreadStateCounts {
 		return countThreadStates(this.threads);
 	}
@@ -610,10 +611,13 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		const memResp = await trySendCommand('Show Memory');
 		const flashResp = await trySendCommand('Show Flash Free');
 		const cpuResp = await trySendCommand('Show CPU Profile');
+		if (!this._connected) { return; }
+		const temperature = parseTemperatureResponse(await trySendCommand(PROBE_TEMPERATURE_CMD));
+		if (!this._connected) { return; }
 
 		// 세 명령 중 하나라도 응답이 왔으면 '성공 조회'로 보고 시각을 기록한다(억제 판정·설명 표기용, #22).
 		// 모두 null(연결 불량)이면 시각을 갱신하지 않아 다음 연결 확립 시 다시 조회된다.
-		if (memResp !== null || flashResp !== null || cpuResp !== null) {
+		if (memResp !== null || flashResp !== null || cpuResp !== null || temperature.complete) {
 			this.lastSystemInfoRefreshAt = Date.now();
 			this.systemInfoCacheKey = getControllerConfig().ip;
 		}
@@ -634,6 +638,17 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			tooltip: cpuRaw || 'Show CPU Profile 응답 없음',
 			iconId: 'pulse',
 		});
+		for (const reading of temperature.readings) {
+			items.push({
+				label: `${reading.label} 온도`,
+				value: reading.celsius === null ? `${reading.reportedCelsius.toFixed(1)}°C 반환 · 센서 지원 미확인` : `${reading.celsius.toFixed(1)}°C`,
+				tooltip: `${PROBE_TEMPERATURE_CMD} · ${new Date(temperature.sampledAt).toLocaleTimeString()}\n${reading.note ?? '과열 여부는 모델별 허용 온도와 함께 확인하세요.'}\n${temperature.raw}`,
+				iconId: 'dashboard',
+			});
+		}
+		if (!temperature.readings.length) {
+			items.push({ label: '온도', value: temperature.note ?? '미확인', tooltip: temperature.raw, iconId: 'dashboard' });
+		}
 
 		this.sysInfo = items;
 		this._onDidChangeTreeData.fire(undefined);
@@ -644,7 +659,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 	/**
 	 * 연결 확립 시의 조건부 시스템 정보 재조회(#22) — refreshFtpIfStale와 같은 규칙(5분·캐시·IP 일치).
-	 * Show Memory / Show Flash Free / Show CPU Profile 3회 왕복을 플랩마다 반복하지 않기 위함.
+	 * 메모리·Flash·CPU·온도 조회를 플랩마다 반복하지 않기 위함.
 	 */
 	private refreshSystemInfoIfStale(): Promise<void> {
 		const decision = decideAutoRefresh(
@@ -1129,7 +1144,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 
 	/**
 	 * 「전체 쓰레드 복사」가 클립보드에 넣는 보고서. 상황 스냅샷의 `## 쓰레드` 절과 같은 표를 쓴다
-	 * (렌더러 정본: `controller/threadReport`).
+	 * (렌더러 정본: `controller/threads/threadReport`).
 	 */
 	buildThreadReportMarkdown(): string {
 		const cfg = getControllerConfig();
@@ -1201,7 +1216,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		lines.push(`- FTP 프로젝트 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}${expectedFolder !== '(미설정)' && !hasExpectedFtp ? ' ⚠ 기대 프로젝트 폴더 없음' : ''}`);
 		lines.push('');
 
-		// ── 쓰레드 (표는 「전체 쓰레드 복사」와 같은 렌더러 — controller/threadReport)
+		// ── 쓰레드 (표는 「전체 쓰레드 복사」와 같은 렌더러 — controller/threads/threadReport)
 		lines.push('## 쓰레드');
 		lines.push(`- ${summarizeThreadStates(this.threads)}`);
 		const threadTable = renderThreadTable(this.threads);

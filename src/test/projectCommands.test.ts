@@ -7,7 +7,7 @@ import {
     loadProject,
     startProject,
     unloadProject,
-} from '../controller/projectCommands';
+} from '../controller/commands/projectCommands';
 
 const OK = '<DATA></DATA><STATUS>0,"Success"</STATUS>';
 
@@ -185,7 +185,7 @@ test('projectCommands Start: -compile을 끈 Start는 에러 모양 텍스트를
 });
 
 // 비차단 STATUS 집합은 controllerStatusCodes 가 정본이라 테스트에서 직접 가져와 대조한다.
-import { isControllerNonBlockingStatus } from '../controller/responseParser';
+import { isControllerNonBlockingStatus } from '../controller/protocol/responseParser';
 function isNonBlocking(code: number): boolean {
     return isControllerNonBlockingStatus(code);
 }

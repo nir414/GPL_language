@@ -13,12 +13,12 @@
  */
 import * as vscode from 'vscode';
 import { EXTENSION_VERSION, getTraceServerLevel, isTraceOn } from './config';
-import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection } from './controller/controllerConnection';
-import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployRecord';
-import { attachSyncManifestStore } from './controller/syncManifest';
-import { setRuntimeConsoleHealthProvider, RuntimeConsoleHealth } from './controller/debugBridge';
-import { activateProjectPicker } from './controller/projectPicker';
-import { activateGprSync } from './controller/gprSyncCommand';
+import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection } from './controller/connection/controllerConnection';
+import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployment/deployRecord';
+import { attachSyncManifestStore } from './controller/files/syncManifest';
+import { setRuntimeConsoleHealthProvider, RuntimeConsoleHealth } from './controller/debugging/debugBridge';
+import { activateProjectPicker } from './controller/projects/projectPicker';
+import { activateGprSync } from './controller/projects/gprSyncCommand';
 import { activatePromoteSource } from './project/promoteSourceCommand';
 import { ControllerTreeProvider } from './views/controllerTreeProvider';
 import { ConnectionStatusBar } from './views/connectionStatusBar';

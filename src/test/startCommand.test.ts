@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { buildStartCommand, commandRunsCompiler, shouldPromptForStartConfirmation } from '../controller/startCommand';
+import { buildStartCommand, commandRunsCompiler, shouldPromptForStartConfirmation } from '../controller/commands/startCommand';
 
 test('startCommand: 기본값은 -compile + GDE와 같은 -event', () => {
     assert.strictEqual(buildStartCommand({ projectName: 'MergeCode' }), 'Start MergeCode -compile -event');

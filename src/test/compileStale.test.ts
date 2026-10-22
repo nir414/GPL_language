@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { CompileStaleTracker } from '../controller/compileStale';
+import { CompileStaleTracker } from '../controller/deployment/compileStale';
 
 test('compileStale: mark 한 프로젝트를 대소문자·공백 무시로 찾는다', () => {
     const t = new CompileStaleTracker();

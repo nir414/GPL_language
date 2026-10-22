@@ -6,7 +6,7 @@ import {
     describeProjectNameProblem,
     isProjectNameSafe,
     suggestSafeProjectName,
-} from '../controller/projectNameGuard';
+} from '../controller/projects/projectNameGuard';
 
 // ── checkProjectName / isProjectNameSafe ─────────────────────────────────
 

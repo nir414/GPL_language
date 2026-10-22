@@ -1,4 +1,4 @@
-// 장시간 작업 기록(Operation) 읽기 — 확장 `src/controller/operationStore.ts` 와 파일 계약을 공유한다.
+// 장시간 작업 기록(Operation) 읽기 — 확장 `src/controller/automation/operationStore.ts` 와 파일 계약을 공유한다.
 //
 // 왜(2026-09-10 개선안 §8~§11): Deploy/Quick Compile 은 브리지 RPC 한 번으로 수 분을 기다렸고, 응답 대기가
 // 끝나면 **결과 불명**이 됐다. 그 상태에서 같은 명령을 다시 보내면 중복 배포이고, 잠금에 막히면 "LOCKED" 만

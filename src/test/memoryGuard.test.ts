@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { assessMemory, checkMemory, needsMemoryGuard, MemoryGuardError } from '../controller/memoryGuard';
+import { assessMemory, checkMemory, needsMemoryGuard, MemoryGuardError } from '../controller/diagnostics/memoryGuard';
 
 const frame = (free: number) => `<DATA>Main Memory:\nFree: ${free} Mb\nUsed: 1 Mb</DATA><STATUS>0,""</STATUS>`;
 

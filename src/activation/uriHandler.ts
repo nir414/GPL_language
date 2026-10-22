@@ -1,11 +1,11 @@
 /**
  * 외부 진입점 URI 핸들러 — `vscode://nir414.gpl-language-support/<gpl.command.id>?…` (GitHub #25 B, 2026-08-28 전체 개방).
- * 해석 규칙은 controller/uriDispatch.ts(단위 테스트 대상).
+ * 해석 규칙은 controller/automation/uriDispatch.ts(단위 테스트 대상).
  */
 
 import * as vscode from 'vscode';
-import { resolveUriRequest, summarizeUriResult } from '../controller/uriDispatch';
-import { findAiBlockedCommand, aiBlockedDetail } from '../controller/aiCommandPolicy';
+import { resolveUriRequest, summarizeUriResult } from '../controller/automation/uriDispatch';
+import { findAiBlockedCommand, aiBlockedDetail } from '../controller/automation/aiCommandPolicy';
 import type { ExtensionHost } from './host';
 
 export function activateUriHandler(host: ExtensionHost): void {
@@ -18,10 +18,10 @@ export function activateUriHandler(host: ExtensionHost): void {
 	//   별칭(종전 호환): /connect?ip&port[&save=settings] · /disconnect · /getState · /dashboard
 	//   터미널/에이전트: code --open-url "vscode://nir414.gpl-language-support/gpl.ai.debug.getState"
 	// 접근은 막지 않는다(사용자 결정). 제어기 안전 조건(Step 연타 #28·정지 정착 §0.6·Compile→Start 완충 §0.7)은 명령 계층의 정책
-	// (controller/commandPolicy.ts)이 어느 경로에서든 같은 방식으로 충족시키므로 URI 에 별도 허용 목록을 두지 않는다. 다만 이 확장의
+	// (controller/commands/commandPolicy.ts)이 어느 경로에서든 같은 방식으로 충족시키므로 URI 에 별도 허용 목록을 두지 않는다. 다만 이 확장의
 	// 명령(`gpl.*`)만 실행한다 — 임의 VS Code 명령의 프록시가 되지 않도록(범위 한정, 제한이 아님). 유일한 예외는 되돌릴 수 없는
-	// 파괴적 명령의 AI 차단 목록(`controller/aiCommandPolicy.ts`, 2026-09-07) — 그 명령은 사람이 UI 에서 직접 실행한다. 결과는 URI 로 돌려줄 수 없으므로
-	// Output([URI] <id> => …) 과 `gpl.ai.debug.*` 의 [AI Debug] 로그로 확인한다. 해석 규칙은 controller/uriDispatch.ts(단위 테스트 대상).
+	// 파괴적 명령의 AI 차단 목록(`controller/automation/aiCommandPolicy.ts`, 2026-09-07) — 그 명령은 사람이 UI 에서 직접 실행한다. 결과는 URI 로 돌려줄 수 없으므로
+	// Output([URI] <id> => …) 과 `gpl.ai.debug.*` 의 [AI Debug] 로그로 확인한다. 해석 규칙은 controller/automation/uriDispatch.ts(단위 테스트 대상).
 	context.subscriptions.push(
 		vscode.window.registerUriHandler({
 			handleUri: async (uri: vscode.Uri) => {

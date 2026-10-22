@@ -1,4 +1,4 @@
-// 배포 취소 요청 — VS Code 확장(src/controller/deployCancellation.ts)과 파일 계약을 공유한다.
+// 배포 취소 요청 — VS Code 확장(src/controller/deployment/deployCancellation.ts)과 파일 계약을 공유한다.
 // 사용자가 명시적으로 Stop -all/-a를 보낼 때 현재 잠금의 operationId에 취소 파일을 남긴다.
 
 import fs from 'node:fs';

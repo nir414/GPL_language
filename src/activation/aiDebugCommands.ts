@@ -13,22 +13,22 @@ import {
 	isPolicyError,
 	sendCommand,
 	sendCommandDetailed,
-} from '../controller/controllerConnection';
-import { AI_BLOCKED_ERROR } from '../controller/aiCommandPolicy';
-import { describeDeployLock } from '../controller/deployLock';
-import { listRemoteDir, listRemoteDirs, normalizeAbsoluteRemoteDir } from '../controller/ftpClient';
-import { classifyRemoteClearRoot, clearRemoteFolderEntries, selectRemoteClearTargets } from '../controller/remoteFolderClear';
-import { getCompiledRecord } from '../controller/deployRecord';
-import { compileUntilPattern } from '../controller/runtimeConsoleBuffer';
-import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThreadList } from '../controller/responseParser';
-import { buildStepCommand } from '../controller/stepCommand';
-import type { StepMode } from '../controller/stepCommand';
+} from '../controller/connection/controllerConnection';
+import { AI_BLOCKED_ERROR } from '../controller/automation/aiCommandPolicy';
+import { describeDeployLock } from '../controller/deployment/deployLock';
+import { listRemoteDir, listRemoteDirs, normalizeAbsoluteRemoteDir } from '../controller/files/ftpClient';
+import { classifyRemoteClearRoot, clearRemoteFolderEntries, selectRemoteClearTargets } from '../controller/files/remoteFolderClear';
+import { getCompiledRecord } from '../controller/deployment/deployRecord';
+import { compileUntilPattern } from '../controller/runtime/runtimeConsoleBuffer';
+import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThreadList } from '../controller/protocol/responseParser';
+import { buildStepCommand } from '../controller/commands/stepCommand';
+import type { StepMode } from '../controller/commands/stepCommand';
 import { waitForThreadPause } from './controllerOps';
-import { describeThreadActivity, isPausedState } from '../controller/threadActivity';
+import { describeThreadActivity, isPausedState } from '../controller/threads/threadActivity';
 import { normalizeEvalValue } from '../debug/showVariableParser';
-import type { SituationDeploySnapshot } from '../controller/deployOutcome';
-import { formatBreakpointCommand, normalizeBreakpointCommandFile } from '../controller/breakpointCommand';
-import { isResolvedBreakpointRecord } from '../controller/breakpointReconcile';
+import type { SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
+import { formatBreakpointCommand, normalizeBreakpointCommandFile } from '../controller/debugging/breakpointCommand';
+import { isResolvedBreakpointRecord } from '../controller/debugging/breakpointReconcile';
 import type { ConnectArgs } from './connection';
 import type { ExtensionHost } from './host';
 
@@ -188,7 +188,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 				try {
 					result = await handler(args);
 				} catch (err: any) {
-					// 명령 정책(controller/commandPolicy.ts)이 한도 안에 안전 조건을 충족시키지 못해 제어기에 보내지 않은 경우는
+					// 명령 정책(controller/commands/commandPolicy.ts)이 한도 안에 안전 조건을 충족시키지 못해 제어기에 보내지 않은 경우는
 					// 통신 실패와 구분해 알린다 — 호출자(AI)가 "기다렸다 다시" 판단을 할 수 있게.
 					result = isPolicyError(err)
 						? { ok: false, error: 'policy-hold', code: err.code, detail: err.message, sentToController: false }

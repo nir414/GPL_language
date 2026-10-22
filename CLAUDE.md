@@ -16,7 +16,7 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 
 ## 자주 쓰는 명령
 
-- `npm run compile` — TypeScript 컴파일 (`out/`)
+- `npm run compile` — tsconfig 기준 이전 JS·소스맵 정리 후 TypeScript 컴파일 (`out/`)
 - `npm run package` — patch 버전 bump + VSIX 패키징 (`dist/gpl-language-support-<ver>.vsix`, 실패 시 버전 자동 롤백)
 - `npm run package:no-bump` — 버전 그대로 패키징
 - `npm test` — 컴파일 + 테스트

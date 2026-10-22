@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import type { ThreadStopIo, ThreadStopResponse } from '../controller/threadStop';
-import { describeRuntimeErrorHint, formatRuntimeError, watchMainThreadAfterStart } from '../controller/postStartWatch';
+import type { ThreadStopIo, ThreadStopResponse } from '../controller/threads/threadStop';
+import { describeRuntimeErrorHint, formatRuntimeError, watchMainThreadAfterStart } from '../controller/threads/postStartWatch';
 
 const LIST = 'Show Thread  -web';
 

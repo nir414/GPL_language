@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { buildSetDioCommand, describeDioForce, parseDioSignals } from '../controller/dio';
+import { buildSetDioCommand, describeDioForce, parseDioSignals } from '../controller/io/dio';
 import { test } from './harness';
 
 test('DIO: Show DIO 응답의 ON/OFF와 강제 상태를 파싱한다', () => {

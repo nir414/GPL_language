@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { isRuntimeConsoleAutoStartOnDebug } from '../config';
-import { setSessionControllerOverride } from '../controller/controllerConnection';
+import { setSessionControllerOverride } from '../controller/connection/controllerConnection';
 import { requestActiveDeployCancellation } from './controllerOps';
 import type { ExtensionHost } from './host';
 

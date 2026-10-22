@@ -5,7 +5,7 @@
  * 제어기 없이 회귀 테스트할 수 있게 한다.
  */
 
-import { classifyConsoleCommand } from '../controller/consoleCommandClassifier';
+import { classifyConsoleCommand } from '../controller/commands/consoleCommandClassifier';
 
 export interface ReplInputEntry {
     /** 사용자가 입력한 한 줄(앞뒤 공백 제거). */

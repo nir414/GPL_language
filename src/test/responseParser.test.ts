@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { classifyErrorEntry, getGplErrorGroup, isConsoleStatusEventFrame, normalizeConsoleLine } from '../controller/responseParser';
-import { parseStatus, parseCompileErrors, parseThreadList, latin1ToUtf8, SHOW_THREAD_LIST_CMD, SHOW_THREAD_LIST_STACK_CMD } from '../controller/responseParser';
+import { classifyErrorEntry, getGplErrorGroup, isConsoleStatusEventFrame, normalizeConsoleLine } from '../controller/protocol/responseParser';
+import { parseStatus, parseCompileErrors, parseThreadList, latin1ToUtf8, SHOW_THREAD_LIST_CMD, SHOW_THREAD_LIST_STACK_CMD } from '../controller/protocol/responseParser';
 
 test('parseStatus: 성공 코드와 메시지', () => {
     const r = parseStatus('<STATUS>0,"OK"</STATUS>');

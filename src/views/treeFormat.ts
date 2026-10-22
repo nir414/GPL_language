@@ -2,7 +2,7 @@
  * 제어기 트리(GPL Controller 뷰)의 표시용 포맷 함수 — vscode 무의존.
  * controllerTreeProvider.ts 하단에 있던 함수를 그대로 옮겼다(2026-09-07 §1-DB, 동작 동일) — 테스트 가능하게 하는 것이 목적.
  */
-import type { ConnectionStats } from '../controller/consoleSocket';
+import type { ConnectionStats } from '../controller/connection/consoleSocket';
 
 /**
  * 1402 keep-alive 연결 통계 한 줄(GitHub #22): `keep-alive 유지 중 · 연결 3회 · 재사용 412회`.

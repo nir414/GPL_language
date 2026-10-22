@@ -5,8 +5,8 @@ import {
     renderThreadListReport,
     renderThreadTable,
     summarizeThreadStates,
-} from '../controller/threadReport';
-import type { ThreadInfo } from '../controller/responseParser';
+} from '../controller/threads/threadReport';
+import type { ThreadInfo } from '../controller/protocol/responseParser';
 
 function thread(partial: Partial<ThreadInfo> & { name: string }): ThreadInfo {
     return {

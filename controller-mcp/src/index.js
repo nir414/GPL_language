@@ -6,8 +6,6 @@
 // 설정(환경변수):
 //   GPL_HOST       제어기 IP            (기본 192.168.0.1)
 //   GPL_PORT       콘솔 포트            (기본 1402)
-//   GPL_PROJECT    기본 프로젝트명      (기본 MergeCode)
-//   GPL_PROJECT_DIR Export 대상 폴더     (있으면 project_target으로 폴더 확인 후 프로젝트 도구 사용)
 //   GPL_TIMEOUT_MS 명령 타임아웃(ms)    (기본 15000)
 //   GPL_LOCK_WAIT_MS 배포 잠금 대기 상한(ms) (기본 20000) — VS Code 확장이 FTP 업로드/배포 중이면
 //                  Compile/Start/Load/Unload를 이 시간까지 기다렸다 진행, 초과 시 거부 (src/deployLock.js)
@@ -45,6 +43,7 @@ import {
   isSuccess,
 } from './parse.js';
 import { readDeployLock, waitForDeployLockRelease, describeDeployLock, DEPLOY_GUARDED_COMMAND_RE } from './deployLock.js';
+import { isStopAllCommand, requestDeployCancellation } from './deployCancellation.js';
 import {
   resolveBridge,
   readExtensionPresence,
@@ -53,14 +52,33 @@ import {
   resolveExtensionInstance,
   takeLateResponse,
   bridgeUnavailableHint,
+  describeHostMismatch,
+  hostMismatchFix,
   isRetrySafeCommand,
   BRIDGE_COMMAND_ID_PATTERN,
+  bridgeHealthSummary,
+  describeBridgeFailure,
 } from './extensionBridge.js';
-import { listOperations, readOperation, describeOperation, operationRecovery } from './operations.js';
+import { partitionStopTargets } from './stopTargets.js';
+import { compilerCommandOptions, controllerResponseOutcome } from './commandOptions.js';
+import {
+  listOperations,
+  activeOperations,
+  readOperation,
+  describeOperation,
+  operationRecovery,
+  isTerminalOperationState,
+  DeliveredResultMemory,
+  compactOperation,
+  compactOperationRecord,
+  compactOperationResult,
+  summarizeOperationResult,
+} from './operations.js';
 import { runBatch, normalizeCommandInput, BATCH_MAX } from './batch.js';
 import { aiBlockedResult, AI_BLOCKED_COMMANDS } from './aiPolicy.js';
 import { SERVER_INSTRUCTIONS, DOC_COMMENT_GUIDE } from './guidelines.js';
-import { readConfiguredTarget, projectForCommand } from './configuredTarget.js';
+import { captureFilesFor, searchCapture } from './consoleCapture.js';
+import { deployTargetArgs, projectForCommand } from './configuredTarget.js';
 import {
   SEND_OUTCOME_NOT_SENT,
   SEND_OUTCOME_UNKNOWN,
@@ -68,6 +86,7 @@ import {
   sendOutcomeOf,
   commandFailureResult,
   classifyReachability,
+  summarizeLocalConnections,
   UnknownCommandMemory,
   unknownCommandResult,
   UNKNOWN_COMMAND_STATUS,
@@ -75,8 +94,6 @@ import {
 
 const HOST = process.env.GPL_HOST || '192.168.0.1';
 const PORT = parseInt(process.env.GPL_PORT || '1402', 10);
-const CONFIGURED_TARGET = readConfiguredTarget(process.env);
-const DEFAULT_PROJECT = CONFIGURED_TARGET.project;
 const TIMEOUT = parseInt(process.env.GPL_TIMEOUT_MS || '15000', 10);
 const IDLE_CLOSE = parseInt(process.env.GPL_IDLE_CLOSE_MS || '30000', 10);
 const LOCK_WAIT_MS = parseInt(process.env.GPL_LOCK_WAIT_MS || '20000', 10);
@@ -192,22 +209,29 @@ let bridgeState = { available: false, reason: 'unchecked', presence: null, check
 async function currentBridge({ force = false, wake = false } = {}) {
   const now = Date.now();
   if (!force && now - bridgeState.checkedAt < BRIDGE_RECHECK_MS) return bridgeState;
-  const r = await resolveBridge(HOST, { mode: BRIDGE_MODE, wake });
+  // projectDir 는 host-mismatch 판정에서 "같은 작업의 창" 을 가려내는 근거(§1-ES)다.
+  const r = await resolveBridge(HOST, { mode: BRIDGE_MODE, wake, projectDir: sessionTarget?.dir ?? undefined });
   bridgeState = { ...r, checkedAt: now };
   return bridgeState;
 }
 
+/** 브리지를 못 쓸 때의 안내 — 주소 불일치면 IP 를 박은 조치 문구, 아니면 사유별 일반 문구. */
+function bridgeHint(b) {
+  return b?.hostMismatch ? hostMismatchFix(b.hostMismatch) : bridgeUnavailableHint(b?.reason);
+}
+
 /**
  * 확장 명령 1건 호출(브리지). 결과는 확장 명령의 반환값 그대로.
- * `instanceId` 를 주면 그 창의 큐로만 보낸다 — 생략하면 현재 경로(리더 인스턴스 또는 레거시 큐).
+ * `instanceId` 를 주면 그 창의 큐로만 보낸다 — 생략하면 현재 경로(제어기에 연결된 창 → 리더 순, 또는 레거시 큐).
  */
 async function callExtension(command, args, { timeoutMs, instanceId } = {}) {
   const b = await currentBridge();
   if (!b.available) {
     const err = new Error(
-      `확장 브리지를 쓸 수 없다 (${b.reason}). ${bridgeUnavailableHint(b.reason)}`,
+      `확장 브리지를 쓸 수 없다 (${b.reason}). ${bridgeHint(b)}`,
     );
     err.bridgeReason = b.reason;
+    err.hostMismatch = b.hostMismatch ?? null;
     err.sendOutcome = SEND_OUTCOME_NOT_SENT;
     throw err;
   }
@@ -232,7 +256,8 @@ async function sendGuarded(command, opts) {
       // 확장은 `Set Break`/`Nobreak`를 에디터 중단점에도 반영한다(빨간 점). 스스로 정리하는
       // 임시 BP만 여기서 제외한다 — 안 그러면 빨간 점이 깜빡인다.
       ...(opts?.mirrorBreakpoints === false ? { mirrorBreakpoints: false } : {}),
-      // 1402 콘솔 명령은 어느 창을 거치든 같은 제어기로 나가므로 현재 경로(리더 인스턴스)를 그대로 쓴다.
+      // 현재 경로 = 제어기에 연결된 창(없으면 리더) — resolveBridge 가 pickConsoleRouteInstance 로 고른 값.
+      // 1402 는 단일 클라이언트라 미접속 창(리더라도)으로 보내면 그 창이 새로 접속하다 ECONNREFUSED 가 난다(§1-EK).
     }, { timeoutMs: cmdTimeout + 20_000, instanceId: b.presence?.extensionInstanceId ?? undefined });
 
     if (res.ok && res.result && typeof res.result.raw === 'string') {
@@ -250,28 +275,66 @@ async function sendGuarded(command, opts) {
         { policyCode: res.result.code },
       );
     }
-    const ambiguous = res.error === 'bridge-timeout' || res.error === 'command-failed' || res.error === 'response-parse-failed';
+    if (res.ok && ['LOW_MEMORY', 'MEMORY_UNVERIFIED'].includes(res.result?.error)) {
+      throw taggedError(res.result.detail, SEND_OUTCOME_NOT_SENT, {
+        code: res.result.error, precheck: res.result.precheck, via: 'extension-bridge',
+      });
+    }
+    // 확장이 명령을 **실행했는데 전송이 실패**한 경우(`result.ok:false`, 예: ECONNREFUSED·타임아웃) — 확장 세션의 판정이다.
+    // 직접 접속으로 다시 보내지 않는다: 그 창이 소켓을 쥐고 있으면 직접 연결은 어차피 거부되고(1402 단일 클라이언트),
+    // 상태 변경 명령은 확장이 이미 보냈을 수 있어 중복 위험이다. 종전에는 이 분기가 없어 아래 직접 폴백으로 떨어졌다(§1-EO).
+    if (res.ok && res.result && res.result.ok === false) {
+      const detail = String(res.result.detail ?? res.result.error ?? 'unknown');
+      const code = (detail.match(/\b(ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|ENOTFOUND)\b/) || [])[1];
+      const notSent = /\b(ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND)\b/.test(detail) || /Connection closed with no response/i.test(detail);
+      logLine(`  1402> ${command} | via extension | FAILED ${detail}`);
+      throw taggedError(
+        `확장 세션에서 전송 실패(${res.result.error ?? 'command-failed'}): ${detail}. ` +
+        '확장 창이 제어기 연결을 맡고 있으므로 직접 접속으로 다시 보내지 않는다 — ' +
+        (notSent ? '제어기에는 보내지지 않았다.' : '보냈을 수 있어 결과 미확정이다(show_threads 로 관측).') +
+        ' 확장 Output(GPL Language Support)의 [Command] … (agent) 줄과 extension_status 의 connected 를 볼 것.',
+        notSent ? SEND_OUTCOME_NOT_SENT : SEND_OUTCOME_UNKNOWN,
+        { bridgeError: res.result.error ?? 'command-failed', via: 'extension-bridge', ...(code ? { code } : {}) },
+      );
+    }
+    const bridgeFailure = describeBridgeFailure(res);
+    // 브리지가 요청을 **집어 가지도 않은** 타임아웃(sent:false)인데 그 창이 제어기에 연결돼 있는 경우 — 직접 접속하면
+    // 그 창이 쥔 소켓 때문에 ECONNREFUSED 가 나고, AI 는 그것을 제어기 이상으로 읽는다(2026-10-14 실측 §1-EO:
+    // 앞선 gpl.deploy 가 토스트 await 로 끝나지 않아 그 창의 순차 큐가 막혀 있었다). 보내지 않았음이 확실하므로 NOT_SENT.
+    if (res?.error === 'bridge-timeout' && res.sent === false && b.presence?.connected === true) {
+      logLine(`  bridge 미수거(${bridgeFailure.detail}) — 연결된 창이라 직접 접속으로 폴백하지 않음: ${command}`);
+      bridgeState.checkedAt = 0;
+      throw taggedError(
+        `확장 창(${b.presence.extensionInstanceId})이 ${res.ms}ms 안에 요청을 집어 가지 않았다 — 제어기에는 보내지 않았다. ` +
+        '그 창이 제어기 연결을 맡고 있어 직접 접속은 거부되므로 시도하지 않는다. 확장의 브리지는 요청을 한 번에 하나씩 처리하니 ' +
+        '앞선 장시간 명령(배포 등)이 끝나지 않았을 가능성이 크다 — operation_status 와 확장 Output 의 [Bridge] 줄을 확인하고, ' +
+        '창이 응답하지 않으면 사용자에게 알릴 것. 제어기 다운으로 결론내지 말 것.',
+        SEND_OUTCOME_NOT_SENT,
+        { bridgeError: bridgeFailure.error, via: 'extension-bridge', requestId: res.requestId ?? null },
+      );
+    }
+    const ambiguous = bridgeFailure.error === 'bridge-timeout' || bridgeFailure.error === 'command-failed' || bridgeFailure.error === 'response-parse-failed';
     if (ambiguous && !isRetrySafeCommand(command)) {
       throw taggedError(
-        `확장 브리지 전송 결과를 확인하지 못했다(${res.error}: ${res.detail}). '${command}'는 상태 변경 명령이라 ` +
+        `확장 브리지 전송 결과를 확인하지 못했다(${bridgeFailure.error}: ${bridgeFailure.detail}). '${command}'는 상태 변경 명령이라 ` +
         '중복 전송 위험이 있어 직접 재전송하지 않는다. show_threads 등으로 현재 상태를 확인한 뒤 판단할 것.',
         SEND_OUTCOME_UNKNOWN,
-        { bridgeError: res.error },
+        { bridgeError: bridgeFailure.error },
       );
     }
     if (BRIDGE_MODE === 'only') {
       // 브리지가 명령을 보냈는지는 res.error 에 달렸다 — 모호한 실패면 결과 미확정.
       throw taggedError(
-        `GPL_BRIDGE=only — 확장 브리지 실패(${res.error}: ${res.detail}). 직접 접속으로 폴백하지 않는다.`,
+        `GPL_BRIDGE=only — 확장 브리지 실패(${bridgeFailure.error}: ${bridgeFailure.detail}). 직접 접속으로 폴백하지 않는다.`,
         ambiguous ? SEND_OUTCOME_UNKNOWN : SEND_OUTCOME_NOT_SENT,
-        { bridgeError: res.error },
+        { bridgeError: bridgeFailure.error },
       );
     }
-    logLine(`  bridge 실패(${res.error}: ${res.detail}) → 직접 접속으로 폴백: ${command}`);
+    logLine(`  bridge 실패(${bridgeFailure.error}: ${bridgeFailure.detail}) → 직접 접속으로 폴백: ${command}`);
     bridgeState.checkedAt = 0;   // 다음 호출에서 presence 재확인
   } else if (BRIDGE_MODE === 'only') {
     throw taggedError(
-      `GPL_BRIDGE=only — 확장 브리지를 쓸 수 없다(${b.reason}). ${bridgeUnavailableHint(b.reason)}`,
+      `GPL_BRIDGE=only — 확장 브리지를 쓸 수 없다(${b.reason}). ${bridgeHint(b)}`,
       SEND_OUTCOME_NOT_SENT,
       { bridgeReason: b.reason },
     );
@@ -296,15 +359,77 @@ function transportInfo() {
     } : null,
     // 같은 제어기를 보는 VS Code 창이 몇 개인지 — 2개 이상이면 배포 대상 창을 특정해야 한다(§6).
     extensionInstances: (bridgeState.instances ?? []).length,
+    // 이 제어기를 보는 창은 없는데 다른 IP 에 살아 있는 창(§1-ES) — null 이 아니면 "확장 미실행" 이 아니라 .mcp.json GPL_HOST 문제다.
+    hostMismatch: bridgeState.hostMismatch ?? null,
+    // 1402 명령이 지금 어느 창으로 나가는지와 그 근거(§1-EK) — ECONNREFUSED 를 "제어기 이상"으로 읽기 전에 이것을 볼 것.
+    consoleRoute: p && !bridgeState.legacy ? {
+      extensionInstanceId: p.extensionInstanceId ?? null,
+      via: bridgeState.routeVia ?? null,
+      connected: !!p.connected,
+    } : null,
     hint: bridgeState.available
-      ? '1402 명령이 확장 세션(직렬 큐·keep-alive·명령 정책)을 통해 나간다 — 세션 경쟁 없음.'
-      : bridgeUnavailableHint(bridgeState.reason),
+      ? consoleRouteHint()
+      : bridgeHint(bridgeState),
   };
+}
+
+/** 브리지가 켜져 있을 때의 경로 설명 — 창이 여럿이면 어느 창으로 왜 나가는지까지. */
+function consoleRouteHint() {
+  const count = (bridgeState.instances ?? []).length;
+  const base = '1402 명령이 확장 세션(직렬 큐·keep-alive·명령 정책)을 통해 나간다 — 세션 경쟁 없음.';
+  if (count < 2) return base;
+  switch (bridgeState.routeVia) {
+    case 'connected':
+      return `${base} 창이 ${count}개지만 제어기에 연결된 창으로 나가므로 1402 단일 클라이언트 충돌이 없다.`;
+    case 'explicit-instance':
+      return `${base} 창이 ${count}개이고 지정된 창으로 나간다.`;
+    default:
+      return `${base} 창이 ${count}개인데 어느 창도 제어기에 연결돼 있지 않아 리더 창이 접속한다 — `
+        + 'ECONNREFUSED 가 나면 다른 창이 방금 세션을 쥔 것일 수 있으니 extension_list 의 connected 를 확인할 것.';
+  }
 }
 
 // 이 세션에서 STATUS -714(존재하지 않는 명령)를 받은 명령 기억 — 같은 명령의 재전송을 캐시로 끊고,
 // 같은 계열의 다른 표기에는 "이미 없다고 확인된 형제 명령" 목록을 실어 추측 재시도를 줄인다(개선안 §4·§5).
 const unknownCommands = new UnknownCommandMemory();
+
+// 이 세션에서 이미 본문까지 전달한 **완료** 결과 기억(§1-EP) — 같은 완료 결과의 재조회는 본문 없는 짧은 응답으로 끝낸다.
+// (deploy_project 가 동기로 결과를 돌려줬는데도 operation_status 목록→상세→Show Memory 로 세 번 더 확인하던 낭비.)
+const deliveredResults = new DeliveredResultMemory();
+
+/**
+ * 작업 상세 응답 한 곳 — deploy_project 완료·operation_status 상세·wait_operation 이 모두 이 모양을 쓴다.
+ * 처음 전달: 축약 본문(verbose 면 원문) + recovery + next. 재전달: `redundant:true` 와 요약 한 줄만.
+ */
+function operationDetailResult(rec, { verbose = false, extra = {} } = {}) {
+  const seen = deliveredResults.check(rec.operationId, rec.state);
+  const terminal = isTerminalOperationState(rec.state);
+  if (seen.redundant && !verbose) {
+    return {
+      ok: true,
+      redundant: true,
+      operationId: rec.operationId,
+      state: rec.state,
+      summary: describeOperation(rec),
+      resultSummary: summarizeOperationResult(rec),
+      deliveries: seen.deliveries,
+      next: 'none',
+      hint: '이미 전달한 완료 결과다 — 본문은 처음 응답에 있었다. 다시 조회하거나 다른 명령(Show Memory 등)으로 재확인하지 말고 다음 단계로 진행할 것. 원문이 꼭 필요하면 verbose:true.',
+      ...extra,
+    };
+  }
+  deliveredResults.mark(rec.operationId, rec.state);
+  return {
+    ok: rec.state !== 'FAILED',
+    operation: verbose ? rec : compactOperationRecord(rec),
+    summary: describeOperation(rec),
+    resultSummary: summarizeOperationResult(rec),
+    recovery: operationRecovery(rec),
+    // next: 완료면 'none'(재확인 불필요) · 진행 중이면 'wait_operation'(폴링 대신 한 번 기다릴 것).
+    next: terminal ? 'none' : rec.state === 'UNKNOWN' ? 'observe' : 'wait_operation',
+    ...extra,
+  };
+}
 
 async function runCommand(command, opts) {
   const known = unknownCommands.check(command);
@@ -321,6 +446,11 @@ async function runCommand(command, opts) {
   const status = parseStatus(raw);
   const ok = isSuccess(status);
   const result = { command, status, ok, data: extractData(raw) };
+  if (controllerResponseOutcome(status) === SEND_OUTCOME_UNKNOWN) {
+    result.outcome = SEND_OUTCOME_UNKNOWN;
+    result.hint = '응답이 </STATUS> 종결자 없이 끝나 성공/실패를 확인할 수 없다. 같은 상태 변경 명령을 자동 재전송하지 말고, show_threads는 현재 상태 관측에만 사용한다(원래 명령 성공의 증명은 아님).';
+    return result;
+  }
   if (!ok) {
     // 실패 시 "무엇을 바꿔 재시도할지"를 응답에 함께 실어, 같은 부류의
     // 재시도 낭비(-780 eval 반복, -714 없는 명령 추측 등)를 그 자리에서 끊는다.
@@ -335,6 +465,28 @@ async function runCommand(command, opts) {
     }
   }
   return result;
+}
+
+/** 사용자 진입점의 전체 정지만 현재 호스트 배포에 취소로 전파한다. 내부 안전 Stop은 runCommand를 그대로 쓴다. */
+function requestActiveDeployCancellation(reason) {
+  const holder = readDeployLock(HOST);
+  const operationIds = new Set(activeOperations({ controllerId: HOST }).map((operation) => operation.operationId));
+  if (holder?.operationId) operationIds.add(holder.operationId);
+  const requests = [...operationIds].map((operationId) => requestDeployCancellation({
+    operationId, controllerId: HOST, reason,
+  }));
+  if (requests.length) logLine(`  cancel ${requests.map((request) => request.operationId).join(', ')} ← ${reason}`);
+  return requests;
+}
+
+async function runUserCommand(command, opts) {
+  const cancellations = isStopAllCommand(command)
+    ? requestActiveDeployCancellation('MCP controller_command Stop -all 요청')
+    : [];
+  const result = await runCommand(command, opts);
+  return cancellations.length
+    ? { ...result, cancelledOperationIds: cancellations.map((request) => request.operationId) }
+    : result;
 }
 
 /**
@@ -385,9 +537,9 @@ function tool(name, description, shape, handler) {
  * (확장의 controller/projectNameGuard.ts와 같은 규칙).
  */
 // ── 세션 대상 프로젝트 (2026-08-31 개선안 §18·§19, 2026-09-10 개선안 §3) ────
-// 종전에는 프로젝트명 인자를 생략하면 곧바로 환경변수 기본값(GPL_PROJECT)으로 떨어졌고, 확장 명령(gpl.deploy 등)은
+// 종전에는 프로젝트명 인자를 생략하면 환경변수 기본값(GPL_PROJECT)으로 떨어졌고, 확장 명령(gpl.deploy 등)은
 // 아예 대상 인자를 받지 못해 QuickPick 이 열렸다. 한 작업 세션의 대상은 하나로 고정되는 것이 정상이므로
-// `project_target` 로 한 번 정하면 이후 모든 도구가 같은 대상을 쓴다. 우선순위: 인자 > 세션 대상 > GPL_PROJECT.
+// 영구 기본값은 두지 않고 `project_target` 로 한 번 정하면 이후 모든 도구가 같은 대상을 쓴다. 우선순위: 인자 > 세션 대상.
 //
 // 대상의 canonical identity 는 **폴더 경로**다(2026-09-10 개선안 §3.1). 같은 `ProjectName` 이 여러 과제 폴더에
 // 복제돼 있는 실제 배치(`Antibody/projects/MergeCode`, `Binder/projects/MergeCode` …)에서 이름만으로는 특정할 수
@@ -407,13 +559,13 @@ function setSessionTarget(project, { dir = null, verified = false, via = null } 
 
 /** 이 세션의 대상 프로젝트가 어디서 왔는지 — 응답에 실어 "왜 이 프로젝트가 쓰였지"를 추론하지 않게 한다(§27). */
 function targetProjectInfo(explicit) {
-  const name = (explicit && explicit.trim()) || sessionTarget?.project || DEFAULT_PROJECT;
-  const source = (explicit && explicit.trim()) ? 'argument' : sessionTarget ? 'session-target' : 'env-default';
+  const name = (explicit && explicit.trim()) || sessionTarget?.project || null;
+  const source = (explicit && explicit.trim()) ? 'argument' : sessionTarget ? 'session-target' : 'unresolved';
   return { project: name, source };
 }
 
 const proj = (p) => {
-  const resolved = projectForCommand(p, sessionTarget, CONFIGURED_TARGET);
+  const resolved = projectForCommand(p, sessionTarget);
   if (!resolved.ok) { throw taggedError(resolved.detail, SEND_OUTCOME_NOT_SENT, { code: resolved.error }); }
   const name = resolved.project;
   if (/[\s\u0000-\u001F\u007F]/u.test(name)) {
@@ -578,13 +730,48 @@ function pingOnce(host, timeoutMs = 2500) {
  */
 async function probeReachability(err) {
   const code = err?.code ?? (/timed out/i.test(err?.message ?? '') ? 'ETIMEDOUT' : undefined);
-  const icmp = await pingOnce(HOST);
+  const [icmp, localRows] = await Promise.all([pingOnce(HOST), localSocketOwners(HOST, PORT)]);
+  // 이 PC 의 어느 프로세스가 같은 포트를 잡고 있는지(§1-EU) — 확장 인스턴스 pid 는 presence 에서, 나머지는 foreign.
+  const localConnections = summarizeLocalConnections(localRows, {
+    selfPid: process.pid,
+    extensionPids: listExtensionInstances(undefined, {}).map((p) => p.pid).filter((p) => Number.isInteger(p)),
+  });
   return {
     tcp1402: false,
     error: code ?? String(err?.message ?? err),
     icmp,
-    ...classifyReachability({ host: HOST, code, icmpAlive: icmp.alive }),
+    ...classifyReachability({ host: HOST, code, icmpAlive: icmp.alive, localConnections }),
   };
+}
+
+/**
+ * 이 PC 에서 `host:port` 로 맺어진 TCP 연결과 소유 프로세스(Windows: Get-NetTCPConnection + Get-Process).
+ * 조회 실패·비 Windows 는 null(측정 못 함) — 빈 배열(연결 없음)과 구분한다. 읽기 전용이며 제어기에는 아무것도 보내지 않는다.
+ */
+function localSocketOwners(host, port, timeoutMs = 4000) {
+  if (process.platform !== 'win32') return Promise.resolve(null);
+  const safeHost = String(host).replace(/[^A-Za-z0-9.:_-]/g, '');
+  const script = `Get-NetTCPConnection -RemoteAddress '${safeHost}' -RemotePort ${Number(port) | 0} -ErrorAction SilentlyContinue | ForEach-Object { `
+    + '$p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; '
+    + '[pscustomobject]@{ pid = [int]$_.OwningProcess; process = $p.ProcessName; state = [string]$_.State; localPort = [int]$_.LocalPort } } '
+    + '| ConvertTo-Json -Compress';
+  return new Promise((resolve) => {
+    try {
+      execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
+        if (err) return resolve(null);
+        const text = String(stdout || '').trim();
+        if (!text) return resolve([]);
+        try {
+          const parsed = JSON.parse(text);
+          resolve(Array.isArray(parsed) ? parsed : [parsed]);
+        } catch {
+          resolve(null);
+        }
+      });
+    } catch {
+      resolve(null);
+    }
+  });
 }
 
 /** 정지 확인 결과를 도구 응답용 위치 요약으로 변환. */
@@ -634,8 +821,8 @@ tool('controller_command',
   },
   async ({ command, commands, stopOnError }) => {
     const input = normalizeCommandInput({ command, commands });
-    if (input.mode === 'single') return textResult(await runCommand(input.command)); // 종전과 동일한 응답(하위 호환)
-    return textResult(await runBatch(input.commands, (c) => runCommand(c), { stopOnError: !!stopOnError }));
+    if (input.mode === 'single') return textResult(await runUserCommand(input.command)); // 종전 필드 + 전체 정지 때 취소 operationId
+    return textResult(await runBatch(input.commands, (c) => runUserCommand(c), { stopOnError: !!stopOnError }));
   });
 
 tool('read_dataids',
@@ -771,10 +958,36 @@ tool('controller_status',
         assessment: reachable.assessment,
         controllerHealth: reachable.controllerHealth,
         recommendedAction: reachable.recommendedAction,
-        reachable,
-        hint: `${reachable.verdict} ${base.transport.using === 'extension-bridge'
-          ? '이 조회는 확장 세션을 통해 나갔으므로 "VS Code가 1402를 점유해서 실패"가 아니다.'
-          : `현재 직접 접속 경로다(${base.transport.reason}). VS Code에서 확장이 실행 중이면 extension_status로 브리지를 켜 같은 세션을 쓸 수 있다.`} `
+        verdict: reachable.verdict,
+        // 배포 잠금이 있으면 "확장이 지금 제어기와 작업 중" 이 1402 거부의 1순위 원인 후보다(개선 요청 §4) —
+        // 사용자가 창에서 Upload & Start 를 하는 동안 MCP 조회가 거부되는 것은 제어기 이상이 아니다.
+        likelyCause: base.deployLock
+          ? `확장이 배포/업로드 중(${base.deployLock.describe}) — 그동안 1402 가 거부되거나 큐가 막힐 수 있다. operation_status 로 끝나길 기다린 뒤 다시 조회할 것.`
+          // 확장이 다른 IP 에 붙어 있으면 이 직접 접속의 실패는 "그 IP 에 제어기가 없거나 다른 장치" 일 가능성이 1순위다(§1-ES).
+          : base.transport.hostMismatch
+            ? `${hostMismatchFix(base.transport.hostMismatch)} 이 조회는 GPL_HOST(${HOST})로 직접 접속한 결과라 제어기 상태의 근거가 아니다.`
+            : null,
+        hostMismatch: base.transport.hostMismatch ?? null,
+        // 실패가 확장 창 쪽(브리지 미수거·확장 세션 전송 실패)인지 제어기 1402 쪽인지 가른다(§1-EO) —
+        // 종전에는 창이 바빠 요청을 못 집어 가도 직접 접속의 ECONNREFUSED 만 보여 제어기 이상처럼 읽혔다.
+        bridge: err?.via === 'extension-bridge'
+          ? {
+            error: err.bridgeError ?? null,
+            requestId: err.requestId ?? null,
+            extensionInstanceId: base.transport.consoleRoute?.extensionInstanceId ?? null,
+            hint: err.bridgeError === 'bridge-timeout'
+              ? '확장 창이 요청을 집어 가지 않았다(브리지 순차 큐가 앞선 요청에 막혔을 가능성) — 제어기 상태가 아니라 창 상태다. operation_status·확장 Output [Bridge] 확인.'
+              : '확장 세션에서 전송이 실패했다 — 확장 Output 의 [Command] … (agent) 줄과 extension_status 의 connected 를 볼 것.',
+          }
+          : null,
+        hint: `${reachable.verdict} ${err?.via === 'extension-bridge'
+          ? '이 실패는 확장 창에서 났다(bridge 필드) — 1402 거부가 아니다.'
+          : base.transport.using === 'extension-bridge'
+            // 다른 로컬 프로세스가 포트를 잡고 있으면 "점유 아님" 으로 단정하지 않는다(§1-EU) — observations.localConnections 를 볼 것.
+            ? (reachable.observations?.localConnections?.foreignOwners?.length
+              ? '이 조회는 확장 세션을 통해 나갔지만 observations.localConnections 에 이 창이 아닌 로컬 프로세스의 ESTABLISHED 연결이 있다 — 그 점유가 1순위 원인 후보다.'
+              : '이 조회는 확장 세션을 통해 나갔으므로 "VS Code가 1402를 점유해서 실패"가 아니다(observations.localConnections 에 다른 로컬 프로세스의 연결도 없다).')
+            : `현재 직접 접속 경로다(${base.transport.reason}). VS Code에서 확장이 실행 중이면 extension_status로 브리지를 켜 같은 세션을 쓸 수 있다.`} `
           + `이 조회의 전송 결과: ${sendOutcome}. 제어기 다운/전원 재투입을 결론내지 말고 recommendedAction 을 따를 것.`,
       });
     }
@@ -803,7 +1016,8 @@ tool('extension_status',
   'VS Code GPL 확장과의 브리지 상태: 확장 실행 여부·버전·pid·제어기 연결 상태·디버그 세션 여부와, 지금 1402 명령이 ' +
   '어느 경로로 나가는지(extension-bridge / direct-tcp). **"1402를 VS Code가 점유 중"이라고 추측하지 말고 이 도구로 확인할 것** — ' +
   '브리지가 켜져 있으면 MCP 명령이 확장의 같은 세션으로 나가므로 경쟁 자체가 없다. wake=true면 확장이 비활성 상태일 때 ' +
-  'URI(code --open-url)로 활성화를 시도한다.',
+  'URI(code --open-url)로 활성화를 시도한다. available:false 에 `hostMismatch` 가 실려 오면 확장은 떠 있고 **이 MCP 의 GPL_HOST 와 ' +
+  '다른 제어기 IP 에 연결된 것**이다 — 확장 재시작·wake 가 아니라 .mcp.json 의 GPL_HOST 를 고치고 /mcp 재연결(또는 Export 재실행)이 조치다.',
   { wake: z.boolean().optional().describe('확장이 감지되지 않을 때 VS Code URI로 깨우기 시도(기본 false)') },
   async ({ wake }) => {
     const b = await currentBridge({ force: true, wake: wake === true });
@@ -825,13 +1039,22 @@ tool('extension_status',
         workspace: p.workspace ?? null,
         connected: !!p.connected,
         leader: !!p.leader,
+        bridgeHealth: bridgeHealthSummary(p),
       })),
+      // 이 제어기(GPL_HOST)를 보는 창은 없지만 다른 IP 에 살아 있는 창(§1-ES). available:false 의 원인이 "확장 미실행" 인지
+      // ".mcp.json 주소 불일치" 인지 여기서 갈린다 — null 이 아니면 확장 재시작·wake 는 소용없다.
+      hostMismatch: b.hostMismatch ?? null,
       legacyPresenceOnly: b.legacy === true,
+      bridgeHealth: bridgeHealthSummary(b.presence),
       nextStep: b.available
-        ? (instances.length > 1
-          ? `창이 ${instances.length}개다 — 1402 명령은 리더 창으로 나가지만, 배포/컴파일은 extension_resolve 로 대상 창을 특정할 것.`
+        ? (b.presence?.bridge?.bridgeStalled === true
+          ? `확장 host는 살아 있지만 요청 큐가 ${b.presence.bridge.oldestPendingRequestAgeMs ?? '?'}ms 동안 수거되지 않았다. `
+            + 'activeRequest와 pendingRequests를 확인하고, 장시간 작업이면 operation_status/wait_operation으로 결과를 기다릴 것. wake=true는 이미 실행 중인 host의 막힌 큐를 풀지 못한다.'
+          : instances.length > 1
+          ? `창이 ${instances.length}개다 — 1402 명령은 제어기에 연결된 창(transport.consoleRoute, 없으면 리더)으로 나가고, `
+            + '배포/컴파일은 extension_resolve 로 대상 창을 특정할 것.'
           : 'extension_command로 확장 기능(Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)을 그대로 사용할 수 있다.')
-        : bridgeUnavailableHint(b.reason),
+        : bridgeHint(b),
     });
   });
 
@@ -839,15 +1062,20 @@ tool('extension_list',
   '이 PC 에서 살아 있는 **VS Code 확장 인스턴스(창) 전부**를 나열한다(2026-09-10 개선안 §21). ' +
   '같은 제어기에 두 개 이상의 창이 붙어 있으면 배포/컴파일을 어느 창이 수행할지가 달라지므로, ' +
   '"확장이 하나뿐"이라고 가정하지 말고 이 도구로 확인할 것. 각 항목: extensionInstanceId · pid · workspace · ' +
-  'workspaceFolders · connected(제어기 연결) · debugSessionActive · leader(레거시 큐 담당). ' +
+  'workspaceFolders · connected(제어기 연결 — 1402 콘솔 명령은 이 창으로 나간다) · debugSessionActive · leader(레거시 큐 담당일 뿐, 콘솔 경로 기준이 아님). ' +
   '대상 창을 정하려면 extension_resolve 를 쓴다.',
   { allControllers: z.boolean().optional().describe('true면 다른 제어기를 보는 창까지 모두(기본 false — 이 제어기만)') },
   async ({ allControllers }) => {
     const instances = listExtensionInstances(allControllers === true ? undefined : HOST, {});
+    const hostMismatch = allControllers === true || instances.length > 0
+      ? null
+      : describeHostMismatch(HOST, { projectDir: sessionTarget?.dir ?? undefined });
     return textResult({
       ok: true,
       host: HOST,
       count: instances.length,
+      // 이 제어기를 보는 창은 없지만 다른 IP 에 살아 있는 창(§1-ES) — allControllers:true 면 목록 자체에 들어 있다.
+      hostMismatch,
       extensions: instances.map((p) => ({
         extensionInstanceId: p.extensionInstanceId,
         pid: p.pid,
@@ -858,10 +1086,13 @@ tool('extension_list',
         debugSessionActive: !!p.debugSessionActive,
         leader: !!p.leader,
         heartbeatAgeMs: Date.now() - p.heartbeat,
+        bridgeHealth: bridgeHealthSummary(p),
       })),
       transport: transportInfo(),
       hint: instances.length === 0
-        ? '살아 있는 인스턴스가 없다 — VS Code 에서 확장이 활성화되지 않았거나 구버전이다(구버전은 extension_status 로 확인).'
+        ? (hostMismatch
+          ? hostMismatchFix(hostMismatch)
+          : '살아 있는 인스턴스가 없다 — VS Code 에서 확장이 활성화되지 않았거나 구버전이다(구버전은 extension_status 로 확인).')
         : instances.length === 1
           ? '창이 하나뿐이라 대상이 자명하다.'
           : '창이 여럿이다 — 배포 계열은 projectDir 로 대상 창을 특정할 것(extension_resolve). 임의로 고르지 않는다.',
@@ -883,11 +1114,15 @@ tool('extension_resolve',
       return textResult({
         ...r,
         recovery: {
-          action: r.error === 'EXTENSION_AMBIGUOUS' ? 'RESOLVE_EXTENSION' : 'NONE',
+          action: r.error === 'EXTENSION_AMBIGUOUS' ? 'RESOLVE_EXTENSION'
+            : r.error === 'EXTENSION_HOST_MISMATCH' ? 'FIX_MCP_HOST' : 'NONE',
           retryCurrentCommand: false,
           detail: r.error === 'EXTENSION_AMBIGUOUS'
             ? 'projectDir 를 주거나 후보 중 하나의 extensionInstanceId 를 골라 다시 호출할 것.'
-            : 'VS Code 에서 확장이 활성화됐는지 확인할 것(extension_status wake=true).',
+            : r.error === 'EXTENSION_HOST_MISMATCH'
+              // 확장은 떠 있다 — wake 나 재시작을 요청하지 말고 .mcp.json 의 GPL_HOST 를 고치게 할 것(§1-ES).
+              ? r.detail
+              : 'VS Code 에서 확장이 활성화됐는지 확인할 것(extension_status wake=true).',
         },
       });
     }
@@ -934,17 +1169,149 @@ tool('extension_command',
     return textResult({ command, ...res, transport: transportInfo() });
   });
 
+// ── 런타임 콘솔 스트림 읽기 (2026-10-14 §1-EP) ────────────────────────────────
+// 확장이 받는 런타임 콘솔(1403) 줄을 커서 기준으로 읽는다. 서버(확장)가 `untilPattern`/`waitMs` 동안 대신 기다리므로
+// AI 가 "언제 읽을지" 를 정하려고 폴링하지 않아도 된다. 같은 줄은 확장이 파일(`captureFile`)에도 남기므로 사용자는 그 파일을
+// 통째로 열어 볼 수 있다 — 단, 상태 판단의 근거는 이 도구의 응답(라이브 스트림의 사본)이지 그 파일이 아니다(§0 하드 규칙 1 의 취지).
+tool('runtime_console_read',
+  '런타임 콘솔(1403) 출력을 **한 번에** 읽는다 — `cursor` 이후의 새 줄을 돌려주고 `nextCursor` 를 준다(다음 호출에 그대로 넘길 것). ' +
+  '`untilPattern`(정규식)을 주면 그 줄이 올 때까지(최대 waitMs) 확장이 기다렸다가 누적 줄을 한 번에 돌려준다 — ' +
+  '"프로그램이 X 를 출력할 때까지" 를 반복 조회로 확인하지 말고 이것 하나로 끝낼 것. 패턴 없이 waitMs 만 주면 새 줄이 하나라도 올 때까지 기다린다. ' +
+  '응답: {ok, lines:[{seq,at,text,project?}], nextCursor, dropped(링버퍼에서 밀려 못 본 줄 수), matched, timedOut, status(콘솔 연결 상태), captureFile}. ' +
+  '링버퍼는 최근 2000줄(확장 재시작 시 비워짐)이다 — **지난 실행(에이징 등) 이력은 `runtime_console_search`** 로 캡처 파일에서 찾을 것. ' +
+  '제어기에 명령을 보내지 않는다(확장의 수신 버퍼만 읽는다). 확장 브리지가 필요하다.',
+  {
+    cursor: z.number().int().min(0).optional().describe('이 seq 부터 읽는다(이전 응답의 nextCursor). 생략하면 — waitMs 0 이면 버퍼의 최근 maxLines 줄, waitMs 를 주면 지금부터 오는 줄'),
+    maxLines: z.number().int().min(1).max(2000).optional().describe('최대 줄 수(기본 200)'),
+    waitMs: z.number().int().min(0).max(120000).optional().describe('새 줄/패턴을 기다릴 시간(ms, 기본 0 = 지금 있는 것만)'),
+    untilPattern: z.string().optional().describe('이 정규식(대소문자 무시)에 맞는 줄이 올 때까지 기다린다. 맞으면 matched:true'),
+    extensionInstanceId: z.string().optional().describe('읽을 VS Code 창(생략하면 현재 경로 = 제어기에 연결된 창)'),
+  },
+  async ({ cursor, maxLines, waitMs, untilPattern, extensionInstanceId }) => {
+    const wait = waitMs ?? 0;
+    let res;
+    try {
+      res = await callExtension(
+        'gpl.ai.debug.runtimeConsoleRead',
+        { cursor, maxLines, waitMs: wait, untilPattern },
+        { timeoutMs: wait + 20_000, instanceId: extensionInstanceId },
+      );
+    } catch (err) {
+      return textResult({ ok: false, error: 'bridge-unavailable', detail: err?.message ?? String(err), hint: 'extension_status 로 확장 브리지를 확인할 것. 런타임 콘솔은 확장이 수신한다.' });
+    }
+    if (!res?.ok) {
+      return textResult({ ok: false, error: res?.error ?? 'bridge-failed', detail: res?.detail ?? null, transport: transportInfo() });
+    }
+    return textResult({ ...(res.result ?? {}), transport: transportInfo() });
+  });
+
+// ── 런타임 콘솔 이력 검색 (2026-10-22 Sample Prep 요청) ──────────────────────────
+// 링버퍼 밖의 지난 출력은 확장이 남기는 캡처 파일에만 있다. 사용자·AI 모두 그 파일이 있는 줄 몰라 Bash 로 %TEMP% 를 뒤졌다.
+// 같은 PC 의 파일을 이 서버가 직접 읽는다(확장 브리지·제어기 불필요). 경로 규칙과 형식은 consoleCapture.js.
+tool('runtime_console_search',
+  '런타임 콘솔(1403) **지난 출력 이력**을 확장의 캡처 파일에서 찾는다(제어기·확장 브리지 불필요, 읽기 전용). ' +
+  '"이 제어기에서 전에 에이징을 어떻게 돌렸나"처럼 링버퍼(runtime_console_read, 최근 2000줄) 밖의 기록을 볼 때 쓴다. ' +
+  `파일: %TEMP%\\gpl-controller\\runtime-console-<GPL_HOST>.log(+ 직전 .1.log, 각 2 MB 에서 교체 — 그보다 오래된 기록은 없다). ` +
+  '줄은 PC 수신 시각(UTC)·프로젝트·텍스트이고, `--- capture start / reconnected … not listening for N s / capture paused ---` 마커가 확장이 듣지 않은 구간을 알려 준다(마커가 없는 공백 = 출력이 없었음). ' +
+  '같은 IP 로 실물 제어기를 바꿔 끼우면 기록이 한 파일에 섞인다 — project 와 시각으로 가를 것. ' +
+  '응답: {ok, files:[{path,exists,bytes}], scannedLines, matchedLines, truncated, lines:[{at,project?,text,marker,file,line}]}. maxLines 를 넘으면 최근 것을 남긴다.',
+  {
+    pattern: z.string().optional().describe('정규식(대소문자 무시). 예: "Repeat (start|end)|Cycle end|ERROR". 생략하면 모든 줄'),
+    since: z.string().optional().describe('이 시각 이후(ISO 8601, 예: 2026-10-20T22:00:00+09:00)'),
+    until: z.string().optional().describe('이 시각 이전(ISO 8601)'),
+    project: z.string().optional().describe('이 프로젝트의 줄만(대소문자 무시). 마커는 항상 포함'),
+    maxLines: z.number().int().min(1).max(2000).optional().describe('최대 줄 수(기본 200)'),
+    includeMarkers: z.boolean().optional().describe('듣기 상태 마커 포함(기본 true)'),
+  },
+  async ({ pattern, since, until, project, maxLines, includeMarkers }) => {
+    const result = searchCapture({ files: captureFilesFor(HOST), pattern, since, until, project, maxLines: maxLines ?? 200, includeMarkers: includeMarkers ?? true });
+    return textResult({ host: HOST, ...result });
+  });
+
+// ── 제어기 /GPL 폴더 목록 (2026-10-14 §1-EP, 개선 요청 §8) ─────────────────────────
+// Unload 뒤에도 Free 메모리가 모자라 Start 가 -200 이던 사건의 진짜 원인은 /GPL 에 남아 있던 다른 프로젝트였다.
+// 콘솔에는 로드/잔존 프로젝트를 보는 명령이 없으므로(`Show Project` 는 -714) 확장 FTP 로 폴더 목록을 읽는다.
+tool('list_remote_projects',
+  '제어기 `/GPL`(기본) 아래 프로젝트 폴더 목록 — 이름·파일 수·바이트·최근 수정 시각과, 확장이 아는 **마지막 업로드 출처(로컬 폴더)**. ' +
+  '"Unload 했는데 메모리가 안 풀린다 / Start 가 -200" 이면 먼저 이걸로 **다른 프로젝트가 /GPL 에 남아 있는지** 볼 것(개선 요청 §8). ' +
+  '읽기 전용(FTP LIST) — 정리는 사용자 동의를 받은 뒤 `clear_remote_folder` 로 한다(/GPL 만). 확장 브리지가 필요하다.',
+  {
+    root: z.string().optional().describe('조회할 원격 루트(기본 /GPL). /flash/projects 도 가능'),
+    extensionInstanceId: z.string().optional().describe('FTP 를 열 VS Code 창(생략하면 현재 경로)'),
+  },
+  async ({ root, extensionInstanceId }) => {
+    let res;
+    try {
+      res = await callExtension('gpl.ai.debug.listRemoteProjects', { root }, { timeoutMs: 40_000, instanceId: extensionInstanceId });
+    } catch (err) {
+      return textResult({ ok: false, error: 'bridge-unavailable', detail: err?.message ?? String(err), hint: 'extension_status 로 확장 브리지를 확인할 것. FTP 는 확장만 연다.' });
+    }
+    if (!res?.ok) {
+      return textResult({ ok: false, error: res?.error ?? 'bridge-failed', detail: res?.detail ?? null, transport: transportInfo() });
+    }
+    return textResult({ ...(res.result ?? {}), transport: transportInfo() });
+  });
+
+// ── 제어기 /GPL 비우기 (2026-10-21 사용자 결정) ─────────────────────────────
+// 종전에는 "삭제는 사용자가 트리의 「/GPL 비우기」로" 였다. 이제 AI 가 사용자 동의를 받고 confirm:true 로 실행한다.
+// 확장 쪽(gpl.ai.debug.clearRemoteFolder)이 모달 없이 처리하고, 범위(/GPL 만)·flash 차단·배포 잠금·쓰레드 게이트를 강제한다.
+tool('clear_remote_folder',
+  '제어기 `/GPL`(로드 폴더)의 항목을 지운다(폴더 자체는 남는다). **두 단계로 쓴다:** ① `confirm` 없이 호출 → 지울 목록만 돌려준다(`dryRun:true`, 아무것도 지우지 않음). ' +
+  '② 그 목록을 사용자에게 보여 주고 **동의를 받은 뒤에만** `confirm:true` 와 동의받은 `names` 로 다시 호출 → 그 항목만 지운다. ' +
+  '`names` 를 생략하면 그 시점의 전부를 지운다(미리보기 뒤 생긴 항목까지) — 동의받은 목록을 넘기는 것을 권장. ' +
+  '`/flash/...` 는 되돌릴 수 없어 `AI_BLOCKED`(사용자에게 트리의 Flash 「폴더 비우기」를 요청), 그 밖의 경로는 `root-not-allowed`. ' +
+  '배포 중이면 `deploy-busy`, 쓰레드가 있으면 `threads-running`(정지도 동의를 받아 `stop_threads` 로 한 뒤 재호출), Show Thread 무응답이면 `thread-state-unknown` — 모두 지우지 않은 상태다. ' +
+  '응답: {ok, root, targets, deleted, failed:[{name,error}], missing(지정했지만 없던 이름), next}. 확장 브리지가 필요하다.',
+  {
+    names: z.array(z.string()).optional().describe('지울 항목 이름(/GPL 바로 아래 폴더·파일, 대소문자 무시). 생략하면 전부'),
+    confirm: z.boolean().optional().describe('true 일 때만 실제로 지운다 — 사용자 동의를 받은 뒤에만 넣을 것'),
+    root: z.string().optional().describe('비울 원격 폴더(기본 = 설정된 로드 폴더 /GPL). 그 밖의 경로는 거절된다'),
+    extensionInstanceId: z.string().optional().describe('FTP 를 열 VS Code 창(생략하면 현재 경로)'),
+  },
+  async ({ names, confirm, root, extensionInstanceId }) => {
+    let res;
+    try {
+      res = await callExtension('gpl.ai.debug.clearRemoteFolder', { names, confirm, root }, { timeoutMs: 120_000, instanceId: extensionInstanceId });
+    } catch (err) {
+      return textResult({ ok: false, error: 'bridge-unavailable', detail: err?.message ?? String(err), hint: 'extension_status 로 확장 브리지를 확인할 것. FTP 는 확장만 연다.' });
+    }
+    if (!res?.ok) {
+      return textResult({ ok: false, error: res?.error ?? 'bridge-failed', detail: res?.detail ?? null, transport: transportInfo() });
+    }
+    logLine(`  ${confirm ? 'clear' : 'preview'} ${res.result?.root ?? root ?? '/GPL'} — ${JSON.stringify(res.result?.deleted ?? res.result?.targets ?? [])}`);
+    return textResult({ ...(res.result ?? {}), transport: transportInfo() });
+  });
+
 // ── 자동화 대상 프로젝트 (2026-08-31 개선안 §15~§27) ──────────────────────
-// 확장의 `gpl.deploy`/`gpl.uploadStart`/`gpl.quickCompile`/`gpl.start` 는 인자로 대상을 받으면
+// 확장의 `gpl.deploy`/`gpl.uploadOnly`/`gpl.uploadStart`/`gpl.quickCompile`/`gpl.start` 는 인자로 대상을 받으면
 // **UI 를 띄우지 않고** 구조화된 결과를 돌려준다(그 전에는 QuickPick 이 열려 자동화가 멈췄다). 여기서는 그 인자를
 // 항상 채워 보내고, 대상을 세션에 고정해 배포·컴파일·실행·Unload 가 전부 같은 프로젝트로 나가게 한다.
 // (`gpl.saveToFlash` 도 같은 인자 규약이었으나 2026-09-07 부터 AI 경로에서 차단된다 — aiPolicy.js.)
 
+/** 확장 `gpl.automation.target` 성공 응답 축약 — 후보 목록은 개수만 남긴다(실패 응답의 candidates 는 그대로 올라간다). */
+function compactTargetResponse(extension) {
+  if (!extension || typeof extension !== 'object' || !Array.isArray(extension.candidates)) return extension;
+  const { candidates, ...rest } = extension;
+  return { ...rest, candidateCount: candidates.length };
+}
+
+/** 브리지 실패 응답에 싣는 창 목록 — "어느 창이 요청을 집어 가야 했는지" 를 추측하지 않게. */
+function describeInstancesForError() {
+  return listExtensionInstances(HOST, {}).map((p) => ({
+    extensionInstanceId: p.extensionInstanceId ?? null,
+    pid: p.pid,
+    version: p.extensionVersion ?? null,
+    workspace: p.workspace ?? null,
+    connected: !!p.connected,
+    leader: !!p.leader,
+  }));
+}
+
 tool('project_target',
   '이 세션의 대상 프로젝트를 조회/고정/해제한다. **작업 시작 시 한 번 고정할 것** — 이후 모든 도구(compile_project·' +
   'start_project·unload_project·deploy_project·show_thread …)가 인자를 생략해도 같은 대상을 쓴다. ' +
-  '인자 없이 부르면 현재 상태만 돌려준다: 세션 대상·출처(argument/session-target/env-default)·워크스페이스 후보 목록' +
-  '(각 후보의 runnable = `.gpr` 에 ProjectStart 가 있는 실행 가능 프로젝트인지, 라이브러리면 참조하는 프로젝트명)·설정 기본값. ' +
+  '인자 없이 부르면 현재 상태만 돌려준다: 세션 대상·출처(argument/session-target)·워크스페이스 후보 목록' +
+  '(각 후보의 runnable = `.gpr` 에 ProjectStart 가 있는 실행 가능 프로젝트인지, 라이브러리면 참조하는 프로젝트명). ' +
   '**"왜 이 프로젝트가 올라갔지"를 추론하지 말고 이 도구로 확인할 것.** ' +
   'clear=true 면 고정을 푼다. 확장 브리지가 켜져 있으면 확장 쪽 세션 대상도 함께 고정된다.',
   {
@@ -961,7 +1328,7 @@ tool('project_target',
     const b = await currentBridge();
     if (b.available) {
       try {
-        const routing = resolveExtensionInstance(HOST, { projectDir: projectDir ?? (projectFile ? path.dirname(projectFile) : undefined) ?? sessionTarget?.dir ?? CONFIGURED_TARGET.dir ?? undefined });
+        const routing = resolveExtensionInstance(HOST, { projectDir: projectDir ?? (projectFile ? path.dirname(projectFile) : undefined) ?? sessionTarget?.dir ?? undefined });
         if (!routing.ok) { throw new Error(`대상 VS Code 창을 확정할 수 없음: ${routing.error}`); }
         const res = await callExtension('gpl.automation.target', { project, projectDir, projectFile, clear }, { instanceId: routing.instance.extensionInstanceId });
         if (!res?.ok) {
@@ -999,10 +1366,14 @@ tool('project_target',
     } else if (extension?.target) {
       // 확장이 해석한 이름·폴더를 쓴다(.gpr ProjectName 이 폴더명과 다를 수 있다 — 제어기 명령 인자는 ProjectName).
       setSessionTarget(extension.target.project, { dir: extension.target.dir, verified: true, via: 'extension' });
-    } else if (CONFIGURED_TARGET.requiresResolution && (project || projectDir || projectFile)) {
+    } else if (projectDir || projectFile) {
       return textResult({
         ok: false, error: 'PROJECT_TARGET_UNVERIFIED', sent: false,
-        detail: extensionError || '작업 폴더를 확인할 확장 브리지가 없습니다. VS Code GPL 확장을 확인하고 project_target을 다시 호출하세요.',
+        // 브리지가 없는 이유를 사유대로 적는다 — 주소 불일치(§1-ES)를 "확장을 확인하라" 로 뭉개면 엉뚱한 조치로 간다.
+        detail: extensionError || (b.hostMismatch
+          ? `작업 폴더를 확인할 확장 브리지가 없습니다 — ${hostMismatchFix(b.hostMismatch)}`
+          : `작업 폴더를 확인할 확장 브리지가 없습니다(${b.reason}). ${bridgeUnavailableHint(b.reason)} 해결한 뒤 project_target을 다시 호출하세요.`),
+        hostMismatch: b.hostMismatch ?? null,
         target: sessionTarget, transport: transportInfo(),
       });
     } else if (project && project.trim()) {
@@ -1017,20 +1388,18 @@ tool('project_target',
       effectiveProject: info.project,
       effectiveTarget: sessionTarget,
       source: info.source,
-      envDefault: DEFAULT_PROJECT,
-      envProjectDir: CONFIGURED_TARGET.dir,
-      requiresResolvedTarget: CONFIGURED_TARGET.requiresResolution,
-      extension,
+      // 성공 응답에는 target 만 — 후보 전체(워크스페이스의 라이브러리까지 70개, 수천 토큰)는 PROJECT_AMBIGUOUS 때만 실린다(개선 요청 §2).
+      extension: compactTargetResponse(extension),
       extensionError,
+      // 브리지 요청이 수거되지 않았으면 어느 창이 살아 있고 어느 창이 제어기를 쥐고 있는지 함께 준다(개선 요청 §1).
+      ...(extensionError ? { extensionInstances: describeInstancesForError() } : {}),
       transport: transportInfo(),
       hint: sessionTarget
         ? `이후 도구는 project 인자를 생략하면 '${sessionTarget.project}' 를 씁니다`
           + `${sessionTarget.dir ? ` (폴더 ${sessionTarget.dir})` : ''}`
           + `${sessionTarget.verified ? '' : ' — 워크스페이스에서 확인되지 않은 이름입니다(확장 브리지 없음)'}. `
           + '다른 프로젝트는 그 호출에 project 를 직접 주세요.'
-        : CONFIGURED_TARGET.requiresResolution
-          ? '작업 대상 미확정 — 이 도구에 projectDir을 지정하고 성공 응답을 확인한 뒤 프로젝트 도구를 사용할 것.'
-          : '세션 대상이 없습니다 — 인자를 생략한 도구는 GPL_PROJECT 기본값을 씁니다. 프로젝트가 여럿이면 먼저 projectDir로 대상을 고정할 것.',
+        : '작업 대상 미확정 — 이 도구에 projectDir을 지정하고 성공 응답을 확인한 뒤 프로젝트 도구를 사용할 것.',
     });
   });
 
@@ -1072,7 +1441,22 @@ function deployOutcome(mode, command, res) {
       ms: res.ms,
     };
   }
-  return { ok: true, mode, command, result: r ?? null, ms: res.ms };
+  // Start 뒤 메인 쓰레드가 Error 로 멈춘 경우(§1-EU) — 배포는 성공이지만 프로그램은 돌지 않는다. 호출자가 result 깊숙이
+  // 들어가지 않아도 보이게 위로 올리고, "다시 배포" 가 아니라 소스/설정을 볼 일임을 적는다.
+  const runtimeError = r && typeof r === 'object' && r.runtimeError && typeof r.runtimeError === 'object' ? r.runtimeError : null;
+  return {
+    ok: true,
+    mode,
+    command,
+    ...(runtimeError ? {
+      runtimeError,
+      warning: `Start 뒤 메인 쓰레드 '${runtimeError.threadName}' 가 Error 로 멈췄다(${runtimeError.statusCode ?? '?'} ${runtimeError.statusMessage ?? ''}`
+        + `${runtimeError.file ? ` @ ${runtimeError.file}:${runtimeError.line ?? '?'}` : ''}). 업로드·컴파일·Start 는 성공했으므로 다시 배포하지 말고 `
+        + `그 위치의 코드와 제어기 설정을 볼 것.${runtimeError.hint ? ` 힌트: ${runtimeError.hint}` : ''}`,
+    } : {}),
+    result: r ?? null,
+    ms: res.ms,
+  };
 }
 
 /**
@@ -1085,6 +1469,8 @@ function deployPhaseRecovery(failedPhase) {
       return { action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: true, detail: '다른 배포가 진행 중이다(제어기에 아무것도 보내지 않았다). **다른 명령으로 우회하지 말고** operation_status 로 그 작업을 확인한 뒤 끝나고 다시 보낼 것.' };
     case 'IN_PROGRESS':
       return { action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: true, detail: '같은 요청의 배포가 이미 돌고 있다. operationId 로 결과를 확인할 것 — 다시 보내도 같은 응답이 온다.' };
+	case 'CANCELLED':
+		return { action: 'NONE', retryCurrentCommand: false, safeToRepeat: false, detail: '사용자 또는 디버그 정지 요청으로 배포가 취소됐다. 자동 재실행하지 말고 사용자의 다음 지시를 따를 것.' };
     case 'COMPILE':
       return { action: 'NONE', retryCurrentCommand: false, safeToRepeat: false, detail: '컴파일 에러다. compileErrors 의 위치를 고친 뒤 다시 배포할 것 — 되풀이해도 같은 결과다.' };
     case 'COMPILE_DEFERRED':
@@ -1107,13 +1493,15 @@ function deployPhaseRecovery(failedPhase) {
 tool('deploy_project',
   '로컬 프로젝트를 제어기에 올린다(확장 경유 — FTP 업로드는 1402 콘솔로 불가). **대상은 인자/세션 대상으로 결정되고 UI 는 뜨지 않는다.** ' +
   'mode: `build`(기본 — 정지 후 /GPL 전체 업로드 + Compile, Start 없음) · `quick`(변경분만 업로드 + Compile, 정지 생략 — 에러 확인용) · ' +
+	'`upload`(/GPL 업로드만 — Stop/Compile/Start 없음, 실행 중 프로그램 유지) · ' +
   '`upload-start`(업로드 + Start, 별도 Compile 생략 — Start 의 -compile 이 컴파일). ' +
+	'같은 제어기에 여러 요청이 들어오면 확장이 등록 순서대로 대기열에서 실행한다. ' +
   '대상을 정할 수 없으면 `{ok:false, error:"PROJECT_AMBIGUOUS", candidates:[…]}` 가 오므로 사용자에게 묻거나 project 를 지정할 것. ' +
   '미저장 편집기 문서가 있으면 `UNSAVED_FILES` 로 멈춘다(업로드는 디스크 내용을 올리므로) — 저장해도 되면 saveDirty=true. ' +
   '`upload-start` 는 로봇이 움직일 수 있어 사용자 확인이 필요하다: 확인을 받은 뒤 confirmStart=true 로 호출하지 않으면 ' +
   '`INTERACTIVE_UI_REQUIRED` 가 온다(모달을 띄우지 않는다). [upload-start 는 모션 영향 가능]',
   {
-    mode: z.enum(['build', 'quick', 'upload-start']).optional().describe('기본 build'),
+    mode: z.enum(['build', 'quick', 'upload', 'upload-start']).optional().describe('기본 build'),
     project: z.string().optional().describe('프로젝트 이름. 생략하면 세션 대상(project_target) 또는 확장의 자동 결정'),
     projectDir: z.string().optional().describe('프로젝트 폴더 경로'),
     projectFile: z.string().optional().describe('.gpr 또는 프로젝트 안의 소스 파일 경로'),
@@ -1122,16 +1510,18 @@ tool('deploy_project',
     ignoreCompileStale: z.boolean().optional().describe('컴파일 미검증 상태여도 진행'),
     timeoutMs: z.number().int().min(5000).max(600000).optional().describe('확장 명령 응답 대기(ms, 기본 240000 — 업로드+컴파일은 오래 걸린다)'),
     idempotencyKey: z.string().optional().describe('같은 키의 배포가 진행 중이면 새로 시작하지 않는다. 생략하면 (명령+대상 폴더)로 자동 생성'),
+    verbose: z.boolean().optional().describe('true면 결과 본문 원문(해시·전체 목록 포함). 기본은 축약본 — 판단에 필요한 필드는 모두 남는다'),
   },
-  async ({ mode, project, projectDir, projectFile, saveDirty, confirmStart, ignoreCompileStale, timeoutMs, idempotencyKey }) => {
+  async ({ mode, project, projectDir, projectFile, saveDirty, confirmStart, ignoreCompileStale, timeoutMs, idempotencyKey, verbose }) => {
     const m = mode ?? 'build';
-    const command = m === 'quick' ? 'gpl.quickCompile' : m === 'upload-start' ? 'gpl.uploadStart' : 'gpl.deploy';
+    const command = m === 'quick'
+		? 'gpl.quickCompile'
+		: m === 'upload' ? 'gpl.uploadOnly' : m === 'upload-start' ? 'gpl.uploadStart' : 'gpl.deploy';
+    const targetArgs = deployTargetArgs({ project, projectDir, projectFile }, sessionTarget);
     const args = {
       // 대상을 항상 명시해 보낸다 — 확장이 active editor 를 보거나 QuickPick 을 열 이유를 없앤다(§18·§22).
-      // 인자로 이름만 준 호출에는 세션 폴더를 얹지 않는다(다른 프로젝트를 가리키는 이름일 수 있다).
-      project: project ?? sessionTarget?.project ?? undefined,
-      projectDir: projectDir ?? (project ? undefined : sessionTarget?.dir ?? undefined),
-      projectFile: projectFile ?? undefined,
+      // 명시 projectDir/projectFile에는 세션의 다른 프로젝트 이름을 섞지 않는다(예: Lib 폴더 + COM_Probe 이름).
+      ...targetArgs,
       saveDirty: saveDirty === true ? true : undefined,
       confirmStart: confirmStart === true ? true : undefined,
       ignoreCompileStale: ignoreCompileStale === true ? true : undefined,
@@ -1140,9 +1530,13 @@ tool('deploy_project',
       idempotencyKey: idempotencyKey ?? undefined,
     };
     if (!args.project && !args.projectDir && !args.projectFile) {
-      // 대상 키가 하나도 없으면 확장이 "자동화 인자"로 인식하지 못해 대화형 경로로 간다 — projectDir 자리에 빈 값을
-      // 넣는 대신 project 를 환경 기본값으로 채워 보낸다(확장이 못 찾으면 PROJECT_NOT_FOUND 로 돌려준다).
-      args.project = DEFAULT_PROJECT;
+      return textResult({
+        ok: false,
+        error: 'PROJECT_TARGET_REQUIRED',
+        detail: '작업 대상이 정해지지 않았습니다. 먼저 project_target에 projectDir을 지정하고 성공 응답을 확인하세요.',
+        sent: false,
+        outcome: SEND_OUTCOME_NOT_SENT,
+      });
     }
     // 어느 창이 이 배포를 수행할지 먼저 정한다(§6). 창이 여럿인데 특정할 수 없으면 보내지 않는다 —
     // 종전에는 요청을 공용 큐에 던져 **먼저 집은 창**이 실행했고, 다른 워크스페이스의 창이 남의 배포를 할 수 있었다.
@@ -1167,6 +1561,7 @@ tool('deploy_project',
       }
       instanceId = pick.ok ? pick.instance.extensionInstanceId : undefined;
     }
+    const requestedAt = Date.now();
     let res;
     try {
       res = await callExtension(command, args, { timeoutMs: timeoutMs ?? 240_000, instanceId });
@@ -1175,15 +1570,39 @@ tool('deploy_project',
         ok: false, mode: m, command,
         error: 'bridge-unavailable',
         detail: err?.message ?? String(err),
-        hint: 'extension_status 로 확장 브리지를 확인할 것. 확장 없이는 파일 업로드가 불가하다(1402 콘솔은 Compile/Start 만 가능).',
+        hostMismatch: err?.hostMismatch ?? null,
+        hint: err?.hostMismatch
+          ? '확장은 떠 있으나 이 MCP 와 제어기 주소가 다르다(hostMismatch) — 확장 확인이 아니라 .mcp.json 의 GPL_HOST 를 고칠 일이다.'
+          : 'extension_status 로 확장 브리지를 확인할 것. 확장 없이는 파일 업로드가 불가하다(1402 콘솔은 Compile/Start 만 가능).',
       });
     }
     // 응답 대기가 끊긴 경우 — 확장이 이미 요청을 집어 갔다면 배포는 **계속 진행 중**이다.
     // 종전에는 여기서 결과가 사라져 AI 가 같은 배포를 다시 보내거나 "실패"로 보고했다(§9·§16).
     if (!res?.ok && res?.error === 'bridge-timeout') {
-      const running = listOperations({ controllerId: HOST }).find(
-        (r) => (r.state === 'RUNNING' || r.state === 'QUEUED') && (!args.projectDir || r.projectDir === args.projectDir),
-      );
+      // 응답 파일이 오지 않아도 작업 기록은 남는다 — 이 요청 뒤에 만들어진 같은 대상의 기록이 이미 끝났으면 **그 결과를
+      // 여기서 바로 돌려준다**(개선 요청 §6: 완료된 배포가 300초 타임아웃으로 보고돼 operation_status 를 두 번 더 불렀다).
+      const sameTarget = (r) => !args.projectDir || r.projectDir === args.projectDir;
+      const sinceRequest = listOperations({ controllerId: HOST })
+        .filter((r) => sameTarget(r) && r.createdAt >= requestedAt - 2000);
+      const finished = sinceRequest.find((r) => isTerminalOperationState(r.state));
+      if (finished) {
+        logLine(`  deploy 응답 유실 → 작업 기록 ${finished.operationId}(${finished.state}) 으로 복구`);
+        if (finished.state === 'COMPLETED') {
+          const name = finished.projectName || args.project;
+          setSessionTarget(name, { dir: finished.projectDir ?? args.projectDir ?? sessionTarget?.dir ?? null, verified: true, via: 'deploy' });
+        }
+        return textResult(operationDetailResult(finished, {
+          verbose: verbose === true,
+          extra: {
+            mode: m, command,
+            recoveredFrom: 'operation-record',
+            note: `확장의 응답 전달이 ${res.detail ?? 'bridge-timeout'} 로 끊겼지만 작업 기록은 이미 끝나 있어 그 결과를 돌려준다 — operation_status 재조회 불필요.`,
+            transport: transportInfo(),
+          },
+        }));
+      }
+      const running = sinceRequest.find((r) => r.state === 'RUNNING' || r.state === 'QUEUED')
+        ?? listOperations({ controllerId: HOST }).find((r) => (r.state === 'RUNNING' || r.state === 'QUEUED') && sameTarget(r));
       return textResult({
         ok: false,
         mode: m,
@@ -1196,7 +1615,8 @@ tool('deploy_project',
         operation: running ? { state: running.state, phase: running.phase, summary: describeOperation(running) } : null,
         recovery: res.sent === false
           ? { action: 'RETRY_SAME_REQUEST', retryCurrentCommand: true, detail: '확장이 요청을 집어 가지 않아 실행되지 않았다 — 같은 요청을 다시 보내도 안전하다.' }
-          : { action: 'CHECK_OPERATION', retryCurrentCommand: false, detail: '배포는 진행 중이다. **다시 배포하지 말고** operation_status 로 결과를 확인할 것.' },
+          : { action: 'CHECK_OPERATION', retryCurrentCommand: false, detail: '배포는 진행 중이다. **다시 배포하지 말고** wait_operation 으로 끝나길 한 번 기다릴 것(폴링 금지).' },
+        next: res.sent === false ? 'retry' : 'wait_operation',
         transport: transportInfo(),
       });
     }
@@ -1207,7 +1627,22 @@ tool('deploy_project',
         || args.project;
       setSessionTarget(name, { dir: args.projectDir ?? sessionTarget?.dir ?? null, verified: true, via: 'deploy' });
     }
-    return textResult({ ...out, targetSent: args, extensionInstanceId: instanceId ?? null, transport: transportInfo() });
+    // 완료 결과를 **여기서 전달했음**을 기록한다 — 같은 operationId 의 operation_status 재조회는 redundant 로 짧게 끝난다(§1-EP).
+    const opId = out.result && typeof out.result === 'object' ? out.result.operationId : null;
+    if (opId) deliveredResults.mark(opId, out.ok ? 'COMPLETED' : 'FAILED');
+    const body = verbose === true || !out.result || typeof out.result !== 'object'
+      ? out
+      : { ...out, result: compactOperationResult(out.result) };
+    return textResult({
+      ...body,
+      ...(out.ok ? {
+        next: 'none',
+        hint: '배포가 끝났고 결과는 이 응답에 다 있다 — operation_status 재조회나 Show Memory 같은 재확인 없이 다음 단계로 진행할 것.',
+      } : {}),
+      targetSent: args,
+      extensionInstanceId: instanceId ?? null,
+      transport: transportInfo(),
+    });
   });
 
 tool('diagnostic_snapshot',
@@ -1224,6 +1659,10 @@ tool('diagnostic_snapshot',
       ok: true,
       controller: { id: HOST, port: PORT },
       sessionTarget,
+      // 이 제어기를 보는 창이 없을 때 다른 IP 의 창(§1-ES) — extensions 가 비었는데 이것이 있으면 주소 불일치다.
+      hostMismatch: instances.length === 0
+        ? describeHostMismatch(HOST, { projectDir: sessionTarget?.dir ?? undefined })
+        : null,
       extensions: instances.map((p) => ({
         extensionInstanceId: p.extensionInstanceId,
         pid: p.pid,
@@ -1232,6 +1671,7 @@ tool('diagnostic_snapshot',
         connected: !!p.connected,
         debugSessionActive: !!p.debugSessionActive,
         leader: !!p.leader,
+        bridgeHealth: bridgeHealthSummary(p),
       })),
       deployLock: lock
         ? {
@@ -1252,7 +1692,7 @@ tool('diagnostic_snapshot',
       reading: [
         instances.length > 1 ? `창이 ${instances.length}개다 — 배포 대상 창을 extension_resolve 로 특정할 것.` : null,
         lock && !lock.operationId ? '잠금 레코드가 구버전(작업 id 없음)이다 — 확장을 갱신하면 어느 작업이 잡고 있는지 보인다.' : null,
-        active.length > 0 ? `진행 중 작업 ${active.length}건 — 새 배포는 잠금에 막힌다. operation_status 로 확인할 것.` : null,
+        active.length > 0 ? `진행·대기 작업 ${active.length}건 — 새 배포 요청은 대기열 뒤에 등록된다. operation_status 로 순서를 확인할 것.` : null,
         sessionTarget && !sessionTarget.verified ? '세션 대상이 워크스페이스에서 확인되지 않은 이름이다(확장 브리지 없이 고정됨).' : null,
       ].filter(Boolean),
     });
@@ -1269,8 +1709,9 @@ tool('operation_status',
     operationId: z.string().optional().describe('조회할 작업 id(deploy_project 응답의 operationId)'),
     activeOnly: z.boolean().optional().describe('true면 진행 중인 것만'),
     limit: z.number().int().min(1).max(100).optional().describe('목록 개수(기본 10)'),
+    verbose: z.boolean().optional().describe('true면 기록 원문(projectDir·pid·host·해시 포함). 기본은 축약본 + 결과 요약 한 줄'),
   },
-  async ({ operationId, activeOnly, limit }) => {
+  async ({ operationId, activeOnly, limit, verbose }) => {
     if (operationId) {
       const rec = readOperation(operationId);
       if (!rec) {
@@ -1282,42 +1723,97 @@ tool('operation_status',
           recovery: { action: 'CHECK_OPERATION', retryCurrentCommand: false, detail: 'operation_status 를 인자 없이 불러 최근 작업 목록을 확인하거나, show_threads 로 제어기 상태를 관측할 것.' },
         });
       }
-      return textResult({ ok: true, operation: rec, summary: describeOperation(rec), recovery: operationRecovery(rec) });
+      return textResult(operationDetailResult(rec, { verbose: verbose === true }));
     }
     const all = listOperations({ controllerId: HOST }).filter((r) => activeOnly !== true || r.state === 'RUNNING' || r.state === 'QUEUED');
     const shown = all.slice(0, limit ?? 10);
+    const running = shown.filter((r) => r.state === 'RUNNING' || r.state === 'QUEUED');
     return textResult({
       ok: true,
       controllerId: HOST,
       count: all.length,
-      operations: shown.map((r) => ({
-        operationId: r.operationId,
-        type: r.type,
-        state: r.state,
-        phase: r.phase,
-        projectName: r.projectName ?? null,
-        projectDir: r.projectDir ?? null,
-        extensionInstanceId: r.extensionInstanceId ?? null,
-        createdAt: r.createdAt,
-        finishedAt: r.finishedAt ?? null,
-        summary: describeOperation(r),
-      })),
-      hint: shown.some((r) => r.state === 'RUNNING')
-        ? '진행 중인 작업이 있다 — 새 배포를 보내면 배포 잠금에 막힌다. 끝날 때까지 이 도구로 확인할 것.'
-        : '진행 중인 작업이 없다.',
+      // 목록 항목에 결과 요약 한 줄(uploaded/compileErrors/inSync)이 있어 상세 재조회가 필요 없다(개선 요청 §7).
+      operations: shown.map((r) => (verbose === true
+        ? { ...compactOperation(r), projectDir: r.projectDir ?? null, extensionInstanceId: r.extensionInstanceId ?? null, pid: r.pid, host: r.host }
+        : compactOperation(r))),
+      next: running.length > 0 ? 'wait_operation' : 'none',
+      hint: running.length > 0
+        ? `진행·대기 중 ${running.length}건 — 새 배포 요청은 대기열 뒤에 등록된다. 반복 조회 대신 wait_operation({ operationId: "${running[0].operationId}" }) 으로 끝나길 한 번 기다릴 것.`
+        : '진행 중인 작업이 없다. 완료 결과의 본문이 필요하면 operationId 로 한 번만 조회할 것(이미 받은 결과는 redundant 로 돌아온다).',
     });
+  });
+
+tool('wait_operation',
+  '배포·컴파일 작업이 **끝날 때까지 서버가 대신 기다렸다가** 결과를 한 번에 돌려준다(폴링 금지 — operation_status 를 반복 호출하지 말 것). ' +
+  '`operationId` 생략 시 진행 중인 최신 작업. 끝나면 operation_status 상세와 같은 모양(result·recovery·next), ' +
+  'timeoutMs 안에 안 끝나면 `{ok:false, error:"WAIT_TIMEOUT", operation}` 로 현재 상태를 준다(실패가 아니다 — 다시 wait_operation). ' +
+  'UNKNOWN(작업 프로세스 생존 신호 끊김)이면 즉시 반환한다.',
+  {
+    operationId: z.string().optional().describe('기다릴 작업 id. 생략하면 이 제어기의 진행 중 작업 중 최신 것'),
+    timeoutMs: z.number().int().min(1000).max(600000).optional().describe('최대 대기(ms, 기본 120000)'),
+    pollMs: z.number().int().min(100).max(10000).optional().describe('기록 파일 확인 간격(ms, 기본 500) — 제어기에는 아무것도 보내지 않는다'),
+    verbose: z.boolean().optional().describe('true면 기록 원문'),
+  },
+  async ({ operationId, timeoutMs, pollMs, verbose }) => {
+    let id = operationId;
+    if (!id) {
+      const active = listOperations({ controllerId: HOST }).find((r) => r.state === 'RUNNING' || r.state === 'QUEUED');
+      if (!active) {
+        const latest = listOperations({ controllerId: HOST })[0];
+        return textResult(latest
+          ? operationDetailResult(latest, { verbose: verbose === true, extra: { note: '진행 중인 작업이 없어 최신 완료 작업을 돌려준다.' } })
+          : { ok: false, error: 'NO_OPERATION', detail: '이 제어기의 작업 기록이 없다.', next: 'none' });
+      }
+      id = active.operationId;
+    }
+    const deadline = Date.now() + (timeoutMs ?? 120_000);
+    const interval = pollMs ?? 500;
+    let rec = readOperation(id);
+    if (!rec) {
+      return textResult({ ok: false, error: 'OPERATION_UNKNOWN', operationId: id, detail: `작업 '${id}' 기록이 없다.`, next: 'none' });
+    }
+    const t0 = Date.now();
+    while (!isTerminalOperationState(rec.state) && rec.state !== 'UNKNOWN' && Date.now() < deadline) {
+      await sleep(Math.min(interval, Math.max(0, deadline - Date.now())));
+      rec = readOperation(id) ?? rec;
+    }
+    const waitedMs = Date.now() - t0;
+    if (!isTerminalOperationState(rec.state) && rec.state !== 'UNKNOWN') {
+      return textResult({
+        ok: false,
+        error: 'WAIT_TIMEOUT',
+        operationId: id,
+        waitedMs,
+        operation: verbose === true ? rec : compactOperationRecord(rec),
+        summary: describeOperation(rec),
+        recovery: operationRecovery(rec),
+        next: 'wait_operation',
+        hint: `${Math.round(waitedMs / 1000)}초 안에 끝나지 않았다(${rec.phase}). 실패가 아니다 — 같은 인자로 wait_operation 을 다시 부를 것.`,
+      });
+    }
+    return textResult(operationDetailResult(rec, { verbose: verbose === true, extra: { waitedMs } }));
   });
 
 // ── 컴파일/실행 ───────────────────────────────────────────────────────────
 tool('compile_project',
   '프로젝트를 컴파일한다(Compile) — 에러 확인용. 성공/실패는 STATUS로만 판정하고, 실패 시 에러 라인을 파싱해 돌려준다. ' +
   '실행이 목적이면 이 도구 대신 start_project만 호출할 것(start_project가 -compile로 컴파일까지 한다 — Compile 직후 Start 연속 호출 금지).',
-  { project: z.string().optional().describe(`프로젝트명(기본 ${DEFAULT_PROJECT})`) },
+  { project: z.string().optional().describe('프로젝트명. 생략하면 project_target으로 고정한 세션 대상') },
   async ({ project }) => {
-    const raw = await sendGuarded(`Compile ${proj(project)}`, { timeoutMs: Math.max(TIMEOUT, 60000) });
+    const raw = await sendGuarded(`Compile ${proj(project)}`, compilerCommandOptions(TIMEOUT));
     const status = parseStatus(raw);
     const { errors, aggregate } = parseCompileErrors(raw);
-    return textResult({ command: `Compile ${proj(project)}`, ok: isSuccess(status), status, errorCount: errors.length, errors, aggregate });
+    const confirmed = controllerResponseOutcome(status) === 'completed';
+    return textResult({
+      command: `Compile ${proj(project)}`,
+      ok: confirmed && isSuccess(status),
+      outcome: confirmed ? 'completed' : SEND_OUTCOME_UNKNOWN,
+      status,
+      errorCount: errors.length,
+      errors,
+      aggregate,
+      ...(!confirmed ? { hint: 'Compile 응답이 </STATUS> 없이 끝나 결과 미확정이다. 같은 Compile을 자동 재전송하지 말고 응답 경로를 먼저 복구할 것.' } : {}),
+    });
   });
 
 tool('start_project',
@@ -1336,22 +1832,207 @@ tool('start_project',
       : `Start ${proj(project)} -compile -event`;
     // -compile 이 붙은 Start 는 제어기에서 컴파일까지 돌리므로 응답이 Compile 과 같다(pass 사이 수 초 침묵).
     // 기본 타임아웃(15 s)으로 받으면 compiler pass 도중 끊겨 결과 미확정이 된다 — compile_project 와 같은 상한을 쓴다.
-    return textResult(await runCommand(cmd, { timeoutMs: Math.max(TIMEOUT, 60000) }));
+    return textResult(await runCommand(cmd, compilerCommandOptions(TIMEOUT)));
   });
 
 tool('unload_project',
-  '프로젝트를 메모리에서 제거한다(Unload). ' +
+  '프로젝트를 메모리에서 제거한다(Unload). 보내기 전에 Show Thread -web 로 **그 프로젝트의 활성 쓰레드**를 확인하고, 있으면 ' +
+  '-750 이 뻔하므로 보내지 않고 목록과 함께 거부한다(refused:"threads-active") — 먼저 stop_threads({ project }) 로 멈출 것. ' +
+  '`Stop <project>` 는 동명 쓰레드 하나만 멈추므로 다른 이름의 쓰레드(LOG_SOCKET 등)가 남아 -750 이 반복되는 것이 전형이다(2026-10-14 실측). ' +
   '**응답이 없어 타임아웃하면 실패가 아니라 결과 미확정(outcome="unknown")으로 돌아온다** — 제어기가 실행했을 수도 있다. ' +
   '실측 2026-08-31: Unload 타임아웃 뒤 약 2.5분간 1402 새 연결이 거부되다가 재부팅 없이 정상 복귀했다. ' +
   '그 사이의 ECONNREFUSED를 제어기 다운의 증거로 쓰지 말고, 같은 명령을 곧바로 재전송하지 말 것 — ' +
   'recommendedAction(wait-and-probe)대로 기다린 뒤 show_threads / controller_status 로 관측할 것. ' +
-  '오래 걸릴 수 있으므로 필요하면 timeoutMs를 크게 줄 것(기본은 GPL_TIMEOUT_MS).',
+  '오래 걸릴 수 있으므로 필요하면 timeoutMs를 크게 줄 것(기본은 GPL_TIMEOUT_MS). ' +
+  'Unload 로 풀리는 메모리도 있다 — 2026-10-14 실측: 쓰레드를 다 멈춰도 Free 0.6 Mb 이던 것이 Unload 뒤 4.4 Mb(로드된 프로젝트가 쥔 힙).',
   {
     project: z.string().optional(),
     timeoutMs: z.number().int().min(1000).max(600000).optional()
       .describe('응답 대기(ms). 생략하면 GPL_TIMEOUT_MS(기본 15000). Unload가 느린 환경이면 크게 줄 것'),
+    skipThreadCheck: z.boolean().optional()
+      .describe('true 면 사전 쓰레드 확인 없이 바로 보낸다(Show Thread 의 project 열이 믿기 어려운 경우에만)'),
   },
-  async ({ project, timeoutMs }) => textResult(await runCommand(`Unload ${proj(project)}`, timeoutMs ? { timeoutMs } : undefined)));
+  async ({ project, timeoutMs, skipThreadCheck }) => {
+    const name = proj(project);
+    if (!skipThreadCheck) {
+      // 읽기 전용 1회 — 실패하면(연결 등) 사전 확인 없이 진행한다. 거부는 제어기의 -750 이 대신한다.
+      const probe = await listThreads().catch(() => null);
+      if (probe?.ok) {
+        const active = probe.threads.filter((t) => isActiveThread(t) && sameName(t.project, name));
+        if (active.length > 0) {
+          return textResult({
+            ok: false, refused: 'threads-active', project: name, sent: false, outcome: SEND_OUTCOME_NOT_SENT,
+            activeThreads: active.map(compactThread),
+            hint: `Unload 는 프로젝트의 쓰레드가 하나라도 활성이면 -750 으로 거부된다. 먼저 stop_threads({ project: "${name}" }) 로 ` +
+              `위 쓰레드(${active.map((t) => t.name).join(', ')})를 멈춘 뒤 다시 호출할 것 — controller_command("Stop ${name}") 은 ` +
+              '이름이 같은 쓰레드 하나만 멈춘다.',
+          });
+        }
+      }
+    }
+    return textResult(await runCommand(`Unload ${name}`, timeoutMs ? { timeoutMs } : undefined));
+  });
+
+// ── 정지(Stop) ────────────────────────────────────────────────────────────
+// 제어기의 `Stop <이름>` 은 **쓰레드 이름** 단위다 — `Stop MergeCode` 는 이름이 MergeCode 인 쓰레드 하나만 멈추고,
+// 프로젝트가 `New Thread(…, "LOG_SOCKET")` 처럼 다른 이름으로 띄운 쓰레드는 그대로 Running 으로 남는다(2026-10-14 실측:
+// 그 상태의 `Unload` 는 -750 "Invalid when thread active" 가 반복됐고, `Stop -all` 한 번에 즉시 정지했다).
+// 그래서 이 도구는 프로젝트 단위 요청을 Show Thread -web 로 열거한 쓰레드 이름별 Stop 으로 풀어 보내고,
+// STATUS 0/-752(접수)를 정지 완료로 보지 않고 Show Thread -web 폴링으로 확인한다 — 확장 controller/threadStop.ts 와
+// 같은 규약(접수 → settle → 1회 자동 재시도). GPL 에는 강제 kill 이 없으므로 재시도 뒤에도 남으면 진단으로 넘긴다.
+const SETTLED_STATES = new Set(['Idle', 'Stopped', 'Error']);
+const STOP_ACCEPTED_STATUS = new Set([0, -752]); // -752 "Timeout stopping thread" = 정지 진행 중(비치명)
+const STOP_SETTLE_TIMEOUT_MS = 8000;
+const STOP_SETTLE_POLL_MS = 300;
+
+const sameName = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+const isActiveThread = (t) => !SETTLED_STATES.has(t.state);
+
+/** `Show Thread -web` 1회 → 구조화 목록. STATUS 실패면 `ok:false`(목록은 비움 — "쓰레드 없음"으로 읽지 말 것). */
+async function listThreads() {
+  const raw = await sendGuarded('Show Thread -web');
+  const status = parseStatus(raw);
+  if (!isSuccess(status)) return { ok: false, status, threads: [] };
+  return { ok: true, status, threads: parseThreadList(raw).threads };
+}
+
+/** 정지 대상 결정 — thread 명시 > project 범위(열거된 활성 쓰레드) > 전체(`-all`). `names:null` 은 전체. */
+async function resolveStopTargets({ thread, project }) {
+  if (thread) return { mode: 'thread', ...partitionStopTargets([thread]) };
+  if (project) {
+    const probe = await listThreads();
+    if (!probe.ok) return { mode: 'project', error: probe };
+    const names = probe.threads.filter((t) => isActiveThread(t) && sameName(t.project, project)).map((t) => t.name);
+    return { mode: 'project', ...partitionStopTargets(names), listed: probe.threads.map(compactThread) };
+  }
+  return { mode: 'all', commands: ['Stop -all'], names: null, skipped: [] };
+}
+
+/** 대상 쓰레드가 모두 정착(Idle/Stopped/Error 또는 목록에서 사라짐)할 때까지 폴링. */
+async function waitThreadsSettle(names, { timeoutMs = STOP_SETTLE_TIMEOUT_MS, pollMs = STOP_SETTLE_POLL_MS } = {}) {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let last = null;
+  for (;;) {
+    const probe = await listThreads().catch(() => null);
+    if (probe?.ok) {
+      last = probe.threads;
+      const remaining = probe.threads.filter((t) => isActiveThread(t)
+        && (names === null || names.some((n) => sameName(n, t.name))));
+      if (remaining.length === 0) return { settled: true, unconfirmed: false, remaining: [], threads: probe.threads };
+      if (Date.now() >= deadline) return { settled: false, unconfirmed: false, remaining: remaining.map(compactThread), threads: probe.threads };
+    } else if (Date.now() >= deadline) {
+      // 응답을 못 받았다 — "정지됐다"고 단정하지 않는다.
+      return { settled: false, unconfirmed: true, remaining: [], threads: last ?? [] };
+    }
+    await sleep(pollMs);
+  }
+}
+
+tool('stop_threads',
+  '쓰레드를 정지한다(Stop) — 접수(STATUS 0/-752)와 정지 완료를 구분해 Show Thread -web 폴링으로 확인하고, 미정착이면 1회 자동 재전송한다. ' +
+  '범위: thread → `Stop <thread>` 하나 · project → 그 프로젝트(Show Thread 의 project 열)의 활성 쓰레드를 열거해 이름별 Stop · 둘 다 생략 → `Stop -all`. ' +
+  '범위를 생략한 전체 정지는 같은 제어기의 실행 중·대기 중 업로드/배포에도 취소를 요청해 이후 Compile/Start를 막는다. ' +
+  '**제어기의 `Stop <이름>` 은 프로젝트가 아니라 쓰레드 이름 단위다** — `Stop MergeCode` 는 이름이 MergeCode 인 쓰레드만 멈추고, ' +
+  '프로젝트가 다른 이름(`New Thread(…, "LOG_SOCKET")`)으로 띄운 쓰레드는 Running 으로 남아 Unload/Compile 이 -750 으로 거부된다(2026-10-14 실측). ' +
+  '프로젝트 전체를 멈출 때는 controller_command("Stop <project>") 대신 이 도구를 project 범위 또는 전체로 쓸 것. ' +
+  '단, 공식 Stop 구문에는 쓰레드 이름의 따옴표/이스케이프 형식이 없고 `TCPCLI[0]` 같은 대괄호 이름은 실기에서 -712였다. ' +
+  '그런 이름은 임의 문법으로 보내지 않고 `skipped`로 보고하며, 전체 정지가 필요하면 사용자가 범위 없는 호출(Stop -all)을 명시해야 한다. ' +
+  'GPL 에는 강제 kill 이 없다 — 재시도 뒤에도 남는 쓰레드는 블로킹 I/O(Read/ReadLine)나 탈출 조건 없는 루프일 수 있으니 ' +
+  'extension_command("gpl.controller.diagnoseStuckThread") 로 진단할 것(복구 후보만 제시, 자동 전송 없음). [정지 명령 — 돌던 프로그램·모션을 멈춘다]',
+  {
+    thread: z.string().optional().describe('쓰레드 이름(Show Thread 의 name 열). project 와 동시 지정 불가'),
+    project: z.string().optional().describe('이 프로젝트(Show Thread 의 project 열)의 활성 쓰레드 전부. thread 와 동시 지정 불가'),
+    timeoutMs: z.number().int().min(500).max(60000).optional()
+      .describe(`정지 확인 폴링 상한(ms, 기본 ${STOP_SETTLE_TIMEOUT_MS}). 자동 재시도 1회에도 같은 값을 쓴다`),
+  },
+  async ({ thread, project, timeoutMs }) => {
+    const threadName = thread?.trim() || undefined;
+    const projectName = project?.trim() || undefined;
+    if (threadName && projectName) {
+      return textResult({ ok: false, error: 'invalid-args', detail: 'thread 와 project 는 동시에 줄 수 없다', sent: false, outcome: SEND_OUTCOME_NOT_SENT });
+    }
+    const target = await resolveStopTargets({ thread: threadName, project: projectName });
+    if (target.error) {
+      return textResult({ ok: false, error: 'thread-list-failed', status: target.error.status, sent: false, outcome: SEND_OUTCOME_NOT_SENT,
+        hint: 'Show Thread -web 가 실패해 대상을 열거하지 못했다. 전체 정지가 목적이면 범위 없이(= Stop -all) 다시 호출할 것.' });
+    }
+    if (target.commands.length === 0 && target.skipped?.length > 0) {
+      return textResult({
+        ok: false,
+        error: 'unsupported-thread-name',
+        mode: target.mode,
+        sent: [],
+        skipped: target.skipped,
+        outcome: SEND_OUTCOME_NOT_SENT,
+        hint: 'PA Stop 문법에서 이 이름을 표현할 따옴표/이스케이프 형식을 확인하지 못해 보내지 않았다. 전체 정지가 의도라면 사용자가 범위 없는 stop_threads() (= Stop -all)를 명시해야 한다.',
+      });
+    }
+    if (target.commands.length === 0) {
+      return textResult({ ok: true, mode: target.mode, alreadySettled: true, sent: [], threads: target.listed,
+        hint: `프로젝트 ${projectName} 의 활성 쓰레드가 없다 — 보낼 Stop 이 없다. threads 의 project 열에 다른 이름으로 올라 있지 않은지 확인할 것.` });
+    }
+    const cancellations = target.mode === 'all'
+      ? requestActiveDeployCancellation('MCP stop_threads 전체 정지 요청')
+      : [];
+    const cancellationInfo = cancellations.length
+      ? { cancelledOperationIds: cancellations.map((request) => request.operationId) }
+      : {};
+    const settleOpts = timeoutMs ? { timeoutMs } : {};
+    const sent = [];
+    let settle = null;
+    let attempt = 0;
+    for (attempt = 1; attempt <= 2; attempt++) {
+      for (const command of target.commands) {
+        const r = await runCommand(command);
+        const code = r.status?.code;
+        sent.push({ attempt, command, status: r.status ?? null, ...(r.outcome && r.outcome !== 'completed' ? { outcome: r.outcome, error: r.error } : {}) });
+        if (code === undefined || code === null || r.outcome === SEND_OUTCOME_UNKNOWN || r.status?.complete === false) {
+          // 전송 실패/타임아웃 — 결과 미확정. 같은 명령을 더 보내지 않고 그대로 알린다.
+          return textResult({ ok: false, error: 'stop-not-confirmed', mode: target.mode, attempts: attempt, sent, settled: false, ...cancellationInfo,
+            skipped: target.skipped ?? [], outcome: r.outcome ?? SEND_OUTCOME_UNKNOWN,
+            hint: r.hint ?? r.recommendedAction ?? 'show_threads 로 상태를 관측한 뒤 판단할 것.' });
+        }
+        if (!STOP_ACCEPTED_STATUS.has(code)) {
+          return textResult({ ok: false, error: 'stop-rejected', mode: target.mode, attempts: attempt, sent, settled: false, skipped: target.skipped ?? [], outcome: 'completed', ...cancellationInfo,
+            threads: target.listed ?? [],
+            threadsSample: "before-stop",
+            hint: `제어기가 ${command} 를 STATUS ${code} 로 거부했다 — 쓰레드 이름을 확인하세요. [] 또는 :가 든 이름은 이름별 Stop에서 지원되지 않습니다. 전체 정지는 사용자 의도를 확인한 뒤 별도로 요청하세요.` });
+        }
+      }
+      settle = await waitThreadsSettle(target.names, settleOpts);
+      if (settle.settled) {
+        if (target.skipped?.length > 0) {
+          return textResult({
+            ok: false,
+            error: 'threads-skipped',
+            partial: true,
+            mode: target.mode,
+            attempts: attempt,
+            sent,
+            settled: true,
+            skipped: target.skipped,
+            threads: settle.threads.map(compactThread),
+            ...cancellationInfo,
+            hint: '표현 가능한 쓰레드는 정지됐지만 대괄호·콜론 등 콘솔 문법으로 표현할 수 없는 이름은 건너뛰었다. 전체 정지는 사용자 의도를 확인한 뒤 stop_threads()로 별도 요청할 것.',
+          });
+        }
+        return textResult({ ok: true, mode: target.mode, attempts: attempt, sent, settled: true, skipped: [], threads: settle.threads.map(compactThread), ...cancellationInfo });
+      }
+      if (settle.unconfirmed) break;
+    }
+    const remainingNames = (settle?.remaining ?? []).map((t) => t.name).join(', ');
+    return textResult({
+      ok: false, error: settle?.unconfirmed ? 'settle-unconfirmed' : 'threads-still-active',
+      mode: target.mode, attempts: Math.min(attempt, 2), sent, settled: false, unconfirmed: !!settle?.unconfirmed,
+      remaining: settle?.remaining ?? [],
+      skipped: target.skipped ?? [],
+      ...cancellationInfo,
+      hint: settle?.unconfirmed
+        ? 'Stop 은 접수됐으나 Show Thread 응답이 없어 정지를 확인하지 못했다 — 정지됐다고 단정하지 말고 controller_status 로 관측할 것.'
+        : `Stop 을 2회 보냈는데도 활성 쓰레드가 남았다(${remainingNames}). GPL 에 강제 kill 은 없다 — ` +
+          'extension_command("gpl.controller.diagnoseStuckThread") 로 정지 위치·블로킹 호출·복구 후보(Execute <스트림>.Close())를 받고, 보낼지는 사용자에게 물을 것.',
+    });
+  });
 
 // ── 실행 제어(디버그) ─────────────────────────────────────────────────────
 tool('pause_thread',
@@ -1388,6 +2069,7 @@ tool('continue_thread',
       });
     }
     const r = await runCommand(`Continue ${thread}${ignoreErrors ? ' -noerror' : ''}`);
+    if (String(before?.state).toLowerCase() === 'error') { r.warning = 'GPL 4.2K5 실측: Error 정지 후 Continue는 이미 실행한 Finally를 다시 실행할 수 있습니다. Catch 후 재던지기도 같습니다. 종료가 목적이면 Stop을 사용하세요.'; }
     if (!r.ok) return textResult(r);
     const wait = await waitForThreadPause(thread, {
       timeoutMs: waitForStopMs ?? 3000,
@@ -1560,7 +2242,12 @@ tool('debug_snapshot',
       .describe('true면 정지 스레드의 해당 프레임 변수 전체 덤프(`Show Variable <thread> <frame>`, 이름 생략)를 원문으로 포함 — Brooks 문서상 구문, 실기기 미검증. 어떤 이름이 있는지 몰라 evals 이름을 추측하는 왕복을 없애는 용도'),
   },
   async ({ thread, evals, frame, listLocals }) => {
-    const raw = await sendGuarded('Show Thread -web');
+    let raw;
+    try {
+      raw = await sendGuarded('Show Thread -web');
+    } catch (err) {
+      return textResult({ ...commandFailureResult('Show Thread -web', err), transport: transportInfo() });
+    }
     const status = parseStatus(raw);
     const { threads } = parseThreadList(raw);
     const result = { ok: isSuccess(status), status, summary: summarizeThreads(threads), threads: threads.map(compactThread) };
@@ -1593,7 +2280,14 @@ tool('show_threads',
   'verbose=true일 때만 원문 줄(rawLines)과 열 배열(fields)을 함께 준다(기본은 compact — 토큰 절약).',
   { verbose: z.boolean().optional().describe('원문 줄·fields 포함') },
   async ({ verbose }) => {
-    const raw = await sendGuarded('Show Thread -web');
+    // 연결 실패도 controller_command 와 같은 구조(ok:false·outcome·recommendedAction)로 — 문자열 ERROR 로 떨어지면
+    // 호출자가 "제어기 다운" 으로 읽는다(개선 요청 §5).
+    let raw;
+    try {
+      raw = await sendGuarded('Show Thread -web');
+    } catch (err) {
+      return textResult({ ...commandFailureResult('Show Thread -web', err), transport: transportInfo() });
+    }
     const status = parseStatus(raw);
     const { threads, rawLines } = parseThreadList(raw);
     return textResult({
@@ -1636,7 +2330,7 @@ tool('set_variable',
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`[gpl-controller-mcp] ready — ${BUILD_LABEL} — target ${HOST}:${PORT}, default project "${DEFAULT_PROJECT}"`);
+  console.error(`[gpl-controller-mcp] ready — ${BUILD_LABEL} — target ${HOST}:${PORT}, project target is session-scoped`);
   // 시작 시 확장 브리지 상태를 한 줄 알린다(깨우지는 않는다 — 사용자가 VS Code를 열지 않았을 수 있으므로).
   void currentBridge({ force: true }).then((b) => {
     console.error(b.available
@@ -1647,7 +2341,7 @@ async function main() {
     console.error(`[gpl-controller-mcp] session log: ${LOG_FILE}`);
     console.error(`[gpl-controller-mcp] 실시간 관찰: Get-Content "${LOG_FILE}" -Wait`);
   }
-  logLine(`session start — ${BUILD_LABEL} — target ${HOST}:${PORT}, project "${DEFAULT_PROJECT}", idleClose ${IDLE_CLOSE}ms`);
+  logLine(`session start — ${BUILD_LABEL} — target ${HOST}:${PORT}, project target session-scoped, idleClose ${IDLE_CLOSE}ms`);
 }
 
 main().catch((err) => {

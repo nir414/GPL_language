@@ -45,6 +45,10 @@ export interface RemoteProjectPathCandidate {
     basePath: string;
     projectPath: string;
     exists: boolean;
+    /** 목록 조회 결과. `unconfirmed`를 `missing`으로 오인해 다른 경로를 고르면 안 된다. */
+    probeStatus: 'exists' | 'missing' | 'unconfirmed';
+    /** 조회 실패 원문(로그/사용자 안내용). */
+    probeError?: string;
     rank: number;
 }
 
@@ -55,6 +59,8 @@ export interface RemoteProjectPathChoice {
     candidates: RemoteProjectPathCandidate[];
     /** 사용자가 고른 경로와 다른 곳을 골랐는가(로그로 알려야 한다). */
     switched: boolean;
+    /** 선택된 후보의 목록 조회가 성공했는가. false면 호출부는 Load/업로드를 중단해야 한다. */
+    confirmed: boolean;
 }
 
 const RANK_EXISTS = 200;
@@ -87,16 +93,28 @@ export async function resolveRemoteProjectPath(
     for (const basePath of bases) {
         const projectPath = `${basePath}/${name}`;
         let exists = false;
+        let probeStatus: RemoteProjectPathCandidate['probeStatus'] = 'missing';
+        let probeError: string | undefined;
         try {
             const entries = await opts.listDir(basePath);
             exists = entries.some(e => e.isDirectory && sameePath(e.name.trim(), name));
-        } catch {
-            // 조회 실패는 "없음"이 아니라 "확인 못 함"이다 — 후보에서 빼지 않고 점수만 주지 않는다.
+            probeStatus = exists ? 'exists' : 'missing';
+        } catch (error: any) {
+            // 조회 실패는 "없음"이 아니라 "확인 못 함"이다. 모든 후보가 이 상태면 호출부가 작업을 중단한다.
+            probeStatus = 'unconfirmed';
+            probeError = error?.message || String(error);
         }
         const rank = (exists ? RANK_EXISTS : 0)
             + (flashBase && sameePath(basePath, flashBase) ? RANK_FLASH : 0)
             + (selected && sameePath(projectPath, selected) ? RANK_SELECTED : 0);
-        candidates.push({ basePath, projectPath, exists, rank });
+        candidates.push({
+            basePath,
+            projectPath,
+            exists,
+            probeStatus,
+            ...(probeError ? { probeError } : {}),
+            rank,
+        });
     }
 
     candidates.sort((a, b) => b.rank - a.rank);
@@ -104,6 +122,7 @@ export async function resolveRemoteProjectPath(
         basePath: normalizeBase(opts.gplBasePath),
         projectPath: `${normalizeBase(opts.gplBasePath)}/${name}`,
         exists: false,
+        probeStatus: 'unconfirmed' as const,
         rank: 0,
     };
 
@@ -112,10 +131,11 @@ export async function resolveRemoteProjectPath(
         projectPath: chosen.projectPath,
         candidates,
         switched: selected.length > 0 && !sameePath(chosen.projectPath, selected),
+        confirmed: chosen.probeStatus !== 'unconfirmed',
     };
 }
 
 /** 로그 한 줄용 — `경로 (exists)` 나열. */
 export function describeRemotePathCandidates(candidates: readonly RemoteProjectPathCandidate[]): string[] {
-    return candidates.map(c => `${c.projectPath}${c.exists ? ' (exists)' : ''}`);
+    return candidates.map(c => `${c.projectPath}${c.exists ? ' (exists)' : c.probeStatus === 'unconfirmed' ? ' (unconfirmed)' : ''}`);
 }

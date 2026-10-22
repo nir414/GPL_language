@@ -11,7 +11,8 @@
  * pid/heartbeat로 죽은 보유자는 자동 만료시킨다(강제 해제 버튼을 두지 않는 근거).
  *
  * 파일 계약 — controller-mcp/src/deployLock.js(읽기 전용 구현)와 반드시 동일하게 유지:
- *   { "version": 1, "owner": string, "stage": string, "since": ms, "heartbeat": ms, "pid": number, "host": string }
+ *   { "version": 2, "owner": string, "stage": string, "since": ms, "heartbeat": ms, "pid": number, "host": string,
+ *     "operationId"?: string, "extensionInstanceId"?: string, "projectDir"?: string }
  *   stale = (pid > 0 && 프로세스 없음) || now - heartbeat > DEPLOY_LOCK_STALE_MS
  *   획득 = O_EXCL 생성('wx'); 갱신 = 임시 파일 + rename(원자적); 해제 = 자기 레코드(pid·since 일치)일 때만 삭제.
  *

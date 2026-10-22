@@ -304,10 +304,31 @@ const SSOT_RULES: readonly SsotRule[] = [
     },
     {
         what: '업로드 진행 바·완료 요약 문구 (상태바 본문·툴팁·완료 표시 — 다른 표면이 바를 다시 그리지 않게)',
-        pattern: /[█▏▎▍▌▋▊▉░]|업로드 완료 (—|\d)/,
+        pattern: /[█▏▎▍▌▋▊▉░]|업로드 완료 (— 변경 없음|\$\{)/,
         ownedBy: ['views/uploadProgressBar'],
         requires: ['renderBar', 'renderUploadProgress', 'renderUploadSummary'],
         use: 'views/uploadProgressBar.renderUploadProgress / renderUploadSummary (집계는 controller/uploadProgress, 보이기·타이밍은 views/connectionStatusBar)',
+    },
+    {
+        what: 'Flash 쓰기 전원 차단 금지 상태바 문구 (쓰기·Sync·안정화·미확인 단계가 공유)',
+        pattern: /FLASH (저장 중|쓰기 완료 대기|안정화|안전 상태 미확인)/,
+        ownedBy: ['views/flashSafetyPresentation'],
+        requires: ['presentFlashSafety'],
+        use: 'views/flashSafetyPresentation.presentFlashSafety (절차·시간은 controller/flashSafety)',
+    },
+    {
+        what: 'GPL 심볼 → VS Code SymbolKind 대응 (개요·워크스페이스 심볼이 공유 — 같은 심볼이 두 곳에서 다른 종류로 보이지 않게)',
+        pattern: /vscode\.SymbolKind\.(Module|Class|Method|Function|Property|Field|Constant|Variable)\b/,
+        ownedBy: ['providers/symbolKinds'],
+        requires: ['toVsCodeSymbolKind'],
+        use: 'providers/symbolKinds.toVsCodeSymbolKind (분류·detail·계층은 language/outlineModel)',
+    },
+    {
+        what: '제어기 연결 세션 상태 (쓰기는 host.setControllerConnected 한 곳, 읽기는 정본 — 뷰의 연결 플래그를 상태 출처로 쓰지 않게)',
+        pattern: /setControllerSessionConnected\s*\(|controllerTree\??\.isConnected\b/,
+        ownedBy: ['controller/connectionSession', 'activation/host'],
+        requires: ['isControllerSessionConnected', 'setControllerSessionConnected', 'onControllerSessionChange', 'effectiveKeepAlive'],
+        use: 'host.isControllerConnected / controller/connectionSession.isControllerSessionConnected · onControllerSessionChange',
     },
 ];
 

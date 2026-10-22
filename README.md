@@ -1,4 +1,6 @@
-# GPL Language Support
+# Brooks GPL
+
+현재 로컬 패키지: **0.14.0**
 
 **[Brooks Automation](https://www2.brooksautomation.com/)(구 Precise Automation) PreciseFlex 로봇 제어기 개발을 VS Code에서 끝내기 위한 확장**입니다.
 
@@ -13,6 +15,17 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 - **언어 지원** — IntelliSense, 정의/참조 탐색, 호버, Outline, 코드 폴딩, 내장 API 문서
 
 > GPL 언어 공식 레퍼런스: [Brooks Automation GPL Reference](https://www2.brooksautomation.com/Controller_Software/Introduction_To_The_Software/Guidance_Programming_Language/)
+
+## 설치와 업데이트
+
+Marketplace 게시 후에는 VS Code 확장 화면(`Ctrl+Shift+X`)에서
+`@id:nir414.gpl-language-support`를 검색해 설치할 수 있습니다.
+게시 여부는 Marketplace 검색 결과에서 확인하세요.
+
+설치한 확장의 **Auto Update**가 켜져 있으면 새 버전을 자동으로 받습니다.
+기존 VSIX로 설치했다면 Auto Update가 기본으로 꺼져 있으므로 확장 메뉴에서 확인하세요.
+회사에서 관리하는 VS Code는 조직의 업데이트 정책이 적용될 수 있습니다.
+오프라인 설치용 VSIX는 [GitHub Releases](https://github.com/nir414/GPL_language/releases)에서 제공합니다.
 
 ## 기능
 
@@ -75,6 +88,7 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 | Outline | `Ctrl+Shift+O` | 문서 내 심볼 구조 |
 | Symbol Search | `Ctrl+T` | 워크스페이스 전체 심볼 검색 |
 | Code Folding | — | Module/Class/Sub/Function·If/Select/For/While/Do/Try 블록과 `' #region` 접기 |
+| Try/Finally 호환성 안내 | — | 기본 해제. `gpl.diagnostics.tryWithoutCatch`를 켜면 Information 표시. GPL 4.2K5의 Error 정지 후 Continue에서 Finally 재실행 가능성을 안내하며, Catch 추가만으로 예방된다고 판단하지 않습니다. |
 | Quick Fix | `Ctrl+.` | XML 개선·호환성 대안 제안 |
 
 - `Project.gpr`이 있으면 `ProjectSource`에 등록된 파일만 우선 인덱싱 (대형 워크스페이스 최적화)
@@ -110,15 +124,16 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 | 명령 | 설명 |
 |---|---|
 | `GPL: Connect to Controller` / `Disconnect Controller` | 제어기 연결/해제 |
+| `GPL: Upload Only` | `/GPL` 소스만 업로드 — 실행 중 프로그램을 멈추지 않고 Stop/Compile/Start 모두 생략 |
 | `GPL: Quick Compile` | 변경분만 /GPL에 직접 업로드 + Compile (STOP/START 생략) — 패널 상단 아이콘 |
-| `GPL: Upload & Start` | STOP → /GPL 업로드 → Start(`-compile` 포함) — 패널 상단 아이콘 |
+| `GPL: Upload & Start` | /GPL 업로드 ∥ STOP → Start(`-compile` 포함) — 패널 상단 아이콘 |
 | `GPL: Deploy` | 전체 /GPL 업로드 + Compile, 실행하지 않음 |
 | `GPL: Start` | 배포 없이 실행만 (이미 올라간 것을 다시 돌릴 때) |
-| `GPL: Save to Flash` | `/flash/projects`에 영구 저장만 |
-| `GPL: Stop All Threads` | `Stop -all` 전체 정지 — 패널 상단 아이콘 |
+| `GPL: Save to Flash` | `/flash/projects`에 영구 저장만 — `Sync` + 10초 안전 대기가 끝날 때까지 상태바에 전원 차단 금지 경고 |
+| `GPL: Stop All Threads` | `Stop -all` 전체 정지 + 같은 제어기의 실행 중·대기 중 업로드/배포 취소 — 패널 상단 아이콘 |
 
 - 대상 프로젝트는 `.gpr`가 있는 폴더입니다. 워크스페이스에 여러 개면 QuickPick으로 고르고(최근 선택이 맨 위),
-  **탐색기에서 프로젝트 폴더(`.gpr`가 들어 있는 폴더)를 우클릭**하면 선택 없이 그 프로젝트로 Deploy/Quick Compile/
+  **탐색기에서 프로젝트 폴더(`.gpr`가 들어 있는 폴더)를 우클릭**하면 선택 없이 그 프로젝트로 Upload Only/Deploy/Quick Compile/
   Debug Project/Upload & Start/Start/Save to Flash를 실행할 수 있습니다. 제어기 쪽 프로젝트 이름은 `.gpr`의 `ProjectName`입니다.
 - **`Project.gpr` 우클릭 → `GPL: Sync Project Sources`**: 폴더의 `.gpl`과 `ProjectSource` 목록을 대조해
   누락된 파일 추가·없는 파일 항목 제거를 확인 후 반영합니다(GDE 형식 유지). `.gpl`을 새로 만들거나 이름 변경·삭제하면
@@ -129,8 +144,19 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 > 그 대신 소스에 에러가 있으면 Problems 패널이 아니라 **Start 실패(STATUS)** 로만 드러납니다 —
 > 에러 위치까지 보려면 `Quick Compile`로 확인하세요.
 
+> **`Upload Only`는 업로드 전용입니다.** 실행 중인 프로그램과 현재 컴파일본을 그대로 두고 `/GPL` 소스만 갱신하며,
+> 안전성이 확인되지 않은 원격 전용 파일 삭제도 보류합니다. 업로드 뒤에는 `컴파일 필요` 상태로 표시됩니다.
+> 같은 제어기에 여러 프로젝트 업로드/배포를 연달아 요청하면 거부하지 않고 등록 순서대로 대기합니다. 실제 업로드
+> 중에는 기존 배포 잠금을 유지하므로 Compile/Start가 겹치지 않습니다.
+
 > **FTP 패널의 `Compile & Run`(업로드된 복사본 실행) 주의**: 제어기에 **이미 업로드된 복사본만**
 > 대상으로 하며 로컬 변경사항을 업로드하지 않습니다. 최신 로컬 코드 검증은 Deploy를 사용하세요.
+
+FTP 패널의 프로젝트 다운로드는 두 모드를 제공합니다. **Live Working Copy**는 로컬 저장 시 기본 autoOnSave 규칙에 따라
+`/GPL/<프로젝트>` 작업 소스를 갱신할 수 있지만 `Save to Flash`는 자동 실행하지 않습니다. **Read-only Snapshot**은
+autoOnSave·Quick Compile·Deploy/F5·Save to Flash를 차단합니다. 다운로드 후에는 **Controller 작업공간 열기**를 선택하세요.
+처음 한 번 Extension Host가 다시 시작될 수 있지만, 같은 상위 폴더에 다음 프로젝트를 내려받으면 저장된
+`gpl-controller-<host>.code-workspace`에 자동으로 보이므로 폴더를 다시 추가할 필요가 없습니다.
 
 ### 디버깅·모니터링
 
@@ -146,8 +172,14 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 | `GPL: Start/Stop Live Log Terminal` | 명령 콘솔·런타임 콘솔 실시간 로그 터미널 — 같은 항목 우클릭 |
 | `GPL: Show Traffic Monitor` | 명령 콘솔 송신 명령·수신 응답 본문(실시간, 줄 단위)과 런타임 콘솔 트래픽 모니터 — 패널 트리의 `통신 모니터` 항목에서 열고 본문 표시 켜기/끄기·지우기 |
 | `GPL: Send Command to Controller` | 콘솔 명령 직접 전송 |
-| `GPL: Show/Set Global` / `Show DIO` / `Set DIO` | 전역변수·DIO 조회/변경 |
+| `GPL: Open Digital I/O Panel` | 대시보드의 **디지털 I/O** 탭 — 전체 신호 ON/OFF·강제 상태, 번호 검색·필터, 확인 후 강제 ON/OFF/해제 |
+| `GPL: Show/Set Global` / `Show DIO` / `Set DIO` | 전역변수·DIO 원시 명령(팔레트·외부 호출 호환용) |
 | `GPL: Refresh All` | 쓰레드·FTP·시스템 정보 전체 새로고침 — 패널 상단 아이콘 |
+
+디버깅 중에는 Debug Console에 명령을 여러 줄 붙여 넣어 위에서 아래로 순차 실행할 수 있습니다. `Show Thread -web`·
+`ErrorLog` 같은 읽기 전용 명령은 그대로 쓰고, `Stop`·`Break`·`Execute` 같은 상태 변경 명령은 각 줄 앞에 `>`를 붙입니다.
+상태 변경 명령이 여러 개면 전체 묶음을 실행하기 전에 한 번만 확인합니다. `>`를 빠뜨린 상태 변경 명령은 전송하지 않고
+Debug Console에 그 사실과 올바른 입력 예를 표시합니다.
 
 > **중단점이 회색으로 안 걸릴 때**: 제어기는 중단점 대상 파일을 그 프로젝트가 `.gpr` 에 **직접 적은**
 > `ProjectSource` 안에서만 찾습니다. `ProjectLibrary` 로 참조해 들어온 소스는 어떤 표기를 써도
@@ -167,13 +199,20 @@ VB.NET 유사 언어로 작성하는데, 공식 개발 환경(GDE)은 코드 탐
 | URI `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>` | 외부 진입점(`code --open-url`) — 이 확장의 **모든 명령**을 실행(`?key=value` 평면 인자, `/command?id=…`도 가능). 별칭 `/connect?ip&port`, `/disconnect`, `/getState`, `/dashboard`. 결과는 Output `[URI]`로 확인 |
 
 **MCP 서버(`controller-mcp`)는 이 확장을 통해 제어기를 다룹니다.** 확장이 실행 중이면 MCP의 명령 콘솔 명령이 확장 세션으로
-라우팅되어(Agent Bridge, `gpl.agentBridge.enabled`) 세션 경쟁이 없고, MCP 도구 `extension_command`로 Deploy·Quick Compile·
+라우팅되어(Agent Bridge, `gpl.agentBridge.enabled`) 세션 경쟁이 없고, MCP 도구 `extension_command`로 Upload Only·Deploy·Quick Compile·
 브레이크포인트 동기화 같은 **확장 기능 자체**를 쓸 수 있습니다. 현재 경로는 `extension_status`로 확인합니다.
+AI 가 보낸 명령과 응답은 사람이 보낸 것과 같은 자리(출력 「GPL Language Support」)에 `(agent)` 표시로 남고, AI 요청이 오면
+출력 패널이 자동으로 열립니다(`gpl.agentBridge.revealOutput`).
 
-`GPL: Export AI Agent Setup`은 설정 파일을 만들고 자동 점검합니다. 프로젝트가 여럿이면 열린 파일로 대상을 추측하지
-않고 **설정 정상 · 작업 대상 미확정**으로 표시하며, `프로젝트 선택`에서 작업할 폴더를 지정할 수 있습니다.
-선택한 이름과 폴더는 재실행해도 유지됩니다. 새 설정의 MCP 세션에서는 먼저 `project_target`에 `projectDir`을
-지정해 대상을 확인해야 프로젝트 도구를 사용할 수 있습니다. CLAUDE/AGENTS 안내가 서로 다르면 점검 결과로 알립니다.
+`GPL: Export AI Agent Setup`이 만드는 `.mcp.json`은 `GPL_BRIDGE=only`를 사용합니다. 따라서 사람이 VS Code에서 연결한 동안에도
+AI가 두 번째 TCP 연결을 열지 않고 **확장의 한 연결과 직렬 큐를 공유**합니다. 브리지를 쓸 수 없으면 직접 접속으로 우회하지 않고
+원인을 보고하므로, 단일 클라이언트 제어기에서 순간적인 presence 실패가 연결 경쟁으로 번지지 않습니다. GDE처럼 Agent Bridge를
+사용하지 않는 외부 프로그램과의 동시 직접 접속은 여전히 지원하지 않습니다.
+
+`GPL: Export AI Agent Setup`은 연결 설정만 만들고 브리지 전용 여부까지 자동 점검합니다. 프로젝트 이름·폴더는 `.mcp.json`이나
+VS Code 설정에 기본값으로 저장하지 않습니다. MCP 세션을 시작하면 먼저 `project_target`에 정확한 `projectDir`을 지정해 대상을
+확인한 뒤 프로젝트 도구를 사용합니다. Export를 다시 실행하면 구버전 `.mcp.json`의 `GPL_PROJECT`/`GPL_PROJECT_DIR`을 제거하고,
+`CLAUDE.md`와 기존 `AGENTS.md` 자동 생성 블록을 현재 버전으로 갱신합니다. 사람이 작성한 문서 본문은 보존합니다.
 
 제어기 안전 조건(Step/Continue 연타 방지, 정지 정착 전 Compile/Start 금지, Compile 직후
 Start 완충)은 어느 경로로 명령을 보내든 확장의 **명령 정책**이 대신 기다려서 충족시킵니다(`gpl.controller.commandPolicyEnabled`,

@@ -14,9 +14,8 @@
  *   2. 인자의 `project` (이름 — .gpr `ProjectName` 또는 폴더명, 대소문자 무시)
  *   3. 세션 대상(`sessionTargetDir`) — 한 세션에서 대상을 고정해 중간에 다른 프로젝트로 튀지 않게 한다(§19)
  *   4. 워크스페이스에 **실행 가능(runnable) 프로젝트가 유일**할 때 그것
- *   5. 설정 `gpl.controller.defaultProject`
- *   6. 후보가 통째로 하나뿐이면 그것(라이브러리여도 — 단일 프로젝트 워크스페이스에서 오류를 내지 않는다)
- *   7. 그 밖에는 PROJECT_AMBIGUOUS
+ *   5. 후보가 통째로 하나뿐이면 그것(라이브러리여도 — 단일 프로젝트 워크스페이스에서 오류를 내지 않는다)
+ *   6. 그 밖에는 PROJECT_AMBIGUOUS
  *
  * **active editor 는 쓰지 않는다.** 어느 탭을 열어 뒀는지는 사람의 UI 상태이지 자동화 작업의 의도가 아니다(§22).
  * 대화형 경로(명령 팔레트·탐색기 우클릭)는 종전대로 `projectPicker.ts` 를 쓴다 — 두 경로를 섞지 않는다.
@@ -54,8 +53,6 @@ export interface ProjectTargetRequest {
 export interface ResolveTargetOptions {
     /** 이 세션에서 이미 확정된 대상 폴더(§19). 후보 목록에 남아 있을 때만 쓴다. */
     sessionTargetDir?: string;
-    /** 설정 `gpl.controller.defaultProject` — 프로젝트명 또는 폴더명. */
-    configuredDefault?: string;
 }
 
 export type TargetResolutionVia =
@@ -64,7 +61,6 @@ export type TargetResolutionVia =
     | 'argument-name'
     | 'session-target'
     | 'sole-runnable'
-    | 'configured-default'
     | 'sole-candidate';
 
 /** 오류 응답에 싣는 후보 요약 — 호출자(AI)가 다음에 무엇을 지정할지 바로 알 수 있게. */
@@ -227,28 +223,17 @@ export function resolveProjectTarget(
     const runnables = candidates.filter(c => c.runnable);
     if (runnables.length === 1) { return resolved(runnables[0], 'sole-runnable'); }
 
-    // ── 5. 설정 기본값 ─────────────────────────────────────────────────────
-    if (options.configuredDefault) {
-        const gprNameOf = (dir: string): string | undefined => index.get(normalizeDirKey(dir))?.projectName;
-        const matched = filterDirsByProjectName(dirs, options.configuredDefault, gprNameOf);
-        if (matched.length === 1) {
-            const c = index.get(normalizeDirKey(matched[0]));
-            if (c) { return resolved(c, 'configured-default'); }
-        }
-        // 기본값이 후보와 맞지 않으면 무시하고 다음 규칙으로 — 설정 오타 하나로 자동화를 세우지 않는다.
-    }
-
-    // ── 6. 후보가 하나뿐 ───────────────────────────────────────────────────
+    // ── 5. 후보가 하나뿐 ───────────────────────────────────────────────────
     if (candidates.length === 1) { return resolved(candidates[0], 'sole-candidate'); }
 
-    // ── 7. 애매함 ──────────────────────────────────────────────────────────
+    // ── 6. 애매함 ──────────────────────────────────────────────────────────
     const runnableNote = runnables.length === 0
         ? '실행 가능한 프로젝트(.gpr 에 ProjectStart 가 있는 것)가 없습니다.'
         : `실행 가능한 후보가 ${runnables.length}개입니다.`;
     return {
         ok: false,
         error: 'PROJECT_AMBIGUOUS',
-        detail: `워크스페이스에 GPL 프로젝트가 ${candidates.length}개 있어 대상을 결정할 수 없습니다. ${runnableNote} ${NAME_HINT} 한 프로젝트로 계속 작업한다면 설정 \`gpl.controller.defaultProject\` 를 두거나 첫 호출에만 대상을 지정하면 이후 같은 대상이 유지됩니다.`,
+        detail: `워크스페이스에 GPL 프로젝트가 ${candidates.length}개 있어 대상을 결정할 수 없습니다. ${runnableNote} ${NAME_HINT} 첫 호출에 대상을 지정하면 이후 같은 세션에서 유지됩니다.`,
         candidates: summaries,
     };
 }

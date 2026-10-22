@@ -88,7 +88,35 @@ test('remoteProjectPath: 목록 조회 실패는 "없음"이 아니라 "확인 �
     });
     assert.strictEqual(choice.candidates.length, 2);
     assert.deepStrictEqual(choice.candidates.map(c => c.exists), [false, false]);
+    assert.deepStrictEqual(choice.candidates.map(c => c.probeStatus), ['unconfirmed', 'unconfirmed']);
+    assert.strictEqual(choice.confirmed, false);
     assert.strictEqual(choice.projectPath, '/flash/projects/P');
+});
+
+test('remoteProjectPath: 일부 기준 경로만 조회돼도 선택된 후보가 미확인이면 중단 신호를 낸다', async () => {
+    const choice = await resolveRemoteProjectPath({
+        projectFolderName: 'P', flashBasePath: FLASH, gplBasePath: GPL,
+        listDir: async base => {
+            if (base === FLASH) { throw new Error('flash probe failed'); }
+            return [];
+        },
+    });
+    assert.strictEqual(choice.projectPath, '/flash/projects/P', '기존 flash 우선순위는 유지한다');
+    assert.strictEqual(choice.confirmed, false, '다른 후보 조회 성공을 선택 후보의 확인으로 대체하면 안 된다');
+    assert.strictEqual(choice.candidates.find(c => c.basePath === FLASH)?.probeStatus, 'unconfirmed');
+    assert.strictEqual(choice.candidates.find(c => c.basePath === GPL)?.probeStatus, 'missing');
+});
+
+test('remoteProjectPath: 선택된 후보가 확인됐으면 다른 후보 조회 실패와 무관하게 진행할 수 있다', async () => {
+    const choice = await resolveRemoteProjectPath({
+        projectFolderName: 'P', flashBasePath: FLASH, gplBasePath: GPL,
+        listDir: async base => {
+            if (base === FLASH) { throw new Error('flash probe failed'); }
+            return [{ name: 'P', isDirectory: true }];
+        },
+    });
+    assert.strictEqual(choice.projectPath, '/GPL/P');
+    assert.strictEqual(choice.confirmed, true);
 });
 
 test('remoteProjectPath: 뒤쪽 슬래시·대소문자 차이를 흡수한다', async () => {
@@ -107,4 +135,15 @@ test('remoteProjectPath: 후보 설명 줄은 존재 표시를 붙인다', async
         projectFolderName: 'P', flashBasePath: FLASH, gplBasePath: GPL, listDir: listDirWith([GPL], 'P'),
     });
     assert.deepStrictEqual(describeRemotePathCandidates(choice.candidates), ['/GPL/P (exists)', '/flash/projects/P']);
+});
+
+test('remoteProjectPath: 후보 설명 줄은 조회 실패를 누락과 구분한다', async () => {
+    const choice = await resolveRemoteProjectPath({
+        projectFolderName: 'P', flashBasePath: FLASH, gplBasePath: GPL,
+        listDir: async () => { throw new Error('ftp down'); },
+    });
+    assert.deepStrictEqual(describeRemotePathCandidates(choice.candidates), [
+        '/flash/projects/P (unconfirmed)',
+        '/GPL/P (unconfirmed)',
+    ]);
 });

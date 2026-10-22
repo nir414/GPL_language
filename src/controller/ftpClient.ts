@@ -19,6 +19,22 @@ import type { UploadProgressEvent } from './uploadProgress';
 
 const TIMEOUT_MS = 10_000;
 
+/** 파일 경계에서 협력적으로 중단된 업로드. 네트워크 장애와 구분해 사용자에게 실패가 아닌 취소로 보고한다. */
+export class UploadCancelledError extends Error {
+	constructor(message = '업로드가 취소되었습니다') {
+		super(message);
+		this.name = 'UploadCancelledError';
+	}
+}
+
+export function isUploadCancelledError(error: unknown): error is UploadCancelledError {
+	return error instanceof UploadCancelledError || (error as { name?: unknown })?.name === 'UploadCancelledError';
+}
+
+function throwIfCancelled(isCancelled?: () => boolean): void {
+	if (isCancelled?.()) { throw new UploadCancelledError(); }
+}
+
 export interface FtpEntry {
 	name: string;
 	isDirectory: boolean;
@@ -172,11 +188,13 @@ export interface ClearRemoteDirResult {
  * - 한 FTP 세션으로 처리하고, 개별 실패는 모아서 돌려준다(하나가 걸려도 나머지는 계속 지운다).
  *   호출측이 "부분 완료"를 사용자에게 그대로 알릴 수 있도록 성공/실패 목록을 함께 준다.
  * - 안전장치: 빈 경로·루트('/')는 대상이 될 수 없다(설정 오입력으로 파일시스템 전체를 지우는 사고 방지).
+ * - `include` 를 주면 그 조건에 맞는 항목만 지운다(확인받은 목록만 지우기 — 확인 뒤 새로 생긴 항목은 남는다).
  */
 export async function clearRemoteDir(
 	host: string,
 	remotePath: string,
 	onDelete?: (name: string, isDirectory: boolean) => void,
+	include?: (entry: FtpEntry) => boolean,
 ): Promise<ClearRemoteDirResult> {
 	const base = normalizeAbsoluteRemoteDir(remotePath);
 	if (base === '/') {
@@ -188,6 +206,7 @@ export async function clearRemoteDir(
 		const entries = await client.list(base);
 		for (const entry of entries) {
 			if (entry.name === '.' || entry.name === '..') { continue; }
+			if (include && !include(toFtpEntry(entry))) { continue; }
 			const full = `${base}/${entry.name}`;
 			try {
 				if (entry.isDirectory) {
@@ -247,8 +266,11 @@ export async function uploadProject(
 		 * 상태바용). 집계 규칙은 `uploadProgress.UploadProgressTracker`.
 		 */
 		onProgress?: (event: UploadProgressEvent) => void;
+		/** true면 새 파일 전송을 시작하지 않고 현재 파일 경계에서 취소한다. */
+		isCancelled?: () => boolean;
 	},
 ): Promise<{ uploaded: number; skipped: number; totalBytes: number; manifest: SyncManifestFiles }> {
+	throwIfCancelled(options?.isCancelled);
 	const client = await createClient(host);
 
 	try {
@@ -272,6 +294,7 @@ export async function uploadProject(
 		const manifest: SyncManifestFiles = {};
 
 		for (const entry of entries) {
+			throwIfCancelled(options?.isCancelled);
 			const { file, relative } = entry;
 			// 해시·검증·지문은 지금 이 순간의 파일 기준(LocalUploadEntry 주석) — entry.size 는 진행 집계 전용.
 			const size = fs.statSync(file).size;
@@ -304,6 +327,8 @@ export async function uploadProject(
 			}
 			manifest[key] = nextStamp(local, remote, previous, skip ? 'skipped' : 'uploaded');
 			tracker.end(relative, entry.size, skip ? 'skipped' : 'uploaded');
+			// 파일 전송 도중 들어온 취소는 이 지점에서 반영한다. 중간 소켓 절단으로 부분 파일을 의도적으로 만들지 않는다.
+			throwIfCancelled(options?.isCancelled);
 		}
 
 		return { uploaded, skipped, totalBytes: tracker.totalBytes, manifest };
@@ -349,6 +374,8 @@ export async function mirrorProject(
 		 * 지문이 없는 파일(첫 동기화 등)은 스킵하지 않고 올린다 — 판정 불가는 항상 업로드 쪽으로 넘어뜨린다.
 		 */
 		manifest?: Readonly<SyncManifestFiles>;
+		/** true면 새 파일/삭제를 시작하지 않고 현재 파일 경계에서 취소한다. */
+		isCancelled?: () => boolean;
 	},
 ): Promise<{
 	uploaded: number;
@@ -359,6 +386,7 @@ export async function mirrorProject(
 	/** 이번 동기화 뒤의 파일별 지문. 성공 시 `recordSyncManifest`로 저장한다(전체 목록 기준 → 대체). */
 	manifest: SyncManifestFiles;
 }> {
+	throwIfCancelled(options?.isCancelled);
 	const client = await createClient(host);
 	try {
 		// 1) 원격 파일 목록(재귀). 원격 폴더가 없거나 조회 실패면 빈 목록으로 취급 → 전체 업로드.
@@ -368,6 +396,7 @@ export async function mirrorProject(
 		} catch {
 			// ignore: 원격 폴더 없음 등 — 아래에서 전부 업로드된다.
 		}
+		throwIfCancelled(options?.isCancelled);
 		// 로컬(Windows)은 대소문자 무시 파일시스템이므로 소문자 키로 매칭한다.
 		const remoteByRel = new Map<string, { remotePath: string; size: number; modifiedAtMs?: number }>();
 		for (const rf of remoteFiles) {
@@ -389,6 +418,7 @@ export async function mirrorProject(
 
 		// 2) 로컬 기준 업로드/스킵
 		for (const entry of entries) {
+			throwIfCancelled(options?.isCancelled);
 			const { file, relative } = entry;
 			localRelSet.add(relative.toLowerCase());
 			// 해시·검증·지문은 지금 이 순간의 파일 기준(LocalUploadEntry 주석) — entry.size 는 진행 집계 전용.
@@ -410,11 +440,13 @@ export async function mirrorProject(
 			}
 			manifest[key] = nextStamp(local, remote, previous, skip ? 'skipped' : 'uploaded');
 			tracker.end(relative, entry.size, skip ? 'skipped' : 'uploaded');
+			throwIfCancelled(options?.isCancelled);
 		}
 
 		// 3) 원격에만 있는 파일 삭제 (낡은 소스 제거) — deferDelete면 목록만 돌려준다.
 		const pendingDeletes: RemoteFileRef[] = [];
 		for (const rf of remoteFiles) {
+			throwIfCancelled(options?.isCancelled);
 			if (localRelSet.has(rf.relativePath.toLowerCase())) { continue; }
 			if (options?.deferDelete) {
 				pendingDeletes.push({ remotePath: rf.remotePath, relativePath: rf.relativePath });
@@ -427,6 +459,7 @@ export async function mirrorProject(
 			} catch {
 				// 삭제 실패는 non-fatal — 남은 파일은 Compile 결과로 드러난다.
 			}
+			throwIfCancelled(options?.isCancelled);
 		}
 
 		return { uploaded, skipped, deleted, totalBytes: tracker.totalBytes, pendingDeletes, manifest };
@@ -528,7 +561,9 @@ export async function downloadProject(
 			const localPath = path.join(localDir, rf.relativePath);
 			// 원격 엔트리 이름 검증: localDir 밖으로 나가는 경로(../ 류)는 저장하지 않는다.
 			const relCheck = path.relative(localDir, localPath);
-			if (!relCheck || relCheck.startsWith('..') || path.isAbsolute(relCheck)) { continue; }
+			if (!relCheck || relCheck.startsWith('..') || path.isAbsolute(relCheck)) {
+				throw new Error(`안전하지 않은 FTP 파일 경로를 거부했습니다: ${rf.relativePath}`);
+			}
 
 			// 로컬 디렉터리 생성
 			const dir = path.dirname(localPath);
@@ -537,11 +572,25 @@ export async function downloadProject(
 			}
 
 			await client.downloadTo(localPath, rf.remotePath);
-			const stat = fs.statSync(localPath);
+			let stat = fs.statSync(localPath);
+			if (Number.isFinite(rf.size) && rf.size >= 0 && stat.size !== rf.size) {
+				// 전송 종료만으로 완전성을 추정하지 않는다. 목록의 크기와 다르면 한 번만 다시 받고 재검증한다.
+				await client.downloadTo(localPath, rf.remotePath);
+				stat = fs.statSync(localPath);
+				if (stat.size !== rf.size) {
+					throw new Error(
+						`다운로드 검증 실패: ${rf.relativePath} 크기 불일치 (remote ${rf.size} / local ${stat.size})`,
+					);
+				}
+			}
 			totalBytes += stat.size;
 			downloaded++;
 
 			onProgress?.(i + 1, remoteFiles.length, rf.relativePath);
+		}
+
+		if (downloaded !== remoteFiles.length) {
+			throw new Error(`다운로드 검증 실패: 파일 수 불일치 (remote ${remoteFiles.length} / local ${downloaded})`);
 		}
 
 		return { downloaded, totalBytes };

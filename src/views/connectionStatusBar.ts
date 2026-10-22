@@ -20,10 +20,12 @@
 import * as vscode from 'vscode';
 import { getControllerConfig } from '../controller/controllerConnection';
 import type { CompileStaleInfo } from '../controller/compileStale';
+import type { FlashSafetyState } from '../controller/flashSafety';
 import type { UploadProgressEvent, UploadSummary } from '../controller/uploadProgress';
 import { describeUploadProgress, renderUploadProgress, renderUploadSummary } from './uploadProgressBar';
 import { isGplDocument } from '../config';
 import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from './compileStaleBadge';
+import { presentFlashSafety } from './flashSafetyPresentation';
 
 /** 업로드가 끝났을 때 상태바에 잠시 남기는 결과. 실패 문구는 배포 결과 알림이 따로 띄우므로 짧게만. */
 export type UploadEndOutcome =
@@ -60,6 +62,8 @@ export class ConnectionStatusBar implements vscode.Disposable {
     private uploadLingerTimer: ReturnType<typeof setTimeout> | undefined;
     /** 진행 표시가 한 번이라도 떴는지 — 시작도 못 한 실패(FTP 접속 불가)는 배포 알림에 맡기고 여기선 조용히 지나간다. */
     private uploadShown = false;
+    /** Flash 쓰기 중 전원 차단 금지 경고 — 업로드 진행과 별개로 Sync + 안정화가 끝날 때까지 유지한다. */
+    private flashSafetyItem: vscode.StatusBarItem;
     private disposables: vscode.Disposable[] = [];
 
     get isConnected(): boolean { return this._isConnected; }
@@ -139,6 +143,18 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.updateThreadLockItem();
     }
 
+    /** Flash 쓰기 안전 단계 표시. undefined면 안전 확인이 끝난 것이므로 숨긴다. */
+    setFlashSafety(state?: FlashSafetyState, projectName?: string): void {
+        if (!state) {
+            this.flashSafetyItem.hide();
+            return;
+        }
+        const shown = presentFlashSafety(state, projectName);
+        this.flashSafetyItem.text = shown.text;
+        this.flashSafetyItem.tooltip = shown.tooltip;
+        this.flashSafetyItem.show();
+    }
+
     constructor() {
         this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         this.item.command = 'gpl.controller.connect';
@@ -162,6 +178,11 @@ export class ConnectionStatusBar implements vscode.Disposable {
 
         this.uploadItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 95);
         this.uploadItem.name = 'GPL 업로드 진행';
+
+        // 안전 경고는 연결/업로드 항목보다 높은 우선순위로 두어 좁은 상태바에서도 먼저 남는다.
+        this.flashSafetyItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
+        this.flashSafetyItem.name = 'GPL Flash 쓰기 안전 경고';
+        this.flashSafetyItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
 
         this.disposables.push(
             vscode.window.onDidChangeActiveTextEditor(() => this.updateVisibility())
@@ -190,6 +211,7 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.staleItem.dispose();
         this.threadLockItem.dispose();
         this.uploadItem.dispose();
+        this.flashSafetyItem.dispose();
     }
 
     private updateThreadLockItem(): void {

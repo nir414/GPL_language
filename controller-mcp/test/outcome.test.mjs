@@ -20,6 +20,15 @@ import {
 } from '../src/outcome.js';
 
 // ── sendOutcomeOf ─────────────────────────────────────────────────────────
+test('memory guard: preserve not-sent code and sample without inviting automatic retry', () => {
+  const precheck = { level: 'blocked', freeMb: 2.32 };
+  const r = commandFailureResult('Compile Lib', taggedError('low memory', SEND_OUTCOME_NOT_SENT, { code: 'LOW_MEMORY', precheck }));
+  assert.equal(r.error, 'LOW_MEMORY');
+  assert.equal(r.outcome, SEND_OUTCOME_NOT_SENT);
+  assert.equal(r.sent, false);
+  assert.deepEqual(r.precheck, precheck);
+  assert.equal(r.recovery.retryCurrentCommand, false);
+});
 
 test('sendOutcomeOf: 태그가 있으면 그것을 그대로 쓴다', () => {
   assert.equal(sendOutcomeOf(taggedError('정책 보류', SEND_OUTCOME_NOT_SENT)), SEND_OUTCOME_NOT_SENT);
@@ -217,4 +226,40 @@ test('UnknownCommandMemory: list() 로 이 세션의 -714 이력을 낸다(진�
     m.list().sort((a, b) => a.command.localeCompare(b.command)),
     [{ command: 'Show Project', count: 2 }, { command: 'Show Trace', count: 1 }],
   );
+});
+
+// ── 로컬 소켓 소유자(2026-10-19 Sample Prep ②, §1-EU) ─────────────────────────────
+
+import { summarizeLocalConnections } from '../src/outcome.js';
+
+test('summarizeLocalConnections: 확장/이 서버의 연결은 우리 것, 그 밖의 ESTABLISHED 는 foreign 으로 가른다', () => {
+  const rows = [
+    { pid: 6136, process: 'Code', state: 'Established', localPort: 56001 },
+    { pid: 15876, process: 'Code', state: 'Established', localPort: 56002 },
+    { pid: 4242, process: 'node', state: 'TimeWait', localPort: 56003 },
+    { pid: 999, process: 'node', state: 'Established', localPort: 56004 },
+  ];
+  const s = summarizeLocalConnections(rows, { selfPid: 999, extensionPids: [15876] });
+  assert.equal(s.measured, true);
+  assert.equal(s.established, 3);
+  assert.deepEqual(s.foreign.map((f) => f.pid), [6136]);
+  assert.deepEqual(s.owners.map((o) => o.owner), ['other', 'extension', 'other', 'this-mcp']);
+  assert.match(s.note, /6136\(Code\)/);
+  // 측정 못 함(null)과 연결 없음([])을 구분한다.
+  assert.equal(summarizeLocalConnections(null).measured, false);
+  assert.equal(summarizeLocalConnections([]).measured, true);
+  assert.equal(summarizeLocalConnections([]).note, null);
+});
+
+test('classifyReachability: refused + 다른 로컬 프로세스의 ESTABLISHED 가 있으면 그것이 1순위 후보로 관측·판정에 실린다', () => {
+  const local = summarizeLocalConnections([{ pid: 6136, process: 'Code', state: 'Established', localPort: 1 }], { selfPid: 1, extensionPids: [] });
+  const r = classifyReachability({ host: '192.168.0.1', code: 'ECONNREFUSED', icmpAlive: true, localConnections: local });
+  assert.equal(r.observations.localConnections.foreignOwners[0].pid, 6136);
+  assert.match(r.assessment.alternativeExplanations[0], /6136/);
+  assert.match(r.verdict, /6136/);
+  assert.equal(r.assessment.controllerCrashConfirmed, false);
+  // 측정하지 않았으면 종전과 같은 결과에 measured:false 만 붙는다.
+  const plain = classifyReachability({ host: '192.168.0.1', code: 'ECONNREFUSED', icmpAlive: true });
+  assert.equal(plain.observations.localConnections.measured, false);
+  assert.doesNotMatch(plain.verdict, /PID/);
 });

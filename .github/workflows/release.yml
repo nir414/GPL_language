@@ -5,11 +5,112 @@ on:
     tags:
       - "v*.*.*"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release version
+        id: version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PACKAGE_VERSION" != "$VERSION" ]; then
+            echo "package.json ($PACKAGE_VERSION) does not match tag ($VERSION)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test extension
+        run: npm test
+
+      - name: Install MCP server dependencies
+        # This isolated Linux runner does not modify the local Windows checkout.
+        working-directory: controller-mcp
+        run: npm ci
+
+      - name: Test MCP server
+        working-directory: controller-mcp
+        run: npm test
+
+      - name: Package VSIX
+        run: npm run package:no-bump
+
+      - name: Record VSIX checksum
+        working-directory: dist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: sha256sum "gpl-language-support-$VERSION.vsix" > SHA256SUMS
+
+      - name: Store verified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketplace-vsix
+          path: |
+            dist/*.vsix
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Extract changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/extract-changelog.js "$VERSION" > release_notes.md
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Brooks GPL v${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          files: |
+            dist/*.vsix
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ steps.version.outputs.is_prerelease == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  marketplace:
+    needs: release
+    if: vars.MARKETPLACE_PUBLISH == 'true' && needs.release.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-latest
+    environment: marketplace
+    concurrency:
+      group: marketplace-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CORE_OUTPUT: none
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
     steps:
       - name: Checkout
@@ -21,58 +122,35 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install dependencies
+      - name: Install publishing tool from lockfile
         run: npm ci
 
-      - name: Compile
-        run: npm run compile
-
-      - name: Install MCP server dependencies
-        # bundle:mcp(esbuild)가 controller-mcp의 의존성을 해석해야 단일 파일로 번들된다.
-        # node_modules 자체는 VSIX에 실리지 않으므로(번들 산출물 out/mcp/*.cjs만 포함)
-        # 리눅스 러너에서 설치해도 CLAUDE.md 하드 규칙 5(윈도우 작업본에 유닉스 심링크를
-        # 만들지 않는다)와 무관하다 — 그 규칙은 로컬 Windows 체크아웃에 대한 것이다.
-        working-directory: controller-mcp
-        run: npm ci
-
-      - name: Package VSIX
-        run: npm run package:no-bump
-
-      - name: Extract version from tag
-        id: version
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          if [[ $VERSION =~ -(alpha|beta|rc) ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Verify version matches tag
-        run: |
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION="${{ steps.version.outputs.version }}"
-          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
-            echo "❌ package.json ($PACKAGE_VERSION) ≠ tag ($TAG_VERSION)"
-            exit 1
-          fi
-
-      - name: Extract changelog
-        run: node scripts/extract-changelog.js "${{ steps.version.outputs.version }}" > release_notes.md
-
-      - name: Delete existing release if present
-        run: gh release delete "v${{ steps.version.outputs.version }}" --yes 2>/dev/null || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Download verified package
+        uses: actions/download-artifact@v4
         with:
-          name: GPL Language Support v${{ steps.version.outputs.version }}
-          body_path: release_notes.md
-          files: dist/*.vsix
-          draft: false
-          prerelease: ${{ steps.version.outputs.is_prerelease }}
+          name: marketplace-vsix
+          path: dist
+
+      - name: Verify VSIX checksum
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+
+      - name: Check publishing configuration
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        shell: bash
+        run: |
+          test -n "$AZURE_CLIENT_ID" || { echo "Missing marketplace environment secret AZURE_CLIENT_ID"; exit 1; }
+          test -n "$AZURE_TENANT_ID" || { echo "Missing marketplace environment secret AZURE_TENANT_ID"; exit 1; }
+
+      - name: Sign in with Microsoft Entra ID
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Publish verified VSIX to Marketplace
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: node node_modules/@vscode/vsce/vsce publish --azure-credential --packagePath "dist/gpl-language-support-$VERSION.vsix" --skip-duplicate

@@ -36,7 +36,7 @@ export function activateBreakpointCommands(host: ExtensionHost): void {
 	// VS Code 중단점을 단일 원본으로 삼고, 외부 AI(MCP)가 건 BP도 위 미러를 거쳐 그 원본에 합류시킨다.
 	host.breakpointSync = new EditorBreakpointSync({
 		mirrorEcho: bpMirrorEcho,
-		isConnected: () => host.controllerTree?.isConnected ?? false,
+		isConnected: () => host.isControllerConnected,
 		isDebugSessionActive: () => host.isDebugSessionActive,
 		resolveProjectName: () => host.project.resolveExpectedProjectName(),
 		resolveTarget: (fsPath, line, projectName) => host.project.resolveBreakpointTarget(fsPath, line, projectName),

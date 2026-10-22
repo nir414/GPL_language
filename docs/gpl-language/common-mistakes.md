@@ -23,6 +23,7 @@
 - [ ] `Continue For/While`를 쓰지 않았는지? (GPL 미지원 → 조건 분기로 대체)
 - [ ] `A++`/`A--`를 쓰지 않았는지? (GPL 미지원 → `A += 1`, `A -= 1` 사용)
 - [ ] VB 전역 상수 `vbTab`, `vbCrLf` 등을 사용하지 않았는지? (`Utils.TAB`, `Utils.CRLF` 사용)
+- [ ] **정수 비트 마스크에 `And (Not mask)`를 쓰지 않았는지?** (`Not`이 비트 반전으로 동작하지 않음 → 아래 0-8 참고)
 - [ ] **문자열 리터럴에서 따옴표("")를 `\"`로 이스케이프하지 않았는지?** (GPL은 `"` 스타일 미지원 → `""`로 표현)
 - [ ] VS Code에서 `*.gpl`이 `일반 텍스트`로 열리고 있진 않은지? (기본은 `vb`로 연결해 하이라이팅 유지, 폴딩은 확장에서 보정)
 - [ ] **편집기 진단(Problems)이 실제 컴파일러와 불일치할 수 있음을 인지했는지?** (GPL 특성상 파서/진단 오탐 가능 → 실제 컴파일 로그를 우선 기준으로 판단)
@@ -179,6 +180,25 @@ End Sub
 ### 관련 에러
 - 생성자가 호출되지 않음
 - 초기화되지 않은 멤버 변수
+- `-722` *Unexpected text at end of line* — 아래 "생성자 없는 클래스에 `New X()`" 참고
+
+### 생성자 없는 클래스에 `New X()` → `-722`
+
+`Sub New`가 없는 클래스(필드만 있는 클래스 포함)를 `New X()`로 만들면, 그 줄마다 `-722` *Unexpected text at end of line*이 난다.
+메시지만 봐서는 원인이 생성자 없음이라는 것을 짐작하기 어렵다.
+
+```vb
+Public Class AxisSelection
+    Public Mask As Integer
+End Class
+
+sel = New AxisSelection()   ' ❌ -722 (Sub New 가 없다)
+```
+
+- 해결: 클래스에 `Public Sub New()`를 명시한다(빈 본문이어도 된다).
+- 실기 확인(2026-10-21, Sample Prep `Lib`, GPL 4.2K5): `New AxisSelection()` 두 줄이 -722였고, `Public Sub New()`를 추가하자 컴파일에 성공했다.
+  같은 Lib에서 `Sub New()`가 있는 `New KvFile()`은 문제가 없었다.
+- 괄호 없는 `New X`가 생성자 없이 통과하는지는 아직 확인하지 않았다. 확인 전까지는 `Sub New()`를 명시하는 쪽을 쓴다.
 
 ---
 
@@ -483,6 +503,51 @@ WARN(-510): ... CreateDirectory failed | *File already exists*
 
 - [ ] `Socket`(또는 Session 내부 Socket) **Property에 `Nothing` 대입 코드가 없는지?**
 - [ ] 소켓 해제 의도를 **값 대입으로 표현하지 않았는지?**
+
+---
+
+## 0-8. `Not`은 정수 비트 반전이 아니다 — `And (Not mask)` 검사가 조용히 통과
+
+### 증상
+
+"허용 비트 밖이 켜졌는지"를 `And (Not mask)`로 검사했는데, 잘못된 값이 **경고·에러 없이 통과**한다.
+
+```gpl
+' count = 3 → 허용 마스크 0b0111. 0b1000 은 거부돼야 한다.
+If v <= 0 Or (v And (Not (AxisBit(count + 1) - 1))) <> 0 Then   ' ❌ v = 0b1000 이 통과했다
+    FailArg(...)
+End If
+```
+
+### 근거
+
+- 실기 재현(2026-10-21, Sample Prep `BINDER_Probe`, GPL 4.2K5): `POS R:0b1000`이 위 검사를 통과했다.
+  검사를 `(v And mask) <> v`로 바꾸자 `R1 axis mask 0B1000 out of 1..3`으로 거부됐다. 컴파일 경고는 없었다.
+- 기존 라이브러리 주석에도 같은 경고가 있다("`Not`이 논리 연산이라 `And Not`으로는 못 쓴다").
+- 원인 추정: `Not 7`이 VB.NET처럼 비트 반전(`-8`)이 아니라 **논리 부정(0)** 으로 계산된다. 이 결과에서 추론한 것이고,
+  `Not 7`의 값을 직접 찍어 확인한 것은 아니다. `And`·`Or`의 정수 비트 연산은 위 대체식이 동작하므로 정상이다.
+
+### ✅ 대체 패턴
+
+| 의도 | 쓰지 말 것 | 대신 |
+| --- | --- | --- |
+| 허용 비트 밖이 켜졌나 | `(v And (Not mask)) <> 0` | `(v And mask) <> v` |
+| 특정 비트 지우기 | `v And (Not bits)` | `v - (v And bits)` |
+
+- `Not`은 Boolean 피연산자(`If Not FileExists(path)`, `Do While Not done`)에만 쓴다.
+
+---
+
+## 0-9. 반환값을 버리는 Function 호출 문장 — 허용됨
+
+Function을 문장으로 불러 반환값을 버리고 ByRef 인자 결과만 쓰는 형태는 컴파일·실행된다.
+
+```gpl
+PRS.SplitOnce(w, ":", head, tail)   ' 반환값(Boolean)은 버리고 head/tail(ByRef)만 사용
+```
+
+- 실기 확인(2026-10-21, `BINDER_Probe` `Commands.gpl`): `Start -compile` 성공, 동작 정상.
+- 반환값이 성공 여부라면 버리지 말고 검사하는 편이 안전하다. 이 절은 "문법상 허용된다"는 확인일 뿐이다.
 
 ---
 
@@ -971,3 +1036,17 @@ line = line & Utils.CRLF
 - **FILE_IO_IMPLEMENTATION.md**: 파일 I/O 구현 패턴
 - **ERROR_HANDLING_GUIDE.md**: 에러 처리 표준
 - **STRING_API_GUIDE.md**: 문자열 처리 가이드
+
+## Error 정지 후 Continue와 Finally 재실행
+
+Sample Prep의 2026-10-22 GPL 4.2K5 실측 보고에서는 정상 종료·예외 전파·Return·Exit Sub 등 단일 스레드 시험 16종에서 Finally가 한 번 실행됐습니다. 잡히지 않은 예외로 스레드가 Error 상태에 남은 뒤 Continue하면 Finally가 다시 실행됐으며, Catch에서 재던진 경우도 같았습니다. Object 정보 유실은 이 시험에서 재현되지 않았습니다. 다른 버전으로 일반화하지 않습니다.
+
+| 경로 | 보고된 Finally 실행 |
+| --- | --- |
+| 정상 종료 / 호출자가 예외 처리 | 1회 |
+| 예외가 스레드 최상위까지 전파 | Error 정지 전 1회 |
+| Error 정지 후 Continue | 추가 1회 |
+| Error 정지 후 Stop | 추가 실행 없음 |
+| 스레드 진입점에서 예외 처리 | 1회, Error 정지 없음 |
+
+Try마다 Catch를 추가하는 것으로 재실행을 막을 수는 없습니다. 진입점에서 예외를 처리하고, 종료가 목적이면 Stop을 사용합니다. 정리 코드의 중복 실행도 검토합니다. `gpl.diagnostics.tryWithoutCatch`는 기본 해제이며 선택 활성화 시 정보 안내만 제공합니다.

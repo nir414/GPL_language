@@ -78,6 +78,12 @@ export function commandFailureResult(command, err) {
   const message = String(err?.message ?? err);
   const result = { command, ok: false, status: null, outcome, error: message, traits };
 
+  if (['LOW_MEMORY', 'MEMORY_UNVERIFIED'].includes(err?.code)) {
+    return { ...result, error: err.code, detail: message, sent: false, precheck: err.precheck,
+      recovery: { action: 'FREE_MEMORY', retryCurrentCommand: false },
+      recommendedAction: '메모리 상태와 /GPL 잔존 파일을 검토하고 사용자 동의 후 정리할 것. Unload는 수 분간 명령 채널을 막을 수 있다. 자동 재시도하지 말 것.' };
+  }
+
   if (outcome === SEND_OUTCOME_NOT_SENT) {
     result.reason = 'not-sent';
     result.controllerHealth = 'unaffected-by-this-command';
@@ -212,12 +218,43 @@ export function unknownCommandResult(command, check) {
  *        code: 오류 errno(ECONNREFUSED/ETIMEDOUT …). icmpAlive: true 응답 / false 무응답 / null 판정 불가.
  * @returns 관측·분류·런타임 상태·권고·사람이 읽는 한 줄.
  */
-export function classifyReachability({ host, code, icmpAlive }) {
+/**
+ * 로컬 PC 에서 `host:port` 로 맺어진 TCP 연결의 소유 프로세스 요약(2026-10-19 Sample Prep ②, §1-EU).
+ *
+ * 왜: 1402 는 단일 클라이언트다. refused 때 "확장 세션으로 나갔으니 VS Code 점유가 아니다" 라고만 말하면, 다른 창·GDE·
+ * 리로드 전 옛 확장 호스트가 ESTABLISHED 로 잡고 있는 경우(17:53 PID 6136 실측)를 배제하는 것처럼 읽힌다.
+ * rows 는 OS 조회 결과 `[{pid, process, state, localPort}]`(측정 못 했으면 null 을 넘겨 호출측이 빈 값으로 처리).
+ * 이 서버 자신과 살아 있는 확장 인스턴스의 pid 는 "우리 것", 나머지 ESTABLISHED 는 `foreign` 이다.
+ */
+export function summarizeLocalConnections(rows, { selfPid, extensionPids = [] } = {}) {
+  const list = Array.isArray(rows) ? rows.filter((r) => r && Number.isInteger(r.pid)) : [];
+  const owners = list.map((r) => ({
+    pid: r.pid,
+    process: r.process ?? null,
+    state: r.state ?? null,
+    localPort: r.localPort ?? null,
+    owner: r.pid === selfPid ? 'this-mcp' : extensionPids.includes(r.pid) ? 'extension' : 'other',
+  }));
+  const established = owners.filter((o) => /established/i.test(String(o.state ?? '')));
+  const foreign = established.filter((o) => o.owner === 'other');
+  const note = foreign.length > 0
+    ? `로컬 PID ${foreign.map((f) => `${f.pid}(${f.process ?? '?'})`).join(', ')} 가 이 포트를 ESTABLISHED 로 잡고 있다 — `
+      + '명령 콘솔은 단일 클라이언트라 그 연결이 닫혀야 새 연결이 받아들여진다(다른 VS Code 창·GDE·리로드 전 옛 확장 호스트일 수 있다).'
+    : null;
+  return { measured: Array.isArray(rows), owners, established: established.length, foreign, note };
+}
+
+export function classifyReachability({ host, code, icmpAlive, localConnections = null }) {
+  const local = localConnections && typeof localConnections === 'object' ? localConnections : null;
   const observations = {
     icmp: icmpAlive === true ? 'reachable' : icmpAlive === false ? 'unreachable' : 'unknown',
     tcp1402: code === 'ECONNREFUSED' ? 'refused' : code === 'ETIMEDOUT' ? 'timeout' : (code ?? 'error'),
     // 이 서버는 라우트/인터페이스를 특정하지 않는다 — 멀티 NIC 환경에서 같은 IP가 다른 장치일 수 있다(#22 함정).
     route: 'ambiguous',
+    // 이 PC 에서 같은 제어기 포트로 맺어진 연결(§1-EU). measured:false 면 조회하지 못한 것이지 "없다" 가 아니다.
+    localConnections: local
+      ? { measured: local.measured !== false, established: local.established, owners: local.owners, foreignOwners: local.foreign }
+      : { measured: false, established: 0, owners: [], foreignOwners: [] },
   };
 
   let state;
@@ -246,8 +283,13 @@ export function classifyReachability({ host, code, icmpAlive }) {
     alternativeExplanations = ['ping 을 실행할 수 없어 호스트 도달성을 측정하지 못함'];
   }
 
+  // 다른 로컬 프로세스가 포트를 잡고 있으면 그것이 1순위 후보다 — 추론 목록 맨 앞과 판정 문장에 넣는다(§1-EU).
+  if (local?.note) {
+    alternativeExplanations = [local.note, ...alternativeExplanations];
+  }
+  const localNote = local?.note ? ` ${local.note}` : '';
   const verdict = state === 'command-channel-unavailable'
-    ? `${host}:1402 새 연결이 거부됨(refused) — 지금 명령 채널을 열 수 없다는 관측이다. 제어기 런타임 상태는 이것만으로 확정할 수 없다.`
+    ? `${host}:1402 새 연결이 거부됨(refused) — 지금 명령 채널을 열 수 없다는 관측이다. 제어기 런타임 상태는 이것만으로 확정할 수 없다.${localNote}`
     : state === 'command-channel-unresponsive'
       ? 'ICMP는 응답하나 1402 TCP가 실패 — 부팅 중(서비스 미기동)·소켓 점유·경로 차단 가능. 런타임 상태 미확정.'
       : state === 'host-unreachable'

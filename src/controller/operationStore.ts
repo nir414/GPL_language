@@ -303,6 +303,18 @@ export class OperationHandle {
     get filePath(): string { return operationFilePath(this.rec.operationId, this.dir); }
     get finished(): boolean { return this.done; }
 
+	/** QUEUED 작업이 실제 실행권을 얻었을 때 RUNNING으로 전환한다. */
+	start(phase = 'PREPARE'): void {
+		if (this.done) { return; }
+		if (this.rec.state !== 'QUEUED') {
+			this.setPhase(phase);
+			return;
+		}
+		const t = this.now();
+		this.rec = { ...this.rec, state: 'RUNNING', phase, startedAt: t, heartbeat: t };
+		this.write();
+	}
+
     setPhase(phase: string): void {
         if (this.done || this.rec.phase === phase) { return; }
         this.rec = { ...this.rec, phase, heartbeat: this.now() };
@@ -330,9 +342,10 @@ export class OperationHandle {
         this.finish('FAILED', { error, result });
     }
 
-    cancel(reason?: string): void {
+    cancel(reason?: string, result?: Record<string, unknown>): void {
         this.finish('CANCELLED', {
             error: reason ? { code: 'OPERATION_CANCELLED', message: reason, retryable: true, retryMode: 'RETRY_SAME_REQUEST', safeToRepeat: true } : undefined,
+            result,
         });
     }
 
@@ -365,12 +378,18 @@ export function beginOperation(
         idempotencyKey?: string;
         requestId?: string;
         phase?: string;
+		queued?: boolean;
     },
     env: OperationEnv = {},
 ): OperationHandle {
     const now = env.now ?? (() => Date.now());
+    const { queued, ...recordSeed } = seed;
     return new OperationHandle(
-        { ...seed, operationId: seed.operationId ?? newOperationId(seed.type, now(), env.pid ?? process.pid) },
+		{
+			...recordSeed,
+			operationId: seed.operationId ?? newOperationId(seed.type, now(), env.pid ?? process.pid),
+			...(queued ? { state: 'QUEUED' as const, startedAt: undefined } : {}),
+		},
         env,
     );
 }

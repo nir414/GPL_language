@@ -3,7 +3,7 @@
  *
  * /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트를 담는다. 확장의 `Start`는 `-compile` 을 붙여
  * 컴파일까지 함께 하므로(ai-handoff §0.7 — 스위치 없는 Start 는 옛 바이너리를 실행한다, §1-DN) 옛 바이너리가
- * 도는 문제는 아니지만, 소스에 에러가 있으면 Start가 실패하고 Problems 연동도 없다 → Start 전 안내가 필요하다.
+ * 도는 문제는 아니다. 다만 소스에 에러가 있으면 Start 단계에서 컴파일이 실패해 실행되지 않으므로 Start 전 안내가 필요하다.
  *
  * set: 업로드 후 Compile 보류(autoOnSave/THREAD_CHECK) · Compile 실패.
  * clear: Compile 성공 확정(deployRecord.onDidRecordCompiled — 경로 무관) · Load→Compile→Start 성공.
@@ -34,7 +34,7 @@ export interface CompileStaleCleared {
  */
 export function describeCompileStale(info: CompileStaleInfo, formatTime: (ms: number) => string = defaultFormatTime): string {
     return `'${info.projectName}' 의 /GPL 소스가 ${formatTime(info.since)} 이후 아직 Compile 로 검증되지 않았습니다(사유: ${info.reason}). `
-        + 'Start 는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 Start 가 실패하고 에러 위치가 Problems 에 오지 않습니다.';
+        + 'Start 는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 실행되지 않고, 에러 위치는 Problems 에 표시됩니다. 먼저 Quick Compile 로 확인할 수 있습니다.';
 }
 
 function defaultFormatTime(ms: number): string {

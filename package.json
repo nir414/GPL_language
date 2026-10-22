@@ -1,8 +1,8 @@
 {
     "name": "gpl-language-support",
-    "displayName": "GPL Language Support",
+    "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.9.11",
+    "version": "0.14.0",
     "publisher": "nir414",
     "repository": {
         "type": "git",
@@ -39,10 +39,12 @@
         "onCommand:gpl.showXmlBestPractices",
         "onCommand:gpl.analyzeXmlEncoding",
         "onCommand:gpl.controller.showDashboard",
+        "onCommand:gpl.controller.showIoPanel",
         "onCommand:gpl.controller.connect",
         "onCommand:gpl.stopAll",
         "onCommand:gpl.controller.disconnect",
         "onCommand:gpl.deploy",
+        "onCommand:gpl.uploadOnly",
         "onCommand:gpl.start",
         "onCommand:gpl.uploadStart",
         "onCommand:gpl.saveToFlash",
@@ -257,6 +259,12 @@
                 "icon": "$(dashboard)"
             },
             {
+                "command": "gpl.controller.showIoPanel",
+                "title": "Open Digital I/O Panel (디지털 I/O 제어판)",
+                "category": "GPL",
+                "icon": "$(circuit-board)"
+            },
+            {
                 "command": "gpl.controller.connect",
                 "title": "Connect to Controller (제어기 연결)",
                 "category": "GPL",
@@ -271,6 +279,12 @@
             {
                 "command": "gpl.deploy",
                 "title": "Deploy (/GPL 업로드 + 컴파일, 실행 안 함)",
+                "category": "GPL",
+                "icon": "$(cloud-upload)"
+            },
+            {
+                "command": "gpl.uploadOnly",
+                "title": "Upload Only (/GPL 업로드만 — 정지·컴파일·실행 없음)",
                 "category": "GPL",
                 "icon": "$(cloud-upload)"
             },
@@ -402,7 +416,7 @@
             },
             {
                 "command": "gpl.controller.setDio",
-                "title": "Set DIO (DIO 출력 설정)",
+                "title": "Set DIO (DIO 강제 상태 설정)",
                 "category": "GPL",
                 "icon": "$(circuit-board)"
             },
@@ -899,34 +913,39 @@
             ],
             "explorer/context": [
                 {
-                    "command": "gpl.deploy",
+                    "command": "gpl.uploadOnly",
                     "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
                     "group": "gpl_project@1"
                 },
                 {
-                    "command": "gpl.quickCompile",
+                    "command": "gpl.deploy",
                     "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
                     "group": "gpl_project@2"
                 },
                 {
-                    "command": "gpl.debugProject",
+                    "command": "gpl.quickCompile",
                     "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
                     "group": "gpl_project@3"
                 },
                 {
-                    "command": "gpl.uploadStart",
+                    "command": "gpl.debugProject",
                     "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
                     "group": "gpl_project@4"
                 },
                 {
-                    "command": "gpl.start",
+                    "command": "gpl.uploadStart",
                     "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
                     "group": "gpl_project@5"
                 },
                 {
-                    "command": "gpl.saveToFlash",
+                    "command": "gpl.start",
                     "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
                     "group": "gpl_project@6"
+                },
+                {
+                    "command": "gpl.saveToFlash",
+                    "when": "explorerResourceIsFolder && resourcePath in gpl.projectDirs",
+                    "group": "gpl_project@7"
                 },
                 {
                     "command": "gpl.project.syncSources",
@@ -971,18 +990,23 @@
                     "when": "view == gplThreads"
                 },
                 {
-                    "command": "gpl.deploy",
+                    "command": "gpl.uploadOnly",
                     "group": "1_deploy@1",
                     "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
-                    "command": "gpl.start",
+                    "command": "gpl.deploy",
                     "group": "1_deploy@2",
                     "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
-                    "command": "gpl.saveToFlash",
+                    "command": "gpl.start",
                     "group": "1_deploy@3",
+                    "when": "view == gplThreads && gpl.ui.connected"
+                },
+                {
+                    "command": "gpl.saveToFlash",
+                    "group": "1_deploy@4",
                     "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
@@ -1193,34 +1217,39 @@
                     "group": "inline"
                 },
                 {
-                    "command": "gpl.deploy",
+                    "command": "gpl.uploadOnly",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@1"
                 },
                 {
-                    "command": "gpl.uploadStart",
+                    "command": "gpl.deploy",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@2"
                 },
                 {
-                    "command": "gpl.start",
+                    "command": "gpl.uploadStart",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@3"
                 },
                 {
-                    "command": "gpl.saveToFlash",
+                    "command": "gpl.start",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@4"
                 },
                 {
-                    "command": "gpl.diagnosticSnapshot",
+                    "command": "gpl.saveToFlash",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@5"
                 },
                 {
-                    "command": "gpl.controller.copyThreads",
+                    "command": "gpl.diagnosticSnapshot",
                     "when": "view == gplThreads && viewItem == section-threads",
                     "group": "threadSection@6"
+                },
+                {
+                    "command": "gpl.controller.copyThreads",
+                    "when": "view == gplThreads && viewItem == section-threads",
+                    "group": "threadSection@7"
                 },
                 {
                     "command": "gpl.controller.refreshFtp",
@@ -1380,6 +1409,12 @@
                     ],
                     "description": "Prefix prepended to each runtime console output line."
                 },
+                "gpl.runtimeConsole.captureFile": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "런타임 콘솔(1403) 출력 줄을 임시 파일(%TEMP%\\gpl-controller\\runtime-console-<ip>.log, 2 MB 넘으면 .1 로 교체)에도 남깁니다. 사용자가 나중에 통째로 열어 보는 용도이며, AI(MCP)의 runtime_console_read 는 파일이 아니라 확장의 수신 버퍼를 읽습니다."
+                },
                 "gpl.runtimeConsole.showStateInOutputChannel": {
                     "scope": "window",
                     "type": "boolean",
@@ -1509,6 +1544,17 @@
                     "default": true,
                     "description": "On compile failure during Deploy/Build, open the first compile error's file at its line and reveal the Problems panel."
                 },
+                "gpl.deploy.errorLogQuietCodes": {
+                    "scope": "window",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    },
+                    "default": [
+                        -1600
+                    ],
+                    "description": "Controller ErrorLog codes that represent intended behavior (default: -1600 Power off requested). On successful deploys they are logged to the Output channel but never raise a warning notification. Entries already seen in the previous deploy are never re-notified either."
+                },
                 "gpl.controller.ip": {
                     "scope": "window",
                     "type": "string",
@@ -1546,13 +1592,6 @@
                     "minimum": 1000,
                     "description": "연결 끊김 감지용 프로브(Show Thread 폴링·재프로브)의 응답 대기 시간(ms). 명령 타임아웃(timeoutMs)과 별개입니다. 프로브가 연속 3회(연결 거부·도달 불가는 2회) 실패하면 연결 유실로 판정해 연결 상태를 끊습니다(자동 재접속 없음 — 다시 Connect). 첫 실패나 런타임 콘솔 오류·keep-alive 소켓 오류·대시보드 프로브 실패 뒤에는 정규 폴링 간격을 기다리지 않고 1초 간격으로 재프로브합니다."
                 },
-                "gpl.controller.defaultProject": {
-                    "scope": "window",
-                    "type": "string",
-                    "default": "",
-                    "description": "자동화(MCP·URI) 호출의 기본 프로젝트 — 이름(.gpr ProjectName) 또는 폴더명. 워크스페이스에 실행 가능한 GPL 프로젝트(.gpr에 ProjectStart가 있는 것)가 여럿일 때, 대상을 지정하지 않은 자동화 호출이 어느 프로젝트를 쓸지 정합니다. 비워 두면 ① 호출 인자 ② 이 세션에서 이미 확정된 대상 ③ 실행 가능 프로젝트가 유일할 때 그것 순으로 결정하고, 그래도 애매하면 UI를 띄우지 않고 `PROJECT_AMBIGUOUS`와 후보 목록을 돌려줍니다. 사람이 명령 팔레트에서 실행할 때의 프로젝트 선택 목록(QuickPick)에는 영향을 주지 않습니다.",
-                    "markdownDescription": "자동화(MCP·URI) 호출의 기본 프로젝트 — 이름(`.gpr` 의 `ProjectName`) 또는 폴더명.\n\n워크스페이스에 **실행 가능한** GPL 프로젝트(`.gpr` 에 `ProjectStart` 가 있는 것)가 여럿일 때, 대상을 지정하지 않은 자동화 호출이 어느 프로젝트를 쓸지 정합니다. 비워 두면 ① 호출 인자(`project`/`projectDir`/`projectFile`) ② 이 세션에서 이미 확정된 대상 ③ 실행 가능 프로젝트가 유일할 때 그것 순으로 결정하고, 그래도 애매하면 **UI를 띄우지 않고** `PROJECT_AMBIGUOUS` 와 후보 목록을 돌려줍니다.\n\n사람이 명령 팔레트에서 실행할 때의 프로젝트 선택 목록(QuickPick)에는 영향을 주지 않습니다."
-                },
                 "gpl.controller.connectionRecoveryWindowMs": {
                     "scope": "window",
                     "type": "number",
@@ -1563,7 +1602,13 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 명령 콘솔 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. 끄면 MCP는 제어기에 직접 접속합니다."
+                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 명령 콘솔 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. Export 설정은 브리지 전용(`GPL_BRIDGE=only`)이므로 이 옵션을 끄면 MCP가 직접 접속으로 우회하지 않고 브리지 사용 불가를 보고합니다. 직접 접속은 `.mcp.json`에서 `GPL_BRIDGE=auto` 또는 `off`를 명시한 개발 환경만 사용합니다."
+                },
+                "gpl.agentBridge.revealOutput": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "AI 에이전트(MCP)의 요청이 들어오면 출력 패널 「GPL Language Support」를 자동으로 엽니다(포커스는 편집기에 둡니다). 사람이 보내는 명령·배포처럼 AI 가 제어기에 보낸 명령과 응답도 같은 자리에 남습니다. 요청마다 여는 것이 아니라 30초 이상 조용하다가 다시 요청이 올 때(새 작업 시작)만 열므로, 다른 채널을 보고 있는 동안 AI 의 폴링이 패널을 되돌려 놓지 않습니다. 끄면 패널을 열지 않습니다(로그는 그대로 남습니다)."
                 },
                 "gpl.controller.commandPolicyEnabled": {
                     "scope": "window",
@@ -1630,6 +1675,13 @@
                     "default": true,
                     "description": "Start 명령(프로그램 실행 — 로봇 모션 가능) 전에 확인 모달을 표시합니다. GPL: Start 버튼과 디버그 attach 후 자동 Start에 적용됩니다."
                 },
+                "gpl.controller.postStartWatchMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 5000,
+                    "minimum": 0,
+                    "description": "Deploy & Run / Upload & Start 의 Start 뒤 이 시간(ms) 동안 메인 쓰레드를 읽기 전용 Show Thread 로 감시해, Error 로 멈추면 코드·메시지·file:line 을 알림과 작업 기록(runtimeError)에 남깁니다. 0 이면 감시하지 않습니다(종전처럼 Start 직후 ErrorLog 스냅샷만)."
+                },
                 "gpl.controller.syncEditorBreakpoints": {
                     "scope": "window",
                     "type": "boolean",
@@ -1677,6 +1729,12 @@
                     "type": "boolean",
                     "default": true,
                     "description": "디버그 콘솔에서 '>' 접두사로 보내는 명령이 제어기 상태를 바꿀 수 있으면(Start/Stop/Execute/Set 등) 전송 전 확인을 요구합니다."
+                },
+                "gpl.diagnostics.tryWithoutCatch": {
+                    "scope": "resource",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Catch 없는 Try에 선택적 호환성 안내(Information)를 표시합니다. 기본 해제. GPL 4.2K5 실측에서 Finally 재실행은 잡히지 않은 예외로 Error 정지한 스레드를 Continue할 때 발생했으며 Catch 후 재던지기로도 방지되지 않았습니다."
                 },
                 "gpl.diagnostics.experimental": {
                     "scope": "window",
@@ -1805,6 +1863,18 @@
                         ".gpl"
                     ],
                     "description": "Project.gpr 소스 목록 동기화에서 소스로 취급할 확장자입니다. GDE는 .gpo(컴파일 산출물)를 ProjectSource에 넣지 않으므로 기본은 .gpl만입니다."
+                },
+                "gpl.controller.memoryGuard.warnMb": {
+                    "type": "number",
+                    "default": 4,
+                    "minimum": 0,
+                    "description": "Compile/Start 및 배포 전 여유 메모리 경고 기준(MB). 현장 보고 기반 운영 기준이며 제어기 사양의 절대 한계가 아닙니다."
+                },
+                "gpl.controller.memoryGuard.blockMb": {
+                    "type": "number",
+                    "default": 2.5,
+                    "minimum": 0,
+                    "description": "Compile/Start 및 배포 전 여유 메모리 차단 기준(MB). 이 값 미만이면 전송하지 않습니다. 0이면 수치 차단을 해제하지만 측정 실패는 차단합니다. 삭제·Unload는 자동 수행하지 않습니다."
                 }
             }
         },

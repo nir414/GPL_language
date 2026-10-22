@@ -60,7 +60,8 @@ export function parseCompileErrors(text: string): CompileError[] {
     // 제어기 응답은 줄바꿈(`\n`) 또는 ` | ` 로 항목이 구분될 수 있으므로,
     // 메시지는 다음 구분자(파이프/줄바꿈/문자열 끝) 직전까지만 비탐욕적으로 캡처한다.
     // (이전 정규식의 탐욕적 `(.+)`는 한 줄로 합쳐진 응답에서 첫 에러가 나머지를 모두 삼켰다.)
-    const regex = /(?:\[CONSOLE\]\s*)?([^\s:|]+\.(?:gpl|gpr|gpo)):(\d+):\((-?\d+)\):\s*(.+?)(?=\s*\||[\r\n]|$)/gi;
+    // `<DATA>`가 첫 에러와 같은 줄에 붙어도 태그를 파일명의 일부로 삼지 않는다.
+    const regex = /(?:\[CONSOLE\]\s*)?([^\s:|<>]+\.(?:gpl|gpr|gpo)):(\d+):\((-?\d+)\):\s*(.+?)(?=\s*\||[\r\n]|<\/?DATA>|<STATUS>|$)/gi;
     let m: RegExpExecArray | null;
     while ((m = regex.exec(text)) !== null) {
         const code = parseInt(m[3], 10);

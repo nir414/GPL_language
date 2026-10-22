@@ -5,6 +5,7 @@ import * as path from 'path';
 import { test } from './harness';
 import {
     GPR_PATH_SEPARATOR,
+    ancestorRelativePathCandidates,
     collectProjectSourcePaths,
     collectRelatedGprPaths,
     findNearestGprOnDisk,
@@ -307,6 +308,33 @@ test('projectSources: resolveProjectLibraryDirs — projects 루트 기준·프�
         assert.deepStrictEqual(unresolved.unresolved, ['NoSuchLibrary']);
     } finally {
         p.cleanup();
+    }
+});
+
+test('projectSources: 배포 루트 기준 ProjectLibrary를 중첩 도구 프로젝트에서도 해석한다', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gpl-v2-library-test-'));
+    try {
+        const v2 = path.join(root, 'V2');
+        const toolDir = path.join(v2, 'tools', 'EM2RS_Probe');
+        const libDir = path.join(v2, 'Lib', 'Lib_Device');
+        fs.mkdirSync(toolDir, { recursive: true });
+        fs.mkdirSync(libDir, { recursive: true });
+        fs.writeFileSync(path.join(libDir, 'Project.gpr'), LIB_GPR, 'utf8');
+        const toolGpr = path.join(toolDir, 'Project.gpr');
+        const text = 'ProjectBegin\r\nProjectName="EM2RS_Probe"\r\nProjectLibrary="Lib\\Lib_Device"\r\nProjectEnd\r\n';
+        fs.writeFileSync(toolGpr, text, 'utf8');
+
+        assert.deepStrictEqual(resolveProjectLibraryDirs(toolGpr, text).dirs, [libDir]);
+        assert.deepStrictEqual(
+            ancestorRelativePathCandidates(toolDir, 'Lib\\Lib_Device\\EM2RS.gpl').slice(0, 3),
+            [
+                path.join(toolDir, 'Lib', 'Lib_Device', 'EM2RS.gpl'),
+                path.join(v2, 'tools', 'Lib', 'Lib_Device', 'EM2RS.gpl'),
+                path.join(v2, 'Lib', 'Lib_Device', 'EM2RS.gpl'),
+            ],
+        );
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
     }
 });
 

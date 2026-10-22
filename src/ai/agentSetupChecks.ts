@@ -1,9 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isIP } from 'net';
-import { resolveProjectTarget, ResolveTargetResult, TargetCandidate } from '../controller/projectTarget';
-import { checkProjectName } from '../controller/projectNameGuard';
-import { normalizeDirKey, isPathUnder } from '../util/pathKey';
+import { normalizeDirKey } from '../util/pathKey';
 
 export const MCP_SERVER_NAME = 'gpl-controller';
 export const GUIDE_VERSION_MARK = '<!-- gpl-controller-mcp guide version:';
@@ -11,12 +9,19 @@ export const GUIDE_BEGIN = '<!-- BEGIN gpl-controller-mcp guide (auto-generated 
 export const GUIDE_END = '<!-- END gpl-controller-mcp guide -->';
 export const GUIDE_TOPIC = '제어기 통신 — gpl-controller MCP 도구만 사용한다';
 export const GUIDE_SETUP_MARK = '<!-- gpl-controller-mcp setup: ';
+/**
+ * 확장 Export가 만드는 MCP 설정의 전송 정책.
+ *
+ * 제어기는 명령 콘솔 클라이언트를 하나만 받으므로 AI가 별도 TCP 연결로 폴백하면
+ * 사람이 연결한 VS Code 세션과 경쟁한다. `only`는 AI 명령을 Agent Bridge로만 보내
+ * 확장의 단일 소켓·직렬 큐를 사람과 공유하게 한다. 헤드리스 직접 접속이 필요한
+ * 개발자는 수동 설정에서 `auto`/`off`를 명시할 수 있지만 Export의 안전 기본값은 아니다.
+ */
+export const SHARED_CONTROLLER_BRIDGE_MODE = 'only';
 
 export interface GuideSetup {
 	ip: string;
 	port: number;
-	projectName?: string;
-	projectDir?: string;
 }
 
 export interface GuideReport {
@@ -29,16 +34,32 @@ export interface GuideReport {
 	setup?: GuideSetup;
 }
 
+/** 확장이 지금 쓰는 제어기 주소 — `.mcp.json`(GPL_HOST/GPL_PORT)과 대조하는 기준. */
+export interface ControllerAddress {
+	ip: string;
+	port: number;
+}
+
+export interface InspectWorkspaceSetupOptions {
+	/** 주면 `.mcp.json` 의 GPL_HOST/GPL_PORT 가 이 주소와 다를 때 설정 문제로 알린다(§1-ES). */
+	currentController?: ControllerAddress;
+}
+
+export interface McpHostMismatch {
+	path: string;
+	configured: { host: string; port: number };
+	current: ControllerAddress;
+}
+
 export interface WorkspaceSetupReport {
 	workspaceRoot?: string;
 	mcpJson: {
 		path?: string; exists: boolean; registered: boolean;
 		scriptPath?: string; scriptExists?: boolean; pointsToStableCopy: boolean | null;
-		projectName?: string; projectDir?: string;
+		bridgeMode?: string;
 	};
 	claudeMd: GuideReport;
 	agentsMd: GuideReport;
-	target: { status: 'confirmed' | 'unresolved'; resolution?: ResolveTargetResult; detail: string };
 	problems: string[];
 	warnings: string[];
 }
@@ -52,8 +73,39 @@ export function sameSetupPath(a: string, b: string): boolean {
 	return normalizeDirKey(a) === normalizeDirKey(b);
 }
 
-export function projectCandidatesInRoot(candidates: readonly TargetCandidate[], root: string): TargetCandidate[] {
-	return candidates.filter(candidate => isPathUnder(candidate.dir, root));
+function sameControllerAddress(configured: { host: string; port: number }, current: ControllerAddress): boolean {
+	return configured.host.trim().toLowerCase() === current.ip.trim().toLowerCase() && configured.port === current.port;
+}
+
+/** `.mcp.json` 의 gpl-controller 항목이 가리키는 제어기 주소. 파일·항목이 없거나 파싱에 실패하면 undefined. */
+export function readMcpControllerAddress(root: string): { path: string; host?: string; port?: number } | undefined {
+	const file = path.join(root, '.mcp.json');
+	if (!fs.existsSync(file)) { return undefined; }
+	try {
+		const config = record(JSON.parse(fs.readFileSync(file, 'utf8')));
+		const entry = record(record(config?.mcpServers)?.[MCP_SERVER_NAME]);
+		if (!entry) { return undefined; }
+		const env = record(entry.env);
+		const host = typeof env?.GPL_HOST === 'string' ? env.GPL_HOST : undefined;
+		const port = typeof env?.GPL_PORT === 'string' && /^\d+$/.test(env.GPL_PORT) ? Number(env.GPL_PORT) : undefined;
+		return { path: file, host, port };
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * `.mcp.json` 의 제어기 주소가 지금 확장이 쓰는 주소와 다른가(2026-10-19, ai-handoff §1-ES).
+ *
+ * 다르면 그 워크스페이스에서 뜨는 MCP 서버는 옛 주소(Export 시점 값)로 접속하고, 이 확장의 presence 도 못 찾아
+ * "확장 미실행" 으로 보고한다 — 배포·콘솔이 전부 막힌다. 항목이 없거나 값이 비정상이면 불일치로 보지 않는다
+ * (그것은 `inspectWorkspaceSetup` 이 설정 문제로 따로 알린다). 호스트 이름과 IP 는 문자열로만 비교한다.
+ */
+export function findMcpHostMismatch(root: string, current: ControllerAddress): McpHostMismatch | undefined {
+	const mcp = readMcpControllerAddress(root);
+	if (!mcp || !mcp.host || mcp.port === undefined || !isControllerHost(mcp.host)) { return undefined; }
+	const configured = { host: mcp.host, port: mcp.port };
+	return sameControllerAddress(configured, current) ? undefined : { path: mcp.path, configured, current };
 }
 
 export function isControllerHost(value: string): boolean {
@@ -88,16 +140,10 @@ function readGuide(file: string, version: string, problems: string[], warnings: 
 		if (marker !== -1) {
 			const close = guide.indexOf(' -->', marker);
 			const setup = record(JSON.parse(guide.slice(marker + GUIDE_SETUP_MARK.length, close)));
-			if (!setup || typeof setup.ip !== 'string' || !Number.isInteger(setup.port)
-				|| (setup.projectName !== undefined && typeof setup.projectName !== 'string')
-				|| (setup.projectDir !== undefined && typeof setup.projectDir !== 'string')) {
+			if (!setup || typeof setup.ip !== 'string' || !Number.isInteger(setup.port)) {
 				throw new Error('안내 블록 설정 표식 형식 오류');
 			}
-			report.setup = setup as unknown as GuideSetup;
-		} else if (report.hasGuide) {
-			// 구버전 안내는 이름만 기록했다. 폴더는 추측하지 않는다.
-			const projectName = guide.match(/기본 프로젝트는\s*`([^`]+)`/)?.[1];
-			if (projectName) { report.setup = { ip: '', port: 0, projectName }; }
+			report.setup = { ip: setup.ip as string, port: setup.port as number };
 		}
 	} catch (err) {
 		problems.push(`${path.basename(file)} 읽기/안내 파싱 실패: ${err instanceof Error ? err.message : String(err)}`);
@@ -110,7 +156,7 @@ export function inspectWorkspaceSetup(
 	root: string | undefined,
 	stableScript: string,
 	version: string,
-	candidates: readonly TargetCandidate[],
+	options: InspectWorkspaceSetupOptions = {},
 ): WorkspaceSetupReport {
 	const problems: string[] = [];
 	const warnings: string[] = [];
@@ -145,6 +191,11 @@ export function inspectWorkspaceSetup(
 					if (!mcpJson.pointsToStableCopy) { problems.push('서버 경로가 globalStorage 사본을 가리키지 않음 — Export 재실행'); }
 				}
 				env = record(entry.env);
+				const bridgeMode = typeof env?.GPL_BRIDGE === 'string' ? env.GPL_BRIDGE.trim().toLowerCase() : undefined;
+				mcpJson.bridgeMode = bridgeMode;
+				if (bridgeMode !== SHARED_CONTROLLER_BRIDGE_MODE) {
+					problems.push(`GPL_BRIDGE가 ${SHARED_CONTROLLER_BRIDGE_MODE}가 아님(${bridgeMode ?? '미지정'}) — VS Code와 AI의 명령 콘솔 공유를 보장하려면 Export 재실행`);
+				}
 				if (typeof env?.GPL_HOST !== 'string' || !isControllerHost(env.GPL_HOST)) {
 					problems.push('GPL_HOST가 올바른 IP 주소 또는 호스트 이름이 아님');
 				}
@@ -152,16 +203,16 @@ export function inspectWorkspaceSetup(
 					|| Number(env.GPL_PORT) < 1 || Number(env.GPL_PORT) > 65535) {
 					problems.push('GPL_PORT는 1~65535의 정수 문자열이어야 함');
 				}
-				for (const name of ['GPL_PROJECT', 'GPL_PROJECT_DIR']) {
-					if (env?.[name] !== undefined && typeof env[name] !== 'string') { problems.push(`${name}은 문자열이어야 함`); }
+				// 형식이 맞아도 지금 연결 주소와 다르면 MCP 는 다른 제어기로 가고 이 창을 못 찾는다(§1-ES).
+				if (options.currentController && typeof env?.GPL_HOST === 'string' && isControllerHost(env.GPL_HOST)
+					&& typeof env?.GPL_PORT === 'string' && /^\d+$/.test(env.GPL_PORT)
+					&& !sameControllerAddress({ host: env.GPL_HOST, port: Number(env.GPL_PORT) }, options.currentController)) {
+					problems.push(`GPL_HOST(${env.GPL_HOST}:${env.GPL_PORT})가 현재 제어기 주소(${options.currentController.ip}:${options.currentController.port})와 다름 — Export 재실행(현재 주소로 다시 씀)`);
 				}
-				mcpJson.projectName = typeof env?.GPL_PROJECT === 'string' ? env.GPL_PROJECT : undefined;
-				mcpJson.projectDir = typeof env?.GPL_PROJECT_DIR === 'string' && env.GPL_PROJECT_DIR
-					? path.resolve(root, env.GPL_PROJECT_DIR) : undefined;
-				if (mcpJson.projectName && env?.GPL_PROJECT_DIR === undefined) {
-					warnings.push('GPL_PROJECT_DIR 미지정 — Export에서 작업 폴더를 선택하고 저장하세요.');
+				const legacyTargetKeys = ['GPL_PROJECT', 'GPL_PROJECT_DIR'].filter(name => env?.[name] !== undefined);
+				if (legacyTargetKeys.length > 0) {
+					problems.push(`${legacyTargetKeys.join('/')}는 더 이상 사용하지 않음 — Export 재실행`);
 				}
-				if (mcpJson.projectName && !checkProjectName(mcpJson.projectName).ok) { problems.push('GPL_PROJECT에 제어기 명령으로 쓸 수 없는 이름이 지정됨'); }
 			}
 		} catch (err) {
 			problems.push(`.mcp.json 읽기/파싱 실패: ${err instanceof Error ? err.message : String(err)}`);
@@ -172,25 +223,11 @@ export function inspectWorkspaceSetup(
 	if (root && !claudeMd.hasGuide) { problems.push('CLAUDE.md에 제어기 통신 안내 없음 — Export 실행'); }
 	if (claudeMd.hasGuide && !claudeMd.hasBlock) { warnings.push('CLAUDE.md의 수동 안내는 자동 갱신하지 않음 — 내용 확인 필요'); }
 
-	const request = mcpJson.projectDir ? { projectDir: mcpJson.projectDir }
-		: mcpJson.projectName ? { project: mcpJson.projectName } : undefined;
-	const resolution = request ? resolveProjectTarget(request, root ? projectCandidatesInRoot(candidates, root) : []) : undefined;
-	const confirmed = resolution?.ok === true;
-	const target: WorkspaceSetupReport['target'] = {
-		status: confirmed ? 'confirmed' : 'unresolved', resolution,
-		detail: resolution ? resolution.ok ? `${resolution.projectName} — ${resolution.dir}` : resolution.detail
-			: '기본 대상이 지정되지 않음 — project_target에 projectDir을 지정하세요.',
-	};
-	if (resolution?.ok && mcpJson.projectName && mcpJson.projectName !== resolution.projectName) {
-		problems.push(`GPL_PROJECT(${mcpJson.projectName})와 지정 폴더의 ProjectName(${resolution.projectName})이 다름`);
-	}
 	for (const guide of [claudeMd, agentsMd]) {
 		const setup = guide.setup;
 		if (!setup) { continue; }
 		const label = path.basename(guide.path);
-		if ((setup.projectName ?? '') !== (mcpJson.projectName ?? '')) { warnings.push(`${label}의 기본 프로젝트(${setup.projectName ?? '미지정'})가 .mcp.json(${mcpJson.projectName || '미지정'})과 다름`); }
-		if (setup.projectDir && (!mcpJson.projectDir || !sameSetupPath(path.resolve(root ?? '', setup.projectDir), mcpJson.projectDir))) { warnings.push(`${label}의 프로젝트 폴더가 .mcp.json과 다름`); }
 		if (setup.ip && (setup.ip !== env?.GPL_HOST || setup.port !== Number(env?.GPL_PORT))) { warnings.push(`${label}의 제어기 주소가 .mcp.json과 다름`); }
 	}
-	return { workspaceRoot: root, mcpJson, claudeMd, agentsMd, target, problems, warnings };
+	return { workspaceRoot: root, mcpJson, claudeMd, agentsMd, problems, warnings };
 }

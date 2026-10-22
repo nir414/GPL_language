@@ -2,16 +2,17 @@ import * as vscode from 'vscode';
 import { GPLParser } from '../language/gplParser';
 import { findInitHookFindings, InitHookSeverity } from '../language/initHook';
 import { isGplFile } from '../config';
+import { findTryCatchFindings } from '../language/tryCatch';
 
 export class GPLDiagnosticProvider {
     private diagnosticCollection: vscode.DiagnosticCollection;
     private pendingTimers: Map<string, NodeJS.Timeout> = new Map();
 
     /**
-     * 진단은 실험 기능 — gpl.diagnostics.experimental 설정(기본 false = 꺼짐)이 켜진
-     * 경우에만 동작한다. 호출 시마다 읽으므로 설정 변경이 재시작 없이 반영된다.
+     * XML/성능/호환성 등 기존 진단은 실험 설정이 켜진 경우에만 동작한다.
+     * Try/Finally 호환성 안내는 별도 설정으로 선택 활성화한다.
      */
-    private static isDiagnosticsEnabled(): boolean {
+    private static isExperimentalDiagnosticsEnabled(): boolean {
         return vscode.workspace.getConfiguration('gpl').get<boolean>('diagnostics.experimental', false) === true;
     }
 
@@ -27,13 +28,25 @@ export class GPLDiagnosticProvider {
             return;
         }
 
-        // 실험 설정(gpl.diagnostics.experimental)이 꺼져 있으면 기존 진단을 지우고 종료.
-        if (!GPLDiagnosticProvider.isDiagnosticsEnabled()) {
-            this.diagnosticCollection.delete(document.uri);
-            return;
+        const diagnostics: vscode.Diagnostic[] = [];
+        if (vscode.workspace.getConfiguration('gpl', document.uri).get<boolean>('diagnostics.tryWithoutCatch', false)) {
+            diagnostics.push(...findTryCatchFindings(document.getText()).map(finding => {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(finding.line, finding.start, finding.line, finding.end),
+                    finding.message,
+                    vscode.DiagnosticSeverity.Information,
+                );
+                diagnostic.source = 'GPL Compatibility';
+                diagnostic.code = finding.code;
+                return diagnostic;
+            }));
         }
 
-        const diagnostics: vscode.Diagnostic[] = [];
+        // 선택 활성화한 호환성 안내는 실험 진단과 독립적으로 표시한다.
+        if (!GPLDiagnosticProvider.isExperimentalDiagnosticsEnabled()) {
+            this.diagnosticCollection.set(document.uri, diagnostics);
+            return;
+        }
         const content = document.getText();
         const lines = content.split('\n');
 
@@ -84,7 +97,7 @@ export class GPLDiagnosticProvider {
      * Debounced diagnostics scheduling to avoid frequent recomputation
      */
     public scheduleDiagnostics(document: vscode.TextDocument, delayMs: number = 500): void {
-        if (!isGplFile(document) || !GPLDiagnosticProvider.isDiagnosticsEnabled()) {
+        if (!isGplFile(document)) {
             return;
         }
 

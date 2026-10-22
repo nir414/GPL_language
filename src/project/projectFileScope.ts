@@ -15,6 +15,7 @@ import {
     collectProjectSourcePaths,
     collectRelatedGprPaths,
     findNearestGprOnDisk,
+    listSourceFilesRecursive,
     pickOwningGprPath,
 } from './projectSources';
 
@@ -44,9 +45,9 @@ export async function findWorkspaceGprPaths(): Promise<string[]> {
 export interface ProjectFileScope {
     /**
      * `project`: 소유 프로젝트(.gpr)를 찾아 그 폴더로 범위를 정했다.
-     * `workspace`: .gpr를 못 찾아 워크스페이스 전체 glob으로 범위를 정했다.
+     * `folder`: .gpr를 못 찾아 기준 파일의 폴더 재귀 범위로 정했다.
      */
-    origin: 'project' | 'workspace';
+    origin: 'project' | 'folder';
     /** origin='project'일 때 프로젝트 폴더 */
     projectDir?: string;
     /** origin='project'일 때 기준 .gpr */
@@ -72,7 +73,7 @@ export interface ProjectFileScopeOptions {
  * `seedPath`(현재 문서 또는 정의 파일)와 같은 프로젝트의 소스 파일 집합을 만든다.
  *
  * ① 워크스페이스 `.gpr` 중 이 파일을 포함하는 가장 가까운 것 → ② 워크스페이스 밖이면 디스크에서
- * 위로 올라가며 `.gpr` 탐색 → ③ 그래도 없으면 워크스페이스 전체 재귀 glob.
+ * 위로 올라가며 `.gpr` 탐색 → ③ 그래도 없으면 기준 파일의 폴더 재귀 범위.
  * ①·②는 프로젝트 폴더 **재귀** 스캔 ∪ `.gpr` 목록이라 하위 폴더가 임의 깊이로 중첩돼도 포함된다.
  *
  * ①·②에서는 `ProjectLibrary` 관계도 펼친다(`collectRelatedGprPaths`) — 라이브러리 프로젝트는
@@ -136,15 +137,29 @@ export async function resolveProjectFileScope(
         }
     }
 
-    const glob = `**/*.{${extensions.map(e => e.replace(/^\./, '')).join(',')}}`;
+    // `.gpr`가 없다는 이유로 워크스페이스 전체를 훑지 않는다. 저장소 상위 폴더를 연 환경에서는
+    // 무관한 프로젝트 수백 개와 동명 사본까지 섞이고, 상한에 걸리면 결과도 불완전해진다.
+    // 기준 파일 폴더를 임시 컴파일 단위처럼 다루되, 하위의 별도 `.gpr` 경계에서는 멈춘다.
+    const fallbackDir = (() => {
+        try {
+            return fs.statSync(seedPath).isDirectory() ? seedPath : path.dirname(seedPath);
+        } catch {
+            return path.dirname(seedPath);
+        }
+    })();
     try {
-        const found = await vscode.workspace.findFiles(glob, PROJECT_EXCLUDE_GLOB, maxFiles + 1);
+        const listed = listSourceFilesRecursive(fallbackDir, {
+            extensions,
+            separator: '/',
+            maxFiles,
+        });
         return {
-            origin: 'workspace',
-            files: found.slice(0, maxFiles),
-            truncated: found.length > maxFiles,
+            origin: 'folder',
+            projectDir: fallbackDir,
+            files: listed.files.map(rel => vscode.Uri.file(path.join(fallbackDir, rel.replace(/\//g, path.sep)))),
+            truncated: listed.truncated,
         };
     } catch {
-        return { origin: 'workspace', files: [], truncated: false };
+        return { origin: 'folder', projectDir: fallbackDir, files: [], truncated: false };
     }
 }

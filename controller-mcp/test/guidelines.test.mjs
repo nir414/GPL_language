@@ -35,7 +35,15 @@ test('SERVER_INSTRUCTIONS: 제어기 안전 규칙과 코딩 규약을 함께 �
   assert.ok(SERVER_INSTRUCTIONS.includes('원시 TCP'), '원시 소켓 금지 규칙 누락');
   assert.ok(SERVER_INSTRUCTIONS.includes(DOC_COMMENT_GUIDE), '문서화 주석 규약이 포함되지 않았다');
   // 세션 내내 컨텍스트에 남는 텍스트 — 비대해지지 않게 상한을 둔다.
-  assert.ok(SERVER_INSTRUCTIONS.length < 4000, `instructions가 너무 길다(${SERVER_INSTRUCTIONS.length}자)`);
+  // 2026-10-14: 재확인 금지·대기 도구 규칙 1건 추가로 4000 → 4300 (규칙을 더 넣을 때는 기존 규칙을 줄여 상한 안에 둘 것).
+  assert.ok(SERVER_INSTRUCTIONS.length < 4300, `instructions가 너무 길다(${SERVER_INSTRUCTIONS.length}자)`);
+});
+
+test('SERVER_INSTRUCTIONS: 재확인 금지와 대기 도구를 안내한다(§1-EP)', () => {
+  assert.ok(SERVER_INSTRUCTIONS.includes('next:"none"'), 'next:"none" 규칙 누락');
+  for (const t of ['wait_operation', 'runtime_console_read', 'list_remote_projects']) {
+    assert.ok(SERVER_INSTRUCTIONS.includes(t), `${t} 안내 누락`);
+  }
 });
 
 test('SERVER_INSTRUCTIONS: 자동화 대상 고정·UI 요청 금지·명령 추측 금지 규칙이 들어 있다 (2026-08-31)', () => {
@@ -44,6 +52,13 @@ test('SERVER_INSTRUCTIONS: 자동화 대상 고정·UI 요청 금지·명령 추
   assert.ok(SERVER_INSTRUCTIONS.includes('PROJECT_AMBIGUOUS'), '애매함 응답 안내 누락');
   assert.ok(SERVER_INSTRUCTIONS.includes('파일을 열어 달라고'), 'UI 개입 요청 금지 규칙 누락');
   assert.ok(SERVER_INSTRUCTIONS.includes('relatedUnknownCommands'), '-714 추측 금지 규칙 누락');
+});
+
+test('SERVER_INSTRUCTIONS: Stop 범위(쓰레드 이름)와 stop_threads 안내가 들어 있다 (2026-10-14)', () => {
+  assert.ok(SERVER_INSTRUCTIONS.includes('쓰레드 이름 단위'), 'Stop 범위 규칙 누락');
+  assert.ok(SERVER_INSTRUCTIONS.includes('stop_threads'), '정지 도구 안내 누락');
+  assert.ok(SERVER_INSTRUCTIONS.includes('-750'), '-750 원인 안내 누락');
+  assert.ok(SERVER_INSTRUCTIONS.includes('접수이지 완료가 아니다'), '접수≠완료 규칙 누락');
 });
 
 test('SERVER_INSTRUCTIONS: 연결 실패를 제어기 장애로 단정하지 말라는 규칙이 들어 있다 (2026-08-31)', () => {

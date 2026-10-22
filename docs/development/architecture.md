@@ -58,7 +58,7 @@ flowchart BT
 | 계층(폴더) | 역할 | import 가능 | vscode |
 | --- | --- | --- | --- |
 | `util/` | 어느 도메인에도 속하지 않는 순수 헬퍼 (`pathKey`·`formatBytes`) | — | 금지 |
-| `language/` | GPL 언어 분석 전부 — 파서·문 사전·GPL Dictionary 데이터/조회·문서화 주석(+오버로드 병합)·분기형 getter 계산·스코프·이름 바꾸기 규칙·식별자 규칙 | `util` | **금지** (20 모듈 전부 순수) |
+| `language/` | GPL 언어 분석 전부 — 파서·문 사전·GPL Dictionary 데이터/조회·문서화 주석(+오버로드 병합)·분기형 getter 계산·스코프·이름 바꾸기 규칙·식별자 규칙·개요 표현 모델(`outlineModel`) | `util` | **금지** (전 모듈 순수) |
 | `project/` | Project.gpr 모델 — 소스 목록·라이브러리 해석·컴파일 단위·소스 승격·.gpr 동기화 순수 로직 | `language`, `util` | 허용 목록 2개만 (`projectFileScope`·`promoteSourceCommand`) |
 | `log/` | 1402/1403 트래픽 미러 터미널 | — | 허용 (단일 파일) |
 | `config.ts` | 설정 값 정규화 단일 출처, `EXTENSION_VERSION` | `language` | 허용 |
@@ -66,7 +66,7 @@ flowchart BT
 | `symbolCache.ts` | 워크스페이스 심볼 인덱스 — providers 와 activation 이 공유하는 언어 서비스 호스트 | `language`, `project`, `util`, `config` | 허용 |
 | `debug/` | DAP 어댑터(`gplDebugSession`)·구성 provider·정지/스텝 판정·launch.json 편집 | `controller`, `project`, `language`, `util` | 허용 목록 2개만 |
 | `views/` | 트리·상태바·대시보드와 그 표시 규칙 | `controller`, `util`, `config` | 허용 목록 3개만 |
-| `providers/` | VS Code 언어 provider 구현 13종 | `language`, `project`, `util`, `config`, `symbolCache` | 전부 허용(접착 계층) |
+| `providers/` | VS Code 언어 provider 구현 13종 + 공용 대응표(`symbolKinds`: 개요 분류 → `SymbolKind`, R7 정본) | `language`, `project`, `util`, `config`, `symbolCache` | 전부 허용(접착 계층) |
 | `ai/` | AI 에이전트 설정 내보내기·점검. 대상 해석은 `controller/projectTarget`, 경로 비교는 `util/pathKey` 사용 | `controller`, `util` | `exportAgentSetup`만 허용 (`agentSetupChecks`는 순수) |
 | `activation/` | 명령 그룹별 `activateXxx(host)` 14개 + `ExtensionHost` + 공용 제어기 조작(`controllerOps`) | 위 전부 | 전부 허용(접착 계층) |
 | `extension.ts` | `activate()`/`deactivate()` — 배선만(195줄) | 전부 | 허용 |
@@ -163,7 +163,8 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 쓰레드 목록 표·상태 집계(「전체 쓰레드 복사」·상황 스냅샷) | `controller/threadReport.ts` (`renderThreadTable`·`countThreadStates`·`summarizeThreadStates`) | `\| 이름 \| 상태 \|` 표 직접 조립 / `state === 'Paused' \|\| … 'Break'` |
 | 에러 코드 → 코드/환경 분류(트리 버킷·오류 상세·배포 요약) | `controller/responseParser.ts` (`classifyErrorEntry`·`describeErrorCategory`·`getGplErrorGroup`) | `category: 'code'/'environment'` 직접 판정 |
 | 바이트 → 사람이 읽는 크기(트리 FTP 목록·업로드 진행 바·완료 요약) | `util/formatBytes.ts` (`formatBytes`·`formatBytesAs`·`byteUnitFor`) | `.toFixed(1)} KB/MB/GB` 직접 조립 |
-| 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / `업로드 완료 …` 직접 조립 |
+| 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / 상태바 `업로드 완료 — 변경 없음`·크기 템플릿 직접 조립 |
+| Flash 쓰기 전원 차단 금지 문구(쓰기·`Sync`·10초 안정화·안전 미확인) | `views/flashSafetyPresentation.ts` (`presentFlashSafety`) — 절차·시간은 `controller/flashSafety.ts` | `FLASH 저장 중`·`FLASH 안전 상태 미확인` 직접 조립 |
 
 새 정본을 세우면 `SSOT_RULES` 에 한 줄을 더한다(무엇을·정본은 어디·우회 표식·대신 쓸 것).
 규칙을 늘리는 비용이 낮아야 실제로 늘어난다.
@@ -186,10 +187,11 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | `bridge/inst/<instanceId>/{req,res}` | `controller/agentBridge.ts` | MCP → 그 창의 명령 요청/응답 |
 | `<ip>.extension.json` · `bridge/<ip>/…` | `controller/agentBridge.ts` | 위의 **레거시(IP) 경로** — 리더 인스턴스 하나만 서비스(구버전 MCP 호환) |
 | `operations/<operationId>.json` | `controller/operationStore.ts` | 장시간 작업의 단계와 **결과** — 끝난 뒤에도 **남는다** |
+| `cancellations/<operationId>.json` | `controller/deployCancellation.ts` | 명시적 전체 정지를 실행 중·대기 중 업로드/배포에 전달 — 작업이 끝나면 **사라진다** |
 
 지켜야 할 규약:
 
-1. **각 계약의 정본 모듈은 하나**이고, MCP 쪽 구현(`controller-mcp/src/{deployLock,extensionBridge,operations}.js`)은
+1. **각 계약의 정본 모듈은 하나**이고, MCP 쪽 구현(`controller-mcp/src/{deployLock,deployCancellation,extensionBridge,operations}.js`)은
    그 파일 머리말에 적힌 계약을 **읽기 전용으로 미러**한다. 필드를 늘릴 때 양쪽 머리말을 같이 고친다.
 2. **읽는 쪽은 모르는 필드를 무시하고 version 을 튕기지 않는다.** 그래서 필드 추가는 구버전과 섞여도
    안전하다(배포 잠금 v1→v2 가 그 예다). 반대로 필드의 *의미*를 바꾸는 것은 호환을 깨는 변경이다.
@@ -269,3 +271,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 - 설계 원칙(명확성 > 간결성, 테스트 가능성 > 편리성, thin wrapper 지양): [design-principles](design-principles.md)
 - 장기 방향(브로커 프로세스 분리) — 이 문서의 계층은 그 Phase 0(코어 디커플링)의 현재 상태다: [broker-workbench-architecture](broker-workbench-architecture.md)
 - 제어기 디버깅 절차: [ai-controller-debugging-runbook](ai-controller-debugging-runbook.md)
+
+### 메모리 사전 검사
+
+`controller/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석하고 정책을 판정하는 순수 모듈입니다. `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사하고, `deployService`는 업로드 전에 추가 검사합니다. `memoryGuard.warnMb`(기본 4 MB)·`blockMb`(기본 2.5 MB)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 알 수 없는 측정은 정상으로 간주하지 않습니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. MCP는 Export의 `GPL_BRIDGE=only` 경로를 사용합니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.

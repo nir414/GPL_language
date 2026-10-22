@@ -46,6 +46,8 @@ import { ResolvedBreakpointTarget, resolveBreakpointTarget } from '../project/br
 import { normalizeBreakpointCommandFile } from '../controller/breakpointCommand';
 import { isResolvedBreakpointRecord } from '../controller/breakpointReconcile';
 import { getDeployLock, describeDeployLock } from '../controller/deployLock';
+import { requestDeployCancellation } from '../controller/deployCancellation';
+import { activeOperations } from '../controller/operationStore';
 import { stopAllAndSettle } from '../controller/threadStop';
 import type { ThreadStopIo } from '../controller/threadStop';
 import {
@@ -76,6 +78,12 @@ import {
 import type { CompiledRecord, SnapshotDiff } from '../controller/deployRecord';
 import { shouldGateStepRequest, StepGateReason } from './stepGate';
 import { formatEvalError, describeNestedExpandFailure, UNDEFINED_SYMBOL_STATUS } from './evalMessages';
+import {
+    formatBlockedReplInput,
+    formatReplBatchResults,
+    parseReplInput,
+} from './replInput';
+import type { ReplInputEntry } from './replInput';
 import { evaluateGetterBranch, getterBranchIdentifiers } from '../language/getterBranch';
 import { SpontaneousPauseTracker } from './spontaneousPause';
 import {
@@ -889,6 +897,16 @@ export class GPLDebugSession extends LoggingDebugSession {
                 // 제어기 측 프로그램도 정지한다(정지 버튼, 또는 stopAllOnDisconnect=true).
                 // STATUS 0 은 "정지 요청 접수"일 뿐이므로 정지 완료까지 확인한다(§0.6, controller/threadStop.ts).
                 const trigger = terminateDebuggee ? '정지 버튼' : 'stopAllOnDisconnect';
+				const controllerId = this._config?.ip;
+				if (controllerId) {
+					const holder = getDeployLock(controllerId).current()?.record;
+					const operationIds = new Set(activeOperations({ controllerId }).map(operation => operation.operationId));
+					if (holder?.operationId) { operationIds.add(holder.operationId); }
+					for (const operationId of operationIds) {
+						requestDeployCancellation({ operationId, controllerId, reason: `디버그 ${trigger}` });
+					}
+					if (operationIds.size > 0) { this._log(`진행 중 배포 취소 요청 ${operationIds.size}건: ${[...operationIds].join(', ')}`); }
+				}
                 const outcome = await stopAllAndSettle(this._threadStopIo());
                 this._log(outcome.ok
                     ? `프로젝트 정지 완료 (${trigger} → Stop -all)${outcome.settle?.unconfirmed ? ' — Show Thread 무응답으로 확인은 못 함' : ''}`
@@ -2735,100 +2753,64 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         if (args.context === 'repl') {
-            // REPL 처리 순서:
-            //  1) '>' 접두사면 무조건 제어기 명령으로 전송 (강제 패스스루)
-            //  2) 멈춘 쓰레드가 있으면 변수/식 평가(Show Variable -eval) → 전역(Show Global) 시도
-            //  3) 위에서 결과가 없으면 입력 전체를 제어기 명령으로 전송
-            const forceRaw = expression.startsWith('>');
-            const rawCommand = forceRaw ? expression.slice(1).trim() : expression;
-            let evalError: { code: number; message: string } | undefined;
+            // 여러 줄을 붙여 넣으면 빈 줄을 빼고 위에서 아래로 순차 처리한다.
+            // 각 줄의 정책은 단일 입력과 같다: 변수 평가 → 읽기 전용 폴백, `>`는 강제 전송.
+            const entries = parseReplInput(args.expression);
+            if (entries.length > 1) {
+                const confirmationTargets = entries.filter(entry =>
+                    entry.forceRaw
+                    && entry.expression.length > 0
+                    && !isReadOnlyConsoleCommand(entry.expression));
+                const confirmBatch = confirmationTargets.length > 0
+                    && vscode.workspace.getConfiguration('gpl')
+                        .get<boolean>('debug.confirmDestructiveRepl', true);
 
-            if (!forceRaw && threadName) {
-                const structured = await this._queryVariableStructuredSmart(
-                    threadName, frameIndex, expression,
-                );
-                if (structured) {
-                    evalError = structured.error;
-                    const kind = classifyVarEntry(structured.entry, structured.members.length > 0);
-                    if (kind === 'object' && structured.members.length > 0) {
-                        // 객체는 응답의 멤버 줄 전체를 보여준다 (기존: 첫 줄만 파싱해 "Object"만 표시).
-                        // Location은 한 줄 요약을 헤더에 덧붙이고, 2열 멤버(타입 없음)는 빈 칸 없이 잇는다(GitHub #27).
-                        const locSummary = isLocationType(structured.entry.type) ? summarizeLocation(structured.members) : undefined;
-                        result = [
-                            `${structured.entry.name || expression}, ${structured.entry.type || 'Object'}${locSummary ? `  ${locSummary}` : ''}`,
-                            ...structured.members.map(m => `  ${[m.name, m.type, m.value].filter(Boolean).join(', ')}`),
-                        ].join('\n');
-                    } else if (kind === 'object') {
-                        // 멤버 줄이 없는 객체(중첩 객체 멤버 등, §1-DS) — 타입은 알려 주고 멤버를 못 받은 이유를 붙인다.
-                        // 종전에는 "변수 평가 실패" 로 떨어져 객체가 존재한다는 사실조차 보이지 않았다.
-                        const row = describeNestedExpandFailure({
-                            expression, varType: structured.entry.type, error: structured.error,
-                        });
-                        result = `${structured.entry.name || expression}, ${structured.entry.type || 'Object'}\n  ${row.value}`;
-                    } else if (kind === 'array') {
-                        result = `${structured.entry.type} 배열 — 요소는 ${expression}(i) 형식으로 조회`;
-                    } else if (structured.entry.value && structured.entry.value !== GPLDebugSession.UNDEFINED_VALUE) {
-                        result = structured.entry.type
-                            ? `${structured.entry.value}  (${structured.entry.type})`
-                            : structured.entry.value;
-                        evalType = dapColorizeType(structured.entry.type, structured.entry.value);
-                    } else if (/\bnull\s*$/i.test(structured.entry.type)) {
-                        // null 객체 참조 요소 (`armList(1), Object() null`)
-                        result = `null  (${structured.entry.type})`;
+                if (confirmBatch) {
+                    const shown = confirmationTargets.slice(0, 8)
+                        .map(entry => `> ${entry.expression}`);
+                    if (confirmationTargets.length > shown.length) {
+                        shown.push(`… 외 ${confirmationTargets.length - shown.length}개`);
                     }
-                    if (result && structured.via) { result += `\n  ← ${structured.via}`; }
-                }
-                if (!result && this._projectName) {
-                    const gResp = await this._sendCmd(
-                        `Show Global ${expression}, ${this._projectName}`,
+                    const pick = await vscode.window.showWarningMessage(
+                        [
+                            `제어기 상태를 바꾸거나 분류되지 않은 명령 ${confirmationTargets.length}개를 포함합니다.`,
+                            `입력 ${entries.length}개를 위에서 아래로 순서대로 실행할까요?`,
+                            ...shown,
+                        ].join('\n'),
+                        { modal: true },
+                        '모두 실행',
                     );
-                    if (gResp) {
-                        const lines = this._showGlobalResponseLines(gResp);
-                        if (lines.length > 0) { result = lines.join('\n'); }
+                    if (pick !== '모두 실행') {
+                        response.body = {
+                            result: '(취소됨 — 여러 줄 입력을 실행하지 않았습니다)',
+                            variablesReference: 0,
+                        };
+                        this.sendResponse(response);
+                        return;
                     }
                 }
-            }
 
-            // 변수 평가가 불가하거나 멈춘 쓰레드가 없으면 → 임의 제어기 명령으로 전송
-            if (!result && rawCommand) {
-                const readOnly = isReadOnlyConsoleCommand(rawCommand);
-                if (!forceRaw && !readOnly) {
-                    // 비접두사 입력의 폴백 전송은 읽기 전용 명령만 허용 — 오타/변수명이
-                    // 상태 변경 명령으로 흘러가는 사고를 막는다. 의도적 전송은 '>' 접두사로.
-                    result = evalError
-                        ? `${formatEvalError(expression, evalError)}\n제어기 명령으로 보내려면 '>' 접두사를 사용하세요.`
-                        : `변수 평가 실패. 제어기 명령으로 보내려면 '>' 접두사를 사용하세요.`;
-                } else {
-                    let approved = true;
-                    if (!readOnly && vscode.workspace.getConfiguration('gpl')
-                        .get<boolean>('debug.confirmDestructiveRepl', true)) {
-                        // 상태 변경(또는 미분류) 명령은 기본값으로 모달 확인을 거친다.
-                        const pick = await vscode.window.showWarningMessage(
-                            `제어기 상태를 바꾸는 명령입니다: ${rawCommand}`,
-                            { modal: true },
-                            '전송',
-                        );
-                        approved = pick === '전송';
-                    }
-                    if (!approved) {
-                        result = '(취소됨)';
-                    } else {
-                        const raw = await this._sendCmd(rawCommand);
-                        if (raw === null) {
-                            result = '(제어기 미연결 — 디버그 세션/연결 상태를 확인하세요)';
-                        } else {
-                            const cleaned = raw.replace(/<[^>]+>/g, '').trim();
-                            result = cleaned.length > 0 ? cleaned : '(ok)';
-                        }
-                        // 임의 명령은 제어기 상태를 바꿀 수 있으므로 hover/watch 캐시와
-                        // 프레임 캐시 신선도를 함께 무효화한다 (예: >Step 뒤 옛 스택 방지).
-                        this._clearEvaluateCache();
-                        this._frameCacheAt.clear();
-                        this._frameCacheGen++;
-                    }
+                const batchResults = [];
+                for (const entry of entries) {
+                    const evaluated = await this._evaluateReplEntry(
+                        entry,
+                        threadName,
+                        frameIndex,
+                        true,
+                    );
+                    batchResults.push({ entry, result: evaluated.result });
                 }
+                result = formatReplBatchResults(batchResults);
+            } else {
+                const entry = entries[0] ?? {
+                    source: expression,
+                    expression,
+                    forceRaw: false,
+                };
+                const evaluated = await this._evaluateReplEntry(entry, threadName, frameIndex, false);
+                result = evaluated.result;
+                evalType = evaluated.type;
             }
-            if (!result) { result = '(평가 불가)'; }
         } else if (args.context === 'hover' || args.context === 'watch') {
             const cacheKey = [
                 args.context,
@@ -2918,6 +2900,109 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         response.body = { result: result || `(${expression} 평가 불가)`, variablesReference: evalRef, type: evalType };
         this.sendResponse(response);
+    }
+
+    /** 단일 Debug Console 입력을 기존 안전 정책에 따라 평가하거나 제어기로 보낸다. */
+    private async _evaluateReplEntry(
+        entry: ReplInputEntry,
+        threadName: string | undefined,
+        frameIndex: number,
+        skipStateChangeConfirmation: boolean,
+    ): Promise<{ result: string; type?: string }> {
+        const expression = entry.expression;
+        let result = '';
+        let evalType: string | undefined;
+        let evalError: { code: number; message: string } | undefined;
+
+        if (!entry.forceRaw && threadName) {
+            const structured = await this._queryVariableStructuredSmart(
+                threadName, frameIndex, expression,
+            );
+            if (structured) {
+                evalError = structured.error;
+                const kind = classifyVarEntry(structured.entry, structured.members.length > 0);
+                if (kind === 'object' && structured.members.length > 0) {
+                    // 객체는 응답의 멤버 줄 전체를 보여준다 (기존: 첫 줄만 파싱해 "Object"만 표시).
+                    // Location은 한 줄 요약을 헤더에 덧붙이고, 2열 멤버(타입 없음)는 빈 칸 없이 잇는다(GitHub #27).
+                    const locSummary = isLocationType(structured.entry.type)
+                        ? summarizeLocation(structured.members)
+                        : undefined;
+                    result = [
+                        `${structured.entry.name || expression}, ${structured.entry.type || 'Object'}${locSummary ? `  ${locSummary}` : ''}`,
+                        ...structured.members.map(m => `  ${[m.name, m.type, m.value].filter(Boolean).join(', ')}`),
+                    ].join('\n');
+                } else if (kind === 'object') {
+                    // 멤버 줄이 없는 객체(중첩 객체 멤버 등, §1-DS) — 타입은 알려 주고 멤버를 못 받은 이유를 붙인다.
+                    const row = describeNestedExpandFailure({
+                        expression, varType: structured.entry.type, error: structured.error,
+                    });
+                    result = `${structured.entry.name || expression}, ${structured.entry.type || 'Object'}\n  ${row.value}`;
+                } else if (kind === 'array') {
+                    result = `${structured.entry.type} 배열 — 요소는 ${expression}(i) 형식으로 조회`;
+                } else if (structured.entry.value && structured.entry.value !== GPLDebugSession.UNDEFINED_VALUE) {
+                    result = structured.entry.type
+                        ? `${structured.entry.value}  (${structured.entry.type})`
+                        : structured.entry.value;
+                    evalType = dapColorizeType(structured.entry.type, structured.entry.value);
+                } else if (/\bnull\s*$/i.test(structured.entry.type)) {
+                    result = `null  (${structured.entry.type})`;
+                }
+                if (result && structured.via) { result += `\n  ← ${structured.via}`; }
+            }
+            if (!result && this._projectName) {
+                const gResp = await this._sendCmd(
+                    `Show Global ${expression}, ${this._projectName}`,
+                );
+                if (gResp) {
+                    const lines = this._showGlobalResponseLines(gResp);
+                    if (lines.length > 0) { result = lines.join('\n'); }
+                }
+            }
+        }
+
+        // 변수 평가가 불가하거나 멈춘 쓰레드가 없으면 임의 제어기 명령 경로를 검토한다.
+        if (!result && expression) {
+            const readOnly = isReadOnlyConsoleCommand(expression);
+            if (!entry.forceRaw && !readOnly) {
+                // 비접두사 폴백은 읽기 전용만 허용한다. 알려진 상태 변경 명령이면
+                // "평가 실패"보다 미전송 사실과 `>` 사용법을 먼저 보여 준다.
+                const evaluationFailure = evalError
+                    ? formatEvalError(expression, evalError)
+                    : undefined;
+                result = formatBlockedReplInput(expression, evaluationFailure);
+            } else {
+                let approved = true;
+                if (!readOnly
+                    && !skipStateChangeConfirmation
+                    && vscode.workspace.getConfiguration('gpl')
+                        .get<boolean>('debug.confirmDestructiveRepl', true)) {
+                    const pick = await vscode.window.showWarningMessage(
+                        `제어기 상태를 바꾸는 명령입니다: ${expression}`,
+                        { modal: true },
+                        '전송',
+                    );
+                    approved = pick === '전송';
+                }
+                if (!approved) {
+                    result = '(취소됨)';
+                } else {
+                    const raw = await this._sendCmd(expression);
+                    if (raw === null) {
+                        result = '(제어기 미연결 — 디버그 세션/연결 상태를 확인하세요)';
+                    } else {
+                        const cleaned = raw.replace(/<[^>]+>/g, '').trim();
+                        result = cleaned.length > 0 ? cleaned : '(ok)';
+                    }
+                    // 임의 명령은 제어기 상태를 바꿀 수 있으므로 hover/watch 캐시와
+                    // 프레임 캐시 신선도를 함께 무효화한다 (예: >Step 뒤 옛 스택 방지).
+                    this._clearEvaluateCache();
+                    this._frameCacheAt.clear();
+                    this._frameCacheGen++;
+                }
+            }
+        }
+
+        return { result: result || '(평가 불가)', type: evalType };
     }
 
     // ═══════════════════════════════════════════════════════

@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { buildStartCommand, commandRunsCompiler } from '../controller/startCommand';
+import { buildStartCommand, commandRunsCompiler, shouldPromptForStartConfirmation } from '../controller/startCommand';
 
 test('startCommand: 기본값은 -compile + GDE와 같은 -event', () => {
     assert.strictEqual(buildStartCommand({ projectName: 'MergeCode' }), 'Start MergeCode -compile -event');
@@ -92,4 +92,10 @@ test('commandRunsCompiler: 컴파일하지 않는 명령은 거짓', () => {
     assert.ok(!commandRunsCompiler(''));
     // 프로젝트 이름에 compile 이 들어가도 스위치가 아니면 거짓
     assert.ok(!commandRunsCompiler('Start compileTest -event'));
+});
+
+test('shouldPromptForStartConfirmation: 설정이 켜져도 이미 확인된 자동화 호출은 다시 묻지 않는다', () => {
+    assert.strictEqual(shouldPromptForStartConfirmation(true, false), true);
+    assert.strictEqual(shouldPromptForStartConfirmation(true, true), false);
+    assert.strictEqual(shouldPromptForStartConfirmation(false, false), false);
 });

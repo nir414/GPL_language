@@ -78,6 +78,17 @@ export function commandRunsCompiler(command: string): boolean {
     return /^start\b/i.test(c) && /(^|\s)-compile(\s|$)/i.test(c);
 }
 
+/**
+ * Start 확인 모달을 실제로 띄워야 하는가.
+ *
+ * 자동화 호출자가 `confirmStart:true`로 사용자 확인을 이미 받았다고 명시한 경우에는
+ * 자동화 진입 게이트와 배포 서비스가 같은 사실을 공유해야 한다. 종전에는 진입 게이트만
+ * 통과하고 배포 서비스가 다시 모달을 띄워 브리지 호출이 멈췄다.
+ */
+export function shouldPromptForStartConfirmation(requireConfirmation: boolean, alreadyConfirmed = false): boolean {
+    return requireConfirmation && !alreadyConfirmed;
+}
+
 /** 프로젝트/쓰레드 이름에 1402 인자를 깨뜨리는 공백류가 있는가. */
 function hasWhitespace(value: string): boolean {
     return /[\s 　]/.test(value);

@@ -108,7 +108,7 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 | Build Only | GPL: Deploy (/GPL 업로드 + Compile, Start 없음) | `gpl.deploy` | 최신 로컬 코드 검증 기본 경로, /GPL 직접 업로드 |
 | 업로드 후 실행 | GPL: 업로드 스타트 (/GPL 업로드 + Start, Compile은 제어기가 수행) | `gpl.uploadStart` | 실행 상태 변경. `Compile`을 보내지 않는다(§0.7) — 소스 에러는 Start STATUS로만 드러남 |
 | 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` | 실행 상태 변경 (구 `gpl.deployRun`에서 분리) |
-| flash 저장 | GPL: Save to Flash | `gpl.saveToFlash` | **사람 전용 — AI/자동화 경로 차단(`AI_BLOCKED`).** /flash/projects에 FTP 미러 저장만 (Load/Compile 없음). 필요하면 사용자에게 실행을 요청한다 |
+| flash 저장 | GPL: Save to Flash | `gpl.saveToFlash` | **사람 전용 — AI/자동화 경로 차단(`AI_BLOCKED`).** /flash/projects에 FTP 미러 저장만 (Load/Compile 없음). 확장은 `Sync`로 Disk Busy 해제를 확인하고 10초 안전 대기까지 전원 차단 금지 경고를 유지한다. 필요하면 사용자에게 실행을 요청한다 |
 | launch 생성 | GPL: Create/Update Debug launch.json | `gpl.debug.generateLaunch` | Attach 구성 생성 |
 | 붙기만 | GPL: Debug: Attach Only | `gpl.debug.attachOnly` | 이미 실행 중인 프로그램에 붙기(제어기 상태 안 바꿈) |
 | 배포 + 붙기 | GPL: Debug Project | `gpl.debugProject` | 대상을 QuickPick·탐색기 우클릭으로 고른 뒤 배포하고 붙기 |

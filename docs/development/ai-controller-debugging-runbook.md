@@ -61,6 +61,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 연결 | GPL: Connect to Controller | `gpl.controller.connect` |
 | 연결 해제 | GPL: Disconnect Controller | `gpl.controller.disconnect` |
 | 대시보드 | GPL: 제어기 대시보드 열기 | `gpl.controller.showDashboard` |
+| 디지털 I/O 제어판 | GPL: 디지털 I/O 제어판 열기 | `gpl.controller.showIoPanel` |
 | 전체 새로고침 | GPL: Refresh All | `gpl.threads.refresh` |
 | FTP 새로고침 | GPL: Refresh FTP Files | `gpl.controller.refreshFtp` |
 | 시스템 정보 새로고침 | GPL: Refresh System Info | `gpl.controller.refreshSystemInfo` |
@@ -72,20 +73,21 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 
 | 목적 | 제목 | Command ID |
 | --- | --- | --- |
+| 업로드만 | GPL: Upload Only (/GPL 업로드만 — 정지·컴파일·실행 없음) | `gpl.uploadOnly` |
 | Build Only(배포) | GPL: Deploy (/GPL 업로드 + Compile, Start 없음) | `gpl.deploy` |
 | 업로드 후 실행 | GPL: 업로드 스타트 (/GPL 업로드 + Start, Compile은 제어기가 수행) | `gpl.uploadStart` |
 | 실행만 | GPL: Start (실행만, 배포 없음) | `gpl.start` |
-| Flash 저장 | GPL: Save to Flash (/flash/projects에 저장만) | `gpl.saveToFlash` **— 사람 전용, AI/자동화 차단** |
+| Flash 저장 | GPL: Save to Flash (/flash/projects에 저장만) | `gpl.saveToFlash` **— 사람 전용, AI/자동화 차단. `Sync` + 10초 안전 대기까지 상태바 전원 차단 금지 경고** |
 | 빠른 컴파일 | GPL: 빠른 컴파일 (변경분만 /GPL 직접 업로드, STOP/START 생략) | `gpl.quickCompile` |
-| 전체 정지 | GPL: 모든 쓰레드 중지 (Stop -all) | `gpl.controller.stopAll` (별칭 `gpl.stopAll`) |
+| 전체 정지 | GPL: 모든 쓰레드 중지 (Stop -all) | `gpl.controller.stopAll` (별칭 `gpl.stopAll`) — 같은 제어기의 실행 중·대기 중 업로드/배포도 취소 |
 | 자동화 대상 조회/고정 | (팔레트 미노출 — 자동화 전용) | `gpl.automation.target` |
 
 > **자동화(MCP·URI)로 배포/실행 명령을 부를 때는 대상 프로젝트를 인자로 넘긴다** (2026-08-31, `§1-CM`).
-> `gpl.deploy`·`gpl.uploadStart`·`gpl.quickCompile`·`gpl.start` 는 인자가
+> `gpl.uploadOnly`·`gpl.deploy`·`gpl.uploadStart`·`gpl.quickCompile`·`gpl.start` 는 인자가
 > `{project|projectDir|projectFile}` 중 하나를 가진 객체면 **비대화형**으로 동작한다 — QuickPick·모달을 띄우지 않고
 > 대상을 정할 수 없으면 `{ok:false, error:"PROJECT_AMBIGUOUS", candidates:[…]}` 를 반환한다.
 > 인자가 없거나 `vscode.Uri`(탐색기 우클릭)면 종전 대화형 경로다(사람용). **active editor 는 자동화 대상 결정에
-> 쓰이지 않는다.** MCP 에서는 `project_target`(대상 고정) → `deploy_project`(mode: build/quick/upload-start)를 쓴다.
+> 쓰이지 않는다.** MCP 에서는 `project_target`(대상 고정) → `deploy_project`(mode: upload/build/quick/upload-start)를 쓴다.
 
 ### 디버그/콘솔
 
@@ -109,8 +111,13 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 목적 | 제목 | Command ID |
 | --- | --- | --- |
 | 전역변수 보기/편집 | GPL: 전역변수 보기/편집 (Show/Set Global) | `gpl.controller.showGlobal` |
-| DIO 조회 | GPL: DIO 조회 (Show DIO) | `gpl.controller.showDio` |
-| DIO 출력 설정 | GPL: DIO 출력 설정 (Set DIO) — **하드웨어 출력 변경** | `gpl.controller.setDio` |
+| DIO 조회(원시 명령) | GPL: DIO 조회 (Show DIO) | `gpl.controller.showDio` |
+| DIO 강제 상태 설정(원시 명령) | GPL: DIO 강제 상태 설정 (Set DIO) — **입력·출력 신호 및 장비 동작에 영향 가능** | `gpl.controller.setDio` |
+
+일반 조작은 `gpl.controller.showIoPanel`을 사용한다. 대시보드의 **디지털 I/O** 탭은 `Show DIO`의
+`signal: 0|1`과 강제 표시 `*`를 카드로 보여 주며, 강제 ON(`1`)·강제 OFF(`-1`)·강제 해제(`0`)를
+각 신호에서 바로 선택한다. `Set DIO` 전 확인 모달은 생략하지 않는다. 강제 해제는 현재 ON/OFF 값을
+바꾸지 않고 force만 제거한다.
 
 ### AI 에이전트 전용
 
@@ -141,8 +148,8 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | `gpl.ai.debug.connect` | `{ ip: "192.168.0.1", port: 1402, save: "session", silent: true }` — 모두 선택. `ip` 생략 시 launch.json > 세션 오버라이드 > settings 순의 현재 값 |
 | `gpl.ai.debug.getConnectionState` | 인자 없음 → `{ ok, connected, ip, port, consolePort, debugSessionActive, debugSession, runtimeConsole:{active,state,reason,lastPayloadAt}, expectedProject, deployLock, compileStale[] }` |
 | `gpl.controller.connect` | `{ silent: true }` 처럼 ConnectArgs 객체를 주면 비대화형(`{ ok, ip, port, connected, error?, mode }` 반환). 인자 없으면 대화형 |
-| `gpl.automation.target` | `{}` → 현재 상태(`{ ok, target, configuredDefault, candidates:[{project,dir,runnable,referencedAsLibraryBy?}], hint }`) · `{ project: "GPL_Code" }` → 세션 대상 고정 · `{ clear: true }` → 해제 |
-| `gpl.deploy` / `gpl.quickCompile` | `{ project: "GPL_Code" }` 또는 `{ projectDir: "…/projects/GPL_Code" }` / `{ projectFile: "…/Main.gpl" }`. 선택: `saveDirty: true`(미저장 문서 저장 후 계속 — 기본은 `UNSAVED_FILES` 로 중단) |
+| `gpl.automation.target` | `{}` → 현재 상태(`{ ok, target, candidates:[{project,dir,runnable,referencedAsLibraryBy?}], hint }`) · `{ projectDir: "…/projects/GPL_Code" }` → 세션 대상 고정 · `{ clear: true }` → 해제 |
+| `gpl.uploadOnly` / `gpl.deploy` / `gpl.quickCompile` | `{ project: "GPL_Code" }` 또는 `{ projectDir: "…/projects/GPL_Code" }` / `{ projectFile: "…/Main.gpl" }`. 선택: `saveDirty: true`(미저장 문서 저장 후 계속 — 기본은 `UNSAVED_FILES` 로 중단) |
 | `gpl.uploadStart` / `gpl.start` | 위와 같고 **Start 를 보내므로** `confirmStart: true` 가 필요하다(사용자 확인을 받았음을 단언 — 없으면 `INTERACTIVE_UI_REQUIRED`). 설정 `gpl.controller.requireStartConfirmation: false` 면 불필요. 선택: `ignoreCompileStale: true`(기본은 `COMPILE_UNVERIFIED` 로 중단) |
 | `gpl.saveToFlash` | **자동화 호출 불가** — `{ok:false, error:"AI_BLOCKED", detail}` 을 돌려주고 아무것도 올리지 않는다. 브리지는 `command-blocked`, URI 는 경고 후 무시. flash 영구 사본을 되돌릴 수 없게 덮어쓰므로 사용자가 UI 에서 직접 실행한다 (`src/controller/aiCommandPolicy.ts`, 2026-09-07) |
 
@@ -159,8 +166,9 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
   `INTERACTIVE_UI_REQUIRED`(모션 확인 필요 — `confirmStart:true` 로 단언, 또는 1402 `Start` 직접 전송).
   **어느 코드든 UI 를 띄우지 않는다** — 사용자에게 QuickPick 을 누르거나 파일을 열어 달라고 요청하는 것은 자동화 결함으로 본다.
 - 자동화 대상 결정 우선순위: ① 인자(`projectDir`/`projectFile` → `project`) ② 세션 대상(`gpl.automation.target` 또는
-  사람이 QuickPick 에서 고른 값) ③ 실행 가능(`.gpr` 에 `ProjectStart`) 프로젝트가 유일할 때 그것 ④ 설정
-  `gpl.controller.defaultProject` ⑤ 후보가 하나뿐이면 그것 ⑥ 그 밖에는 `PROJECT_AMBIGUOUS`.
+  사람이 QuickPick 에서 고른 값) ③ 실행 가능(`.gpr` 에 `ProjectStart`) 프로젝트가 유일할 때 그것 ④ 후보가 하나뿐이면
+  그것 ⑤ 그 밖에는 `PROJECT_AMBIGUOUS`. 영구 기본 프로젝트 설정은 두지 않으며, MCP는 작업 시작 시
+  `project_target({projectDir})`으로 정확한 폴더를 세션에 고정한다.
   규칙 정본은 `src/controller/projectTarget.ts`(순수 로직, 단위 테스트 `src/test/projectTarget.test.ts`).
 - **외부 진입점(URI, GitHub #25 → 2026-08-28 전체 개방)**: 이 확장의 **모든 `gpl.*` 명령**을 URI로 실행할 수 있다.
   `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>`(인자 1개를 JSON으로), `/<gpl.command.id>?key=value&…`(평면 인자 → 객체 1개,
@@ -180,9 +188,11 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
   확장을 통한 테스트로 넘어가지 못했다. 이제 확장이 실행 중이면 MCP의 1402 명령이 **확장의 `gpl.controller.sendCommand`**로 라우팅되어
   같은 직렬 큐·keep-alive 세션·명령 정책을 그대로 탄다(따라서 MCP 경로에도 R1/R2/R3이 적용된다). 전송은 `%TEMP%\gpl-controller\`의
   요청/응답 파일(배포 잠금과 같은 계약, 새 포트 없음), 확장 상태는 `<ip>.extension.json`(heartbeat 5 s / stale 15 s).
-  MCP 도구 `extension_status`(경로·확장 상태 확인, `wake:true`로 확장 깨우기)와 `extension_command`(확장의 `gpl.*` 명령 실행 —
+  MCP 도구 `extension_status`(경로·확장 상태 확인, `wake:true`로 확장 깨우기, `hostMismatch`가 있으면 확장은 떠 있고 `.mcp.json`의 `GPL_HOST`가 연결 주소와 다른 것 — §1-ES)와 `extension_command`(확장의 `gpl.*` 명령 실행 —
   Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)가 추가됐다. 설정: 확장 `gpl.agentBridge.enabled`, MCP `GPL_BRIDGE=auto|only|off`.
-  브리지가 꺼져 있거나 확장이 없을 때만 MCP가 직접 접속한다(그때는 MCP 자체의 정지 확인만 적용).
+  **확장의 `GPL: Export AI Agent Setup`은 `GPL_BRIDGE=only`를 명시한다.** 사람이 VS Code에서 연결한 동안 AI도 그 한 소켓과 직렬 큐를
+  공유하고, presence/브리지 문제 때 두 번째 직접 연결로 폴백하지 않는다. `GPL: Check AI Agent Setup`은 누락·`auto`·`off`를 설정 문제로
+  보고한다. `auto`/`off`는 VS Code 없이 헤드리스 MCP 직접 접속이 필요한 개발자가 수동으로 선택하는 모드이며 동시 사용을 보장하지 않는다.
 - **VS Code 디버그 세션 종료 시 제어기 브레이크포인트는 전부 해제된다**(`disconnectRequest`가 이 세션이 설정한 BP를 `Set Nobreak`로 정리 — 다음 세션 중복 등록 방지, 의도된 동작). MCP 등 외부 클라이언트와 병행할 때는 세션 종료 후 재설정하거나 세션 없이 `gpl.controller.syncEditorBreakpoints`(에디터 BP → 제어기 실시간 동기화)를 사용한다.
 - **AI(MCP·URI·명령 콘솔)가 건 BP는 에디터 중단점에도 반영된다**(§1-CO, `gpl.controller.mirrorAiBreakpoints`, 기본 켜짐). 빨간 점으로 보이므로 사용자가 F9로 지울 수 있고, 위의 세션 종료 정리·`reconcileAll`·DAP의 파일 단위 재설정이 "에디터에 없는 BP"라며 지워 버리는 일이 없어진다. 반영은 **외부 진입점**(`gpl.controller.sendCommand` 인자 경로, `gpl.ai.debug.setBreakpoint/clearBreakpoint`)에서만 일어난다 — DAP와 에디터 동기화는 in-process 호출이라 대상이 아니다.
 
@@ -239,8 +249,9 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 - `GPL: Deploy (/GPL 업로드 + Compile, Start 없음)`를 먼저 실행한다.
 - 이 단계는 UPLOAD ∥ STOP(+정지 완료 게이트) -> COMPILE까지 수행하고 START는 하지 않는다
   (2026-08-25 재구성: 업로드와 정지를 동시에 진행하고 둘 다 끝난 뒤 Compile — GitHub #17. Compile과 Start는 한 번에 하나만).
-- 실행 중에는 배포 잠금 파일(`%TEMP%\gpl-controller\<ip>.lock.json`)이 잡혀 다른 창·MCP의 Compile/Start가 대기·거부된다.
-  "배포가 진행 중입니다 (보유자 — 단계, 경과)" 경고가 뜨면 Output 채널의 `[Lock]`/단계 배너로 진행 상황을 확인한다.
+- 같은 제어기의 여러 업로드/배포 요청은 작업 기록에 `QUEUED`로 남고 등록 순서대로 실행된다. 실행 중에는 배포 잠금 파일
+  (`%TEMP%\gpl-controller\<ip>.lock.json`)이 잡혀 Compile/Start가 겹치지 않는다. Output의 `[Queue]`·`[Lock]`과
+  `operation_status`/`wait_operation`으로 대기 순서와 완료를 확인한다.
 - 실패하면 아래 순서로 본다.
 
 ```text
@@ -322,6 +333,11 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 
 `GPL: Send Command to Controller`는 필요한 경우에만 사용한다.
 
+디버깅 세션의 Debug Console에는 여러 명령을 줄 단위로 붙여 넣을 수 있다. 빈 줄은 건너뛰고 위에서 아래로 순차 처리한다.
+`Show`·`ErrorLog`·`PD` 같은 읽기 전용 명령은 접두사 없이 전송하지만, `Stop`·`Break`·`Execute` 같은 상태 변경 명령은
+각 줄에 `>` 접두사가 있어야 한다. `>`가 없는 상태 변경 명령은 명령으로 인식했다는 안내만 하고 원문 명령은 보내지 않는다.
+여러 줄에 상태 변경 명령이 포함되면 `gpl.debug.confirmDestructiveRepl` 정책에 따라 묶음 전체를 한 번 확인한다.
+
 VS Code 확장 명령을 사용할 수 없어서 raw TCP로 확인해야 할 때는 컨트롤러 명령을 XML로 감싸지 말고, plain text 명령 뒤에 CRLF를 붙여 ASCII로 보낸다. 예: `Show Thread` + `\r\n`. 응답은 보통 `</STATUS>`까지 읽는다.
 
 PowerShell inline 명령에 XML처럼 보이는 angle-bracket 리터럴을 넣으면 일부 AI 실행 환경의 sandbox가 명령 실행 전 차단할 수 있다. raw TCP fallback이 꼭 필요하면 inline one-liner보다 workspace-local script file을 만들고 실행하는 패턴을 권장한다. 예시는 `tools/probe-controller.ps1` 형태처럼 host/port/command를 파라미터화하고, payload는 `Command + CRLF`로 구성한다.
@@ -361,6 +377,11 @@ Set Break ...
 Set NoBreak ...
 ErrorLog -clear
 ```
+
+사용자가 명시적으로 실행한 전체 정지(`Stop -all`/`Stop -a`, `GPL: Stop All Threads`, MCP `stop_threads()` 전체 범위)는
+같은 제어기의 실행 중·대기 중인 호스트 업로드/배포에도 취소를 전달한다. FTP는 현재 전송 중인 파일 경계에서 멈추고,
+그 뒤의 원격 삭제·Compile·Start는 진행하지 않는다. 배포 파이프라인 내부에서 쓰레드 정착을 위해 보내는 `Stop -all`은
+자기 배포를 취소하지 않는다. 이미 제어기에 전송된 명령은 취소할 수 없으므로 응답 정리 뒤 후속 단계만 차단한다.
 
 ### 위험 명령
 

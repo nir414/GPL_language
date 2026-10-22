@@ -7,18 +7,22 @@
  */
 
 import * as vscode from 'vscode';
+import { formatRuntimeError } from '../controller/postStartWatch';
 import * as path from 'path';
 import { isRuntimeConsoleAutoStartOnDeploy } from '../config';
 import { AI_BLOCKED_ERROR, aiBlockedDetail, findAiBlockedCommand } from '../controller/aiCommandPolicy';
 import { getControllerConfig, sendCommandDetailed } from '../controller/controllerConnection';
+import { FLASH_SYNC_TIMEOUT_MS, waitForFlashSafe } from '../controller/flashSafety';
 import { describeCompileStale } from '../controller/compileStale';
 import { describeDeployLock, getDeployLock } from '../controller/deployLock';
-import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, makeLockedResult, onDidUploadProgress } from '../controller/deployService';
-import { mirrorProject } from '../controller/ftpClient';
+import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, onDidUploadProgress } from '../controller/deployService';
+import { isUploadCancelledError, mirrorProject } from '../controller/ftpClient';
 import { checkProjectName, describeProjectNameProblem } from '../controller/projectNameGuard';
 import { buildTargetCandidates, pickProjectDir, readGprProjectName } from '../controller/projectPicker';
 import { normalizeDirKey } from '../util/pathKey';
-import { activeOperations, listOperations, readOperation } from '../controller/operationStore';
+import { getControllerProjectWriteBlock } from '../project/controllerProjectWorkspace';
+import { activeOperations, beginOperation, listOperations, readOperation, sweepOperations } from '../controller/operationStore';
+import { clearDeployCancellation, readDeployCancellation } from '../controller/deployCancellation';
 import { recoveryFor } from '../controller/automationRecovery';
 import type { RecoveryHint } from '../controller/automationRecovery';
 import {
@@ -41,11 +45,13 @@ import {
 	comparisonNoteFor,
 	controllerSystemErrorEntries,
 	describeDeployFailure,
+	errorLogEntryKey,
 	makeDeploySnapshot,
 	parsedErrorCodes,
+	selectErrorLogNotice,
 	summarizeCompileAttempts,
 } from '../controller/deployOutcome';
-import type { SituationDeploySnapshot } from '../controller/deployOutcome';
+import type { ErrorLogNotice, SituationDeploySnapshot } from '../controller/deployOutcome';
 import type { ExtensionHost } from './host';
 
 export interface DeployApi {
@@ -57,6 +63,9 @@ export interface DeployApi {
 export type QuickDeployOpts = {
 	skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[];
 	overrideProjectDir?: string; noStopPrompt?: boolean; autoGate?: boolean; skipCompile?: boolean; nonInteractive?: boolean;
+	uploadOnly?: boolean;
+	/** 자동화 호출자가 사용자에게 Start 모션 확인을 이미 받았음. 배포 내부의 중복 확인 모달도 생략한다. */
+	startConfirmed?: boolean;
 	/**
 	 * 같은 키의 배포가 진행 중이면 새로 시작하지 않는다(개선안 §10). 자동화 호출자(MCP)가 넘긴다 —
 	 * 브리지 응답 대기가 끊긴 뒤의 재시도가 두 번째 배포를 만드는 것을 막는다.
@@ -70,6 +79,40 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	// 배포 결과 이력 — signature 만 중복 알림 억제에 쓴다(상한 50, 규칙은 controller/deployOutcome.ts).
 	const deployOutcomeHistory = new DeployOutcomeHistory(50);
 
+	// 성공 배포 알림에서 이미 본 ErrorLog 항목(제어기 IP별) — 제어기는 ErrorLog 를 지울 때까지 보존하므로 그대로 알리면
+	// 배포마다 같은 경고가 반복된다(2026-10-21 Sample Prep). 매 배포의 ErrorLog 전체로 **대체**하므로 크기는 로그 길이를 넘지 않는다.
+	const seenErrorLogEntries = new Map<string, Set<string>>();
+	/**
+	 * 성공 배포의 ErrorLog 알림 선별 — 새 항목만 알림 대상으로, 의도된 동작 코드는 정보로 낮춘다(규칙: deployOutcome.selectErrorLogNotice).
+	 * 출력 로그(분류 섹션)·결과 스냅샷은 종전대로 전부 남는다.
+	 */
+	const takeErrorLogNotice = (ip: string, errorLog: readonly string[]): ErrorLogNotice => {
+		const quietCodes = vscode.workspace.getConfiguration('gpl').get<number[]>('deploy.errorLogQuietCodes', [-1600]);
+		const notice = selectErrorLogNotice(errorLog, seenErrorLogEntries.get(ip) ?? new Set(), Array.isArray(quietCodes) ? quietCodes : []);
+		seenErrorLogEntries.set(ip, new Set(errorLog.map(errorLogEntryKey)));
+		if (notice.repeated > 0 || notice.quiet.length > 0) {
+			host.log(`[Deploy] ErrorLog 알림 생략: 이미 본 항목 ${notice.repeated}건, 의도된 동작 코드 ${notice.quiet.length}건 (위 분류 섹션에는 모두 표시)`);
+		}
+		return notice;
+	};
+	/** 알림의 「ErrorLog 지우기」 — 사람이 버튼을 눌렀을 때만 보낸다. 응답 STATUS 로 판정한다(하드 규칙 2). */
+	const clearControllerErrorLog = async (ip: string): Promise<void> => {
+		try {
+			const resp = await sendCommandDetailed('ErrorLog -clear');
+			const status = parseStatus(resp.raw);
+			if (resp.meta.statusTagReceived && status.code === 0) {
+				seenErrorLogEntries.delete(ip);
+				vscode.window.showInformationMessage('제어기 ErrorLog 를 지웠습니다.');
+				host.controllerTree?.refresh();
+			} else {
+				vscode.window.showErrorMessage(`ErrorLog 지우기 실패: STATUS ${resp.meta.statusTagReceived ? `${status.code} ${status.message ?? ''}` : '응답 없음'}`.trimEnd());
+			}
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`ErrorLog 지우기 실패: ${err?.message ?? err}`);
+		}
+	};
+	const CLEAR_ERROR_LOG = 'ErrorLog 지우기';
+
 	// 업로드 진행 바(상태바) — 배포가 어느 경로(명령·F5·autoOnSave·MCP)로 시작됐든 deployService 가 같은 이벤트를 내므로
 	// 여기서 한 번만 구독한다. 출력 패널의 파일별 로그는 그대로(이력), 움직이는 바는 상태바(§1-EE).
 	context.subscriptions.push(onDidUploadProgress(e => {
@@ -81,30 +124,17 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	}));
 
 	/**
-	 * 배포 진입점. 잠금은 deploy() 안에서 — 프로젝트 선택/미저장 확인 UI가 끝난 뒤 — 획득한다(UI 대기 중 잠금 금지, 이슈 #15).
-	 * 여기서는 이미 잡혀 있으면 컨텍스트와 함께 경고하고 바로 끝낸다. 결과는 호출측(autoOnSave 재예약, Start 전 Compile)이 쓴다.
+	 * 배포 진입점. 큐 등록과 잠금은 deploy() 안에서 — 프로젝트 선택/미저장 확인 UI가 끝난 뒤 — 수행한다
+	 * (UI 대기 중 대기열 점유 금지, 이슈 #15). 같은 제어기의 기존 작업이 있으면 거부하지 않고 순서대로 기다린다.
 	 */
 	async function runDeploy(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<DeployResult | undefined> {
-		const owned = host.currentDeployLockOwnership();
-		if (owned) {
-			const { record: holder, local } = owned;
-			if (quickOpts?.changedFiles?.length) {
-				host.log(`[QuickCompile] autoOnSave 대기 — 배포 잠금 보유 중 (${describeDeployLock(holder)})`);
-			} else {
-				host.warnDeployBusy(
-					quickOpts?.quick ? 'Quick Compile' : quickOpts?.skipCompile ? '업로드 스타트' : 'Deploy',
-					holder,
-					'완료 후 다시 시도하세요',
-				);
-			}
-			return makeLockedResult(holder, local);
-		}
 		return runDeployCore(skipStart, quickOpts);
 	}
 
 	/**
 	 * Start 전 "컴파일 검증 필요" 상태 확인. 확장의 Start는 `-compile` 로 컴파일까지 함께 수행하므로(§0.7) 소스에 에러가
-	 * 있으면 Start가 실패하고 Problems 연동도 없다 — 먼저 Compile로 검증할지 묻는다. 단 Compile 직후 Start를 연속으로
+	 * 있으면 Start가 실패해 실행되지 않는다 — 먼저 Compile로 검증할지 묻는다. 실패 위치는 Problems에 연동한다(§1-EW).
+	 * 단 Compile 직후 Start를 연속으로
 	 * 보내지 않으므로(한 번에 하나만, 컴파일 중복 회피) "Compile만 실행"을 고르면 Start는 하지 않는다. true면 Start 진행.
 	 */
 	async function confirmStartWhenCompileStale(projectName: string, projectDir?: string): Promise<boolean> {
@@ -169,7 +199,9 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	}
 
 	async function runDeployCore(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<DeployResult | undefined> {
-		const modeLabel: SituationDeploySnapshot['mode'] = skipStart
+		const modeLabel: SituationDeploySnapshot['mode'] = quickOpts?.uploadOnly
+			? 'Upload Only'
+			: skipStart
 			? 'Build'
 			: quickOpts?.skipCompile ? 'Upload & Start' : 'Deploy & Run';
 		const cfg = getControllerConfig();
@@ -198,7 +230,9 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			for (const f of dirty.savedFiles) { quickCompilePendingFiles.delete(f); }
 		}
 
-		const mode = quickOpts?.quick
+		const mode = quickOpts?.uploadOnly
+			? 'Upload Only'
+			: quickOpts?.quick
 			? 'Quick Compile'
 			: skipStart ? 'Build' : quickOpts?.skipCompile ? '업로드 스타트' : 'Deploy & Run';
 		host.log(`[Deploy] Starting ${mode}: ${projectDir} → ${cfg.ip}`);
@@ -219,6 +253,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			const result = await deploy({
 				projectDir,
 				skipStart,
+				uploadOnly: quickOpts?.uploadOnly,
 				skipStop: quickOpts?.skipStop,
 				// 업로드 스타트: Compile을 보내지 않는다 — Start 의 `-compile` 이 컴파일하므로(§0.7) 중복이다.
 				skipCompile: quickOpts?.skipCompile,
@@ -231,12 +266,15 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				// 배포 잠금 레코드의 owner — 다른 창/MCP가 "누가 잡고 있는지" 볼 수 있게 경로별로 구분.
 				lockOwner: quickOpts?.changedFiles?.length
 					? 'autoOnSave Quick Compile'
-					: quickOpts?.quick ? 'Quick Compile' : quickOpts?.skipCompile ? 'Upload & Start' : 'Deploy',
+					: quickOpts?.uploadOnly ? 'Upload Only' : quickOpts?.quick ? 'Quick Compile' : quickOpts?.skipCompile ? 'Upload & Start' : 'Deploy',
 				// 모든 배포는 /GPL 직접 업로드가 기본 (테스트는 /GPL, flash 저장은 gpl.saveToFlash 담당).
 				// /GPL/<name>이 없으면 FTP로 생성 — 단 changedFiles(autoOnSave) 경로는 클래식 폴백.
 				directGpl: true,
 				// Start 스위치: 기본 `-event`(GDE 동일 — 상태 변경을 1403 이벤트로 받는다)
 				startEventMode: vscode.workspace.getConfiguration('gpl').get<boolean>('controller.startEventMode', true),
+				startConfirmed: quickOpts?.startConfirmed === true,
+				// Start 뒤 메인 쓰레드 감시 창(§1-EU) — Error 로 멈추면 runtimeError 로 돌아온다(0 이면 감시 안 함).
+				postStartWatchMs: vscode.workspace.getConfiguration('gpl').get<number>('controller.postStartWatchMs', 5000),
 				// 활성 쓰레드 감지 시 사용자에게 Stop -all 여부를 모달로 확인.
 				// autoOnSave 경로(noStopPrompt)는 저장마다 팝업이 뜨면 방해되므로 조용히 중단 유지.
 				confirmStopOnActive: quickOpts?.quick && !quickOpts?.noStopPrompt && !quickOpts?.nonInteractive
@@ -252,12 +290,44 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				beforeStart: skipStart ? undefined : () => host.primeRuntimeConsoleForStart('Deploy'),
 			}, outputChannel, deployDiagnostics);
 
+			if (result.cancelled) {
+				const reason = result.cancellationReason ?? result.failedStatusMessage ?? '작업자 전체 정지 요청';
+				if (result.uploadStats) {
+					host.markCompileStale(
+						result.projectName,
+						`${mode} 취소 — 부분 업로드 가능, Compile/Start 미수행`,
+						projectDir,
+					);
+				}
+				const message = `${mode} 취소: ${reason} — 이후 Compile/Start는 실행하지 않았습니다.`;
+				host.log(`[Deploy] ${message}`);
+				host.lastDeploySnapshot = makeDeploySnapshot({
+					mode: modeLabel, success: false, lastStage: 'CANCELLED', summary: message,
+					compileErrorCodes: [], controllerSystemCodes: [],
+				});
+				if (!quickOpts?.changedFiles?.length) { void vscode.window.showWarningMessage(message); }
+				return result;
+			}
+
 			// 배포 잠금 보유 중(UI 확인이 끝난 사이 다른 창/autoOnSave가 먼저 잡은 경우) — 컨텍스트와 함께 안내.
 			if (result.failedPhase === 'LOCKED') {
 				if (quickOpts?.changedFiles?.length) {
 					host.log(`[QuickCompile] autoOnSave 대기 — ${result.failedStatusMessage ?? '배포 잠금 보유 중'}`);
 				} else if (result.lockHolder) {
 					host.warnDeployBusy(mode, result.lockHolder, '완료 후 다시 시도하세요');
+				}
+				return result;
+			}
+
+			// Controller Snapshot manifest 게이트는 제어기를 건드리기 전의 의도적 차단이다.
+			// deployService 내부 단계는 AUTO_GATE를 재사용하지만, 사람이 누른 Quick Compile/Deploy까지
+			// "autoOnSave 건너뜀"으로 조용히 처리하면 명령이 사라진 것처럼 보인다. 대화형 경로에는
+			// manifest의 정확한 이유를 보여 주고, 자동화 경로는 구조화 결과를 그대로 호출자에게 돌려준다.
+			if (!result.success && result.failedCommand === 'Controller project manifest gate') {
+				const message = result.failedStatusMessage ?? 'Controller 프로젝트 manifest 정책으로 쓰기 작업이 차단됐습니다.';
+				host.log(`[Deploy] ${mode} 차단: ${message}`);
+				if (!quickOpts?.nonInteractive && !quickOpts?.changedFiles?.length) {
+					void vscode.window.showWarningMessage(message);
 				}
 				return result;
 			}
@@ -286,6 +356,24 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				return result;
 			}
 
+			if (!result.success && (result.cancelled || result.failedPhase === 'CANCELLED')) {
+				if (result.uploadStats) {
+					host.markCompileStale(result.projectName, `${mode} 취소 — 업로드가 일부 진행됐을 수 있음`, projectDir);
+				}
+				const msg = `${mode} 취소: ${result.cancellationReason ?? result.failedStatusMessage ?? '사용자 요청'}`;
+				host.log(`[Deploy] ${msg}`);
+				host.lastDeploySnapshot = makeDeploySnapshot({
+					mode: modeLabel,
+					success: false,
+					lastStage: 'CANCELLED',
+					summary: msg,
+					compileErrorCodes: [],
+					controllerSystemCodes: [],
+				});
+				if (!quickOpts?.changedFiles?.length) { void vscode.window.showInformationMessage(msg); }
+				return result;
+			}
+
 			// ErrorLog 분류·COMPILE 원문 섹션의 문구는 controller/deployOutcome.ts 가 만든다(테스트 대상) — 여기서는 줄만 찍는다.
 			const logErrorLogSections = (): { sysCount: number; deployErrCount: number } => {
 				const classified = classifyDeployErrorLog(result.errorLog);
@@ -297,6 +385,32 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			};
 
 			if (result.success) {
+				if (quickOpts?.uploadOnly) {
+					host.markCompileStale(result.projectName, 'Upload Only 완료 — Compile 미수행', projectDir);
+					const deployedFolderName = path.basename(projectDir).trim();
+					const remotePathInfo = result.selectedRemoteProjectPath
+						? ` / 경로: ${result.selectedRemoteProjectPath}`
+						: '';
+					host.controllerTree?.setExpectedProjectContext(result.projectName, deployedFolderName);
+					await host.controllerTree?.refreshFtp();
+					const signature = buildDeployOutcomeSignature(result, []);
+					const comparisonNote = comparisonNoteFor(deployOutcomeHistory.countSame(signature), 'result');
+					deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: '업로드 성공' });
+					const summary = `업로드 완료: ${result.projectName}${remotePathInfo} (Stop/Compile/Start 미실행)`;
+					host.log(`[Deploy] ✔ ${summary}`);
+					void vscode.window.showInformationMessage(summary);
+					outputChannel.show(true);
+					host.lastDeploySnapshot = makeDeploySnapshot({
+						mode: modeLabel,
+						success: true,
+						lastStage: 'SUCCESS',
+						summary: `업로드 성공 / Compile 미수행${remotePathInfo}`,
+						compileErrorCodes: [],
+						controllerSystemCodes: [],
+						comparisonNote,
+					});
+					return result;
+				}
 				host.clearCompileStale(result.projectName);
 				const controllerSystemCodes = parsedErrorCodes(result.errorLog);
 				const signature = buildDeployOutcomeSignature(result, controllerSystemCodes);
@@ -319,13 +433,21 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						host.log(`[Console] build-only auto-start failed: ${err?.message ?? err}`);
 					}
 					const { sysCount } = logErrorLogSections();
-					if (sysCount > 0) {
+					// 알림은 직전 배포 이후 새로 생긴 항목만(이미 본 경고를 배포마다 반복하지 않는다). 스냅샷 summary 는 전체 건수.
+					const notice = takeErrorLogNotice(cfg.ip, controllerSystemErrorEntries(result.errorLog));
+					if (notice.newSys.length > 0) {
 						// Build Only이므로 START는 미실행. 제어기 시스템 에러는 배포와 무관하므로 경고만 표시.
 						outputChannel.show(true);
-						await vscode.window.showWarningMessage(
-							`빌드 완료: ${result.projectName}. 제어기 시스템 경고 ${sysCount}건 (배포/GPL 오류 아님) → 출력 채널 확인`,
+						// 토스트를 await 하지 않는다 — 비모달 알림의 Promise 는 사용자가 닫아야 끝나서, 브리지(MCP `deploy_project`)로
+						// 들어온 호출이 작업은 11초에 끝나고도 응답을 못 받아 300초 타임아웃이 났다(2026-10-14 실측, §1-EO).
+						void vscode.window.showWarningMessage(
+							`빌드 완료: ${result.projectName}. 새 제어기 시스템 경고 ${notice.newSys.length}건 (배포/GPL 오류 아님) → 출력 채널 확인`,
 							'출력 보기',
-						);
+							CLEAR_ERROR_LOG,
+						).then(pick => {
+							if (pick === '출력 보기') { outputChannel.show(true); }
+							else if (pick === CLEAR_ERROR_LOG) { void clearControllerErrorLog(cfg.ip); }
+						});
 					} else {
 						// 완료 문구는 진행 로그와 같은 자리(GPL Language Support)에 남긴다 — 실행하지 않은 경로에서
 						// GPL Console(1403 런타임 출력)로 포커스를 뺏으면 방금 본 업로드/컴파일 로그가 사라진다
@@ -347,25 +469,65 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 					});
 				} else {
 					const { sysCount, deployErrCount } = logErrorLogSections();
-					if (sysCount > 0 || deployErrCount > 0) {
+					// 알림은 직전 배포 이후 새로 생긴 항목만 — 스냅샷 summary·출력 분류 섹션은 전체 건수 그대로.
+					const notice = takeErrorLogNotice(cfg.ip, result.errorLog);
+					const runtimeError = result.runtimeError;
+					if (runtimeError) {
+						// Start 뒤 메인 쓰레드가 Error 로 멈췄다(§1-EU) — 업로드·컴파일·Start 는 성공이지만 "배포 완료" 로만 보고하면
+						// 사용자는 런타임 콘솔을 들여다보고서야 알아챈다(2026-10-19 Sample Prep). 디버그 이벤트와 같은 자리에 남긴다:
+						// 오류 컨텍스트(트리·오류 상세) + 에러 줄 강조(주인 쓰레드 붙임, 재시작하면 자동 해제 §1-EP) + 에러 토스트.
+						const text = formatRuntimeError(runtimeError);
+						host.log(`[Deploy] ✘ Start 뒤 메인 쓰레드 Error: ${text}${runtimeError.hint ? ` — ${runtimeError.hint}` : ''}`);
+						host.lastRuntimeErrorContext = { threadName: runtimeError.threadName, statusText: text, firstSeenAt: new Date().toISOString() };
+						host.controllerTree?.setRuntimeErrorContext(host.lastRuntimeErrorContext);
+						if (runtimeError.file && runtimeError.line) {
+							const target = host.project.resolveGplFilePath(path.basename(runtimeError.file));
+							if (target) {
+								try {
+									const doc = await vscode.workspace.openTextDocument(target);
+									const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+									const range = doc.lineAt(Math.min(Math.max(0, runtimeError.line - 1), Math.max(0, doc.lineCount - 1))).range;
+									host.decorations.showError(editor, range, { threadName: runtimeError.threadName });
+									editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+								} catch (err: any) {
+									host.log(`[Deploy] 오류 줄 표시 실패: ${err?.message ?? err}`);
+								}
+							}
+						}
+						outputChannel.show(true);
+						// 토스트를 await 하지 않는다(브리지 호출의 300초 타임아웃 원인, §1-EO).
+						void vscode.window.showErrorMessage(
+							`배포는 끝났지만 Start 뒤 메인 쓰레드가 Error 로 멈췄습니다: ${text}${runtimeError.hint ? ` — ${runtimeError.hint}` : ''}`,
+							'오류 상세',
+							'출력 보기',
+						).then(pick => {
+							if (pick === '오류 상세') { void vscode.commands.executeCommand('gpl.controller.showErrorDetail', { threadName: runtimeError.threadName }); }
+							else if (pick === '출력 보기') { outputChannel.show(true); }
+						});
+					} else if (notice.newSys.length > 0 || notice.newDeployErr.length > 0) {
 						outputChannel.show(true);
 						const parts: string[] = [];
-						if (deployErrCount > 0) { parts.push(`배포 에러 ${deployErrCount}건`); }
-						if (sysCount > 0) { parts.push(`제어기 시스템 경고 ${sysCount}건 (배포 원인 아님)`); }
-						const action = await vscode.window.showWarningMessage(
+						if (notice.newDeployErr.length > 0) { parts.push(`새 배포 에러 ${notice.newDeployErr.length}건`); }
+						if (notice.newSys.length > 0) { parts.push(`새 제어기 시스템 경고 ${notice.newSys.length}건 (배포 원인 아님)`); }
+						// 같은 이유로 await 하지 않는다(위 Build Only 분기 참조) — 선택은 then 에서 처리한다.
+						void vscode.window.showWarningMessage(
 							`배포 완료: ${result.projectName} — ${parts.join(' / ')}`,
 							'출력 보기',
 							'콘솔 보기',
-						);
-						if (action === '콘솔 보기') {
-							if (!deployRuntimeConsole) {
-								deployRuntimeConsole = host.ensureRuntimeConsole();
-								await deployRuntimeConsole.waitUntilReady(800);
+							CLEAR_ERROR_LOG,
+						).then(async action => {
+							if (action === CLEAR_ERROR_LOG) {
+								void clearControllerErrorLog(cfg.ip);
+							} else if (action === '콘솔 보기') {
+								if (!deployRuntimeConsole) {
+									deployRuntimeConsole = host.ensureRuntimeConsole();
+									await deployRuntimeConsole.waitUntilReady(800);
+								}
+								consoleChannel.show(true);
+							} else if (action === '출력 보기') {
+								outputChannel.show(true);
 							}
-							consoleChannel.show(true);
-						} else {
-							outputChannel.show(true);
-						}
+						});
 					} else {
 						vscode.window.showInformationMessage(`배포 완료: ${result.projectName}${remotePathInfo}`);
 						if (!deployRuntimeConsole && isRuntimeConsoleAutoStartOnDeploy(vscode.workspace)) {
@@ -378,9 +540,11 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						mode: modeLabel,
 						success: true,
 						lastStage: 'SUCCESS',
-						summary: sysCount > 0 || deployErrCount > 0
-							? `배포 성공 / 배포 에러 ${deployErrCount}건 / 시스템 경고 ${sysCount}건${remotePathInfo}`
-							: `배포 성공${remotePathInfo}`,
+						summary: runtimeError
+							? `배포 성공 / Start 뒤 메인 쓰레드 Error(${runtimeError.statusCode ?? '?'})${runtimeError.file ? ` ${runtimeError.file}:${runtimeError.line ?? '?'}` : ''}${remotePathInfo}`
+							: sysCount > 0 || deployErrCount > 0
+								? `배포 성공 / 배포 에러 ${deployErrCount}건 / 시스템 경고 ${sysCount}건${remotePathInfo}`
+								: `배포 성공${remotePathInfo}`,
 						compileErrorCodes: [],
 						controllerSystemCodes,
 						comparisonNote,
@@ -396,9 +560,9 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 					host.markCompileStale(
 						result.projectName,
 						quickOpts?.skipCompile && result.failedPhase === 'START'
-							// 업로드 스타트는 Compile을 보내지 않는다 — Start 실패는 `-compile` 컴파일 실패일 수 있고
-							// 그 경우 에러 위치가 Problems에 오지 않으므로 빠른 컴파일로 확인하도록 남긴다(§0.7).
-							? '업로드 스타트: Start 실패 — 소스 에러 여부는 빠른 컴파일로 확인 필요'
+							? result.compileErrors.length > 0
+								? `업로드 스타트: Start -compile 컴파일 에러 ${result.compileErrors.length}건`
+								: '업로드 스타트: Start 실패 — 컴파일 에러 위치는 응답에서 확인되지 않음'
 							: `${mode} 업로드 후 Compile 실패(${result.failedPhase ?? 'FAIL'})`,
 						projectDir,
 					);
@@ -412,9 +576,11 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				const failure = describeDeployFailure(result, sysErrors, comparisonNote);
 				// 소스 줄에 붙는 컴파일 에러면 Problems 패널 + 에러 줄로 보내고, 그 외(제어기 시스템 에러 등
 				// 코드 위치가 없는 실패)에만 출력 패널을 띄운다.
+				// 자동화(AI) 배포는 에러 줄을 보여 주기만 하고 포커스는 옮기지 않는다 — 사용자가 채팅에 입력 중일 수 있다.
 				const jumpedToError = failure.jumpToCompileErrors
 					&& await jumpToFirstCompileError(result.compileErrors, projectDir,
-						msg => outputChannel.appendLine(`[Deploy] ${msg}`));
+						msg => outputChannel.appendLine(`[Deploy] ${msg}`),
+						{ preserveFocus: quickOpts?.nonInteractive === true });
 				if (!jumpedToError) {
 					outputChannel.show(true);
 				}
@@ -495,6 +661,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		error: AutomationErrorCode;
 		detail: string;
 		candidates?: TargetCandidateSummary[];
+		candidateCount?: number;
 		files?: string[];
 		/**
 		 * 다음에 무엇을 할지 — 호출자(AI/MCP)가 detail 문장을 해석해 행동을 지어내지 않게 한다(개선안 §15~§17).
@@ -519,12 +686,6 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		return { ok: false, error, detail, ...extra, recovery: recoveryFor(error) };
 	}
 
-	/** 설정 `gpl.controller.defaultProject` — 프로젝트명 또는 폴더명. 빈 문자열이면 없음. */
-	function getConfiguredDefaultProject(): string | undefined {
-		const v = vscode.workspace.getConfiguration('gpl.controller').get<string>('defaultProject', '');
-		return typeof v === 'string' && v.trim() ? v.trim() : undefined;
-	}
-
 	/**
 	 * 자동화 대상 해석. **UI 를 띄우지 않고 active editor 를 보지 않는다.** 성공하면 세션 대상을 갱신한다.
 	 * 실패는 예외가 아니라 구조화된 결과 — 호출자(AI)가 그대로 읽고 다음에 무엇을 지정할지 알 수 있게.
@@ -536,11 +697,10 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		const candidates = await buildTargetCandidates();
 		const r = resolveProjectTarget(request, candidates, {
 			sessionTargetDir: host.sessionTargetDir,
-			configuredDefault: getConfiguredDefaultProject(),
 		});
 		if (!r.ok) {
 			host.log(`[Automation] ${label}: ${describeResolution(r)} · 후보: ${describeCandidates(r.candidates)}`);
-			return automationFailure(r.error, r.detail, { candidates: r.candidates });
+			return automationFailure(r.error, r.detail, { candidateCount: r.candidates.length });
 		}
 		host.sessionTargetDir = r.dir;
 		host.log(`[Automation] ${label}: 대상 ${describeResolution(r)}`);
@@ -603,7 +763,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 
 	/**
 	 * "컴파일 검증 필요"(업로드했지만 Compile 로 검증되지 않음) 상태의 자동화 게이트. Start 는 제어기가 자체
-	 * 컴파일하므로 소스 에러가 있으면 Start 가 실패하고 Problems 연동도 없다(§0.7) — 그 사실을 오류로 알린다.
+	 * 컴파일하므로 소스 에러가 있으면 Start 가 실패해 실행되지 않는다(§0.7). 자동화는 확인 모달을 띄울 수 없으므로 오류로 알린다.
 	 */
 	function compileStaleGate(label: string, projectName: string, args: AutomationTargetArgs): AutomationFailure | undefined {
 		const stale = host.findCompileStale(projectName);
@@ -631,6 +791,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			...opts,
 			overrideProjectDir: target.dir,
 			nonInteractive: true,
+			startConfirmed: args.confirmStart === true,
 			// 호출자가 키를 주지 않으면 (명령 + 대상 폴더)로 만든다 — 같은 대상에 같은 종류의 배포가
 			// 겹쳐 들어오는 것이 막으려는 상황이므로, 키가 없다고 중복 방지가 꺼지면 안 된다(§10).
 			idempotencyKey: args.idempotencyKey ?? `${label}:${normalizeDirKey(target.dir)}`,
@@ -640,7 +801,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	/**
 	 * `gpl.automation.target` — 세션 자동화 대상 조회/고정/해제 (개선안 §19·§27).
 	 *
-	 * 대상 없이 부르면 현재 상태(고정된 대상·후보 목록·설정 기본값)를 돌려준다 — "왜 이 프로젝트가 올라갔지?"를
+	 * 대상 없이 부르면 현재 상태(고정된 대상·후보 목록)를 돌려준다 — "왜 이 프로젝트가 올라갔지?"를
 	 * 사후 추론하지 않고 바로 확인하기 위한 것이다. 대상을 주면 해석해 세션에 고정하고, 이후 `gpl.deploy` 등을
 	 * 인자 없이(또는 대상 없는 객체로) 불러도 같은 프로젝트가 쓰인다. `clear: true` 면 고정을 푼다.
 	 */
@@ -661,7 +822,6 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			return {
 				ok: true,
 				target: current ? { project: current.projectName, dir: current.dir, runnable: current.runnable } : null,
-				configuredDefault: getConfiguredDefaultProject() ?? null,
 				candidates: candidates.map(c => ({
 					project: c.projectName,
 					dir: c.dir,
@@ -670,7 +830,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				})),
 				hint: current
 					? '이 대상이 인자 없는 자동화 호출에 쓰입니다. 다른 프로젝트를 쓰려면 그 호출에 project/projectDir 를 직접 주세요.'
-					: '고정된 대상이 없습니다 — 자동화 호출은 실행 가능 프로젝트가 유일하거나 설정 기본값이 있을 때만 자동 결정되고, 그 밖에는 PROJECT_AMBIGUOUS 를 돌려줍니다.',
+					: '고정된 대상이 없습니다 — 자동화 호출은 실행 가능 프로젝트가 유일할 때만 자동 결정되고, 그 밖에는 PROJECT_AMBIGUOUS 를 돌려줍니다.',
 			};
 		})
 	);
@@ -727,10 +887,27 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		})
 	);
 
+	// gpl.uploadOnly — /GPL 소스 업로드만. 실행 중 프로그램을 멈추거나 Compile/Start하지 않는다.
+	// 같은 제어기의 다른 업로드/배포가 진행 중이면 공통 큐에서 순서를 기다린다.
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.uploadOnly', async (resource?: unknown) => {
+			const uploadOnly = { uploadOnly: true } as const;
+			if (isAutomationInvocation(resource)) {
+				return runDeployForAutomation('gpl.uploadOnly', resource as AutomationTargetArgs, true, uploadOnly);
+			}
+			if (resource instanceof vscode.Uri) {
+				const dir = await pickWorkspaceProjectDir('업로드할 프로젝트를 선택하세요', resource);
+				if (!dir) { return undefined; }
+				return runDeploy(true, { ...uploadOnly, overrideProjectDir: dir });
+			}
+			return runDeploy(true, uploadOnly);
+		})
+	);
+
 	// gpl.uploadStart — Stop + /GPL 직접 업로드 + Start. Compile은 보내지 않는다.
 	// 확장의 Start 는 `-compile` 로 컴파일까지 수행하므로(ai-handoff §0.7)
-	// 확장이 Compile을 먼저 보내면 같은 컴파일이 두 번 돈다. 대신 소스 에러는 Problems 대신
-	// Start의 STATUS 실패로만 드러나므로, 에러 위치가 필요하면 '빠른 컴파일'(gpl.quickCompile)을 쓴다.
+	// 확장이 Compile을 먼저 보내면 같은 컴파일이 두 번 돈다. Start 컴파일 에러도 §1-EW부터 Problems에 연동한다.
+	// '빠른 컴파일'(gpl.quickCompile)은 Start 없이 먼저 검증하고 싶을 때 쓴다.
 	// Start 확인 모달·배포 잠금·프로젝트명 가드는 모두 기존 배포 경로와 동일하게 적용된다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.uploadStart', async (resource?: unknown) => {
@@ -874,6 +1051,12 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			}
 			const projectDir = await pickWorkspaceProjectDir('flash에 저장할 프로젝트를 선택하세요', resource);
 			if (!projectDir) { return undefined; }
+			const currentHost = getControllerConfig().ip;
+			const manifestBlock = getControllerProjectWriteBlock(projectDir, currentHost);
+			if (manifestBlock) {
+				void vscode.window.showWarningMessage(manifestBlock.message);
+				return undefined;
+			}
 			// 업로드 전 미저장 파일 확인. savedFiles는 pending에서 지우지 않는다 —
 			// flash 업로드는 /GPL을 갱신하지 않으므로 /GPL 동기화는 이후 autoOnSave가 자체 게이트로 처리.
 			if (!(await confirmSaveDirtyProjectDocs(projectDir)).ok) {
@@ -887,11 +1070,57 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			host.log(`[SaveToFlash] ${projectDir} → ftp://${cfg.ip}${remoteDir} (미러 동기화, Load/Compile 없음)`);
 			// FTP 미러(원격 파일 삭제 포함) 중 autoOnSave/배포/MCP의 Compile·Start가 겹치지 않도록 배포 잠금에 포함.
 			// 프로젝트 선택·미저장 확인 UI가 끝난 뒤에 잡는다(UI 대기 중 잠금 금지, 이슈 #15).
-			const acquired = getDeployLock(cfg.ip).acquire('Save to Flash', 'FTP_MIRROR');
+			const operation = beginOperation({
+				type: 'SAVE_TO_FLASH', controllerId: cfg.ip, extensionInstanceId: host.extensionInstanceId,
+				projectDir, projectName, phase: 'FTP_MIRROR',
+			});
+			clearDeployCancellation(operation.operationId);
+			const acquired = getDeployLock(cfg.ip).acquire('Save to Flash', 'FTP_MIRROR', {
+				operationId: operation.operationId,
+				extensionInstanceId: host.extensionInstanceId,
+				projectDir,
+			});
 			if (!acquired.ok) {
+				operation.fail({
+					code: 'LOCK_HELD_BY_OTHER_OPERATION', message: `배포 잠금 보유 중: ${describeDeployLock(acquired.holder)}`,
+					retryable: true, retryMode: 'CHECK_OPERATION', safeToRepeat: true,
+				});
+				clearDeployCancellation(operation.operationId);
 				host.warnDeployBusy('Save to Flash', acquired.holder, '완료 후 flash 저장을 실행하세요');
 				return undefined;
 			}
+			host.statusBar?.setFlashSafety({ phase: 'writing' }, projectName);
+			void vscode.window.showWarningMessage(
+				'Flash 저장을 시작했습니다. 안전 확인이 끝나 상태바 경고가 사라질 때까지 제어기 전원을 끄지 마세요.'
+			);
+			let flashSafetyStage = '';
+			const isCancelled = (): boolean => readDeployCancellation(operation.operationId).requested;
+			const confirmFlashSafe = async () => waitForFlashSafe({
+				sendSync: async () => {
+					host.log('[SaveToFlash] Sync — Disk Busy 해제 대기');
+					const response = await sendCommandDetailed('Sync', cfg, {
+						waitForStatusClose: true,
+						timeoutMs: Math.max(cfg.timeoutMs, FLASH_SYNC_TIMEOUT_MS),
+					});
+					return response.raw;
+				},
+				onState: state => {
+					const stage = state.phase === 'syncing' ? 'FLASH_SYNC'
+						: state.phase === 'settling' ? 'FLASH_SETTLE'
+							: state.phase === 'unknown' ? 'FLASH_SAFETY_UNKNOWN'
+								: 'FTP_MIRROR';
+					try {
+						if (stage !== flashSafetyStage) {
+							flashSafetyStage = stage;
+							acquired.handle.setStage(stage);
+							operation.setPhase(stage);
+						} else {
+							acquired.handle.heartbeat();
+						}
+					} catch { /* 자동 heartbeat가 다음 주기에 다시 기록한다 — 안전 확인 자체는 계속 */ }
+					host.statusBar?.setFlashSafety(state, projectName);
+				},
+			});
 			try {
 				const stats = await mirrorProject(cfg.ip, projectDir, remoteDir, {
 					// 크기만 같고 내용이 바뀐 파일을 스킵하지 않도록 직전 업로드 지문(SHA-1)을 함께 본다.
@@ -904,20 +1133,66 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 						}
 						host.statusBar?.setUploadProgress(event, projectName);
 					},
-					onDelete: (file) => host.log(`[SaveToFlash] del ${file} (원격 전용 — 로컬에 없어 삭제)`),
+					onDelete: (file) => {
+						host.log(`[SaveToFlash] del ${file} (원격 전용 — 로컬에 없어 삭제)`);
+					},
+					isCancelled,
 				});
 				host.statusBar?.endUpload({ ok: true, summary: stats });
 				recordSyncManifest(cfg.ip, remoteDir, stats.manifest);
-				host.log(`[SaveToFlash] 완료: ${stats.uploaded} sent, ${stats.skipped} skipped, ${stats.deleted} deleted`);
+
+				// 변경 파일이 0개여도 Sync를 보낸다. 직전 시도의 안전 상태 미확인 경고가 남아 있을 수 있으므로,
+				// 실제 Disk Busy=0을 확인하지 않고 새 no-op 저장이 경고를 지우게 하지 않는다.
+				const safety = await confirmFlashSafe();
+				if (!safety.ok) {
+					const detail = safety.detail ?? 'Sync 결과를 확인하지 못했습니다.';
+					host.log(`[SaveToFlash] Flash 안전 상태 미확인 — ${detail}`);
+					void vscode.window.showWarningMessage(
+						`flash 파일 저장은 끝났지만 전원 차단 안전 상태를 확인하지 못했습니다: ${detail} ` +
+						'제어기의 Flash Busy 표시가 사라진 뒤 10초 이상 기다리세요.',
+						'출력 보기',
+					).then(pick => { if (pick === '출력 보기') { outputChannel.show(true); } });
+					if (isCancelled()) { operation.cancel(readDeployCancellation(operation.operationId).request?.reason ?? '작업자 전체 정지 요청'); }
+					else { operation.fail({ code: 'FLASH_SAFETY_UNKNOWN', message: detail, retryable: false, retryMode: 'NONE', safeToRepeat: false }); }
+					return undefined;
+				}
+				if (isCancelled()) {
+					const reason = readDeployCancellation(operation.operationId).request?.reason ?? '작업자 전체 정지 요청';
+					host.statusBar?.setFlashSafety(undefined);
+					host.log(`[SaveToFlash] 취소: ${reason} — Flash Sync 안전 확인은 완료`);
+					void vscode.window.showWarningMessage(`flash 저장 취소: ${reason} (Flash 안전 확인 완료)`);
+					operation.cancel(reason);
+					return undefined;
+				}
+				host.statusBar?.setFlashSafety(undefined);
+				host.log(`[SaveToFlash] 완료(Sync + 안전 대기 확인): ${stats.uploaded} sent, ${stats.skipped} skipped, ${stats.deleted} deleted`);
 				vscode.window.showInformationMessage(
-					`flash 저장 완료: ${remoteDir} (${stats.uploaded} 업로드, ${stats.skipped} 스킵${stats.deleted ? `, ${stats.deleted} 삭제` : ''})`
+					`flash 저장·안전 확인 완료: ${remoteDir} (${stats.uploaded} 업로드, ${stats.skipped} 스킵${stats.deleted ? `, ${stats.deleted} 삭제` : ''})`
 				);
 				await host.controllerTree?.refreshAll();
+				operation.complete({ success: true, projectName, remoteProjectPath: remoteDir, uploadStats: stats });
 			} catch (err: any) {
 				host.statusBar?.endUpload({ ok: false, message: err?.message ?? String(err) });
-				vscode.window.showErrorMessage(`flash 저장 실패: ${err.message ?? err}`);
+				// FTP 실패도 파일 일부가 이미 쓰였을 수 있고, 이전 시도의 안전 미확인 경고가 남아 있을 수도 있다.
+				// 실패 알림 전에 항상 Sync + 안정화를 시도해 전원 차단 경고를 근거 없이 지우지 않는다.
+				const safety = await confirmFlashSafe();
+				if (safety.ok) {
+					host.statusBar?.setFlashSafety(undefined);
+				}
+				const cancellation = readDeployCancellation(operation.operationId);
+				if (isUploadCancelledError(err) || cancellation.requested) {
+					const reason = cancellation.request?.reason ?? '작업자 전체 정지 요청';
+					host.log(`[SaveToFlash] 취소: ${reason} — Flash Sync 안전 확인 ${safety.ok ? '완료' : '미확인'}`);
+					void vscode.window.showWarningMessage(`flash 저장 취소: ${reason}${safety.ok ? ' (Flash 안전 확인 완료)' : ' — Flash 안전 상태는 확인하지 못함'}`);
+					operation.cancel(reason);
+				} else {
+					vscode.window.showErrorMessage(`flash 저장 실패: ${err.message ?? err}`);
+					operation.fail({ code: 'SAVE_TO_FLASH_FAILED', message: err?.message ?? String(err), retryable: true, retryMode: 'RETRY_SAME_REQUEST', safeToRepeat: false });
+				}
 			} finally {
 				acquired.handle.release();
+				clearDeployCancellation(operation.operationId);
+				sweepOperations();
 			}
 			return undefined;
 		})
@@ -1053,7 +1328,12 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		vscode.workspace.onDidSaveTextDocument((doc) => {
 			if (doc.languageId !== 'gpl') { return; }
 			if (getAutoOnSaveMode() === 'off') { return; }
-			if (!host.controllerTree?.isConnected) { return; }
+			if (!host.isControllerConnected) { return; }
+			const manifestBlock = getControllerProjectWriteBlock(doc.uri.fsPath, getControllerConfig().ip);
+			if (manifestBlock) {
+				host.log(`[QuickCompile] ${manifestBlock.message} 저장 파일: ${doc.uri.fsPath}`);
+				return;
+			}
 			quickCompilePendingFiles.add(doc.uri.fsPath);
 			scheduleQuickCompileFlush(600);
 		})

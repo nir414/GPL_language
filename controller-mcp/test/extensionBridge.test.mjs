@@ -22,6 +22,11 @@ import {
   instanceBridgeDirs,
   instancePresenceDir,
   takeLateResponse,
+  pickConsoleRouteInstance,
+  describeHostMismatch,
+  hostMismatchFix,
+  bridgeHealthSummary,
+  describeBridgeFailure,
 } from '../src/extensionBridge.js';
 
 function tmpDir() {
@@ -85,6 +90,29 @@ test('presence: 손상된 JSON은 읽기 실패로 처리한다(브리지 없음
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(presenceFilePath(ip, dir), '{broken');
   assert.equal(readExtensionPresence(ip, { dir }).reason, 'presence-unreadable');
+});
+
+test('presence: 브리지 큐 상태를 고정 모양으로 요약한다', () => {
+  assert.deepEqual(bridgeHealthSummary({ bridge: { busy: true, pendingRequests: 2, bridgeStalled: true,
+    activeRequest: { id: 'a', command: 'gpl.quickCompile', startedAt: 10 }, lastRequestCollectedAt: 10 } }), {
+    busy: true,
+    activeRequest: { id: 'a', command: 'gpl.quickCompile', startedAt: 10 },
+    lastRequestCollectedAt: 10,
+    lastResponseWrittenAt: null,
+    pendingRequests: 2,
+    oldestPendingRequestAt: null,
+    oldestPendingRequestAgeMs: null,
+    bridgeStalled: true,
+  });
+  assert.equal(bridgeHealthSummary({ bridge: { enabled: true } }).bridgeStalled, false);
+});
+
+test('브리지 실패 설명: 필드가 빠져도 undefined 문구를 만들지 않는다', () => {
+  assert.deepEqual(describeBridgeFailure(undefined), {
+    error: 'unexpected-bridge-response',
+    detail: '브리지 응답에 실패 상세가 없습니다.',
+  });
+  assert.deepEqual(describeBridgeFailure({ ok: true, result: { ok: false, error: 'E', detail: 'D' } }), { error: 'E', detail: 'D' });
 });
 
 test('요청 id는 파일명으로 안전한 문자만 쓴다', () => {
@@ -281,7 +309,7 @@ test('타임아웃 뒤 도착한 응답은 requestId 로 회수한다(§11 — �
   assert.equal(takeLateResponse(ip, 'req-1', { dir, instanceId: 'win-b' }), null);
 });
 
-test('resolveBridge: 인스턴스 presence 가 있으면 리더를 기본 경로로 쓴다(레거시는 폴백)', async () => {
+test('resolveBridge: 인스턴스 presence 가 있고 모두 연결돼 있으면 리더를 기본 경로로 쓴다(레거시는 폴백)', async () => {
   const dir = tmpDir();
   const ip = '10.0.0.25';
   writeInstancePresence(dir, ip, 'late', { since: 5000 });
@@ -289,6 +317,7 @@ test('resolveBridge: 인스턴스 presence 가 있으면 리더를 기본 경로
   const r = await resolveBridge(ip, { dir, mode: 'auto', wake: false });
   assert.equal(r.available, true);
   assert.equal(r.presence.extensionInstanceId, 'early');
+  assert.equal(r.routeVia, 'connected');
   assert.equal(r.instances.length, 2);
   assert.notEqual(r.legacy, true);
 
@@ -298,4 +327,134 @@ test('resolveBridge: 인스턴스 presence 가 있으면 리더를 기본 경로
   const legacy = await resolveBridge(ip, { dir: dir2, mode: 'auto', wake: false });
   assert.equal(legacy.available, true);
   assert.equal(legacy.legacy, true);
+});
+
+// ── 콘솔 경로: 리더가 아니라 연결된 창(2026-10-14, §1-EK) ──────────────────
+
+test('콘솔 경로: 리더가 미접속이고 다른 창이 연결돼 있으면 연결된 창으로 보낸다', () => {
+  const leaderIdle = { extensionInstanceId: 'leader-idle', since: 1000, connected: false, leader: true };
+  const liveLate = { extensionInstanceId: 'live-late', since: 2000, connected: true, leader: false };
+  const r = pickConsoleRouteInstance([leaderIdle, liveLate]);
+  assert.equal(r.instance.extensionInstanceId, 'live-late');
+  assert.equal(r.via, 'connected');
+});
+
+test('콘솔 경로: 명시 instanceId 가 최우선이고, 살아 있지 않으면 일반 규칙으로 돌아간다', () => {
+  const a = { extensionInstanceId: 'a', since: 1000, connected: false, leader: true };
+  const b = { extensionInstanceId: 'b', since: 2000, connected: true, leader: false };
+  assert.equal(pickConsoleRouteInstance([a, b], { instanceId: 'a' }).via, 'explicit-instance');
+  assert.equal(pickConsoleRouteInstance([a, b], { instanceId: 'a' }).instance.extensionInstanceId, 'a');
+  const ghost = pickConsoleRouteInstance([a, b], { instanceId: 'ghost' });
+  assert.equal(ghost.instance.extensionInstanceId, 'b');
+  assert.equal(ghost.via, 'connected');
+});
+
+test('콘솔 경로: 연결된 창이 없으면 리더, 창이 하나면 그 창(sole)', () => {
+  const a = { extensionInstanceId: 'a', since: 1000, connected: false, leader: true };
+  const b = { extensionInstanceId: 'b', since: 2000, connected: false, leader: false };
+  const r = pickConsoleRouteInstance([a, b]);
+  assert.equal(r.instance.extensionInstanceId, 'a');
+  assert.equal(r.via, 'leader');
+  const sole = pickConsoleRouteInstance([{ extensionInstanceId: 'only', since: 1, connected: false, leader: false }]);
+  assert.equal(sole.via, 'sole-instance');
+  assert.equal(pickConsoleRouteInstance([]), null);
+});
+
+test('콘솔 경로: 연결된 창이 여럿(stale presence 등)이면 그중 리더, 리더가 없으면 가장 먼저 뜬 것', () => {
+  const x = { extensionInstanceId: 'x', since: 3000, connected: true, leader: false };
+  const y = { extensionInstanceId: 'y', since: 2000, connected: true, leader: false };
+  const z = { extensionInstanceId: 'z', since: 1000, connected: false, leader: true };
+  assert.equal(pickConsoleRouteInstance([x, y, z]).instance.extensionInstanceId, 'y');
+  const yLeader = { ...y, leader: true };
+  assert.equal(pickConsoleRouteInstance([x, yLeader]).instance.extensionInstanceId, 'y');
+});
+
+test('resolveBridge: 리더 창이 미접속이면 presence 파일 기준으로도 연결된 창이 기본 경로다(§1-EK 실측 재현)', async () => {
+  const dir = tmpDir();
+  const ip = '10.0.0.26';
+  // 34. Sample Prep 창 = 먼저 떠서 리더, 제어기 미접속 / GPL_language 창 = 나중에 떠서 접속 중.
+  writeInstancePresence(dir, ip, 'sample-prep', { since: 1000, connected: false });
+  writeInstancePresence(dir, ip, 'gpl-language', { since: 2000, connected: true });
+  const r = await resolveBridge(ip, { dir, mode: 'auto', wake: false });
+  assert.equal(r.available, true);
+  assert.equal(r.presence.extensionInstanceId, 'gpl-language');
+  assert.equal(r.routeVia, 'connected');
+  // 리더 계산 자체는 종전대로(레거시 큐 담당) — 콘솔 경로와 분리돼 있다.
+  assert.equal(r.instances.find((p) => p.extensionInstanceId === 'sample-prep').leader, true);
+  // 명시 instanceId 는 그대로 존중한다.
+  const explicit = await resolveBridge(ip, { dir, mode: 'auto', wake: false, instanceId: 'sample-prep' });
+  assert.equal(explicit.presence.extensionInstanceId, 'sample-prep');
+  assert.equal(explicit.routeVia, 'explicit-instance');
+});
+
+// ── 주소 불일치: 확장은 다른 IP 에 떠 있는데 GPL_HOST 가 옛 값(2026-10-19, §1-ES) ──────────
+
+test('주소 불일치: 다른 IP 의 살아 있는 창을 찾고 projectDir 로 같은 작업의 창을 표시한다', () => {
+  const dir = tmpDir();
+  const projectDir = path.join(dir, 'ws', 'projects', 'MergeCode');
+  writeInstancePresence(dir, '192.168.0.102', 'sample-prep', { workspace: '34. Sample Prep', workspaceFolders: [path.join(dir, 'ws')] });
+  writeInstancePresence(dir, '10.0.0.99', 'other-robot', { workspaceFolders: [path.join(dir, 'elsewhere')] });
+  const hm = describeHostMismatch('192.168.0.1', { dir, projectDir });
+  assert.equal(hm.mcp, '192.168.0.1');
+  assert.deepEqual(hm.extensions.map((e) => e.ip).sort(), ['10.0.0.99', '192.168.0.102']);
+  assert.equal(hm.extensions.find((e) => e.ip === '192.168.0.102').workspaceMatch, true);
+  assert.equal(hm.extensions.find((e) => e.ip === '10.0.0.99').workspaceMatch, false);
+  assert.equal(hm.workspaceMatched, true);
+  // 같은 IP 만 떠 있으면 불일치가 아니다.
+  const dir2 = tmpDir();
+  writeInstancePresence(dir2, '192.168.0.1', 'same');
+  assert.equal(describeHostMismatch('192.168.0.1', { dir: dir2 }), null);
+  // 조치 문구에는 두 IP 와 고칠 곳(.mcp.json GPL_HOST)이 이름으로 들어간다.
+  const fix = hostMismatchFix(hm);
+  assert.match(fix, /192\.168\.0\.102/);
+  assert.match(fix, /192\.168\.0\.1 /);
+  assert.match(fix, /GPL_HOST/);
+  assert.match(fix, /확장 미실행이 아니/);
+  assert.match(bridgeUnavailableHint('host-mismatch'), /GPL_HOST/);
+});
+
+test('resolveBridge: 확장이 다른 IP 에 떠 있으면 presence-missing 이 아니라 host-mismatch 다(§1-ES 재현)', async () => {
+  const dir = tmpDir();
+  const projectDir = path.join(dir, 'ws', 'projects', 'MergeCode');
+  writeInstancePresence(dir, '192.168.0.102', 'sample-prep', { workspaceFolders: [path.join(dir, 'ws')] });
+  const r = await resolveBridge('192.168.0.1', { dir, mode: 'auto', wake: false, projectDir });
+  assert.equal(r.available, false);
+  assert.equal(r.reason, 'host-mismatch');
+  assert.equal(r.hostMismatch.extensions[0].ip, '192.168.0.102');
+  assert.equal(r.hostMismatch.extensions[0].workspaceMatch, true);
+  assert.equal(r.instances.length, 0);
+});
+
+test('resolveBridge: 같은 작업의 창이 다른 IP 에 살아 있으면 wake 를 시도하지 않는다(깨워도 IP 는 안 바뀐다)', async () => {
+  const dir = tmpDir();
+  const projectDir = path.join(dir, 'ws', 'projects', 'MergeCode');
+  const prevCli = process.env.GPL_VSCODE_CLI;
+  process.env.GPL_VSCODE_CLI = 'gpl-no-such-cli-for-test';   // 실제 code 를 띄우지 않게 — 호출되면 wakeError 가 남는다
+  try {
+    writeInstancePresence(dir, '192.168.0.102', 'sample-prep', { workspaceFolders: [path.join(dir, 'ws')] });
+    const skipped = await resolveBridge('192.168.0.1', { dir, mode: 'auto', wake: true, wakeWaitMs: 50, projectDir });
+    assert.equal(skipped.reason, 'host-mismatch');
+    assert.equal(skipped.wakeError, undefined);
+    // 같은 작업인지 모르면(projectDir 없음) 종전처럼 깨우기를 시도하되, 사유는 그대로 host-mismatch 다.
+    const tried = await resolveBridge('192.168.0.1', { dir, mode: 'auto', wake: true, wakeWaitMs: 50 });
+    assert.equal(tried.reason, 'host-mismatch');
+    assert.equal(typeof tried.wakeError, 'string');
+  } finally {
+    if (prevCli === undefined) delete process.env.GPL_VSCODE_CLI; else process.env.GPL_VSCODE_CLI = prevCli;
+  }
+});
+
+test('인스턴스 선택: 이 IP 의 창이 없고 다른 IP 의 창만 있으면 EXTENSION_HOST_MISMATCH 와 후보 IP 를 돌려준다', () => {
+  const dir = tmpDir();
+  const projectDir = path.join(dir, 'ws', 'projects', 'MergeCode');
+  writeInstancePresence(dir, '192.168.0.102', 'sample-prep', { workspaceFolders: [path.join(dir, 'ws')] });
+  const r = resolveExtensionInstance('192.168.0.1', { dir, projectDir });
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'EXTENSION_HOST_MISMATCH');
+  assert.equal(r.candidates[0].ip, '192.168.0.102');
+  assert.equal(r.candidates[0].workspaceMatch, true);
+  assert.match(r.detail, /192\.168\.0\.102/);
+  // 아무 창도 없으면 종전대로 EXTENSION_NOT_FOUND.
+  const none = resolveExtensionInstance('192.168.0.1', { dir: tmpDir(), projectDir });
+  assert.equal(none.error, 'EXTENSION_NOT_FOUND');
 });

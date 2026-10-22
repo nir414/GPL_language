@@ -1,31 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readConfiguredTarget, projectForCommand } from '../src/configuredTarget.js';
+import { deployTargetArgs, projectForCommand } from '../src/configuredTarget.js';
 
-test('legacy 설정은 종전 기본값을 유지하고 빈 값은 MergeCode로 폴백하지 않는다', () => {
-  assert.equal(projectForCommand(undefined, null, readConfiguredTarget({})).project, 'MergeCode');
-  assert.equal(projectForCommand(undefined, null, readConfiguredTarget({ GPL_PROJECT: '' })).error, 'PROJECT_TARGET_REQUIRED');
+test('명시 프로젝트나 세션 대상만 사용한다', () => {
+  assert.deepEqual(projectForCommand('MergeCode', null), { ok: true, project: 'MergeCode' });
+  assert.deepEqual(projectForCommand(undefined, { project: 'GenAdp' }), { ok: true, project: 'GenAdp' });
 });
 
-test('Export 대상은 명시 이름으로도 폴더 확인을 우회하지 못한다', () => {
-  const configured = readConfiguredTarget({ GPL_PROJECT: 'MergeCode', GPL_PROJECT_DIR: 'C:\\Sample Prep\\Dilution\\MergeCode' });
-  for (const explicit of [undefined, 'MergeCode', 'GenAdp']) {
-    const result = projectForCommand(explicit, null, configured);
-    assert.equal(result.ok, false);
-    assert.equal(result.error, 'PROJECT_TARGET_REQUIRED');
-  }
+test('대상이 없으면 영구 기본값으로 폴백하지 않는다', () => {
+  const result = projectForCommand(undefined, null);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'PROJECT_TARGET_REQUIRED');
+  assert.match(result.detail, /project_target/);
 });
 
-test('미확정 Export도 대상 확인을 요구하고 확인 후 고정된 이름을 사용한다', () => {
-  const configured = readConfiguredTarget({ GPL_PROJECT: '', GPL_PROJECT_DIR: '' });
-  assert.equal(projectForCommand('MergeCode', { project: 'MergeCode', verified: false }, configured).ok, false);
+test('명시 프로젝트는 세션 대상보다 우선한다', () => {
   const target = { project: 'MergeCode', dir: 'C:\\Sample Prep\\Dilution\\MergeCode', verified: true };
-  assert.deepEqual(projectForCommand(undefined, target, configured), { ok: true, project: 'MergeCode' });
-  assert.equal(projectForCommand('Other', target, configured).ok, false);
+  assert.deepEqual(projectForCommand('Other', target), { ok: true, project: 'Other' });
 });
 
-test('target clear 후에는 다시 폴더 확인을 요구한다', () => {
-  const configured = readConfiguredTarget({ GPL_PROJECT: 'GenAdp', GPL_PROJECT_DIR: 'C:\\GenAdp' });
-  assert.equal(projectForCommand(undefined, { project: 'GenAdp', dir: 'C:\\GenAdp', verified: true }, configured).ok, true);
-  assert.equal(projectForCommand(undefined, null, configured).ok, false);
+test('deploy 대상: 명시 projectDir에는 세션의 다른 프로젝트 이름을 섞지 않는다', () => {
+  const session = { project: 'COM_Probe', dir: 'C:\\Sample Prep\\COM_Probe', verified: true };
+  assert.deepEqual(
+    deployTargetArgs({ projectDir: 'C:\\Sample Prep\\V2\\Lib' }, session),
+    { project: undefined, projectDir: 'C:\\Sample Prep\\V2\\Lib', projectFile: undefined },
+  );
+});
+
+test('deploy 대상: 명시 이름과 무인자 호출은 각각 이름만·세션 이름+폴더를 보낸다', () => {
+  const session = { project: 'COM_Probe', dir: 'C:\\Sample Prep\\COM_Probe', verified: true };
+  assert.deepEqual(
+    deployTargetArgs({ project: 'Other' }, session),
+    { project: 'Other', projectDir: undefined, projectFile: undefined },
+  );
+  assert.deepEqual(
+    deployTargetArgs({}, session),
+    { project: 'COM_Probe', projectDir: 'C:\\Sample Prep\\COM_Probe', projectFile: undefined },
+  );
 });

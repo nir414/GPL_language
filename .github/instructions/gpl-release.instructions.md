@@ -4,15 +4,20 @@ description: "Use when changing package version, README version text, building t
 
 # GPL Release and Validation Workflow
 
-- 코드 수정이 있으면 `package.json` 버전을 patch +1 한다.
-- `README.md`의 현재 버전 표기는 `package.json`과 반드시 일치해야 한다.
+- 코드 수정이 있으면 `docs/releases/process.md`의 SemVer 정책에 따라 버전을 결정한다. 호환되는 기능 추가·동작 확장은
+  minor, 버그 수정·안정화·문서/내부 개선은 patch, 하위 호환을 깨는 변경은 major다. major는 사용자에게 영향과
+  전환 방법을 먼저 알린다.
+- `README.md`에 현재 버전 표기가 있다면 `package.json`과 반드시 일치해야 한다.
 - 코드 수정 작업은 **항상 VSIX 패키징까지 완료**한다.
 - 검증/패키징 순서는 기본적으로 다음을 따른다.
   1. `npm run compile`
   2. `npm run pre-release-check`
-  3. `npm run package` — **patch 계열 작업에만.** minor/major/pre-release 공식 릴리즈는
-     버전을 먼저 수동 설정한 뒤 `npm run package:no-bump`를 쓴다 (정본: `docs/releases/process.md`).
-- VSIX 생성 후에는 **파일 경로만 안내**한다.
+  3. 패키징 — **patch 계열만** `npm run package`를 쓴다. minor/major는 버전을 먼저 맞춘 뒤
+     `npm run package:no-bump`를 쓴다 (정본: `docs/releases/process.md`). 패키징 뒤 포함 파일을 수정했다면
+     버전을 다시 올리지 않고 `npm run package:no-bump`로 재생성한다.
+- package/package-lock, CHANGELOG, 버전을 표시하는 README, `docs/ai-handoff.md`를 같은 버전으로 맞춘다.
+- Git 커밋·태그·push·공식 릴리즈는 사용자 요청 없이 수행하지 않는다.
+- VSIX 생성 후에는 파일 경로·크기·SHA-256과 경고/실패 여부를 안내한다.
 
 ## 창 열기·설치 명령은 사용자 요청이 있을 때만
 

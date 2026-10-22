@@ -26,7 +26,9 @@
  *   presence(인스턴스) : <dir>/extensions/<instanceId>.json
  *                        { version, extensionInstanceId, pid, extensionVersion, ip, port, connected,
  *                          debugSessionActive, since, heartbeat, workspace, workspaceFolders,
- *                          bridge:{ enabled, reqDir, resDir } }
+ *                          bridge:{ enabled, reqDir, resDir, busy, activeRequest,
+ *                                   lastRequestCollectedAt, lastResponseWrittenAt,
+ *                                   pendingRequests, oldestPendingRequestAgeMs, bridgeStalled } }
  *   presence(레거시)   : <dir>/<ip>.extension.json   — 리더만 쓴다. 내용은 위와 같은 모양.
  *              stale = (pid 죽음) || now - heartbeat > PRESENCE_STALE_MS
  *   요청     : <dir>/bridge/inst/<instanceId>/req/<id>.json  { version, id, command, args?, createdAt, from?, timeoutMs? }
@@ -55,6 +57,8 @@ export const DEFAULT_REQUEST_TTL_MS = 60_000;
 export const RESPONSE_SWEEP_MS = 300_000;
 /** fs.watch 를 놓쳐도 요청이 방치되지 않도록 하는 폴백 스캔 주기. */
 export const SCAN_INTERVAL_MS = 300;
+/** 요청 파일이 이 시간 이상 큐에 남으면 host heartbeat와 별개로 브리지 정체로 표시한다. */
+export const BRIDGE_STALL_MS = 15_000;
 
 /** 이 확장의 명령만 실행한다(임의 VS Code 명령 프록시 방지 — uriDispatch 와 같은 규칙). */
 export const BRIDGE_COMMAND_ID_PATTERN = /^gpl\.[A-Za-z0-9_.]+$/;
@@ -73,7 +77,19 @@ export interface BridgePresence {
     debugSessionActive: boolean;
     since: number;
     heartbeat: number;
-    bridge: { enabled: boolean; reqDir: string; resDir: string };
+    bridge: {
+        enabled: boolean;
+        reqDir: string;
+        resDir: string;
+        busy?: boolean;
+        activeRequest?: { id: string; command: string; startedAt: number };
+        lastRequestCollectedAt?: number;
+        lastResponseWrittenAt?: number;
+        pendingRequests?: number;
+        oldestPendingRequestAt?: number;
+        oldestPendingRequestAgeMs?: number;
+        bridgeStalled?: boolean;
+    };
     workspace?: string;
     /** 이 창이 열고 있는 워크스페이스 폴더들 — MCP 가 projectDir 로 인스턴스를 고를 때 쓴다(§6). */
     workspaceFolders?: string[];
@@ -318,6 +334,10 @@ export class AgentBridgeServer {
     private connected = false;
     private debugSessionActive = false;
     private started = false;
+    private activeRequest: { id: string; command: string; startedAt: number } | undefined;
+    private readonly consoleReads = new Map<string, { id: string; command: string; startedAt: number }>();
+    private lastRequestCollectedAt: number | undefined;
+    private lastResponseWrittenAt: number | undefined;
     /** 레거시(IP) 큐·presence 를 맡고 있는가. 매 heartbeat 마다 다시 계산한다. */
     private leader = false;
 
@@ -424,8 +444,41 @@ export class AgentBridgeServer {
         if (this.started) { this.writePresence(); }
     }
 
+    /** 현재 서비스 중인 큐에 남은 요청 수와 가장 오래된 요청 시각. */
+    private pendingQueueState(): { pendingRequests: number; oldestPendingRequestAt?: number; oldestPendingRequestAgeMs?: number; bridgeStalled: boolean } {
+        let pendingRequests = 0;
+        let oldestPendingRequestAt: number | undefined;
+        for (const queue of this.queues()) {
+            let names: string[];
+            try { names = fs.readdirSync(queue.reqDir).filter(name => name.endsWith('.json')); } catch { continue; }
+            for (const name of names) {
+                const file = path.join(queue.reqDir, name);
+                let createdAt: number | undefined;
+                try {
+                    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<BridgeRequest>;
+                    if (typeof parsed.createdAt === 'number' && Number.isFinite(parsed.createdAt)) { createdAt = parsed.createdAt; }
+                } catch { /* mtime 폴백 */ }
+                if (createdAt === undefined) {
+                    try { createdAt = fs.statSync(file).mtimeMs; } catch { continue; }
+                }
+                pendingRequests++;
+                oldestPendingRequestAt = oldestPendingRequestAt === undefined ? createdAt : Math.min(oldestPendingRequestAt, createdAt);
+            }
+        }
+        const oldestPendingRequestAgeMs = oldestPendingRequestAt === undefined
+            ? undefined
+            : Math.max(0, this.now() - oldestPendingRequestAt);
+        return {
+            pendingRequests,
+            oldestPendingRequestAt,
+            oldestPendingRequestAgeMs,
+            bridgeStalled: pendingRequests > 0 && (oldestPendingRequestAgeMs ?? 0) >= BRIDGE_STALL_MS,
+        };
+    }
+
     /** presence 레코드 한 벌 — 인스턴스 파일과 레거시 파일에 같은 내용을 쓴다. */
     private presenceRecord(): BridgePresence {
+        const pending = this.pendingQueueState();
         return {
             version: AGENT_BRIDGE_VERSION,
             extensionInstanceId: this.instanceId,
@@ -437,7 +490,16 @@ export class AgentBridgeServer {
             debugSessionActive: this.debugSessionActive,
             since: this.since || this.now(),
             heartbeat: this.now(),
-            bridge: { enabled: this.started, reqDir: this.reqDir, resDir: this.resDir },
+            bridge: {
+                enabled: this.started,
+                reqDir: this.reqDir,
+                resDir: this.resDir,
+                busy: this.activeRequest !== undefined || this.consoleReads.size > 0,
+                activeRequest: this.activeRequest ?? this.consoleReads.values().next().value,
+                lastRequestCollectedAt: this.lastRequestCollectedAt,
+                lastResponseWrittenAt: this.lastResponseWrittenAt,
+                ...pending,
+            },
             workspace: this.env.workspace,
             workspaceFolders: this.env.workspaceFolders,
         };
@@ -455,9 +517,10 @@ export class AgentBridgeServer {
      * 큐 경로는 **레거시 큐**를 가리켜야 그 MCP 가 쓰는 곳과 우리가 읽는 곳이 같아진다.
      */
     private writeLegacyPresence(): void {
+        const base = this.presenceRecord();
         const record: BridgePresence = {
-            ...this.presenceRecord(),
-            bridge: { enabled: this.started, reqDir: this.legacyReqDir, resDir: this.legacyResDir },
+            ...base,
+            bridge: { ...base.bridge, enabled: this.started, reqDir: this.legacyReqDir, resDir: this.legacyResDir },
         };
         try {
             fs.mkdirSync(this.dir, { recursive: true });
@@ -499,7 +562,18 @@ export class AgentBridgeServer {
                         continue;
                     }
                     for (const name of names) {
-                        await this.processFile(name, q);
+                        if (!this.started) { return; }
+                        // 수신 버퍼 대기는 제어기 명령 큐를 쓰지 않는다. Stop 등 후속 요청을 막지 않는다.
+                        let bufferRead = false;
+                        try {
+                            bufferRead = JSON.parse(fs.readFileSync(path.join(q.reqDir, name), 'utf8')).command
+                                === 'gpl.ai.debug.runtimeConsoleRead';
+                        } catch { /* 잘못된 요청은 processFile에서 응답한다. */ }
+                        if (bufferRead) {
+                            void this.processFile(name, q, true).catch(err => this.env.log?.(`[Bridge] ${String(err)}`));
+                        } else {
+                            await this.processFile(name, q);
+                        }
                         processed++;
                     }
                 }
@@ -511,7 +585,7 @@ export class AgentBridgeServer {
         }
     }
 
-    private async processFile(name: string, queue: { reqDir: string; resDir: string }): Promise<void> {
+    private async processFile(name: string, queue: { reqDir: string; resDir: string }, bufferRead = false): Promise<void> {
         const file = path.join(queue.reqDir, name);
         const startedAt = this.now();
         const fileId = requestIdFromFileName(name);
@@ -527,6 +601,8 @@ export class AgentBridgeServer {
         }
         // 먼저 지운다 — 처리 중 재진입/중복 실행 방지(응답 파일이 결과 채널).
         try { fs.unlinkSync(file); } catch { /* noop */ }
+        this.lastRequestCollectedAt = this.now();
+        this.writePresence();
 
         let parsed: unknown;
         try {
@@ -542,22 +618,33 @@ export class AgentBridgeServer {
             return;
         }
         const req = check.request;
-        if (this.env.isKnownCommand) {
-            const known = await this.env.isKnownCommand(req.command);
-            if (!known) {
-                this.writeResponse(queue.resDir, { version: AGENT_BRIDGE_VERSION, id: fileId, ok: false, error: 'unknown-command', detail: `'${req.command}' 명령이 등록돼 있지 않음`, startedAt, finishedAt: this.now() });
-                return;
-            }
-        }
-        this.env.log?.(`[Bridge] 실행 ${req.command}${req.from ? ` (from ${req.from})` : ''}`);
+        const active = { id: req.id, command: req.command, startedAt: this.now() };
+        const readKey = path.join(queue.reqDir, name);
+        if (bufferRead) { this.consoleReads.set(readKey, active); }
+        else { this.activeRequest = active; }
+        this.writePresence();
         try {
-            const result = await this.env.execute(req.command, req.args);
-            // 명령이 `{ ok:false, error }`(AiDebugResult 규약)를 돌려준 경우도 전송은 성공이다 —
-            // 브리지의 ok 는 "명령을 실행했다"이고, 도메인 성공/실패는 result 안에 그대로 실어 보낸다.
-            const code = typeof (result as { error?: unknown })?.error === 'string' ? (result as { error: string }).error : undefined;
-            this.writeResponse(queue.resDir, { version: AGENT_BRIDGE_VERSION, id: fileId, ok: true, result, code, startedAt, finishedAt: this.now() });
-        } catch (err: any) {
-            this.writeResponse(queue.resDir, { version: AGENT_BRIDGE_VERSION, id: fileId, ok: false, error: 'command-failed', detail: err?.message ?? String(err), startedAt, finishedAt: this.now() });
+            if (this.env.isKnownCommand) {
+                const known = await this.env.isKnownCommand(req.command);
+                if (!known) {
+                    this.writeResponse(queue.resDir, { version: AGENT_BRIDGE_VERSION, id: fileId, ok: false, error: 'unknown-command', detail: `'${req.command}' 명령이 등록돼 있지 않음`, startedAt, finishedAt: this.now() });
+                    return;
+                }
+            }
+            this.env.log?.(`[Bridge] 실행 ${req.command}${req.from ? ` (from ${req.from})` : ''}`);
+            try {
+                const result = await this.env.execute(req.command, req.args);
+                // 명령이 `{ ok:false, error }`(AiDebugResult 규약)를 돌려준 경우도 전송은 성공이다 —
+                // 브리지의 ok 는 "명령을 실행했다"이고, 도메인 성공/실패는 result 안에 그대로 실어 보낸다.
+                const code = typeof (result as { error?: unknown })?.error === 'string' ? (result as { error: string }).error : undefined;
+                this.writeResponse(queue.resDir, { version: AGENT_BRIDGE_VERSION, id: fileId, ok: true, result, code, startedAt, finishedAt: this.now() });
+            } catch (err: any) {
+                this.writeResponse(queue.resDir, { version: AGENT_BRIDGE_VERSION, id: fileId, ok: false, error: 'command-failed', detail: err?.message ?? String(err), startedAt, finishedAt: this.now() });
+            }
+        } finally {
+            if (bufferRead) { this.consoleReads.delete(readKey); }
+            else { this.activeRequest = undefined; }
+            if (this.started) { this.writePresence(); }
         }
     }
 
@@ -566,6 +653,8 @@ export class AgentBridgeServer {
         try {
             fs.mkdirSync(resDir, { recursive: true });
             writeFileAtomic(path.join(resDir, `${res.id}.json`), JSON.stringify({ ...res, extensionVersion: this.env.extensionVersion }));
+            this.lastResponseWrittenAt = this.now();
+            if (this.started) { this.writePresence(); }
         } catch (err: any) {
             this.env.log?.(`[Bridge] 응답 쓰기 실패 ${res.id}: ${err?.message ?? err}`);
         }

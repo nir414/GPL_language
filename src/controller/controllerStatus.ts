@@ -132,23 +132,29 @@ const EMPTY_CART: CartesianPose = {
 	x: null, y: null, z: null, yaw: null, pitch: null, roll: null,
 };
 
-/** 한 번의 폴링으로 전체 상태 스냅샷을 수집한다. */
-export async function fetchControllerStatus(
-	config?: Partial<ControllerConfig>,
-	options?: FetchStatusOptions,
-): Promise<ControllerStatusSnapshot> {
-	const cfg = { ...getControllerConfig(), ...(config ?? {}) };
-	const snapshot: ControllerStatusSnapshot = {
+/** 통신이 성립하지 않은 상태의 빈 스냅샷 — 폴링 실패와 "연결 해제라 조회하지 않음"(대시보드)이 같은 모양을 쓴다. */
+export function emptyControllerStatusSnapshot(target: { ip: string; port: number }, note?: string): ControllerStatusSnapshot {
+	return {
 		connected: false,
 		timestamp: Date.now(),
-		target: { ip: cfg.ip, port: cfg.port },
+		target: { ip: target.ip, port: target.port },
 		powerEnabled: null,
 		jointAngles: [],
 		cartesian: { ...EMPTY_CART },
 		threads: [],
 		threadSummary: { running: 0, paused: 0, idle: 0, error: 0, total: 0 },
 		errors: [],
+		...(note !== undefined ? { note } : {}),
 	};
+}
+
+/** 한 번의 폴링으로 전체 상태 스냅샷을 수집한다. */
+export async function fetchControllerStatus(
+	config?: Partial<ControllerConfig>,
+	options?: FetchStatusOptions,
+): Promise<ControllerStatusSnapshot> {
+	const cfg = { ...getControllerConfig(), ...(config ?? {}) };
+	const snapshot = emptyControllerStatusSnapshot(cfg);
 
 	// 1) 스레드 목록 — 통신 성립 여부의 기준으로도 사용.
 	const threadResp = await trySendCommand(SHOW_THREAD_LIST_CMD, cfg, PROBE_TIMEOUT_MS);

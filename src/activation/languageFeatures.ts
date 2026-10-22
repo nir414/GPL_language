@@ -353,6 +353,18 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 		})
 	);
 
+	// 진단 설정을 바꾸면 열린 문서에도 바로 반영한다.
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration(event => {
+			if (!event.affectsConfiguration('gpl.diagnostics')) { return; }
+			for (const document of vscode.workspace.textDocuments) {
+				if (isGplDocument(document)) {
+					diagnosticProvider.scheduleDiagnostics(document, 0);
+				}
+			}
+		}),
+	);
+
 	// 문서 저장 시 진단 업데이트
 	context.subscriptions.push(
 		vscode.workspace.onDidSaveTextDocument((document) => {

@@ -4,9 +4,9 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import {
 	MCP_SERVER_NAME, GUIDE_VERSION_MARK, GUIDE_BEGIN, GUIDE_END, GUIDE_TOPIC, GUIDE_SETUP_MARK,
-	GuideSetup, WorkspaceSetupReport, inspectWorkspaceSetup, sameSetupPath,
+	GuideSetup, WorkspaceSetupReport, ControllerAddress, inspectWorkspaceSetup, sameSetupPath,
+	SHARED_CONTROLLER_BRIDGE_MODE,
 } from './agentSetupChecks';
-import type { TargetCandidate } from '../controller/projectTarget';
 
 /**
  * `GPL: Export AI Agent Setup` (gpl.ai.exportAgentSetup)
@@ -46,11 +46,7 @@ export interface ExportAiAgentSetupResult {
 }
 
 function buildClaudeSection(opts: ExportAiAgentSetupOptions, extensionVersion: string): string {
-	const targetCall = opts.projectDir ? `project_target({projectDir: ${JSON.stringify(opts.projectDir)}})` : 'project_target에 작업할 projectDir을 지정';
-	const projectLine = opts.projectName
-		? `기본 프로젝트는 \`${opts.projectName}\`. 작업 폴더는 \`${opts.projectDir ?? '미확정'}\`.`
-		: '기본 프로젝트는 미확정이다. 이름이나 열린 파일로 대상을 추측하지 않는다.';
-	const setup: GuideSetup = { ip: opts.ip, port: opts.port, projectName: opts.projectName, projectDir: opts.projectDir };
+	const setup: GuideSetup = { ip: opts.ip, port: opts.port };
 	return [
 		GUIDE_BEGIN,
 		`${GUIDE_VERSION_MARK} ${extensionVersion} -->`,
@@ -66,11 +62,16 @@ function buildClaudeSection(opts: ExportAiAgentSetupOptions, extensionVersion: s
 		'자동으로 띄운다(수동 실행·설치 불필요). `/mcp`로 연결 상태를 확인하고, 처음이면 승인 프롬프트만 수락한다.',
 		'그래도 없으면 사용자에게 알리고 멈춘다 — 직접 소켓으로 우회하지 않는다.',
 		'',
+		'**사람과 AI의 동시 사용**: 이 설정은 `GPL_BRIDGE=only`라 AI가 제어기에 두 번째 TCP 연결을 열지 않는다.',
+		'VS Code 확장이 명령 콘솔 연결을 하나만 소유하고, 사람의 명령과 AI 요청을 같은 직렬 큐에서 순서대로 처리한다.',
+		'`extension_status`의 `transport.using`이 `extension-bridge`인지 확인한다. 브리지가 없거나 응답하지 않으면',
+		'직접 접속으로 폴백하지 말고 확장 설치·활성화와 `/mcp` 재연결 상태를 확인한다.',
+		'',
 		'**판정 규칙**: 명령의 성공/실패는 해당 응답의 `<STATUS>`를 `</STATUS>` 종결자까지 읽고 판정한다.',
 		'간접 신호(로그 파일, 침묵, 부분 응답)로 성공을 추정하지 않는다.',
 		'',
-		projectLine,
-		`**작업 대상 확정**: 세션 시작 시 먼저 \`${targetCall}\`하고 성공 응답의 이름·폴더를 확인한다.`,
+		'**작업 대상 확정**: 기본 프로젝트를 설정이나 파일에 저장하지 않는다. 세션 시작 시 먼저',
+		'`project_target({projectDir: "작업할 프로젝트 폴더"})`를 호출하고 성공 응답의 이름·폴더를 확인한다.',
 		'동명 프로젝트는 이름만으로 구분할 수 없다. 대상 미확정이면 배포·컴파일·실행을 진행하지 않는다.',
 		'',
 		'**전형적 디버그 흐름**: `set_breakpoint(file, line)` → `start_project(stopOnEntry: true)` →',
@@ -93,6 +94,9 @@ function buildClaudeSection(opts: ExportAiAgentSetupOptions, extensionVersion: s
 		'시작·재개할 수 있는 명령이다. 시뮬레이션 모드(모터 미연결)에서만 자율 실행하고, 실기 연결 상태로',
 		'보이면 실행 전에 사용자 확인을 받는다. 급정지는 `softestop`. Compile/Start 전에는 `show_threads`로',
 		'같은 프로젝트의 스레드가 정지(Idle/Stopped/Error)했는지 확인한다 — 정지 미완료 상태의 Compile/Start는 제어기 이상을 유발한다.',
+		'정지는 `stop_threads`(project 범위·전체·스레드별, 정지 확인과 1회 재시도 내장)로 한다. 제어기의 `Stop <이름>`은 **스레드 이름 단위**라',
+		'`controller_command("Stop <project>")`는 동명 스레드 하나만 멈추고, 프로젝트가 다른 이름으로 띄운 스레드(`LOG_SOCKET` 등)가 남아',
+		'Unload/Compile이 -750으로 거부된다(2026-10-14 실측). `unload_project`는 활성 스레드가 있으면 보내기 전에 목록과 함께 거부한다.',
 		'',
 		'**배포 잠금**: VS Code 확장이 FTP 업로드/배포 중이면 잠금 파일(`%TEMP%/gpl-controller/<ip>.lock.json`)을 잡는다.',
 		'그동안 `compile_project`·`start_project`·`unload_project`와 `controller_command`의 Compile/Start/Load/Unload는',
@@ -107,12 +111,19 @@ function buildClaudeSection(opts: ExportAiAgentSetupOptions, extensionVersion: s
 		'자원 관찰은 `controller_status(detail: true)`의 `resources`(Show Memory / Show Network -tcp / -mbuf 구조화,',
 		'`tcp.acceptedPerSec` = 직전 호출 대비 TCP accept 증가율)로 — 제어기 사망 조사(GitHub #22)용 시계열이 자동으로 남는다.',
 		'',
-		'**동시 접속 주의**: 명령 콘솔은 사실상 단일 클라이언트 채널이다. VS Code 확장의 디버그 세션(F5 Attach)이나',
-		'GDE가 같은 제어기에 붙어 작업 중이면 MCP 명령과 경합할 수 있다 — 한쪽만 사용하고, 순간 충돌로',
-		'명령이 실패하면 잠시 후 한 번 재시도한다.',
+		'**받은 결과를 재확인하지 않는다(폴링 금지)**: `deploy_project`는 완료 결과를 동기로 돌려주고 성공 응답에 `next:"none"`이 붙는다 —',
+		'그 뒤 `operation_status` 재조회·`Show Memory` 같은 재확인 없이 다음 단계로 간다(이미 전달한 완료 결과의 재조회는 `redundant:true`',
+		'요약만 온다). 기다릴 일은 반복 조회가 아니라 **한 번**으로 끝낸다: 작업 완료는 `wait_operation(operationId?)`(서버가 대신 대기),',
+		'프로그램 출력은 `runtime_console_read(cursor?, untilPattern?, waitMs?)`(런타임 콘솔 줄을 커서로 읽고 패턴이 올 때까지 확장이 대기).',
+		'"Unload 했는데 메모리가 안 풀린다 / Start -200"이면 `list_remote_projects`로 `/GPL`에 다른 프로젝트가 남았는지 먼저 본다.',
 		'',
-		'**실시간 로그(런타임 콘솔)**: 아직 MCP 도구로는 노출되지 않았다. 런타임 로그 관찰이 필요하면 사용자에게',
-		'VS Code 확장의 `GPL: Start Live Log Terminal` 실행을 요청하고, 그 출력을 근거로 삼는다.',
+		'**외부 클라이언트 주의**: VS Code와 AI는 위 Agent Bridge로 한 연결을 공유할 수 있다. 반면 GDE나 다른 프로그램이',
+		'제어기에 직접 연결하면 확장과 경합하므로 동시에 사용하지 않는다. 상태 변경 명령의 응답이 미확정이면 재전송하지 않는다.',
+		'',
+		'**실시간 로그(런타임 콘솔)**: `runtime_console_read(cursor?, untilPattern?, waitMs?)`로 확장이 수신한 줄을 읽는다.',
+		'반복 폴링하지 말고 필요한 패턴과 대기 시간을 한 번 지정한다.',
+		'**지난 실행 이력**(에이징 등, 링버퍼 밖)은 `runtime_console_search(pattern?, since?, until?, project?)`로 확장의 캡처 파일에서 찾는다 —',
+		'제어기에 기록이 없는 프로그램도 확장이 듣고 있던 동안의 출력은 남아 있다. `--- … not listening … ---` 마커가 확장이 듣지 않은 구간이다.',
 		'',
 		`_이 블록은 확장 v${extensionVersion} 기준으로 생성됨. 확장 업데이트 뒤 MCP 서버 사본은 자동 갱신되지만(Claude Code에서 \`/mcp\` 재연결 필요)`,
 		'이 안내 블록은 `GPL: Export AI Agent Setup`을 다시 실행해야 갱신된다. 상태 점검은 `GPL: Check AI Agent Setup`._',
@@ -236,7 +247,8 @@ export interface AiAgentSetupReport extends WorkspaceSetupReport {
 
 export interface InspectAiAgentSetupOptions {
 	workspaceRoot?: string;
-	candidates?: readonly TargetCandidate[];
+	/** 확장이 지금 쓰는 제어기 주소 — 주면 `.mcp.json` 의 GPL_HOST/GPL_PORT 불일치를 설정 문제로 알린다(§1-ES). */
+	currentController?: ControllerAddress;
 }
 
 export function inspectAiAgentSetup(context: vscode.ExtensionContext, opts: InspectAiAgentSetupOptions = {}): AiAgentSetupReport {
@@ -253,13 +265,13 @@ export function inspectAiAgentSetup(context: vscode.ExtensionContext, opts: Insp
 	};
 	const folders = vscode.workspace.workspaceFolders ?? [];
 	const root = opts.workspaceRoot ?? (folders.length === 1 ? folders[0].uri.fsPath : undefined);
-	const workspace = inspectWorkspaceSetup(root, dst.bundle, extensionVersion, opts.candidates ?? []);
+	const workspace = inspectWorkspaceSetup(root, dst.bundle, extensionVersion, { currentController: opts.currentController });
 	const problems = [...workspace.problems];
 	if (!bundled.exists || !bundled.sha256) { problems.push('동봉 MCP 번들이 없거나 읽을 수 없음 — 확장 재설치 또는 npm run bundle:mcp'); }
 	if (!stableExists || !stableSha) { problems.push('globalStorage MCP 사본이 없거나 읽을 수 없음 — Export 실행'); }
 	else if (stableCopy.upToDate === false) { problems.push('globalStorage MCP 사본이 동봉 번들과 다름 — Export 재실행'); }
 	const settingsOk = problems.length === 0;
-	const ready = settingsOk && workspace.target.status === 'confirmed' && workspace.warnings.length === 0;
+	const ready = settingsOk && workspace.warnings.length === 0;
 	return { ...workspace, extensionVersion, bundled, stableCopy, problems, settingsOk, ready, ok: ready };
 }
 
@@ -279,17 +291,22 @@ function writeMcpJson(workspaceRoot: string, serverScriptPath: string, opts: Exp
 	}
 	const servers = (config.mcpServers && typeof config.mcpServers === 'object') ? config.mcpServers as Record<string, unknown> : {};
 	const existing = servers[MCP_SERVER_NAME] as { env?: Record<string, unknown> } | undefined;
+	const env = existing?.env && typeof existing.env === 'object' && !Array.isArray(existing.env)
+		? { ...existing.env } : {};
+	// 구버전 Export가 저장한 영구 대상은 제거한다. 프로젝트는 매 MCP 세션에서 project_target으로만 고정한다.
+	delete env.GPL_PROJECT;
+	delete env.GPL_PROJECT_DIR;
 	servers[MCP_SERVER_NAME] = {
 		type: 'stdio',
 		command: 'node',
 		args: [serverScriptPath],
 		env: {
-			...(existing?.env && typeof existing.env === 'object' && !Array.isArray(existing.env) ? existing.env : {}),
+			...env,
+			// 제어기는 명령 콘솔 연결 하나만 허용한다. AI가 별도 TCP로 폴백하지 않고
+			// VS Code 확장의 단일 소켓·직렬 큐를 반드시 공유하게 한다.
+			GPL_BRIDGE: SHARED_CONTROLLER_BRIDGE_MODE,
 			GPL_HOST: opts.ip,
 			GPL_PORT: String(opts.port),
-			// 빈 문자열은 MCP의 과거 기본값으로 폴백하지 않는다.
-			GPL_PROJECT: opts.projectName ?? '',
-			GPL_PROJECT_DIR: opts.projectDir ?? '',
 		},
 	};
 	config.mcpServers = servers;
@@ -339,6 +356,25 @@ function upsertClaudeMdSection(
 	return { path: claudeMdPath, action: 'appended' };
 }
 
+/** AGENTS.md는 새로 만들거나 섹션을 추가하지 않고, 과거 Export가 만든 자동 블록만 최신 내용으로 교체한다. */
+function updateExistingAgentsMdSection(
+	workspaceRoot: string,
+	opts: ExportAiAgentSetupOptions,
+	extensionVersion: string,
+): string | undefined {
+	const agentsMdPath = path.join(workspaceRoot, 'AGENTS.md');
+	if (!fs.existsSync(agentsMdPath)) { return undefined; }
+	const existing = fs.readFileSync(agentsMdPath, 'utf8');
+	const beginIndex = existing.indexOf(GUIDE_BEGIN);
+	const endIndex = existing.indexOf(GUIDE_END);
+	if (beginIndex === -1 || endIndex <= beginIndex) { return undefined; }
+	const eol = existing.includes('\r\n') ? '\r\n' : '\n';
+	const section = buildClaudeSection(opts, extensionVersion).replace(/\n/g, eol);
+	const after = existing.slice(endIndex + GUIDE_END.length);
+	fs.writeFileSync(agentsMdPath, existing.slice(0, beginIndex) + section + after);
+	return agentsMdPath;
+}
+
 export async function exportAiAgentSetup(
 	context: vscode.ExtensionContext,
 	opts: ExportAiAgentSetupOptions
@@ -356,6 +392,7 @@ export async function exportAiAgentSetup(
 		const stablePath = copyBundleToStablePath(context);
 		const mcpJsonPath = writeMcpJson(workspaceRoot, stablePath, opts);
 		const claudeMd = upsertClaudeMdSection(workspaceRoot, opts, extensionVersionOf(context));
+		const agentsMd = updateExistingAgentsMdSection(workspaceRoot, opts, extensionVersionOf(context));
 
 		const written = [stablePath, mcpJsonPath];
 		const skipped: string[] = [];
@@ -364,11 +401,11 @@ export async function exportAiAgentSetup(
 		} else {
 			written.push(`${claudeMd.path} (${claudeMd.action})`);
 		}
+		if (agentsMd) { written.push(`${agentsMd} (updated)`); }
 
 		void vscode.window.showInformationMessage(
-			`GPL AI Agent Setup 완료 — .mcp.json${claudeMd.action === 'skipped' ? '' : ' + CLAUDE.md'} 생성/갱신. ` +
-			(opts.projectDir ? `대상: ${opts.projectName} — ${opts.projectDir}. ` : '작업 대상 미확정. ') +
-			'Claude Code 세션을 새로 시작하고 project_target으로 대상을 확인하세요.'
+			`GPL AI Agent Setup 완료 — .mcp.json${claudeMd.action === 'skipped' ? '' : ' + CLAUDE.md'}${agentsMd ? ' + AGENTS.md' : ''} 생성/갱신. ` +
+			'AI는 VS Code의 명령 콘솔 세션을 공유합니다. Claude Code에서 /mcp로 재연결한 뒤 project_target으로 작업 대상을 정하세요.'
 		);
 
 		return { ok: true, written, ...(skipped.length > 0 ? { skipped } : {}) };

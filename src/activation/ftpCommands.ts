@@ -4,6 +4,7 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { EXTENSION_VERSION } from '../config';
 import { getControllerConfig, sendCommand, sendCommandDetailed } from '../controller/controllerConnection';
 import { isBusyStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from '../controller/controllerStatusCodes';
@@ -12,7 +13,6 @@ import { compileProject, loadProject, startProject, unloadProject } from '../con
 import type { ProjectCommandIo } from '../controller/projectCommands';
 import {
 	FtpEntry,
-	clearRemoteDir,
 	downloadProject,
 	listRemoteDir,
 	normalizeAbsoluteRemoteDir,
@@ -20,9 +20,18 @@ import {
 	removeRemoteFile,
 } from '../controller/ftpClient';
 import { NO_STATUS_CODE, SHOW_THREAD_LIST_CMD, parseThreadList } from '../controller/responseParser';
+import { clearRemoteFolderEntries, selectRemoteClearTargets } from '../controller/remoteFolderClear';
 import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../controller/remoteProjectPath';
 import { forgetSyncManifest } from '../controller/syncManifest';
 import { describeThreadActivity } from '../controller/threadActivity';
+import {
+	ControllerProjectMode,
+	chooseAvailableDownloadDir,
+	ensureControllerWorkspaceFile,
+	makeDownloadStagingDir,
+	removeDownloadStagingDir,
+	writeControllerProjectManifest,
+} from '../project/controllerProjectWorkspace';
 import { stopAllThreads, stopThreadWithRecovery } from './controllerOps';
 import type { ExtensionHost } from './host';
 
@@ -60,34 +69,97 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			});
 			if (!targetUri?.[0]) { return; }
 
-			const localDir = path.join(targetUri[0].fsPath, name);
 			const cfg = getControllerConfig();
-			const host = cfg.ip;
-
-			await vscode.window.withProgress(
-				{ location: vscode.ProgressLocation.Notification, title: `${name} 다운로드 중...`, cancellable: false },
-				async (progress) => {
-					try {
-						const result = await downloadProject(host, remotePath, localDir, (_cur, total, file) => {
-							progress.report({ increment: (1 / total) * 100, message: file });
-						});
-						const openChoice = await vscode.window.showInformationMessage(
-							`"${name}" 다운로드 완료 (${result.downloaded}개 파일)`,
-							'폴더 열기', '워크스페이스에 추가',
-						);
-						if (openChoice === '폴더 열기') {
-							await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(localDir));
-						} else if (openChoice === '워크스페이스에 추가') {
-							vscode.workspace.updateWorkspaceFolders(
-								vscode.workspace.workspaceFolders?.length ?? 0, 0,
-								{ uri: vscode.Uri.file(localDir), name },
-							);
-						}
-					} catch (err: any) {
-						vscode.window.showErrorMessage(`다운로드 실패: ${err.message ?? err}`);
-					}
+			const parentDir = targetUri[0].fsPath;
+			const modeChoice = await vscode.window.showQuickPick([
+				{
+					label: 'Live Working Copy',
+					description: '권장 · 저장 시 /GPL 업로드 허용 (Save to Flash는 별도)',
+					mode: 'live' as ControllerProjectMode,
 				},
+				{
+					label: 'Read-only Snapshot',
+					description: '검토용 · Deploy, Quick Compile, Save to Flash 차단',
+					mode: 'snapshot' as ControllerProjectMode,
+				},
+			], {
+				title: `"${name}" 다운로드 모드`,
+				placeHolder: '로컬 사본의 제어기 쓰기 정책을 선택하세요',
+			});
+			if (!modeChoice) { return; }
+
+			const localDir = chooseAvailableDownloadDir(parentDir, name);
+			let stagingDir: string | undefined;
+			let result: { downloaded: number; totalBytes: number };
+			try {
+				result = await vscode.window.withProgress(
+					{ location: vscode.ProgressLocation.Notification, title: `${name} 다운로드 중...`, cancellable: false },
+					async (progress) => {
+						stagingDir = makeDownloadStagingDir(parentDir, name);
+						let lastPercent = 0;
+						const downloaded = await downloadProject(cfg.ip, remotePath, stagingDir, (current, total, file) => {
+							const percent = total > 0 ? (current / total) * 100 : 100;
+							progress.report({ increment: percent - lastPercent, message: file });
+							lastPercent = percent;
+						});
+						writeControllerProjectManifest(stagingDir, {
+							mode: modeChoice.mode,
+							controllerHost: cfg.ip,
+							sourceRemotePath: remotePath,
+							projectName: name,
+							downloadedAt: new Date().toISOString(),
+						});
+						fs.renameSync(stagingDir, localDir);
+						stagingDir = undefined;
+						return downloaded;
+					},
+				);
+			} catch (err: any) {
+				if (stagingDir) {
+					try { removeDownloadStagingDir(stagingDir, parentDir); } catch (cleanupErr: any) {
+						host.log(`[FTP Download] 임시 폴더 정리 실패: ${cleanupErr?.message ?? cleanupErr}`);
+					}
+				}
+				void vscode.window.showErrorMessage(`다운로드 실패: ${err.message ?? err}`);
+				return;
+			}
+
+			let workspaceFile: string;
+			try {
+				workspaceFile = ensureControllerWorkspaceFile(parentDir, cfg.ip);
+			} catch (err: any) {
+				void vscode.window.showWarningMessage(
+					`"${name}" 다운로드는 완료했지만 작업 영역 파일을 만들지 못했습니다: ${err.message ?? err}`,
+				);
+				return;
+			}
+
+			const modeLabel = modeChoice.mode === 'live' ? 'Live Working Copy' : 'Read-only Snapshot';
+			const currentWorkspace = vscode.workspace.workspaceFile?.fsPath;
+			if (currentWorkspace && path.resolve(currentWorkspace).toLowerCase() === path.resolve(workspaceFile).toLowerCase()) {
+				void vscode.window.showInformationMessage(
+					`"${name}" 다운로드 완료 (${result.downloaded}개 파일, ${modeLabel})`,
+				);
+				return;
+			}
+
+			const openWorkspace = 'Controller 작업공간 열기';
+			const addCurrent = '현재 작업공간에 추가';
+			const openChoice = await vscode.window.showInformationMessage(
+				`"${name}" 다운로드 완료 (${result.downloaded}개 파일, ${modeLabel}). `
+				+ '처음 열 때는 Extension Host가 다시 시작되어 연결이 한 번 해제될 수 있습니다. '
+				+ '이후 다운로드에서는 창 전환과 신뢰 확인을 반복하지 않습니다.',
+				openWorkspace, addCurrent,
 			);
+			if (openChoice === openWorkspace) {
+				// 첫 전환 때만 Extension Host가 다시 시작될 수 있다. 이후 같은 상위 폴더의 다운로드는 자동으로 보인다.
+				await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspaceFile), false);
+			} else if (openChoice === addCurrent) {
+				vscode.workspace.updateWorkspaceFolders(
+					vscode.workspace.workspaceFolders?.length ?? 0, 0,
+					{ uri: vscode.Uri.file(localDir), name },
+				);
+			}
 		})
 	);
 
@@ -171,6 +243,8 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	// FTP 폴더 통째로 비우기 — 트리 섹션(/GPL·Flash Projects) 헤더에서 실행한다.
 	// 파일 하나씩 지우는 ftpDelete와 달리 "폴더 안을 전부" 지우므로 게이트를 더 두껍게 건다:
 	// 배포 잠금 → 지울 목록 확인 → 쓰레드 정지 게이트 → 목록을 보여주는 모달 확인 → 삭제.
+	// 반환값은 자동화 호출자(extension_command)가 "모달 취소"와 "삭제 완료"를 가릴 수 있게 구조로 준다(2026-10-21).
+	// AI 가 모달 없이 비우는 경로는 `gpl.ai.debug.clearRemoteFolder`(/GPL 만, 동의는 AI 가 받는다)이고 절차는 controller/remoteFolderClear.ts 를 같이 쓴다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpClearFolder', async (node: any) => {
 			const cfg = getControllerConfig();
@@ -178,16 +252,24 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			// 섹션 노드가 실제 표시 중인 경로를 최우선으로 쓰고(설정 변경 직후에도 화면과 일치), 없으면 설정값.
 			const rawPath: string = node?.remotePath || (isFlash ? cfg.ftpFlashProjectsPath : cfg.ftpBasePath);
 			const basePath = normalizeAbsoluteRemoteDir(rawPath);
+			const outcome = (fields: { ok: boolean; cancelled?: boolean; reason?: string; targets?: FtpEntry[]; deleted?: string[]; failed?: { name: string; error: string }[] }) => ({
+				root: basePath,
+				cancelled: false,
+				...fields,
+				targets: (fields.targets ?? []).map(e => (e.isDirectory ? `${e.name}/` : e.name)),
+				deleted: fields.deleted ?? [],
+				failed: fields.failed ?? [],
+			});
 			if (basePath === '/') {
 				vscode.window.showErrorMessage(`폴더 비우기 중단 — 대상 경로가 비어 있거나 루트입니다 (설정값: "${rawPath ?? ''}")`);
-				return;
+				return outcome({ ok: false, reason: 'unsafe-root' });
 			}
 
 			// 업로드/컴파일 도중 원격 파일이 사라지면 반쯤 지워진 소스가 컴파일된다 — 배포 잠금으로 차단.
 			const busy = host.currentDeployLockHolder();
 			if (busy) {
 				host.warnDeployBusy(`${basePath} 비우기`, busy, '완료 후 다시 실행하세요');
-				return;
+				return outcome({ ok: false, reason: 'deploy-busy' });
 			}
 
 			// 1) 지울 목록을 먼저 확인한다 — 사용자에게 그대로 보여주기 위함.
@@ -196,16 +278,18 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				entries = await listRemoteDir(cfg.ip, basePath);
 			} catch (err: any) {
 				vscode.window.showErrorMessage(`${basePath} 조회 실패: ${err.message ?? err}`);
-				return;
+				return outcome({ ok: false, reason: `ftp-failed: ${err?.message ?? err}` });
 			}
-			const targets = entries.filter(e => e.name !== '.' && e.name !== '..');
+			const { targets } = selectRemoteClearTargets(entries);
 			if (targets.length === 0) {
 				vscode.window.showInformationMessage(`${basePath}은(는) 이미 비어 있습니다.`);
-				return;
+				return outcome({ ok: true, reason: 'already-empty' });
 			}
 
 			// 2) 쓰레드 정지 게이트
-			if (!(await ensureIdleBeforeRemoteDelete(basePath))) { return; }
+			if (!(await ensureIdleBeforeRemoteDelete(basePath))) {
+				return outcome({ ok: false, cancelled: true, reason: 'thread-gate', targets });
+			}
 
 			// 3) 삭제 확인 — 무엇이 지워지는지 목록으로 보여준다.
 			const PREVIEW_MAX = 15;
@@ -221,25 +305,22 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				{ modal: true, detail: `${preview}${more}\n\n${note}` },
 				'모두 삭제',
 			);
-			if (confirm !== '모두 삭제') { return; }
+			if (confirm !== '모두 삭제') {
+				return outcome({ ok: false, cancelled: true, reason: 'user-cancelled', targets });
+			}
 
-			// 4) 삭제 — 개별 실패는 모아서 "부분 완료"로 알린다.
+			// 4) 삭제 — 개별 실패는 모아서 "부분 완료"로 알린다. 확인받은 목록만 지운다(확인 뒤 새로 생긴 항목은 남긴다).
 			host.log(`[FTP] ${basePath} 비우기 시작 — 대상 ${targets.length}개`);
-			await vscode.window.withProgress(
+			return vscode.window.withProgress(
 				{ location: vscode.ProgressLocation.Notification, title: `${basePath} 비우는 중...`, cancellable: false },
 				async (progress) => {
 					try {
 						let done = 0;
-						const result = await clearRemoteDir(cfg.ip, basePath, (name, isDirectory) => {
+						const result = await clearRemoteFolderEntries(cfg.ip, basePath, targets, (name, isDirectory) => {
 							done++;
 							host.log(`[FTP] − del ${basePath}/${name}${isDirectory ? '/' : ''}`);
 							progress.report({ increment: (1 / targets.length) * 100, message: `${done}/${targets.length} ${name}` });
 						});
-						// 원격을 지웠으니 그 경로들의 업로드 지문도 버린다(다음 동기화는 목록 조회로 다시 판정).
-						forgetSyncManifest(cfg.ip, basePath);
-						for (const name of result.deleted) {
-							forgetSyncManifest(cfg.ip, `${basePath}/${name}`);
-						}
 						if (result.failed.length > 0) {
 							for (const f of result.failed) {
 								host.log(`[FTP] ✘ ${basePath}/${f.name} 삭제 실패: ${f.error}`);
@@ -251,9 +332,11 @@ export function activateFtpCommands(host: ExtensionHost): void {
 						} else {
 							vscode.window.showInformationMessage(`${basePath} 비우기 완료 — ${result.deleted.length}개 삭제`);
 						}
+						return outcome({ ok: result.failed.length === 0, reason: result.failed.length > 0 ? 'partial' : undefined, targets, ...result });
 					} catch (err: any) {
 						host.log(`[FTP] ${basePath} 비우기 실패: ${err.message ?? err}`);
 						vscode.window.showErrorMessage(`${basePath} 비우기 실패: ${err.message ?? err}`);
+						return outcome({ ok: false, reason: `ftp-failed: ${err?.message ?? err}`, targets });
 					} finally {
 						void host.controllerTree?.refreshFtp();
 					}
@@ -304,6 +387,12 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			host.log(`│ Note: FTP Run uses the uploaded controller copy at ${effectiveLoadPath}`);
 			host.log(`│       Local edits are NOT uploaded here. Use GPL: Deploy (Build Only) to verify latest local code.`);
 			host.log(`│ Path candidates: ${describeRemotePathCandidates(resolvedPath.candidates).join(' | ') || effectiveLoadPath}`);
+			if (!resolvedPath.confirmed) {
+				const message = `원격 프로젝트 경로를 확인할 수 없어 컴파일 & 실행을 중단했습니다: ${describeRemotePathCandidates(resolvedPath.candidates).join(' | ')}`;
+				host.log(`│ ✘ ${message}`);
+				vscode.window.showErrorMessage(message);
+				return;
+			}
 			if (resolvedPath.switched) {
 				host.log(`│ Path selected: ${loadPath} → ${effectiveLoadPath}`);
 			}

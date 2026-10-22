@@ -56,7 +56,25 @@
 			background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.2));
 		}
 		button.secondary:hover, select:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,0.3)); }
+		button:disabled { opacity: 0.48; cursor: not-allowed; }
 		label.ctl { color: var(--idle); font-size: 0.85em; display: inline-flex; align-items: center; gap: 4px; }
+		input {
+			font-family: inherit; font-size: inherit; color: var(--vscode-input-foreground, var(--vscode-foreground));
+			background: var(--vscode-input-background, rgba(127,127,127,0.12));
+			border: 1px solid var(--vscode-input-border, var(--card-border)); border-radius: 4px; padding: 6px 9px;
+		}
+		input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+		/* ── 상태 / I/O 화면 전환 ── */
+		.view-tabs { display: flex; gap: 4px; margin: 0 0 var(--gap); border-bottom: 1px solid var(--card-border); }
+		.view-tab {
+			color: var(--vscode-foreground); background: transparent; border-radius: 0; padding: 7px 13px;
+			border-bottom: 2px solid transparent; font-weight: 600;
+		}
+		.view-tab:hover { background: rgba(127,127,127,0.12); }
+		.view-tab.active { color: var(--vscode-textLink-foreground, #3794ff); border-bottom-color: var(--accent); }
+		.page { display: none; }
+		.page.active { display: block; }
 
 		/* ── 상태 스트립: 흘깃 봐도 정상/이상이 보이는 큰 배지 ── */
 		.strip {
@@ -179,6 +197,41 @@
 		.res-raw summary { cursor: pointer; color: var(--idle); font-size: 0.85em; }
 		.res-raw pre { margin: 6px 0 0; max-height: 220px; overflow: auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.8em; line-height: 1.4; padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,0.10); white-space: pre-wrap; word-break: break-all; }
 		.res-raw pre b { color: var(--idle); }
+
+		/* ── 디지털 I/O ── */
+		.io-head {
+			display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); gap: 8px; margin-bottom: var(--gap);
+		}
+		.io-stat { padding: 10px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--card-bg); }
+		.io-stat .n { display: block; font-size: 1.4em; font-weight: 800; font-variant-numeric: tabular-nums; }
+		.io-stat .l { display: block; color: var(--idle); font-size: 0.78em; margin-top: 2px; }
+		.io-stat.on .n { color: var(--ok); }
+		.io-stat.forced .n { color: var(--warn); }
+		.io-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: var(--gap); }
+		.io-toolbar input { min-width: 180px; flex: 1 1 220px; }
+		.io-filter { display: inline-flex; gap: 3px; padding: 3px; border-radius: 6px; background: rgba(127,127,127,0.10); }
+		.io-filter button { background: transparent; color: var(--vscode-foreground); padding: 4px 9px; }
+		.io-filter button.active { background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.25)); }
+		.io-note { min-height: 1.4em; color: var(--idle); margin: -2px 0 10px; }
+		.io-note.ok { color: var(--ok); }
+		.io-note.err { color: var(--err); }
+		.io-safety { padding: 9px 11px; margin-bottom: var(--gap); border-left: 4px solid var(--warn); background: rgba(210,153,34,0.10); border-radius: 5px; }
+		.io-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 9px; }
+		.io-card { border: 1px solid var(--card-border); border-radius: 8px; background: var(--card-bg); overflow: hidden; }
+		.io-card.forced { border-color: rgba(210,153,34,0.70); box-shadow: inset 0 3px 0 var(--warn); }
+		.io-card-main { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 11px 12px 8px; }
+		.io-signal { font-weight: 700; font-variant-numeric: tabular-nums; }
+		.io-force { display: inline-block; margin-left: 5px; padding: 1px 6px; border-radius: 10px; color: var(--warn); background: rgba(210,153,34,0.16); font-size: 0.72em; }
+		.io-value { display: flex; align-items: center; gap: 7px; font-size: 1.05em; font-weight: 800; }
+		.io-lamp { width: 13px; height: 13px; border-radius: 50%; background: var(--idle); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18); }
+		.io-value.on { color: var(--ok); }
+		.io-value.on .io-lamp { background: var(--ok); box-shadow: 0 0 9px rgba(63,185,80,0.55); }
+		.io-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1px; border-top: 1px solid var(--card-border); background: var(--card-border); }
+		.io-actions button { border-radius: 0; padding: 7px 3px; font-size: 0.78em; }
+		.io-actions .force-off, .io-actions .release { color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.2)); }
+		.io-actions .release { color: var(--warn); }
+		.io-empty { grid-column: 1 / -1; padding: 26px; text-align: center; color: var(--idle); border: 1px dashed var(--card-border); border-radius: 8px; }
+		@media (max-width: 620px) { .io-head { grid-template-columns: repeat(2, 1fr); } }
 	</style>
 </head>
 <body>
@@ -201,6 +254,12 @@
 		<span id="updated" class="updated"></span>
 	</div>
 
+	<nav class="view-tabs" aria-label="대시보드 화면">
+		<button id="statusTab" class="view-tab active" data-page="status" aria-selected="true">상태</button>
+		<button id="ioTab" class="view-tab" data-page="io" aria-selected="false">디지털 I/O</button>
+	</nav>
+
+	<section id="statusPage" class="page active">
 	<div class="strip">
 		<div id="bConn" class="badge na"><span class="k">연결</span><span class="v">—</span><span class="s"></span></div>
 		<div id="bPower" class="badge na"><span class="k">고전원 (서보)</span><span class="v">—</span><span class="s">Controller.PowerEnabled</span></div>
@@ -296,6 +355,31 @@
 			<div class="log" id="log"><div class="empty">로그 없음</div></div>
 		</div>
 	</div>
+	</section>
+
+	<section id="ioPage" class="page">
+		<div class="io-safety">
+			<strong>Set DIO는 실제 신호를 강제합니다.</strong>
+			버튼을 누르면 실행 전 확인창이 한 번 더 열립니다. <strong>강제 해제</strong>는 현재 ON/OFF 값을 바꾸지 않고 force만 제거합니다.
+		</div>
+		<div class="io-head">
+			<div class="io-stat"><span id="dioTotal" class="n">—</span><span class="l">전체 신호</span></div>
+			<div class="io-stat on"><span id="dioOn" class="n">—</span><span class="l">ON</span></div>
+			<div class="io-stat"><span id="dioOff" class="n">—</span><span class="l">OFF</span></div>
+			<div class="io-stat forced"><span id="dioForced" class="n">—</span><span class="l">강제됨</span></div>
+		</div>
+		<div class="io-toolbar">
+			<input id="dioSearch" type="search" inputmode="numeric" placeholder="신호 번호 검색" aria-label="DIO 신호 번호 검색">
+			<div class="io-filter" aria-label="DIO 상태 필터">
+				<button class="active" data-dio-filter="all">전체</button>
+				<button data-dio-filter="on">ON</button>
+				<button data-dio-filter="off">OFF</button>
+				<button data-dio-filter="forced">강제됨</button>
+			</div>
+		</div>
+		<div id="dioNotice" class="io-note">Show DIO 상태를 불러오는 중…</div>
+		<div id="dioGrid" class="io-grid"><div class="io-empty">데이터 없음</div></div>
+	</section>
 
 	<script nonce="${nonce}">
 		const vscode = acquireVsCodeApi();
@@ -317,8 +401,74 @@
 			xyTrail: [],                // 최근 XY 점
 			prevCart: null,
 			prevClustersFree: null,     // 직전 mbuf clusters free (감소 표시용)
+			page: 'status',
+			dioSignals: [],
+			dioFilter: 'all',
+			dioQuery: '',
+			dioBusy: false,
 		};
 		const MOVE_EPS = 0.01;
+
+		function showPage(page, notify) {
+			const next = page === 'io' ? 'io' : 'status';
+			state.page = next;
+			$('statusPage').classList.toggle('active', next === 'status');
+			$('ioPage').classList.toggle('active', next === 'io');
+			$('statusTab').classList.toggle('active', next === 'status');
+			$('ioTab').classList.toggle('active', next === 'io');
+			$('statusTab').setAttribute('aria-selected', String(next === 'status'));
+			$('ioTab').setAttribute('aria-selected', String(next === 'io'));
+			if (notify !== false) vscode.postMessage({ type: 'showPage', page: next });
+		}
+
+		function setDioNotice(message, cls) {
+			const el = $('dioNotice');
+			el.textContent = message || '';
+			el.className = 'io-note' + (cls ? ' ' + cls : '');
+		}
+
+		function renderDioGrid() {
+			const query = state.dioQuery.trim();
+			const signals = state.dioSignals.filter((item) => {
+				if (query && !String(item.signal).includes(query)) return false;
+				if (state.dioFilter === 'on' && !item.on) return false;
+				if (state.dioFilter === 'off' && item.on) return false;
+				if (state.dioFilter === 'forced' && !item.forced) return false;
+				return true;
+			});
+			const grid = $('dioGrid');
+			if (signals.length === 0) {
+				const text = state.dioSignals.length === 0 ? '표시할 DIO 신호가 없습니다.' : '검색 조건과 일치하는 신호가 없습니다.';
+				grid.innerHTML = '<div class="io-empty">' + text + '</div>';
+				return;
+			}
+			grid.innerHTML = signals.map((item) => {
+				const forced = item.forced ? '<span class="io-force">FORCED</span>' : '';
+				return '<article class="io-card' + (item.forced ? ' forced' : '') + '">' +
+					'<div class="io-card-main"><div class="io-signal">Signal ' + item.signal + forced + '</div>' +
+					'<div class="io-value' + (item.on ? ' on' : '') + '"><span class="io-lamp"></span>' + (item.on ? 'ON' : 'OFF') + '</div></div>' +
+					'<div class="io-actions">' +
+					'<button data-dio-signal="' + item.signal + '" data-dio-value="1"' + (state.dioBusy ? ' disabled' : '') + '>강제 ON</button>' +
+					'<button class="force-off" data-dio-signal="' + item.signal + '" data-dio-value="-1"' + (state.dioBusy ? ' disabled' : '') + '>강제 OFF</button>' +
+					'<button class="release" data-dio-signal="' + item.signal + '" data-dio-value="0"' + (state.dioBusy ? ' disabled' : '') + '>강제 해제</button>' +
+					'</div></article>';
+			}).join('');
+		}
+
+		function renderDio(snapshot) {
+			renderHeader(snapshot);
+			state.dioSignals = Array.isArray(snapshot.signals) ? snapshot.signals : [];
+			const on = state.dioSignals.filter((item) => item.on).length;
+			const forced = state.dioSignals.filter((item) => item.forced).length;
+			$('dioTotal').textContent = String(state.dioSignals.length);
+			$('dioOn').textContent = String(on);
+			$('dioOff').textContent = String(state.dioSignals.length - on);
+			$('dioForced').textContent = String(forced);
+			if (!snapshot.connected) setDioNotice(snapshot.note || '제어기 연결이 끊겼습니다.', 'err');
+			else if (snapshot.note) setDioNotice(snapshot.note, 'err');
+			else setDioNotice(`Show DIO · ${state.dioSignals.length}개 신호 · ${forced}개 강제 상태`, '');
+			renderDioGrid();
+		}
 
 		function setBadge(id, cls, value, sub) {
 			const el = $(id);
@@ -341,6 +491,7 @@
 			}
 			$('connLabel').textContent = s.connected ? '연결됨' : '연결 끊김';
 			$('target').textContent = s.target ? (s.target.ip + ':' + s.target.port) : '';
+			$('target').title = s.note || '';
 			$('updated').textContent = '갱신 ' + new Date(s.timestamp || Date.now()).toLocaleTimeString();
 		}
 
@@ -671,8 +822,16 @@
 			if (!msg) { return; }
 			if (msg.type === 'status' && msg.snapshot) {
 				render(msg.snapshot, msg.resourceHistory, msg.resourceProbes, msg.connectionStats);
+			} else if (msg.type === 'dio' && msg.dio) {
+				renderDio(msg.dio);
+			} else if (msg.type === 'dioAction') {
+				state.dioBusy = msg.busy === true;
+				setDioNotice(msg.message || '', msg.ok === true ? 'ok' : (msg.ok === false ? 'err' : ''));
+				renderDioGrid();
 			} else if (msg.type === 'config') {
 				applyConfig(msg);
+			} else if (msg.type === 'navigate') {
+				showPage(msg.page, false);
 			} else if (msg.type === 'error') {
 				$('connLabel').textContent = '오류: ' + (msg.message || '');
 				$('dot').className = 'dot down';
@@ -683,6 +842,29 @@
 		$('refreshBtn').addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
 		$('intervalSel').addEventListener('change', (e) => vscode.postMessage({ type: 'setInterval', ms: Number(e.target.value) }));
 		$('pauseBtn').addEventListener('click', () => vscode.postMessage({ type: 'pause', paused: !state.paused }));
+		$('statusTab').addEventListener('click', () => showPage('status'));
+		$('ioTab').addEventListener('click', () => showPage('io'));
+		$('dioSearch').addEventListener('input', (e) => {
+			state.dioQuery = String(e.target.value || '').replace(/[^0-9]/g, '');
+			if (e.target.value !== state.dioQuery) e.target.value = state.dioQuery;
+			renderDioGrid();
+		});
+		document.querySelectorAll('[data-dio-filter]').forEach((button) => {
+			button.addEventListener('click', () => {
+				state.dioFilter = button.dataset.dioFilter || 'all';
+				document.querySelectorAll('[data-dio-filter]').forEach((item) => item.classList.toggle('active', item === button));
+				renderDioGrid();
+			});
+		});
+		$('dioGrid').addEventListener('click', (event) => {
+			const button = event.target.closest('button[data-dio-signal]');
+			if (!button || state.dioBusy) return;
+			vscode.postMessage({
+				type: 'setDio',
+				signal: Number(button.dataset.dioSignal),
+				value: Number(button.dataset.dioValue),
+			});
+		});
 
 		vscode.postMessage({ type: 'ready' });
 	</script>

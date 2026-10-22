@@ -16,7 +16,9 @@ import * as vscode from 'vscode';
 import { SymbolCache } from '../symbolCache';
 import { GPLDiagnosticProvider } from '../providers/diagnosticProvider';
 import { getControllerConfig, setIdlePingActive } from '../controller/controllerConnection';
+import { isControllerSessionConnected, setControllerSessionConnected } from '../controller/connectionSession';
 import { AgentBridgeServer, newExtensionInstanceId } from '../controller/agentBridge';
+import { createRevealGate } from '../controller/agentCommandLog';
 import { ConnectionHealthMonitor, ConnectionHealthProber } from '../controller/connectionHealth';
 import { EditorBreakpointSync } from '../controller/breakpointSync';
 import { ControllerBreakpointMirror } from '../controller/breakpointMirror';
@@ -280,8 +282,16 @@ export class ExtensionHost {
 		void vscode.commands.executeCommand('setContext', 'gpl.ui.debugging', this.isDebugSessionActive);
 	}
 
+	/** 이 창이 제어기에 연결된 상태인가 — 정본은 controller/connectionSession(뷰가 아니라). */
+	get isControllerConnected(): boolean {
+		return isControllerSessionConnected();
+	}
+
 	setControllerConnected(connected: boolean, options?: { refreshTree?: boolean; reason?: 'disconnect' | 'lost' }): void {
-		const wasConnected = this.controllerTree?.isConnected ?? false;
+		const wasConnected = isControllerSessionConnected();
+		// 정본을 먼저 갱신한다 — 아래 소비자와 세션 구독자(대시보드 폴링 등)가 같은 값을 보게.
+		// 해제 뒤에는 전송 계층이 1402 소켓을 보관하지 않는다(connectionSession.effectiveKeepAlive).
+		setControllerSessionConnected(connected, options?.reason);
 		this.statusBar?.setConnected(connected);
 		this.updateUiContexts(connected);
 		this.controllerTree?.setConnected(connected, { refresh: options?.refreshTree, reason: options?.reason });
@@ -309,6 +319,16 @@ export class ExtensionHost {
 	 */
 	readonly extensionInstanceId = newExtensionInstanceId();
 
+	/**
+	 * AI 요청이 **조용한 뒤 처음** 올 때 Output 「GPL Language Support」를 연다(포커스는 유지) — 사용자의 배포·명령은
+	 * 패널을 열어 로그가 보였는데 AI 경유 동작은 보이지 않았다(§1-EO). 판단(`createRevealGate`)은 순수 모듈에 있다.
+	 */
+	private readonly agentRevealDue = createRevealGate();
+	private revealOutputForAgentRequest(): void {
+		if (vscode.workspace.getConfiguration('gpl.agentBridge').get<boolean>('revealOutput', true) !== true) { return; }
+		if (this.agentRevealDue(Date.now())) { this.outputChannel.show(true); }
+	}
+
 	ensureAgentBridge(): AgentBridgeServer | undefined {
 		if (vscode.workspace.getConfiguration('gpl.agentBridge').get<boolean>('enabled', true) === false) {
 			if (this.agentBridge) { this.agentBridge.stop(); this.agentBridge = undefined; this.agentBridgeKey = ''; }
@@ -327,17 +347,20 @@ export class ExtensionHost {
 			workspace: vscode.workspace.workspaceFolders?.[0]?.name,
 			// MCP 가 projectDir 로 어느 창에 보낼지 고르는 근거(§6).
 			workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath),
-			execute: (command, args) => Promise.resolve(
-				args === undefined
-					? vscode.commands.executeCommand(command)
-					: vscode.commands.executeCommand(command, args),
-			),
+			execute: (command, args) => {
+				this.revealOutputForAgentRequest();
+				return Promise.resolve(
+					args === undefined
+						? vscode.commands.executeCommand(command)
+						: vscode.commands.executeCommand(command, args),
+				);
+			},
 			isKnownCommand: async command => (await vscode.commands.getCommands(true)).includes(command),
 			log: this.log,
 		});
 		this.agentBridgeKey = key;
 		this.agentBridge.start();
-		this.agentBridge.setState({ connected: this.controllerTree?.isConnected ?? false, debugSessionActive: this.isDebugSessionActive });
+		this.agentBridge.setState({ connected: isControllerSessionConnected(), debugSessionActive: this.isDebugSessionActive });
 		return this.agentBridge;
 	}
 

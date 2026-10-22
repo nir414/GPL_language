@@ -16,8 +16,12 @@
  */
 
 import * as net from 'net';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { getControllerConfig, getTrafficChannel, formatTrafficTimestamp, recordTrafficLine } from './controllerConnection';
+import { RuntimeConsoleBuffer } from './runtimeConsoleBuffer';
 import { isConsoleStatusEventFrame, normalizeConsoleLine, latin1ToUtf8 } from './responseParser';
 import { appendLiveLog } from '../log/liveLogTerminal';
 import {
@@ -59,6 +63,17 @@ const CONNECT_TIMEOUT_MS = 5_000;
 const WATCHDOG_INTERVAL_MS = 15_000;
 /** 접속 카운터 요약 로그 주기 (누적 N회 접속마다) */
 const CONNECT_SUMMARY_EVERY = 50;
+/** AI(MCP) `runtime_console_read` 가 읽는 수신 줄 링버퍼 크기 (§1-EP) */
+const LINE_BUFFER_CAPACITY = 2000;
+/** 파일 캡처(`gpl.runtimeConsole.captureFile`) 교체 임계 — 넘으면 `.1.log` 로 밀고 새로 쓴다 */
+const CAPTURE_ROTATE_BYTES = 2 * 1024 * 1024;
+/** 파일 크기를 매 줄 stat 하지 않도록 N 줄마다 확인 */
+const CAPTURE_SIZE_CHECK_EVERY = 200;
+/**
+ * 이 시간 이상 끊겼다가 다시 붙으면 캡처 파일에 "안 듣고 있던 구간" 마커를 남긴다. 1403 은 idle 세션이 짧게 끊겼다 다시
+ * 붙는 일이 잦아서(접속 카운터 요약 참고) 매 접속마다 남기면 파일이 마커로 덮인다 — 그래서 짧은 재접속은 표시하지 않는다.
+ */
+const CAPTURE_GAP_MARK_MS = 60_000;
 /** Connected 상태에서 이 시간 동안 데이터가 없으면 idle 힌트 표시 */
 const NO_OUTPUT_HINT_MS = 3_000;
 /** payload 없이 종료된 세션이 이 시간 이상 유지되면 정상 idle timeout으로 분류 */
@@ -218,6 +233,78 @@ export class RuntimeConsole implements vscode.Disposable {
     readonly onDidStatusChanged = this._onDidStatusChanged.event;
     /** 1403 세션 첫 데이터 + 상태 이벤트 프레임 도착 시 발생. 디버그 즉시 폴 트리거 용도. */
     readonly onDidReceiveData = this._onDidReceiveData.event;
+
+    /**
+     * 수신 줄 링버퍼 — AI(MCP) `runtime_console_read` 가 커서로 읽고 패턴을 기다린다(§1-EP). 정규화된 줄만 들어가며
+     * 접두사(시각/프로젝트)는 붙지 않는다. 판단 근거는 이 버퍼(라이브 스트림의 사본)이고 파일 캡처는 사후 열람용이다.
+     */
+    readonly lineBuffer = new RuntimeConsoleBuffer(LINE_BUFFER_CAPACITY);
+    private _captureLinesSinceCheck = 0;
+    private _captureDisabledReason = '';
+    /** 이 인스턴스가 캡처 파일에 시작 마커를 남겼는가(확장 세션당 1회). */
+    private _captureSessionMarked = false;
+    /** 마지막으로 연결이 끊긴 시각(epoch ms, 연결 중이면 0) — 재접속 때 공백 마커 판단용. */
+    private _captureDisconnectedAt = 0;
+
+    /** 파일 캡처 경로(설정이 꺼져 있으면 undefined). 응답에 실어 사용자가 열어 볼 수 있게 한다. */
+    get captureFilePath(): string | undefined {
+        const enabled = vscode.workspace.getConfiguration('gpl.runtimeConsole').get<boolean>('captureFile', true);
+        if (!enabled) { return undefined; }
+        const ip = getControllerConfig().ip.replace(/[^A-Za-z0-9.-]/g, '_');
+        return path.join(os.tmpdir(), 'gpl-controller', `runtime-console-${ip}.log`);
+    }
+
+    /**
+     * 한 줄을 캡처 파일에 덧붙인다 — 실패해도 수신 경로를 막지 않는다(첫 실패만 상태 로그에 남기고 이후는 조용히 건너뛴다).
+     * 2 MB 를 넘으면 `.1.log` 로 밀어 두 파일(최근 + 직전)만 남긴다.
+     */
+    private appendCapture(text: string, project: string, at: number): void {
+        const file = this.captureFilePath;
+        if (!file || this._captureDisabledReason) { return; }
+        try {
+            if (this._captureLinesSinceCheck === 0) {
+                fs.mkdirSync(path.dirname(file), { recursive: true });
+            }
+            if (++this._captureLinesSinceCheck >= CAPTURE_SIZE_CHECK_EVERY) {
+                this._captureLinesSinceCheck = 1;
+                let size = 0;
+                try { size = fs.statSync(file).size; } catch { size = 0; }
+                if (size >= CAPTURE_ROTATE_BYTES) {
+                    const rotated = file.replace(/\.log$/, '.1.log');
+                    try { fs.unlinkSync(rotated); } catch { /* 없으면 무시 */ }
+                    fs.renameSync(file, rotated);
+                }
+            }
+            const stamp = new Date(at).toISOString();
+            fs.appendFileSync(file, `${stamp} ${project ? `[${project}] ` : ''}${text}\n`);
+        } catch (err: any) {
+            this._captureDisabledReason = err?.message ?? String(err);
+            this.appendStateLine(`[RC1403] capture file disabled for this session: ${this._captureDisabledReason} (${file})`);
+        }
+    }
+
+    /**
+     * 캡처 파일에 듣기 상태 마커(`--- … ---`)를 남긴다 — "출력이 없었다" 와 "확장이 듣고 있지 않았다" 를 파일만으로 가르기 위해
+     * (2026-10-22 Sample Prep: 10-20 13시 → 10-21 02시 공백이 어느 쪽인지 알 수 없었다). 링버퍼에는 넣지 않는다(프로그램 출력이 아님).
+     */
+    private appendCaptureMarker(text: string): void {
+        this.appendCapture(`--- ${text} ---`, '', Date.now());
+    }
+
+    /** 연결될 때 — 세션 첫 연결이면 시작 마커, 오래 끊겼다 다시 붙었으면 공백 마커. */
+    private markCaptureOnConnect(endpoint: string): void {
+        const now = Date.now();
+        if (!this._captureSessionMarked) {
+            this._captureSessionMarked = true;
+            const version = vscode.extensions.getExtension('nir414.gpl-language-support')?.packageJSON?.version ?? '?';
+            const workspace = vscode.workspace.name ?? '-';
+            this.appendCaptureMarker(`capture start ${endpoint} (ext ${version}, pid ${process.pid}, workspace ${workspace})`);
+        } else if (this._captureDisconnectedAt > 0 && now - this._captureDisconnectedAt >= CAPTURE_GAP_MARK_MS) {
+            const gapSec = Math.round((now - this._captureDisconnectedAt) / 1000);
+            this.appendCaptureMarker(`reconnected ${endpoint} — not listening for ${gapSec} s since ${new Date(this._captureDisconnectedAt).toISOString()}`);
+        }
+        this._captureDisconnectedAt = 0;
+    }
 
     get isConnected(): boolean { return this._isConnected; }
 
@@ -415,6 +502,9 @@ export class RuntimeConsole implements vscode.Disposable {
             this.logConsoleTraffic('---', `STOP (no socket, reconnectTimerCanceled=${hadReconnectTimer})`);
         }
         if (wasConnected) {
+            // 사용자가 콘솔을 멈췄다 — 이후 공백은 "출력 없음" 이 아니라 "듣지 않음" 이다.
+            this.appendCaptureMarker('capture paused: runtime console stopped');
+            this._captureDisconnectedAt = Date.now();
             this._onDidDisconnect.fire();
         }
     }
@@ -698,6 +788,8 @@ export class RuntimeConsole implements vscode.Disposable {
         this._sessionLinesEmitted++;
         this.recordIterationValue(normalized);
         this.output.appendLine(formatRuntimeConsoleLine(normalized, project, this.getLinePrefixMode()));
+        const buffered = this.lineBuffer.push(normalized, project || undefined);
+        this.appendCapture(normalized, project, buffered.at);
         this._onDidReceiveLine.fire(normalized);
     }
 
@@ -1097,6 +1189,7 @@ export class RuntimeConsole implements vscode.Disposable {
                 this.appendStateLine(`[Console][RC1403] STATE=CONNECTED endpoint=${cfg.ip}:${cfg.consolePort}`);
             }
             this.logConsoleTraffic('---', `CONNECTED (local ${socket.localAddress}:${socket.localPort}, idle=${this._consecutiveEmptySessions})`);
+            this.markCaptureOnConnect(`${cfg.ip}:${cfg.consolePort}`);
             this._onDidConnect.fire();
         });
 
@@ -1246,6 +1339,7 @@ export class RuntimeConsole implements vscode.Disposable {
                     + `lifetimeBytes=${this._lifetimeRxBytes}, lifetimeFrames=${this._lifetimeFrames}, `
                     + `connects=${this._connectStats.total})`,
                 );
+                this._captureDisconnectedAt = Date.now();
                 this._onDidDisconnect.fire();
             } else {
                 // connect 콜백 전에 close 된 경우

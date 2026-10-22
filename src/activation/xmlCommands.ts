@@ -76,14 +76,14 @@ export function activateXmlCommands(host: ExtensionHost): void {
 				return;
 			}
 
-			// 진단 게이트(gpl.diagnostics.experimental, 기본 false)가 꺼져 있으면 updateDiagnostics는
-			// 아무것도 표시하지 않는다 — "분석 완료"로 오인시키지 않고 비활성 상태를 그대로 안내한다.
+			// 실험 설정(gpl.diagnostics.experimental, 기본 false)이 꺼져 있으면 XML 진단은
+			// 표시하지 않는다 — "분석 완료"로 오인시키지 않고 비활성 상태를 그대로 안내한다.
 			const diagnosticsEnabled = vscode.workspace
 				.getConfiguration('gpl.diagnostics')
 				.get<boolean>('experimental', false);
 			if (!diagnosticsEnabled) {
 				vscode.window.showInformationMessage(
-					'GPL 진단이 비활성화되어 있어 XML 인코딩 분석 결과가 표시되지 않습니다. 설정 gpl.diagnostics.experimental을 켜면 Problems에 결과가 표시됩니다.',
+					'실험적 XML 진단이 비활성화되어 있어 XML 인코딩 분석 결과가 표시되지 않습니다. 설정 gpl.diagnostics.experimental을 켜면 Problems에 결과가 표시됩니다.',
 				);
 				return;
 			}

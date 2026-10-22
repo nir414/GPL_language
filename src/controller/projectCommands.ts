@@ -61,6 +61,7 @@ export interface StatusOutcome {
     statusCode: number;
     message: string;
     raw: string;
+    meta?: CommandResponseMeta;
 }
 
 /** 실패 사유 — 호출부가 사용자 문구·`failedPhase` 로 옮겨 쓴다. */
@@ -103,11 +104,12 @@ export async function runStatusCommand(
             statusCode: status.code,
             message: status.message,
             raw: resp.raw,
+            meta: resp.meta,
         };
     } catch (e: any) {
         const raw = e?.message || String(e);
         const status = parseStatus(raw);
-        return { ok: false, statusCode: status.code, message: status.message, raw };
+        return { ok: false, statusCode: status.code, message: e?.sent === false ? raw : status.message, raw };
     }
 }
 
@@ -354,6 +356,9 @@ export interface StartOutcome {
     statusCode: number;
     message: string;
     raw: string;
+    /** `Start -compile` 응답에서 파싱한 컴파일 에러. */
+    errors: CompileError[];
+    responseMeta?: CommandResponseMeta;
     /** 비차단 STATUS(환경 경고)로 성공한 경우 — 호출부가 경고를 남긴다. */
     nonBlockingWarning?: boolean;
     failure?: CommandFailure;
@@ -374,13 +379,15 @@ export async function startProject(
 ): Promise<StartOutcome> {
     const p = prefixOf(opts);
     const command = buildStartCommand(startOptions);
+    const runsCompiler = commandRunsCompiler(command);
     io.log(`${p}CMD ${command}`);
     // `-compile` 이 붙은 Start 는 Compile 과 같은 응답(수 초 침묵 + 긴 출력)이라 같은 대기 규칙으로 보낸다.
     // 짧은 idle 완료로 받으면 compiler pass 도중 잘려 `-9999 No STATUS found` 가 된다(§1-DN).
-    const start = await runStatusCommand(io, command, { forCompile: commandRunsCompiler(command) });
+    const start = await runStatusCommand(io, command, { forCompile: runsCompiler });
+    const errors = runsCompiler ? parseCompileErrors(start.raw) : [];
     io.log(`${p}RAW ${rawPreview(start.raw) || '(empty)'}`);
 
-    if (start.ok) {
+    if (start.ok && errors.length === 0) {
         const nonBlockingWarning = start.statusCode !== 0;
         if (nonBlockingWarning) {
             io.log(`${p}⚠ Start STATUS ${start.statusCode} non-blocking (controller environment warning)`);
@@ -392,17 +399,27 @@ export async function startProject(
             statusCode: start.statusCode,
             message: start.message,
             raw: start.raw,
+            errors,
+            responseMeta: start.meta,
             nonBlockingWarning,
         };
     }
 
     io.log(`${p}✘ Start failed: STATUS ${start.statusCode}: ${start.message || 'Unknown error'}`);
+    if (errors.length > 0) {
+        io.log(`${p}  컴파일 에러 ${errors.length}건(Start -compile 응답)`);
+    }
+    const failureMessage = errors.length > 0 && (!start.message || start.message === 'Success')
+        ? 'Compilation errors'
+        : start.message || 'Unknown error';
     return {
         ok: false,
         command,
         statusCode: start.statusCode,
-        message: start.message || 'Unknown error',
+        message: failureMessage,
         raw: start.raw,
-        failure: { command, code: start.statusCode, message: start.message || 'Unknown error', raw: start.raw },
+        errors,
+        responseMeta: start.meta,
+        failure: { command, code: start.statusCode, message: failureMessage, raw: start.raw },
     };
 }

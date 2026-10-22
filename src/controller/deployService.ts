@@ -18,7 +18,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { sendCommandDetailed, trySendCommand, getControllerConfig, ControllerConfig, CommandResponseMeta } from './controllerConnection';
-import { uploadProject, mirrorProject, listRemoteDir, removeRemoteFiles, RemoteFileRef } from './ftpClient';
+import { watchMainThreadAfterStart, PostStartRuntimeError, PostStartWatchOutcome } from './postStartWatch';
+import { uploadProject, mirrorProject, listRemoteDir, removeRemoteFiles, RemoteFileRef, isUploadCancelledError } from './ftpClient';
 import { getSyncManifest, mergeSyncManifest, recordSyncManifest } from './syncManifest';
 import { parseStatus, parseGpr, parseErrorLog, CompileError, isControllerNonBlockingStatus } from './responseParser';
 import type { ThreadInfo } from './responseParser';
@@ -35,16 +36,22 @@ import { compileProject, loadProject, startProject, unloadProject } from './proj
 import type { CompileAttempt, ProjectCommandIo } from './projectCommands';
 import { isProjectAlreadyLoaded, isProjectNotLoaded } from './controllerStatusCodes';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
+import { KeyedSerialQueue } from './deployQueue';
 import { beginOperation, findActiveByIdempotencyKey, sweepOperations, OperationHandle, OperationRecord } from './operationStore';
+import { clearDeployCancellation, readDeployCancellation } from './deployCancellation';
 import { recordCompiled, snapshotProjectFiles, FileStamp } from './deployRecord';
 import { compareProvenance, describeProvenance } from './deployProvenance';
 import type { ProvenanceReport } from './deployProvenance';
 import { checkProjectName, describeProjectNameProblem } from './projectNameGuard';
 import { isPathUnder } from '../util/pathKey';
-import { resolveProjectLibraryDirs } from '../project/projectSources';
-import { resolveRemoteProjectPath } from './remoteProjectPath';
+import { ancestorRelativePathCandidates, resolveProjectLibraryDirs } from '../project/projectSources';
+import { shouldPromptForStartConfirmation } from './startCommand';
+import { describeRemotePathCandidates, resolveRemoteProjectPath } from './remoteProjectPath';
 import { PROJECT_EXCLUDE_GLOB } from '../project/projectFileScope';
+import { collapseControllerProjectDirs, getControllerProjectWriteBlock } from '../project/controllerProjectWorkspace';
 import type { UploadProgressEvent, UploadSummary } from './uploadProgress';
+import { checkMemoryBeforeOperation } from './controllerConnection';
+import { MemoryGuardError, MemoryPrecheck } from './memoryGuard';
 
 /**
  * 배포 파이프라인의 업로드 진행 알림(§1-EE). 배포가 어느 경로(명령·F5·autoOnSave·MCP)로 시작됐든 같은 이벤트가 나가므로
@@ -64,15 +71,21 @@ export interface DeployOptions {
     skipUnchanged?: boolean;
     skipStart?: boolean;
     skipStop?: boolean;
+	/**
+	 * `/GPL`에 소스만 업로드하고 Stop/Show Thread/Compile/Start를 모두 생략한다.
+	 * 실행 중 FTP 업로드는 허용하되 원격 전용 파일 삭제는 안전성이 확인되지 않아 보류한다.
+	 * 업로드 동안에는 배포 잠금을 유지하므로 다른 Compile/Start가 겹치지 않는다.
+	 */
+	uploadOnly?: boolean;
     /**
      * COMPILE 단계(Compile 명령)를 생략한다 — '업로드 스타트'(gpl.uploadStart) 경로.
      * 확장이 보내는 `Start`에는 `-compile`이 붙어 컴파일까지 수행하므로(§1-DN, ai-handoff §0.7)
      * 확장이 `Compile`을 먼저 보내면 같은 컴파일을 두 번 하게 된다. 업로드 직후 곧바로 Start를 보내
      * 컴파일은 Start의 `-compile`에 맡긴다. 클래식(비 direct) 경로의 Unload/Load 동기화는 그대로 수행한다 —
      * Start 하려면 제어기에 프로젝트가 로드돼 있어야 하기 때문이다.
-     * 대가: 소스 에러가 Problems(진단)로 오지 않고 Start의 STATUS 실패로만 드러난다.
+     * Start의 `-compile` 응답도 파싱해 소스 에러를 Problems(진단)에 표시한다(§1-EW).
      * 에러 위치를 보려면 `gpl.quickCompile`(빠른 컴파일)로 따로 확인한다.
-     * skipStart와 함께 쓰면 제어기에 아무것도 검증하지 않는 "업로드만" 경로가 되므로 조합하지 않는다.
+     * 소스만 올리는 경로에는 skipStart 조합 대신 의미가 분명한 uploadOnly를 사용한다.
      */
     skipCompile?: boolean;
     /**
@@ -103,7 +116,14 @@ export interface DeployOptions {
      * false 면 `-noevent`. 호출측이 설정(`gpl.controller.startEventMode`)을 읽어 넘긴다.
      */
     startEventMode?: boolean;
+    /** 자동화 호출자가 `confirmStart:true`로 사용자 확인을 이미 받았음. true면 배포 서비스의 중복 모달을 생략한다. */
+    startConfirmed?: boolean;
     beforeStart?: () => Promise<void> | void;
+    /**
+     * Start 뒤 메인 쓰레드를 이 시간(ms) 동안 감시해 Error 로 멈추면 `runtimeError` 에 싣는다(§1-EU, postStartWatch.ts).
+     * 0/미지정이면 감시하지 않는다. 호출측이 설정 `gpl.controller.postStartWatchMs` 를 읽어 넘긴다.
+     */
+    postStartWatchMs?: number;
     /**
      * autoOnSave 자동 게이트 (gpl.quickCompile.autoOnSave = "auto").
      * 1. /GPL/<projectName> 폴더가 원격에 이미 존재해야 업로드한다 (없어도 생성하지 않고 classic 폴백도 없음
@@ -140,6 +160,7 @@ export interface DeployOptions {
 export type DeployPhase =
     | 'LOCKED'            // 배포 잠금을 다른 배포/창/프로세스가 보유 중 — 제어기를 건드리지 않음
     | 'IN_PROGRESS'       // 같은 idempotencyKey 의 배포가 이미 진행 중 — 새로 시작하지 않음(§10)
+    | 'CANCELLED'         // 작업자 Stop -all/VS Code 취소 — 이후 Compile/Start 미전송
     | 'AUTO_GATE'         // autoOnSave: /GPL 폴더 없음 등으로 업로드 전 스킵
     | 'UPLOAD'
     | 'STOP'
@@ -160,10 +181,14 @@ export interface CompileAttemptLog {
 
 export interface DeployResult {
     success: boolean;
+    /** 작업자 전체 정지 또는 CancellationToken으로 중단됨. 일반 배포 실패와 구분한다. */
+    cancelled?: boolean;
+    cancellationReason?: string;
     projectName: string;
     compileErrors: CompileError[];
     compileAttemptLogs: CompileAttemptLog[];
     precheckWarnings: string[];
+    memoryPrecheck?: MemoryPrecheck;
     errorLog: string[];
     selectedRemoteBasePath?: string;
     selectedRemoteProjectPath?: string;
@@ -195,6 +220,13 @@ export interface DeployResult {
      * 기록에 실패했거나 컴파일까지 가지 못했으면 undefined. 배포 성공/실패 판정과는 무관한 보조 정보.
      */
     compiledSnapshotFiles?: number;
+    /**
+     * Start 뒤 감시 창 안에 메인 쓰레드가 Error 로 멈춘 사실(§1-EU). 업로드·컴파일·Start 자체는 성공했으므로
+     * `success` 는 그대로 true 다 — 호출측이 경고로 보고하고 작업 기록에도 그대로 실린다.
+     */
+    runtimeError?: PostStartRuntimeError;
+    /** Start 뒤 감시의 결과 종류와 소요(§1-EU). 감시하지 않았으면 undefined. */
+    postStartWatch?: { outcome: PostStartWatchOutcome['kind']; elapsedMs: number };
     trace: string[];
 }
 
@@ -237,6 +269,7 @@ function makeInProgressResult(existing: OperationRecord): DeployResult {
 }
 
 function defaultLockOwner(options: DeployOptions): string {
+	if (options.uploadOnly) { return 'Upload Only'; }
     if ((options.changedFiles ?? []).length > 0) { return 'autoOnSave Quick Compile'; }
     if (options.skipStop) { return 'Quick Compile'; }
     if (options.skipCompile && !options.skipStart) { return 'Upload & Start'; }
@@ -245,11 +278,15 @@ function defaultLockOwner(options: DeployOptions): string {
 
 function defaultOperationType(options: DeployOptions): string {
     if (options.operationType) { return options.operationType; }
+	if (options.uploadOnly) { return 'UPLOAD_ONLY'; }
     if ((options.changedFiles ?? []).length > 0) { return 'AUTO_QUICK_COMPILE'; }
     if (options.skipStop) { return 'QUICK_COMPILE'; }
     if (options.skipCompile && !options.skipStart) { return 'UPLOAD_START'; }
     return 'DEPLOY';
 }
+
+const deployQueue = new KeyedSerialQueue();
+const DEPLOY_LOCK_RETRY_MS = 250;
 
 /**
  * 배포 잠금 핸들에 작업 기록을 얹는다 — `lock.setStage()` 한 번으로 잠금 단계와 작업 phase 가 함께 움직인다.
@@ -270,9 +307,10 @@ function withOperationPhase(lock: DeployLockHandle, op: OperationHandle | undefi
  * 프로젝트를 제어기에 배포한다.
  * Output channel에 단계별 진행 상태를 출력한다.
  *
- * 진입 시 배포 잠금(deployLock.ts)을 획득하고 종료 시 해제한다 — 호출측은 프로젝트 선택·미저장 확인 같은
- * UI를 *먼저* 끝내고 이 함수를 불러야 UI 대기 중 잠금이 잡히지 않는다(이슈 #15). 잠금이 이미 잡혀 있으면
- * 제어기를 건드리지 않고 failedPhase 'LOCKED'로 즉시 돌아온다. 디버그 F5 경로도 같은 함수를 쓰므로 자동 참여.
+ * 진입 시 제어기별 직렬 큐에 등록한 뒤 배포 잠금(deployLock.ts)을 획득하고 종료 시 해제한다. 호출측은 프로젝트
+ * 선택·미저장 확인 같은 UI를 *먼저* 끝내고 이 함수를 불러야 UI 대기 중 대기열을 차지하지 않는다(이슈 #15).
+ * 같은 제어기의 뒤 요청은 거부하지 않고 QUEUED 상태로 기다리며, 다른 창/프로세스의 잠금도 해제될 때까지 기다린다.
+ * 디버그 F5 경로도 같은 함수를 쓰므로 자동 참여한다.
  */
 export async function deploy(
     options: DeployOptions,
@@ -284,6 +322,20 @@ export async function deploy(
     const cfg: ControllerConfig = { ...getControllerConfig(), ...controllerOverride };
     const owner = options.lockOwner ?? defaultLockOwner(options);
 
+    // FTP 다운로드 manifest는 로컬 사본의 쓰기 정책과 원본 제어기를 고정한다. 이 검사는 잠금·FTP·1402보다
+    // 먼저 수행해 snapshot이나 다른 제어기에서 받은 사본이 어떤 원격 상태도 바꾸지 않게 한다(F5 포함).
+    const manifestBlock = getControllerProjectWriteBlock(options.projectDir, cfg.ip);
+    if (manifestBlock) {
+        output.appendLine(`[Manifest] ${manifestBlock.message} (${manifestBlock.context.root})`);
+        return {
+            ...emptyResult(),
+            projectName: manifestBlock.context.manifest.projectName,
+            failedPhase: 'AUTO_GATE',
+            failedCommand: 'Controller project manifest gate',
+            failedStatusMessage: manifestBlock.message,
+        };
+    }
+
     // ① 멱등 검사 — 같은 키의 배포가 이미 돌고 있으면 두 번째를 만들지 않는다(§10).
     //    브리지 타임아웃 뒤의 재시도가 중복 배포가 되던 경로를 여기서 끊는다.
     if (options.idempotencyKey) {
@@ -294,7 +346,7 @@ export async function deploy(
         }
     }
 
-    // ② 잠금. 작업 기록을 먼저 만들어 두어야 잠금 레코드에 operationId 를 실을 수 있다(§7.2).
+    // ② 대기열 + 잠금. 작업 기록을 먼저 만들어 두어야 QUEUED 상태와 잠금 레코드의 operationId를 남길 수 있다.
     const operation = beginOperation({
         type: defaultOperationType(options),
         controllerId: cfg.ip,
@@ -302,42 +354,74 @@ export async function deploy(
         projectDir: options.projectDir,
         idempotencyKey: options.idempotencyKey,
         requestId: options.requestId,
-        phase: 'LOCK_WAIT',
+		phase: 'QUEUE_WAIT',
+		queued: true,
     });
-    const acquired = getDeployLock(cfg.ip).acquire(owner, 'PREPARE', {
-        operationId: operation.operationId,
-        extensionInstanceId: options.extensionInstanceId,
-        projectDir: options.projectDir,
-    });
-    if (!acquired.ok) {
-        output.appendLine(`[Lock] 배포 잠금 획득 실패 — ${describeDeployLock(acquired.holder)}${acquired.local ? ' (이 창의 다른 작업)' : ' (다른 창/프로세스)'}`);
-        operation.fail({
-            code: acquired.local ? 'LOCK_HELD_BY_OTHER_OPERATION' : 'LOCK_HELD_BY_OTHER_OPERATION',
-            message: `배포 잠금 보유 중: ${describeDeployLock(acquired.holder)}`,
-            retryable: true,
-            // 다른 작업이 잡고 있다 — 우회하거나 되풀이하지 말고 그 작업의 결과를 확인할 것(§16).
-            retryMode: 'CHECK_OPERATION',
-            safeToRepeat: true,
-        });
-        return makeLockedResult(acquired.holder, acquired.local);
-    }
-    operation.setPhase('PREPARE');
-    // autoOnSave는 저장마다 도니 잠금 로그로 채널을 채우지 않는다.
+    // operationId는 매 작업마다 유일하지만 외부 주입/비정상 종료 잔재까지 방어한다.
+    // 잠금에 id를 공개하기 전에만 지운다 — 이후 생긴 파일은 실제 사용자 취소다.
+    clearDeployCancellation(operation.operationId);
     const quiet = !!options.autoGate;
-    const startedAt = Date.now();
-    if (!quiet) { output.appendLine(`[Lock] 배포 잠금 획득: ${owner} (pid ${process.pid}, ${operation.operationId})`); }
-    let result: DeployResult | undefined;
-    try {
-        result = await deployLocked(options, output, diagnosticCollection, token, cfg, withOperationPhase(acquired.handle, operation));
-        result.operationId = operation.operationId;
-        return result;
-    } finally {
-        acquired.handle.release();
-        // ③ 결과를 남긴다 — 잠금은 사라져도 기록은 남아야 타임아웃 뒤에 결과를 되찾을 수 있다(§18 "Result Persist").
-        finishOperation(operation, result);
-        sweepOperations();
-        if (!quiet) { output.appendLine(`[Lock] 배포 잠금 해제: ${owner} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`); }
-    }
+    const ticket = deployQueue.enqueue(cfg.ip, async () => {
+        let lastHolderKey = '';
+        let acquired: ReturnType<ReturnType<typeof getDeployLock>['acquire']>;
+        while (true) {
+            const queuedCancellation = readDeployCancellation(operation.operationId);
+            if (token?.isCancellationRequested || queuedCancellation.requested) {
+                const cancelled = emptyResult();
+                cancelled.operationId = operation.operationId;
+                cancelled.cancelled = true;
+                cancelled.failedPhase = 'CANCELLED';
+                cancelled.cancellationReason = queuedCancellation.request?.reason ?? '배포 대기 중 사용자가 취소했습니다.';
+                cancelled.failedStatusMessage = cancelled.cancellationReason;
+                operation.cancel(cancelled.failedStatusMessage);
+                return cancelled;
+            }
+            acquired = getDeployLock(cfg.ip).acquire(owner, 'PREPARE', {
+                operationId: operation.operationId,
+                extensionInstanceId: options.extensionInstanceId,
+                projectDir: options.projectDir,
+            });
+            if (acquired.ok) { break; }
+            operation.heartbeat();
+            const holder = describeDeployLock(acquired.holder);
+            const holderKey = [
+                acquired.holder.operationId ?? '',
+                acquired.holder.pid,
+                acquired.holder.since,
+                acquired.holder.stage,
+            ].join('|');
+            if (!quiet && holderKey !== lastHolderKey) {
+                output.appendLine(`[Queue] 앞 작업 완료 대기 — ${holder}${acquired.local ? ' (이 창)' : ' (다른 창/프로세스)'}`);
+                lastHolderKey = holderKey;
+            }
+            await new Promise(resolve => setTimeout(resolve, DEPLOY_LOCK_RETRY_MS));
+        }
+
+		operation.start('PREPARE');
+		const startedAt = Date.now();
+		if (!quiet) { output.appendLine(`[Lock] 배포 잠금 획득: ${owner} (pid ${process.pid}, ${operation.operationId})`); }
+		let result: DeployResult | undefined;
+		try {
+			result = await deployLocked(options, output, diagnosticCollection, token, cfg,
+				withOperationPhase(acquired.handle, operation), operation.operationId);
+			result.operationId = operation.operationId;
+			return result;
+		} finally {
+			acquired.handle.release();
+			// ③ 결과를 남긴다 — 잠금은 사라져도 기록은 남아야 타임아웃 뒤에 결과를 되찾을 수 있다(§18 "Result Persist").
+			finishOperation(operation, result);
+			sweepOperations();
+			if (!quiet) { output.appendLine(`[Lock] 배포 잠금 해제: ${owner} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`); }
+		}
+	});
+	if (!quiet && ticket.ahead > 0) {
+		output.appendLine(`[Queue] 대기 작업 등록: ${owner} — 앞에 ${ticket.ahead}건 (${operation.operationId})`);
+	}
+	try {
+		return await ticket.result;
+	} finally {
+		clearDeployCancellation(operation.operationId);
+	}
 }
 
 /** 배포 결과를 작업 기록에 확정한다. 예외로 빠져나간 경우(result 없음)도 FAILED 로 닫는다. */
@@ -357,6 +441,7 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         success: result.success,
         projectName: result.projectName,
         compileErrorCount: result.compileErrors.length,
+        ...(result.memoryPrecheck ? { memoryPrecheck: result.memoryPrecheck } : {}),
         ...(result.uploadStats ? { uploadStats: result.uploadStats } : {}),
         ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
         ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),
@@ -374,15 +459,21 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         } : {}),
     };
     if (result.projectName) { operation.describeTarget({ projectName: result.projectName }); }
+    if (result.cancelled) {
+        operation.cancel(result.cancellationReason ?? result.failedStatusMessage ?? '배포 취소', summary);
+        return;
+    }
     if (result.success) {
         operation.complete(summary);
         return;
     }
     operation.fail({
-        code: result.failedPhase ? `DEPLOY_${result.failedPhase}` : 'OPERATION_FAILED',
+        code: result.memoryPrecheck?.level === 'blocked' ? 'LOW_MEMORY'
+            : result.memoryPrecheck?.level === 'unknown' ? 'MEMORY_UNVERIFIED'
+            : result.failedPhase ? `DEPLOY_${result.failedPhase}` : 'OPERATION_FAILED',
         message: result.failedStatusMessage ?? `배포가 ${result.failedPhase ?? '알 수 없는 단계'} 에서 중단됐습니다.`,
-        retryable: result.failedPhase !== 'COMPILE',   // 컴파일 에러는 소스를 고쳐야 한다 — 되풀이해도 같은 결과다
-        retryMode: result.failedPhase === 'COMPILE' ? 'NONE' : 'RETRY_SAME_REQUEST',
+        retryable: result.failedPhase !== 'COMPILE' && result.memoryPrecheck?.level !== 'blocked' && result.memoryPrecheck?.level !== 'unknown',
+        retryMode: result.failedPhase === 'COMPILE' || result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown' ? 'NONE' : 'RETRY_SAME_REQUEST',
         // 업로드/Compile 은 제어기 상태를 바꾼다 — 같은 요청을 그대로 되풀이해도 되는지는 단계에 달렸다.
         safeToRepeat: result.failedPhase === 'LOCKED' || result.failedPhase === 'AUTO_GATE' || result.failedPhase === 'IN_PROGRESS',
     }, summary);
@@ -395,6 +486,7 @@ async function deployLocked(
     token: vscode.CancellationToken | undefined,
     cfg: ControllerConfig,
     lock: DeployLockHandle,
+    operationId: string,
 ): Promise<DeployResult> {
     const result: DeployResult = {
         success: false,
@@ -411,6 +503,34 @@ async function deployLocked(
         output.appendLine(line);
     };
 
+    const cancellationStatus = (): { requested: boolean; reason?: string } => {
+        if (token?.isCancellationRequested) {
+            return { requested: true, reason: 'VS Code에서 배포 취소 요청' };
+        }
+        const status = readDeployCancellation(operationId);
+        if (!status.requested) { return { requested: false }; }
+        return {
+            requested: true,
+            reason: status.request?.reason ?? '배포 취소 요청 파일이 확인됐습니다(내용 손상)',
+        };
+    };
+    const isCancelled = (): boolean => cancellationStatus().requested;
+    const cancelResult = (where: string): DeployResult => {
+        if (!result.cancelled) {
+            const status = cancellationStatus();
+            result.cancelled = true;
+            result.cancellationReason = status.reason ?? '배포 취소 요청';
+            result.failedPhase = 'CANCELLED';
+            result.failedCommand = where;
+            result.failedStatusMessage = `${result.cancellationReason} — 이후 Compile/Start 미수행`;
+            lock.setStage('CANCELLED');
+            pushTrace(`│ ■ 배포 취소: ${result.cancellationReason} (${where}) — 이후 Compile/Start를 보내지 않습니다.`);
+        }
+        return result;
+    };
+
+    if (isCancelled()) { return cancelResult('PREPARE'); }
+
     const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
     const rawPreview = (raw: string): string => {
@@ -423,6 +543,7 @@ async function deployLocked(
         basePath: string;
         projectPath: string;
         candidates: string[];
+        confirmed: boolean;
     }> {
         const choice = await resolveRemoteProjectPath({
             projectFolderName,
@@ -433,7 +554,8 @@ async function deployLocked(
         return {
             basePath: choice.basePath,
             projectPath: choice.projectPath,
-            candidates: choice.candidates.map(c => c.projectPath),
+            candidates: describeRemotePathCandidates(choice.candidates),
+            confirmed: choice.confirmed,
         };
     }
 
@@ -476,6 +598,22 @@ async function deployLocked(
         }
     }
 
+    if (!options.uploadOnly) {
+        lock.setStage('MEMORY_CHECK');
+        try {
+            result.memoryPrecheck = await checkMemoryBeforeOperation(cfg);
+            if (result.memoryPrecheck.level === 'warning') { result.precheckWarnings.push(result.memoryPrecheck.message); }
+        } catch (err) {
+            if (!(err instanceof MemoryGuardError)) { throw err; }
+            result.memoryPrecheck = err.precheck;
+            result.failedPhase = 'UPLOAD';
+            result.failedCommand = 'Show Memory (precheck)';
+            result.failedStatusMessage = `${err.code}: ${err.message}`;
+            pushTrace(`✘ ${result.failedStatusMessage}`);
+            return result;
+        }
+    }
+
     // ── Direct /GPL 모드 프로브 ────────────────────
     // Load 문서 Remarks: "an external file-copy utility such as FTP can be used to
     // create the folder and copy the files" — /GPL 직접 쓰기는 공식 허용 경로.
@@ -508,6 +646,18 @@ async function deployLocked(
         } catch (e: any) {
             directProbeError = e?.message || String(e);
         }
+    }
+
+    // `/GPL` 목록 조회 실패는 "폴더 없음"이 아니다. 이 상태에서 classic 경로로 내려가면 공용 경로
+    // 선택기의 flash 가점만으로 `/flash/projects` 영구 사본을 고를 수 있다(2026-10-16 실측).
+    // 업로드 대상을 확인하지 못했으므로 어떤 FTP 쓰기도 시작하기 전에 중단한다.
+    if (options.directGpl && directProbeError) {
+        const reason = `/GPL 목록 조회 실패: ${directProbeError} — /flash/projects로 폴백하지 않고 업로드를 중단합니다.`;
+        pushTrace(`✘ ${reason}`);
+        result.failedPhase = 'UPLOAD';
+        result.failedCommand = 'Probe /GPL';
+        result.failedStatusMessage = reason;
+        return result;
     }
 
     // autoGate 조건 1: /GPL/<projectName>이 이미 존재해야 한다.
@@ -548,24 +698,33 @@ async function deployLocked(
         result.candidateRemoteProjectPaths = [directGplDir!];
     } else {
         const remotePath = await chooseRemoteProjectPath(folderName);
+        result.candidateRemoteProjectPaths = remotePath.candidates;
+        if (!remotePath.confirmed) {
+            const reason = `원격 프로젝트 경로 목록을 확인할 수 없어 업로드를 중단합니다: ${remotePath.candidates.join(' | ')}`;
+            pushTrace(`✘ ${reason}`);
+            result.failedPhase = 'UPLOAD';
+            result.failedCommand = 'Resolve remote project path';
+            result.failedStatusMessage = reason;
+            return result;
+        }
         ftpProjectDir = remotePath.projectPath;
         loadPath = ftpProjectDir;
         result.selectedRemoteBasePath = remotePath.basePath;
         result.selectedRemoteProjectPath = remotePath.projectPath;
-        result.candidateRemoteProjectPaths = remotePath.candidates;
     }
-    // (UPLOAD ∥ STOP/게이트) + COMPILE + ERROR CHECK(항상 수행) = 3, START는 옵션.
-    const totalPhases = 3 + (options.skipStart ? 0 : 1);
+    // Upload Only는 FTP 한 단계뿐. 일반 경로는 (UPLOAD ∥ STOP/게이트) + COMPILE + ERROR CHECK, START는 옵션.
+    const totalPhases = options.uploadOnly ? 1 : 3 + (options.skipStart ? 0 : 1);
     let phase = 0;
 
-    pushTrace(`╭──────────────────────────────────────────────────────╮`);
-    const modeSuffix = options.skipStop
+    // 헤더는 왼쪽 `│` 거터만 쓴다 — 오른쪽 테두리는 한글(전각)·긴 경로 때문에 줄마다 어긋나 닫힌 상자가 깨졌다.
+    const modeSuffix = options.uploadOnly
+		? ' (Upload Only — Stop/Compile/Start 없음)'
+		: options.skipStop
         ? ' (Quick Compile)'
         : options.skipCompile && !options.skipStart
             ? ' (Upload & Start — Compile 생략, Start -compile 이 컴파일)'
             : options.skipStart ? ' (Build Only)' : '';
     pushTrace(`│  ◆ ${projectName}${modeSuffix}`);
-    pushTrace(`├──────────────────────────────────────────────────────┤`);
     pushTrace(`│  Local:  ${options.projectDir}`);
     pushTrace(`│  FTP:    ${ftpProjectDir}`);
     if (directActive) {
@@ -596,7 +755,7 @@ async function deployLocked(
         pushTrace(`│  Library: ${gprInfo.libraries.join(' | ')}`);
         if (inside.length > 0) {
             const names = inside.map(d => path.relative(options.projectDir, d));
-            pushTrace(`│    ↳ 폴더 안(함께 업로드됨): ${names.join(', ')}`);
+            pushTrace(`│    ↳ 폴더 안의 라이브러리(함께 업로드됨): ${names.join(', ')}`);
         }
         if (outside.length > 0) {
             pushTrace(`│    ⚠ 폴더 밖 — 이 배포에 포함되지 않습니다: ${outside.join(', ')}`);
@@ -606,7 +765,6 @@ async function deployLocked(
             pushTrace(`│    ⚠ 로컬에서 폴더를 찾지 못한 라이브러리: ${resolved.unresolved.join(', ')}`);
         }
     }
-    pushTrace(`╰──────────────────────────────────────────────────────╯`);
 
     // ── 쓰레드 정지 절차 (controller/threadStop.ts 가 정본) ─────────────
     // Stop -all 의 STATUS 0 은 "정지 요청 접수"이지 완전 정지 보장이 아니다(§0.6). 정지 완료 전에
@@ -629,7 +787,7 @@ async function deployLocked(
         },
         log: line => pushTrace(line),
         sleep,
-        isCancelled: () => token?.isCancellationRequested === true,
+        isCancelled,
     };
     // 배포 트레이스는 모든 줄이 `│ ` 로 시작한다.
     const threadStopOpts: ThreadStopOptions = { logPrefix: '│ ' };
@@ -690,20 +848,24 @@ async function deployLocked(
     pushTrace('');
     phase++;
     const gateLabel = options.skipStop ? '쓰레드 상태 확인' : 'STOP';
-    pushTrace(`━━ [${phase}/${totalPhases}] UPLOAD ∥ ${gateLabel} (동시 진행) ━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lock.setStage(options.skipStop ? 'UPLOAD+THREAD_CHECK' : 'UPLOAD+STOP');
+	pushTrace(options.uploadOnly
+		? `━━ [${phase}/${totalPhases}] UPLOAD (Stop/Compile/Start 생략) ━━━━━━━━━━━━━━━━━━━━━━━`
+		: `━━ [${phase}/${totalPhases}] UPLOAD ∥ ${gateLabel} (동시 진행) ━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lock.setStage(options.uploadOnly ? 'UPLOAD' : options.skipStop ? 'UPLOAD+THREAD_CHECK' : 'UPLOAD+STOP');
 
-    if (token?.isCancellationRequested) { return result; }
+    if (isCancelled()) { return cancelResult('UPLOAD 시작 전'); }
 
     // 컴파일 스냅샷(GitHub #21)은 업로드 *직전*의 로컬 상태를 찍어 둔다 — 실제로 제어기에 올라가는 소스에 가장 가깝다.
     // 컴파일 성공 시점에 찍으면 업로드~컴파일 사이(수 초)에 편집한 파일이 "컴파일본과 동일"로 오판되어
     // Attach only BP 신뢰성 판정이 놓친다. 기록 자체는 Compile 성공이 확정된 뒤(아래 Phase 3 끝)에 한다.
     // 실패해도 배포에는 영향 없음(그 경우 성공 시점에 다시 찍어 폴백).
     let preUploadSnapshot: Record<string, FileStamp> | undefined;
-    try {
-        preUploadSnapshot = snapshotProjectFiles(options.projectDir);
-    } catch (e: any) {
-        pushTrace(`│ ⚠ 컴파일 스냅샷 수집 실패(무시, 성공 시점에 재시도): ${e?.message ?? e}`);
+	if (!options.uploadOnly) {
+		try {
+			preUploadSnapshot = snapshotProjectFiles(options.projectDir);
+		} catch (e: any) {
+			pushTrace(`│ ⚠ 컴파일 스냅샷 수집 실패(무시, 성공 시점에 재시도): ${e?.message ?? e}`);
+		}
     }
 
     const changedFiles = (options.changedFiles ?? []).filter(Boolean);
@@ -725,8 +887,15 @@ async function deployLocked(
      * 바이트 갱신은 로그에 찍지 않고 상태바 구독자에게만 간다(출력 패널은 줄을 제자리에서 못 고친다, §1-EE).
      */
     const onUploadProgress = (progress: UploadProgressEvent): void => {
+        if (!result.uploadStats) {
+            result.uploadStats = { uploaded: 0, skipped: 0, totalBytes: progress.totalBytes, ...(useMirror ? { deleted: 0 } : {}) };
+        } else {
+            result.uploadStats.totalBytes = progress.totalBytes;
+        }
         if (progress.type === 'file') {
             lock.heartbeat();
+            if (progress.action === 'uploaded') { result.uploadStats.uploaded++; }
+            else { result.uploadStats.skipped++; }
             if (progress.action === 'uploaded') {
                 pushTrace(`│ ↑ [${progress.doneFiles}/${progress.totalFiles}] ${progress.file}`);
             }
@@ -740,13 +909,17 @@ async function deployLocked(
     async function runUpload(): Promise<UploadOutcome> {
         try {
             if (useMirror) {
-                pushTrace('│ ↑ Mode: mirror sync (변경분만 업로드, 원격 전용 파일 삭제는 정지 확인 뒤, Unload 생략)');
+                const remoteOnlyPolicy = options.uploadOnly
+                    ? '원격 전용 파일 삭제 보류'
+                    : '원격 전용 파일 삭제는 정지 확인 뒤';
+                pushTrace(`│ ↑ Mode: mirror sync (변경분만 업로드, ${remoteOnlyPolicy}, Unload 생략)`);
                 const previousManifest = getSyncManifest(cfg.ip, ftpProjectDir);
                 const stats = await mirrorProject(cfg.ip, options.projectDir, ftpProjectDir, {
                     deferDelete: true,
                     // 크기만 같고 내용이 바뀐 파일을 스킵하지 않도록 직전 업로드 지문(SHA-1)을 함께 본다.
                     manifest: previousManifest,
                     onProgress: onUploadProgress,
+                    isCancelled,
                 });
                 result.uploadStats = {
                     uploaded: stats.uploaded,
@@ -757,7 +930,10 @@ async function deployLocked(
                 // 전체 목록 기준이므로 대체 저장(로컬에서 사라진 파일의 지문도 함께 정리된다).
                 recordSyncManifest(cfg.ip, ftpProjectDir, stats.manifest);
                 const noManifest = Object.keys(previousManifest).length === 0;
-                pushTrace(`│ ✔ Mirror done: ${stats.uploaded} sent, ${stats.skipped} skipped${stats.pendingDeletes.length > 0 ? `, ${stats.pendingDeletes.length} remote-only (정지 확인 뒤 삭제)` : ''}${noManifest ? ' (첫 동기화 — 지문 기록 없음, 전체 업로드)' : ''}`);
+                const pendingDeleteNote = stats.pendingDeletes.length > 0
+                    ? `, ${stats.pendingDeletes.length} remote-only (${options.uploadOnly ? '삭제 보류' : '정지 확인 뒤 삭제'})`
+                    : '';
+                pushTrace(`│ ✔ Mirror done: ${stats.uploaded} sent, ${stats.skipped} skipped${pendingDeleteNote}${noManifest ? ' (첫 동기화 — 지문 기록 없음, 전체 업로드)' : ''}`);
                 fireUploadEnd(stats);
                 return { ok: true, pendingDeletes: stats.pendingDeletes };
             }
@@ -766,6 +942,7 @@ async function deployLocked(
                 onlyFiles: useChangedOnly ? changedFiles : undefined,
                 manifest: getSyncManifest(cfg.ip, ftpProjectDir),
                 onProgress: onUploadProgress,
+                isCancelled,
             });
             // 이번에 다룬 파일만 담겨 있으므로 병합(autoOnSave는 저장 파일만 올린다).
             mergeSyncManifest(cfg.ip, ftpProjectDir, stats.manifest);
@@ -778,8 +955,9 @@ async function deployLocked(
             fireUploadEnd(stats);
             return { ok: true, pendingDeletes: [] };
         } catch (e: any) {
-            const message = e?.message || 'Upload failed';
-            pushTrace(`│ ✘ Upload failed: ${message}`);
+            const cancelled = isUploadCancelledError(e) || isCancelled();
+            const message = cancelled ? (cancellationStatus().reason ?? '업로드 취소') : (e?.message || 'Upload failed');
+            pushTrace(cancelled ? `│ ■ Upload cancelled: ${message}` : `│ ✘ Upload failed: ${message}`);
             _onDidUploadProgress.fire({ kind: 'end', projectName, remoteDir: ftpProjectDir, ok: false, message });
             return { ok: false, message };
         }
@@ -792,6 +970,10 @@ async function deployLocked(
      *   수동 경로는 활성 쓰레드 시 사용자에게 Stop 여부 확인(거부 → THREAD_CHECK). 업로드는 병행 중이라 그대로 완료된다.
      */
     async function runStopGate(): Promise<'proceed' | 'abort'> {
+		if (options.uploadOnly) {
+			pushTrace('│ ⏭ Stop·Show Thread 생략 — FTP 업로드만 수행');
+			return 'proceed';
+		}
         if (!options.skipStop) {
             return (await stopAllAndSettle()) ? 'proceed' : 'abort';
         }
@@ -855,6 +1037,9 @@ async function deployLocked(
     // 특히 업로드가 진행 중인데 돌아가 배포 잠금을 풀면 "업로드 도중 Compile/Start" 창이 열린다.
     const [upload, gate] = await Promise.all([runUpload(), runStopGate()]);
 
+    // 일반 업로드/정지 실패보다 명시적 취소가 우선이다. 병행 작업 둘을 정리한 뒤 잠금을 유지한 채 여기서 끊는다.
+    if (isCancelled()) { return cancelResult('UPLOAD/STOP 완료 대기'); }
+
     const pendingDeletes: RemoteFileRef[] = upload.ok ? upload.pendingDeletes : [];
     const deferNote = pendingDeletes.length > 0 ? ` (원격 전용 파일 ${pendingDeletes.length}개 삭제는 보류)` : '';
 
@@ -874,14 +1059,18 @@ async function deployLocked(
         pushTrace(`│   업로드는 완료됨 — /GPL 소스는 최신, 컴파일본은 이전 상태(컴파일 필요)${deferNote}`);
         return result;
     }
-    pushTrace(`│ ✔ 업로드·정지 확인 모두 완료 → Compile 진행 (mirrored/uploaded copy: ${ftpProjectDir})`);
+    pushTrace(options.uploadOnly
+		? `│ ✔ 업로드 완료 — Compile/Start 미수행 (uploaded copy: ${ftpProjectDir})${deferNote}`
+		: `│ ✔ 업로드·정지 확인 모두 완료 → Compile 진행 (mirrored/uploaded copy: ${ftpProjectDir})`);
 
     // ── 지연된 원격 전용 파일 삭제 (정지 확인 뒤) ──
-    if (pendingDeletes.length > 0) {
+    if (pendingDeletes.length > 0 && !options.uploadOnly) {
+        if (isCancelled()) { return cancelResult('원격 파일 삭제 전'); }
         lock.setStage('UPLOAD');
         pushTrace(`│ 원격 전용 파일 ${pendingDeletes.length}개 삭제 (정지 확인 후)`);
         // ✘는 실패 기호로 오독된다 — 미러 삭제는 정상 동작이므로 −로 표기.
         const deleted = await removeRemoteFiles(cfg.ip, pendingDeletes, file => pushTrace(`│ − del ${file} (원격 전용 — 로컬에 없어 삭제)`));
+        if (isCancelled()) { return cancelResult('원격 파일 삭제 후'); }
         if (result.uploadStats) { result.uploadStats.deleted = deleted; }
         if (deleted < pendingDeletes.length) {
             pushTrace(`│ ⚠ 삭제 실패 ${pendingDeletes.length - deleted}개 (non-fatal — 남은 파일은 Compile 결과로 드러남)`);
@@ -907,6 +1096,13 @@ async function deployLocked(
         }
     }
 
+	if (options.uploadOnly) {
+		if (isCancelled()) { return cancelResult('Upload Only 완료 전'); }
+		result.success = true;
+		pushTrace('│ ✔ Upload Only 완료 — 실행 중인 프로그램과 컴파일본은 변경하지 않았습니다.');
+		return result;
+	}
+
     // ── Phase 3: COMPILE ──────────────────────────
 
     pushTrace('');
@@ -918,7 +1114,7 @@ async function deployLocked(
         : `━━ [${phase}/${totalPhases}] COMPILE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     lock.setStage('COMPILE');
 
-    if (token?.isCancellationRequested) { return result; }
+    if (isCancelled()) { return cancelResult('COMPILE 시작 전'); }
 
     if (options.autoGate) {
         // 게이트 통과 → 실제 컴파일 진행이 확정된 시점에 이전 진단을 비운다
@@ -946,11 +1142,16 @@ async function deployLocked(
     // 로드 상태 구분·HTTP 응답 감지)을 이 파일과 FTP 경로가 따로 갖고 있던 것이 차이의 원인이었다.
     const projectIo: ProjectCommandIo = {
         send: async (command, sendOpts) => {
+            // 단계 검사와 실제 전송 사이에 Stop -all이 들어온 경우까지 닫는다.
+            if (isCancelled()) { throw new Error('DEPLOY_CANCELLED_BEFORE_CONTROLLER_COMMAND'); }
             const detailed = await sendCommandDetailed(command, cfg, sendOpts?.forCompile
                 // 컴파일은 pass 사이에 수 초간 침묵한다. idle 로 조기 완료하면 응답이 잘려 STATUS/에러
                 // 라인을 놓치고 거짓 성공이 난다(GDE 는 종결자까지 받는다) — 반드시 </STATUS> 까지 대기.
                 ? { waitForStatusClose: true, timeoutMs: Math.max(cfg.timeoutMs, 60000) }
-                : undefined);
+                : undefined).catch(err => {
+                    if (err instanceof MemoryGuardError) { result.memoryPrecheck = err.precheck; }
+                    throw err;
+                });
             return { raw: detailed.raw, meta: detailed.meta };
         },
         log: line => pushTrace(`│ ${line}`),
@@ -1023,6 +1224,7 @@ async function deployLocked(
         let unloadBlockedByActiveThread = false;
         for (const target of reloadTargets) {
             const unloaded = await tryUnload(target);
+            if (isCancelled()) { return cancelResult(`Unload ${target} 응답 후`); }
             if (!unloaded) {
                 // -750(*Invalid when thread active*): 쓰레드 실행 중에는 Unload/Load 동기화가
                 // 원천적으로 불가하다. 이 상태로 Load를 강행하면 이전 로드본을 컴파일하거나
@@ -1044,6 +1246,7 @@ async function deployLocked(
             return result;
         }
         const synced = await ensureLoadedFromFtpPath();
+        if (isCancelled()) { return cancelResult(`Load ${loadPath} 응답 후`); }
         if (!synced) {
             pushTrace('│ ✘ Failed to load uploaded project copy before compile');
             result.failedPhase = 'COMPILE';
@@ -1061,6 +1264,13 @@ async function deployLocked(
         let recoveryFailureRecorded = false; // 복구 분기(cr2)가 실패를 기록했는지 (§1-L cr 덮어쓰기 방지)
         // 전송·판정·일시적 STATUS 재시도·로그는 projectCommands 가 한다(§1-DE). 로드 상태 복구만 아래에 남는다.
         let cr = await compileCandidate(candidate);
+        if (isCancelled()) { return cancelResult(`Compile ${candidate} 응답 후`); }
+        if (result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown') {
+            result.failedPhase = 'COMPILE';
+            result.failedCommand = `Compile ${candidate} (precheck)`;
+            result.failedStatusMessage = result.memoryPrecheck.message;
+            return result;
+        }
 
         if (cr.ok) {
             if (isControllerNonBlockingStatus(cr.statusCode)) {
@@ -1098,14 +1308,17 @@ async function deployLocked(
         else if (!directActive && (isProjectAlreadyLoaded(cr.statusCode) || hasCode(errText, -745))) {
             pushTrace(`│ ⚠ Already loaded. Unload → Load → Compile`);
             const unloaded = await tryUnload(candidate);
+            if (isCancelled()) { return cancelResult(`Unload ${candidate} 응답 후`); }
             if (!unloaded) {
                 continue;
             }
             const loaded = await ensureLoadedFromFtpPath();
+            if (isCancelled()) { return cancelResult(`Load ${loadPath} 응답 후`); }
             if (!loaded) {
                 continue;
             }
             const cr2 = await compileCandidate(candidate);
+            if (isCancelled()) { return cancelResult(`Compile ${candidate} 재시도 응답 후`); }
             if (cr2.ok) {
                 result.projectName = candidate;
                 result.compileErrors = [];
@@ -1127,10 +1340,12 @@ async function deployLocked(
             || hasCode(errText, -508) || hasCode(errText, -743))) {
             pushTrace(`│ ⚠ Not loaded. Load → Compile`);
             const loaded = await ensureLoadedFromFtpPath();
+            if (isCancelled()) { return cancelResult(`Load ${loadPath} 응답 후`); }
             if (!loaded) {
                 continue;
             }
             const cr2 = await compileCandidate(candidate);
+            if (isCancelled()) { return cancelResult(`Compile ${candidate} 재시도 응답 후`); }
             if (cr2.ok) {
                 const warning = `Pre-check warning: Compile by name returned ${cr.statusCode}, but Load ${loadPath} + Compile succeeded`;
                 result.precheckWarnings.push(warning);
@@ -1165,17 +1380,19 @@ async function deployLocked(
         }
     }
 
-    // 컴파일 에러 → vscode.Diagnostic 주입
-    if (result.compileErrors.length > 0) {
-        applyCompileDiagnostics(result.compileErrors, options.projectDir, diagnosticCollection);
-        for (const err of result.compileErrors) {
+    /** 컴파일 에러를 Problems와 클릭 가능한 Output 줄에 함께 올린다(Compile/Start -compile 공용). */
+    function reportCompileErrors(errors: CompileError[]): void {
+        if (errors.length === 0) { return; }
+        applyCompileDiagnostics(errors, options.projectDir, diagnosticCollection);
+        for (const err of errors) {
             // 절대경로 `파일:줄:열` 형식으로 출력하면 출력 패널에서 클릭 시 해당 위치로 이동된다.
-            const abs = path.isAbsolute(err.file)
-                ? err.file
-                : path.join(options.projectDir, err.file);
+            const abs = resolveErrorFilePath(err.file, options.projectDir);
             pushTrace(`│   ${abs}:${err.line}:1 (${err.code}) ${err.message}`);
         }
     }
+
+    // 컴파일 에러 → vscode.Diagnostic 주입
+    reportCompileErrors(result.compileErrors);
 
     if (!compiled) {
         pushTrace('│ ✘ All compile attempts failed');
@@ -1223,7 +1440,7 @@ async function deployLocked(
         pushTrace(`━━ [${phase}/${totalPhases}] START ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         lock.setStage('START');
 
-        if (token?.isCancellationRequested) { return result; }
+        if (isCancelled()) { return cancelResult('START 시작 전'); }
 
         // Start 직전 정지 재확인(§0.6) — 정지 게이트를 통과한 뒤에도 업로드·원격 파일 삭제·Compile로
         // 수십 초가 지났고, -752(정지 진행 중) 뒤 제어기 내부 정리가 남아 있을 수 있다. 활성 쓰레드가
@@ -1231,7 +1448,7 @@ async function deployLocked(
         // `Show Thread` 한 번(정지돼 있으면 즉시 통과)이라 §1-DL에서 병행 복귀 후에도 남겨 두었다.
         // 무응답은 확인 불가로 보고 통과시킨다(waitThreadsSettle 규약과 동일).
         const preStartSettle: SettleOutcome = await waitThreadsSettle(threadStopIo, threadStopOpts);
-        if (preStartSettle.cancelled) { return result; }
+        if (preStartSettle.cancelled || isCancelled()) { return cancelResult('Start 직전 정지 확인'); }
         if (!preStartSettle.settled) {
             pushTrace(`│ ✘ Start 직전 확인에서 활성 쓰레드 발견: ${preStartSettle.activeDesc}`);
             pushTrace('│   → 정지되지 않은 상태로 Start를 보내지 않고 중단합니다. 프로그램을 STOP한 뒤 다시 실행하세요.');
@@ -1250,16 +1467,18 @@ async function deployLocked(
                 pushTrace(`│ ⚠ Runtime console pre-start failed: ${err?.message ?? err}`);
             }
         }
+        if (isCancelled()) { return cancelResult('Start 준비 후'); }
 
         // B2(§3-B): 자동 Start 확인 게이트 — Start는 로봇 모션을 유발할 수 있다(§0.6).
         const requireStartConfirm = vscode.workspace.getConfiguration('gpl')
             .get<boolean>('controller.requireStartConfirmation', true);
-        if (requireStartConfirm) {
+        if (shouldPromptForStartConfirmation(requireStartConfirm, options.startConfirmed === true)) {
             const pick = await vscode.window.showWarningMessage(
                 `'${result.projectName}' 프로그램을 시작합니다. 로봇이 움직일 수 있습니다.`,
                 { modal: true },
                 'Start'
             );
+            if (isCancelled()) { return cancelResult('Start 확인 대기 중'); }
             if (pick !== 'Start') {
                 pushTrace('│ ✘ 사용자가 Start를 취소했습니다 (gpl.controller.requireStartConfirmation)');
                 result.failedPhase = 'START';
@@ -1275,7 +1494,24 @@ async function deployLocked(
             projectName: result.projectName,
             eventMode: options.startEventMode,
         });
+        if (isCancelled()) { return cancelResult(`Start ${result.projectName} 응답 후`); }
+        if (start.errors.length > 0) {
+            // Upload & Start는 별도 Compile을 생략한다. `Start -compile` 응답이 컴파일 결과의 유일한
+            // 출처이므로 Compile 경로와 같은 진단·원문·클릭 가능한 위치를 남긴다.
+            result.compileErrors = start.errors;
+            result.compileAttemptLogs.push({
+                command: start.command,
+                statusCode: start.statusCode,
+                raw: start.raw,
+                errors: start.errors,
+                responseMeta: start.responseMeta,
+                note: 'Start -compile 응답에서 파싱한 컴파일 결과',
+            });
+            reportCompileErrors(start.errors);
+        }
         if (start.ok) {
+            // 성공한 Start -compile은 현재 소스의 컴파일 성공 근거다. 이전 gpl-deploy 진단을 지운다.
+            diagnosticCollection.clear();
             if (options.skipCompile) {
                 // Start가 STATUS 0으로 끝났다 = 제어기가 방금 올린 소스를 `-compile` 로 컴파일해 실행 중이다(§0.7).
                 // 그때서야 "이 소스가 제어기에서 돌고 있다"가 사실이 되므로 여기서 스냅샷을 기록한다.
@@ -1297,7 +1533,23 @@ async function deployLocked(
     pushTrace(`━━ [${phase}/${totalPhases}] ERROR CHECK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     lock.setStage('ERROR_CHECK');
 
+    // Start 뒤 메인 쓰레드 감시(§1-EU) — 종전에는 아래 ErrorLog 스냅샷만 봐서, 기동 수 초 뒤 -1509 로 멈춘 프로그램이
+    // success:true 로 기록됐다(2026-10-19 Sample Prep). 읽기 전용 Show Thread 폴링이라 모션에 영향 없음.
+    const watchMs = options.skipStart ? 0 : Math.max(0, options.postStartWatchMs ?? 0);
+    if (watchMs > 0) {
+        pushTrace(`│ Start 뒤 메인 쓰레드 감시 ${watchMs}ms (읽기 전용 Show Thread)`);
+        const watch = await watchMainThreadAfterStart(threadStopIo, result.projectName, { windowMs: watchMs, logPrefix: '│ ' });
+        if (watch.kind === 'cancelled' || isCancelled()) { return cancelResult('Start 뒤 감시 중'); }
+        result.postStartWatch = { outcome: watch.kind, elapsedMs: watch.elapsedMs };
+        if (watch.kind === 'error') {
+            result.runtimeError = watch.error;
+            if (watch.error.hint) { pushTrace(`│   힌트: ${watch.error.hint}`); }
+        }
+    }
+
+    if (isCancelled()) { return cancelResult('ErrorLog 확인 전'); }
     const errorLogResp = await trySendCommand('ErrorLog', cfg);
+    if (isCancelled()) { return cancelResult('ErrorLog 확인 후'); }
     if (errorLogResp) {
         pushTrace(`│ RAW ${rawPreview(errorLogResp) || '(empty)'}`);
         result.errorLog = parseErrorLog(errorLogResp);
@@ -1322,7 +1574,8 @@ async function deployLocked(
     const doneLabel = options.skipStart ? 'Build' : options.skipCompile ? 'Upload & Start' : 'Deploy';
     pushTrace('');
     pushTrace('══════════════════════════════════════════════════════');
-    pushTrace(`${result.success ? '✔' : '✘'} ${doneLabel} ${result.success ? 'complete' : 'failed'}: ${result.projectName}`);
+    pushTrace(`${result.success ? '✔' : '✘'} ${doneLabel} ${result.success ? 'complete' : 'failed'}: ${result.projectName}`
+        + (result.runtimeError ? ' — 단, Start 뒤 메인 쓰레드가 Error 로 멈춤(runtimeError)' : ''));
     pushTrace('══════════════════════════════════════════════════════');
 
     return result;
@@ -1377,10 +1630,11 @@ export function resolveErrorFilePath(file: string, projectDir: string): string {
     if (path.isAbsolute(file)) {
         return file;
     }
-    const direct = path.join(projectDir, file);
-    if (fs.existsSync(direct)) {
-        return direct;
+    const candidates = ancestorRelativePathCandidates(projectDir, file);
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) { return candidate; }
     }
+    const direct = candidates[0] ?? path.join(projectDir, file);
     try {
         const base = path.basename(file);
         const stack = [projectDir];
@@ -1409,11 +1663,16 @@ export function resolveErrorFilePath(file: string, projectDir: string): string {
  * 반환값은 **패널을 Problems 로 전환했는지**다. 호출측은 이 값이 true 면 출력 채널을
  * `show()` 하지 않아야 한다 — 그러지 않으면 나중에 도착한 출력 패널 표시가 Problems 를
  * 덮어써서, 에러 줄로 점프해 놓고도 패널은 출력으로 되돌아간다(§1-DH).
+ *
+ * `preserveFocus` 면 키보드 포커스를 옮기지 않는다 — 에러 줄을 편집기에 보여 주기만 하고 Problems 패널 전환도
+ * 하지 않는다(그 명령이 포커스를 가져가므로). AI(자동화) 배포가 쓴다: 사용자가 채팅에 입력하는 중에 포커스를
+ * 편집기로 가져가 입력이 소스에 섞인 사례가 있었다(2026-10-21 Sample Prep, `Addre축 ssOf`).
  */
 export async function jumpToFirstCompileError(
     errors: CompileError[],
     projectDir: string,
-    logError: (message: string) => void
+    logError: (message: string) => void,
+    options?: { preserveFocus?: boolean },
 ): Promise<boolean> {
     if (errors.length === 0) { return false; }
     const jumpEnabled = vscode.workspace
@@ -1422,13 +1681,16 @@ export async function jumpToFirstCompileError(
     if (!jumpEnabled) { return false; }
 
     const first = errors[0];
+    const preserveFocus = options?.preserveFocus === true;
     // Problems 패널 명령은 키보드 포커스를 패널로 가져가므로 편집기 점프보다
     // 먼저 실행해야 최종 포커스·커서가 에러 줄의 편집기에 남는다.
-    await vscode.commands.executeCommand('workbench.actions.view.problems');
+    if (!preserveFocus) {
+        await vscode.commands.executeCommand('workbench.actions.view.problems');
+    }
     try {
         const filePath = resolveErrorFilePath(first.file, projectDir);
         const doc = await vscode.workspace.openTextDocument(filePath);
-        const editor = await vscode.window.showTextDocument(doc, { preview: false });
+        const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus });
         const lineIdx = Math.min(Math.max(0, first.line - 1), doc.lineCount - 1);
         const lineInfo = doc.lineAt(lineIdx);
         // 컴파일러는 파일:줄만 보고하므로(컬럼 없음) 들여쓰기 뒤 첫 문자에 커서를 둔다.
@@ -1438,8 +1700,8 @@ export async function jumpToFirstCompileError(
     } catch (jumpErr: any) {
         logError(`첫 에러 파일 열기 실패: ${jumpErr?.message ?? jumpErr}`);
     }
-    // 편집기 점프가 실패해도 Problems 패널 전환은 이미 일어났으므로 true 다.
-    return true;
+    // 편집기 점프가 실패해도 Problems 패널 전환은 이미 일어났으므로 true 다(preserveFocus 면 전환하지 않았다).
+    return !preserveFocus;
 }
 
 /**
@@ -1451,6 +1713,7 @@ export async function findProjectDirs(): Promise<string[]> {
     // 여기만 따로 두면 어떤 기능은 보고 어떤 기능은 못 보는 프로젝트가 생긴다.
     const gprFiles = await vscode.workspace.findFiles('**/*.gpr', PROJECT_EXCLUDE_GLOB);
 
-    // 동일 폴더 내 여러 .gpr가 있어도 폴더는 중복 없이 반환
-    return [...new Set(gprFiles.map(uri => path.dirname(uri.fsPath)))];
+    // 동일 폴더 내 여러 .gpr가 있어도 폴더는 중복 없이 반환한다. FTP로 내려받은 프로젝트는 manifest 루트가
+    // 배포 단위이므로, Lib/Lib_Core/Log/Project.gpr 같은 내부 컴파일 단위를 별도 /GPL/Lib_Log로 오해하지 않는다.
+    return collapseControllerProjectDirs(gprFiles.map(uri => path.dirname(uri.fsPath)));
 }

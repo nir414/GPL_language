@@ -10,7 +10,9 @@
  * `extension.ts` 의 activate() 클로저에서 분리(2026-09-07). 로그·알림이 필요한 함수는 host 를 첫 인자로 받는다.
  */
 import * as vscode from 'vscode';
-import { sendCommand, sendCommandDetailed } from '../controller/controllerConnection';
+import { getControllerConfig, sendCommand, sendCommandDetailed } from '../controller/controllerConnection';
+import { DeployCancellationRequest, requestDeployCancellation } from '../controller/deployCancellation';
+import { activeOperations } from '../controller/operationStore';
 import { parseStatus } from '../controller/responseParser';
 import type { ThreadInfo } from '../controller/responseParser';
 import { isPausedState, isSettledState } from '../controller/threadActivity';
@@ -52,6 +54,28 @@ export function stopAllThreads(
 	opts?: ThreadStopOptions & { logTo?: (line: string) => void },
 ): Promise<StopAllOutcome> {
 	return stopAllAndSettle(createThreadStopIo(opts?.logTo ?? host.log), opts);
+}
+
+/**
+ * 작업자가 요청한 전체 정지를 현재 호스트 측 배포에도 전파한다.
+ * 배포 내부 안전 Stop은 이 함수를 부르지 않으므로 `UPLOAD ∥ STOP` 자체는 취소되지 않는다.
+ */
+export function requestActiveDeployCancellation(
+	host: ExtensionHost,
+	reason = '작업자 Stop -all 요청',
+): DeployCancellationRequest[] {
+	const controllerId = getControllerConfig().ip;
+	const holder = host.currentDeployLockHolder();
+	const operationIds = new Set(activeOperations({ controllerId }).map(operation => operation.operationId));
+	if (holder?.operationId) { operationIds.add(holder.operationId); }
+	if (holder && !holder.operationId) {
+		host.log(`[Cancel] 활성 배포 잠금에 operationId가 없어 취소 신호를 연결하지 못했습니다: ${holder.owner} — ${holder.stage}`);
+	}
+	const requests = [...operationIds].map(operationId => requestDeployCancellation({ operationId, controllerId, reason }));
+	if (requests.length > 0) {
+		host.log(`[Cancel] 배포 취소 요청 ${requests.length}건: ${requests.map(request => request.operationId).join(', ')}`);
+	}
+	return requests;
 }
 
 /**

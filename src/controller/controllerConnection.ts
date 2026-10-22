@@ -11,6 +11,8 @@ import type { IdlePingStats } from './idlePing';
 import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS, commandChannelTraits } from './commandPolicy';
 import type { CommandPolicyOptions, CommandChannelTraits } from './commandPolicy';
 import { parseThreadList, SHOW_THREAD_LIST_CMD } from './responseParser';
+import { effectiveKeepAlive } from './connectionSession';
+import { checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryPrecheck } from './memoryGuard';
 
 export { isPolicyError, PolicyError } from './commandPolicy';
 export type { PolicyErrorCode } from './commandPolicy';
@@ -347,6 +349,9 @@ export function sendCommandDetailed(
 				log: message => logTraffic('---', `policy: ${message}`),
 			});
 		}
+		if (needsMemoryGuard(command)) {
+			await checkMemoryBeforeOperation(config, true);
+		}
 		let response: CommandResponse;
 		try {
 			response = await sendCommandDetailedInternal(command, config, options);
@@ -360,6 +365,20 @@ export function sendCommandDetailed(
 			commandPolicy.after(command, response.raw, response.meta.statusTagReceived, Date.now());
 		}
 		return response;
+	});
+}
+
+/** 배포는 업로드 전, Compile/Start는 해당 명령의 직렬 큐 슬롯에서 각각 현재 Free를 확인한다. */
+export async function checkMemoryBeforeOperation(config?: Partial<ControllerConfig>, insideQueue = false): Promise<MemoryPrecheck> {
+	const settings = vscode.workspace.getConfiguration('gpl.controller');
+	const options = {
+		warnMb: settings.get<number>('memoryGuard.warnMb', DEFAULT_MEMORY_GUARD.warnMb),
+		blockMb: settings.get<number>('memoryGuard.blockMb', DEFAULT_MEMORY_GUARD.blockMb),
+	};
+	const send = insideQueue ? sendCommandDetailedInternal : sendCommandDetailed;
+	return checkMemory(async () => (await send('Show Memory', config, { waitForStatusClose: true })).raw, options, check => {
+		logTraffic('---', `memory: ${check.level} — ${check.message}`);
+		if (check.level === 'warning') { void vscode.window.showWarningMessage(check.message); }
 	});
 }
 
@@ -427,7 +446,8 @@ function sendCommandDetailedInternal(
 			minResponseBytes: Math.max(1, options?.minResponseBytes ?? 10),
 			extraIdleMsOnIncomplete: Math.max(0, options?.extraIdleMsOnIncomplete ?? 0),
 			waitForStatusClose: options?.waitForStatusClose === true,
-			keepAlive: keepAlive.enabled,
+			// 연결 해제 상태에서는 설정과 무관하게 단발 연결 — 해제된 창이 1402 세션을 쥐지 않게(connectionSession.ts).
+			keepAlive: effectiveKeepAlive(keepAlive.enabled),
 			keepAliveIdleCloseMs: keepAlive.idleCloseMs,
 		},
 		{ log: logTraffic, body: bodyLog },

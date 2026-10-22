@@ -32,8 +32,11 @@ import { buildTargetCandidates, readGprProjectStart } from '../controller/projec
 import { describeStartProcedureMismatch } from '../controller/startProcedureCheck';
 import { renderErrorReport } from '../controller/errorReport';
 import { asThreadNode } from '../controller/threadArgs';
+import { formatAgentCommandFailure, formatAgentCommandLines } from '../controller/agentCommandLog';
+import { buildSetDioCommand, describeDioForce, DioForceValue } from '../controller/dio';
 import { EXTENSION_VERSION } from '../config';
-import { createThreadStopIo, showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
+import { isStopAllCommand } from '../controller/deployCancellation';
+import { createThreadStopIo, requestActiveDeployCancellation, showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 async function normalizeControllerCommandInput(rawCommand: string): Promise<string | undefined> {
@@ -180,6 +183,9 @@ export function activateControllerCommands(host: ExtensionHost): void {
 				}
 				const timeoutMs = typeof (args as { timeoutMs?: unknown })?.timeoutMs === 'number'
 					? Math.max(1000, Math.floor((args as { timeoutMs: number }).timeoutMs)) : undefined;
+				const cancellations = isStopAllCommand(command)
+					? requestActiveDeployCancellation(host, '원시 명령 Stop -all 요청')
+					: [];
 				try {
 					const detailed = await sendCommandDetailed(command, undefined, {
 						timeoutMs,
@@ -187,7 +193,11 @@ export function activateControllerCommands(host: ExtensionHost): void {
 						waitForStatusClose: (args as { waitForStatusClose?: boolean })?.waitForStatusClose === true || /^compile\b/i.test(command),
 					});
 					const status = parseStatus(detailed.raw);
-					outputChannel.appendLine(`[Command] >>> ${command} (agent)`);
+					// 사람이 보낸 명령처럼 응답까지 Output 에 남긴다(§1-EO) — 본문 상한은 GPL Traffic 과 같은 설정.
+					for (const line of formatAgentCommandLines(
+						{ command, raw: detailed.raw, statusCode: status.code, durationMs: detailed.meta.durationMs },
+						{ maxChars: getTrafficLogOptions().maxResponseChars },
+					)) { outputChannel.appendLine(line); }
 					// 외부(MCP·URI·에이전트)가 원시 명령으로 건 `Set Break`/`Nobreak`를 에디터에도 반영한다
 					// (§1-CO). in-process 호출자(DAP·EditorBreakpointSync)는 이 명령을 거치지 않으므로
 					// 여기서만 미러가 걸린다. 임시 BP는 호출 측이 `mirrorBreakpoints: false`로 제외한다.
@@ -201,12 +211,19 @@ export function activateControllerCommands(host: ExtensionHost): void {
 						status,
 						raw: detailed.raw,
 						statusTagReceived: detailed.meta.statusTagReceived,
+						...(cancellations.length > 0 ? { cancelledOperationIds: cancellations.map(item => item.operationId) } : {}),
 						...(mirror && mirror.reason !== 'not-breakpoint-command'
 							? { editorBreakpoint: mirror.mirrored ? 'updated' : mirror.reason }
 							: {}),
 					};
 				} catch (err: any) {
-					return isPolicyError(err)
+					if (err?.code === 'LOW_MEMORY' || err?.code === 'MEMORY_UNVERIFIED') {
+						outputChannel.appendLine(formatAgentCommandFailure(command, err.code, err.message));
+						return { ok: false, error: err.code, detail: err.message, precheck: err.precheck, sentToController: false, command };
+					}
+					const policy = isPolicyError(err);
+					outputChannel.appendLine(formatAgentCommandFailure(command, policy ? 'policy-hold' : 'command-failed', err?.message ?? String(err)));
+					return policy
 						? { ok: false, error: 'policy-hold', code: err.code, detail: err.message, sentToController: false, command }
 						: { ok: false, error: 'command-failed', detail: err?.message ?? String(err), command };
 				}
@@ -218,6 +235,9 @@ export function activateControllerCommands(host: ExtensionHost): void {
 			if (!cmd) { return undefined; }
 			const normalizedCommand = await normalizeControllerCommandInput(cmd);
 			if (!normalizedCommand) { return undefined; }
+			if (isStopAllCommand(normalizedCommand)) {
+				requestActiveDeployCancellation(host, '명령 팔레트 Stop -all 요청');
+			}
 			try {
 				const resp = await sendCommand(normalizedCommand);
 				outputChannel.appendLine(`[Command] >>> ${normalizedCommand}`);
@@ -237,6 +257,7 @@ export function activateControllerCommands(host: ExtensionHost): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.stopAll', async () => {
 			try {
+				const cancellations = requestActiveDeployCancellation(host, 'GPL 전체 정지 요청');
 				// 전송·STATUS 판정·정지 확인 폴링·자동 재시도는 controller/threadStop.ts 가 한다(§1-DD).
 				// -752(정지 진행 중)는 실패가 아니라는 판정도 그 안에 있다 — 여기서는 결과만 사용자에게 옮긴다.
 				const outcome = await stopAllThreads(host, { logTo: line => host.log(`[Stop] ${line}`) });
@@ -249,7 +270,9 @@ export function activateControllerCommands(host: ExtensionHost): void {
 				// 확인 불가(Show Thread 무응답)는 "정지됨"으로 단정하지 않는다 — SoftEStop 안내 경로로 보낸다.
 				const stopped = outcome.ok && outcome.settle?.unconfirmed !== true;
 				if (stopped) {
-					vscode.window.showWarningMessage('전체 정지 완료 (Stop -all)');
+					vscode.window.showWarningMessage(cancellations.length > 0
+						? '전체 정지 완료 (Stop -all) — 진행 중이던 업로드/배포도 취소 요청됨'
+						: '전체 정지 완료 (Stop -all)');
 				} else {
 					const recovered = await trySoftEStopRecovery(host);
 					if (!recovered) {
@@ -504,8 +527,11 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		return { lines, location, threadName: threadName || undefined };
 	}
 
-	/** 에러 위치로 이동 + 붉은 강조. 파일을 못 찾으면 조용히 건너뛴다(보고서는 그대로 나간다). */
-	async function revealErrorLocation(location: GatheredErrorReport['location']): Promise<boolean> {
+	/**
+	 * 에러 위치로 이동 + 붉은 강조. 파일을 못 찾으면 조용히 건너뛴다(보고서는 그대로 나간다).
+	 * `threadName` 은 강조의 주인 — 그 쓰레드가 `Error` 를 벗어나면(재시작·Stop) 강조가 자동으로 지워진다(§1-EP).
+	 */
+	async function revealErrorLocation(location: GatheredErrorReport['location'], threadName?: string): Promise<boolean> {
 		if (!location) { return false; }
 		const filePath = host.project.resolveGplFilePath(location.file);
 		if (!filePath) {
@@ -519,7 +545,7 @@ export function activateControllerCommands(host: ExtensionHost): void {
 			const range = doc.lineAt(lineIndex).range;
 			editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
 			editor.selection = new vscode.Selection(range.start, range.start);
-			host.decorations.showError(editor, range);
+			host.decorations.showError(editor, range, { threadName });
 			return true;
 		} catch (err: any) {
 			host.log(`[Error Detail] 위치 이동 실패: ${err?.message ?? err}`);
@@ -547,7 +573,7 @@ export function activateControllerCommands(host: ExtensionHost): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.showErrorDetail', async (arg: unknown) => {
 			const report = await gatherErrorReport(toErrorDetailPayload(arg));
-			await revealErrorLocation(report.location);
+			await revealErrorLocation(report.location, report.threadName);
 			outputChannel.show(true);
 			// host.log 가 아니라 host.report 로 — 보고서는 링버퍼에 남기지 않는다(§1-EA).
 			host.report([
@@ -607,15 +633,16 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		})
 	);
 
-	// Set DIO — 출력 강제 (안전 확인 모달)
+	// Set DIO — 신호 강제 (안전 확인 모달). 기본 UI는 대시보드의 I/O 탭이고 이 명령은 팔레트/외부 호출 호환용.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.setDio', async (presetSignal?: number) => {
 			const signalStr = typeof presetSignal === 'number'
 				? String(presetSignal)
 				: await vscode.window.showInputBox({ prompt: 'Set DIO — 신호 번호', placeHolder: '예: 13' });
 			if (!signalStr) { return; }
-			const signal = parseInt(String(signalStr), 10);
-			if (Number.isNaN(signal)) { vscode.window.showWarningMessage('유효한 신호 번호가 아닙니다.'); return; }
+			const signalText = String(signalStr).trim();
+			if (!/^\d+$/.test(signalText)) { vscode.window.showWarningMessage('유효한 신호 번호가 아닙니다.'); return; }
+			const signal = Number(signalText);
 			const pick = await vscode.window.showQuickPick(
 				[
 					{ label: '$(circle-filled) 강제 ON (force on)', value: '1' },
@@ -625,14 +652,17 @@ export function activateControllerCommands(host: ExtensionHost): void {
 				{ placeHolder: `신호 ${signal} — Set DIO 동작 선택 (장비 출력에 영향)` }
 			);
 			if (!pick) { return; }
+			const value = Number(pick.value) as DioForceValue;
+			const action = describeDioForce(value);
 			const confirm = await vscode.window.showWarningMessage(
-				`Set DIO ${signal} ${pick.value} 실행 — 디지털 신호가 강제되어 장비가 동작할 수 있습니다. 계속할까요?`,
+				`DIO ${signal} — ${action.label}\n${action.detail}\n\n장비 동작에 영향을 줄 수 있습니다. 실행할까요?`,
 				{ modal: true },
 				'실행',
 			);
 			if (confirm !== '실행') { return; }
 			try {
-				const cmd = `Set DIO ${signal} ${pick.value}`;
+				const cmd = buildSetDioCommand(signal, value);
+				if (!cmd) { throw new Error('유효하지 않은 DIO 신호 또는 동작입니다.'); }
 				const resp = await sendCommand(cmd);
 				outputChannel.appendLine(`[DIO] >>> ${cmd}`);
 				outputChannel.appendLine(resp || '(empty)');

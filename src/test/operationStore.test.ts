@@ -47,6 +47,22 @@ test('operationStore: 시작하면 RUNNING 기록이 파일로 남고 단계 전
     assert.strictEqual(read().projectName, 'MergeCode');
 });
 
+test('operationStore: 대기 작업은 QUEUED로 보이고 실행권을 얻으면 RUNNING으로 전환된다', () => {
+	const dir = tmpDir();
+	const op = begin(dir, { queued: true, phase: 'QUEUE_WAIT', idempotencyKey: 'upload:project-a' });
+	const queued = readOperation(op.operationId, { dir, now: 1_000 })!;
+	assert.strictEqual(queued.state, 'QUEUED');
+	assert.strictEqual(queued.phase, 'QUEUE_WAIT');
+	assert.strictEqual(queued.startedAt, undefined);
+	assert.strictEqual(findActiveByIdempotencyKey('upload:project-a', { dir, now: 1_000 })?.operationId, op.operationId);
+
+	op.start('PREPARE');
+	const running = readOperation(op.operationId, { dir, now: 1_000 })!;
+	assert.strictEqual(running.state, 'RUNNING');
+	assert.strictEqual(running.phase, 'PREPARE');
+	assert.strictEqual(running.startedAt, 1_000);
+});
+
 test('operationStore: complete/fail 은 결과를 남기고 멱등이다', () => {
     const dir = tmpDir();
     const ok = begin(dir);

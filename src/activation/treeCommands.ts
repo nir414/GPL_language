@@ -248,8 +248,8 @@ export function activateTreeCommands(host: ExtensionHost): void {
 				editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
 				editor.selection = new vscode.Selection(line, 0, line, 0);
 
-				// Apply stopped-line decoration
-				host.decorations.showStopped(editor, doc.lineAt(line).range);
+				// Apply stopped-line decoration — 주인 쓰레드를 붙여 Continue/Step/재시작으로 떠나면 자동으로 지워진다(§1-EP).
+				host.decorations.showStopped(editor, doc.lineAt(line).range, { threadName });
 
 				outputChannel.appendLine(
 					`[Thread] ${threadName} 정지 위치: ${topFrame.file}:${topFrame.fileLine} (${topFrame.process})`,

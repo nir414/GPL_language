@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { isRuntimeConsoleAutoStartOnDebug } from '../config';
 import { setSessionControllerOverride } from '../controller/controllerConnection';
+import { requestActiveDeployCancellation } from './controllerOps';
 import type { ExtensionHost } from './host';
 
 function formatDebugErrorSummary(errorMessage: unknown, errorCode: unknown, fallback: string): string {
@@ -251,6 +252,7 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 				return;
 			}
 			host.log('[Debug] 정지 버튼 — 디버그 세션 종료 + 제어기 프로그램 정지(Stop -all)');
+			requestActiveDeployCancellation(host, '디버그 정지 버튼 요청');
 			await vscode.commands.executeCommand('workbench.action.debug.stop');
 		}),
 	);
@@ -268,7 +270,7 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 					host.sessionTargetDir = dirFromDebugConfig;
 					host.log(`[ProjectContext] session target (debug config): ${dirFromDebugConfig}`);
 				}
-				host.updateUiContexts(host.controllerTree?.isConnected ?? host.statusBar?.isConnected ?? false);
+				host.updateUiContexts(host.isControllerConnected);
 				host.ensureAgentBridge()?.setState({ debugSessionActive: true });
 				const projectFromDebugConfig = (session.configuration?.projectName || '').toString().trim();
 				if (projectFromDebugConfig) {
@@ -290,7 +292,7 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 			if (session.type === 'brooks-gpl') {
 				host.isDebugSessionActive = false;
 				if (host.gplDebugSession?.id === session.id) { host.gplDebugSession = undefined; }
-				host.updateUiContexts(host.controllerTree?.isConnected ?? host.statusBar?.isConnected ?? false);
+				host.updateUiContexts(host.isControllerConnected);
 				host.ensureAgentBridge()?.setState({ debugSessionActive: false });
 				host.controllerTree?.exitDebugMode();
 				host.lastSourceStale = undefined;
@@ -406,10 +408,13 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 			if (targetPath && line > 0) {
 				try {
 					const doc = await vscode.workspace.openTextDocument(targetPath);
-					const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+					// 런타임 에러는 비동기로 도착한다 — 사용자가 다른 곳(채팅 등)에 입력 중일 수 있으므로 보여 주기만 하고
+					// 키보드 포커스는 옮기지 않는다(2026-10-21, 채팅 입력이 소스에 섞인 사례).
+					const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
 					const lineIndex = Math.max(0, line - 1);
 					const targetLine = doc.lineAt(Math.min(lineIndex, Math.max(0, doc.lineCount - 1))).range;
-					host.decorations.showError(editor, targetLine);
+					// 주인 쓰레드를 붙여 두면 재시작·Stop 으로 Error 를 벗어날 때 강조가 자동으로 지워진다(§1-EP).
+					host.decorations.showError(editor, targetLine, { threadName: body.threadName });
 					editor.selection = new vscode.Selection(targetLine.start, targetLine.start);
 					editor.revealRange(targetLine, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 

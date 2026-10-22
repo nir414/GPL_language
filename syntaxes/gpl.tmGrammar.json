@@ -1,7 +1,7 @@
 {
 	"name": "GPL",
 	"scopeName": "source.gpl",
-	"comment": "GPL 전용 규칙을 앞에 두고 나머지는 VS Code 내장 VB(ASP) 문법에 위임한다. 내장 문법은 VBScript 수준이라 Delegate·AddressOf·Shared·Overrides·Try/Catch·Me/MyBase·Inherits 등을 모른다(ai-handoff §1-DT). 규칙을 더할 때 지킬 것 세 가지 — (1) **선언 규칙은 `^\\s*` 로 줄 머리에 고정한다.** TextMate 는 줄 안 아무 곳에서나 매치를 찾으므로 `\\s*` 만 두면 `Public SyncSub As X` 의 `SyncSub` 안 `Sub` 같은 낱말 조각에 걸려 식별자 중간부터 색이 바뀐다(§1-DZ). (2) 줄 머리가 아닌 규칙은 `\\b` 로 낱말 전체를 요구한다. (3) 타입 **정의** 이름만 `entity.name.type.*`, 타입을 **참조**하는 자리(`As X`·`New X`·`Inherits X`)는 모두 `storage.type.gpl` 로 통일한다. 선언 패턴의 수식어 집합은 파서 GPL_PROC_MODIFIERS(cursorExpression.ts)와 같아야 하며 src/test/grammar.test.ts 가 강제한다.",
+	"comment": "GPL 전용 규칙을 앞에 두고 나머지는 VS Code 내장 VB(ASP) 문법에 위임한다. 내장 문법은 VBScript 수준이라 Delegate·AddressOf·Shared·Overrides·Try/Catch·Me/MyBase·Inherits 등을 모른다(ai-handoff §1-DT). 규칙을 더할 때 지킬 것 세 가지 — (1) **선언 규칙은 `^\\s*` 로 줄 머리에 고정한다.** TextMate 는 줄 안 아무 곳에서나 매치를 찾으므로 `\\s*` 만 두면 `Public SyncSub As X` 의 `SyncSub` 안 `Sub` 같은 낱말 조각에 걸려 식별자 중간부터 색이 바뀐다(§1-DZ). (2) 줄 머리가 아닌 규칙은 `\\b` 로 낱말 전체를 요구한다. (3) 타입 이름은 정의·참조 모두 `entity.name.type` 계열이다 — **정의**(Class·Module·Delegate 선언)는 `entity.name.type.class.gpl` 처럼 종류를 붙이고, **참조**하는 자리(`As X`·`New X`·`Inherits X`)는 모두 맨 `entity.name.type.gpl` 로 통일한다. `storage.type.*` 은 `Class`·`Sub`·`Const` 같은 **키워드**에만 쓴다 — 타입 이름에 쓰면 Dracula(`storage` = 분홍)·Dark+(`storage.type` = 파랑) 등 대부분의 테마에서 `New`·`As` 와 같은 키워드 색이 들어 `New RobotArm` 이 통째로 한 색이 된다(§1-EN, 사용자 보고). 선언 패턴의 수식어 집합은 파서 GPL_PROC_MODIFIERS(cursorExpression.ts)와 같아야 하며 src/test/grammar.test.ts 가 강제한다.",
 	"patterns": [
 		{
 			"comment": "Class declaration — highlight modifiers, keyword, and class name",
@@ -82,8 +82,8 @@
 			}
 		},
 		{
-			"comment": "Declaration modifiers and parameter modifiers missing from the built-in grammar",
-			"match": "(?i)\\b(Shared|ReadOnly|WriteOnly|Friend|Protected|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial|Static|Optional|ParamArray|ByVal|ByRef|Preserve|Delegate)\\b",
+			"comment": "Declaration modifiers and parameter modifiers missing from the built-in grammar. 앞의 `\\s*` 는 필수다 — 내장 VB 문법의 variable.other.asp 가 쉼표 뒤 ` ByVal` 을 공백부터 매치하므로, 이 규칙도 같은 자리에서 시작해야 동점에서 이긴다. 캡처는 키워드만 잡아 공백에는 수식어 색을 주지 않는다.",
+			"match": "(?i)\\s*\\b(Shared|ReadOnly|WriteOnly|Friend|Protected|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial|Static|Optional|ParamArray|ByVal|ByRef|Preserve|Delegate)\\b",
 			"captures": {
 				"1": { "name": "storage.modifier.gpl" }
 			}
@@ -93,14 +93,23 @@
 			"match": "(?i)\\b(Inherits|Implements)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
 			"captures": {
 				"1": { "name": "keyword.other.inherits.gpl" },
-				"2": { "name": "storage.type.gpl" }
+				"2": { "name": "entity.name.type.gpl" }
 			}
 		},
 		{
-			"comment": "Operators missing from the built-in grammar — AddressOf (delegate target), Is/IsNot (reference comparison)",
+			"comment": "Delegate target — `AddressOf [qualifier.]Proc` 의 마지막 이름은 프로시저 참조라 함수 색을 준다(`AddressOf PRB.OnCfg` 에서 대상이 무색이었다). 앞의 한정자(모듈·객체)는 무색으로 두되 Me/MyBase 만 self 색. 이름이 뒤따르지 않으면 아래 연산자 규칙이 AddressOf 만 잡는다.",
+			"match": "(?i)\\b(AddressOf)\\s+((?:[A-Za-z_][A-Za-z0-9_]*\\.)*)([A-Za-z_][A-Za-z0-9_]*)\\b",
+			"captures": {
+				"1": { "name": "keyword.operator.expression.addressof.gpl" },
+				"2": { "patterns": [{ "match": "(?i)\\b(?:Me|MyBase)\\b", "name": "variable.language.gpl" }] },
+				"3": { "name": "entity.name.function.gpl" }
+			}
+		},
+		{
+			"comment": "Operators missing from the built-in grammar — AddressOf (delegate target), Is/IsNot (reference comparison). 낱말 연산자는 `keyword.operator.expression` 으로 둔다 — 기본 Dark+/Light+ 는 맨 `keyword.operator` 를 본문색으로 칠하고 `.expression` 이어야 키워드 색을 준다(Dracula 등은 둘 다 키워드 색).",
 			"match": "(?i)\\b(AddressOf|IsNot|Is)\\b",
 			"captures": {
-				"1": { "name": "keyword.operator.gpl" }
+				"1": { "name": "keyword.operator.expression.gpl" }
 			}
 		},
 		{
@@ -116,16 +125,25 @@
 			"captures": {
 				"1": { "name": "keyword.operator.type.gpl" },
 				"2": { "name": "keyword.operator.new.gpl" },
-				"3": { "name": "storage.type.gpl" }
+				"3": { "name": "entity.name.type.gpl" }
 			}
 		},
 		{
-			"comment": "Constructor type usage — `New <Type>` (`As New` 는 위 규칙이 먼저 잡는다)",
-			"match": "(?i)\\b(New)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+			"comment": "Constructor type usage — `New <Type>` (`As New` 는 위 규칙이 먼저 잡는다). 앞의 `\\s*` 는 필수다 — 내장 문법의 storage.type.asp 규칙이 `\\s*\\b(…|New|…)` 로 New 앞 공백부터 매치를 시작하므로, 이 규칙도 같은 자리에서 시작해야 동점이 되고 앞선 규칙인 이쪽이 이긴다(`x = New Cb(…)` 에서 New 가 storage.type.asp, 타입이 support.function.asp 로 칠해지던 원인).",
+			"match": "(?i)\\s*\\b(New)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
 			"captures": {
 				"1": { "name": "keyword.operator.new.gpl" },
-				"2": { "name": "storage.type.gpl" }
+				"2": { "name": "entity.name.type.gpl" }
 			}
+		},
+		{
+			"comment": "Round brackets — 괄호 안에도 GPL 규칙을 적용한다. 내장 VB 문법의 #round-brackets 는 안쪽 패턴이 `source.asp.vb.net` 자신뿐이라, 괄호를 그쪽이 먼저 열면 안의 AddressOf·New·Is·Me·ByVal 등에 위 규칙이 전혀 닿지 않았다(`New X(AddressOf PRB.OnCfg)` 의 AddressOf 가 variable.other.asp 로 칠해짐). 스코프 이름은 내장 문법과 같은 모양을 유지해 테마 호환을 지킨다. 반드시 include 보다 앞에 둔다.",
+			"begin": "\\(",
+			"beginCaptures": { "0": { "name": "punctuation.section.round-brackets.begin.gpl" } },
+			"end": "\\)",
+			"endCaptures": { "0": { "name": "punctuation.section.round-brackets.end.gpl" } },
+			"name": "meta.round-brackets.gpl",
+			"patterns": [{ "include": "$self" }]
 		},
 		{ "include": "source.asp.vb.net" }
 	]

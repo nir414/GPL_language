@@ -8,7 +8,11 @@ import { GPL_PROC_MODIFIERS } from '../language/cursorExpression';
 // 발단: `Public Delegate Sub LogSinkSub(ByVal line As String)` 의 `Delegate` 가 색이 없었다 — 확장 문법에도, 위임하는
 // VS Code 내장 VB(ASP) 문법에도 없는 낱말이었다. 문법 파일은 파서 정본을 import 할 수 없으므로 여기서 대조한다.
 
-interface GrammarRule { comment?: string; match?: string; captures?: Record<string, { name: string }>; include?: string }
+interface Capture { name?: string; patterns?: GrammarRule[] }
+interface GrammarRule {
+    comment?: string; match?: string; captures?: Record<string, Capture>; include?: string;
+    begin?: string; end?: string; name?: string; patterns?: GrammarRule[];
+}
 interface Grammar { scopeName: string; patterns: GrammarRule[] }
 
 function loadGrammar(): Grammar {
@@ -34,6 +38,7 @@ interface Token { rule: string; text: string; scope: string; start: number; end:
  * TextMate 의 토큰화를 문법의 `match` 규칙만으로 흉내 낸다 — **줄 안에서 가장 앞에서 시작하는 매치가 이기고**,
  * 같은 자리면 patterns 의 앞선 규칙이 이긴다. 내장 VB(ASP) 문법은 여기서 흉내 낼 수 없으므로 제외하지만,
  * 그쪽은 우리 규칙보다 뒤에 있어 "우리 규칙이 잘못 선점하는지"를 보는 데는 이 근사로 충분하다.
+ * 단 begin/end 영역(괄호)은 흉내 내지 않는다 — 괄호 안에 규칙이 닿는지는 'Round brackets' 테스트가 따로 지킨다.
  */
 function tokenize(g: Grammar, line: string): Token[] {
     const rules = g.patterns.filter(p => p.match).map(p => ({ comment: p.comment ?? '', re: toScanner(p.match!), captures: p.captures ?? {} }));
@@ -52,7 +57,7 @@ function tokenize(g: Grammar, line: string): Token[] {
         for (let i = 1; i < best.m.length; i++) {
             const scope = best.rule.captures[String(i)];
             const span = indices[i];
-            if (!scope || !span || best.m[i] === undefined) { continue; }
+            if (!scope?.name || !span || best.m[i] === undefined) { continue; }
             out.push({ rule: best.rule.comment, text: best.m[i], scope: scope.name, start: span[0], end: span[1] });
         }
         pos = best.m.index + best.m[0].length;
@@ -78,6 +83,7 @@ test('grammar: 모든 match 규칙이 정규식으로 컴파일되고 include �
     assert.strictEqual(g.scopeName, 'source.gpl');
     for (const p of g.patterns) {
         if (p.include) { assert.strictEqual(p.include, 'source.asp.vb.net'); continue; }
+        if (p.begin) { continue; } // 괄호 영역 — 'Round brackets' 테스트가 따로 본다
         assert.ok(p.match, `match 없는 규칙: ${p.comment}`);
         assert.doesNotThrow(() => toRegExp(p.match!), `컴파일 실패: ${p.comment}`);
         assert.ok(p.captures && Object.keys(p.captures).length > 0, `captures 없는 규칙: ${p.comment}`);
@@ -148,6 +154,25 @@ test('grammar: 수식어가 여럿인 선언과 내장 문법이 모르는 키�
     assert.strictEqual(inh?.[2], 'LogSinkBase');
 });
 
+test('grammar: 쉼표 뒤 ByVal/ByRef도 앞 공백부터 매치해 내장 variable.other.asp보다 늦지 않는다', () => {
+    // TextMate 는 patterns 순서보다 "더 앞에서 시작하는 매치"를 먼저 고른다. 내장 VB 문법은
+    // `, ByVal` 의 공백부터 variable.other.asp 로 잡으므로 GPL 규칙이 ByVal 자체에서 시작하면 진다.
+    const g = loadGrammar();
+    const re = toScanner(ruleOf(g, 'Declaration modifiers').match!);
+    const line = ', ByVal baud As Integer, ByRef id As Integer';
+
+    re.lastIndex = 1;
+    const byVal = re.exec(line);
+    assert.strictEqual(byVal?.index, 1);
+    assert.strictEqual(byVal?.[0], ' ByVal');
+    assert.strictEqual(byVal?.[1], 'ByVal', '공백은 매치에만 포함하고 수식어 캡처에서는 제외한다');
+
+    re.lastIndex = byVal!.index + byVal![0].length;
+    const byRef = re.exec(line);
+    assert.strictEqual(byRef?.[0], ' ByRef');
+    assert.strictEqual(byRef?.[1], 'ByRef');
+});
+
 // ─── 낱말 조각 오염 방지 (§1-DZ) ────────────────────────────────────────────────
 // 발단: `Public SyncSub As TcpSyncCmdSub` 에서 식별자 `SyncSub` 안의 `Sub` 만 색이 달라졌다.
 // 선언 규칙이 `(?i)\s*…(Sub)\s+(이름)` 이라 TextMate 가 줄 중간의 `Sub As` 를 "Sub 선언"으로 읽고
@@ -215,7 +240,7 @@ test('grammar: 필드 선언 `Public SyncSub As TcpSyncCmdSub` 는 As 규칙만 
     const line = '\t\tPublic SyncSub As TcpSyncCmdSub';
     assert.deepStrictEqual(
         tokenize(g, line).map(t => `${t.text}=${t.scope}`),
-        ['As=keyword.operator.type.gpl', 'TcpSyncCmdSub=storage.type.gpl'],
+        ['As=keyword.operator.type.gpl', 'TcpSyncCmdSub=entity.name.type.gpl'],
         'Sub 선언 규칙이 SyncSub 안의 Sub 를 선점하면 안 된다'
     );
     for (const prefix of ['Sub declaration', 'Function declaration', 'Property declaration',
@@ -228,34 +253,81 @@ test('grammar: `As New <Type>` — New 는 키워드, 뒤 이름이 타입이다
     const g = loadGrammar();
     assert.deepStrictEqual(
         tokenize(g, '\t\tDim ex As New Exception').map(t => `${t.text}=${t.scope}`),
-        ['As=keyword.operator.type.gpl', 'New=keyword.operator.new.gpl', 'Exception=storage.type.gpl']
+        ['As=keyword.operator.type.gpl', 'New=keyword.operator.new.gpl', 'Exception=entity.name.type.gpl']
     );
     // 생성자 인자가 붙어도, 한정 이름이어도 같다.
     assert.deepStrictEqual(
         tokenize(g, '\t\tDim sink As New Net.LogSink(AddressOf WriteTagged)')
-            .filter(t => t.scope !== 'keyword.operator.gpl')
+            .filter(t => !t.rule.startsWith('Delegate target'))
             .map(t => `${t.text}=${t.scope}`),
-        ['As=keyword.operator.type.gpl', 'New=keyword.operator.new.gpl', 'Net.LogSink=storage.type.gpl']
+        ['As=keyword.operator.type.gpl', 'New=keyword.operator.new.gpl', 'Net.LogSink=entity.name.type.gpl']
     );
     // As 없이 쓰는 New 도 같은 색이어야 한다.
     assert.deepStrictEqual(
         tokenize(g, '\t\tex = New Exception').map(t => `${t.text}=${t.scope}`),
-        ['New=keyword.operator.new.gpl', 'Exception=storage.type.gpl']
+        ['New=keyword.operator.new.gpl', 'Exception=entity.name.type.gpl']
     );
 });
 
-test('grammar: 타입을 참조하는 자리(As/New/Inherits)는 모두 storage.type.gpl 로 통일돼 있다', () => {
+test('grammar: 타입을 참조하는 자리(As/New/Inherits)는 모두 entity.name.type.gpl 로 통일돼 있다', () => {
     const g = loadGrammar();
-    // 정의 이름(Class/Module/Delegate)만 entity.name.* 을 쓴다.
+    // 참조는 맨 entity.name.type.gpl, 정의(Class/Module/Delegate)는 종류를 붙인 entity.name.type.<kind>.gpl.
+    // storage.type.* 은 키워드용 스코프라 타입 이름에 쓰면 Dracula·Dark+ 에서 New/As 와 같은 색이 된다(§1-EN).
     for (const prefix of ['Type annotation', 'Constructor type usage', 'Inheritance keywords']) {
         const caps = Object.values(ruleOf(g, prefix).captures ?? {}).map(c => c.name);
         assert.ok(
-            caps.includes('storage.type.gpl'),
-            `${prefix}: 타입 참조는 storage.type.gpl 이어야 한다 (지금: ${caps.join(', ')})`
+            caps.includes('entity.name.type.gpl'),
+            `${prefix}: 타입 참조는 entity.name.type.gpl 이어야 한다 (지금: ${caps.join(', ')})`
         );
         assert.ok(
-            !caps.some(n => n.startsWith('entity.name.type')),
-            `${prefix}: 타입 참조에 정의용 스코프(entity.name.type.*)를 쓰면 안 된다`
+            !caps.some(n => n?.startsWith('storage.type')),
+            `${prefix}: 타입 이름에 키워드용 스코프(storage.type.*)를 쓰면 안 된다 — 테마가 키워드 색을 준다`
         );
     }
+    // 정의 규칙은 종류가 붙은 entity.name.type.*.gpl 이어야 참조(이탤릭 등)와 구별된다.
+    for (const [prefix, want] of [['Class declaration', 'entity.name.type.class.gpl'], ['Delegate declaration', 'entity.name.type.delegate.gpl']] as const) {
+        const caps = Object.values(ruleOf(g, prefix).captures ?? {}).map(c => c.name);
+        assert.ok(caps.includes(want), `${prefix}: 정의 이름은 ${want} 이어야 한다 (지금: ${caps.join(', ')})`);
+    }
+});
+
+// ─── 괄호 안·AddressOf 대상 (2026-10-02) ─────────────────────────────────────────
+// 발단: `p.AddSync("RSCFG", New TcpSyncCmdSub(AddressOf PRB.OnCfg))` 에서 AddressOf·대상이 무색이었다.
+// 실제 vscode-textmate 로 토큰화해 보니 원인은 둘이었다 — (1) 내장 VB 문법의 #round-brackets 가 괄호를 먼저 열고
+// 안쪽 패턴으로 자기 자신만 include 해서, 괄호 안에서는 GPL 규칙이 하나도 적용되지 않았다(AddressOf=variable.other.asp).
+// (2) 대상 프로시저 이름에는 원래 규칙이 없었다. 위 tokenize 근사는 begin/end 를 흉내 내지 않아 (1)을 못 잡았다.
+
+test('grammar: Round brackets — GPL 이 괄호 영역을 직접 열고 안쪽에 $self 를 적용한다(내장 VB include 보다 앞)', () => {
+    const g = loadGrammar();
+    const i = g.patterns.findIndex(p => (p.comment ?? '').startsWith('Round brackets'));
+    assert.ok(i >= 0, 'Round brackets 규칙이 있어야 한다');
+    const r = g.patterns[i];
+    assert.strictEqual(r.begin, '\\(');
+    assert.strictEqual(r.end, '\\)');
+    assert.deepStrictEqual(r.patterns, [{ include: '$self' }], '괄호 안에도 이 문법 전체가 적용돼야 한다');
+    const inc = g.patterns.findIndex(p => p.include === 'source.asp.vb.net');
+    assert.ok(i < inc, '내장 VB 문법 include 보다 앞에 있어야 괄호를 이쪽이 연다');
+});
+
+test('grammar: `AddressOf [한정자.]Proc` — 대상 프로시저 이름에 함수 색을 준다', () => {
+    const g = loadGrammar();
+    const pick = (line: string) => tokenize(g, line).map(t => `${t.text}=${t.scope}`);
+    assert.deepStrictEqual(pick('New TcpSyncCmdSub(AddressOf PRB.OnCfg)').slice(-2),
+        ['AddressOf=keyword.operator.expression.addressof.gpl', 'OnCfg=entity.name.function.gpl']);
+    assert.deepStrictEqual(pick('x = New Cb(AddressOf WriteTagged)').slice(-2),
+        ['AddressOf=keyword.operator.expression.addressof.gpl', 'WriteTagged=entity.name.function.gpl']);
+    // 한정자의 Me/MyBase 는 캡처 안쪽 패턴이 self 색을 준다.
+    const target = ruleOf(g, 'Delegate target');
+    const inner = target.captures!['2'].patterns!.map(p => toRegExp(p.match!));
+    assert.ok(inner.some(re => re.test('Me.')) && inner.some(re => re.test('MyBase.')));
+    assert.ok(!toRegExp(target.match!).test('AddressOfX Foo'), '식별자 일부는 AddressOf 가 아니다');
+});
+
+test('grammar: 낱말 연산자(AddressOf/Is/IsNot)와 New 는 keyword.operator.expression·.new 를 쓴다', () => {
+    // 기본 Dark+/Light+ 는 맨 keyword.operator 를 본문색으로 칠한다 — .expression/.new 여야 키워드 색이 든다.
+    const g = loadGrammar();
+    assert.strictEqual(ruleOf(g, 'Operators missing').captures!['1'].name, 'keyword.operator.expression.gpl');
+    assert.ok(ruleOf(g, 'Delegate target').captures!['1'].name!.startsWith('keyword.operator.expression.'));
+    // 내장 문법의 storage.type.asp 가 `\s*\b(New)` 로 New 앞 공백부터 매치하므로 이쪽도 공백부터 시작해야 동점에서 이긴다.
+    assert.ok(ruleOf(g, 'Constructor type usage').match!.startsWith('(?i)\\s*\\b(New)'));
 });

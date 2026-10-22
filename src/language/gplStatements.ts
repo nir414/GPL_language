@@ -1,3 +1,4 @@
+import { TRY_CATCH_COMPATIBILITY_NOTE } from './tryCatch';
 import { GplBlockContext, GplBlockKind, GplScope } from './blockContext';
 
 /**
@@ -191,6 +192,7 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
         detail: 'Try … Catch exception_object … End Try',
         documentation: [
             '블록 실행 중의 예외를 잡아 스레드 종료 없이 처리한다.',
+            TRY_CATCH_COMPATIBILITY_NOTE,
             '',
             '`Catch`의 예외 객체는 **미리 인스턴스화되어 있어야** 한다:',
             '',
@@ -211,6 +213,7 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
         documentation: [
             '예외 처리와 정리(cleanup) 블록을 함께 만든다. `Finally` 블록은 예외 발생 여부와',
             '무관하게 실행된다.',
+            TRY_CATCH_COMPATIBILITY_NOTE,
             '',
             '`Catch`의 예외 객체는 미리 `Dim ex As New Exception`으로 인스턴스화해야 한다.'
         ].join('\n'),
@@ -230,7 +233,7 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
     {
         label: 'Finally',
         detail: 'Finally',
-        documentation: '예외 발생 여부와 무관하게 마지막에 실행되는 정리 블록이다.',
+        documentation: '예외 발생 여부와 무관하게 마지막에 실행되는 정리 블록이다. ' + TRY_CATCH_COMPATIBILITY_NOTE,
         body: ['Finally', '\t$0'],
         scopes: ['procedure'],
         requiresOpen: 'try',

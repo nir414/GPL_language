@@ -83,6 +83,10 @@ const TABLE: Record<string, RecoveryHint> = {
         action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: true,
         detail: '같은 요청의 배포가 이미 돌고 있어 새로 시작하지 않았다. operationId 로 그 작업의 결과를 확인할 것 — 다시 보내도 같은 응답이 온다.',
     },
+	DEPLOY_CANCELLED: {
+		action: 'NONE', retryCurrentCommand: false, safeToRepeat: false,
+		detail: '사용자 또는 디버그 정지 요청으로 배포를 취소했다. 자동으로 되풀이하지 말고, 다시 올릴지는 사용자의 다음 지시를 따른다.',
+	},
     DEPLOY_AUTO_GATE: {
         action: 'NONE', retryCurrentCommand: false, safeToRepeat: true,
         detail: '자동 게이트 조건이 맞지 않아 업로드하지 않았다(제어기를 건드리지 않음). 조건은 로그에 있다 — 명시 배포(build 모드)를 쓸 것.',

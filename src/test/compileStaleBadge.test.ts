@@ -19,10 +19,11 @@ const info: CompileStaleInfo = {
     reason: '쓰레드 동작 중 — Compile 보류',
 };
 
-test('compileStale: 설명 문장은 프로젝트·시각·사유를 담고 Start 실패 위험을 말한다', () => {
+test('compileStale: 설명 문장은 프로젝트·시각·사유와 Start 실패 시 Problems 연동을 말한다', () => {
     const s = describeCompileStale(info, fixedTime);
     assert.ok(s.includes("'GPL_Code'") && s.includes('T1000') && s.includes(info.reason), s);
-    assert.ok(/-compile/.test(s) && /Start/.test(s) && /Problems/.test(s), s);
+    assert.ok(/-compile/.test(s) && /Start/.test(s) && /Problems/.test(s) && /표시/.test(s), s);
+    assert.ok(!/오지 않습니다/.test(s), s);
 });
 
 test('compileStaleBadge: 라벨·툴팁은 정본 문장 위에 클릭 안내만 붙인다', () => {

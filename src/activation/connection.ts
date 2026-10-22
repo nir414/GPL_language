@@ -354,7 +354,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		const launchInfo = host.project.readLaunchControllerInfo();
 		const cancelled = (): ConnectResult => ({
 			ok: false, ip: currentCfg.ip, port: currentCfg.port,
-			connected: host.controllerTree?.isConnected ?? false, error: 'cancelled', mode: 'interactive',
+			connected: host.isControllerConnected, error: 'cancelled', mode: 'interactive',
 		});
 		// 기본값 우선순위: launch.json > 현재 cfg(세션 오버라이드 포함) > settings
 		const defaultIp = launchInfo?.ip || currentCfg.ip;

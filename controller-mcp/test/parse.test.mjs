@@ -147,7 +147,10 @@ test('summarizeThreads: 상태별 개수 + 정지 스레드 위치', () => {
   assert.equal(s.running, 1);
   assert.equal(s.idle, 1);
   assert.equal(s.error, 1);
-  assert.deepEqual(s.pausedThreads.map((t) => t.name), ['OpCommandRunThread1', 'ErrThread']);
+  // 목록 이름과 요약 숫자가 일치한다(2026-10-19 Sample Prep ③): paused 1 ↔ pausedThreads 1, error 1 ↔ errorThreads 1.
+  assert.deepEqual(s.pausedThreads.map((t) => t.name), ['OpCommandRunThread1']);
+  assert.deepEqual(s.errorThreads.map((t) => t.name), ['ErrThread']);
+  assert.deepEqual(s.stoppedThreads.map((t) => t.name), ['OpCommandRunThread1', 'ErrThread']);
   assert.equal(s.pausedThreads[0].line, 1597);
 });
 
@@ -189,6 +192,16 @@ test('statusHint: -712/-762/-763 추가', () => {
   assert.match(statusHint(-712), /Me\./);
   assert.match(statusHint(-762), /Angles/);
   assert.match(statusHint(-763), /Cartesian/);
+});
+
+// 2026-10-14 실측: `Stop MergeCode` 뒤에도 LOG_SOCKET 쓰레드가 남아 Unload 가 -750 을 반복했다 — Stop 범위(쓰레드 이름)와
+// -752(진행 중) 의미를 실패 응답 그 자리에서 알려 줘야 엉뚱한 진단(블로킹·SoftEStop)으로 빠지지 않는다.
+test('statusHint: -750 은 Stop 범위(쓰레드 이름)와 stop_threads 를, -752 는 비치명·폴링을 안내한다', () => {
+  assert.match(statusHint(-750), /이름이 같은 쓰레드 하나만/);
+  assert.match(statusHint(-750), /stop_threads\(\{ project \}\)/);
+  assert.match(statusHint(-752), /진행 중/);
+  assert.match(statusHint(-752), /재전송하지 말고/);
+  assert.match(statusHint(-752), /diagnoseStuckThread/);
 });
 
 // ── DataID(pd) 응답 파싱 (GitHub #16) ──────────────────────────────────────────

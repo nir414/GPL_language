@@ -50,6 +50,10 @@ export interface GPLSymbol {
     getterBranch?: GetterBranch;
     /** Property 전용. `Get … End Get` 블록이 있으면 true, WriteOnly(Set만)면 false. 블록을 못 훑었으면 undefined. */
     hasGetter?: boolean;
+    /** Property 전용. 선언에 `ReadOnly` 수식어가 있으면 true(개요 detail 등 표시용). */
+    isReadOnly?: boolean;
+    /** Property 전용. 선언에 `WriteOnly` 수식어가 있으면 true. */
+    isWriteOnly?: boolean;
     isXmlRelated?: boolean;
     hasXmlIssues?: string[];
 }
@@ -423,6 +427,8 @@ export class GPLParser {
                     className: currentClass,
                     accessModifier: propAccess as 'public' | 'private' | undefined,
                     isShared: /\bShared\b/i.test(propMods),
+                    isReadOnly: /\bReadOnly\b/i.test(propMods),
+                    isWriteOnly: /\bWriteOnly\b/i.test(propMods),
                     // 배열 반환(`As Integer()`)은 `Integer[]`로 기록 — Function과 동일 규칙.
                     returnType: propertyMatch[3] ? propertyMatch[3] + (propertyMatch[4] ? '[]' : '') : undefined,
                     docComment,

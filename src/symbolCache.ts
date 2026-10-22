@@ -158,7 +158,7 @@ export class SymbolCache {
      * 인코딩은 `files.encoding` 이 UTF-8 계열(기본)이면 직접 디코딩(BOM 제거)하고, 그 외로 설정된
      * 리소스만 VS Code 의 디코더를 빌리기 위해 문서로 연다.
      */
-    private async readSourceText(uri: vscode.Uri): Promise<string> {
+    public async readSourceText(uri: vscode.Uri): Promise<string> {
         const encoding = vscode.workspace.getConfiguration('files', uri).get<string>('encoding', 'utf8');
         if (!/^utf-?8(bom)?$/i.test(encoding)) {
             return (await vscode.workspace.openTextDocument(uri)).getText();

@@ -17,10 +17,10 @@ import { classifyErrorEntry, extractErrorCodeFromEntry, getErrorCodeHint } from 
 
 /** 마지막 배포 결과 요약 — 트리의 "상황" 섹션과 오류 상세 보기가 읽는다. */
 export interface SituationDeploySnapshot {
-    mode: 'Build' | 'Deploy & Run' | 'Upload & Start';
+    mode: 'Build' | 'Deploy & Run' | 'Upload & Start' | 'Upload Only';
     success: boolean;
     // 순서(2026-08-25 재배치): UPLOAD → STOP/THREAD_CHECK → COMPILE → START → ERROR_CHECK
-    lastStage: 'LOCKED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
+    lastStage: 'LOCKED' | 'CANCELLED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
     compileErrorCodes: number[];
     controllerSystemCodes: number[];
     updatedAt: number;
@@ -218,6 +218,45 @@ export function buildCompileRawSectionLines(result: DeployResult): string[] {
     return lines;
 }
 
+/** 성공 배포 알림에 쓸 ErrorLog 선별 결과(`selectErrorLogNotice`). */
+export interface ErrorLogNotice {
+    /** 직전 배포 이후 새로 생긴 제어기 시스템 항목(알림 대상). */
+    newSys: string[];
+    /** 직전 배포 이후 새로 생긴 코드/배포 에러 항목(알림 대상). */
+    newDeployErr: string[];
+    /** 새 항목이지만 의도된 동작 코드(예: -1600 Power off requested)라 알림 없이 정보로만 남길 항목. */
+    quiet: string[];
+    /** 이미 직전 배포에서 본 항목 수 — 출력 로그·결과 필드에는 남기고 알림은 내지 않는다. */
+    repeated: number;
+}
+
+/** 같은 ErrorLog 항목인지 판정하는 키 — 항목 문자열에 시각·코드·문구가 다 들어 있으므로 공백만 정규화한다. */
+export function errorLogEntryKey(entry: string): string {
+    return entry.trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * 성공 배포의 알림 대상을 고른다. 제어기 ErrorLog 는 지울 때까지 남아 있어서, 그대로 알리면 배포마다 같은 경고가
+ * 반복된다(2026-10-21 Sample Prep: 같은 4건이 10회 넘게). 그래서 **직전 배포에서 이미 본 항목은 알리지 않고**,
+ * 사람·프로그램이 의도한 정상 동작 코드(`quietCodes`)는 정보로 낮춘다. 분류·출력 로그·결과 필드는 종전대로 전부 남는다.
+ */
+export function selectErrorLogNotice(
+    errorLog: readonly string[],
+    alreadySeen: ReadonlySet<string>,
+    quietCodes: readonly number[],
+): ErrorLogNotice {
+    const notice: ErrorLogNotice = { newSys: [], newDeployErr: [], quiet: [], repeated: 0 };
+    const quiet = new Set(quietCodes);
+    for (const entry of errorLog) {
+        if (alreadySeen.has(errorLogEntryKey(entry))) { notice.repeated++; continue; }
+        const c = classifyErrorEntry(entry);
+        const code = extractErrorCodeFromEntry(entry) ?? c.parsedCode;
+        if (typeof code === 'number' && quiet.has(code)) { notice.quiet.push(entry); continue; }
+        (c.isControllerSystem ? notice.newSys : notice.newDeployErr).push(entry);
+    }
+    return notice;
+}
+
 /** ErrorLog 중 제어기 시스템 항목만(실패 경로의 "배포 원인 아님" 집계용). */
 export function controllerSystemErrorEntries(errorLog: readonly string[]): string[] {
     return errorLog.filter(e => classifyErrorEntry(e).isControllerSystem);
@@ -242,8 +281,9 @@ export interface DeployFailureDescription {
 
 /**
  * 실패 문구 결정. 분기 순서가 뜻을 갖는다:
- * ① COMPILE 단계 + 시스템 에러 → 환경 블로커(코드 수정 효과 검증 불가) ② 컴파일 에러 있음 ③ ErrorLog 전체가 시스템 에러 →
- * "GPL 코드 오류 없음" 명시 ④ 그 외 미상. 이어서 comparisonNote·선택된 원격 경로를 접미로 붙인다.
+ * ① UPLOAD 단계 → FTP/원격 경로 문제 ② COMPILE 단계 + 시스템 에러 → 환경 블로커(코드 수정 효과 검증 불가)
+ * ③ 컴파일 에러 있음 ④ ErrorLog 전체가 시스템 에러 → "GPL 코드 오류 없음" 명시 ⑤ 그 외 미상.
+ * 이어서 comparisonNote·선택된 원격 경로를 접미로 붙인다.
  */
 export function describeDeployFailure(
     result: DeployResult,
@@ -263,10 +303,19 @@ export function describeDeployFailure(
 
     let message: string;
     let jumpToCompileErrors = false;
-    if (envBlocking) {
+    if (result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown') {
+        message = `메모리 사전 검사로 중단: ${result.memoryPrecheck.message}`;
+    } else if (result.failedPhase === 'UPLOAD') {
+        const ftp452 = /\b452\b[\s\S]*error writing file/i.test(result.failedStatusMessage ?? '');
+        const action = ftp452
+            ? 'FTP 452는 제어기 저장 공간 또는 메모리 부족 가능성이 있으므로 Show Memory와 /GPL 사용량 확인'
+            : 'FTP 및 원격 경로 로그 확인';
+        message = `업로드 실패${commandLabel}${statusLabel || (result.failedStatusMessage ? ` / ${result.failedStatusMessage}` : '')} — ${action}`;
+    } else if (envBlocking) {
         message = `코드 수정 효과 검증 불가: COMPILE 환경 블로커 감지${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
     } else if (result.compileErrors.length > 0) {
-        message = `${result.compileErrors.length}개 컴파일 에러${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — COMPILE 원문 로그 확인`;
+        const rawLabel = result.failedPhase === 'START' ? 'START -compile 원문 로그' : 'COMPILE 원문 로그';
+        message = `${result.compileErrors.length}개 컴파일 에러${phaseLabel}${commandLabel}${statusLabel}${sysLabel} — ${rawLabel} 확인`;
         jumpToCompileErrors = true;
     } else if (sysErrors.length > 0 && result.errorLog.length === sysErrors.length) {
         // 에러 로그 전체가 제어기 시스템 에러인 경우 — GPL 코드 원인 없음을 명시

@@ -148,6 +148,8 @@ export function activate(context: vscode.ExtensionContext) {
 	// 실행 위치 데코레이션(정지 줄·에러 줄) — 트리 명령과 디버그 이벤트가 함께 쓴다.
 	h.decorations = new ExecutionDecorations();
 	context.subscriptions.push(h.decorations);
+	// 강조는 제어기 상태의 표시 — 쓰레드 목록이 갱신될 때마다 주인 쓰레드가 그 상태를 벗어났으면 지운다(§1-EP).
+	context.subscriptions.push(controllerTree.onDidChangeRuntimeState(snapshot => h.decorations.reconcile(snapshot)));
 	activateTreeCommands(h);
 	activateFtpCommands(h);
 

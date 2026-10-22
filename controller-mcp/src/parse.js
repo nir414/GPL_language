@@ -7,11 +7,14 @@
 //   ProtocolModule.gpl:478:(-760): *Invalid assignment*
 //   ...:2934:(-742): *Compilation errors*: 4   ← 집계줄(개별 에러 아님)
 
+/** 종결 `<STATUS>`가 없는 부분 응답의 센티넬. 실패가 아니라 결과 미확정이다. */
+export const NO_STATUS_CODE = -9999;
+
 /** <STATUS>code,"message"</STATUS> 추출. 없으면 code -9999(센티넬). */
 export function parseStatus(raw) {
   const m = String(raw).match(/<STATUS>\s*(-?\d+)\s*,?\s*"?([^"<]*?)"?\s*<\/STATUS>/);
   if (!m) {
-    return { code: -9999, message: 'No STATUS found', complete: false };
+    return { code: NO_STATUS_CODE, message: 'No STATUS found', complete: false };
   }
   return { code: parseInt(m[1], 10), message: m[2].trim(), complete: true };
 }
@@ -170,6 +173,14 @@ export function statusHint(code) {
       return '컴파일 에러 — 응답의 `file:line:(code)` 에러 라인을 읽고 소스를 수정할 것. 이 프로젝트는 실행 불가 상태다.';
     case -745:
       return '이미 로드된 프로젝트일 수 있다. 문맥 없이 치명 실패로 단정하지 말 것.';
+    case -750:
+      return '"Invalid when thread active" — 그 프로젝트의 쓰레드가 아직 활성(Running/Paused)이다. `Stop <project>` 는 **이름이 같은 쓰레드 하나만** 멈추므로 ' +
+        '다른 이름으로 띄운 쓰레드(LOG_SOCKET 등)가 남아 Unload/Compile/Show Stack 이 -750 을 반복한다(2026-10-14 실측). ' +
+        'show_threads 의 project 열로 남은 쓰레드를 보고 stop_threads({ project }) 또는 stop_threads()(= Stop -all) 로 전부 멈춘 뒤 재시도할 것.';
+    case -752:
+      return '"Timeout stopping thread" — 실패가 아니라 정지 **진행 중**(비치명). 같은 Stop 을 곧바로 재전송하지 말고 show_threads 폴링으로 ' +
+        'Idle/Stopped/Error 를 확인할 것(stop_threads 는 이 확인과 1회 재시도가 내장). 반복되면 블로킹 I/O(Read/ReadLine)나 탈출 조건 없는 루프 — ' +
+        'extension_command("gpl.controller.diagnoseStuckThread") 로 진단할 것.';
     case -9999:
       return 'STATUS 종결자를 받지 못했다(불완전 응답). 성공으로 간주하지 말고 연결/타임아웃을 확인할 것.';
     default:
@@ -235,14 +246,21 @@ export function summarizeThreads(threads) {
     error: count((t) => t.state === 'Error'),
     idle: count((t) => t.state === 'Idle'),
     stopped: count((t) => t.state === 'Stopped' || t.state === 'Stopping'),
-    pausedThreads: threads.filter((t) => PAUSED_STATES.has(t.state)).map((t) => {
-      const o = { name: t.name, state: t.state };
-      if (t.file) o.file = t.file;
-      if (t.line) o.line = t.line;
-      if (t.procedure) o.procedure = t.procedure;
-      return o;
-    }),
+    // 이름과 숫자가 어긋나지 않게(2026-10-19 Sample Prep ③): pausedThreads 는 `paused` 와 같은 집합(Paused/Break)만,
+    // Error 는 errorThreads 로, 정지 계열 전체(PAUSED_STATES)는 stoppedThreads 로 따로 준다.
+    pausedThreads: threads.filter((t) => t.state === 'Paused' || t.state === 'Break').map(compactLocation),
+    errorThreads: threads.filter((t) => t.state === 'Error').map(compactLocation),
+    stoppedThreads: threads.filter((t) => PAUSED_STATES.has(t.state)).map(compactLocation),
   };
+}
+
+/** 정지 스레드의 위치 요약 — 이름·상태·file/line/procedure 만. */
+function compactLocation(t) {
+  const o = { name: t.name, state: t.state };
+  if (t.file) o.file = t.file;
+  if (t.line) o.line = t.line;
+  if (t.procedure) o.procedure = t.procedure;
+  return o;
 }
 
 // ── Show Variable 응답 파싱(확장 showVariableParser.ts 규칙 이식) ────────────

@@ -23,6 +23,7 @@ import {
 import { EXTENSION_VERSION } from '../config';
 import { channelName } from '../controller/channelNames';
 import { isPausedState } from '../controller/threadActivity';
+import type { RuntimeStateSnapshot } from '../controller/executionMarks';
 import { BreakpointTarget, breakpointKey, orphanControllerBreakpoints } from '../controller/breakpointReconcile';
 import { editorBreakpointTargets } from '../controller/breakpointSync';
 import { FtpEntry, listRemoteDirs } from '../controller/ftpClient';
@@ -148,6 +149,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 */
 	private readonly _onDidThreadPause = new vscode.EventEmitter<{ name: string; state: string }>();
 	readonly onDidThreadPause = this._onDidThreadPause.event;
+
+	/**
+	 * 쓰레드 목록(과 마지막 ErrorLog 건수)이 바뀔 때마다 발생 — 폴링·디버그 브리지·연결 해제(빈 목록) 모두 같은 경로.
+	 * 에디터의 실행 위치 강조(정지 줄·에러 줄)가 "주인 쓰레드가 아직 그 상태인가"를 여기서 확인해 낡은 강조를 지운다
+	 * (`ExecutionDecorations.reconcile`, §1-EP). 디버그 세션 중에는 ErrorLog 를 재조회하지 않으므로 `errorCount` 는 마지막 값이다.
+	 */
+	private readonly _onDidChangeRuntimeState = new vscode.EventEmitter<RuntimeStateSnapshot>();
+	readonly onDidChangeRuntimeState = this._onDidChangeRuntimeState.event;
 
 	private _connected = false;
 	private threads: ThreadInfo[] = [];
@@ -344,6 +353,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this.threads = [];
 		this.errors = [];
 		this.breakpoints = [];
+		this.fireRuntimeStateChanged();
 		if (options?.keepOnDemandCaches) { return; }
 		this.ftpEntries = [];
 		this.ftpError = null;
@@ -408,8 +418,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this._debugModeSubscription?.dispose();
 		this._debugModeSubscription = onDebugThreadsUpdated(threads => {
 			this.threads = threads;
+			this.fireRuntimeStateChanged();
 			this._onDidChangeTreeData.fire(undefined);
 		});
+	}
+
+	/** 쓰레드 목록·ErrorLog 건수 스냅샷을 구독자(실행 위치 강조)에 알린다. */
+	private fireRuntimeStateChanged(): void {
+		this._onDidChangeRuntimeState.fire({ threads: this.threads, errorCount: this.errors.length });
 	}
 
 	/**
@@ -508,6 +524,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			this.lastDetailPollAt = now;
 		}
 
+		this.fireRuntimeStateChanged();
 		this._onDidChangeTreeData.fire(undefined);
 		} finally {
 			this._refreshInFlight = false;
@@ -828,7 +845,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		];
 		if (stale) {
 			// /GPL 소스만 올라가고 Compile로 검증되지 않은 상태(이슈 #17 재구성의 부수 상태). Start는 `-compile` 로 컴파일하므로(§0.7)
-			// 옛 프로그램이 도는 건 아니지만, 소스 에러가 있으면 Start가 실패하고 Problems 연동이 없다.
+			// 옛 프로그램이 도는 건 아니지만, 소스 에러가 있으면 Start가 실패해 실행되지 않는다(에러 위치는 §1-EW에서 Problems 연동).
 			ctxSec.collapsed = false;
 			// 문구·클릭 대상은 상태바 배지와 같은 규칙(views/compileStaleBadge) — 폴더를 알면 Uri 인자로 선택 창 없이 그 프로젝트.
 			ctxSec.children.unshift(new InfoNode(
@@ -988,11 +1005,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		sections.push(sysSec);
 
 		// ── I/O · 전역변수 (상호작용 진입점)
-		const ioSec = new SectionNode('io', 'I/O · 전역변수', 'symbol-interface', '클릭하여 조회/설정');
+		const ioSec = new SectionNode('io', 'I/O · 전역변수', 'symbol-interface', 'I/O 제어판 · 전역변수');
 		ioSec.collapsed = true;
 		ioSec.children = [
-			new InfoNode('DIO 조회 (Show DIO)', 'symbol-boolean', '입출력 상태 보기', { command: 'gpl.controller.showDio', title: 'Show DIO' }, 'ioAction', '디지털 입출력 신호 상태를 조회합니다.'),
-			new InfoNode('DIO 출력 설정 (Set DIO)', 'circuit-board', '출력 강제 (안전 확인)', { command: 'gpl.controller.setDio', title: 'Set DIO' }, 'ioAction', '디지털 출력을 강제(force)합니다. 장비 동작에 영향을 줄 수 있어 확인 후 실행됩니다.'),
+			new InfoNode('디지털 I/O 제어판', 'circuit-board', '상태 확인 · 강제 ON/OFF · 해제', { command: 'gpl.controller.showIoPanel', title: '디지털 I/O 제어판 열기' }, 'ioAction', '모든 설치 신호의 ON/OFF·강제 상태를 한눈에 보고, 확인 후 Set DIO를 실행합니다.'),
 			new InfoNode('전역변수 보기/편집', 'symbol-variable', 'Show/Set Global', { command: 'gpl.controller.showGlobal', title: 'Show Global' }, 'ioAction', '전역변수 값을 조회하고 필요 시 수정합니다.'),
 		];
 		sections.push(ioSec);
@@ -1303,22 +1319,29 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		};
 		if (deploy) {
 			if (deploy.success) {
-				stageMap.STOPPING = 'OK';
+				stageMap.STOPPING = deploy.mode === 'Upload Only' ? 'SKIP' : 'OK';
 				stageMap.UPLOADING = 'OK';
-				stageMap.COMPILE = 'OK';
-				stageMap.RUNNING = deploy.mode === 'Build' ? 'SKIP' : 'OK';
+				stageMap.COMPILE = deploy.mode === 'Upload Only' ? 'SKIP' : 'OK';
+				stageMap.RUNNING = deploy.mode === 'Build' || deploy.mode === 'Upload Only' ? 'SKIP' : 'OK';
 			} else {
 				// 순서(2026-08-25 재배치, 이슈 #17): UPLOAD → STOP/THREAD_CHECK → COMPILE → START.
 				// THREAD_CHECK(빠른 컴파일의 Compile 전 쓰레드 게이트)·COMPILE_DEFERRED는 STOP 단계 실패와 동급으로 취급.
 				const stage = deploy.lastStage;
+				if (stage === 'CANCELLED') {
+					stageMap.STOPPING = 'N/A';
+					stageMap.UPLOADING = 'N/A';
+					stageMap.COMPILE = 'N/A';
+					stageMap.RUNNING = 'N/A';
+				} else {
 				const uploadFailed = stage === 'UPLOAD' || stage === 'LOCKED';
 				const stoppedStageFailed = stage === 'STOP' || stage === 'THREAD_CHECK' || stage === 'COMPILE_DEFERRED';
 				stageMap.UPLOADING = uploadFailed ? 'FAIL' : 'OK';
 				stageMap.STOPPING = uploadFailed ? 'N/A' : (stoppedStageFailed ? 'FAIL' : 'OK');
 				stageMap.COMPILE = stage === 'COMPILE' ? 'FAIL' : ((stage === 'START' || stage === 'ERROR_CHECK') ? 'OK' : 'N/A');
-				stageMap.RUNNING = deploy.mode === 'Build'
+				stageMap.RUNNING = deploy.mode === 'Build' || deploy.mode === 'Upload Only'
 					? 'SKIP'
 					: (deploy.lastStage === 'START' ? 'FAIL' : ((deploy.lastStage === 'ERROR_CHECK' || deploy.lastStage === 'SUCCESS') ? 'OK' : 'N/A'));
+				}
 			}
 		}
 

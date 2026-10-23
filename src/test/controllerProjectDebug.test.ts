@@ -4,7 +4,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { test } from './harness';
 import { canResumeControllerDebug, controllerDebugConfiguration, controllerLibraryCandidates } from '../project/controllerProjectDebug';
-import { getControllerProjectWriteBlock } from '../project/controllerProjectWorkspace';
+import { getControllerProjectWriteBlock, writeControllerProjectManifest } from '../project/controllerProjectWorkspace';
+import { buildLibraryGraph, resolveProjectLibraryDirs } from '../project/projectSources';
 import { downloadControllerLibraries, downloadControllerProjectCopy, ControllerDownloadIo } from '../controller/files/controllerProjectDownload';
 
 const target = {
@@ -78,7 +79,7 @@ function downloadFixture() {
             return { downloaded: entries.length, totalBytes: entries.reduce((sum, [, text]) => sum + Buffer.byteLength(text), 0) };
         },
     };
-    return { root, sources, downloaded, queried, io, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+    return { root, sources, downloaded, queried, files, io, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
 test('controller project debug: 형제·중첩·순환 라이브러리를 다운로드하고 없는 참조는 보고한다', async () => {
@@ -119,9 +120,55 @@ test('controller project debug: 라이브러리 경로의 대소문자는 원격
         assert.deepStrictEqual(p.downloaded, ['/GPL/Probe', '/GPL/Lib']);
         assert.ok(!p.queried.includes('/GPL/lib'));
         assert.ok(fs.existsSync(path.join(p.sources, 'Lib', 'Core', 'Core.gpl')));
-        // 원격 표기는 보존한다. 내려받은 뒤 로컬 그래프의 경로 해석은 파일 시스템을 따른다.
-        const localReferenceExists = fs.existsSync(path.join(p.sources, 'lib', 'core', 'Project.gpr'));
-        assert.deepStrictEqual(unresolved, localReferenceExists ? ['Missing'] : ['lib\\core']);
+        assert.deepStrictEqual(unresolved, ['Missing']);
+    } finally { p.cleanup(); }
+});
+
+test('controller project debug: 절대·대소문자 참조에서 하위 의존성을 받고 재열기에도 같은 그래프를 사용한다', async () => {
+    const p = downloadFixture();
+    try {
+        p.files['/GPL/Probe']['Project.gpr'] = 'ProjectName="Probe"\nProjectLibrary="/gpl/lib/core"\n';
+        p.files['/GPL/Lib']['Core/Project.gpr'] = 'ProjectName="Core"\nProjectLibrary="/GPL/extra"\n';
+        p.files['/GPL/Extra'] = { 'Project.gpr': 'ProjectName="Extra"\nProjectLibrary="Missing"\n' };
+        const main = path.join(p.sources, 'Probe');
+        const gpr = path.join(main, 'Project.gpr');
+        await downloadControllerProjectCopy(target.host, '/GPL/Probe', main, () => {}, p.io);
+        const original = fs.readFileSync(gpr, 'utf8');
+        const unresolved = await downloadControllerLibraries(target.host, '/GPL', p.sources, gpr, () => {}, p.io);
+        assert.deepStrictEqual(p.downloaded, ['/GPL/Probe', '/GPL/Lib', '/GPL/Extra']);
+        assert.deepStrictEqual(unresolved, ['Missing']);
+        writeControllerProjectManifest(p.sources, {
+            mode: 'snapshot', controllerHost: target.host, sourceRemotePath: '/GPL',
+            projectName: 'Probe', downloadedAt: new Date().toISOString(),
+        });
+        // 디버거와 같은 기본 resolver: 개별 branch manifest가 최상위 사본을 가리지 않는다.
+        const resolved = resolveProjectLibraryDirs(gpr, original);
+        assert.deepStrictEqual(resolved.dirs, [path.join(p.sources, 'Lib', 'Core'), path.join(p.sources, 'Extra')]);
+        assert.deepStrictEqual(resolved.unresolved, ['Missing']);
+        assert.strictEqual(fs.readFileSync(gpr, 'utf8'), original, '원본 GPR 참조를 고쳐서 우회하지 않는다');
+    } finally { p.cleanup(); }
+});
+
+test('controller project debug: snapshot 밖 참조와 다른 원격 root를 known 프로젝트로 대체하지 않는다', () => {
+    const p = downloadFixture();
+    try {
+        const main = path.join(p.sources, 'Probe');
+        const outside = path.join(p.root, 'flash', 'projects', 'Other');
+        fs.mkdirSync(main, { recursive: true });
+        fs.mkdirSync(outside, { recursive: true });
+        const outsideGpr = path.join(outside, 'Project.gpr');
+        fs.writeFileSync(outsideGpr, 'ProjectName="Other"\n');
+        const rawOutside = path.relative(main, outside);
+        const text = `ProjectName="Probe"\nProjectLibrary="/flash/projects/Other"\nProjectLibrary="${rawOutside}"\n`;
+        const gpr = path.join(main, 'Project.gpr');
+        fs.writeFileSync(gpr, text);
+        writeControllerProjectManifest(p.sources, {
+            mode: 'snapshot', controllerHost: target.host, sourceRemotePath: '/GPL',
+            projectName: 'Probe', downloadedAt: new Date().toISOString(),
+        });
+        const graph = buildLibraryGraph(gpr, text, { knownGprPaths: [outsideGpr] });
+        assert.deepStrictEqual(graph.dirs, []);
+        assert.deepStrictEqual(graph.unresolved, ['/flash/projects/Other', rawOutside]);
     } finally { p.cleanup(); }
 });
 

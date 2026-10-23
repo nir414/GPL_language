@@ -1,7 +1,6 @@
 /** 제어기 소스 사본과 Attach 대상의 연결. VS Code 창 전환 뒤에도 같은 대상을 사용한다. */
-import * as path from 'path';
-import { ancestorRelativePathCandidates } from './projectSources';
-import { isPathUnder, normalizePathKey } from '../util/pathKey';
+import { normalizePathKey } from '../util/pathKey';
+export { controllerLibraryCandidates } from './projectSources';
 
 export const CONTROLLER_DEBUG_MARKER = '.gpl-controller-debug.json';
 export const PENDING_CONTROLLER_DEBUG_KEY = 'gpl.pendingControllerDebug';
@@ -47,14 +46,4 @@ export function canResumeControllerDebug(pending: PendingControllerDebug, worksp
     return normalizePathKey(pending.workspaceFile) === normalizePathKey(workspaceFile)
         && Number.isFinite(pending.requestedAt)
         && now >= pending.requestedAt && now - pending.requestedAt <= PENDING_LIFETIME_MS;
-}
-
-/** 기존 ProjectLibrary 경로 우선순위를 사용하되 다운로드 사본 밖은 후보에 넣지 않는다. */
-export function controllerLibraryCandidates(sourceRoot: string, remoteRoot: string, projectDir: string, raw: string): string[] {
-    const remote = raw.replace(/\\/g, '/');
-    const candidates = remote.startsWith('/')
-        ? [path.resolve(sourceRoot, path.posix.relative(remoteRoot, remote))]
-        : ancestorRelativePathCandidates(projectDir, raw);
-    return candidates.filter(candidate => isPathUnder(candidate, sourceRoot)
-        && normalizePathKey(candidate) !== normalizePathKey(sourceRoot));
 }

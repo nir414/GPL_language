@@ -56,7 +56,9 @@ export async function downloadControllerLibraries(
         return { branch, entries: await list(current) };
     };
     while (true) {
-        const graph = buildLibraryGraph(gprPath, fs.readFileSync(gprPath, 'utf8'));
+        const graph = buildLibraryGraph(gprPath, fs.readFileSync(gprPath, 'utf8'), {
+            controllerSource: { sourceRoot, remoteRoot },
+        });
         let downloaded = false;
         for (const node of graph.nodes.values()) {
             for (const ref of node.refs.filter(r => !r.dir)) {

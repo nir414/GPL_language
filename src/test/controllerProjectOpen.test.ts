@@ -17,6 +17,8 @@ function fixture() {
     const commands = new Map<string, (...args: any[]) => Promise<void>>();
     const starts: any[] = [];
     const connections: any[] = [];
+    const configUpdates: any[] = [];
+    let syncEditorBreakpoints = true;
     const errors: string[] = [];
     const opened: any[] = [];
     const grantHandlers: Array<() => void> = [];
@@ -26,8 +28,16 @@ function fixture() {
     const vscode: any = {
         Uri: { file: (fsPath: string) => ({ fsPath }) },
         ProgressLocation: { Notification: 1 },
+        ConfigurationTarget: { Workspace: 2 },
         workspace: {
             isTrusted: true, workspaceFile: undefined,
+            getConfiguration: () => ({
+                get: (key: string) => key === 'syncEditorBreakpoints' ? syncEditorBreakpoints : undefined,
+                update: async (key: string, value: boolean, scope: number) => {
+                    configUpdates.push({ key, value, scope });
+                    if (key === 'syncEditorBreakpoints') { syncEditorBreakpoints = value; }
+                },
+            }),
             getWorkspaceFolder: () => undefined,
             onDidGrantWorkspaceTrust: (fn: () => void) => { grantHandlers.push(fn); return dispose(); },
         },
@@ -59,7 +69,7 @@ function fixture() {
     };
     const host: any = {
         context, log() {},
-        connection: { connectControllerWithArgs: async (args: any) => { connections.push(args); return { ok: true }; } },
+        connection: { connectControllerWithArgs: async (args: any) => { connections.push({ ...args, syncEditorBreakpoints }); return { ok: true }; } },
     };
     const filename = path.resolve(__dirname, '../activation/controllerProjectDebug.js');
     const realRequire = createRequire(filename);
@@ -82,7 +92,7 @@ function fixture() {
     const activate = () => { grantHandlers.length = 0; module.exports.activateControllerProjectDebug(host); };
     const flush = () => new Promise(resolve => setImmediate(resolve));
     return {
-        root, state, starts, connections, errors, opened, downloads, vscode, host, activate, flush,
+        root, state, starts, connections, configUpdates, errors, opened, downloads, vscode, host, activate, flush,
         grant: () => grantHandlers.forEach(fn => fn()),
         open: (resource?: unknown) => commands.get('gpl.controller.openProjectForDebugging')!(resource),
         cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
@@ -102,6 +112,7 @@ test('controller project open: FTP 메뉴에서 다운로드하고 창 전환 �
         assert.strictEqual(s.opened[0].newWindow, false);
         const workspace = JSON.parse(fs.readFileSync(pending.workspaceFile, 'utf8'));
         assert.strictEqual(workspace.settings['gpl.controller.consolePort'], 1503);
+        assert.strictEqual(workspace.settings['gpl.controller.syncEditorBreakpoints'], false);
         assert.ok(fs.existsSync(path.join(path.dirname(pending.workspaceFile), 'sources', '.vscode', 'launch.json')));
 
         s.vscode.workspace.workspaceFile = { fsPath: pending.workspaceFile };
@@ -116,6 +127,8 @@ test('controller project open: FTP 메뉴에서 다운로드하고 창 전환 �
         assert.strictEqual(s.starts.length, 1);
         assert.strictEqual(s.starts[0].projectDir, pending.target.projectDir);
         assert.strictEqual(s.connections[0].ip, '192.0.2.2');
+        assert.strictEqual(s.connections[0].syncEditorBreakpoints, false, '초기 접속 시점부터 기존 BP 동기화를 차단한다');
+        assert.deepStrictEqual(s.configUpdates, [{ key: 'syncEditorBreakpoints', value: false, scope: 2 }]);
         assert.strictEqual(s.connections[0].port, 1502);
         assert.strictEqual(s.host.sessionTargetDir, pending.target.projectDir);
         assert.strictEqual(s.state.get(PENDING_CONTROLLER_DEBUG_KEY), undefined);
@@ -167,5 +180,25 @@ test('controller project open: 첫 연결이 실패해도 요청을 재실행하
         s.activate();
         await s.flush();
         assert.strictEqual(s.errors.length, 1);
+    } finally { s.cleanup(); }
+});
+
+test('controller project open: 중단점 동기화를 끄지 못하면 초기 연결을 보내지 않는다', async () => {
+    const s = fixture();
+    try {
+        s.activate();
+        await s.open({ remotePath: '/GPL/FolderName' });
+        const pending = s.state.get(PENDING_CONTROLLER_DEBUG_KEY);
+        s.vscode.workspace.workspaceFile = { fsPath: pending.workspaceFile };
+        s.vscode.workspace.getConfiguration = () => ({
+            get: () => true,
+            update: async () => { throw new Error('settings write failed'); },
+        });
+        s.activate();
+        await s.flush();
+        assert.strictEqual(s.connections.length, 0);
+        assert.strictEqual(s.starts.length, 0);
+        assert.ok(s.errors[0].includes('settings write failed'));
+        assert.strictEqual(s.state.get(PENDING_CONTROLLER_DEBUG_KEY), undefined);
     } finally { s.cleanup(); }
 });

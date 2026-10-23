@@ -36,6 +36,11 @@ export function activateControllerProjectDebug(host: ExtensionHost): void {
             const entry = sources.find(file => start && ciEq(path.basename(file, path.extname(file)), start)) ?? sources[0];
             if (entry) { await vscode.window.showTextDocument(vscode.Uri.file(entry), { preview: false }); }
         }
+        // 접속 이벤트가 DAP보다 먼저 실행돼 기존 BP를 지우지 않도록 작업공간에서 먼저 끈다.
+        const controllerConfig = vscode.workspace.getConfiguration('gpl.controller');
+        if (controllerConfig.get<boolean>('syncEditorBreakpoints') === true) {
+            await controllerConfig.update('syncEditorBreakpoints', false, vscode.ConfigurationTarget.Workspace);
+        }
         const connected = await host.connection.connectControllerWithArgs({
             ip: target.host, port: target.port, save: 'session', silent: true,
         });
@@ -167,6 +172,7 @@ export function activateControllerProjectDebug(host: ExtensionHost): void {
             settings: {
                 'gpl.controller.ip': cfg.ip, 'gpl.controller.port': cfg.port,
                 'gpl.controller.consolePort': cfg.consolePort,
+                'gpl.controller.syncEditorBreakpoints': false,
             },
         }, null, 2)}\n`, 'utf8');
         fs.mkdirSync(path.join(sourceRoot, '.vscode'), { recursive: true });

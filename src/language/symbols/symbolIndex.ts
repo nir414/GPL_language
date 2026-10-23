@@ -159,13 +159,21 @@ export class SymbolIndex {
             return [];
         }
 
+        const ctx = toCallContext(call);
+        // 인자별 오버로드 선택이 없으면 현재 파일이 항상 최우선이며 같은 컴파일 단위에 속한다.
+        // 다른 프로젝트의 동명 후보 때문에 관계 그래프를 먼저 만드는 비용을 피한다.
+        if (currentFilePath && typeof ctx?.argCount !== 'number') {
+            const currentKey = normalizePathKey(currentFilePath);
+            const inFile = all.find(s => normalizePathKey(s.filePath) === currentKey);
+            if (inFile) { return [inFile]; }
+        }
+
         // 워크스페이스를 프로젝트 상위 폴더에서 열면 여러 과제의 동명 심볼이 한 인덱스에 들어온다.
         // 같은 컴파일 단위 안에 후보가 있으면 그 밖은 정의가 될 수 없다 — 점수 경쟁 전에 잘라낸다.
         const candidates = this.context.narrowCandidates(all, currentFilePath);
 
         // 호출 문맥(Foo(...))이고 호출 가능한 후보가 있으면 arity/타입 기반 오버로드 해석을 시도한다.
         // 이 경로는 파일 우선순위(scoreFilePath)도 함께 고려하므로 현재 파일 내 오버로드가 자연스레 우선된다.
-        const ctx = toCallContext(call);
         if (ctx && typeof ctx.argCount === 'number') {
             const callable = candidates.filter(s => s.kind === 'function' || s.kind === 'sub');
             if (callable.length > 0) {

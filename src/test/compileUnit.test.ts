@@ -213,6 +213,38 @@ test('CompileUnitIndex.setGprPaths: 목록이 같으면 캐시를 유지하고, 
 
 // ── narrowToCompileUnit ────────────────────────────────────────────────────
 
+test('CompileUnitIndex: 관계 탐색에서 같은 폴더를 다시 읽지 않고 새 .gpr는 무효화 뒤 반영한다', () => {
+    const fx = makeTwoTasks();
+    const nativeFs: typeof fs = require('fs');
+    const original = nativeFs.readdirSync;
+    const reads = new Map<string, number>();
+    try {
+        fs.writeFileSync(fx.a.gpr, GPR_MAIN.replace('ProjectEnd', 'ProjectLibrary="Later"\r\nProjectEnd'));
+        const index = new CompileUnitIndex();
+        index.setGprPaths(fx.gprPaths);
+        nativeFs.readdirSync = ((...args: any[]) => {
+            const key = path.resolve(String(args[0])).toLowerCase();
+            reads.set(key, (reads.get(key) ?? 0) + 1);
+            return (original as any)(...args);
+        }) as typeof fs.readdirSync;
+        assert.deepStrictEqual(keys(index.unitDirsFor(fx.a.main)), keys([fx.a.dir, fx.a.libDir]));
+        assert.deepStrictEqual(keys(index.unitDirsFor(fx.a.core)), keys([fx.a.libDir, fx.a.dir]));
+        assert.ok(reads.size > 0);
+        assert.ok([...reads.values()].every(count => count === 1), '성공·실패한 폴더 조회를 모두 재사용해야 한다');
+        nativeFs.readdirSync = original;
+
+        const later = path.join(fx.a.dir, 'Later');
+        fs.mkdirSync(later);
+        fs.writeFileSync(path.join(later, 'Project.gpr'), GPR_PLAIN);
+        assert.ok(!index.unitDirsFor(fx.a.main).includes(later), '기존 캐시는 변경 전 결과를 유지한다');
+        index.invalidate();
+        assert.deepStrictEqual(keys(index.unitDirsFor(fx.a.main)), keys([fx.a.dir, fx.a.libDir, later]));
+    } finally {
+        nativeFs.readdirSync = original;
+        cleanup(fx.root);
+    }
+});
+
 interface Cand { filePath: string; tag: string }
 const pathOf = (c: Cand): string => c.filePath;
 

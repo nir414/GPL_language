@@ -465,6 +465,8 @@ export interface ResolveLibraryOptions {
     maxDepth?: number;
     /** 테스트 주입용 `.gpr` 읽기. 기본은 `fs.readFileSync(utf8)`, 실패는 빈 문자열. */
     readText?: (filePath: string) => string;
+    /** 폴더→.gpr 조회. 반복 관계 해석을 캐시할 때 주입하며 경로 후보의 우선순위는 그대로 유지한다. */
+    findGprInDir?: (dir: string) => string | undefined;
 }
 
 export interface ResolvedLibraries {
@@ -529,6 +531,7 @@ export function buildLibraryGraph(
 ): LibraryGraph {
     const readText = opts.readText ?? defaultReadGprText;
     const maxDepth = opts.maxDepth ?? 8;
+    const findGpr = opts.findGprInDir ?? gprPathInDir;
     const known = opts.knownGprPaths ?? [];
     const rootGpr = path.resolve(gprPath);
     const rootDir = path.dirname(rootGpr);
@@ -559,7 +562,7 @@ export function buildLibraryGraph(
 
             let libGpr: string | undefined;
             for (const candidate of libraryDirCandidates(bases, raw)) {
-                libGpr = gprPathInDir(candidate);
+                libGpr = findGpr(candidate);
                 if (libGpr) { break; }
             }
             libGpr = libGpr ?? matchKnownGprByPath(raw, known);
@@ -632,7 +635,7 @@ export function collectRelatedGprPaths(
     };
 
     for (const dir of resolveProjectLibraryDirs(selfGpr, gprText, opts).dirs) {
-        const g = gprPathInDir(dir);
+        const g = (opts.findGprInDir ?? gprPathInDir)(dir);
         if (g) { push(g); }
     }
 

@@ -71,6 +71,24 @@ test('SymbolIndex: 오버로드는 인자 수와 타입을 함께 해석한다',
     assert.strictEqual(index.findMemberInModule('Choose', 'MathTools', 'Math.gpl', 2)?.parameters?.length, 2);
 });
 
+test('SymbolIndex: 현재 파일의 이름 조회는 프로젝트 탐색을 생략하고 호출별 해석은 유지한다', () => {
+    let narrowed = 0;
+    const index = setup({ narrowCandidates: candidates => { narrowed++; return candidates; } });
+    const currentPath = path.resolve('symbols', 'Math.gpl');
+    const aliasPath = `${path.dirname(currentPath)}${path.sep}.${path.sep}${path.basename(currentPath)}`;
+    const lookupPath = process.platform === 'win32' ? aliasPath.replace(/\\/g, '/').toUpperCase() : aliasPath;
+    index.updateFileText(currentPath, functions);
+    index.updateFileText(path.resolve('other', 'Math.gpl'), functions);
+    index.rebuildNameIndex();
+    const definition = index.findDefinition('Choose', lookupPath);
+    assert.strictEqual(definition?.line, 1);
+    assert.strictEqual(narrowed, 0);
+    assert.strictEqual(index.findDefinition('Choose', currentPath, 2)?.parameters?.length, 2);
+    assert.strictEqual(narrowed, 1);
+    index.findDefinition('Choose', path.resolve('third', 'Main.gpl'));
+    assert.strictEqual(narrowed, 2, '외부 정의 조회의 프로젝트 경계는 유지한다');
+});
+
 test('SymbolIndex: 프로젝트 경계는 경로 점수보다 먼저 후보를 좁힌다', () => {
     const a = path.resolve('index-fixture/a/Math.gpl');
     const b = path.resolve('index-fixture/b/Math.gpl');

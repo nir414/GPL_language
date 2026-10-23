@@ -55,6 +55,11 @@ description: "Use when an AI agent helps debug a Brooks GPL controller through G
 
 ## 권장 진행 순서
 
+제어기에 있는 소스를 열어 기존 프로그램에 붙는 요청은 `GPL: Open Controller Project for Debugging`
+(`gpl.controller.openProjectForDebugging`)을 사용한다. 이 경로는 Snapshot 다운로드와 Attach만 수행하며
+아래 로컬 변경 배포 절차를 먼저 실행하지 않는다. 다운로드한 소스와 실행 바이너리의 일치는 별도 확인 대상이다.
+아래 순서는 로컬 변경을 배포해 검증하는 경우에 적용한다.
+
 1. 연결 확인
    - 설정: `gpl.controller.ip`, `gpl.controller.port`, `gpl.controller.consolePort`
    - 명령: `GPL: Connect to Controller` (`gpl.controller.connect`)

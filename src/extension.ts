@@ -42,6 +42,7 @@ import { activateTreeCommands } from './activation/treeCommands';
 import { activateFtpCommands } from './activation/ftpCommands';
 import { activateDebugIntegration } from './activation/debugIntegration';
 import { activateUriHandler } from './activation/uriHandler';
+import { activateControllerProjectDebug } from './activation/controllerProjectDebug';
 
 /** 활성화된 호스트 — deactivate()·logMessage() 가 쓴다. */
 let host: ExtensionHost | undefined;
@@ -166,6 +167,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	activateDebugIntegration(h);
 	activateUriHandler(h);
+	activateControllerProjectDebug(h);
 
 	// ════════════════════════════════════════════════════════════
 	// Symbol cache & diagnostics initialization

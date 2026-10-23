@@ -490,6 +490,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			projectName,
 			...(projectDir ? { projectDir } : {}),
 			deployBeforeAttach: opts.deployBeforeAttach,
+			startOnAttach: opts.deployBeforeAttach,
 			// 붙기만 하는 경로에서는 실행 중인 프로그램을 건드리지 않는다 — Stop 도 Start 도 보내지 않는다.
 			// (제어기 쪽 잔재 브레이크포인트 정리는 세션 기본값 clearProjectBreakpointsOnAttach 가 담당한다.)
 			stopAllBeforeAttach: false,

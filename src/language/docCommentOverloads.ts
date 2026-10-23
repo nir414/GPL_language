@@ -107,6 +107,7 @@ export function filterOverloadSiblings<T extends OverloadDocCandidate>(
     if (!CALLABLE_KINDS.has(target.kind)) {
         return [];
     }
+    const targetPath = normalizePathKey(target.filePath);
     const seen = new Set<string>([declKey(target)]);
     const out: T[] = [];
     for (const c of candidates) {
@@ -116,11 +117,13 @@ export function filterOverloadSiblings<T extends OverloadDocCandidate>(
         if (lowerOrEmpty(c.module) !== lowerOrEmpty(target.module) || lowerOrEmpty(c.className) !== lowerOrEmpty(target.className)) {
             continue;
         }
-        if (options.isSameUnit && !options.isSameUnit(c.filePath, target.filePath)) {
-            continue;
-        }
         const key = declKey(c);
         if (seen.has(key)) {
+            continue;
+        }
+        // 자기 선언·캐시 사본은 관계 탐색 전에 제외한다. 같은 파일의 오버로드도 항상 같은 단위다.
+        if (options.isSameUnit && normalizePathKey(c.filePath) !== targetPath
+            && !options.isSameUnit(c.filePath, target.filePath)) {
             continue;
         }
         seen.add(key);

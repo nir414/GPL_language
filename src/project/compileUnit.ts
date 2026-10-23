@@ -23,7 +23,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isPathUnder, normalizeDirKey } from '../util/pathKey';
-import { collectRelatedGprPaths, findNearestGprOnDisk, pickOwningGprPath } from './projectSources';
+import { collectRelatedGprPaths, findNearestGprOnDisk, gprPathInDir, pickOwningGprPath } from './projectSources';
 
 /** 파일→소유 `.gpr` 조회 결과가 "없음"임을 캐시에 남기기 위한 표식. */
 const NO_OWNER = '';
@@ -37,6 +37,8 @@ export class CompileUnitIndex {
     private ownerByFile = new Map<string, string>();
     /** `.gpr` 본문 메모 — 참조자 탐색이 모든 `.gpr`를 읽으므로 단위마다 다시 읽지 않게 한다. */
     private textByGpr = new Map<string, string>();
+    /** 폴더 조회의 실패도 기억한다. 상대 라이브러리 후보가 프로젝트마다 반복되기 때문이다. */
+    private gprByDir = new Map<string, string>();
 
     /**
      * 워크스페이스 `.gpr` 목록을 갱신한다. 목록이 실제로 바뀌었을 때만 캐시를 버린다
@@ -55,6 +57,7 @@ export class CompileUnitIndex {
         this.unitByGpr.clear();
         this.ownerByFile.clear();
         this.textByGpr.clear();
+        this.gprByDir.clear();
     }
 
     /** 이 파일을 소유한 `.gpr` 경로 — 워크스페이스 목록 우선, 없으면 디스크에서 위로 탐색. */
@@ -84,6 +87,7 @@ export class CompileUnitIndex {
         const dirs = collectRelatedGprPaths(gprPath, text, {
             knownGprPaths: this.gprPaths,
             readText: p => this.readGpr(p),
+            findGprInDir: dir => this.findGprInDir(dir),
         }).map(g => path.dirname(path.resolve(g)));
 
         this.unitByGpr.set(key, dirs);
@@ -116,6 +120,15 @@ export class CompileUnitIndex {
         }
         this.textByGpr.set(key, text);
         return text;
+    }
+
+    private findGprInDir(dir: string): string | undefined {
+        const key = normalizeDirKey(dir);
+        const cached = this.gprByDir.get(key);
+        if (cached !== undefined) { return cached || undefined; }
+        const found = gprPathInDir(dir);
+        this.gprByDir.set(key, found ?? NO_OWNER);
+        return found;
     }
 }
 

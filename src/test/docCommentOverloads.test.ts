@@ -59,6 +59,18 @@ test('filterOverloadSiblings: 컴파일 단위 판정이 주어지면 다른 단
     assert.deepStrictEqual(got.map(s => s.filePath), [array.filePath]);
 });
 
+test('filterOverloadSiblings: 자기 선언·사본·같은 파일은 프로젝트 관계를 조회하지 않는다', () => {
+    const aliasPath = `${path.dirname(scalar.filePath)}${path.sep}.${path.sep}${path.basename(scalar.filePath)}`;
+    const copy = { ...scalar, filePath: process.platform === 'win32' ? aliasPath.replace(/\\/g, '/').toUpperCase() : aliasPath };
+    const calls: string[] = [];
+    const external = { ...array, filePath: path.resolve('other-overload-fixture', 'RobotModule.gpl') };
+    const got = filterOverloadSiblings(scalar, [scalar, copy, array, { ...array }, external], {
+        isSameUnit: file => { calls.push(file); return false; },
+    });
+    assert.deepStrictEqual(got, [array]);
+    assert.deepStrictEqual(calls, [external.filePath]);
+});
+
 test('resolveOverloadDoc: 설명 없는 오버로드가 공통 설명·닮은 형제의 설명·이름별 매개변수를 물려받는다', () => {
     const r = resolveOverloadDoc(withOpt, [scalar, array])!;
     assert.strictEqual(r.overloadCount, 2);

@@ -53,10 +53,11 @@ function setup(expression = 'axes = table.AxisCount()') {
         },
         Hover: class { constructor(public contents: any, public range: Range) {} },
     };
+    let projectLookups = 0;
     const index = new SymbolIndex({
-        narrowCandidates: candidates => candidates,
+        narrowCandidates: candidates => { projectLookups++; return candidates; },
         scoreFilePath: () => 0,
-        isSameCompileUnit: () => true,
+        isSameCompileUnit: () => { projectLookups++; return true; },
     });
     index.updateFileText(document.uri.fsPath, document.getText());
     index.updateFileText('Pose.gpl', [
@@ -85,6 +86,7 @@ function setup(expression = 'axes = table.AxisCount()') {
     const { GPLHoverProvider } = load(path.resolve(__dirname, '../providers/hoverProvider.js'));
     const provider = new GPLHoverProvider(index);
     return {
+        projectLookups: () => projectLookups,
         hover: (word: string, cancelled = false) => provider.provideHover(document,
             { line: 5, character: expression.indexOf(word) + Math.floor(word.length / 2) },
             { isCancellationRequested: cancelled }),
@@ -150,4 +152,13 @@ test('Hover: 주석·문자열·취소된 요청은 표시하지 않는다', asy
     assert.strictEqual(await setup("' table.AxisCount()").hover('table'), undefined);
     assert.strictEqual(await setup('"table.AxisCount()"').hover('AxisCount'), undefined);
     assert.strictEqual(await setup().hover('AxisCount', true), undefined);
+});
+
+test('Hover: 현재 문서 함수와 해석된 멤버의 첫 요청은 프로젝트 관계를 탐색하지 않는다', async () => {
+    for (const [expression, word] of [['ReadTable(table)', 'ReadTable'], ['axes = table.AxisCount()', 'AxisCount']]) {
+        const s = setup(expression);
+        const hover = await s.hover(word);
+        assert.ok(hover?.contents.value.includes(`Function ${word}(`));
+        assert.strictEqual(s.projectLookups(), 0);
+    }
 });

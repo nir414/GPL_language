@@ -44,7 +44,7 @@ import { gprPathInDir, resolveGprSourcePaths, resolveProjectLibraryDirs, walkTre
 import { chooseCompileUnitGprs, GprIdentity, readGprIdentity, readGprIdentityInDir } from '../project/compileUnitTarget';
 import { ResolvedBreakpointTarget, resolveBreakpointTarget } from '../project/breakpointTarget';
 import { normalizeBreakpointCommandFile } from '../controller/debugging/breakpointCommand';
-import { isResolvedBreakpointRecord } from '../controller/debugging/breakpointReconcile';
+import { breakpointKey, isResolvedBreakpointRecord } from '../controller/debugging/breakpointReconcile';
 import { getDeployLock, describeDeployLock } from '../controller/deployment/deployLock';
 import { requestDeployCancellation } from '../controller/deployment/deployCancellation';
 import { activeOperations } from '../controller/automation/operationStore';
@@ -67,6 +67,7 @@ import {
     StackFrameInfo,
 } from '../controller/protocol/responseParser';
 import { GPLParser, GPLSymbolKind, GPLSymbol } from '../language/gplParser';
+import { ciEq } from '../language/identifiers';
 import { isReadOnlyConsoleCommand } from '../controller/commands/consoleCommandClassifier';
 import { fireDebugThreadsUpdated, fireDebugProbeResult, onDebugPollTrigger, getRuntimeConsoleHealth } from '../controller/debugging/debugBridge';
 import {
@@ -144,10 +145,14 @@ interface IAttachRequestArguments extends DebugProtocol.AttachRequestArguments {
     stopOnEntry?: boolean;
     projectName?: string;
     deployBeforeAttach?: boolean;
+    /** false면 Attach 초기화에서 Start를 보내지 않는다(stopOnEntry 여부와 무관). */
+    startOnAttach?: boolean;
     projectDir?: string;
     skipUnchangedOnDeploy?: boolean;
     stopAllBeforeAttach?: boolean;
     clearProjectBreakpointsOnAttach?: boolean;
+    /** 세션 전부터 있던 중단점은 설정·해제·분리 시에도 그대로 둔다. */
+    preserveExistingBreakpoints?: boolean;
     /** true면 디버거 분리(세션 종료) 시 제어기 측 프로그램도 정지한다(Stop -all). 기본 false(실행 유지). */
     stopAllOnDisconnect?: boolean;
     /** `Start -stack <KB>` — 프로시저 스택 크기(문서 기본 4 KB). 1~1024 범위 밖은 무시. */
@@ -500,6 +505,10 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _stopOnEntry = false;
     // 디버거 분리 시 제어기 측 프로그램도 정지할지 여부(attach args로 설정).
     private _stopAllOnDisconnect = false;
+    private _startOnAttach = true;
+    private _preserveExistingBreakpoints = false;
+    private _preservedBreakpoints = new Set<string>();
+    private _preservedBreakpointResponse = '';
     // Start 스위치(launch 구성에서 옴 — 문서 구문은 startCommand.ts 참조)
     private _startStackSizeKb: number | undefined;
     private _startShowInitStatements = false;
@@ -616,8 +625,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         super.configurationDoneRequest(response, args);
         this._configurationDone = true;
 
-        // stopOnEntry=false 이면 프로젝트를 시작해야 쓰레드가 생긴다
-        if (!this._stopOnEntry && this._projectName && this._isConnected) {
+        // 기존 실행형 구성은 진입 중단 없이 시작한다. Attach Only는 startOnAttach=false로 이 경로를 끈다.
+        if (this._startOnAttach && !this._stopOnEntry && this._projectName && this._isConnected) {
             // 자동 Start는 로봇 모션을 즉시 유발할 수 있으므로 기본값으로 모달 확인을 거친다
             // (설정 gpl.controller.requireStartConfirmation, 기본 true).
             const requireConfirm = vscode.workspace
@@ -773,7 +782,11 @@ export class GPLDebugSession extends LoggingDebugSession {
         // Optional preflight: stop all threads and clear existing breakpoints for clean session.
         // clearProjectBreakpointsOnAttach 기본값: true (이전 세션의 잔재 BP로 인한 중복 설정 방지)
         const stopAllBeforeAttach = args.stopAllBeforeAttach === true;
-        const clearProjectBreakpointsOnAttach = args.clearProjectBreakpointsOnAttach !== false;
+        this._startOnAttach = args.startOnAttach !== false;
+        this._preserveExistingBreakpoints = args.preserveExistingBreakpoints === true;
+        this._preservedBreakpoints.clear();
+        this._preservedBreakpointResponse = '';
+        const clearProjectBreakpointsOnAttach = !this._preserveExistingBreakpoints && args.clearProjectBreakpointsOnAttach !== false;
         // 세션 종료(disconnect) 시 프로그램 정지 여부를 기억해 둔다.
         this._stopAllOnDisconnect = args.stopAllOnDisconnect === true;
         this._startStackSizeKb = typeof args.startStackSizeKb === 'number' ? args.startStackSizeKb : undefined;
@@ -790,6 +803,24 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._updateProjectDirs();
         this._buildSourceFileMap();
 
+        if (this._preserveExistingBreakpoints) {
+            const existing = await this._sendCmd('Show Break');
+            if (!existing || !existing.includes('</STATUS>') || !isSuccess(existing)) {
+                this._isConnected = false;
+                this.sendErrorResponse(response, { id: 1005, format: '기존 중단점 목록을 확인하지 못해 Attach를 중단했습니다.' });
+                return;
+            }
+            this._preservedBreakpointResponse = existing;
+            for (const bp of parseBreakList(existing)) {
+                if ((!bp.project || ciEq(bp.project, this._projectName)) && bp.file && bp.fileLine > 0) {
+                    for (const form of this._bpFileForms(bp.file)) {
+                        this._preservedBreakpoints.add(breakpointKey({ file: form, line: bp.fileLine }));
+                    }
+                }
+            }
+            this._log('기존 제어기 중단점 보존 — 이 세션이 추가한 중단점만 관리합니다.');
+        }
+
         // GitHub #21: 로컬 소스가 제어기 컴파일 코드보다 새로운지 판정(Attach only 의 핵심 사용 사례).
         // deployBeforeAttach 성공 경로는 방금 기록이 갱신됐으므로 stale 이 없는 것이 정상이지만, 그래도
         // 호출해 빈 목록 이벤트로 상태바 배지를 정리한다. 이후 세션 중 저장·재컴파일에도 반응한다.
@@ -800,7 +831,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         );
 
         // If stopOnEntry, start the project with -break to pause at Main's first line
-        this._stopOnEntry = !!args.stopOnEntry;
+        this._stopOnEntry = this._startOnAttach && !!args.stopOnEntry;
         if (this._stopOnEntry && this._projectName && !(await this._waitDeployLockForStart('stopOnEntry Start'))) {
             // 다른 창/프로세스의 업로드/배포가 계속 잡혀 있음 — attach 상태는 유지하고 Start만 보내지 않는다.
             this._log(`⚠ stopOnEntry Start를 보내지 않았습니다. 배포/업로드 완료 후 디버그 콘솔에서 >Start ${this._projectName} -break -bex 를 사용하세요.`);
@@ -1050,7 +1081,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             // Nobreak 와 같은 폴백을 태운다(무공백/문서 표기 × basename/프로젝트 상대 경로) —
             // 종전에는 Break 만 basename 무공백 1회여서 표기를 가리는 제어기에서 조용히 실패했다.
             // 단, 이미 -508 로 거부된 파일은 표기 문제가 아니므로 1회만 시도해 왕복을 아낀다.
-            const sendBreak = () => (this._bpRejectedFiles.has(baseKey)
+            const sendBreak = () => (!this._preserveExistingBreakpoints && this._bpRejectedFiles.has(baseKey)
                 ? this._sendCmd(cmd)
                 : this._sendBpCommandWithFallback('Break', proj, controllerFile, line));
             const resp = await sendBreak();
@@ -2170,7 +2201,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             const def = defs[0];
             // 소스 BP 와 같은 폴백/안내를 쓴다 — 표기를 가리는 제어기와 라이브러리 소스 모두 대응.
             const defKey = def.file.toLowerCase();
-            const resp = this._bpRejectedFiles.has(defKey)
+            const resp = !this._preserveExistingBreakpoints && this._bpRejectedFiles.has(defKey)
                 ? await this._sendCmd(this._bpCommand('Break', proj, def.file, def.line))
                 : await this._sendBpCommandWithFallback('Break', proj, def.file, def.line);
             const verified = resp !== null && (isSuccess(resp) || /Duplicate breakpoint/i.test(resp));
@@ -2403,7 +2434,9 @@ export class GPLDebugSession extends LoggingDebugSession {
         const proj = this._projectName;
         if (!target || !proj) { return false; }
 
-        const setResp = await this._sendCmd(this._bpCommand('Break', proj, target.file, target.line));
+        const setResp = this._preserveExistingBreakpoints
+            ? await this._sendBpCommandWithFallback('Break', proj, target.file, target.line)
+            : await this._sendCmd(this._bpCommand('Break', proj, target.file, target.line));
         const ok = setResp !== null && (isSuccess(setResp) || /Duplicate breakpoint/i.test(setResp));
         if (!ok) {
             this._log(`⚠ Step Into Target: 임시 BP 설정 실패(${target.file}:${target.line}) — 기본 Step 으로 진행`);
@@ -3172,6 +3205,11 @@ export class GPLDebugSession extends LoggingDebugSession {
         line: number,
     ): Promise<string | null> {
         const forms = this._bpFileForms(file);
+        if (this._preserveExistingBreakpoints && forms.some(form => this._preservedBreakpoints.has(breakpointKey({ file: form, line })))) {
+            this._log(`기존 BP 유지: ${file}:${line} — Set ${kind} 전송 생략`);
+            // Attach에서 받은 실제 Show Break 응답이다. 기존 BP를 다시 설정/해제하지 않는다.
+            return this._preservedBreakpointResponse;
+        }
         const ordered = this._bpPreferProjectRelativeFile && forms.length > 1
             ? [...forms].reverse()
             : forms;

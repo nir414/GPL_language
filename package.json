@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.15.4",
+    "version": "0.16.4",
     "publisher": "nir414",
     "icon": "resources/gpl-logo.png",
     "repository": {
@@ -53,6 +53,8 @@
         "onCommand:gpl.project.promoteSourceForBreakpoint",
         "onCommand:gpl.debug.generateLaunch",
         "onCommand:gpl.debug.attachOnly",
+        "onCommand:gpl.controller.openProjectForDebugging",
+        "workspaceContains:.gpl-controller-debug.json",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
         "onCommand:gpl.console.ensure",
@@ -163,6 +165,16 @@
                                 "type": "boolean",
                                 "description": "Clear existing controller breakpoints for the target project before attaching. Prevents breakpoint duplication across restarts.",
                                 "default": true
+                            },
+                            "startOnAttach": {
+                                "type": "boolean",
+                                "description": "Start the project during Attach initialization. Set false to attach to the existing program without Start, including when stopOnEntry is true.",
+                                "default": true
+                            },
+                            "preserveExistingBreakpoints": {
+                                "type": "boolean",
+                                "description": "Preserve controller breakpoints present at Attach, including when updating editor breakpoints or detaching. Overrides clearProjectBreakpointsOnAttach.",
+                                "default": false
                             },
                             "stopAllOnDisconnect": {
                                 "type": "boolean",
@@ -662,6 +674,12 @@
                 "title": "Download (다운로드)",
                 "category": "GPL",
                 "icon": "$(cloud-download)"
+            },
+            {
+                "command": "gpl.controller.openProjectForDebugging",
+                "title": "Open Controller Project for Debugging (제어기 프로젝트 열어 디버깅)",
+                "category": "GPL",
+                "icon": "$(debug-alt)"
             },
             {
                 "command": "gpl.controller.ftpDelete",
@@ -1336,6 +1354,11 @@
                     "command": "gpl.controller.ftpDownload",
                     "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
                     "group": "ftp@5"
+                },
+                {
+                    "command": "gpl.controller.openProjectForDebugging",
+                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "group": "ftp@1"
                 },
                 {
                     "command": "gpl.console.start",

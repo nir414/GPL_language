@@ -39,6 +39,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseGprText, sourceKey } from './gprSync';
 import { isPathUnder, normalizeDirKey } from '../util/pathKey';
+import { readControllerProjectManifest } from './controllerProjectWorkspace';
 
 /** 소스로 볼 기본 확장자(소문자, 점 포함). */
 export const DEFAULT_SOURCE_EXTENSIONS: readonly string[] = ['.gpl'];
@@ -408,6 +409,60 @@ export function ancestorRelativePathCandidates(projectDir: string, raw: string):
     return out;
 }
 
+export interface ControllerSourceRoot { sourceRoot: string; remoteRoot: string; }
+
+/** FTP 다운로드와 로컬 그래프가 같은 사본 경계·원격 경로 대응을 사용한다. */
+export function controllerLibraryCandidates(sourceRoot: string, remoteRoot: string, projectDir: string, raw: string): string[] {
+    const remote = raw.trim().replace(/\\/g, '/');
+    let candidates: string[];
+    if (remote.startsWith('/')) {
+        const root = path.posix.normalize(remoteRoot).replace(/\/$/, '');
+        const absolute = path.posix.normalize(remote);
+        if (!absolute.toLowerCase().startsWith(`${root.toLowerCase()}/`)) { return []; }
+        candidates = [path.resolve(sourceRoot, absolute.slice(root.length + 1))];
+    } else {
+        candidates = ancestorRelativePathCandidates(projectDir, raw);
+    }
+    return candidates.filter(candidate => isPathUnder(candidate, sourceRoot)
+        && normalizeDirKey(candidate) !== normalizeDirKey(sourceRoot));
+}
+
+/** 개별 branch manifest보다 그 branch들을 함께 받은 최상위 snapshot manifest를 우선한다. */
+function controllerSnapshotRoot(gprPath: string): ControllerSourceRoot | undefined {
+    let current = path.dirname(path.resolve(gprPath));
+    let result: ControllerSourceRoot | undefined;
+    let host: string | undefined;
+    while (true) {
+        const manifest = readControllerProjectManifest(current);
+        if (manifest) {
+            if (manifest.mode !== 'snapshot' || (host && host !== manifest.controllerHost.toLowerCase())) { break; }
+            host = manifest.controllerHost.toLowerCase();
+            result = { sourceRoot: current, remoteRoot: manifest.sourceRemotePath };
+        }
+        const parent = path.dirname(current);
+        if (parent === current) { return result; }
+        current = parent;
+    }
+    return result;
+}
+
+/** 제어기의 대소문자 비구분 참조를 실제 다운로드 표기로 복원한다. 사본 밖은 탐색하지 않는다. */
+function canonicalControllerDirectory(sourceRoot: string, candidate: string): string | undefined {
+    if (!isPathUnder(candidate, sourceRoot)) { return undefined; }
+    let current = path.resolve(sourceRoot);
+    for (const segment of path.relative(current, candidate).split(path.sep).filter(Boolean)) {
+        try {
+            const entries = fs.readdirSync(current, { withFileTypes: true }).filter(entry => entry.isDirectory());
+            const exact = entries.find(entry => entry.name === segment);
+            const matches = entries.filter(entry => entry.name.toLowerCase() === segment.toLowerCase());
+            const entry = exact ?? (matches.length === 1 ? matches[0] : undefined);
+            if (!entry) { return undefined; }
+            current = path.join(current, entry.name);
+        } catch { return undefined; }
+    }
+    return current;
+}
+
 function libraryDirCandidates(bases: readonly string[], raw: string): string[] {
     const out: string[] = [];
     const seen = new Set<string>();
@@ -459,12 +514,16 @@ function defaultReadGprText(filePath: string): string {
 }
 
 export interface ResolveLibraryOptions {
+    /** 다운로드 진행 중 최상위 manifest가 아직 없을 때도 동일한 snapshot 경로 해석을 적용한다. */
+    controllerSource?: ControllerSourceRoot;
     /** 워크스페이스에서 수집한 `.gpr` 경로 — 디스크 후보가 빗나갔을 때의 폴백 검색 대상. */
     knownGprPaths?: readonly string[];
     /** 라이브러리가 다른 라이브러리를 참조하는 깊이 상한(문서상 가능). 기본 8. */
     maxDepth?: number;
     /** 테스트 주입용 `.gpr` 읽기. 기본은 `fs.readFileSync(utf8)`, 실패는 빈 문자열. */
     readText?: (filePath: string) => string;
+    /** 폴더→.gpr 조회. 반복 관계 해석을 캐시할 때 주입하며 경로 후보의 우선순위는 그대로 유지한다. */
+    findGprInDir?: (dir: string) => string | undefined;
 }
 
 export interface ResolvedLibraries {
@@ -529,8 +588,10 @@ export function buildLibraryGraph(
 ): LibraryGraph {
     const readText = opts.readText ?? defaultReadGprText;
     const maxDepth = opts.maxDepth ?? 8;
+    const findGpr = opts.findGprInDir ?? gprPathInDir;
     const known = opts.knownGprPaths ?? [];
     const rootGpr = path.resolve(gprPath);
+    const controllerSource = opts.controllerSource ?? controllerSnapshotRoot(rootGpr);
     const rootDir = path.dirname(rootGpr);
     const dirs: string[] = [];
     const unresolved: string[] = [];
@@ -558,11 +619,15 @@ export function buildLibraryGraph(
             if (!raw) { continue; }
 
             let libGpr: string | undefined;
-            for (const candidate of libraryDirCandidates(bases, raw)) {
-                libGpr = gprPathInDir(candidate);
+            const candidates = controllerSource
+                ? bases.flatMap(base => controllerLibraryCandidates(controllerSource.sourceRoot, controllerSource.remoteRoot, base, raw))
+                : libraryDirCandidates(bases, raw);
+            for (const candidate of candidates) {
+                const local = controllerSource ? canonicalControllerDirectory(controllerSource.sourceRoot, candidate) : candidate;
+                libGpr = local ? findGpr(local) : undefined;
                 if (libGpr) { break; }
             }
-            libGpr = libGpr ?? matchKnownGprByPath(raw, known);
+            if (!controllerSource) { libGpr = libGpr ?? matchKnownGprByPath(raw, known); }
             if (!libGpr) {
                 node.refs.push({ raw });
                 if (!unresolved.includes(raw)) { unresolved.push(raw); }
@@ -632,7 +697,7 @@ export function collectRelatedGprPaths(
     };
 
     for (const dir of resolveProjectLibraryDirs(selfGpr, gprText, opts).dirs) {
-        const g = gprPathInDir(dir);
+        const g = (opts.findGprInDir ?? gprPathInDir)(dir);
         if (g) { push(g); }
     }
 

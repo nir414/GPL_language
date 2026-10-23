@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
 - **최종 갱신: 2026-10-23** · 현재 package 버전 **0.16.3** (원격 수정과 로컬 기능 병합. 검증·패키징 결과는 §1-FU 참조.)
-- **직전 세션: §1-FU** — 로컬 변경 28개를 원본 백업·stash에 보관한 뒤 원격 커밋 2개를 fast-forward하고 재적용했다. 양쪽 기능·이력을 보존하고 테스트의 OS 경로 기준을 맞췄다.
+- **직전 세션: §1-FU** — 원격 수정과 로컬 변경을 0.16.3으로 통합하고 전체 1249/1249·VSIX 검증을 마쳤다. 사용자 승인 뒤 28개 파일을 23ae803으로 커밋·push했으며 GitHub 작업 브랜치의 같은 SHA를 직접 확인했다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -1331,4 +1331,6 @@ FTP 다운로드와 로컬 작업공간, Attach가 분리돼 제어기 프로젝
 Windows 로컬 npm test(compile 포함) **1249/1249**와 git diff --check가 통과했다. 원래 로컬 변경 28개 중 20개는 내용이 그대로이며, 8개는 버전·문서·테스트 통합에 필요한 변경만 반영했다. 양쪽 인계 문서·아카이브의 모든 세션 원문 보존을 대조했다. VSIX 0.16.3 생성에 성공했고, manifest·운영 코드·리소스 179개가 현재 파일과 바이트 단위로 일치했다. README·CHANGELOG는 패키징 도구의 상대 링크·issue 링크 변환만 다르며 내용 보존을 확인했다. 개발 지침·테스트·임시 파일은 포함되지 않았다. 설치·F5 UI·실제 제어기 검증은 별도로 남아 있다. 병합 직후에는 로컬 변경을 미커밋 상태로 보존했으며, 이후 사용자가 커밋·push까지 진행하도록 승인했다.
 
 - 패키징: `dist/gpl-language-support-0.16.3.vsix`, **1,391,689 bytes**, SHA-256 **846F2966834DCE4F514997276CF72F202B02FF76CDDBB058E30AF93B39F36A03**. JavaScript 번들링 권고 경고 1건, 패키징 실패 없음. 검증 로그는 `dist/merge-0.16.3-tests.log`·`dist/merge-0.16.3-package.log`.
-- Git 병합 직후: HEAD와 origin/codex/domain-modules는 `e00e0fb`로 같고 ahead/behind 0/0, 미해결 충돌·staged 변경이 없었다. 후속 승인에 따라 검증된 28개 파일을 같은 작업 브랜치에 커밋·push한다. 최신 fetch에서 원격 추가 변경이 없고 테스트 이후 소스·package 변경이 없음을 재확인했다. 이번 검사에서는 Linux CI·MCP 테스트를 새로 실행하지 않았다.
+- Git 병합 직후: HEAD와 origin/codex/domain-modules는 `e00e0fb`로 같고 ahead/behind 0/0, 미해결 충돌·staged 변경이 없었다. 후속 승인에 따라 검증된 28개 파일을 `23ae803`으로 커밋해 같은 작업 브랜치에 push했다. 최신 fetch에서 원격 추가 변경이 없고 테스트 이후 소스·package 변경이 없음을 재확인했다. 이번 검사에서는 Linux CI·MCP 테스트를 새로 실행하지 않았다.
+
+- 푸시 검증: GitHub `refs/heads/codex/domain-modules`와 로컬 HEAD가 `23ae80366aa4d367b16eb203fe1539097ae6dccf`로 일치하고 작업 트리가 깨끗함을 확인했다. 이 완료 기록은 후속 문서 커밋으로 같은 브랜치에 반영한다. main 병합·태그·릴리스 게시·VSIX 설치는 수행하지 않았고 복구용 stash는 유지한다.

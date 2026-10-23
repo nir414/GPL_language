@@ -1334,3 +1334,5 @@ Windows 로컬 npm test(compile 포함) **1249/1249**와 git diff --check가 통
 - Git 병합 직후: HEAD와 origin/codex/domain-modules는 `e00e0fb`로 같고 ahead/behind 0/0, 미해결 충돌·staged 변경이 없었다. 후속 승인에 따라 검증된 28개 파일을 `23ae803`으로 커밋해 같은 작업 브랜치에 push했다. 최신 fetch에서 원격 추가 변경이 없고 테스트 이후 소스·package 변경이 없음을 재확인했다. 이번 검사에서는 Linux CI·MCP 테스트를 새로 실행하지 않았다.
 
 - 푸시 검증: GitHub `refs/heads/codex/domain-modules`와 로컬 HEAD가 `23ae80366aa4d367b16eb203fe1539097ae6dccf`로 일치하고 작업 트리가 깨끗함을 확인했다. 이 완료 기록은 후속 문서 커밋으로 같은 브랜치에 반영한다. main 병합·태그·릴리스 게시·VSIX 설치는 수행하지 않았고 복구용 stash는 유지한다.
+
+- main 전체 반영 후속: PR #37을 생성했다. 최초 Linux CI는 compile 통과·1248/1249로 실패했으며, 원격 대소문자 보존 테스트가 다운로드 후 로컬 파일 시스템도 대소문자를 무시한다고 가정한 것이 원인이었다. 원격 표기·실제 다운로드 검증은 유지하고, 로컬 그래프의 미해결 참조 기대값은 실제 파일 시스템의 경로 존재 여부로 결정하도록 테스트만 수정했다. 실행 코드는 변경하지 않았다. 수정 후 Windows 테스트·Linux CI·MCP·VSIX smoke를 재확인하고 main 병합을 진행한다.

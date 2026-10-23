@@ -118,7 +118,10 @@ test('controller project debug: 라이브러리 경로의 대소문자는 원격
         const unresolved = await downloadControllerLibraries(target.host, '/GPL', p.sources, gpr, () => {}, p.io);
         assert.deepStrictEqual(p.downloaded, ['/GPL/Probe', '/GPL/Lib']);
         assert.ok(!p.queried.includes('/GPL/lib'));
-        assert.deepStrictEqual(unresolved, ['Missing']);
+        assert.ok(fs.existsSync(path.join(p.sources, 'Lib', 'Core', 'Core.gpl')));
+        // 원격 표기는 보존한다. 내려받은 뒤 로컬 그래프의 경로 해석은 파일 시스템을 따른다.
+        const localReferenceExists = fs.existsSync(path.join(p.sources, 'lib', 'core', 'Project.gpr'));
+        assert.deepStrictEqual(unresolved, localReferenceExists ? ['Missing'] : ['lib\\core']);
     } finally { p.cleanup(); }
 });
 

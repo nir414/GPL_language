@@ -181,13 +181,16 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 	const { context, outputChannel } = host;
 
 	// ── 그룹 Compile 뒤 Unload 위험 (controller/commands/unloadRisk.ts) ─────────────────────────────
-	// 그룹 판정(ProjectStart 유무)은 워크스페이스 .gpr 로 한다 — 같은 이름이 여러 과제 폴더에 있으면 하나라도 실행 가능하면
-	// 실행 가능으로 본다(그룹으로 단정하지 않는다). 워크스페이스에 없는 이름은 모름(표시·Start 거부 없음).
+	// 그룹 판정(ProjectStart 유무)은 워크스페이스 .gpr 로 한다. 제어기 명령 인자는 .gpr ProjectName 이지만 배포가 폴더명 후보로
+	// 컴파일하기도 하므로 둘 다 본다. 같은 이름이 여러 과제 폴더에 있으면 하나라도 실행 가능하면 실행 가능으로 본다(그룹으로
+	// 단정하지 않는다). 워크스페이스에 없는 이름은 모름(표시·Start 거부 없음).
 	setUnloadRiskLogger(line => host.log(line));
 	setProjectKindResolver({
 		lookup: async name => {
 			const key = name.trim().toLowerCase();
-			const same = (await buildTargetCandidates()).filter(c => c.projectName.trim().toLowerCase() === key);
+			const candidates = await buildTargetCandidates();
+			const byName = candidates.filter(c => c.projectName.trim().toLowerCase() === key);
+			const same = byName.length > 0 ? byName : candidates.filter(c => path.basename(c.dir).trim().toLowerCase() === key);
 			return same.length === 0 ? undefined : { runnable: same.some(c => c.runnable) };
 		},
 		runnableProjects: async () => [...new Set((await buildTargetCandidates()).filter(c => c.runnable).map(c => c.projectName))],

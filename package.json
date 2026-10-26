@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.16.4",
+    "version": "0.17.2",
     "publisher": "nir414",
     "icon": "resources/gpl-logo.png",
     "repository": {
@@ -54,6 +54,10 @@
         "onCommand:gpl.debug.generateLaunch",
         "onCommand:gpl.debug.attachOnly",
         "onCommand:gpl.controller.openProjectForDebugging",
+        "onCommand:gpl.controller.browseRemoteFiles",
+        "onCommand:gpl.controller.openRemoteFile",
+        "onCommand:gpl.controller.refreshRemoteFile",
+        "onFileSystem:gpl-ftp",
         "workspaceContains:.gpl-controller-debug.json",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
@@ -676,6 +680,24 @@
                 "icon": "$(cloud-download)"
             },
             {
+                "command": "gpl.controller.browseRemoteFiles",
+                "title": "Browse Controller Files (제어기 FTP 폴더 연결)",
+                "category": "GPL",
+                "icon": "$(remote-explorer)"
+            },
+            {
+                "command": "gpl.controller.refreshRemoteFile",
+                "title": "Refresh Controller File (제어기 파일 새로 읽기)",
+                "category": "GPL",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "gpl.controller.openRemoteFile",
+                "title": "Open Controller File (제어기 파일 열기)",
+                "category": "GPL",
+                "icon": "$(file-code)"
+            },
+            {
                 "command": "gpl.controller.openProjectForDebugging",
                 "title": "Open Controller Project for Debugging (제어기 프로젝트 열어 디버깅)",
                 "category": "GPL",
@@ -839,6 +861,14 @@
                 },
                 {
                     "command": "gpl.controller.ftpDownload",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.openRemoteFile",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.refreshRemoteFile",
                     "when": "false"
                 },
                 {
@@ -1083,6 +1113,9 @@
                     "group": "9_connection@1",
                     "when": "view == gplThreads && gpl.ui.connected"
                 }
+            ],
+            "editor/title": [
+                { "command": "gpl.controller.refreshRemoteFile", "when": "resourceScheme == gpl-ftp", "group": "navigation" }
             ],
             "view/item/context": [
                 {
@@ -1902,7 +1935,7 @@
                     "default": [
                         ".gpl"
                     ],
-                    "description": "Project.gpr 소스 목록 동기화에서 소스로 취급할 확장자입니다. GDE는 .gpo(컴파일 산출물)를 ProjectSource에 넣지 않으므로 기본은 .gpl만입니다."
+                    "description": "Project.gpr 소스 목록 동기화에서 소스로 취급할 확장자입니다. 기본은 .gpl이며, 모션 객체·전역 GPL 변수를 담는 전역 모듈 파일(.gpo)을 동기화하려면 명시적으로 추가하세요."
                 },
                 "gpl.controller.memoryGuard.warnMb": {
                     "type": "number",

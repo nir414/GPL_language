@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { Writable } from 'stream';
 import { Client as FtpClient, FileInfo } from 'basic-ftp';
 import {
 	SyncManifestFiles,
@@ -103,6 +104,31 @@ export async function listRemoteDir(host: string, remotePath: string): Promise<F
 	try {
 		const list = await client.list(remotePath);
 		return list.map(toFtpEntry);
+	} finally {
+		client.close();
+	}
+}
+
+/** 원격 파일 한 개를 읽는다. 폴더 다운로드·원격 쓰기 없이 필요한 문서만 가져온다. */
+export async function readRemoteFile(host: string, remotePath: string): Promise<Uint8Array> {
+	const client = await createClient(host);
+	const chunks: Buffer[] = [];
+	const maxBytes = 64 * 1024 * 1024;
+	let bytes = 0;
+	const destination = new Writable({
+		write(chunk: Buffer, _encoding, callback) {
+			bytes += chunk.length;
+			if (bytes > maxBytes) {
+				callback(new Error(`원격 파일 읽기 상한(64 MiB)을 넘었습니다: ${remotePath}`));
+				return;
+			}
+			chunks.push(Buffer.from(chunk));
+			callback();
+		},
+	});
+	try {
+		await client.downloadTo(destination, remotePath);
+		return Buffer.concat(chunks);
 	} finally {
 		client.close();
 	}

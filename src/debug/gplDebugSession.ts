@@ -45,6 +45,8 @@ import { chooseCompileUnitGprs, GprIdentity, readGprIdentity, readGprIdentityInD
 import { ResolvedBreakpointTarget, resolveBreakpointTarget } from '../project/breakpointTarget';
 import { normalizeBreakpointCommandFile } from '../controller/debugging/breakpointCommand';
 import { breakpointKey, isResolvedBreakpointRecord } from '../controller/debugging/breakpointReconcile';
+import { getRemoteSourceSession } from '../controller/files/remoteSourceSession';
+import type { RemoteDebugProject, RemoteSourceFile, RemoteSourceSession } from '../controller/files/remoteSourceSession';
 import { getDeployLock, describeDeployLock } from '../controller/deployment/deployLock';
 import { requestDeployCancellation } from '../controller/deployment/deployCancellation';
 import { activeOperations } from '../controller/automation/operationStore';
@@ -148,6 +150,8 @@ interface IAttachRequestArguments extends DebugProtocol.AttachRequestArguments {
     /** false면 Attach 초기화에서 Start를 보내지 않는다(stopOnEntry 여부와 무관). */
     startOnAttach?: boolean;
     projectDir?: string;
+    /** 작업공간을 바꾸지 않고 FTP 소스를 여는 세션. */
+    remoteSourceSessionId?: string;
     skipUnchangedOnDeploy?: boolean;
     stopAllBeforeAttach?: boolean;
     clearProjectBreakpointsOnAttach?: boolean;
@@ -304,6 +308,8 @@ export class GPLDebugSession extends LoggingDebugSession {
      * 확정한다(과제별 동명 프로젝트가 여럿인 워크스페이스 — `project/compileUnitTarget.ts`).
      */
     private _projectDirHint: string | undefined;
+    private _remoteSourceSession: RemoteSourceSession | undefined;
+    private _remoteProject: RemoteDebugProject | undefined;
     /**
      * `ProjectLibrary` 로 참조된 하위 프로젝트의 폴더(= `_projectDirs` 중 라이브러리 몫).
      * 이 폴더 아래 소스는 제어기가 BP 대상 파일로 찾지 못한다 — `_librarySourceBpHint` 참조.
@@ -685,6 +691,36 @@ export class GPLDebugSession extends LoggingDebugSession {
             ip: args.controllerIp || baseCfg.ip,
             port: args.controllerPort ?? baseCfg.port,
         };
+        this._remoteSourceSession = undefined;
+        this._remoteProject = undefined;
+
+        if (args.remoteSourceSessionId) {
+            try {
+                const remote = getRemoteSourceSession(args.remoteSourceSessionId);
+                if (!remote || !ciEq(remote.host, this._config.ip)) {
+                    throw new Error('원격 소스 세션과 제어기 연결 대상이 일치하지 않습니다.');
+                }
+                const gpr = args.projectDir && gprPathInDir(args.projectDir);
+                const remoteGpr = gpr && remote.remotePathForLocal(gpr);
+                if (!remoteGpr) { throw new Error('원격 소스 세션에 속한 프로젝트를 찾지 못했습니다.'); }
+                const project = await remote.prepareProject(remoteGpr);
+                if (args.projectName && !ciEq(args.projectName, project.projectName)) {
+                    throw new Error('원격 프로젝트와 디버깅 대상 프로젝트 이름이 일치하지 않습니다.');
+                }
+                this._remoteSourceSession = remote;
+                this._remoteProject = project;
+                // 원격 소스는 현재 실행 코드에 연결한다. 구성 기본값으로 장비 상태가 바뀌지 않게 한다.
+                args = {
+                    ...args, projectName: project.projectName, projectDir: project.projectDir,
+                    deployBeforeAttach: false, startOnAttach: false, stopOnEntry: false,
+                    stopAllBeforeAttach: false, stopAllOnDisconnect: false,
+                    clearProjectBreakpointsOnAttach: false, preserveExistingBreakpoints: true,
+                };
+            } catch (err) {
+                this.sendErrorResponse(response, { id: 1006, format: `원격 소스 준비 실패: ${err instanceof Error ? err.message : String(err)}` });
+                return;
+            }
+        }
 
         // 디버그 세션 폴링 간격은 사용자 설정을 우선하되,
         // 과도한 트래픽을 막기 위해 안전 범위(1s~5s)로 제한한다.
@@ -988,9 +1024,20 @@ export class GPLDebugSession extends LoggingDebugSession {
         response: DebugProtocol.SetBreakpointsResponse,
         args: DebugProtocol.SetBreakpointsArguments,
     ): Promise<void> {
-        const sourcePath = args.source.path || '';
-        const baseName = path.basename(sourcePath);
+        let sourcePath = args.source.path || '';
         const clientLines = args.lines || [];
+        if (this._remoteSourceSession) {
+            try {
+                sourcePath = await this._ensureRemoteSourcePath(sourcePath);
+            } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                response.body = { breakpoints: clientLines.map(line => ({ verified: false, line, message })) };
+                this._log(`원격 BP 전송 생략: ${message}`);
+                this.sendResponse(response);
+                return;
+            }
+        }
+        const baseName = path.basename(sourcePath);
 
         // Project name is required for Brooks breakpoint commands
         const proj = this._projectName;
@@ -1064,7 +1111,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             // 문서 규칙: 빈 줄·주석을 지정하면 제어기가 다음 실행 문장으로 옮긴다.
             // 어느 줄로 옮겨지는지 미리 계산해 그 줄로 설정하고 응답에도 그 줄을 돌려준다
             // (그러지 않으면 VS Code 의 BP 표시와 실제 정지 줄이 어긋난다).
-            const adjusted = this._adjustBreakpointLine(baseName, requestedLine);
+            const adjusted = this._adjustBreakpointLine(this._remoteSourceSession ? sourcePath : baseName, requestedLine);
             const line = adjusted.line;
             if (clientSideBpLogic) {
                 const src = (args.breakpoints ?? []).find(b => b.line === requestedLine);
@@ -1095,6 +1142,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             }
             const verified = finalResp !== null && isSuccess(finalResp);
             const bp = new Breakpoint(verified && !staleEntry, line) as DebugProtocol.Breakpoint;
+            if (this._remoteSourceSession) { bp.source = this._dapSource(sourcePath); }
             bp.id = ++this._bpIdCounter;
             idMap.set(line, bp.id);
             if (!verified) {
@@ -1253,9 +1301,14 @@ export class GPLDebugSession extends LoggingDebugSession {
             const f = frames[i];
             const frameId = this._allocFrameId(threadName, f.frameIndex);
 
-            const source = f.file
-                ? new Source(f.file, this._resolveSourcePath(f.file))
-                : undefined;
+            let source: Source | undefined;
+            if (f.file) {
+                if (this._remoteSourceSession) {
+                    try { await this._ensureRemoteSourcePath(f.file); }
+                    catch (err) { this._log(`스택 소스 준비 실패: ${err instanceof Error ? err.message : String(err)}`); }
+                }
+                source = this._dapSource(f.file);
+            }
 
             dapFrames.push(new StackFrame(frameId, f.process || '(unknown)', source, f.fileLine));
         }
@@ -2131,11 +2184,20 @@ export class GPLDebugSession extends LoggingDebugSession {
      * BP 유효 줄 힌트 — VS Code 가 이 구간에서 BP를 걸 수 있는 줄을 물어본다.
      * 제어기 명령을 보내지 않고 로컬 파서로만 답한다.
      */
-    protected override breakpointLocationsRequest(
+    protected override async breakpointLocationsRequest(
         response: DebugProtocol.BreakpointLocationsResponse,
         args: DebugProtocol.BreakpointLocationsArguments,
-    ): void {
-        const baseName = path.basename(args.source.path || '');
+    ): Promise<void> {
+        let sourcePath = args.source.path || '';
+        if (this._remoteSourceSession) {
+            try { sourcePath = await this._ensureRemoteSourcePath(sourcePath); }
+            catch {
+                response.body = { breakpoints: [] };
+                this.sendResponse(response);
+                return;
+            }
+        }
+        const baseName = this._remoteSourceSession ? sourcePath : path.basename(sourcePath);
         const src = baseName ? this._readSourceLines(baseName) : undefined;
         if (!src) {
             // 소스를 못 읽으면 요청 구간을 그대로 허용한다(힌트를 못 준다고 BP를 막지는 않는다).
@@ -2174,6 +2236,26 @@ export class GPLDebugSession extends LoggingDebugSession {
             };
             this.sendResponse(response);
             return;
+        }
+
+        if (this._remoteSourceSession) {
+            const candidates = requested.map(req => this._findProcedureDefinitions(req.name));
+            const problems = candidates.map((defs, i) => {
+                if (defs.length === 0) {
+                    return `프로시저 '${requested[i].name}'를 현재 내려받은 원격 소스에서 찾지 못했습니다. 해당 파일을 먼저 열고 다시 시도하세요.`;
+                }
+                if (defs.length !== 1) { return `프로시저 '${requested[i].name}'의 원격 정의가 여러 개라 대상을 확정할 수 없습니다.`; }
+                const target = this._resolveBreakpointTarget(this._resolveSourcePath(defs[0].file), defs[0].line);
+                return target?.kind === 'direct-source' ? undefined : target?.message ?? '직접 ProjectSource의 프로시저가 아닙니다.';
+            });
+            if (problems.some(Boolean)) {
+                // 미로딩/모호한 함수 때문에 이전 함수 BP까지 해제하지 않는다.
+                response.body = { breakpoints: problems.map(message => ({
+                    verified: false, message: message ?? '해결되지 않은 원격 함수 BP가 있어 이번 변경을 적용하지 않았습니다.',
+                })) };
+                this.sendResponse(response);
+                return;
+            }
         }
 
         // 이전 함수 BP 해제 — 같은 줄에 소스 BP 가 있으면 남겨 둔다.
@@ -2232,6 +2314,7 @@ export class GPLDebugSession extends LoggingDebugSession {
 
     /** 소스 경로 해석 실패를 예외 없이 흘려보낸다(BP 응답의 source 표기용). */
     private _safeResolveSourcePath(baseName: string): string | undefined {
+        if (this._remoteSourceSession) { return this._remoteSourceForInput(baseName)?.uri; }
         try { return this._resolveSourcePath(baseName); } catch { return undefined; }
     }
 
@@ -2276,8 +2359,11 @@ export class GPLDebugSession extends LoggingDebugSession {
             return;
         }
 
-        const baseName = path.basename(args.source.path || '');
-        const src = baseName ? this._readSourceLines(baseName) : undefined;
+        const requestedPath = args.source.path || '';
+        const sourcePath = this._remoteSourceSession ? this._remoteSourceForInput(requestedPath)?.localPath : requestedPath;
+        const baseName = path.basename(sourcePath || '');
+        const sourceKey = this._remoteSourceSession ? sourcePath : baseName;
+        const src = sourceKey ? this._readSourceLines(sourceKey) : undefined;
         const threadName = this._lockedThreadName ?? this._findBreakThread();
         const frames = threadName ? this._cachedFrames.get(threadName) : undefined;
         const current = frames?.[0];
@@ -2286,13 +2372,20 @@ export class GPLDebugSession extends LoggingDebugSession {
             this.sendResponse(response);
             return;
         }
-        if (current.file && current.file.toLowerCase() !== baseName.toLowerCase()) {
+        if (this._remoteSourceSession) {
+            const currentSource = this._remoteSourceForInput(current.file || '');
+            if (!currentSource || !sourcePath || !this._isSamePath(currentSource.localPath, sourcePath)) {
+                this.sendResponse(response);
+                return;
+            }
+        }
+        if (!this._remoteSourceSession && current.file && current.file.toLowerCase() !== baseName.toLowerCase()) {
             // 다른 파일 — 문서상 같은 프로시저여야 하므로 대상이 될 수 없다.
             this.sendResponse(response);
             return;
         }
 
-        const ranges = this._procedureRangesFor(baseName, src);
+        const ranges = this._procedureRangesFor(sourceKey || baseName, src);
         const currentProc = enclosingProcedure(ranges, current.fileLine);
         const targetLine = resolveBreakpointLine(src, args.line, currentProc);
         if (!currentProc || targetLine === undefined) {
@@ -3308,6 +3401,16 @@ export class GPLDebugSession extends LoggingDebugSession {
      * Uses the pre-built source file map for fast lookup.
      */
     private _resolveSourcePath(filename: string): string {
+        if (this._remoteSourceSession) {
+            const source = this._remoteSourceForInput(filename);
+            if (source) { return source.localPath; }
+            if (!this._sourceResolveWarned.has(filename)) {
+                this._sourceResolveWarned.add(filename);
+                this._log(`원격 소스 해석 실패: "${filename}" — 선택한 프로젝트에서 유일한 소스를 찾지 못했습니다.`);
+            }
+            // 현재 작업공간의 동명 파일이나 상대 경로로 대체하지 않는다.
+            return '';
+        }
         // 제어기가 전체 경로(예: /flash/projects/MergeCode/PDBModule.gpl)를 줄 수도 있으므로
         // 항상 베이스네임으로 정규화한 뒤 워크스페이스 소스맵에서 조회한다.
         const base = filename.replace(/^.*[\\/]/, '');
@@ -3345,8 +3448,43 @@ export class GPLDebugSession extends LoggingDebugSession {
         return filename;
     }
 
+    /** 원격 파일 identity는 이 Attach에서 고른 .gpr의 선언 집합 안에서만 해석한다. */
+    private _remoteSourceForInput(file: string): RemoteSourceFile | undefined {
+        try {
+            const source = this._remoteSourceSession?.resolveSource(file);
+            return source && this._projectSourcePaths.some(candidate => this._isSamePath(candidate, source.localPath))
+                ? source : undefined;
+        } catch { return undefined; }
+    }
+
+    private async _ensureRemoteSourcePath(file: string): Promise<string> {
+        if (!this._isConnected) { throw new Error('디버그 세션이 종료되어 원격 소스 요청을 중단했습니다.'); }
+        const source = this._remoteSourceForInput(file);
+        if (!source) { throw new Error(`${file}: 선택한 프로젝트의 소스가 아니거나 동명 파일을 구분할 수 없습니다.`); }
+        const cached = fs.existsSync(source.localPath);
+        const loaded = await this._remoteSourceSession!.ensureSource(source.remotePath);
+        if (!this._isConnected) { throw new Error('디버그 세션이 종료되어 원격 소스 요청을 중단했습니다.'); }
+        if (!loaded || !this._isSamePath(loaded.localPath, source.localPath)) {
+            throw new Error(`${file}: 원격 소스를 가져오지 못했습니다.`);
+        }
+        if (!cached) {
+            this._globalDescriptorsCache = undefined;
+            this._propertyIndexCache = undefined;
+        }
+        return loaded.localPath;
+    }
+
+    private _dapSource(file: string): Source | undefined {
+        if (this._remoteSourceSession) {
+            const source = this._remoteSourceForInput(file);
+            return source ? new Source(path.posix.basename(source.remotePath), source.uri) : undefined;
+        }
+        return new Source(file, this._resolveSourcePath(file));
+    }
+
     /** 동명 소스 경합 시 프로젝트 폴더 우선으로 선택하고, 모호하면 베이스네임당 1회 경고를 남긴다. */
     private _pickSourcePath(key: string, candidates: string[]): string {
+        if (this._remoteSourceSession) { return this._remoteSourceForInput(key)?.localPath ?? ''; }
         const pick = pickSourceCandidate(candidates, this._projectDirs, this._projectSourcePaths)!;
         if (pick.ambiguous.length > 0 && !this._sourceResolveWarned.has(key)) {
             this._sourceResolveWarned.add(key);
@@ -3380,6 +3518,19 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._knownGprPaths = [];
         // 단위가 다시 확정되므로 "넓힌 상태"를 되돌린다 — 새 대상에서는 다시 좁혀서 시작한다.
         this._sourceMapWidened = false;
+        if (this._remoteProject && this._remoteSourceSession) {
+            this._mainProjectGprs = [this._remoteProject.gprPath];
+            this._projectSourcePaths = [...this._remoteProject.sourcePaths];
+            const gprs: string[] = [];
+            walkTree(this._remoteSourceSession.cacheRoot, (full, name) => {
+                if (/\.gpr$/i.test(name)) { gprs.push(full); }
+            });
+            this._knownGprPaths = gprs;
+            const text = fs.readFileSync(this._remoteProject.gprPath, 'utf8');
+            this._libraryDirs = resolveProjectLibraryDirs(this._remoteProject.gprPath, text, { knownGprPaths: gprs }).dirs;
+            this._projectDirs = [...new Set([this._remoteProject.projectDir, ...this._libraryDirs])];
+            return;
+        }
         // launch 의 projectDir(사람이 고른/자동화가 고정한 대상 폴더)이 있으면 그 .gpr 하나로 확정한다 —
         // 과제별 동명 프로젝트가 여럿인 워크스페이스에서 이름 일치만으로는 사본이 섞여, 배포본이 아닌
         // 사본의 같은 줄 번호(전혀 다른 코드)를 예외 위치로 열었다(2026-09-18). 규칙 정본: project/compileUnitTarget.ts.
@@ -4177,6 +4328,16 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._globalQueryMemo.clear();
         this._globalDescriptorsCache = undefined;
         this._propertyIndexCache = undefined;
+        if (this._remoteProject) {
+            // 아직 다운로드하지 않은 선언 소스도 매핑한다. FTP 내용은 열기/BP 요청 때 읽는다.
+            for (const file of this._projectSourcePaths) {
+                const key = path.basename(file).toLowerCase();
+                const candidates = this._sourceFileMap.get(key) ?? [];
+                if (!candidates.includes(file)) { candidates.push(file); }
+                this._sourceFileMap.set(key, candidates);
+            }
+            return;
+        }
         const roots = this._sourceMapRoots();
         if (roots.dirs.length === 0) { return; }
 

@@ -1,4 +1,4 @@
-/** 제어기 소스 사본과 Attach 대상의 연결. VS Code 창 전환 뒤에도 같은 대상을 사용한다. */
+/** 제어기 소스와 Attach 대상의 연결. 이전 전용 작업공간의 재개 정보도 호환용으로 유지한다. */
 import { normalizePathKey } from '../util/pathKey';
 export { controllerLibraryCandidates } from './projectSources';
 

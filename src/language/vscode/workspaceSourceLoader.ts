@@ -137,7 +137,7 @@ export class WorkspaceSourceLoader {
             for (let i = 0; i < filesToIndex.length; i++) {
                 const file = filesToIndex[i];
                 const fsPath = file.fsPath;
-                // .gpo 는 컴파일 산출물(바이너리) — 인덱싱하지 않는다.
+                // 전역 모듈(.gpo)은 현재 전체 인덱싱에서 제외한다. 열린 문서의 갱신 경로와는 별개다.
                 if (fsPath.toLowerCase().endsWith('.gpo')) {
                     continue;
                 }

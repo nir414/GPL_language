@@ -18,7 +18,7 @@ GPL Language Support 확장을 통해 AI 에이전트가 Brooks GPL 제어기 �
 
 제어기 안의 소스를 기준으로 기존 프로그램에 붙을 때는 FTP 프로젝트 폴더의
 **Open Controller Project for Debugging** (`gpl.controller.openProjectForDebugging`)을 사용한다.
-전용 Snapshot 작업공간과 참조 라이브러리를 준비하고, 창 전환·신뢰 확인 뒤 지정한 프로젝트에 한 번 Attach한다.
+기존 작업공간을 유지하며 원격 .gpr·라이브러리 관계를 확인하고 지정한 프로젝트에 Attach한다. 소스는 원격 파일을 열거나 디버거가 표시할 때만 읽기 전용 편집기로 가져온다. FTP 탐색만 필요하면 `GPL: Browse Controller Files`를 사용하며, 이 경로는 명령 콘솔에 연결하지 않는다.
 이 경로는 Deploy·Compile·Start·Stop을 수행하지 않고 기존 중단점을 보존한다.
 FTP 사본이 실행 바이너리의 소스와 같은지는 미확인이므로 다운로드/해시 검증을 컴파일 출처 증명으로 해석하지 않는다.
 받지 못한 참조는 경고로 남기며 그 라이브러리의 소스 매핑은 미완성일 수 있다. 이후 재열기는 저장된 F5 구성을 사용한다.

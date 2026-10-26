@@ -353,3 +353,8 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 ### 메모리 사전 검사
 
 `controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석하고 정책을 판정하는 순수 모듈입니다. `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사하고, `deployService`는 업로드 전에 추가 검사합니다. `memoryGuard.warnMb`(기본 4 MB)·`blockMb`(기본 2.5 MB)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 알 수 없는 측정은 정상으로 간주하지 않습니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. MCP는 Export의 `GPL_BRIDGE=only` 경로를 사용합니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
+
+
+### FTP 원격 소스 보기
+
+`controller/files/remoteSourceSession`은 VS Code를 참조하지 않고 FTP 메타데이터, 세션별 TMP 캐시와 원격 경로/URI 매핑을 소유한다. `activation/controllerRemoteFiles`가 읽기 전용 FileSystemProvider와 문서·DAP 세션의 수명을 연결하고, `activation/controllerProjectDebug`는 기존 작업공간을 유지한 채 Attach 구성을 전달한다. DAP는 명시한 원격 세션의 소스만 사용한다. `activation/controllerSourceLanguage`는 현재 열린 원격 문서를 별도 SymbolCache에 넣어 로컬 작업공간과 다른 원격 프로젝트의 심볼이 섞이지 않게 한다.

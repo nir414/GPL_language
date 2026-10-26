@@ -808,7 +808,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             // Private 심볼은 정의 파일(현재 문서) 스캔으로 충분하다. 파일 밖 검색은 결과도 없고 비용만 든다.
             if (!token.isCancellationRequested && !hasNonDocumentLocations && targetAccess !== 'private') {
                 scopeFallbackRan = true;
-                // .gpo는 컴파일 산출물(바이너리)이라 텍스트 검색 대상이 아니다 — .gpl만.
+                // 현재 추가 범위 검색은 .gpl만 지원한다. 전역 모듈(.gpo)로의 확대는 별도 검증이 필요하다.
                 const scope = await resolveProjectFileScope(targetUri.fsPath, {
                     extensions: ['.gpl'],
                     maxFiles: MAX_SCOPE_FALLBACK_FILES,

@@ -58,6 +58,8 @@ export interface ConnectArgs {
 	save?: 'session' | 'settings';
 	/** true면 알림 팝업 대신 Output 로그만 남긴다 */
 	silent?: boolean;
+	/** 원격 소스 Attach의 최초 연결에서는 기존 에디터 BP를 제어기에 동기화하지 않는다. */
+	preserveBreakpoints?: boolean;
 }
 
 export interface ConnectResult {
@@ -289,7 +291,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 	}
 
 	/** IP/port 확정 뒤 공통 절차: 프로젝트 컨텍스트 → testConnection(ErrorLog 1회) → 상태 반영 → 1403 자동 시작. */
-	async function finishConnect(mode: ConnectResult['mode'], silent: boolean): Promise<ConnectResult> {
+	async function finishConnect(mode: ConnectResult['mode'], silent: boolean, preserveBreakpoints = false): Promise<ConnectResult> {
 		const expected = await host.project.resolveExpectedProjectName();
 		const projectContext = await host.project.detectWorkspaceProjectContext();
 		host.controllerTree?.setExpectedProjectContext(projectContext.projectName || expected, projectContext.folderName || expected);
@@ -300,7 +302,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			if (ok) {
 				host.log(`[Controller] Connected: ${cfg.ip}:${cfg.port}`);
 				if (!silent) { vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`); }
-				host.setControllerConnected(true);
+				host.setControllerConnected(true, { syncBreakpoints: !preserveBreakpoints });
 				// controller 연결 성공 시 1403도 바로 유지 연결한다.
 				try { host.ensureRuntimeConsole(); } catch (err: any) {
 					host.log(`[Console] auto-start on connect failed: ${err?.message ?? err}`);
@@ -345,7 +347,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			// 기본 'session': 디스크에 쓰지 않고 이 세션의 후속 명령에만 적용한다.
 			setSessionControllerOverride(ip, port);
 		}
-		return finishConnect('args', args.silent === true);
+		return finishConnect('args', args.silent === true, args.preserveBreakpoints === true);
 	}
 
 	/** 대화형 연결(종전 동작). 취소하면 { ok: false, error: 'cancelled' }. */

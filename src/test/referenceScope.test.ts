@@ -138,6 +138,39 @@ test('resolveExpressionType: 배열은 표기 그대로, 인덱싱은 요소 타
     assert.strictEqual(resolveExpressionType([{ name: 'unknownThing' }], lookup), undefined);
 });
 
+// PR #38 리뷰: 앞선 클래스의 `value As Integer` 가 감싸는 모듈의 `value As String` 을 이겨 오버로드를 잘못 골랐다.
+test('resolveExpressionType: 한정자 없는 이름은 렉시컬 범위(클래스 → 모듈 → 다른 모듈 Public)에서만, 모호하면 모른다', () => {
+    const lines = [
+        'Module M',                                   // 0
+        'Public Class Other',                         // 1
+        'Public value As Integer',                    // 2  무관한 클래스의 필드
+        'Public Sub InOther()',                       // 3
+        'x = value',                                  // 4  → 이 클래스의 Integer
+        'End Sub',                                    // 5
+        'End Class',                                  // 6
+        'Private value As String',                    // 7  감싸는 모듈의 변수
+        'Public Sub Use()',                           // 8
+        'Foo(value)',                                 // 9  → String
+        'Foo(common)',                                // 10 → 다른 모듈 Public 이 하나면 그 타입
+        'Foo(dup)',                                   // 11 → 다른 모듈 두 곳에서 타입이 갈리면 모른다
+        'Foo(hidden)',                                // 12 → 다른 모듈 Private 은 보이지 않는다
+        'End Sub',                                    // 13
+        'End Module',                                 // 14
+    ];
+    const others = [
+        ...parse('C:\\p\\N.gpl', ['Module N', 'Public common As Double', 'Public dup As Integer', 'Private hidden As Integer', 'End Module']),
+        ...parse('C:\\p\\K.gpl', ['Module K', 'Public dup As String', 'End Module']),
+    ];
+    const syms = parse('C:\\p\\M.gpl', lines);
+    const at = (line: number) => buildDocumentReceiverLookup(syms, findEnclosingProcedureRange(i => lines[i], lines.length, line), line,
+        n => others.filter(s => s.name.toLowerCase() === n.toLowerCase()));
+    assert.strictEqual(inferArgumentType('value', at(9)), 'String', '감싸는 모듈의 변수가 다른 클래스 필드를 이긴다');
+    assert.strictEqual(inferArgumentType('value', at(4)), 'Integer', '클래스 안에서는 그 클래스의 필드');
+    assert.strictEqual(inferArgumentType('common', at(10)), 'Double');
+    assert.strictEqual(inferArgumentType('dup', at(11)), undefined);
+    assert.strictEqual(inferArgumentType('hidden', at(12)), undefined);
+});
+
 test('오버로드: As Object 파라미터는 중립 — 구체 타입 오버로드가 이긴다', () => {
     assert.strictEqual(scoreArgTypeAgainstParam('Arm', parseParameterDecl('o As Object')), 0);
     assert.strictEqual(scoreArgTypeAgainstParam('Arm', parseParameterDecl('a As Arm')), 3);

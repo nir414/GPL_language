@@ -61,6 +61,8 @@ export interface ReceiverLookup {
     findAllByName(name: string): GPLSymbol[];
     /** 커서를 감싸는 클래스 이름(`Me.` 해석용). */
     enclosingClassName?: string;
+    /** 커서를 감싸는 모듈 이름 — 한정자 없는 이름의 렉시컬 해석(감싸는 클래스 → 감싸는 모듈)에 쓴다. 모르면 undefined. */
+    enclosingModuleName?: string;
     /** 내장 클래스 사전 훅(선택). */
     builtins?: ReceiverBuiltins;
 }
@@ -223,12 +225,28 @@ function descend(lookup: ReceiverLookup, holder: ReceiverHolder, seg: ReceiverSe
     return t ? holderNamed(t, lookup) : undefined;
 }
 
-/** 타입이 있는 비-로컬 동명 심볼 하나 — 감싸는 클래스의 필드를 우선한다(그 자리에서 보이는 것이 그것이므로). */
+/**
+ * 한정자 없는 이름이 가리키는 타입 있는 비-로컬 심볼 — 그 자리에서 **보이는** 것만, 렉시컬 순서로 찾는다.
+ *   감싸는 클래스의 멤버 → 감싸는 모듈 직속 멤버 → 다른 모듈의 직속 Public 멤버(프로젝트 수준).
+ * 다른 클래스의 필드는 수신자 없이 보이지 않으므로 후보가 아니다 — 종전에는 이름만 맞으면 다른 클래스의
+ * `value As Integer` 가 감싸는 모듈의 `value As String` 을 이겨 오버로드를 잘못 골랐다(PR #38 리뷰).
+ * 한 단계 안에서 후보의 타입이 갈리면(같은 이름이 여러 모듈에) 모른다(undefined) — 오판 대신 판단 보류.
+ */
 function typedNonLocal(lookup: ReceiverLookup, name: string): GPLSymbol | undefined {
     const named = lookup.findAllByName(name).filter(s => !s.isLocal && !s.isParameter && s.returnType);
-    const score = (s: GPLSymbol): number =>
-        (s.className && lookup.enclosingClassName && ci(s.className, lookup.enclosingClassName)) ? 1 : 0;
-    return [...named].sort((a, b) => score(b) - score(a))[0];
+    if (named.length === 0) { return undefined; }
+    const unique = (list: GPLSymbol[]): GPLSymbol | undefined =>
+        list.every(s => ci(s.returnType!, list[0].returnType!)) ? list[0] : undefined;
+    const scopes: ReceiverHolder[] = [];
+    if (lookup.enclosingClassName) { scopes.push({ kind: 'class', name: lookup.enclosingClassName }); }
+    if (lookup.enclosingModuleName) { scopes.push({ kind: 'module', name: lookup.enclosingModuleName }); }
+    for (const holder of scopes) {
+        const inScope = named.filter(s => isDeclaredIn(s, holder));
+        if (inScope.length > 0) { return unique(inScope); }
+    }
+    // 프로젝트 수준 — 클래스 밖(모듈 직속)이고 Private 이 아닌 것. 감싸는 모듈을 알면 그 모듈의 것은 위에서 이미 봤다.
+    const outer = named.filter(s => enclosingClassName(s) === undefined && s.accessModifier !== 'private');
+    return outer.length > 0 ? unique(outer) : undefined;
 }
 
 /**
@@ -414,6 +432,7 @@ export function buildDocumentReceiverLookup(
 
     return {
         enclosingClassName: enclosingProc?.className,
+        enclosingModuleName: enclosingProc ? enclosingModuleName(enclosingProc) : undefined,
         builtins,
         findLocal(name: string): GPLSymbol | undefined {
             const locals = docSymbols.filter(s => (s.isLocal || s.isParameter) && ci(s.name, name) && inScope(s));

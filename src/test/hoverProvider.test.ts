@@ -5,6 +5,7 @@ import * as vm from 'vm';
 import { createRequire } from 'module';
 import { SymbolIndex } from '../language/symbols/symbolIndex';
 import { test } from './harness';
+import { createProviderWorld, NO_CANCEL } from './providerHarness';
 
 /** VS Code 경계만 대체하고 실제 Hover·수신자 해석·심볼 인덱스를 실행한다. */
 function setup(expression = 'axes = table.AxisCount()') {
@@ -160,5 +161,50 @@ test('Hover: 현재 문서 함수와 해석된 멤버의 첫 요청은 프로젝
         const hover = await s.hover(word);
         assert.ok(hover?.contents.value.includes(`Function ${word}(`));
         assert.strictEqual(s.projectLookups(), 0);
+    }
+});
+
+// ── 한정자 가림·오버로드 선택 (providerHarness — 여러 파일) ─────────────────────────────
+function setupWorld(files: Record<string, string>) {
+    const world = createProviderWorld(files);
+    const { GPLHoverProvider } = world.load('providers/hoverProvider.js');
+    const provider = new GPLHoverProvider(world.cache, world.output);
+    return {
+        world,
+        hover: (file: string, line: number, marker: string) =>
+            provider.provideHover(world.docs.get(file), world.at(file, line, marker, 1), NO_CANCEL),
+    };
+}
+
+test('Hover: 클래스 멤버 Num() 이 Module NUM 을 가리는 자리에는 한 줄 경고를 붙인다', async () => {
+    const s = setupWorld({
+        'C:\\p\\Numbers.gpl': ['Module NUM', 'Public Function FixedText(v As Double, d As Integer) As String', 'End Function', 'End Module'].join('\n'),
+        'C:\\p\\RobotUnit.gpl': [
+            'Module RBU', 'Public Class RobotUnit', 'Public Function Num() As Integer', 'End Function',
+            'Public Function Pos() As String', 'Return NUM.FixedText(1, 3)', 'End Function', 'End Class',
+            'Public Function Other() As String', 'Return NUM.FixedText(1, 3)', 'End Function', 'End Module',
+        ].join('\n'),
+    });
+    const shadowed = await s.hover('C:\\p\\RobotUnit.gpl', 5, 'NUM');
+    assert.ok(shadowed?.contents.value.includes('클래스 멤버 `Num()`'), shadowed?.contents.value);
+    assert.ok(shadowed.contents.value.includes('Module `NUM`'));
+    assert.ok(shadowed.contents.value.includes('-781'));
+    const plain = await s.hover('C:\\p\\RobotUnit.gpl', 9, 'NUM');
+    assert.ok(plain && !plain.contents.value.includes('-781'), '클래스 밖에서는 경고 없음');
+});
+
+test('Hover: 오버로드 호출은 인자 타입에 맞는 시그니처를 보인다', async () => {
+    const s = setupWorld({
+        'C:\\p\\Robot.gpl': [
+            'Module RobotModule', 'Public Class RNDRobot',
+            'Public Sub getWafer(stage As Integer, gSlot As Integer, arm As RobotArm)', 'End Sub',
+            'Public Sub getWafer(stage As Integer, gSlot As Integer, armlist() As RobotArm)', 'End Sub',
+            'Public Sub useIt()', 'Dim robotArmList() As RobotArm', 'getWafer(1, 2, robotArmList)', 'Me.getWafer(1, 2, robotArmList)', 'End Sub',
+            'End Class', 'Public Class RobotArm', 'End Class', 'End Module',
+        ].join('\n'),
+    });
+    for (const line of [8, 9]) {
+        const h = await s.hover('C:\\p\\Robot.gpl', line, 'getWafer');
+        assert.ok(h?.contents.value.includes('armlist() As RobotArm'), `line ${line}: ${h?.contents.value}`);
     }
 });

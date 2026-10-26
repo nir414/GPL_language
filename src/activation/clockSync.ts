@@ -29,6 +29,9 @@ const DEFAULT_THRESHOLD_SEC = 2;
 function createClockIo(): ClockIo {
 	return {
 		send: async (command: string) => (await sendCommandDetailed(command, undefined, { timeoutMs: CLOCK_COMMAND_TIMEOUT_MS })).raw,
+		// 시계 설정 값은 큐 슬롯 안에서 만든다 — 앞에 긴 Compile 이 있어도 낡은 시각을 쓰지 않는다(composeInSlot).
+		sendComposed: async (reserved: string, compose: () => Promise<string>) =>
+			(await sendCommandDetailed(reserved, undefined, { timeoutMs: CLOCK_COMMAND_TIMEOUT_MS, composeInSlot: compose })).raw,
 		now: () => Date.now(),
 		sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, Math.max(0, ms))),
 	};
@@ -52,6 +55,9 @@ function summarize(result: ClockSyncResult): string {
 		case 'read-before':
 			return `제어기 시각을 읽지 못해 시계를 맞추지 않았습니다: ${result.detail}`;
 		case 'set':
+			if (result.outcome === 'not-sent') {
+				return `시계 설정 명령을 보내지 않았습니다: ${result.detail}`;
+			}
 			return result.outcome === 'unknown'
 				? `시계 설정 명령의 결과를 확인하지 못했습니다(이미 적용됐을 수 있음): ${result.detail}`
 				: `제어기가 시계 설정을 거부했습니다: ${result.detail}`;

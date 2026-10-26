@@ -162,3 +162,48 @@ test('controller clock: rejected set and failed confirm read are reported with t
     assert.strictEqual(failed.stage, 'read-before');
     assert.strictEqual(failed.outcome, 'not-sent');
 });
+
+test('controller clock: 큐 슬롯을 기다리는 동안 흐른 시간은 설정 값에 섞이지 않는다(sendComposed)', async () => {
+    const fake = fakeController(local(2026, 10, 24, 1, 52, 26, 333), -20_000, 30);
+    let slotWaits = 0;
+    // 큐 앞에 긴 Compile 이 있어 슬롯을 3.7 s 늦게 받는다 — 값은 슬롯 안에서 만들어야 한다.
+    fake.io.sendComposed = async (reserved: string, compose: () => Promise<string>) => {
+        assert.strictEqual(reserved, 'date');
+        await fake.io.sleep(3_700);
+        slotWaits++;
+        const command = await compose();
+        return fake.io.send(command);
+    };
+    const result = await syncControllerClock(fake.io);
+    assert.strictEqual(slotWaits, 1);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(fake.offset(), 0, '슬롯 대기 뒤 다시 계획해 정각 초에 도착한다');
+    assert.strictEqual(result.residualMs, 0);
+    assert.strictEqual(result.plan?.command, fake.sent[1].command, '보고하는 명령은 실제로 보낸 명령이다');
+
+    // 대조: 슬롯 밖에서 값을 만들고 큐에서 밀리면(종전 방식) 그만큼 낡은 시각이 써진다.
+    const stale = fakeController(local(2026, 10, 24, 1, 52, 26, 333), -20_000, 30);
+    const send = stale.io.send;
+    let first = true;
+    stale.io.send = async (command: string) => {
+        if (/^date \d/.test(command) && first) { first = false; await stale.io.sleep(3_700); }
+        return send(command);
+    };
+    await syncControllerClock(stale.io);
+    assert.ok(stale.offset() <= -3_000, `종전 방식은 ${stale.offset()} ms 어긋난다`);
+});
+
+test('controller clock: 명령을 만들기 전에 실패하면 보내지 않은 것으로 보고한다', async () => {
+    const fake = fakeController(local(2026, 10, 24, 1, 0, 0), 3_000, 10);
+    fake.io.sendComposed = async () => { throw new Error('PolicyError'); };
+    const result = await syncControllerClock(fake.io);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.stage, 'set');
+    assert.strictEqual(result.outcome, 'not-sent');
+    assert.strictEqual(fake.offset(), 3_000);
+
+    const unknown = fakeController(local(2026, 10, 24, 1, 0, 0), 3_000, 10);
+    unknown.io.sendComposed = async (_r: string, compose: () => Promise<string>) => { await compose(); throw new Error('ECONNRESET'); };
+    const lost = await syncControllerClock(unknown.io);
+    assert.strictEqual(lost.outcome, 'unknown', '만든 뒤 끊기면 적용됐을 수 있다');
+});

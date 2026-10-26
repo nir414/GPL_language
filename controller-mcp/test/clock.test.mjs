@@ -99,6 +99,23 @@ test('sync: dry run 은 읽기만, confirm 은 정각 초에 맞춰 설정하고
   assert.equal((live.sent[1].at + 30) % 1000, 0);
 });
 
+test('sync: sendComposed 가 있으면 큐 슬롯을 얻은 뒤 값을 만든다(슬롯 대기가 값에 섞이지 않음)', async () => {
+  const fake = fakeController(local(2026, 10, 24, 1, 52, 26, 333), -20_000, 30);
+  fake.io.sendComposed = async (reserved, compose) => {
+    assert.equal(reserved, 'date');
+    await fake.io.sleep(3_700);   // 앞의 긴 Compile
+    return fake.io.send(await compose());
+  };
+  const r = summarizeClockSync(await syncControllerClock(fake.io));
+  assert.equal(r.ok, true);
+  assert.equal(fake.offset(), 0);
+  assert.equal(r.sent, fake.sent[1].command);
+
+  const refused = fakeController(local(2026, 10, 24, 1, 0, 0), 3_000, 10);
+  refused.io.sendComposed = async () => { throw new Error('busy'); };
+  assert.equal(summarizeClockSync(await syncControllerClock(refused.io)).outcome, 'not-sent');
+});
+
 test('sync: 설정 거부는 stage=set·setStatus 로', async () => {
   const fake = fakeController(local(2026, 10, 24, 1, 0, 0), 3_000, 10, { rejectSet: -205 });
   const r = summarizeClockSync(await syncControllerClock(fake.io));

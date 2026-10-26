@@ -53,6 +53,23 @@ export interface SendCommandOptions {
 	 * `confirm:true` 로 확인했다. 없으면 위험 상태의 Unload 는 보내지 않고 UnloadRiskError 를 던진다.
 	 */
 	confirmUnloadRisk?: boolean;
+	/**
+	 * 직렬 큐 슬롯을 얻고 안전 검사·명령 정책 대기를 마친 **뒤**, 실제 전송 직전에 보낼 명령 문자열을 만든다.
+	 * 시계 설정(`date mm-dd-yyyy hh:mm:ss`)처럼 값이 전송 시각에 묶인 명령용이다 — 큐 앞의 긴 Compile 뒤에 밀려도
+	 * 낡은 값을 보내지 않는다. 함수가 기다리는 동안에도 슬롯을 쥐고 있어 다른 명령이 끼어들지 않으므로 짧게 끝낸다.
+	 * 결과의 첫 단어(명령 이름)는 `command` 와 같아야 한다 — 검사·정책은 `command` 로 이미 판정했기 때문이다(다르면 보내지 않는다).
+	 */
+	composeInSlot?: () => Promise<string>;
+}
+
+/** `composeInSlot` 결과 — 명령 이름이 예약한 명령과 같을 때만 보낸다. */
+async function composeCommandInSlot(reserved: string, compose: () => Promise<string>): Promise<string> {
+	const wire = await compose();
+	const verb = (s: string) => s.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+	if (!wire.trim() || verb(wire) !== verb(reserved)) {
+		throw Object.assign(new Error(`전송 직전 만든 명령 "${wire}" 이 예약한 명령 "${reserved}" 과 달라 보내지 않았습니다.`), { sent: false });
+	}
+	return wire;
 }
 
 // Brooks 제어기 고정 포트 (하드웨어 결정, 변경 불가)
@@ -363,20 +380,22 @@ export function sendCommandDetailed(
 		if (needsMemoryGuard(command)) {
 			await checkMemoryBeforeOperation(config, true);
 		}
+		// 전송 시점에 값을 정하는 명령(시계 설정) — 슬롯을 쥔 채 만들므로 그 사이 다른 명령이 끼어들지 않는다.
+		const wire = options?.composeInSlot ? await composeCommandInSlot(command, options.composeInSlot) : command;
 		let response: CommandResponse;
 		try {
-			response = await sendCommandDetailedInternal(command, config, options);
+			response = await sendCommandDetailedInternal(wire, config, options);
 		} catch (err) {
 			// 채널 교란 가능 명령이 응답 없이 끝났으면 연결 건강 모니터에 알린다 → recovering (2026-08-31).
 			// 정책이 보류한 경우(PolicyError)는 여기 오지 않는다 — 제어기에 아무것도 보내지 않았으므로.
-			notifyDisruptiveFailure(command, err);
-			attachUnloadRiskGuidance(command, controllerId, err);
+			notifyDisruptiveFailure(wire, err);
+			attachUnloadRiskGuidance(wire, controllerId, err);
 			throw err;
 		}
 		if (policyOn) {
-			commandPolicy.after(command, response.raw, response.meta.statusTagReceived, Date.now());
+			commandPolicy.after(wire, response.raw, response.meta.statusTagReceived, Date.now());
 		}
-		await observeAfterResponse(command, controllerId, response.raw);
+		await observeAfterResponse(wire, controllerId, response.raw);
 		return response;
 	});
 }

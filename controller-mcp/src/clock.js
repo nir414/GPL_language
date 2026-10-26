@@ -119,7 +119,9 @@ export function clockStatusField(reading, pcTimeZone = describePcTimeZone()) {
 
 /**
  * 동기화 절차(직접 접속 경로용). 확장 gpl.controller.syncClock 과 같은 결과 모양을 돌려준다.
- * @param {{send:(c:string)=>Promise<string>, now:()=>number, sleep:(ms:number)=>Promise<void>}} io
+ * io.sendComposed(reserved, compose) 가 있으면 큐 슬롯 안에서 예약 시각 대기·값 계산을 한다(확장 controllerClock.ts 와 같은 규칙 —
+ * 슬롯 밖에서 만든 값은 앞의 긴 명령 뒤로 밀려 낡은 시각이 써진다). 없으면 send(await compose()).
+ * @param {{send:(c:string)=>Promise<string>, now:()=>number, sleep:(ms:number)=>Promise<void>, sendComposed?:(reserved:string, compose:()=>Promise<string>)=>Promise<string>}} io
  * @param {{dryRun?:boolean, minLeadMs?:number}} [options]
  */
 export async function syncControllerClock(io, options = {}) {
@@ -140,19 +142,30 @@ export async function syncControllerClock(io, options = {}) {
   if (dryRun) {
     return { ok: true, dryRun, pcTimeZone, before, plan: { value: plan.value, command: plan.command, oneWayMs: plan.oneWayMs } };
   }
-  for (let i = 0; i < MAX_REPLANS; i++) {
-    const wait = plan.sendAtMs - io.now();
-    if (wait > 0) await io.sleep(wait);
-    if (io.now() - plan.sendAtMs <= LATE_REPLAN_MS) break;
-    plan = planClockSet(io.now(), before.rttMs, minLeadMs);
-  }
-  const planInfo = { value: plan.value, command: plan.command, oneWayMs: plan.oneWayMs };
+  const rttMs = before.rttMs;
+  let composed = false;
+  const compose = async () => {
+    plan = planClockSet(io.now(), rttMs, minLeadMs);
+    for (let i = 0; i < MAX_REPLANS; i++) {
+      const wait = plan.sendAtMs - io.now();
+      if (wait > 0) await io.sleep(wait);
+      if (io.now() - plan.sendAtMs <= LATE_REPLAN_MS) break;
+      plan = planClockSet(io.now(), rttMs, minLeadMs);
+    }
+    composed = true;
+    return plan.command;
+  };
   let setRaw;
   try {
-    setRaw = await io.send(plan.command);
+    setRaw = io.sendComposed ? await io.sendComposed(CLOCK_READ_COMMAND, compose) : await io.send(await compose());
   } catch (err) {
-    return { ok: false, dryRun, pcTimeZone, before, plan: planInfo, stage: 'set', error: 'send-failed', detail: err?.message ?? String(err), outcome: 'unknown' };
+    const notSent = !composed || err?.sent === false;
+    return {
+      ok: false, dryRun, pcTimeZone, before, plan: { value: plan.value, command: plan.command, oneWayMs: plan.oneWayMs },
+      stage: 'set', error: 'send-failed', detail: err?.message ?? String(err), outcome: notSent ? 'not-sent' : 'unknown',
+    };
   }
+  const planInfo = { value: plan.value, command: plan.command, oneWayMs: plan.oneWayMs };
   const setStatus = parseStatus(setRaw);
   if (setStatus.code !== 0) {
     return {

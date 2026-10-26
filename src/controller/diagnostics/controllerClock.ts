@@ -158,6 +158,13 @@ export interface ClockIo {
     send(command: string): Promise<string>;
     now(): number;
     sleep(ms: number): Promise<void>;
+    /**
+     * 직렬 큐 슬롯을 먼저 얻고, 그 안에서 `compose()` 로 보낼 명령을 만든 뒤 바로 보낸다(이름은 `reserved` 와 같다).
+     * 시계 설정은 값이 전송 시각에 묶여 있으므로 **예약 시각 대기와 값 계산을 슬롯 안에서** 해야 한다 — 슬롯 밖에서
+     * 값을 만든 뒤 큐에 넣으면 앞의 긴 명령(Compile 등)이 끝날 때까지 밀려 낡은 시각이 써진다(PR #38 리뷰).
+     * 다른 명령과 큐를 나누는 IO 는 반드시 제공한다. 없으면 `send(await compose())` — 큐가 없는 IO(테스트 대역 등)용.
+     */
+    sendComposed?(reserved: string, compose: () => Promise<string>): Promise<string>;
 }
 
 export interface ControllerClockReading {
@@ -256,24 +263,36 @@ export async function syncControllerClock(io: ClockIo, options: ClockSyncOptions
         return { ok: true, dryRun, pcTimeZone, before, plan: { value: plan.value, command: plan.command, oneWayMs: plan.oneWayMs } };
     }
 
-    // 예약 시각까지 기다린다. 늦게 깨어났으면(타이머 지연) 다음 정각 초로 다시 계획한다.
-    for (let i = 0; i < MAX_REPLANS; i++) {
-        const wait = plan.sendAtMs - io.now();
-        if (wait > 0) { await io.sleep(wait); }
-        if (io.now() - plan.sendAtMs <= LATE_REPLAN_MS) { break; }
-        plan = planClockSet(io.now(), before.rttMs, minLeadMs);
-    }
+    // 큐 슬롯을 얻은 **뒤** 그 시각으로 다시 계획하고 예약 시각까지 기다린다. 늦게 깨어났으면(타이머 지연) 다음 정각 초로 다시 계획한다.
+    // 슬롯을 기다리는 동안(앞의 긴 명령) 흐른 시간은 여기서 다시 계획하므로 값에 섞이지 않는다.
+    const rttMs = before.rttMs;
+    let composed = false;
+    const compose = async (): Promise<string> => {
+        plan = planClockSet(io.now(), rttMs, minLeadMs);
+        for (let i = 0; i < MAX_REPLANS; i++) {
+            const wait = plan.sendAtMs - io.now();
+            if (wait > 0) { await io.sleep(wait); }
+            if (io.now() - plan.sendAtMs <= LATE_REPLAN_MS) { break; }
+            plan = planClockSet(io.now(), rttMs, minLeadMs);
+        }
+        composed = true;
+        return plan.command;
+    };
 
-    const planInfo = { value: plan.value, command: plan.command, oneWayMs: plan.oneWayMs };
     let setRaw: string;
     try {
-        setRaw = await io.send(plan.command);
+        setRaw = io.sendComposed
+            ? await io.sendComposed(CLOCK_READ_COMMAND, compose)
+            : await io.send(await compose());
     } catch (err: any) {
+        // 명령을 만들기 전에(슬롯·안전 검사 단계) 실패했거나 전송 전 거부(sent:false)면 보내지 않은 것이다.
+        const notSent = !composed || err?.sent === false;
         return {
-            ok: false, dryRun, pcTimeZone, before, plan: planInfo, stage: 'set', error: 'send-failed',
-            detail: err?.message ?? String(err), outcome: 'unknown',
+            ok: false, dryRun, pcTimeZone, before, plan: { value: plan.value, command: plan.command, oneWayMs: plan.oneWayMs },
+            stage: 'set', error: 'send-failed', detail: err?.message ?? String(err), outcome: notSent ? 'not-sent' : 'unknown',
         };
     }
+    const planInfo = { value: plan.value, command: plan.command, oneWayMs: plan.oneWayMs };
     const setStatus = parseStatus(setRaw);
     if (setStatus.code !== 0) {
         return {

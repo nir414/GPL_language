@@ -78,7 +78,7 @@ export class SymbolIndex {
      * **이름 인덱스는 다시 만들지 않는다** — 호출자가 묶음이 끝난 뒤 `rebuildNameIndex()` 를 한 번 부른다.
      * 파일마다 재구축하면 그때까지 누적된 심볼 전체를 매번 훑어 O(n²) 가 된다(2026-09-18 실측: 567개
      * 파일·21,747 심볼에서 624만 회 순회·798 ms — 읽기+파싱 465 ms 보다 컸다).
-     * @returns 파싱한 심볼 수. 대상이 아니거나(확장자·바이너리 .gpo) 건너뛰면 undefined.
+     * @returns 파싱한 심볼 수. 대상이 아니거나(확장자·NUL 문자가 있는 내용) 건너뛰면 undefined.
      */
     public updateFileText(fsPath: string, text: string): number | undefined {
         const lower = fsPath.toLowerCase();
@@ -87,7 +87,7 @@ export class SymbolIndex {
         }
         this.beginFileUpdate(fsPath);
 
-        // 바이너리 .gpo가 텍스트로 열린 경우(NUL 문자 포함) 심볼 갱신을 건너뛴다 — 쓰레기 심볼 방지.
+        // NUL 문자가 있는 내용은 텍스트 소스로 해석하지 않는다 — 잘못된 심볼 생성 방지.
         if (text.includes('\u0000')) {
             return;
         }

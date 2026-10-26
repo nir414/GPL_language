@@ -235,12 +235,15 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 수신자 체인 → 타입/홀더 | `language/receiverType.ts` (순수) | — |
 | 그 해석기에 넘길 컨텍스트 조립 | `providers/receiverContext.ts` (vscode 접착) | `buildDocumentReceiverLookup(` 직접 호출 |
 | 배열 표기·요소 타입 | `language/receiverType.ts` (`elementTypeOf`·`isArrayTypeName`) | `replace(/\[\]$/…)` |
+| 호출 인자 타입 추론(정의 이동·호버·참조 찾기의 오버로드 선택) | `language/overloadResolution.ts` (`buildCallContext`·`inferArgumentType` — 식 타입은 `receiverType.resolveExpressionType`) | `inferLiteralArgType(` 직접 호출 |
+| 참조 찾기의 출현 판정(다른 모듈 동명 선언·한정자 불일치·멤버/로컬 가림) | `language/referenceScope.ts` (`classifyReferenceOccurrence`) | 제외 사유 문자열(`'qualifier-mismatch'` 등) 직접 판정 |
 | "컴파일 검증 필요" 상태의 설명 문장(배지 툴팁·Start 확인 모달·자동화 오류) | `controller/deployment/compileStale.ts` (`describeCompileStale`) — 배지 라벨·툴팁·클릭 대상은 `views/compileStaleBadge.ts` | `소스가 아직 Compile 로 검증되지 않았습니다` 직접 조립 |
 | 쓰레드 목록 표·상태 집계(「전체 쓰레드 복사」·상황 스냅샷) | `controller/threads/threadReport.ts` (`renderThreadTable`·`countThreadStates`·`summarizeThreadStates`) | `\| 이름 \| 상태 \|` 표 직접 조립 / `state === 'Paused' \|\| … 'Break'` |
 | 에러 코드 → 코드/환경 분류(트리 버킷·오류 상세·배포 요약) | `controller/protocol/responseParser.ts` (`classifyErrorEntry`·`describeErrorCategory`·`getGplErrorGroup`) | `category: 'code'/'environment'` 직접 판정 |
 | 바이트 → 사람이 읽는 크기(트리 FTP 목록·업로드 진행 바·완료 요약) | `util/formatBytes.ts` (`formatBytes`·`formatBytesAs`·`byteUnitFor`) | `.toFixed(1)} KB/MB/GB` 직접 조립 |
 | 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/deployment/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / 상태바 `업로드 완료 — 변경 없음`·크기 템플릿 직접 조립 |
 | Flash 쓰기 전원 차단 금지 문구(쓰기·`Sync`·10초 안정화·안전 미확인) | `views/flashSafetyPresentation.ts` (`presentFlashSafety`) — 절차·시간은 `controller/deployment/flashSafety.ts` | `FLASH 저장 중`·`FLASH 안전 상태 미확인` 직접 조립 |
+| 그룹 Compile 뒤 Unload 위험 판정·문구(UI 모달·AI 거부·타임아웃 안내·재부팅 해제) | `controller/commands/unloadRisk.ts` (`assessUnloadRisk`·`judgeRebootEvidence`·`unloadRiskWarning` …) — 전송 가드는 `unloadRiskGuard.ts`, 저장은 `unloadRiskStore.ts` | `'unload-after-group-compile'` 리터럴·`명령 콘솔을 끊었` 문구 직접 조립 |
 
 새 정본을 세우면 `SSOT_RULES` 에 한 줄을 더한다(무엇을·정본은 어디·우회 표식·대신 쓸 것).
 규칙을 늘리는 비용이 낮아야 실제로 늘어난다.
@@ -264,6 +267,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | `<ip>.extension.json` · `bridge/<ip>/…` | `controller/automation/agentBridge.ts` | 위의 **레거시(IP) 경로** — 리더 인스턴스 하나만 서비스(구버전 MCP 호환) |
 | `operations/<operationId>.json` | `controller/automation/operationStore.ts` | 장시간 작업의 단계와 **결과** — 끝난 뒤에도 **남는다** |
 | `cancellations/<operationId>.json` | `controller/deployment/deployCancellation.ts` | 명시적 전체 정지를 실행 중·대기 중 업로드/배포에 전달 — 작업이 끝나면 **사라진다** |
+| `unload-risk-<ip>.json` | `controller/commands/unloadRisk.ts`(계약·판정) · `unloadRiskStore.ts`(읽기/쓰기) | 이 부팅의 그룹 Compile 표시 — Unload 확인 요구. 재부팅 근거가 있을 때만 확장이 해제하고 MCP(`controller-mcp/src/unloadRisk.js`)는 읽기·표시 추가만 한다 |
 
 지켜야 할 규약:
 
@@ -353,3 +357,13 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 ### 메모리 사전 검사
 
 `controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석하고 정책을 판정하는 순수 모듈입니다. `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사하고, `deployService`는 업로드 전에 추가 검사합니다. `memoryGuard.warnMb`(기본 4 MB)·`blockMb`(기본 2.5 MB)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 알 수 없는 측정은 정상으로 간주하지 않습니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. MCP는 Export의 `GPL_BRIDGE=only` 경로를 사용합니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
+
+사람 화면의 경고 알림은 `controller/diagnostics/memoryNotice.ts`(순수)가 정합니다 — 제어기 IP별 마지막 수준을 기억해 나빠질 때(ok→warning, warning→blocked)나 직전 알림 대비 0.5 MB 이상 줄었을 때만 알리고, 한 배포(작업 범위) 안에서는 최대 1회, 지속 상태는 상태 표시줄 항목(`$(warning) Free 2.96 MB`, 클릭 `gpl.controller.showMemoryStatus`)이 맡습니다. 차단·AI 결과 필드(`memoryPrecheck`·`precheckWarnings`)는 이 규칙과 무관하게 매번 남습니다.
+
+### 업로드 전 제어기 확인
+
+FTP 쓰기 경로(Upload Only·Upload & Start·Quick Compile·Deploy·autoOnSave·/GPL 비우기)는 쓰기 전에 상대가 PA 제어기인지 확인합니다. 판정은 `controller/connection/controllerIdentity.ts`(순수), 실제 IO는 `controllerIdentityIo.ts`입니다. 증거는 ① 명령 콘솔 읽기 전용 명령의 `<STATUS>` ② FTP 220 배너(`RTEMS FTP server`) ③ 있으면 최근 도달성 스냅샷의 응답 장치(경로 인터페이스의 ARP)입니다. 같은 작업 안에서 이미 받은 STATUS(배포의 Show Memory)와 FTP 세션 배너(/GPL 목록 조회)는 재사용해 왕복을 늘리지 않습니다. 실패 시 정책은 호출부가 정합니다 — 사람 경로는 「그래도 진행」 모달, AI·자동화·autoOnSave는 `CONTROLLER_UNVERIFIED`(sent:false) 구조화 거부. 결과는 작업 기록 `result.controllerCheck`에 남고 배포 로그의 `Target:` 줄이 그 결과를 그대로 씁니다. 설정 `gpl.controller.verifyControllerIdentity`로 끌 수 있습니다.
+
+### FTP 원격 소스 보기
+
+`controller/files/remoteSourceSession`은 VS Code를 참조하지 않고 FTP 메타데이터, 세션별 TMP 캐시와 원격 경로/URI 매핑을 소유한다. `activation/controllerRemoteFiles`가 읽기 전용 FileSystemProvider와 문서·DAP 세션의 수명을 연결하고, `activation/controllerProjectDebug`는 기존 작업공간을 유지한 채 Attach 구성을 전달한다. DAP는 명시한 원격 세션의 소스만 사용한다. `activation/controllerSourceLanguage`는 현재 열린 원격 문서를 별도 SymbolCache에 넣어 로컬 작업공간과 다른 원격 프로젝트의 심볼이 섞이지 않게 한다.

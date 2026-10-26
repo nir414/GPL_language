@@ -38,6 +38,7 @@ import { activateConsoleCommands } from './activation/consoleCommands';
 import { activateAiAgentSetup } from './activation/aiAgentSetup';
 import { activateAiDebugCommands } from './activation/aiDebugCommands';
 import { activateControllerCommands } from './activation/controllerCommands';
+import { activateClockSync } from './activation/clockSync';
 import { activateTreeCommands } from './activation/treeCommands';
 import { activateFtpCommands } from './activation/ftpCommands';
 import { activateDebugIntegration } from './activation/debugIntegration';
@@ -145,6 +146,7 @@ export function activate(context: vscode.ExtensionContext) {
 	activateAiAgentSetup(h);
 	activateAiDebugCommands(h);
 	activateControllerCommands(h);
+	activateClockSync(h);
 
 	// 실행 위치 데코레이션(정지 줄·에러 줄) — 트리 명령과 디버그 이벤트가 함께 쓴다.
 	h.decorations = new ExecutionDecorations();

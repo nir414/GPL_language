@@ -5,6 +5,7 @@ import * as vm from 'vm';
 import { createRequire } from 'module';
 import { SymbolIndex } from '../language/symbols/symbolIndex';
 import { test } from './harness';
+import { createProviderWorld, NO_CANCEL } from './providerHarness';
 
 /** VS Code 경계만 대체하고 실제 Hover·수신자 해석·심볼 인덱스를 실행한다. */
 function setup(expression = 'axes = table.AxisCount()') {
@@ -161,4 +162,79 @@ test('Hover: 현재 문서 함수와 해석된 멤버의 첫 요청은 프로젝
         assert.ok(hover?.contents.value.includes(`Function ${word}(`));
         assert.strictEqual(s.projectLookups(), 0);
     }
+});
+
+// ── 한정자 가림·오버로드 선택 (providerHarness — 여러 파일) ─────────────────────────────
+function setupWorld(files: Record<string, string>) {
+    const world = createProviderWorld(files);
+    const { GPLHoverProvider } = world.load('providers/hoverProvider.js');
+    const provider = new GPLHoverProvider(world.cache, world.output);
+    return {
+        world,
+        hover: (file: string, line: number, marker: string) =>
+            provider.provideHover(world.docs.get(file), world.at(file, line, marker, 1), NO_CANCEL),
+    };
+}
+
+test('Hover: 클래스 멤버 Num() 이 Module NUM 을 가리는 자리에는 한 줄 경고를 붙인다', async () => {
+    const s = setupWorld({
+        'C:\\p\\Numbers.gpl': ['Module NUM', 'Public Function FixedText(v As Double, d As Integer) As String', 'End Function', 'End Module'].join('\n'),
+        'C:\\p\\RobotUnit.gpl': [
+            'Module RBU', 'Public Class RobotUnit', 'Public Function Num() As Integer', 'End Function',
+            'Public Function Pos() As String', 'Return NUM.FixedText(1, 3)', 'End Function', 'End Class',
+            'Public Function Other() As String', 'Return NUM.FixedText(1, 3)', 'End Function', 'End Module',
+        ].join('\n'),
+    });
+    const shadowed = await s.hover('C:\\p\\RobotUnit.gpl', 5, 'NUM');
+    assert.ok(shadowed?.contents.value.includes('클래스 멤버 `Num()`'), shadowed?.contents.value);
+    assert.ok(shadowed.contents.value.includes('Module `NUM`'));
+    assert.ok(shadowed.contents.value.includes('-781'));
+    const plain = await s.hover('C:\\p\\RobotUnit.gpl', 9, 'NUM');
+    assert.ok(plain && !plain.contents.value.includes('-781'), '클래스 밖에서는 경고 없음');
+});
+
+test('Hover: 오버로드 호출은 인자 타입에 맞는 시그니처를 보인다', async () => {
+    const s = setupWorld({
+        'C:\\p\\Robot.gpl': [
+            'Module RobotModule', 'Public Class RNDRobot',
+            'Public Sub getWafer(stage As Integer, gSlot As Integer, arm As RobotArm)', 'End Sub',
+            'Public Sub getWafer(stage As Integer, gSlot As Integer, armlist() As RobotArm)', 'End Sub',
+            'Public Sub useIt()', 'Dim robotArmList() As RobotArm', 'getWafer(1, 2, robotArmList)', 'Me.getWafer(1, 2, robotArmList)', 'End Sub',
+            'End Class', 'Public Class RobotArm', 'End Class', 'End Module',
+        ].join('\n'),
+    });
+    for (const line of [8, 9]) {
+        const h = await s.hover('C:\\p\\Robot.gpl', line, 'getWafer');
+        assert.ok(h?.contents.value.includes('armlist() As RobotArm'), `line ${line}: ${h?.contents.value}`);
+    }
+});
+
+// PR #38 리뷰: 다른 모듈·클래스의 동명 메서드를 오버로드로 보고 인자 타입 순위를 매겨, 렉시컬 대상을 이겼다.
+test('Hover: 한정자 없는 호출은 감싸는 클래스·모듈의 오버로드끼리만 순위를 매긴다', async () => {
+    const s = setupWorld({
+        'C:\\p\\Main.gpl': [
+            'Module MainModule',                                    // 0
+            'Public Sub Process(ByVal x As Integer)', 'End Sub',    // 1-2
+            'Public Sub Use()', 'Process("text")', 'End Sub',       // 3-5
+            'Public Class Worker',                                  // 6
+            'Public Sub Run(ByVal n As Integer)', 'End Sub',        // 7-8
+            'Public Sub Go()', 'Run("text")', 'End Sub',            // 9-11
+            'End Class',                                            // 12
+            'Public Class Other',                                   // 13
+            'Public Sub Run(ByVal s As String)', 'End Sub',         // 14-15
+            'End Class',                                            // 16
+            'End Module',                                           // 17
+        ].join('\n'),
+        'C:\\p\\Util.gpl': [
+            'Module Util',
+            'Public Sub Process(ByVal s As String)', 'End Sub',
+            'End Module',
+        ].join('\n'),
+    });
+    const moduleCall = await s.hover('C:\\p\\Main.gpl', 4, 'Process');
+    assert.ok(moduleCall?.contents.value.includes('x As Integer'), `감싸는 모듈의 Process: ${moduleCall?.contents.value}`);
+    assert.ok(!moduleCall.contents.value.includes('s As String'));
+    const classCall = await s.hover('C:\\p\\Main.gpl', 10, 'Run');
+    assert.ok(classCall?.contents.value.includes('n As Integer'), `감싸는 클래스의 Run: ${classCall?.contents.value}`);
+    assert.ok(classCall.contents.value.includes('Class: `Worker`'));
 });

@@ -3,11 +3,12 @@ import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, EXTENSION_VERSION, getQualifiedWordAtPosition, isInCommentOrString, GPL_CONTROL_KEYWORDS } from '../config';
 import { ciEq } from '../language/identifiers';
-import { escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix, extractQualifierChainBefore, parseChainSegment, getStringLiteralContentAt } from '../language/cursorExpression';
-import { CallContext, inferLiteralArgType, rankOverloadMatches } from '../language/overloadResolution';
+import { escapeRegExp, findEnclosingProcedureRange, extractCallArgumentsFromSuffix, extractQualifierChainBefore, parseChainSegment, getStringLiteralContentAt, isTypeNamePosition } from '../language/cursorExpression';
+import { buildCallContext, CallContext, rankOverloadMatches } from '../language/overloadResolution';
 import { findGplBuiltinMember } from '../language/gplBuiltins';
-import { elementTypeOf, ownedByHolder, resolveReceiverTarget, ReceiverHolder, ReceiverLookup, ReceiverSegment } from '../language/receiverType';
-import { buildReceiverContext } from './receiverContext';
+import { findQualifierShadowing, membersNamed, ownedByHolder, resolveReceiverTarget, ReceiverHolder, ReceiverLookup, ReceiverSegment } from '../language/receiverType';
+import { containerAt, declarationAt } from '../language/referenceScope';
+import { buildReceiverContext, ReceiverContext } from './receiverContext';
 import { dedupeSymbolLocations, preferExistingFiles, fileExists } from '../language/symbolLocations';
 import { pickVisibleDeclaration } from '../language/symbolScope';
 
@@ -28,78 +29,12 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
     }
 
     /**
-     * 호출부 인자 표현식들로 CallContext를 만든다.
-     *
-     * 인자 타입 추론은 lazy — 오버로드 후보가 arity로 걸러도 2개 이상 동점일 때만
-     * (rankOverloadMatches 내부에서) 실행되고, 결과는 요청 내에서 캐시된다.
+     * 커서를 감싼 수신자 해석 컨텍스트(요청당 한 번만 조립 — 문서 파싱은 내용 기준 메모이즈).
+     * 인자 타입 추론·로컬 가림·감싸는 클래스/모듈 멤버 판정이 같은 컨텍스트를 쓴다.
      */
-    private buildCallContext(
-        document: vscode.TextDocument,
-        atLine: number,
-        callArgs: string[] | undefined
-    ): CallContext | undefined {
-        if (!callArgs) {
-            return undefined;
-        }
-        if (callArgs.length === 0) {
-            return { argCount: 0 };
-        }
-        let cached: ReadonlyArray<string | undefined> | undefined;
-        return {
-            argCount: callArgs.length,
-            getArgTypes: () => (cached ??= this.inferCallArgTypes(document, atLine, callArgs))
-        };
-    }
-
-    /**
-     * 인자 표현식별 타입 추론(가벼운 경로만).
-     *   - 리터럴: "..." → String, True/False → Boolean, 숫자/&H/&O → NUMERIC_LITERAL_TYPE
-     *   - `New Foo(...)` → Foo
-     *   - 단순 식별자 → 로컬/파라미터/캐시 심볼의 returnType (배열은 `Type[]`)
-     *   - `ident(...)` → 배열 변수면 요소 타입, 함수면 반환 타입
-     *   - 그 외(멤버 접근 등 복합식)는 undefined(중립) — 오판 대신 판단 보류.
-     */
-    private inferCallArgTypes(
-        document: vscode.TextDocument,
-        atLine: number,
-        callArgs: string[]
-    ): Array<string | undefined> {
-        return callArgs.map(raw => {
-            const expr = raw.trim();
-
-            const literal = inferLiteralArgType(expr);
-            if (literal) {
-                return literal;
-            }
-
-            const ctorMatch = expr.match(/^New\s+(\w+)/i);
-            if (ctorMatch) {
-                return ctorMatch[1];
-            }
-
-            const idMatch = expr.match(/^([A-Za-z_]\w*)\s*(\(.*\))?$/s);
-            if (!idMatch) {
-                return undefined;
-            }
-            const name = idMatch[1];
-            const hasCallOrIndex = !!idMatch[2];
-
-            const sym = this.findLocalSymbol(document, name, atLine)
-                ?? this.symbolCache.findDefinition(name, document.uri.fsPath);
-            const type = sym?.returnType;
-            if (!type) {
-                return undefined;
-            }
-            if (!hasCallOrIndex) {
-                return type;
-            }
-            // `name(...)`: 배열 변수 인덱싱이면 요소 타입, 함수 호출이면 반환 타입.
-            // 요소 타입 규칙은 공용 정본(receiverType.elementTypeOf).
-            if (sym!.kind !== 'function') {
-                return elementTypeOf(type, true) ?? type;
-            }
-            return type;
-        });
+    private receiverContextFactory(document: vscode.TextDocument, atLine: number): () => ReceiverContext {
+        let ctx: ReceiverContext | undefined;
+        return () => (ctx ??= buildReceiverContext(document, atLine, n => this.symbolCache.findAllByName(n)));
     }
 
     private getEnclosingProcedureRange(
@@ -194,14 +129,11 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
     /** 수신자 체인의 최종 대상(사용자 클래스/모듈 · 내장 클래스 · 원시 타입). 조립은 공용 정본에 맡긴다. */
     private resolveReceiver(
-        document: vscode.TextDocument,
-        atLine: number,
+        receiverContext: () => ReceiverContext,
         receiver: ReceiverSegment[]
     ): ReturnType<typeof resolveReceiverTarget> {
         try {
-            const { lookup } = buildReceiverContext(
-                document, atLine, name => this.symbolCache.findAllByName(name));
-            return resolveReceiverTarget(receiver, lookup);
+            return resolveReceiverTarget(receiver, receiverContext().lookup);
         } catch (error) {
             this.log(`[Receiver Resolve Error] ${error}`);
             return undefined;
@@ -268,6 +200,83 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         // 컨테이너는 인덱스에 확실히 존재하는데 그 안에 이 이름이 없다 → 전역 이름 폴백으로 흘려보내면
         // 한정자를 무시한 채 동명의 다른 심볼로 점프한다. 조용히 틀린 곳으로 가느니 "정의 없음"이 안전하다.
         this.log(`[Member NOT Found] "${memberName}" in ${containerKind} "${containerName}" → 전역 폴백 차단`);
+        return undefined;
+    }
+
+    /**
+     * 한정자 없는 이름을 GPL 이름 해석 순서로 푼다 — 로컬/파라미터 → (이름 뒤가 `.` 이면) Module/Class 한정자
+     * → 감싸는 클래스 멤버 → 감싸는 모듈 직속 멤버. 어느 것도 아니면 undefined(호출부가 전역 이름 검색으로 이어간다).
+     *
+     * 종전에는 캐시의 이름 검색(현재 파일 우선)부터 해서 ① 로컬 변수가 다른 곳의 동명 필드에 가려졌고,
+     * ② 클래스 안의 `getWafer(...)` 가 다른 클래스의 동명 오버로드와 같은 줄에서 경쟁했으며(인자 타입을 모르면
+     * peek 에 섞임), ③ `NUM.FixedText` 의 `NUM` 은 같은 파일의 멤버 `Num()` 으로만 갔다(2026-10-23 SamplePrep).
+     */
+    private resolveUnqualifiedInScope(
+        word: string,
+        afterWord: string,
+        document: vscode.TextDocument,
+        atLine: number,
+        receiverContext: () => ReceiverContext,
+        callCtx: CallContext | undefined,
+        callArgCount: number | undefined
+    ): vscode.Definition | undefined {
+        let rc: ReceiverContext;
+        try {
+            rc = receiverContext();
+        } catch (error) {
+            this.log(`[Scope Error] ${error}`);
+            return undefined;
+        }
+        const { lookup, docSymbols } = rc;
+
+        const local = lookup.findLocal(word);
+        if (local) {
+            this.log(`[Scope] "${word}" → 로컬/파라미터 @line ${local.line + 1}`);
+            return this.buildLocation(local);
+        }
+
+        const docPath = document.uri.fsPath;
+        const inUnit = (s: GPLSymbol): boolean =>
+            s.filePath === docPath || this.symbolCache.isSameCompileUnit(s.filePath, docPath);
+
+        if (/^\s*\./.test(afterWord)) {
+            // `X.member` 의 X — 같은 이름의 클래스 멤버가 Module/Class 를 가리면 둘 다 보여 준다(모듈 먼저).
+            const shadow = findQualifierShadowing(word, lookup);
+            const shadowHolders = shadow?.holders.filter(inUnit) ?? [];
+            if (shadow && shadowHolders.length > 0) {
+                this.log(`[Shadowed Qualifier] "${word}": ${shadowHolders.map(h => `${h.kind} ${h.name}`).join(', ')} ↔ ` +
+                    `class ${lookup.enclosingClassName} 멤버 ${shadow.members.map(m => m.name).join(', ')} ` +
+                    `— 컴파일러는 멤버로 해석(-781/-729), 정의는 둘 다(모듈 먼저)`);
+                return this.narrowToDistinctLocations([...shadowHolders, ...shadow.members]).map(s => this.buildLocation(s));
+            }
+            const holders = lookup.findAllByName(word)
+                .filter(s => !s.isLocal && !s.isParameter && (s.kind === 'class' || s.kind === 'module') && inUnit(s));
+            if (holders.length > 0) {
+                this.log(`[Scope] "${word}." → ${holders.map(h => `${h.kind} ${h.name}`).join(', ')}`);
+                return this.buildDefinitionResult(holders);
+            }
+        }
+
+        const here = containerAt(docSymbols, atLine);
+        const className = lookup.enclosingClassName ?? here.className;
+        const scopes: ReceiverHolder[] = [];
+        if (className) {
+            scopes.push({ kind: 'class', name: className });
+        }
+        if (here.module) {
+            scopes.push({ kind: 'module', name: here.module });
+        }
+        for (const holder of scopes) {
+            const members = membersNamed(lookup, holder, word).filter(inUnit);
+            if (members.length === 0) {
+                continue;
+            }
+            this.log(`[Scope] "${word}" → 감싸는 ${holder.kind} ${holder.name} 의 멤버 ${members.length}개`);
+            const found = this.findMemberDefinitionIn(holder, word, document, callCtx, callArgCount);
+            if (found) {
+                return found;
+            }
+        }
         return undefined;
     }
 
@@ -475,10 +484,24 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
         const afterWord = line.substring(wordRange.end.character);
         const callArgs = extractCallArgumentsFromSuffix(afterWord);
         const callArgCount = callArgs ? callArgs.length : undefined;
-        const callCtx = this.buildCallContext(document, position.line, callArgs);
+        const receiverContext = this.receiverContextFactory(document, position.line);
+        const callCtx = buildCallContext(callArgs, () => receiverContext().lookup);
 
         this.log(`\n[Definition Request] v${EXTENSION_VERSION} | Word: "${word}" | Line: "${line.trim()}"`);
         this.log(`[Call Context] afterWord="${afterWord.trim()}" | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
+
+        // 선언 자신의 이름 위(`Public Sub getWafer(...)`, `Dim x As …`)면 그 선언이 답이다.
+        // 종전에는 선언 줄의 파라미터 목록을 "호출 인자"로 읽어 타입을 추론하지 못한 채 같은 개수의
+        // 오버로드를 전부 peek 으로 띄웠다. 자기 자신을 돌려주면 VS Code 가 참조 목록으로 이어 준다.
+        try {
+            const own = declarationAt(receiverContext().docSymbols, word, position.line, wordRange.start.character);
+            if (own) {
+                this.log(`[Declaration Here] ${own.kind} ${own.name} @line ${own.line + 1}`);
+                return this.buildLocation(own);
+            }
+        } catch (error) {
+            this.log(`[Declaration Here Error] ${error}`);
+        }
 
         // Special case: constructor call.
         // Detect "New ClassName(...)" whether cursor is on "New" keyword or on "ClassName".
@@ -568,7 +591,7 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
             const memberName = word;
             const parsed = chainInfo.chain.map(parseChainSegment);
             const receiver = parsed.every(seg => seg !== undefined) ? parsed as ReceiverSegment[] : undefined;
-            const target = receiver ? this.resolveReceiver(document, position.line, receiver) : undefined;
+            const target = receiver ? this.resolveReceiver(receiverContext, receiver) : undefined;
             const chainText = chainInfo.chain.join('.');
             this.log(`[Member Access] Receiver: "${chainText}" | Member: "${memberName}" | Target: ${target ? `${target.kind} ${target.name}` : '미해석'} | callArgCount=${typeof callArgCount === 'number' ? callArgCount : 'N/A'}`);
 
@@ -592,6 +615,16 @@ export class GPLDefinitionProvider implements vscode.DefinitionProvider {
 
         if (token.isCancellationRequested) {
             return undefined;
+        }
+
+        // ── 한정자 없는 이름 — GPL 이름 해석 순서(로컬 → 감싸는 클래스 → 감싸는 모듈)를 먼저 따른다 ──
+        // 타입 자리(`As X`·`New X`·`Inherits X`)의 이름은 멤버가 아니라 타입이므로 종전 검색에 맡긴다
+        // (`Public Property Station As Station` 의 타입 `Station` 이 같은 이름의 프로퍼티로 가지 않게).
+        if (!chainInfo && !isTypeNamePosition(line, wordRange.start.character)) {
+            const scoped = this.resolveUnqualifiedInScope(word, afterWord, document, position.line, receiverContext, callCtx, callArgCount);
+            if (scoped) {
+                return scoped;
+            }
         }
 
         // Fallback to regular definition search (when member access path didn't find anything)

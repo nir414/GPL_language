@@ -22,6 +22,24 @@ import { isBusyStatus } from '../controller/protocol/controllerStatusCodes';
 import { buildRuntimeConsoleUserMessage } from '../controller/runtime/runtimeConsolePresentation';
 import type { RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 import type { ExtensionHost } from './host';
+import { currentUnloadRisk } from '../controller/commands/unloadRiskGuard';
+import { unloadRiskWarning } from '../controller/commands/unloadRisk';
+
+/**
+ * 사람 경로(명령 팔레트·트리·FTP Run)의 Unload 사전 확인 — 그룹 Compile 뒤 Unload 위험(controller/commands/unloadRisk.ts)이면
+ * 모달로 묻는다. 위험 표시가 없으면 묻지 않는다(종전 동작 그대로).
+ *
+ * @returns `proceed:false` 면 사용자가 취소 — 보내지 않는다. `confirmUnloadRisk` 는 전송 옵션에 그대로 넘긴다.
+ */
+export async function confirmUnloadRiskInteractive(command: string): Promise<{ proceed: boolean; confirmUnloadRisk: boolean }> {
+	const risk = currentUnloadRisk(command, getControllerConfig().ip);
+	if (!risk?.risky) { return { proceed: true, confirmUnloadRisk: false }; }
+	const text = unloadRiskWarning(risk);
+	const go: vscode.MessageItem = { title: '그래도 Unload' };
+	const cancel: vscode.MessageItem = { title: '취소', isCloseAffordance: true };
+	const pick = await vscode.window.showWarningMessage(text.message, { modal: true, detail: text.detail }, go, cancel);
+	return pick === go ? { proceed: true, confirmUnloadRisk: true } : { proceed: false, confirmUnloadRisk: false };
+}
 
 /**
  * 접착 계층용 `ThreadStopIo` — 전체 정지 절차(controller/threads/threadStop.ts)에 확장의 전송·로그·대기를 물린다.

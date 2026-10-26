@@ -18,7 +18,7 @@
  */
 
 import * as vscode from 'vscode';
-import { getControllerConfig } from '../controller/connection/controllerConnection';
+import { getControllerConfig, SHOW_MEMORY_STATUS_COMMAND } from '../controller/connection/controllerConnection';
 import type { CompileStaleInfo } from '../controller/deployment/compileStale';
 import type { FlashSafetyState } from '../controller/deployment/flashSafety';
 import type { UploadProgressEvent, UploadSummary } from '../controller/deployment/uploadProgress';
@@ -64,6 +64,11 @@ export class ConnectionStatusBar implements vscode.Disposable {
     private uploadShown = false;
     /** Flash 쓰기 중 전원 차단 금지 경고 — 업로드 진행과 별개로 Sync + 안정화가 끝날 때까지 유지한다. */
     private flashSafetyItem: vscode.StatusBarItem;
+    /**
+     * 여유 메모리 경고 구간 표시(`$(warning) Free 2.96 MB`) — 매 검사마다 숫자만 갱신한다. 알림 창은 상태가 나빠질 때만 뜨고
+     * 지속 상태는 이 한 칸이 맡는다(2026-10-23 보고). 문구 규칙은 controller/diagnostics/memoryNotice.memoryBadge.
+     */
+    private memoryItem: vscode.StatusBarItem;
     private disposables: vscode.Disposable[] = [];
 
     get isConnected(): boolean { return this._isConnected; }
@@ -155,6 +160,20 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.flashSafetyItem.show();
     }
 
+    /**
+     * 메모리 경고 항목. badge 가 null 이면 숨기고(ok 복귀), undefined 면 지금 표시를 유지한다(측정 실패 — 모르는 것을 좋아졌다고 보지 않는다).
+     */
+    setMemoryWarning(badge: { text: string; tooltip: string } | null | undefined): void {
+        if (badge === undefined) { return; }
+        if (badge === null) {
+            this.memoryItem.hide();
+            return;
+        }
+        this.memoryItem.text = badge.text;
+        this.memoryItem.tooltip = badge.tooltip;
+        this.memoryItem.show();
+    }
+
     constructor() {
         this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         this.item.command = 'gpl.controller.connect';
@@ -184,6 +203,11 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.flashSafetyItem.name = 'GPL Flash 쓰기 안전 경고';
         this.flashSafetyItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
 
+        this.memoryItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 94);
+        this.memoryItem.name = 'GPL 제어기 여유 메모리 경고';
+        this.memoryItem.command = SHOW_MEMORY_STATUS_COMMAND;
+        this.memoryItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+
         this.disposables.push(
             vscode.window.onDidChangeActiveTextEditor(() => this.updateVisibility())
         );
@@ -212,6 +236,7 @@ export class ConnectionStatusBar implements vscode.Disposable {
         this.threadLockItem.dispose();
         this.uploadItem.dispose();
         this.flashSafetyItem.dispose();
+        this.memoryItem.dispose();
     }
 
     private updateThreadLockItem(): void {

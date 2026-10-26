@@ -3,6 +3,25 @@
 이 저장소 루트에서 바로 보이는 요청 목록이다. 확장·MCP 를 쓰는 다른 프로젝트 세션이 증상·개선 요청을 여기에 항목으로 덧붙인다.
 처리한 항목은 처리 결과(버전·커밋)를 적고 `## 처리 완료` 로 옮긴다. (2026-10-21 Sample Prep 세션이 사용자 지시로 만들었다.)
 
+## 처리 결과 요약 (2026-10-26, 0.18.0)
+
+원본: `C:\Users\Doyun\Downloads\GPL_language_inbox` 최상위 보고 22건. 코드·테스트로 반영했고(1413/1413, MCP 163/163) 제어기 실기·UI 확인은 하지 않았습니다. 상세는 `docs/ai-handoff.md` §1-FZ, 각 보고 파일 끝의 `## 처리 결과`.
+
+| 보고 | 처리 | 남은 범위 |
+| --- | --- | --- |
+| references-module-scope v1 | 참조 폴백의 모듈·한정자 판정, verbose 출현별 사유 | 실제 프로젝트에서 놓치는 참조 확인 |
+| class-member-shadows-module v1 | 정의 2후보·호버 경고·참조 정리, 멤버 가림 진단 | 모듈 수준 멤버의 가림은 미확인 |
+| gpl-overload-return-type-and-new-parens v1 | -741·-722 진단, 괄호 제거 빠른 수정, 컴파일 에러 힌트 | 다른 파일로 나뉜 오버로드 |
+| string-literal-506 / stop-thread-name-chars / private-shared-visibility / nothing-string-byval / jog-tick-mode | 정적 진단과 문서 반영, `stop_threads` 비영숫자 skip | 리터럴 한도 정확한 값, 밑줄 이름 Stop 실측 |
+| module-string-nothing | 문서 반영 | 첫 사용 린트는 흐름 분석이 필요해 보류 |
+| unload-guard-request 외 Unload 4건 | 그룹 Compile 뒤 Unload 확인(UI 모달·AI confirm), 재부팅 근거로 해제, 타임아웃 안내, /GPL 비우기 정지 게이트, `remoteFolder`·`redeploy` | Lib 배포 기본 upload-only, `Unload -all` 상시 확인 |
+| deploy-target-switch-runs-library v1 | 세션 대상 보존·변경 보고, 실행 불가 Start 사전 거부, -744 재시도 금지 | — |
+| ftp-upload-without-controller-check v1 | FTP 쓰기 전 정체 확인(`CONTROLLER_UNVERIFIED`), `controllerCheck` 기록, 재부팅 안내 | 실기 배너 형식 |
+| memory-warning-toast-repeat v1 | 악화 시만 알림, 상태 표시줄, 배포당 1회 | 「/GPL 확인」·「다시 알리지 않기」 버튼 |
+| unload-hang-ftp-alive / unload-1402-lockout / compile-econnreset | `gpl-runtime-network-down` 등 분류, 경로 인터페이스 ARP, 어댑터 재연결 안내, `compileAborted` | Unload 소켓 유지·명령별 타임아웃, Compile 전후 메모리 시계열 |
+| controller-clock-sync-feature v1 | 시계 동기화 명령·자동 동기화·MCP 도구 | 재부팅 뒤 유지 여부 |
+| gpl-facts-pm / pa-motor-direction-and-overtravel-facts | 문서 반영 | — |
+
 ## 처리 결과 요약 (2026-10-22, 0.14.0)
 
 원본: `C:\Users\Doyun\Downloads\GPL_language_inbox`. 기존 미커밋 변경을 보존하고 아래 항목을 코드·테스트로 대조했습니다. 설치와 제어기 실기 검증은 하지 않았습니다.

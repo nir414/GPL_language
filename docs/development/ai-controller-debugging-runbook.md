@@ -18,7 +18,7 @@ GPL Language Support 확장을 통해 AI 에이전트가 Brooks GPL 제어기 �
 
 제어기 안의 소스를 기준으로 기존 프로그램에 붙을 때는 FTP 프로젝트 폴더의
 **Open Controller Project for Debugging** (`gpl.controller.openProjectForDebugging`)을 사용한다.
-전용 Snapshot 작업공간과 참조 라이브러리를 준비하고, 창 전환·신뢰 확인 뒤 지정한 프로젝트에 한 번 Attach한다.
+기존 작업공간을 유지하며 원격 .gpr·라이브러리 관계를 확인하고 지정한 프로젝트에 Attach한다. 소스는 원격 파일을 열거나 디버거가 표시할 때만 읽기 전용 편집기로 가져온다. FTP 탐색만 필요하면 `GPL: Browse Controller Files`를 사용하며, 이 경로는 명령 콘솔에 연결하지 않는다.
 이 경로는 Deploy·Compile·Start·Stop을 수행하지 않고 기존 중단점을 보존한다.
 FTP 사본이 실행 바이너리의 소스와 같은지는 미확인이므로 다운로드/해시 검증을 컴파일 출처 증명으로 해석하지 않는다.
 받지 못한 참조는 경고로 남기며 그 라이브러리의 소스 매핑은 미완성일 수 있다. 이후 재열기는 저장된 F5 구성을 사용한다.
@@ -111,7 +111,8 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 런타임 콘솔 보장 | GPL: Ensure Runtime Console (1403) | `gpl.console.ensure` |
 | 라이브 로그 시작 | GPL: Start Live Log Terminal | `gpl.logs.liveTerminal.start` |
 | 라이브 로그 중지 | GPL: Stop Live Log Terminal (라이브 로그 중지) | `gpl.logs.liveTerminal.stop` |
-| 직접 명령 | GPL: Send Command to Controller | `gpl.controller.sendCommand` |
+| 직접 명령 | GPL: Send Command to Controller (인자 `{command, confirmUnloadRisk?}` — 그룹 Compile 뒤 Unload 는 확인 필요) | `gpl.controller.sendCommand` |
+| Unload 위험 표시 해제 | GPL: Unload 위험 표시 해제 (그룹 Compile 뒤 — 제어기 재부팅 후) | `gpl.controller.clearUnloadRisk` |
 | 중단점 반영 | GPL: Push Editor Breakpoints to Controller | `gpl.controller.pushBreakpoints` |
 | 중단점 가져오기 | GPL: Pull Controller Breakpoints | `gpl.controller.pullBreakpoints` |
 | 중단점 새로고침 | GPL: Refresh Controller Breakpoints | `gpl.controller.refreshBreakpoints` |
@@ -392,6 +393,15 @@ ErrorLog -clear
 같은 제어기의 실행 중·대기 중인 호스트 업로드/배포에도 취소를 전달한다. FTP는 현재 전송 중인 파일 경계에서 멈추고,
 그 뒤의 원격 삭제·Compile·Start는 진행하지 않는다. 배포 파이프라인 내부에서 쓰레드 정착을 위해 보내는 `Stop -all`은
 자기 배포를 취소하지 않는다. 이미 제어기에 전송된 명령은 취소할 수 없으므로 응답 정리 뒤 후속 단계만 차단한다.
+
+**그룹 Compile 뒤 Unload(2026-10-23)**: 같은 부팅에서 ProjectStart 없는 그룹 `.gpr`(Lib 등)을 Compile 한 뒤의 `Unload <project>`·
+`Unload -all` 은 6번 중 6번 명령 콘솔·런타임 콘솔을 끊었고 최근 사례는 재부팅으로만 복구됐다(원인 미확인). 확장은 이 부팅 상태를
+`%TEMP%/gpl-controller/unload-risk-<ip>.json` 에 기억하고(판정 정본 `controller/commands/unloadRisk.ts`), 모든 전송 경로에서 확인을 요구한다 —
+사람 경로는 모달(「그래도 Unload」/「취소」), AI 경로는 `refused:"unload-after-group-compile"`(미전송) 뒤 사용자 동의를 받아
+`confirm:true`(브리지 인자 `confirmUnloadRisk:true`). 표시는 재부팅 근거(명령 콘솔 유실 뒤 재연결 시 `/GPL` 에 그룹 폴더 없음)가 있을 때만
+자동 해제되고, 그 밖에는 「GPL: Unload 위험 표시 해제」(`gpl.controller.clearUnloadRisk`)로 사람이 푼다. 라이브러리는 업로드만 하고 앱
+Compile 로 검증하면 이 상태 자체를 피할 수 있다. ProjectStart 없는 그룹은 Start 계열에서 정지·업로드·컴파일 전에 거부된다
+(`PROJECT_NOT_RUNNABLE`, 제어기 `-744 *Invalid start procedure*` 는 재시도 금지).
 
 ### 위험 명령
 

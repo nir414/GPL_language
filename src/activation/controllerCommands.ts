@@ -4,9 +4,13 @@
 
 import * as vscode from 'vscode';
 import {
+	SHOW_MEMORY_STATUS_COMMAND,
+	describeMemoryCheck,
 	formatTrafficTimestamp,
 	getControllerConfig,
+	getLastMemoryCheck,
 	getTrafficLogOptions,
+	setMemoryStatusObserver,
 	isPolicyError,
 	isCleanlyTerminated,
 	recordTrafficLine,
@@ -25,6 +29,8 @@ import {
 	parseThreadList,
 } from '../controller/protocol/responseParser';
 import { getGplErrorGroup } from '../controller/protocol/responseParser';
+import { MemoryBadgeOwner, type MemoryBadgeUpdate } from '../controller/diagnostics/memoryNotice';
+import { onControllerSessionChange } from '../controller/connection/connectionSession';
 import type { ErrorCodeCategory } from '../controller/protocol/responseParser';
 import { probeThreads } from '../controller/threads/threadStop';
 import { isSettledState } from '../controller/threads/threadActivity';
@@ -37,7 +43,10 @@ import { formatAgentCommandFailure, formatAgentCommandLines } from '../controlle
 import { buildSetDioCommand, describeDioForce, DioForceValue } from '../controller/io/dio';
 import { EXTENSION_VERSION } from '../config';
 import { isStopAllCommand } from '../controller/deployment/deployCancellation';
-import { createThreadStopIo, requestActiveDeployCancellation, showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
+import { confirmUnloadRiskInteractive, createThreadStopIo, requestActiveDeployCancellation, showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
+import { isNotRunnableStartError, isUnloadRiskError } from '../controller/commands/unloadRiskGuard';
+import { UNLOAD_RISK_REFUSAL, clearUnloadRisk } from '../controller/commands/unloadRisk';
+import { readUnloadRiskState, updateUnloadRiskState } from '../controller/commands/unloadRiskStore';
 import type { ExtensionHost } from './host';
 
 async function normalizeControllerCommandInput(rawCommand: string): Promise<string | undefined> {
@@ -128,6 +137,35 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		})
 	);
 
+	// ── 여유 메모리 경고 상태 표시줄 (2026-10-23 보고 — 알림은 나빠질 때만, 지속 상태는 상태 표시줄 한 칸) ──
+	// 배지는 그 값을 잰 제어기의 것이다 — 현재 제어기의 결과만 보이고, 연결 해제·제어기 변경 시 숨긴다(MemoryBadgeOwner).
+	const memoryBadge = new MemoryBadgeOwner();
+	const applyMemoryBadge = (update: MemoryBadgeUpdate) => { host.statusBar?.setMemoryWarning(update); };
+	setMemoryStatusObserver((ip, _check, badge) => { applyMemoryBadge(memoryBadge.observe(ip, getControllerConfig().ip, badge)); });
+	context.subscriptions.push(
+		{ dispose: () => setMemoryStatusObserver(null) },
+		onControllerSessionChange(change => {
+			applyMemoryBadge(memoryBadge.reconcile(change.connected ? getControllerConfig().ip : undefined));
+		}),
+		vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('gpl.controller.ip')) { applyMemoryBadge(memoryBadge.reconcile(getControllerConfig().ip)); }
+		}),
+		vscode.commands.registerCommand(SHOW_MEMORY_STATUS_COMMAND, async () => {
+			const last = getLastMemoryCheck();
+			if (!last) {
+				void vscode.window.showInformationMessage('아직 여유 메모리 검사 결과가 없습니다 — Compile·Start·배포 전에 자동으로 검사합니다.');
+				return;
+			}
+			const at = new Date(last.at).toLocaleTimeString('ko-KR', { hour12: false });
+			const pick = await vscode.window.showInformationMessage(
+				`${last.ip} 여유 메모리 ${last.check.freeMb ?? '?'} MB (${at} 검사)`,
+				{ modal: true, detail: describeMemoryCheck(last.check) },
+				'명령 콘솔 기록 보기',
+			);
+			if (pick === '명령 콘솔 기록 보기') { trafficChannel.show(true); }
+		}),
+	);
+
 	// 1402 응답 본문 표시(GPL Traffic ` | ` 라인) 켜기/끄기 — 트리 '1402 통신 모니터' 항목 설명도 갱신
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.toggleTrafficResponseBody', async () => {
@@ -187,9 +225,13 @@ export function activateControllerCommands(host: ExtensionHost): void {
 				const cancellations = isStopAllCommand(command)
 					? requestActiveDeployCancellation(host, '원시 명령 Stop -all 요청')
 					: [];
+				// 그룹 Compile 뒤 Unload 는 호출자가 사용자 동의를 받아 confirm 을 줄 때만 보낸다(모달 없음 — 브리지가 멈춘다).
+				const confirmUnloadRisk = (args as { confirmUnloadRisk?: unknown })?.confirmUnloadRisk === true
+					|| (args as { confirm?: unknown })?.confirm === true;
 				try {
 					const detailed = await sendCommandDetailed(command, undefined, {
 						timeoutMs,
+						confirmUnloadRisk,
 						// 컴파일처럼 pass 사이에 침묵하는 명령은 종결자까지 기다려야 STATUS/에러 라인을 놓치지 않는다.
 						waitForStatusClose: (args as { waitForStatusClose?: boolean })?.waitForStatusClose === true || /^compile\b/i.test(command),
 					});
@@ -218,6 +260,23 @@ export function activateControllerCommands(host: ExtensionHost): void {
 							: {}),
 					};
 				} catch (err: any) {
+					if (isUnloadRiskError(err)) {
+						outputChannel.appendLine(formatAgentCommandFailure(command, 'policy-hold', `${UNLOAD_RISK_REFUSAL} — ${err.message}`));
+						return {
+							ok: false, error: UNLOAD_RISK_REFUSAL, refused: UNLOAD_RISK_REFUSAL, detail: err.message,
+							sentToController: false, command,
+							groupProjects: err.assessment.groupProjects,
+							lastGroupCompileAt: err.assessment.lastGroupCompileAt ? new Date(err.assessment.lastGroupCompileAt).toISOString() : null,
+							retryWith: { confirmUnloadRisk: true },
+						};
+					}
+					if (isNotRunnableStartError(err)) {
+						outputChannel.appendLine(formatAgentCommandFailure(command, 'policy-hold', `${err.code} — ${err.message}`));
+						return {
+							ok: false, error: err.code, detail: err.message, sentToController: false, command,
+							project: err.project, runnableCandidates: err.runnableCandidates,
+						};
+					}
 					if (err?.code === 'LOW_MEMORY' || err?.code === 'MEMORY_UNVERIFIED') {
 						outputChannel.appendLine(formatAgentCommandFailure(command, err.code, err.message));
 						return { ok: false, error: err.code, detail: err.message, precheck: err.precheck, sentToController: false, command };
@@ -236,11 +295,14 @@ export function activateControllerCommands(host: ExtensionHost): void {
 			if (!cmd) { return undefined; }
 			const normalizedCommand = await normalizeControllerCommandInput(cmd);
 			if (!normalizedCommand) { return undefined; }
+			// 그룹 Compile 뒤 Unload 면 모달로 확인한다(위험 표시가 없으면 묻지 않는다).
+			const unloadCheck = await confirmUnloadRiskInteractive(normalizedCommand);
+			if (!unloadCheck.proceed) { return undefined; }
 			if (isStopAllCommand(normalizedCommand)) {
 				requestActiveDeployCancellation(host, '명령 팔레트 Stop -all 요청');
 			}
 			try {
-				const resp = await sendCommand(normalizedCommand);
+				const resp = (await sendCommandDetailed(normalizedCommand, undefined, { confirmUnloadRisk: unloadCheck.confirmUnloadRisk })).raw;
 				outputChannel.appendLine(`[Command] >>> ${normalizedCommand}`);
 				outputChannel.appendLine(resp);
 				outputChannel.show(true);
@@ -251,6 +313,31 @@ export function activateControllerCommands(host: ExtensionHost): void {
 				vscode.window.showErrorMessage(`명령 실패: ${err.message ?? err}`);
 			}
 			return undefined;
+		})
+	);
+
+	// 그룹 Compile 뒤 Unload 위험 표시 해제 — 재부팅을 확장이 확인하지 못했을 때(연결 해제 중 재부팅 등) 사람이 푼다.
+	// 판정·저장은 controller/commands/unloadRisk.ts · unloadRiskStore.ts. 인자 `{ confirm: true }` 면 모달 없이 푼다(자동화).
+	context.subscriptions.push(
+		vscode.commands.registerCommand('gpl.controller.clearUnloadRisk', async (args?: unknown) => {
+			const ip = getControllerConfig().ip;
+			const state = readUnloadRiskState(ip);
+			if (!state || state.marks.length === 0) {
+				if (args === undefined) { vscode.window.showInformationMessage(`${ip}: 그룹 Compile 뒤 Unload 위험 표시가 없습니다.`); }
+				return { ok: true, cleared: false, marks: [] };
+			}
+			const list = state.marks.map(m => `${m.project} (${new Date(m.at).toLocaleTimeString()}, ${m.via})`).join(', ');
+			if ((args as { confirm?: unknown } | undefined)?.confirm !== true) {
+				const pick = await vscode.window.showWarningMessage(
+					`${ip}: 그룹 Compile 뒤 Unload 위험 표시를 해제할까요?`,
+					{ modal: true, detail: `표시된 그룹 Compile: ${list}\n\n제어기를 재부팅한 경우에만 해제하세요. 같은 부팅이면 Unload 가 명령 콘솔을 끊을 수 있습니다.` },
+					'해제',
+				);
+				if (pick !== '해제') { return { ok: false, cleared: false, cancelled: true }; }
+			}
+			updateUnloadRiskState(ip, s => clearUnloadRisk(s, Date.now(), args === undefined ? 'user-cleared' : 'automation-cleared'));
+			host.log(`[UnloadRisk] 위험 표시 해제(${args === undefined ? '사용자' : '자동화'}) — ${list}`);
+			return { ok: true, cleared: true, marks: state.marks };
 		})
 	);
 

@@ -50,12 +50,12 @@ test('automationRecovery: 배포 단계 → 코드 변환, 모든 단계가 표�
     assert.strictEqual(deployPhaseCode('LOCKED'), 'DEPLOY_LOCKED');
     assert.strictEqual(deployPhaseCode(undefined), undefined);
     // DeployPhase 전체 — 새 단계를 추가하면 이 테스트가 표 누락을 잡는다.
-    const phases = ['LOCKED', 'IN_PROGRESS', 'CANCELLED', 'AUTO_GATE', 'UPLOAD', 'STOP', 'THREAD_CHECK', 'COMPILE_DEFERRED', 'COMPILE', 'START', 'ERROR_CHECK'];
+    const phases = ['LOCKED', 'IN_PROGRESS', 'CANCELLED', 'AUTO_GATE', 'CONTROLLER_CHECK', 'UPLOAD', 'STOP', 'THREAD_CHECK', 'COMPILE_DEFERRED', 'COMPILE', 'START', 'ERROR_CHECK'];
     for (const p of phases) {
         assert.ok(hasRecovery(`DEPLOY_${p}`), `DEPLOY_${p} 의 복구 지시가 없다 — automationRecovery.ts 표에 추가할 것`);
     }
     // 자동화 오류 코드 전체도 등록돼 있어야 한다.
-    for (const code of ['NO_GPL_PROJECT', 'PROJECT_NOT_FOUND', 'PROJECT_AMBIGUOUS', 'UNSAVED_FILES', 'INTERACTIVE_UI_REQUIRED', 'COMPILE_UNVERIFIED', 'AI_BLOCKED']) {
+    for (const code of ['NO_GPL_PROJECT', 'PROJECT_NOT_FOUND', 'PROJECT_AMBIGUOUS', 'UNSAVED_FILES', 'INTERACTIVE_UI_REQUIRED', 'COMPILE_UNVERIFIED', 'AI_BLOCKED', 'CONTROLLER_UNVERIFIED', 'COMPILE_ABORTED']) {
         assert.ok(hasRecovery(code), `${code} 의 복구 지시가 없다`);
     }
     assert.ok(recoveryCodes().length >= phases.length, '표가 비어 있지 않다');

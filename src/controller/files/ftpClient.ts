@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { Writable } from 'stream';
 import { Client as FtpClient, FileInfo } from 'basic-ftp';
 import {
 	SyncManifestFiles,
@@ -51,13 +52,25 @@ function toFtpEntry(fi: FileInfo): FtpEntry {
 	};
 }
 
+/** 호스트별 마지막 FTP 220 배너 — 정체 확인(controllerIdentity)이 같은 작업 안의 FTP 세션 배너를 재사용한다(추가 접속 없음). */
+const lastBannerByHost = new Map<string, { banner: string; at: number }>();
+
+/** `host` 의 FTP 세션에서 마지막으로 받은 220 배너(없으면 undefined). */
+export function getLastFtpBanner(host: string): { banner: string; at: number } | undefined {
+	return lastBannerByHost.get(host);
+}
+
 /**
  * anonymous 접속된 basic-ftp Client를 생성한다.
  * 호출자가 반드시 client.close()를 호출해야 한다.
+ * 접속 응답(220 배너)은 호스트별로 기억한다 — 업로드 전 정체 확인이 새 접속 없이 쓴다.
  */
 async function createClient(host: string): Promise<FtpClient> {
 	const client = new FtpClient(TIMEOUT_MS);
-	await client.access({ host, user: 'anonymous', password: 'anonymous' });
+	const welcome = await client.access({ host, user: 'anonymous', password: 'anonymous' });
+	if (welcome && typeof welcome.message === 'string') {
+		lastBannerByHost.set(host, { banner: welcome.message, at: Date.now() });
+	}
 	return client;
 }
 
@@ -103,6 +116,31 @@ export async function listRemoteDir(host: string, remotePath: string): Promise<F
 	try {
 		const list = await client.list(remotePath);
 		return list.map(toFtpEntry);
+	} finally {
+		client.close();
+	}
+}
+
+/** 원격 파일 한 개를 읽는다. 폴더 다운로드·원격 쓰기 없이 필요한 문서만 가져온다. */
+export async function readRemoteFile(host: string, remotePath: string): Promise<Uint8Array> {
+	const client = await createClient(host);
+	const chunks: Buffer[] = [];
+	const maxBytes = 64 * 1024 * 1024;
+	let bytes = 0;
+	const destination = new Writable({
+		write(chunk: Buffer, _encoding, callback) {
+			bytes += chunk.length;
+			if (bytes > maxBytes) {
+				callback(new Error(`원격 파일 읽기 상한(64 MiB)을 넘었습니다: ${remotePath}`));
+				return;
+			}
+			chunks.push(Buffer.from(chunk));
+			callback();
+		},
+	});
+	try {
+		await client.downloadTo(destination, remotePath);
+		return Buffer.concat(chunks);
 	} finally {
 		client.close();
 	}

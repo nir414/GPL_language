@@ -18,8 +18,9 @@ import { describeDeployLock, getDeployLock } from '../controller/deployment/depl
 import { DeployResult, deploy, findProjectDirs, jumpToFirstCompileError, onDidUploadProgress } from '../controller/deployment/deployService';
 import { isUploadCancelledError, mirrorProject } from '../controller/files/ftpClient';
 import { checkProjectName, describeProjectNameProblem } from '../controller/projects/projectNameGuard';
-import { buildTargetCandidates, pickProjectDir, readGprProjectName } from '../controller/projects/projectPicker';
+import { buildTargetCandidates, pickProjectDir, readGprProjectName, readGprTargetInfo } from '../controller/projects/projectPicker';
 import { normalizeDirKey } from '../util/pathKey';
+import { gprPathInDir } from '../project/projectSources';
 import { getControllerProjectWriteBlock } from '../project/controllerProjectWorkspace';
 import { activeOperations, beginOperation, listOperations, readOperation, sweepOperations } from '../controller/automation/operationStore';
 import { clearDeployCancellation, readDeployCancellation } from '../controller/deployment/deployCancellation';
@@ -31,8 +32,11 @@ import {
 	isAutomationInvocation,
 	isProjectTargetRequest,
 	resolveProjectTarget,
+	sessionTargetAfterImplicitUse,
+	summarizeCandidates,
 } from '../controller/projects/projectTarget';
-import type { ProjectTargetRequest, TargetCandidateSummary } from '../controller/projects/projectTarget';
+import type { ProjectTargetRequest, SessionTargetUpdate, TargetCandidateSummary } from '../controller/projects/projectTarget';
+import { PROJECT_NOT_RUNNABLE, notRunnableStartDetail } from '../controller/commands/unloadRisk';
 import { isControllerNonBlockingStatus, parseStatus } from '../controller/protocol/responseParser';
 import { RuntimeConsole } from '../controller/runtime/runtimeConsole';
 import { buildStartCommand, commandRunsCompiler } from '../controller/commands/startCommand';
@@ -198,6 +202,18 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		return { ok: true, savedFiles };
 	}
 
+	/**
+	 * `.gpr` 가 있는데 ProjectStart 가 없으면(그룹·라이브러리) Start 거부 사유를, 아니면 undefined.
+	 * `.gpr` 를 못 찾은 폴더는 판단하지 않는다(종전 동작 — 제어기가 STATUS 로 판정).
+	 */
+	async function describeNotRunnable(projectDir: string): Promise<string | undefined> {
+		if (!gprPathInDir(projectDir)) { return undefined; }
+		const info = readGprTargetInfo(projectDir);
+		if (info.runnable) { return undefined; }
+		const runnable = (await buildTargetCandidates()).filter(c => c.runnable).map(c => c.projectName);
+		return notRunnableStartDetail(info.projectName, runnable);
+	}
+
 	async function runDeployCore(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<DeployResult | undefined> {
 		const modeLabel: SituationDeploySnapshot['mode'] = quickOpts?.uploadOnly
 			? 'Upload Only'
@@ -214,6 +230,17 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			const picked = await pickWorkspaceProjectDir('배포할 프로젝트를 선택하세요');
 			if (!picked) { return; }
 			projectDir = picked;
+		}
+
+		// Start 를 보내는 경로(Deploy & Run·업로드 스타트)는 실행 불가(ProjectStart 없는) 프로젝트를 정지·업로드·컴파일 **전에** 거부한다 —
+		// 그대로 가면 Stop -all + 그룹 Compile 뒤 -744 로 끝나고, 그 Compile 이 이 부팅을 Unload 위험 상태로 만든다(2026-10-23).
+		if (!skipStart && !quickOpts?.uploadOnly) {
+			const notRunnable = await describeNotRunnable(projectDir);
+			if (notRunnable) {
+				host.log(`[Deploy] ${notRunnable}`);
+				if (!quickOpts?.nonInteractive) { vscode.window.showErrorMessage(notRunnable); }
+				return;
+			}
 		}
 
 		// 업로드 전 미저장 파일 확인 — 수동 경로(Deploy/Quick Compile)만.
@@ -288,7 +315,31 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 					}
 					: undefined,
 				beforeStart: skipStart ? undefined : () => host.primeRuntimeConsoleForStart('Deploy'),
+				// FTP 쓰기 전 제어기 정체 확인(controller/connection/controllerIdentity.ts). 사람이 누른 경로만 「그래도 진행」을 묻는다 —
+				// AI·자동화(nonInteractive)와 autoOnSave(changedFiles)는 모달 없이 CONTROLLER_UNVERIFIED 로 멈춘다.
+				verifyControllerIdentity: vscode.workspace.getConfiguration('gpl').get<boolean>('controller.verifyControllerIdentity', true) !== false,
+				confirmUnverifiedController: !quickOpts?.nonInteractive && !quickOpts?.changedFiles?.length
+					? async check => {
+						const pick = await vscode.window.showWarningMessage(
+							`${cfg.ip} 이 제어기인지 확인하지 못했습니다 — ${mode} 업로드를 시작하지 않았습니다.`,
+							{ modal: true, detail: `${check.reasons.join('\n')}\n\n명령 콘솔: ${check.commandConsoleDetail}\nFTP 배너: ${check.ftpBanner ?? '(읽지 못함)'}\n\n다른 장치에 파일을 올릴 수 있습니다. 제어기임을 알고 있을 때만 진행하세요.` },
+							'그래도 진행',
+						);
+						return pick === '그래도 진행';
+					}
+					: undefined,
 			}, outputChannel, deployDiagnostics);
+
+			// 제어기 정체 확인 실패 — 아무것도 올리지 않았다. 사람 경로는 이미 모달로 알렸고(취소 선택), 자동 경로는 로그만.
+			if (!result.success && result.failedPhase === 'CONTROLLER_CHECK') {
+				const reasons = result.controllerCheck?.reasons.join(' / ') ?? result.failedStatusMessage ?? '제어기 확인 실패';
+				host.log(`[Deploy] ${mode} 중단(제어기 미확인, 업로드 안 함): ${reasons}`);
+				host.lastDeploySnapshot = makeDeploySnapshot({
+					mode: modeLabel, success: false, lastStage: 'UPLOAD', summary: `제어기 미확인(업로드 안 함) — ${reasons}`,
+					compileErrorCodes: [], controllerSystemCodes: [],
+				});
+				return result;
+			}
 
 			if (result.cancelled) {
 				const reason = result.cancellationReason ?? result.failedStatusMessage ?? '작업자 전체 정지 요청';
@@ -653,6 +704,10 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	type AutomationErrorCode =
 		| 'NO_GPL_PROJECT' | 'PROJECT_NOT_FOUND' | 'PROJECT_AMBIGUOUS'
 		| 'UNSAVED_FILES' | 'INTERACTIVE_UI_REQUIRED' | 'COMPILE_UNVERIFIED'
+		/** Start 경로인데 대상이 실행 불가(ProjectStart 없는 그룹) — 정지·업로드·컴파일 전에 거부. */
+		| typeof PROJECT_NOT_RUNNABLE
+		/** FTP 쓰기 전 제어기 정체 확인 실패 — 아무것도 올리지 않았다(controller/connection/controllerIdentity.ts). */
+		| 'CONTROLLER_UNVERIFIED'
 		/** AI/자동화 경로에서 실행할 수 없는 명령(controller/automation/aiCommandPolicy.ts). */
 		| typeof AI_BLOCKED_ERROR;
 
@@ -663,6 +718,12 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		candidates?: TargetCandidateSummary[];
 		candidateCount?: number;
 		files?: string[];
+		/** 제어기에 아무것도 보내지 않았음(CONTROLLER_UNVERIFIED 등). */
+		sent?: false;
+		/** 정체 확인이 통과하지 못한 이유들. */
+		reasons?: string[];
+		controllerCheck?: DeployResult['controllerCheck'];
+		operationId?: string;
 		/**
 		 * 다음에 무엇을 할지 — 호출자(AI/MCP)가 detail 문장을 해석해 행동을 지어내지 않게 한다(개선안 §15~§17).
 		 * 규칙은 `controller/automation/automationRecovery.ts` 가 정본이며 코드마다 하나로 정해져 있다.
@@ -693,7 +754,8 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	async function resolveAutomationTarget(
 		request: ProjectTargetRequest | undefined,
 		label: string,
-	): Promise<{ ok: true; dir: string; projectName: string } | AutomationFailure> {
+		opts: { pin?: boolean; requireRunnable?: boolean } = {},
+	): Promise<{ ok: true; dir: string; projectName: string; runnable: boolean; sessionTargetUpdate: SessionTargetUpdate } | AutomationFailure> {
 		const candidates = await buildTargetCandidates();
 		const r = resolveProjectTarget(request, candidates, {
 			sessionTargetDir: host.sessionTargetDir,
@@ -702,9 +764,23 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			host.log(`[Automation] ${label}: ${describeResolution(r)} · 후보: ${describeCandidates(r.candidates)}`);
 			return automationFailure(r.error, r.detail, { candidateCount: r.candidates.length });
 		}
-		host.sessionTargetDir = r.dir;
-		host.log(`[Automation] ${label}: 대상 ${describeResolution(r)}`);
-		return { ok: true, dir: r.dir, projectName: r.projectName };
+		const runnable = candidates.find(c => normalizeDirKey(c.dir) === normalizeDirKey(r.dir))?.runnable ?? false;
+		// Start 경로는 실행 불가 그룹을 정지·업로드·컴파일 전에 거부한다(그대로 가면 그룹 Compile 뒤 -744).
+		if (opts.requireRunnable && !runnable) {
+			const runnables = candidates.filter(c => c.runnable);
+			host.log(`[Automation] ${label}: ${r.projectName} 는 ProjectStart 없는 그룹 — ${PROJECT_NOT_RUNNABLE} (보내지 않음)`);
+			return automationFailure(PROJECT_NOT_RUNNABLE, notRunnableStartDetail(r.projectName, runnables.map(c => c.projectName)), {
+				candidates: summarizeCandidates(runnables),
+			});
+		}
+		// 명시 고정(gpl.automation.target)만 세션 대상을 마음대로 바꾼다. 배포·실행 호출의 부수 효과는
+		// sessionTargetAfterImplicitUse 규칙(실행 불가 대상은 세션 대상이 되지 않고, 이미 있는 대상은 바꾸지 않는다)을 따른다.
+		const sessionTargetUpdate: SessionTargetUpdate = opts.pin
+			? { nextDir: r.dir, changed: !host.sessionTargetDir || normalizeDirKey(host.sessionTargetDir) !== normalizeDirKey(r.dir), reason: 'adopted' }
+			: sessionTargetAfterImplicitUse(host.sessionTargetDir, { dir: r.dir, runnable });
+		host.sessionTargetDir = sessionTargetUpdate.nextDir;
+		host.log(`[Automation] ${label}: 대상 ${describeResolution(r)} · 세션 대상 ${sessionTargetUpdate.reason}`);
+		return { ok: true, dir: r.dir, projectName: r.projectName, runnable, sessionTargetUpdate };
 	}
 
 	/**
@@ -782,12 +858,18 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		args: AutomationTargetArgs,
 		skipStart: boolean,
 		opts: Omit<QuickDeployOpts, 'overrideProjectDir' | 'nonInteractive'>,
+		gates: { motion?: boolean } = {},
 	): Promise<DeployResult | AutomationFailure | undefined> {
-		const target = await resolveAutomationTarget(args, label);
+		// Start 를 보내는 모드는 실행 가능 여부를 모션 확인보다 먼저 본다 — 확인을 받아 와도 어차피 -744 로 끝날 요청이다.
+		const target = await resolveAutomationTarget(args, label, { requireRunnable: !skipStart && !opts.uploadOnly });
 		if (isAutomationFailure(target)) { return target; }
+		if (gates.motion) {
+			const gate = startMotionGate(label, args);
+			if (gate) { return gate; }
+		}
 		const dirty = await handleDirtyForAutomation(target.dir, args, label);
 		if (dirty) { return dirty; }
-		return runDeploy(skipStart, {
+		const result = await runDeploy(skipStart, {
 			...opts,
 			overrideProjectDir: target.dir,
 			nonInteractive: true,
@@ -796,6 +878,22 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			// 겹쳐 들어오는 것이 막으려는 상황이므로, 키가 없다고 중복 방지가 꺼지면 안 된다(§10).
 			idempotencyKey: args.idempotencyKey ?? `${label}:${normalizeDirKey(target.dir)}`,
 		});
+		// 제어기 정체 확인 실패는 구조화 거부로 — 모달을 띄우지 않고(브리지 정지 방지) sent:false 와 이유를 싣는다.
+		if (result && !result.success && result.failedPhase === 'CONTROLLER_CHECK') {
+			const reasons = result.controllerCheck?.reasons ?? [];
+			return automationFailure(
+				'CONTROLLER_UNVERIFIED',
+				`${getControllerConfig().ip} 이 PA 제어기인지 확인하지 못해 업로드하지 않았습니다: ${reasons.join(' ') || (result.failedStatusMessage ?? '')}`,
+				{
+					sent: false,
+					reasons,
+					...(result.controllerCheck ? { controllerCheck: result.controllerCheck } : {}),
+					...(result.operationId ? { operationId: result.operationId } : {}),
+				},
+			);
+		}
+		// 세션 대상이 이 호출로 바뀌었는지(또는 왜 그대로인지)를 결과에 싣는다 — 호출자가 추론하지 않게.
+		return result ? Object.assign(result, { sessionTargetUpdate: target.sessionTargetUpdate }) : result;
 	}
 
 	/**
@@ -812,7 +910,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				host.sessionTargetDir = undefined;
 				host.log('[Automation] 세션 대상 해제');
 			} else if (isProjectTargetRequest(a)) {
-				const target = await resolveAutomationTarget(a, 'gpl.automation.target');
+				const target = await resolveAutomationTarget(a, 'gpl.automation.target', { pin: true });
 				if (isAutomationFailure(target)) { return target; }
 			}
 			const candidates = await buildTargetCandidates();
@@ -917,9 +1015,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			if (isAutomationInvocation(resource)) {
 				// Start 를 보내는 경로 — 모션 확인 없이 자동으로 실행하지 않는다(하드 규칙 6).
 				const args = resource as AutomationTargetArgs;
-				const gate = startMotionGate('gpl.uploadStart', args);
-				if (gate) { return gate; }
-				return runDeployForAutomation('gpl.uploadStart', args, false, { ...uploadStart });
+				return runDeployForAutomation('gpl.uploadStart', args, false, { ...uploadStart }, { motion: true });
 			}
 			if (resource instanceof vscode.Uri) {
 				const dir = await pickWorkspaceProjectDir('업로드 후 시작할 프로젝트를 선택하세요', resource);
@@ -946,13 +1042,20 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			const auto = isAutomationInvocation(resource) ? resource as AutomationTargetArgs : undefined;
 			let projectDir: string | undefined;
 			if (auto) {
-				const target = await resolveAutomationTarget(auto, 'gpl.start');
+				const target = await resolveAutomationTarget(auto, 'gpl.start', { requireRunnable: true });
 				if (isAutomationFailure(target)) { return target; }
 				projectDir = target.dir;
 			} else {
 				projectDir = await pickWorkspaceProjectDir('시작할 프로젝트를 선택하세요', resource);
 			}
 			if (!projectDir) { return undefined; }
+			// 실행 불가(ProjectStart 없는 그룹)면 보내지 않는다 — Start -compile 이 그룹을 컴파일한 뒤 -744 로 끝난다.
+			const notRunnable = auto ? undefined : await describeNotRunnable(projectDir);
+			if (notRunnable) {
+				host.log(`[Start] ${notRunnable}`);
+				vscode.window.showErrorMessage(notRunnable);
+				return undefined;
+			}
 			const gprName = readGprProjectName(projectDir);
 			const projectName = gprName ?? path.basename(projectDir);
 			// `Start <name>`은 공백 구분 명령 — 이름에 공백이 있으면 보내지 않고 이유를 알린다.

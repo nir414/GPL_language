@@ -3,10 +3,44 @@ import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLParser, GPLSymbol } from '../language/gplParser';
 import { isTraceVerbose, getQualifiedWordAtPosition, isInCommentOrString } from '../config';
 import { ciEq } from '../language/identifiers';
-import { elementTypeOf, enclosingClassName, enclosingModuleName } from '../language/receiverType';
-import { extractBaseObjectName, escapeRegExp } from '../language/cursorExpression';
+import {
+    elementTypeOf,
+    enclosingClassName,
+    enclosingModuleName,
+    membersNamed,
+    ReceiverHolder,
+    ReceiverSegment,
+    resolveReceiverTarget,
+} from '../language/receiverType';
+import {
+    extractBaseObjectName,
+    escapeRegExp,
+    extractCallArgumentsFromSuffix,
+    extractQualifierChainBefore,
+    isTypeNamePosition,
+    parseChainSegment,
+} from '../language/cursorExpression';
 import { buildConstructorUsagePattern, isSymbolicStringReferenceAt, isTypeUsageAt } from '../language/referenceSyntax';
+import { buildCallContext, CallContext, isOverloadSelected, rankOverloadMatches } from '../language/overloadResolution';
+import {
+    classifyReferenceOccurrence,
+    containerAt,
+    declarationAt,
+    ReferenceExclusionReason,
+    ReferenceTarget,
+} from '../language/referenceScope';
+import { normalizePathKey } from '../util/pathKey';
 import { PROJECT_EXCLUDE_GLOB, resolveProjectFileScope } from '../project/projectFileScope';
+import { buildReceiverContext, buildReceiverContextFromText, ReceiverContext } from './receiverContext';
+
+/** 참조 대상 복원 결과 — `precise` 면 오버로드까지 확정된 것(형제 오버로드의 호출·선언을 가를 수 있다). */
+interface RecoveredTarget {
+    symbol: GPLSymbol;
+    precise: boolean;
+}
+
+/** verbose 로그에 출현별 판정을 몇 줄까지 남길지 — 넘치면 사유별 집계만 남긴다(로그 폭주 방지, 2026-10-19 보고). */
+const MAX_OCCURRENCE_LOG_LINES = 200;
 
 export class GPLReferenceProvider implements vscode.ReferenceProvider {
     constructor(
@@ -179,6 +213,107 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         return sym?.kind === 'class' || sym?.kind === 'module' ? sym : undefined;
     }
 
+    /**
+     * 동명 후보(같은 홀더의 오버로드 등) 중 하나를 고른다. 호출 인자로 하나가 확정되면 precise.
+     * 후보가 하나뿐이어도 precise 다.
+     */
+    private pickCandidate(candidates: GPLSymbol[], callCtx: CallContext | undefined): RecoveredTarget | undefined {
+        if (candidates.length === 0) {
+            return undefined;
+        }
+        if (candidates.length === 1) {
+            return { symbol: candidates[0], precise: true };
+        }
+        const callable = candidates.filter(s => s.kind === 'sub' || s.kind === 'function');
+        if (callable.length > 1 && callCtx && typeof callCtx.argCount === 'number') {
+            const ranked = rankOverloadMatches(callable, callCtx);
+            return { symbol: ranked[0], precise: ranked.length === 1 };
+        }
+        return { symbol: callable[0] ?? candidates[0], precise: false };
+    }
+
+    /**
+     * 사용부(호출·한정자·한정자 없는 이름)에서 실행했을 때 대상 선언을 GPL 이름 해석으로 복원한다 —
+     * 정의 이동(definitionProvider)과 같은 순서다.
+     *   - `a.b.Member` → 수신자 체인을 receiverType 으로 풀어 그 홀더의 멤버(`Me.`·변수·Module 한정 포함)
+     *   - 한정자 없는 `Name.` → 같은 컴파일 단위의 Module/Class(모듈 먼저 — 한정자 자리의 사용자 의도)
+     *   - 한정자 없는 `Name` → 감싸는 클래스 멤버 → 감싸는 모듈 직속 멤버
+     * 로컬/파라미터면 undefined(종전 이름 검색 유지). 오버로드는 호출 인자로 고른다.
+     */
+    private recoverUsageTarget(
+        word: string,
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        lineText: string,
+        wordStart: number,
+        wordEnd: number,
+        receiverContext: () => ReceiverContext,
+    ): RecoveredTarget | undefined {
+        let rc: ReceiverContext;
+        try {
+            rc = receiverContext();
+        } catch {
+            return undefined;
+        }
+        const { lookup, docSymbols } = rc;
+        const docPath = document.uri.fsPath;
+        const inUnit = (s: GPLSymbol): boolean =>
+            s.filePath === docPath || this.symbolCache.isSameCompileUnit(s.filePath, docPath);
+        const callArgs = extractCallArgumentsFromSuffix(lineText.substring(wordEnd));
+        const callCtx = buildCallContext(callArgs, () => lookup);
+
+        const before = lineText.substring(0, wordStart).replace(/\s+$/, '');
+        if (before.endsWith('.')) {
+            const chainInfo = extractQualifierChainBefore(before.replace(/\s*\.\s*/g, '.'));
+            const parsed = chainInfo?.partial === '' ? chainInfo.chain.map(parseChainSegment) : undefined;
+            if (!parsed || !parsed.every(s => s !== undefined)) {
+                return undefined;
+            }
+            const target = resolveReceiverTarget(parsed as ReceiverSegment[], lookup);
+            if (target?.kind !== 'class' && target?.kind !== 'module') {
+                return undefined;
+            }
+            let members = membersNamed(lookup, target, word).filter(inUnit);
+            if (members.length === 0) {
+                members = target.kind === 'class'
+                    ? this.symbolCache.findMemberCandidatesInClass(word, target.name)
+                    : this.symbolCache.findMemberCandidatesInModule(word, target.name);
+            }
+            return this.pickCandidate(members.filter(inUnit), callCtx);
+        }
+
+        if (lookup.findLocal(word)) {
+            return undefined;
+        }
+
+        if (/^\s*\./.test(lineText.substring(wordEnd))) {
+            const holders = lookup.findAllByName(word)
+                .filter(s => !s.isLocal && !s.isParameter && (s.kind === 'module' || s.kind === 'class') && inUnit(s))
+                .sort((a, b) => (a.kind === 'module' ? 0 : 1) - (b.kind === 'module' ? 0 : 1));
+            if (holders.length > 0) {
+                return { symbol: holders[0], precise: true };
+            }
+        }
+
+        const here = containerAt(docSymbols, position.line);
+        const scopes: ReceiverHolder[] = [];
+        const className = lookup.enclosingClassName ?? here.className;
+        if (className) {
+            scopes.push({ kind: 'class', name: className });
+        }
+        if (here.module) {
+            scopes.push({ kind: 'module', name: here.module });
+        }
+        for (const holder of scopes) {
+            const members = membersNamed(lookup, holder, word).filter(inUnit);
+            const picked = this.pickCandidate(members, callCtx);
+            if (picked) {
+                return picked;
+            }
+        }
+        return undefined;
+    }
+
     private isQualifiedAt(text: string, matchIndex: number): boolean {
         // True if the identifier at matchIndex is preceded (ignoring whitespace) by a dot.
         for (let i = matchIndex - 1; i >= 0; i--) {
@@ -342,6 +477,11 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
 
         // If cursor is on a definition, capture its module/class scope.
         let defSymbol = this.tryGetDefinitionSymbolAtPosition(document, position, word, wordRange);
+        // 오버로드까지 확정됐는지 — 선언 위에서 실행했거나, 호출 인자로 하나가 골라졌을 때.
+        let defPrecise = !!defSymbol;
+        let receiverCtx: ReceiverContext | undefined;
+        const receiverContext = () => (receiverCtx ??= buildReceiverContext(
+            document, position.line, n => this.symbolCache.findAllByName(n)));
 
         // 사용부에서 실행한 Find References도 선언에서 실행한 것과 같은 target scope를 가져야 한다.
         // `New ClassName(...)`은 커서 단어(New)만으로는 클래스가 드러나지 않으므로 뒤의 타입을 읽고,
@@ -358,20 +498,27 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 );
             }
         }
-        if (!defSymbol && qualifierSymbol?.kind === 'class') {
-            defSymbol = this.symbolCache.findMemberCandidatesInClass(word, qualifierSymbol.name)[0];
-        }
-        if (!defSymbol && qualifierSymbol?.kind === 'module') {
-            defSymbol = this.symbolCache.findMemberCandidatesInModule(word, qualifierSymbol.name)[0];
-        }
-
         // 커서가 정의 라인이 아니라 "호출부"에 있는 경우에도 정의의 스코프(module/class/access)를
-        // 캐시에서 복원한다. 이렇게 하면 정의에서 실행하든 호출부에서 실행하든 "참조 찾기" 결과가 일관된다.
-        // 단, 같은 이름이 서로 다른 스코프에 흩어져 모호하면(예: 다른 클래스의 동명 멤버) 복원을 포기하고
-        // 기존의 이름 기반 광역 검색으로 남겨, 참조가 누락되지 않도록 한다(false negative 방지 우선).
+        // 복원한다. 이렇게 하면 정의에서 실행하든 호출부에서 실행하든 "참조 찾기" 결과가 일관된다.
+        // 타입 사용부(`As X`/`New X`) → GPL 이름 해석(수신자 체인·감싸는 클래스/모듈, 정의 이동과 같은 순서)
+        // → 종전 이름 기반 복원 순. 어느 것도 확정하지 못하면 기존의 이름 기반 광역 검색으로 남긴다.
         if (!defSymbol) {
-            defSymbol = this.recoverTypeUsageDeclaration(word, document, lineText, wordRange.start.character)
-                ?? this.recoverDefinitionScope(word, qualifier, document);
+            defSymbol = this.recoverTypeUsageDeclaration(word, document, lineText, wordRange.start.character);
+            defPrecise = !!defSymbol;
+        }
+        if (!defSymbol && !ciEq(word, 'New') && !isTypeNamePosition(lineText, wordRange.start.character)) {
+            const recovered = this.recoverUsageTarget(
+                word, document, position, lineText, wordRange.start.character, wordRange.end.character, receiverContext);
+            if (recovered) {
+                defSymbol = recovered.symbol;
+                defPrecise = recovered.precise;
+                this.log(`[References] usage → ${defSymbol.kind} ${defSymbol.name} @${defSymbol.filePath.split('\\').pop()}:${defSymbol.line + 1}` +
+                    ` precise=${defPrecise}`);
+            }
+        }
+        if (!defSymbol) {
+            defSymbol = this.recoverDefinitionScope(word, qualifier, document);
+            defPrecise = false;
         }
 
         const targetFilePath = defSymbol?.filePath;
@@ -387,7 +534,8 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         this.log(
             `[References] word="${word}" qualifier=${qualifier || 'N/A'} defScope=` +
                 `${targetModule || 'N/A'}${targetClass ? '.' + targetClass : ''}` +
-                ` access=${targetAccess || 'N/A'} file=${targetFilePath ? targetFilePath.split('\\').pop() : 'N/A'}`
+                ` access=${targetAccess || 'N/A'} file=${targetFilePath ? targetFilePath.split('\\').pop() : 'N/A'}` +
+                (defSymbol ? ` kind=${defSymbol.kind} line=${defSymbol.line + 1} precise=${defPrecise}` : '')
         );
 
         // Scope-aware search strategy:
@@ -438,7 +586,39 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
         const shouldRestrictUnqualifiedToDefFile =
             !!targetFilePath && (isClassMember || isPrivateModuleLevelMember);
 
-        const shouldPreferQualifiedOnly = !!escapedQualifier && isAuthoritativeQualifier;
+        // 출현 판정(referenceScope)을 적용할 대상 — 소속이 확정된 Module 직속 멤버·Class 멤버·Module 자체.
+        // 생성자·로컬·타입 선언(Class/Delegate — `As X`·`New X` 는 멤버 이름 해석과 규칙이 다르다)은
+        // 종전 규칙(전용 패턴·이름 검색)을 그대로 쓴다.
+        const isConstructorWord = defSymbol?.kind === 'sub' && ciEq(word, 'New');
+        const isTypeDeclaration = defSymbol?.kind === 'class' || defSymbol?.kind === 'delegate';
+        const scopeTarget: ReferenceTarget | undefined = defSymbol && !defSymbol.isLocal && !defSymbol.isParameter
+            && !isConstructorWord && !isTypeDeclaration
+            && (!!targetModule || !!targetClass || defSymbol.kind === 'module')
+            ? {
+                name: defSymbol.name,
+                kind: defSymbol.kind,
+                module: targetModule,
+                className: targetClass,
+                declarations: [],
+            }
+            : undefined;
+        // 오버로드 형제 — 확정 못 했으면 형제 선언도 대상으로 인정하고(빼면 누락), 확정했으면 호출 인자로 가른다.
+        let overloadSiblings: GPLSymbol[] = [];
+        if (scopeTarget && defSymbol && (defSymbol.kind === 'sub' || defSymbol.kind === 'function')) {
+            try {
+                overloadSiblings = this.symbolCache.findOverloadSiblings(
+                    defSymbol, GPLParser.parseDocument(document.getText(), document.uri.fsPath));
+            } catch {
+                overloadSiblings = [];
+            }
+        }
+        if (scopeTarget && defSymbol) {
+            scopeTarget.declarations = [defSymbol, ...(defPrecise ? [] : overloadSiblings)];
+        }
+
+        // 대상이 확정되면 사용부(`BRI.Setup`)에서 실행해도 선언에서 실행한 것과 같은 범위를 찾는다 —
+        // 한정 패턴만 찾으면 정의 모듈 안의 한정자 없는 호출을 놓친다. 오탐은 출현 판정이 거른다.
+        const shouldPreferQualifiedOnly = !!escapedQualifier && isAuthoritativeQualifier && !scopeTarget;
         const shouldAlsoSearchModuleQualified = !shouldPreferQualifiedOnly && !!escapedModule && !targetClass;
         const shouldAlsoSearchClassQualified = !shouldPreferQualifiedOnly && !!escapedClass && !!targetClass;
 
@@ -543,6 +723,83 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             return range.start.character === firstIdx;
         };
 
+        // ── 출현 판정(GPL 이름 해석) ────────────────────────────────────────────────────────
+        // 텍스트 패턴은 이름만 본다. 여기서 각 출현이 정말 대상 선언을 가리키는지 referenceScope 로 거른다 —
+        // 다른 모듈의 동명 선언(`Module BRM` 의 `Setup`), 다른 한정자(`BRM.Setup`), 그 자리의 멤버/로컬에 가려진
+        // 한정자 없는 사용, 다른 오버로드에 맞는 호출을 뺀다(2026-10-23 SamplePrep 보고).
+        const fileContexts = new Map<string, { symbols: GPLSymbol[]; lines?: string[] }>();
+        const fileContextOf = (fsPath: string, text: string) => {
+            const key = normalizePathKey(fsPath);
+            let entry = fileContexts.get(key);
+            if (!entry) {
+                let symbols: GPLSymbol[];
+                try {
+                    symbols = GPLParser.parseDocument(text, fsPath, { includeLocals: true, includeParameters: true });
+                } catch {
+                    symbols = [];
+                }
+                entry = { symbols };
+                fileContexts.set(key, entry);
+            }
+            return entry;
+        };
+        const scopeLookup = {
+            findAllByName: (n: string) => this.symbolCache.findAllByName(n),
+            inUnit: (p: string) => inCompileUnit(p),
+            samePath: (a: string, b: string) => normalizePathKey(a) === normalizePathKey(b),
+        };
+        const overloadFilterOn = !!scopeTarget && defPrecise && isCallableTarget && overloadSiblings.length > 0;
+        const exclusionCounts = new Map<ReferenceExclusionReason, number>();
+        const loggedOccurrences = new Set<string>();
+        const fileName = (p: string) => p.split(/[\\/]/).pop();
+        const logOccurrence = (key: string, message: string) => {
+            if (loggedOccurrences.has(key)) {
+                return;
+            }
+            loggedOccurrences.add(key);
+            if (loggedOccurrences.size <= MAX_OCCURRENCE_LOG_LINES) {
+                this.log(message);
+            }
+        };
+
+        /** 출현 하나를 참조로 남길지. 대상 스코프가 확정되지 않았으면 종전대로 모두 남긴다. */
+        const acceptByScope = (uri: vscode.Uri, text: string, lineIdx: number, lineText: string, character: number): boolean => {
+            if (!scopeTarget || !defSymbol) {
+                return true;
+            }
+            // 문자열 속 `"Module.Proc"` 는 shouldAcceptOccurrence 가 컨테이너까지 이미 검사했다.
+            if (isInCommentOrString(lineText, character)) {
+                return true;
+            }
+            const file = fileContextOf(uri.fsPath, text);
+            const verdict = classifyReferenceOccurrence(
+                scopeTarget,
+                { filePath: uri.fsPath, line: lineIdx, lineText, character, fileSymbols: file.symbols },
+                scopeLookup,
+            );
+            let reason: ReferenceExclusionReason | undefined = verdict.accept ? undefined : verdict.reason;
+            if (!reason && overloadFilterOn && !declarationAt(file.symbols, word, lineIdx, character)) {
+                const callArgs = extractCallArgumentsFromSuffix(lineText.substring(character + word.length));
+                const callCtx = buildCallContext(callArgs, () => buildReceiverContextFromText(
+                    (file.lines ??= text.split(/\r\n|\r|\n/)), uri.fsPath, lineIdx,
+                    n => this.symbolCache.findAllByName(n), file.symbols).lookup);
+                if (!isOverloadSelected(defSymbol, overloadSiblings, callCtx)) {
+                    reason = 'overload-mismatch';
+                }
+            }
+            const where = `${fileName(uri.fsPath)}:${lineIdx + 1}`;
+            const key = `${normalizePathKey(uri.fsPath)}:${lineIdx}:${character}`;
+            if (reason) {
+                if (!loggedOccurrences.has(key)) {
+                    exclusionCounts.set(reason, (exclusionCounts.get(reason) ?? 0) + 1);
+                }
+                logOccurrence(key, `[References]   exclude ${where} reason=${reason}`);
+                return false;
+            }
+            logOccurrence(key, `[References]   hit ${where}`);
+            return true;
+        };
+
         const scanSourceText = (uri: vscode.Uri, text: string, re: RegExp, opts: { unqualifiedOnly?: boolean }): number => {
             let added = 0;
             // VS Code 문서를 열지 않고도 물리 줄의 절대 오프셋을 보존한다(CRLF/LF/CR 혼합 허용).
@@ -608,6 +865,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                     }
 
                     if (shouldSkipAsDeclaration(uri, range, lineText)) {
+                        continue;
+                    }
+                    if (!acceptByScope(uri, text, lineIdx, lineText, colInLine)) {
                         continue;
                     }
                     if (addLocation(uri, range)) {
@@ -726,6 +986,9 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
                 if (shouldSkipAsDeclaration(uri, normalizedRange, lineText)) {
                     return;
                 }
+                if (!acceptByScope(uri, text, normalizedRange.start.line, lineText, normalizedRange.start.character)) {
+                    return;
+                }
                 if (addLocation(uri, normalizedRange)) {
                     workspaceHits += 1;
                 }
@@ -808,7 +1071,7 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             // Private 심볼은 정의 파일(현재 문서) 스캔으로 충분하다. 파일 밖 검색은 결과도 없고 비용만 든다.
             if (!token.isCancellationRequested && !hasNonDocumentLocations && targetAccess !== 'private') {
                 scopeFallbackRan = true;
-                // .gpo는 컴파일 산출물(바이너리)이라 텍스트 검색 대상이 아니다 — .gpl만.
+                // 현재 추가 범위 검색은 .gpl만 지원한다. 전역 모듈(.gpo)로의 확대는 별도 검증이 필요하다.
                 const scope = await resolveProjectFileScope(targetUri.fsPath, {
                     extensions: ['.gpl'],
                     maxFiles: MAX_SCOPE_FALLBACK_FILES,
@@ -886,14 +1149,23 @@ export class GPLReferenceProvider implements vscode.ReferenceProvider {
             // ignore folder fallback errors
         }
 
+        const excludedTotal = [...exclusionCounts.values()].reduce((a, b) => a + b, 0);
         this.log(
             `[References] results: local=${localHits}, workspace=${workspaceHits}, scopeFallback=${scopeFallbackHits}, ` +
-                `scopeFallbackRan=${scopeFallbackRan}, total=${locations.length}`
+                `scopeFallbackRan=${scopeFallbackRan}, total=${locations.length}` +
+                (scopeTarget
+                    ? `, excluded=${excludedTotal}` +
+                        (excludedTotal ? ` (${[...exclusionCounts].map(([r, n]) => `${r}=${n}`).join(', ')})` : '') +
+                        (loggedOccurrences.size > MAX_OCCURRENCE_LOG_LINES
+                            ? ` — 출현 로그 ${MAX_OCCURRENCE_LOG_LINES}줄 이후 생략(${loggedOccurrences.size}건)` : '')
+                    : '')
         );
 
         // Fallback: if workspace scan yields nothing (or was cancelled), use the existing cache-based approach.
         // Note: cache-based approach is less accurate because it is name-only and may include duplicates.
-        if (!token.isCancellationRequested && locations.length === 0 && !isConstructorTarget) {
+        // 출현 판정이 후보를 보고 모두 뺐다면(대상 스코프가 확정된 상태) 이름만 같은 캐시 결과로 되살리지 않는다.
+        if (!token.isCancellationRequested && locations.length === 0 && !isConstructorTarget
+            && !(scopeTarget && excludedTotal > 0)) {
             this.log('[References] Workspace scan returned 0. Falling back to cache-based search.');
             const refs = await this.symbolCache.findReferences(word, token);
             for (const ref of refs) {

@@ -49,6 +49,11 @@ export interface CompileError {
     line: number;
     code: number;
     message: string;
+    /**
+     * 그 줄의 소스를 보고 붙인 원인 안내(있을 때만) — `controller/deployment/compileErrorHints`.
+     * Problems 진단 문구와 자동화 결과(compileErrors)가 같은 값을 쓴다.
+     */
+    hint?: string;
 }
 
 /**
@@ -462,6 +467,38 @@ const ERROR_CODE_HINTS: Record<number, Omit<ErrorCodeHint, 'code'>> = {
         title: 'File not found',
         meaning: '파일/프로젝트 경로를 찾지 못함',
         action: '경로, FTP 디렉터리 존재, 파일명 대소문자/오탈자, 권한을 확인',
+        category: 'code',
+    },
+    // ── 컴파일러 오류(2026-10-25 실기 컴파일, inbox gpl-overload-return-type-and-new-parens) ──
+    // 소스 줄을 보고 고르는 안내는 controller/deployment/compileErrorHints 가 이 action 을 그대로 쓴다.
+    [-741]: {
+        title: 'Argument mismatch',
+        meaning: '인자 개수·형식이 선언과 맞지 않는다. 함수 선언 줄에서 나면 같은 이름의 오버로드끼리 반환형이 다른 경우다(GPL 은 반환형이 다른 오버로드를 받지 않는다)',
+        action: '선언 줄이면 같은 이름 오버로드의 반환형이 다른지 확인하고 이름을 나눌 것(인자 수만 다르고 반환형이 같은 오버로드는 된다). 뒤따르는 -733/-773 은 이 오류의 파생일 가능성이 크다',
+        category: 'code',
+    },
+    [-722]: {
+        title: 'Unexpected text at end of line',
+        meaning: '문장 끝에 해석할 수 없는 글자가 남았다',
+        action: '`New X()` 줄이면 클래스 X 에 `Sub New` 가 있는지 확인 — 없으면 괄호 없이 `New X` 로 쓰거나 `Public Sub New()` 를 선언할 것(내장 클래스는 괄호 가능)',
+        category: 'code',
+    },
+    [-733]: {
+        title: 'Not a top-level statement',
+        meaning: '모듈·클래스 최상위에 올 수 없는 문장이다. 앞선 선언이 깨지면 그 본문 전체가 이렇게 보고된다',
+        action: '같은 파일의 앞선 오류(-741 등)부터 고칠 것 — 파생 오류이면 함께 사라진다',
+        category: 'code',
+    },
+    [-773]: {
+        title: 'Missing module end',
+        meaning: '블록 끝(End …)의 짝이 맞지 않는다. 앞선 선언이 깨지면 그 함수의 `End Function` 이 이렇게 보고된다',
+        action: '같은 파일의 앞선 오류(-741 등)부터 고칠 것 — 파생 오류이면 함께 사라진다',
+        category: 'code',
+    },
+    [-737]: {
+        title: 'Too many errors',
+        meaning: '컴파일러가 파일당 약 20개 오류에서 보고를 끊었다',
+        action: '이 파일의 남은 오류와 뒤따르는 파일의 오류는 다음 컴파일에서야 보일 수 있다 — 보이는 오류를 고친 뒤 다시 컴파일할 것',
         category: 'code',
     },
     [-2]: {

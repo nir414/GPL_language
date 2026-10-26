@@ -49,8 +49,32 @@ export function buildReceiverContext(
 ): ReceiverContext {
     const symbols = docSymbols
         ?? GPLParser.parseDocument(document.getText(), document.uri.fsPath, PARSE_OPTIONS);
-    const procRange = findEnclosingProcedureRange(
-        i => document.lineAt(i).text, document.lineCount, atLine);
+    return assemble(symbols, i => document.lineAt(i).text, document.lineCount, atLine, findAllByName);
+}
+
+/**
+ * 열지 않은 파일(참조 찾기 폴백이 디스크에서 읽은 텍스트)용 — `buildReceiverContext` 와 같은 조립을
+ * 줄 배열로 한다. 문서를 열면 심볼 캐시 재구축이 파일마다 일어나므로 참조 스캔은 텍스트로만 다룬다.
+ */
+export function buildReceiverContextFromText(
+    lines: readonly string[],
+    fsPath: string,
+    atLine: number,
+    findAllByName: (name: string) => GPLSymbol[],
+    docSymbols?: GPLSymbol[],
+): ReceiverContext {
+    const symbols = docSymbols ?? GPLParser.parseDocument(lines.join('\n'), fsPath, PARSE_OPTIONS);
+    return assemble(symbols, i => lines[i] ?? '', lines.length, atLine, findAllByName);
+}
+
+function assemble(
+    symbols: GPLSymbol[],
+    lineAt: (i: number) => string,
+    lineCount: number,
+    atLine: number,
+    findAllByName: (name: string) => GPLSymbol[],
+): ReceiverContext {
+    const procRange = findEnclosingProcedureRange(lineAt, lineCount, atLine);
     const lookup = buildDocumentReceiverLookup(
         symbols, procRange, atLine, findAllByName, GPL_BUILTIN_RECEIVERS);
     return { lookup, docSymbols: symbols, procRange };

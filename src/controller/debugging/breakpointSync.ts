@@ -106,6 +106,7 @@ export function editorBreakpointTargets(
 	const out: BreakpointTarget[] = [];
 	for (const bp of vscode.debug.breakpoints) {
 		if (!(bp instanceof vscode.SourceBreakpoint)) { continue; }
+		if (bp.location.uri.scheme !== 'file') { continue; }
 		if (!includeDisabled && !bp.enabled) { continue; }
 		const fsPath = bp.location.uri.fsPath;
 		if (!isGplSource(fsPath)) { continue; }
@@ -148,6 +149,8 @@ export class EditorBreakpointSync implements vscode.Disposable {
 
 	private _sourceLocation(bp: vscode.Breakpoint): { fsPath: string; line: number } | undefined {
 		if (!(bp instanceof vscode.SourceBreakpoint)) { return undefined; }
+		// 원격 URI는 해당 DAP 세션만 소유한다. 로컬 동명 소스로 해석해 전송하지 않는다.
+		if (bp.location.uri.scheme !== 'file') { return undefined; }
 		const fsPath = bp.location.uri.fsPath;
 		if (!isGplSource(fsPath)) { return undefined; }
 		return { fsPath, line: bp.location.range.start.line + 1 };

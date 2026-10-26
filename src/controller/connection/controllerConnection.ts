@@ -10,9 +10,11 @@ import { IdlePingScheduler } from './idlePing';
 import type { IdlePingStats } from './idlePing';
 import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS, commandChannelTraits } from '../commands/commandPolicy';
 import type { CommandPolicyOptions, CommandChannelTraits } from '../commands/commandPolicy';
-import { parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
+import { parseStatus, parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
 import { effectiveKeepAlive } from './connectionSession';
 import { checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryPrecheck } from '../diagnostics/memoryGuard';
+import { guardBeforeSend, observeAfterResponse, unloadFailureGuidance } from '../commands/unloadRiskGuard';
+import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast } from '../diagnostics/memoryNotice';
 
 export { isPolicyError, PolicyError } from '../commands/commandPolicy';
 export type { PolicyErrorCode } from '../commands/commandPolicy';
@@ -46,6 +48,28 @@ export interface SendCommandOptions {
 	 * 응답이 잘려 STATUS/에러 라인을 놓치는 것을 막는다. 이때 timeoutMs를 충분히 크게 줄 것.
 	 */
 	waitForStatusClose?: boolean;
+	/**
+	 * 그룹 Compile 뒤 Unload 위험(controller/commands/unloadRisk.ts)을 사람이 모달로, 또는 AI 호출자가 사용자 동의를 받아
+	 * `confirm:true` 로 확인했다. 없으면 위험 상태의 Unload 는 보내지 않고 UnloadRiskError 를 던진다.
+	 */
+	confirmUnloadRisk?: boolean;
+	/**
+	 * 직렬 큐 슬롯을 얻고 안전 검사·명령 정책 대기를 마친 **뒤**, 실제 전송 직전에 보낼 명령 문자열을 만든다.
+	 * 시계 설정(`date mm-dd-yyyy hh:mm:ss`)처럼 값이 전송 시각에 묶인 명령용이다 — 큐 앞의 긴 Compile 뒤에 밀려도
+	 * 낡은 값을 보내지 않는다. 함수가 기다리는 동안에도 슬롯을 쥐고 있어 다른 명령이 끼어들지 않으므로 짧게 끝낸다.
+	 * 결과의 첫 단어(명령 이름)는 `command` 와 같아야 한다 — 검사·정책은 `command` 로 이미 판정했기 때문이다(다르면 보내지 않는다).
+	 */
+	composeInSlot?: () => Promise<string>;
+}
+
+/** `composeInSlot` 결과 — 명령 이름이 예약한 명령과 같을 때만 보낸다. */
+async function composeCommandInSlot(reserved: string, compose: () => Promise<string>): Promise<string> {
+	const wire = await compose();
+	const verb = (s: string) => s.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+	if (!wire.trim() || verb(wire) !== verb(reserved)) {
+		throw Object.assign(new Error(`전송 직전 만든 명령 "${wire}" 이 예약한 명령 "${reserved}" 과 달라 보내지 않았습니다.`), { sent: false });
+	}
+	return wire;
 }
 
 // Brooks 제어기 고정 포트 (하드웨어 결정, 변경 불가)
@@ -331,6 +355,10 @@ export function sendCommandDetailed(
 	options?: SendCommandOptions,
 ): Promise<CommandResponse> {
 	return enqueueControllerCommand(async () => {
+		// 그룹 Compile 뒤 Unload 확인·실행 불가 프로젝트 Start 거부 — 명령 정책 설정과 무관하게 모든 경로에 건다
+		// (controller/commands/unloadRiskGuard.ts). 거부하면 제어기에는 아무것도 보내지 않는다.
+		const controllerId = config?.ip ?? getControllerConfig().ip;
+		await guardBeforeSend(command, controllerId, { confirmUnloadRisk: options?.confirmUnloadRisk });
 		const policyOn = isCommandPolicyEnabled();
 		if (policyOn) {
 			commandPolicy.updateOptions(readCommandPolicyOptions());
@@ -352,20 +380,60 @@ export function sendCommandDetailed(
 		if (needsMemoryGuard(command)) {
 			await checkMemoryBeforeOperation(config, true);
 		}
+		// 전송 시점에 값을 정하는 명령(시계 설정) — 슬롯을 쥔 채 만들므로 그 사이 다른 명령이 끼어들지 않는다.
+		const wire = options?.composeInSlot ? await composeCommandInSlot(command, options.composeInSlot) : command;
 		let response: CommandResponse;
 		try {
-			response = await sendCommandDetailedInternal(command, config, options);
+			response = await sendCommandDetailedInternal(wire, config, options);
 		} catch (err) {
 			// 채널 교란 가능 명령이 응답 없이 끝났으면 연결 건강 모니터에 알린다 → recovering (2026-08-31).
 			// 정책이 보류한 경우(PolicyError)는 여기 오지 않는다 — 제어기에 아무것도 보내지 않았으므로.
-			notifyDisruptiveFailure(command, err);
+			notifyDisruptiveFailure(wire, err);
+			attachUnloadRiskGuidance(wire, controllerId, err);
 			throw err;
 		}
 		if (policyOn) {
-			commandPolicy.after(command, response.raw, response.meta.statusTagReceived, Date.now());
+			commandPolicy.after(wire, response.raw, response.meta.statusTagReceived, Date.now());
 		}
+		await observeAfterResponse(wire, controllerId, response.raw);
 		return response;
 	});
+}
+
+// ── 메모리 경고 알림 (2026-10-23 Sample Prep 「경고 알림이 Compile·Start·배포마다 쌓임」) ──────────────
+// 판정(차단·AI 결과 필드)은 종전 그대로이고, 사람 화면의 알림만 controller/diagnostics/memoryNotice.ts 규칙으로 줄인다:
+// 나빠질 때만 알림 · 같은 경고 반복은 Output 한 줄 · 한 작업 안에서는 최대 1회 · 지속 상태는 상태 표시줄 항목.
+const memoryNotices = new MemoryNoticeTracker();
+let _memoryStatusObserver: ((ip: string, check: MemoryPrecheck, badge: { text: string; tooltip: string } | null | undefined) => void) | null = null;
+let _lastMemoryCheck: { ip: string; check: MemoryPrecheck; at: number } | undefined;
+
+/** 메모리 검사 결과 관찰자 — 상태 표시줄 경고 항목이 받는다(badge: null 숨김 / undefined 유지). */
+export function setMemoryStatusObserver(fn: ((ip: string, check: MemoryPrecheck, badge: { text: string; tooltip: string } | null | undefined) => void) | null): void {
+	_memoryStatusObserver = fn;
+}
+
+/** 마지막 메모리 검사(상태 표시줄 클릭 상세용). */
+export function getLastMemoryCheck(): { ip: string; check: MemoryPrecheck; at: number } | undefined {
+	return _lastMemoryCheck;
+}
+
+/** 상세 문구(임계값·안내) — 상태 표시줄 클릭·알림의 「자세히」가 쓴다. 문구 정본은 memoryNotice.formatMemoryDetail. */
+export function describeMemoryCheck(check: MemoryPrecheck): string {
+	return formatMemoryDetail(check);
+}
+
+/**
+ * 한 작업(배포 등)의 메모리 알림 범위를 연다 — 그 안의 검사는 알림을 최대 1회만 띄운다(업로드 전 검사 + Start 큐 검사).
+ * 반환 함수로 닫는다(finally 에서).
+ */
+export function beginMemoryNoticeScope(ip: string): () => void {
+	memoryNotices.beginScope(ip);
+	let closed = false;
+	return () => {
+		if (closed) { return; }
+		closed = true;
+		memoryNotices.endScope(ip);
+	};
 }
 
 /** 배포는 업로드 전, Compile/Start는 해당 명령의 직렬 큐 슬롯에서 각각 현재 Free를 확인한다. */
@@ -376,10 +444,45 @@ export async function checkMemoryBeforeOperation(config?: Partial<ControllerConf
 		blockMb: settings.get<number>('memoryGuard.blockMb', DEFAULT_MEMORY_GUARD.blockMb),
 	};
 	const send = insideQueue ? sendCommandDetailedInternal : sendCommandDetailed;
+	const ip = { ...getControllerConfig(), ...config }.ip;
 	return checkMemory(async () => (await send('Show Memory', config, { waitForStatusClose: true })).raw, options, check => {
+		// Output 에는 매번 전문(긴 안내 포함)을 남긴다 — AI 결과 필드(memoryPrecheck.message)와 같은 문장.
 		logTraffic('---', `memory: ${check.level} — ${check.message}`);
-		if (check.level === 'warning') { void vscode.window.showWarningMessage(check.message); }
+		_lastMemoryCheck = { ip, check, at: Date.now() };
+		const decision = memoryNotices.evaluate(ip, check);
+		if ((check.level === 'warning' || check.level === 'blocked') && !decision.toast) {
+			logTraffic('---', `memory: 알림 생략(${decision.reason}) — 상태 표시줄에 표시 중`);
+		}
+		try { _memoryStatusObserver?.(ip, check, decision.badge); } catch { /* 관찰자 예외는 무시 */ }
+		if (decision.toast) {
+			void vscode.window.showWarningMessage(formatMemoryToast(check), '자세히').then(pick => {
+				if (pick === '자세히') { void vscode.commands.executeCommand(SHOW_MEMORY_STATUS_COMMAND); }
+			});
+		}
 	});
+}
+
+/** 상태 표시줄 메모리 경고 항목·알림의 「자세히」가 여는 명령(activation 에서 등록). */
+export const SHOW_MEMORY_STATUS_COMMAND = 'gpl.controller.showMemoryStatus';
+
+// ── 정체 확인용 관측 기록 (controller/connection/controllerIdentity.ts) ─────────────────────
+// 업로드 전 정체 확인이 "같은 작업 안에서 이미 받은 STATUS" 를 재사용하려면 마지막 STATUS 수신을 알아야 한다.
+let _lastConsoleStatus: { ip: string; at: number; command: string; statusCode: number } | undefined;
+let _lastChannelLoss: { ip: string; at: number } | undefined;
+
+/** `ip` 에서 `sinceMs` 이후 받은 마지막 `<STATUS>`(없으면 undefined). */
+export function getLastConsoleStatus(ip: string, sinceMs = 0): { at: number; command: string; statusCode: number } | undefined {
+	const s = _lastConsoleStatus;
+	return s && s.ip === ip && s.at >= sinceMs ? { at: s.at, command: s.command, statusCode: s.statusCode } : undefined;
+}
+
+/** 명령 콘솔 채널 유실 확정 시각을 기록한다(activation 의 유실 처리). `/GPL` 이 비었을 때 재부팅 정황 안내에 쓴다. */
+export function noteCommandChannelLoss(ip: string, at: number = Date.now()): void {
+	_lastChannelLoss = { ip, at };
+}
+
+export function getLastCommandChannelLoss(ip: string): number | undefined {
+	return _lastChannelLoss && _lastChannelLoss.ip === ip ? _lastChannelLoss.at : undefined;
 }
 
 // ── 채널 교란 관찰자 (2026-08-31) ───────────────────────────────────────────
@@ -419,6 +522,20 @@ function notifyDisruptiveFailure(command: string, err: unknown): void {
 }
 
 /**
+ * 위험 상태(그룹 Compile 뒤)의 Unload 가 결과 미확정으로 끝났으면 "이 조합은 재부팅이 필요했다" 를 오류 문구에 붙인다 —
+ * 일반 채널 복구 대기(최대 180 s) 안내만 보고 기다리지 않게(inbox unload-guard-request ③). 보내지 못한 실패(refused)는 제외.
+ */
+function attachUnloadRiskGuidance(command: string, controllerId: string, err: unknown): void {
+	if (!(err instanceof Error)) { return; }
+	if (!DISRUPTIVE_OUTCOME_UNKNOWN_KINDS.has(classifyCommandFailure(err).kind)) { return; }
+	const guidance = unloadFailureGuidance(command, controllerId);
+	if (!guidance) { return; }
+	logTraffic('---', `unload-risk: ${guidance}`);
+	(err as Error & { unloadRiskGuidance?: string }).unloadRiskGuidance = guidance;
+	err.message = `${err.message} — ${guidance}`;
+}
+
+/**
  * 소켓 처리 본체는 consoleSocket.ts(vscode 무의존, 테스트 가능)로 옮겼다(GitHub #22).
  * 여기서는 설정(제어기 주소·타임아웃·keep-alive·트래픽 표시)을 읽어 옵션으로 넘기고 로거를 연결만 한다.
  */
@@ -451,7 +568,13 @@ function sendCommandDetailedInternal(
 			keepAliveIdleCloseMs: keepAlive.idleCloseMs,
 		},
 		{ log: logTraffic, body: bodyLog },
-	);
+	).then(response => {
+		// 정체 확인(controllerIdentity)이 같은 작업 안의 STATUS 를 재사용할 수 있게 마지막 수신을 기억한다.
+		if (response.meta.statusTagReceived) {
+			_lastConsoleStatus = { ip: cfg.ip, at: Date.now(), command, statusCode: parseStatus(response.raw).code };
+		}
+		return response;
+	});
 }
 
 /**

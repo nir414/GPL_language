@@ -174,6 +174,8 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   배치 응답: `{ count, okCount, failCount, stoppedAt?, skipped?, results:[{ index, command, status, ok, data, hint?, error? }] }`.
   항목마다 기존 `runCommand`를 그대로 쓰므로 **배포 잠금 가드(Compile/Start/Load/Unload 대기·거부)가 항목별로 적용**되고,
   타임아웃/연결 오류 항목은 `{ok:false, error}`로 기록된다(배치 전체가 죽지 않음). `stopOnError:true`면 첫 실패에서 멈추고 `stoppedAt`(인덱스).
+  같은 부팅에서 그룹 Compile 이 있었으면 `Unload`(-all 포함) 항목은 보내지 않고 `refused:"unload-after-group-compile"` 로 돌아온다 —
+  사용자 동의를 받은 뒤에만 `confirm:true` 로 다시 보낸다(아래 **그룹 Compile 뒤 Unload** 참고).
   ```json
   { "commands": ["Show Memory", "Show Network -tcp", "pd 2703", "pd 2704"], "stopOnError": false }
   ```
@@ -197,22 +199,51 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   시뮬레이션/실기 판별 명령은 미확인이라 `simulation`은 항상 `null`.
 - `controller_status` 연결 실패 응답은 `observations/assessment/controllerHealth/recommendedAction/verdict` 를 한 번만 싣고(종전엔 `reachable{}` 아래 중복),
   배포 잠금이 있으면 `likelyCause`("확장이 배포/업로드 중 — 그동안 1402 거부 가능")를 1순위 원인으로 표시한다.
+- `controller_status.clock` — `{ controller, pc, offsetSec, uncertaintySec, pcTimeZone }`. 읽기 전용 `date` 1회로 제어기 시각과
+  같은 순간의 PC 로컬 시각을 함께 싣는다(`offsetSec` = 제어기 − PC, 양수면 제어기가 앞섬). 제어기 표시가 초 단위라 추정에 ±0.5 s 이상의
+  오차가 있고(`uncertaintySec`, 확장 브리지 경유면 왕복이 길어져 더 커진다), 읽기에 실패하면 `clock:{ok:false, error, detail}` 만 남기고
+  나머지 상태 조회는 그대로 진행한다.
+- `sync_controller_clock(confirm?)` — 제어기 시계를 PC 로컬 시각에 맞춘다(2026-10-24 실기 확인: `date mm-dd-yyyy hh:mm:ss` → STATUS 0).
+  `confirm` 없이 부르면 **dry run**(`before.offsetSec`·`wouldSend` 만, 아무것도 바꾸지 않음), 사용자 동의 뒤 `confirm:true` 면 다음 정각 초에
+  도착하도록 왕복/2 만큼 앞당겨 보내고(`sent`·`oneWayCompensationMs`) 다시 읽어 `residualSec`(남은 오차)를 보고한다. 제어기 상태(시계)를
+  바꾸지만 **모션은 일으키지 않는다**. 제어기에는 시간대가 없어 PC 로컬 시각을 그대로 보낸다(`pcTimeZone` 은 표시용). 확장 브리지가 있으면
+  확장 명령 `gpl.controller.syncClock` 으로 실행하고(`via:"extension"`, 왕복 측정이 브리지 지연에 오염되지 않음), 없을 때만 이 서버가 같은
+  절차(`src/clock.js`)를 직접 접속으로 돈다(`via:"direct-tcp"`). 실패는 `stage`(`read-before`/`set`/`read-after`)로 가르며, 설정 명령이
+  타임아웃이면 `outcome:"unknown"`(이미 적용됐을 수 있음 — 곧바로 재전송하지 말 것). 재부팅 뒤 시각 유지 여부는 미확인.
+  `controller_command` 의 분류도 같은 규칙이다: `date` 단독은 조회(재전송 안전), 인자가 있으면 상태 변경.
 - `get_session_log(tail?)` — 이 세션의 도구 호출/1402 명령 로그(왕복 낭비 분석·공유용).
   같은 내용이 파일(`GPL_MCP_LOG_DIR`, 서버 시작 시 stderr에 경로 출력)에도 기록되며,
   사용자는 `Get-Content "<로그파일>" -Wait`로 AI의 제어기 조작을 실시간 관찰할 수 있다.
 
 **컴파일 · 실행**
 - `compile_project(project?)` — `Compile`. STATUS로만 성공 판정, 실패 시 에러 라인 파싱
-- `start_project(project?, stopOnEntry?)` — `Start` (`-break -bex` 시 진입점 정지)
-- `unload_project(project?, timeoutMs?, skipThreadCheck?)` — `Unload`. 보내기 전에 `Show Thread -web`로 그 프로젝트의
+- `start_project(project?, stopOnEntry?)` — `Start` (`-break -bex` 시 진입점 정지). 세션 대상이 ProjectStart 없는 그룹이면 보내지 않고
+  `PROJECT_NOT_RUNNABLE`(+ 실행 가능한 후보)을 돌려준다. 제어기가 `-744 *Invalid start procedure*` 로 거부하면 `retryable:false` —
+  같은 Start 를 되풀이하면 그룹 Compile 만 또 일어난다.
+- `unload_project(project?, timeoutMs?, skipThreadCheck?, confirm?)` — `Unload`. 보내기 전에 `Show Thread -web`로 그 프로젝트의
   활성 스레드를 확인하고, 있으면 -750이 뻔하므로 보내지 않고 `refused:"threads-active"`와 목록을 돌려준다.
+  성공하면 `remoteFolder:{path, exists}` 로 `/GPL/<project>` 가 남았는지 알려 주고, 지워졌으면 `next:"redeploy"`
+  (4.2K5 실측: 앱 프로젝트 Unload 는 `/GPL/<앱>` 폴더까지 지웠다 — 그대로 Start 하면 -508).
+- 위 도구들은 대상이 어디서 왔는지 `targetSource`(`argument` · `session-target` · `session-target-from-deploy` · `unresolved`)를 함께 준다.
+
+**그룹 Compile 뒤 Unload (2026-10-23)** — 같은 부팅에서 ProjectStart 없는 그룹 `.gpr`(Lib 등)을 Compile 한 뒤 `Unload <project>`/`Unload -all`
+을 보내면 명령 콘솔·런타임 콘솔이 모두 끊겼다(6번 중 6번, 최근 사례는 재부팅으로만 복구). 원인은 미확인이고 사용자 방침은 "막지 말고 경고 + 확인".
+- 위험 상태는 제어기별 파일 `%TEMP%\gpl-controller\unload-risk-<ip>.json` 에 있다(확장과 공유). 확장의 전송 가드가 그룹 Compile 성공
+  (`Compile` STATUS 0, `Start -compile` 0/-744)을 보면 켜고, 이 서버도 직접 접속으로 세션 대상 그룹을 컴파일하면 켠다. 해제는 확장이
+  재부팅 근거(명령 콘솔 유실 뒤 재연결 시 `/GPL` 에 그룹 폴더 없음)를 볼 때나 사람이 「GPL: Unload 위험 표시 해제」를 실행할 때만이다.
+- 위험 상태의 `unload_project`·`controller_command("Unload …")` 는 **보내지 않고** `{ok:false, refused:"unload-after-group-compile", sent:false,
+  groupProjects, detail}` 를 돌려준다. AI 는 사용자에게 위험을 알리고 **동의를 받은 뒤에만** `confirm:true` 로 다시 호출한다.
+- 위험 상태에서 Unload 가 타임아웃하면 `unloadRiskGuidance` 와 `recommendedAction:"reboot-likely — …"` 가 붙는다(180 s 복구 대기만 안내하지 않음).
+- `deploy_project` 성공 뒤 세션 대상은 실행 불가 그룹으로 바뀌지 않고, `project_target` 으로 고정한 대상은 배포의 부수 효과로 바뀌지 않는다.
+  바뀌면 `sessionTargetChanged:{from,to}`, 그대로 두면 `sessionTargetKept:{reason,…}` 가 응답에 실린다. `upload-start`/`start_project` 는
+  실행 불가 그룹이면 정지·업로드·컴파일 **전에** `PROJECT_NOT_RUNNABLE` 로 멈춘다.
 - `stop_threads(thread?, project?, timeoutMs?)` — 정지. `thread` → `Stop <thread>`, `project` → 그 프로젝트의 활성 스레드를
   열거해 이름별 `Stop`, 둘 다 생략 → `Stop -all`. STATUS 0/-752는 "접수"로만 보고 `Show Thread -web` 폴링으로 정지를
   확인하며, 미정착이면 1회 자동 재전송한다(확장 `controller/threads/threadStop.ts`와 같은 규약).
   범위 없는 전체 정지는 같은 제어기의 실행 중·대기 중 업로드/배포에도 취소를 요청해 이후 Compile/Start를 막는다.
   **제어기의 `Stop <이름>`은 스레드 이름 단위**다 — `Stop <project>`는 동명 스레드 하나만 멈추고 프로젝트가 다른 이름으로
-  띄운 스레드(`LOG_SOCKET` 등)는 남아 Unload/Compile이 -750이 된다(2026-10-14 실측). `TCPCLI[0]`처럼 대괄호가 든 이름은
-  공식 Stop 구문에 인용/이스케이프 형식이 없어 `skipped`로 보고하며,
+  띄운 스레드(`LOG_SOCKET` 등)는 남아 Unload/Compile이 -750이 된다(2026-10-14 실측). 영숫자·`_` 이외 문자가 든 이름
+  (`RWK[0]`·`TCPLSN:4000` 등 — 실기 -712, 따옴표 인용도 -712)은 공식 Stop 구문에 인용/이스케이프 형식이 없어 `skipped`로 보고하며,
   전체 정지는 호출자가 범위 없는 `stop_threads()`를 명시해야 한다(자동 확대 없음).
 
 **실행 제어(디버그)** — Break/Step/Continue는 STATUS 0이 "접수"일 수 있어(접수≠완료),

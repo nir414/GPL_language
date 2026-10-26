@@ -43,6 +43,10 @@ const TABLE: Record<string, RecoveryHint> = {
         action: 'RESOLVE_PROJECT', retryCurrentCommand: false, safeToRepeat: true,
         detail: '요청한 이름/경로가 이 워크스페이스의 GPL 프로젝트가 아니다. candidates 에서 고르거나 사용자에게 확인할 것.',
     },
+    PROJECT_NOT_RUNNABLE: {
+        action: 'RESOLVE_PROJECT', retryCurrentCommand: false, safeToRepeat: true,
+        detail: '대상이 ProjectStart 없는 그룹(라이브러리)이라 Start 계열을 보내지 않았다(정지·업로드·컴파일 전). candidates 의 실행 가능한 프로젝트를 지정하거나 사용자에게 확인할 것.',
+    },
     NO_GPL_PROJECT: {
         action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true,
         detail: '워크스페이스에 .gpr 프로젝트가 없다. 사용자에게 GPL 프로젝트가 포함된 폴더를 열어 달라고 요청할 것.',
@@ -69,6 +73,16 @@ const TABLE: Record<string, RecoveryHint> = {
         action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true,
         detail: '업로드된 소스가 Compile 로 검증되지 않았다. 먼저 quick 모드로 에러를 확인하거나, 그대로 진행할 것이면 ignoreCompileStale:true 로 호출한다.',
     },
+    CONTROLLER_UNVERIFIED: {
+        action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true,
+        detail: '업로드 전 확인에서 상대가 PA 제어기인지 확인하지 못했다(아무것도 올리지 않았다). reasons 를 사용자에게 보여 주고 '
+            + 'controller_status 로 명령 콘솔·경로를 관측한 뒤 원인(채널 유실·FTP 배너 불일치·경로 인터페이스)이 풀리면 다시 보낼 것. 우회 업로드 금지.',
+    },
+    COMPILE_ABORTED: {
+        action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: false,
+        detail: '컴파일 에러가 아니라 Compile 도중 제어기가 연결을 끊었다. 같은 Compile 을 되풀이하지 말고 controllerHealth 를 보고, '
+            + '응답이 없으면 controller_status 로 관측한 뒤 사용자에게 제어기 상태를 확인할 것.',
+    },
     AI_BLOCKED: {
         action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true,
         detail: '되돌릴 수 없는 사람 전용 명령이다. 우회 경로를 찾지 말고 사용자에게 UI 에서 직접 실행해 달라고 요청할 것.',
@@ -90,6 +104,10 @@ const TABLE: Record<string, RecoveryHint> = {
     DEPLOY_AUTO_GATE: {
         action: 'NONE', retryCurrentCommand: false, safeToRepeat: true,
         detail: '자동 게이트 조건이 맞지 않아 업로드하지 않았다(제어기를 건드리지 않음). 조건은 로그에 있다 — 명시 배포(build 모드)를 쓸 것.',
+    },
+    DEPLOY_CONTROLLER_CHECK: {
+        action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true,
+        detail: '업로드 전 확인에서 상대가 PA 제어기인지 확인하지 못해 아무것도 올리지 않았다(CONTROLLER_UNVERIFIED). controllerCheck.reasons 를 보고 원인이 풀린 뒤 다시 보낼 것.',
     },
     DEPLOY_COMPILE: {
         action: 'NONE', retryCurrentCommand: false, safeToRepeat: false,

@@ -3,6 +3,7 @@ import { test } from './harness';
 import {
     classifyConsoleCommand,
     formatConsoleCommandClassification,
+    isReadOnlyConsoleCommand,
 } from '../controller/commands/consoleCommandClassifier';
 
 test('console command classifier marks observed packet commands', () => {
@@ -54,4 +55,22 @@ test('console command classifier marks destructive commands', () => {
         formatConsoleCommandClassification('Shutdown'),
         'destructive/system/shutdown',
     );
+});
+
+test('console command classifier splits date read from date set', () => {
+    assert.deepStrictEqual(classifyConsoleCommand('date'), {
+        commandName: 'date',
+        category: 'system',
+        impact: 'read-only',
+        detail: 'controller clock read',
+    });
+    assert.strictEqual(formatConsoleCommandClassification('  Date  '), 'read-only/system/date');
+    assert.deepStrictEqual(classifyConsoleCommand('date 10-24-2026 01:55:10'), {
+        commandName: 'date',
+        category: 'system',
+        impact: 'state-changing',
+        detail: 'controller clock set',
+    });
+    assert.strictEqual(isReadOnlyConsoleCommand('DATE 10-24-2026 01:55:10'), false);
+    assert.strictEqual(isReadOnlyConsoleCommand('date'), true);
 });

@@ -19,6 +19,7 @@ import {
 	LossSummary,
 	describeLoss,
 	describeRecovering,
+	recoveryGuidanceForLoss,
 } from '../controller/connection/connectionHealth';
 import {
 	ControllerConfig,
@@ -29,6 +30,7 @@ import {
 	getConnectionStats,
 	getControllerConfig,
 	getRecentTraffic,
+	noteCommandChannelLoss,
 	probeControllerCommand,
 	setDisruptiveCommandObserver,
 	setHeldSocketObserver,
@@ -39,7 +41,11 @@ import {
 } from '../controller/connection/controllerConnection';
 import { onDebugProbeResult } from '../controller/debugging/debugBridge';
 import { DEPLOY_LOCK_DIR_NAME, describeDeployLock, getDeployLock } from '../controller/deployment/deployLock';
-import { projectNameOf } from '../controller/projects/projectPicker';
+import { buildTargetCandidates, projectNameOf } from '../controller/projects/projectPicker';
+import { listRemoteDir } from '../controller/files/ftpClient';
+import { clearUnloadRisk, judgeRebootEvidence, noteChannelLoss } from '../controller/commands/unloadRisk';
+import { readUnloadRiskState, updateUnloadRiskState } from '../controller/commands/unloadRiskStore';
+import { setProjectKindResolver, setUnloadRiskLogger, unloadFailureGuidance } from '../controller/commands/unloadRiskGuard';
 import { probeReachability } from '../controller/connection/reachability';
 import { SHOW_THREAD_LIST_CMD } from '../controller/protocol/responseParser';
 import { setDashboardConnectionObserver } from '../views/controllerDashboardPanel';
@@ -58,6 +64,8 @@ export interface ConnectArgs {
 	save?: 'session' | 'settings';
 	/** true면 알림 팝업 대신 Output 로그만 남긴다 */
 	silent?: boolean;
+	/** 원격 소스 Attach의 최초 연결에서는 기존 에디터 BP를 제어기에 동기화하지 않는다. */
+	preserveBreakpoints?: boolean;
 }
 
 export interface ConnectResult {
@@ -76,13 +84,27 @@ export interface ConnectResult {
 * ping TTL/arp MAC 기반 도달성 판정(직결 NIC 임대 상실 시 사무실 게이트웨이가 응답하는 함정 포함) — 를 한 파일로 묶는다.
 * 파일: %TEMP%/gpl-controller/postmortem-<시각>.log. 실패해도 예외를 밖으로 내지 않는다(undefined).
 */
+/** 이 세션에서 이미 알린 서브넷 겹침 경고(한 번만 알린다). */
+const warnedSubnetOverlaps = new Set<string>();
+
 async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: ControllerConfig, lostAt: Date, loss: LossSummary | undefined, health?: HealthSnapshot): Promise<string | undefined> {
 	try {
 		const recent = getRecentTraffic(400);
 		const stats = getConnectionStats();
 		const rc = host.currentRuntimeConsoleStatus();
 		const lock = getDeployLock(cfg.ip).current()?.record;
-		const reach = await probeReachability(cfg.ip, cfg.port);
+		// 명령 콘솔이 거부되면 FTP 배너·런타임 콘솔도 본다(핸드셰이크만). 직전 교란 명령은 재부팅 후보 확신도의 근거다.
+		const prior = health?.disruptiveOperation;
+		const reach = await probeReachability(cfg.ip, cfg.port, undefined, {
+			runtimeConsolePort: cfg.consolePort,
+			...(prior ? { priorDisruptive: { command: prior.command, kind: prior.kind, at: prior.at } } : {}),
+		});
+		const overlap = reach.assessment.observations.subnetOverlap;
+		if (overlap && !warnedSubnetOverlaps.has(overlap)) {
+			// 같은 경고를 유실마다 반복하지 않는다(세션 한 번) — 구성 문제라 한 번 알면 충분하다.
+			warnedSubnetOverlaps.add(overlap);
+			host.log(`[Controller] ⚠ 네트워크 구성: ${overlap}`);
+		}
 		const lines: string[] = [
 			`# GPL Controller 연결 유실 사후 스냅샷 — ${lostAt.toISOString()} (local ${lostAt.toLocaleString()})`,
 			`target: 명령 콘솔 ${cfg.ip}:${cfg.port} · 런타임 콘솔 ${cfg.consolePort}  extension: v${EXTENSION_VERSION}  pid: ${process.pid}`,
@@ -176,6 +198,50 @@ async function stopDebugSessionAndWait(
 export function activateConnection(host: ExtensionHost): ConnectionApi {
 	const { context, outputChannel } = host;
 
+	// ── 그룹 Compile 뒤 Unload 위험 (controller/commands/unloadRisk.ts) ─────────────────────────────
+	// 그룹 판정(ProjectStart 유무)은 워크스페이스 .gpr 로 한다. 제어기 명령 인자는 .gpr ProjectName 이지만 배포가 폴더명 후보로
+	// 컴파일하기도 하므로 둘 다 본다. 같은 이름이 여러 과제 폴더에 있으면 하나라도 실행 가능하면 실행 가능으로 본다(그룹으로
+	// 단정하지 않는다). 워크스페이스에 없는 이름은 모름(표시·Start 거부 없음).
+	setUnloadRiskLogger(line => host.log(line));
+	setProjectKindResolver({
+		lookup: async name => {
+			const key = name.trim().toLowerCase();
+			const candidates = await buildTargetCandidates();
+			const byName = candidates.filter(c => c.projectName.trim().toLowerCase() === key);
+			const same = byName.length > 0 ? byName : candidates.filter(c => path.basename(c.dir).trim().toLowerCase() === key);
+			return same.length === 0 ? undefined : { runnable: same.some(c => c.runnable) };
+		},
+		runnableProjects: async () => [...new Set((await buildTargetCandidates()).filter(c => c.runnable).map(c => c.projectName))],
+	});
+	context.subscriptions.push({ dispose: () => { setProjectKindResolver(undefined); setUnloadRiskLogger(undefined); } });
+
+	/**
+	 * 재부팅 근거 확인 — 표시 뒤 명령 콘솔 유실이 있었고 재연결 뒤 /GPL 에 그룹 폴더가 없으면 위험 표시를 지운다.
+	 * 근거가 모자라면 그대로 둔다(판정: unloadRisk.judgeRebootEvidence). 배포 중이면 FTP 를 더 열지 않는다.
+	 */
+	async function checkUnloadRiskRebootEvidence(trigger: string): Promise<void> {
+		try {
+			const cfg = getControllerConfig();
+			const state = readUnloadRiskState(cfg.ip);
+			if (!state || state.marks.length === 0 || state.channelLossAt === undefined) { return; }
+			if (host.currentDeployLockHolder()) { return; }
+			let names: string[] | null;
+			try {
+				names = (await listRemoteDir(cfg.ip, cfg.ftpBasePath)).map(e => e.name);
+			} catch {
+				names = null;
+			}
+			const judgement = judgeRebootEvidence(state, names);
+			host.log(`[UnloadRisk] ${trigger}: ${judgement.detail}`);
+			if (judgement.rebooted) {
+				updateUnloadRiskState(cfg.ip, s => clearUnloadRisk(s, Date.now(), judgement.reason));
+				host.log('[UnloadRisk] 그룹 Compile 뒤 Unload 위험 표시를 해제했습니다(재부팅 근거).');
+			}
+		} catch (err: any) {
+			host.log(`[UnloadRisk] 재부팅 근거 확인 실패(표시 유지): ${err?.message ?? err}`);
+		}
+	}
+
 	// ── 연결 건강 모니터 (2026-08-28, controller/connection/connectionHealth.ts) ──────────────────────────────
 	// 연결 유실 판정의 단일 출처. 프로브(트리 Show Thread 폴·디버그 어댑터 폴·재프로브) 결과와 힌트(1403 connect-failed/
 	// socket-error·keep-alive 소켓 error·대시보드 프로브 실패·어댑터 실패 종료)를 받아 connected → suspect → lost 로 판정한다.
@@ -188,6 +254,8 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		const lostAt = new Date(summary.lostAt);
 		// setConnected(false) 가 모니터 상태를 초기화하기 전에 스냅샷을 떠 둔다(교란 명령 관측이 사후 파일에 남게).
 		const healthSnapshotAtLoss = host.healthMonitor?.snapshot();
+		// 위험 표시가 있으면 유실 시각을 남긴다 — 재연결 뒤 재부팅 판정의 전제다(unloadRisk.judgeRebootEvidence).
+		updateUnloadRiskState(cfg.ip, s => noteChannelLoss(s, summary.lostAt));
 		host.stopRuntimeConsoleAndSyncTree();
 		// 'lost' 이유를 넘겨 트리가 FTP/시스템 정보 캐시를 보존하게 한다(#22 재연결 플랩 억제).
 		host.setControllerConnected(false, { reason: 'lost' });
@@ -199,12 +267,19 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		// 문구 원칙(2026-08-31): 확장이 "1402 명령 채널을 놓았다"는 것이 우리가 아는 사실이고, 제어기/런타임이 죽었다는
 		// 것은 여러 독립 증거를 종합해야 하는 판단이다. 알림에서 후자를 단정하지 않는다.
 		host.log(`[Controller] 명령 콘솔 채널 유실 — ${cfg.ip}:${cfg.port} @ ${lostAt.toLocaleTimeString()} — ${describeLoss(summary)} (제어기 런타임 상태는 미확정)`);
+		// 업로드 전 정체 확인·재부팅 정황 안내(/GPL 이 비었을 때)가 이 시각을 쓴다.
+		noteCommandChannelLoss(cfg.ip, summary.lostAt);
+		// 복구 대기 창(기본 180 s)이 지나도 거부로 끝났으면 실측 조치(PC 어댑터 재연결)를 안내한다(2026-10-22 두 번 실측).
+		const guidance = recoveryGuidanceForLoss(summary);
+		if (guidance) { host.log(`[Controller] ${guidance}`); }
 		// 사후 스냅샷(#22 제안 4): 알림은 스냅샷이 준비된 뒤 한 번만 — 파일 열기 버튼 제공.
 		void writeConnectionLostPostmortem(host, cfg, lostAt, summary, healthSnapshotAtLoss).then(file => {
 			const actions = file ? ['사후 스냅샷 열기', '출력 보기'] : ['출력 보기'];
 			void vscode.window.showWarningMessage(
 				`GPL Controller 명령 콘솔 연결을 놓았습니다 (${cfg.ip}) — ${summary.failures}회 연속 무응답으로 연결 상태를 해제했습니다. `
-				+ '제어기가 다운됐다는 뜻은 아닙니다(런타임 상태 미확정) — 다시 Connect 해 보세요. '
+				+ (guidance
+					? `${guidance} `
+					: '제어기가 다운됐다는 뜻은 아닙니다(런타임 상태 미확정) — 다시 Connect 해 보세요. ')
 				+ (file ? '마지막 트래픽·도달성 판정은 사후 스냅샷 파일에 있습니다.' : ''),
 				...actions,
 			).then(pick => {
@@ -236,6 +311,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 				? `채널 복구 확인 — ${info.disruptiveOperation?.command ?? '(명령 미확인)'} 뒤 일시적 사용 불가였음(그 명령의 실제 결과는 여전히 미확정)`
 				: '연결 복구';
 			host.log(`[Health] ${what} — ${info.failuresBeforeRecovery}회 실패 뒤 응답 재확인 (${(info.durationMs / 1000).toFixed(1)} s, 사유: ${info.suspectReason})`);
+			void checkUnloadRiskRebootEvidence('채널 복구');
 		},
 		onLost: summary => handleConnectionLost(summary),
 	});
@@ -260,7 +336,16 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 	context.subscriptions.push({ dispose: () => { setIdlePingObserver(null); setIdlePingActive(false); } });
 	// 채널 교란 가능 명령(Unload/Load/Compile/Start)이 응답 없이 끝나면 recovering 으로 흡수한다(2026-08-31).
 	// 설정 connectionRecoveryWindowMs=0 이면 종전 판정(교란 뒤 거부 2회 → 유실)으로 되돌아간다.
+	// 그룹 Compile 뒤의 Unload 가 응답 없이 끝났으면 복구 대기(최대 180 s)만 안내하지 말고 바로 알린다 — 이 조합은
+	// 지금까지 재부팅이 필요했다(inbox unload-guard-request ③). 안내만 하고 판정·상태는 바꾸지 않는다.
+	const announceUnloadRisk = (command: string): void => {
+		const guidance = unloadFailureGuidance(command, getControllerConfig().ip);
+		if (!guidance) { return; }
+		host.log(`[UnloadRisk] ${guidance}`);
+		void vscode.window.showWarningMessage(guidance, '출력 보기').then(pick => { if (pick === '출력 보기') { outputChannel.show(true); } });
+	};
 	setDisruptiveCommandObserver(failure => {
+		announceUnloadRisk(failure.command);
 		if (getConnectionRecoveryWindowMs() <= 0) { return; }
 		host.healthMonitor?.noteDisruptiveTimeout({ command: failure.command, kind: failure.kind, detail: failure.detail, at: failure.at });
 	});
@@ -289,7 +374,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 	}
 
 	/** IP/port 확정 뒤 공통 절차: 프로젝트 컨텍스트 → testConnection(ErrorLog 1회) → 상태 반영 → 1403 자동 시작. */
-	async function finishConnect(mode: ConnectResult['mode'], silent: boolean): Promise<ConnectResult> {
+	async function finishConnect(mode: ConnectResult['mode'], silent: boolean, preserveBreakpoints = false): Promise<ConnectResult> {
 		const expected = await host.project.resolveExpectedProjectName();
 		const projectContext = await host.project.detectWorkspaceProjectContext();
 		host.controllerTree?.setExpectedProjectContext(projectContext.projectName || expected, projectContext.folderName || expected);
@@ -300,7 +385,8 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			if (ok) {
 				host.log(`[Controller] Connected: ${cfg.ip}:${cfg.port}`);
 				if (!silent) { vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`); }
-				host.setControllerConnected(true);
+				host.setControllerConnected(true, { syncBreakpoints: !preserveBreakpoints });
+				void checkUnloadRiskRebootEvidence('연결');
 				// controller 연결 성공 시 1403도 바로 유지 연결한다.
 				try { host.ensureRuntimeConsole(); } catch (err: any) {
 					host.log(`[Console] auto-start on connect failed: ${err?.message ?? err}`);
@@ -345,7 +431,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			// 기본 'session': 디스크에 쓰지 않고 이 세션의 후속 명령에만 적용한다.
 			setSessionControllerOverride(ip, port);
 		}
-		return finishConnect('args', args.silent === true);
+		return finishConnect('args', args.silent === true, args.preserveBreakpoints === true);
 	}
 
 	/** 대화형 연결(종전 동작). 취소하면 { ok: false, error: 'cancelled' }. */

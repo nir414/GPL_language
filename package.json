@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.16.4",
+    "version": "0.18.0",
     "publisher": "nir414",
     "icon": "resources/gpl-logo.png",
     "repository": {
@@ -54,6 +54,10 @@
         "onCommand:gpl.debug.generateLaunch",
         "onCommand:gpl.debug.attachOnly",
         "onCommand:gpl.controller.openProjectForDebugging",
+        "onCommand:gpl.controller.browseRemoteFiles",
+        "onCommand:gpl.controller.openRemoteFile",
+        "onCommand:gpl.controller.refreshRemoteFile",
+        "onFileSystem:gpl-ftp",
         "workspaceContains:.gpl-controller-debug.json",
         "onCommand:gpl.console.start",
         "onCommand:gpl.console.stop",
@@ -575,6 +579,11 @@
                 "category": "GPL"
             },
             {
+                "command": "gpl.controller.showMemoryStatus",
+                "title": "Show Controller Memory Status (제어기 여유 메모리 상세)",
+                "category": "GPL"
+            },
+            {
                 "command": "gpl.debug.lockThread",
                 "title": "Lock Thread (이 스레드만 Continue/Step)",
                 "category": "GPL",
@@ -676,6 +685,24 @@
                 "icon": "$(cloud-download)"
             },
             {
+                "command": "gpl.controller.browseRemoteFiles",
+                "title": "Browse Controller Files (제어기 FTP 폴더 연결)",
+                "category": "GPL",
+                "icon": "$(remote-explorer)"
+            },
+            {
+                "command": "gpl.controller.refreshRemoteFile",
+                "title": "Refresh Controller File (제어기 파일 새로 읽기)",
+                "category": "GPL",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "gpl.controller.openRemoteFile",
+                "title": "Open Controller File (제어기 파일 열기)",
+                "category": "GPL",
+                "icon": "$(file-code)"
+            },
+            {
                 "command": "gpl.controller.openProjectForDebugging",
                 "title": "Open Controller Project for Debugging (제어기 프로젝트 열어 디버깅)",
                 "category": "GPL",
@@ -706,6 +733,12 @@
                 "icon": "$(search)"
             },
             {
+                "command": "gpl.controller.syncClock",
+                "title": "Sync Controller Clock to PC (제어기 시계를 PC에 맞추기)",
+                "category": "GPL",
+                "icon": "$(watch)"
+            },
+            {
                 "command": "gpl.controller.consoleToggle",
                 "title": "Toggle Console (콘솔 토글)",
                 "category": "GPL",
@@ -728,6 +761,11 @@
                 "title": "Unload (메모리에서 내리기)",
                 "category": "GPL",
                 "icon": "$(close)"
+            },
+            {
+                "command": "gpl.controller.clearUnloadRisk",
+                "title": "Unload 위험 표시 해제 (그룹 Compile 뒤 — 제어기 재부팅 후)",
+                "category": "GPL"
             }
         ],
         "viewsContainers": {
@@ -839,6 +877,14 @@
                 },
                 {
                     "command": "gpl.controller.ftpDownload",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.openRemoteFile",
+                    "when": "false"
+                },
+                {
+                    "command": "gpl.controller.refreshRemoteFile",
                     "when": "false"
                 },
                 {
@@ -1084,6 +1130,13 @@
                     "when": "view == gplThreads && gpl.ui.connected"
                 }
             ],
+            "editor/title": [
+                {
+                    "command": "gpl.controller.refreshRemoteFile",
+                    "when": "resourceScheme == gpl-ftp",
+                    "group": "navigation"
+                }
+            ],
             "view/item/context": [
                 {
                     "command": "gpl.controller.refreshBreakpoints",
@@ -1312,52 +1365,52 @@
                 },
                 {
                     "command": "gpl.controller.ftpRun",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpStop",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpDownload",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpDelete",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile|ftpFlashFolder|ftpFlashFile/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpSubFolder|ftpFile|ftpFlashFolder|ftpFlashSubFolder|ftpFlashFile)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpRun",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "ftp@1"
                 },
                 {
                     "command": "gpl.controller.ftpStop",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "ftp@2"
                 },
                 {
                     "command": "gpl.controller.ftpDelete",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile|ftpFlashFolder|ftpFlashFile/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpSubFolder|ftpFile|ftpFlashFolder|ftpFlashSubFolder|ftpFlashFile)$/",
                     "group": "ftp@3"
                 },
                 {
                     "command": "gpl.controller.ftpUnload",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "ftp@4"
                 },
                 {
                     "command": "gpl.controller.ftpDownload",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "ftp@5"
                 },
                 {
                     "command": "gpl.controller.openProjectForDebugging",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder|ftpSubFolder|ftpFlashSubFolder)$/",
                     "group": "ftp@1"
                 },
                 {
@@ -1654,6 +1707,19 @@
                     "minimum": 0,
                     "description": "같은 프로젝트의 Compile 응답 완료 뒤 Start를 보내기까지의 완충 시간(ms). 확장이 보내는 Start에는 -compile이 붙어 컴파일까지 수행하므로 Compile 직후 연속 Start(컴파일 중복)를 피합니다(ai-handoff §0.7 — 중복 실행의 안전성은 실기기 미검증이라 거부가 아닌 완충으로 둠). 0이면 완충 없음."
                 },
+                "gpl.controller.syncClockOnConnect": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "제어기에 연결되면 명령 콘솔의 date 로 제어기 시각을 읽고, PC 시각과의 차이가 syncClockThresholdSec 를 넘을 때만 PC 로컬 시각으로 맞춥니다(제어기에는 시간대가 없어 PC 로컬 시각을 그대로 보냄). 런타임 콘솔·ErrorLog 시각을 PC 와 맞추는 용도입니다. 실패해도 연결에는 영향이 없고 Output 에 로그만 남깁니다. 시계 설정은 모션을 일으키지 않습니다."
+                },
+                "gpl.controller.syncClockThresholdSec": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 2,
+                    "minimum": 0,
+                    "description": "syncClockOnConnect 가 켜져 있을 때 자동으로 맞추는 기준(초). 제어기와 PC 의 시각 차이 절댓값이 이 값을 넘을 때만 맞춥니다. 제어기 시각은 초 단위로만 표시돼 측정 오차가 약 ±0.5초이므로 1 이상을 권장합니다."
+                },
                 "gpl.controller.keepAlive1402": {
                     "scope": "window",
                     "type": "boolean",
@@ -1759,6 +1825,12 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Catch 없는 Try에 선택적 호환성 안내(Information)를 표시합니다. 기본 해제. GPL 4.2K5 실측에서 Finally 재실행은 잡히지 않은 예외로 Error 정지한 스레드를 Continue할 때 발생했으며 Catch 후 재던지기로도 방지되지 않았습니다."
+                },
+                "gpl.diagnostics.compilerChecks": {
+                    "scope": "resource",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "실제 제어기(GPL 4.2K5)에서 확인한 컴파일러·제어기 사실을 정적 진단으로 표시합니다. 반환형이 다른 오버로드(-741), Sub New 없는 클래스의 New X()(-722), Module 이름을 가리는 멤버(-781/-729), 다른 클래스의 Private Shared 접근(-729), Stop 으로 멈출 수 없는 쓰레드 이름(-712)은 Warning, 100바이트를 넘는 문자열 리터럴(-506, 한도 미확정)·ByVal String 매개변수의 Is Nothing 검사(-782)·5% 이하 조그 속도(tick 모드)는 Information입니다."
                 },
                 "gpl.diagnostics.experimental": {
                     "scope": "window",
@@ -1902,7 +1974,7 @@
                     "default": [
                         ".gpl"
                     ],
-                    "description": "Project.gpr 소스 목록 동기화에서 소스로 취급할 확장자입니다. GDE는 .gpo(컴파일 산출물)를 ProjectSource에 넣지 않으므로 기본은 .gpl만입니다."
+                    "description": "Project.gpr 소스 목록 동기화에서 소스로 취급할 확장자입니다. 기본은 .gpl이며, 모션 객체·전역 GPL 변수를 담는 전역 모듈 파일(.gpo)을 동기화하려면 명시적으로 추가하세요."
                 },
                 "gpl.controller.memoryGuard.warnMb": {
                     "type": "number",
@@ -1915,6 +1987,11 @@
                     "default": 2.5,
                     "minimum": 0,
                     "description": "Compile/Start 및 배포 전 여유 메모리 차단 기준(MB). 이 값 미만이면 전송하지 않습니다. 0이면 수치 차단을 해제하지만 측정 실패는 차단합니다. 삭제·Unload는 자동 수행하지 않습니다."
+                },
+                "gpl.controller.verifyControllerIdentity": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "FTP로 파일을 올리거나 지우기 전(Upload Only·Upload & Start·Quick Compile·Deploy·autoOnSave·/GPL 비우기) 상대가 PA 제어기인지 확인합니다: 명령 콘솔의 읽기 전용 명령 STATUS와 FTP 220 배너(RTEMS FTP server). 같은 작업 안에서 이미 받은 응답은 재사용합니다. 확인에 실패하면 사람이 실행한 경우 「그래도 진행」을 묻고, AI·자동화 경로는 CONTROLLER_UNVERIFIED로 거부합니다(아무것도 올리지 않음)."
                 }
             }
         },

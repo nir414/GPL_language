@@ -415,7 +415,10 @@ export interface ControllerSourceRoot { sourceRoot: string; remoteRoot: string; 
 export function controllerLibraryCandidates(sourceRoot: string, remoteRoot: string, projectDir: string, raw: string): string[] {
     const remote = raw.trim().replace(/\\/g, '/');
     let candidates: string[];
-    if (remote.startsWith('/')) {
+    if (path.isAbsolute(raw.trim()) && isPathUnder(raw.trim(), sourceRoot)) {
+        // 이미 사본 안의 로컬 절대 경로(원격 세션이 해석해 다시 쓴 .gpr) — POSIX 에서는 `/` 로 시작해 원격 절대 경로와 구분되지 않는다.
+        candidates = [path.resolve(raw.trim())];
+    } else if (remote.startsWith('/')) {
         const root = path.posix.normalize(remoteRoot).replace(/\/$/, '');
         const absolute = path.posix.normalize(remote);
         if (!absolute.toLowerCase().startsWith(`${root.toLowerCase()}/`)) { return []; }

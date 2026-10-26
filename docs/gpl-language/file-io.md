@@ -11,6 +11,11 @@ GPL(Guidance Programming Language)의 파일 입출력 API와 Flash 메모리 �
 
 - **Flash 경로**: `/flash/` — 영구 저장. **쓰기 횟수 수명 제한**이 있으므로 빈번한 쓰기를 피한다.
 - **ROMDISK 경로**: `/ROMDISK/` — 휘발성 임시 저장, 직접 쓰기에 적합.
+  - **부팅 직후에는 하위 폴더가 없다.** `StreamWriter`는 폴더를 만들지 않으므로 `/ROMDISK/tmp/...`에 처음 쓰면 `-508` *File not found*가 난다.
+    쓰기 전에 `File.CreateDirectory`를 부르고 `-510`(이미 있음)은 성공으로 본다(아래 [common-mistakes 0-6-1](common-mistakes.md)).
+    실기 확인(2026-10-22, Sample Prep `FileStore.gpl` `SafeSaveToFlash`): 최종 경로에만 폴더를 만들고 temp 경로에는 만들지 않아 첫 저장이 실패했다.
+- **Flash 쓰기 시간**: 안전 저장(temp 쓰기 + `.bak` 복사 + Copy·Delete) 한 번에 약 0.6~2.3 s가 걸렸다(2026-10-22 실측).
+  명령 처리 스레드에서 동기로 저장하면 그 연결의 다음 응답이 그만큼 늦으므로, 잦은 저장은 워커 스레드 큐로 넘긴다.
 - 안전 저장 패턴: **ROMDISK에 임시 파일로 먼저 쓴 뒤 Flash로 이동(원자적 쓰기)**, 기존 파일은
   `.bak`으로 백업. 중간 실패 시 원본이 보호되고 백업에서 복구할 수 있다.
 

@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-23** · 현재 package 버전 **0.16.4** (PR #37의 Snapshot 초기 연결·라이브러리 경로 수정. 검증·main 반영 결과는 §1-FV 참조.)
-- **직전 세션: §1-FV** — 사용자의 전체 반영 요청으로 main 대상 PR #37을 생성했다. 초기 연결 BP 동기화·Snapshot 라이브러리 경로 해석을 0.16.4로 수정하고 분리 worktree의 Windows 1252/1252·VSIX 검증을 마쳤다. GitHub 최종 검사·main 병합 상태는 PR #37이 정본이다.
+- **최종 갱신: 2026-10-26** · 현재 package 버전 **0.18.0** (수신함 보고 일괄 반영. 검증 결과는 §1-FZ 참조.)
+- **직전 세션: §1-FZ** — 수신함 22건을 다섯 갈래(참조·정의, 정적 진단, Unload·대상 안전, FTP 정체 확인·메모리 알림·연결 진단, 시계 동기화)로 구현·병합했다. 1423/1423·MCP 164/164(PR #38 리뷰 6건 반영 포함), VSIX 0.18.0 패키징. 실기·UI 확인과 Marketplace 자동 게시 연결은 남았다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,7 +76,11 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
-- [ ] **(2026-10-23, §1-FT) `.gpo` 설명 정정 검토.** `package.json`의 소스 확장자 설정 설명과 `src/project/gprSync.ts` 주석은 `.gpo`를 컴파일 산출물로 적고 있으나, Brooks GDS 공식 설명서는 모션 객체·전역 GPL 변수를 담는 전역 모듈 파일로 설명한다. 실제 파일 취급과 대조해 이 설명을 바로잡는다. 이번에는 README만 GPL/GPR 중심으로 정리하고 실행 코드·설정 선언은 수정하지 않았다.
+- [ ] **(2026-10-26, §1-FZ) 0.18.0 실기·UI 확인.** ① FTP 쓰기 전 정체 확인: 실제 제어기에서 220 배너(`RTEMS FTP server`)가 읽혀 Upload Only·Quick Compile이 막히지 않는지, 배너·런타임 콘솔 핸드셰이크 프로브가 무해한지. ② 그룹(Lib) Compile 뒤 Unload 확인 모달·MCP `confirm` 흐름과 재부팅 뒤 자동 해제. ③ 참조 찾기(BinderR3 `BRI.Setup`)·정의 이동(`NUM` 2후보, MergeCode `getWafer`) 결과와 놓치는 참조 여부. ④ 새 진단 8종의 대형 코드베이스(V2/Lib) 오탐률. ⑤ `date` 응답 형식·잔여 오차·재부팅 뒤 유지. ⑥ 메모리 경고 상태 표시줄과 배포당 1회 알림. 보류 항목(모듈 String 첫 사용 린트, Unload 소켓 유지, Lib upload-only 기본값)은 §1-FZ 남은 일 참조.
+
+- [ ] **(2026-10-23, §1-FY) 명령 커서 아이콘 — 새 VSIX/UI 확인.** 0.17.2 설치 후 확장 목록·README와 활동바/Status 보기에서 컬러·단색 아이콘을 밝은/어두운 테마로 확인한다. 24px 렌더링과 패키지 내용은 정적으로 확인했으며 실제 VS Code 표시와 캐시 갱신은 아직 보지 않았다.
+
+- [ ] **(2026-10-23, §1-FX) FTP 새로고침 UI 확인.** 새 VSIX에서 조회 진행 중 새로고침·연속 클릭·편집기/세션 종료를 확인한다. 모의 FTP 회귀와 로컬 테스트는 실제 제어기·VS Code UI 검증을 대신하지 않는다.
 
 - [ ] **(2026-10-22, §1-FQ) Hover 성능 — 새 VSIX 편집기 확인.** PoseFile.gpl:132의 AxisCount와 여러 파일의 함수 이름에서 첫 마우스 Hover·재방문 반응을 확인한다. 실제 소스 하니스에서 VS Code의 표시 대기·렌더링·다른 확장의 경합은 측정하지 않았다.
 
@@ -125,7 +129,7 @@
       FTP 목록만 갱신되는지 ⑤ 로컬에 없는 원격 전용 파일은 삭제되지 않는지 확인한다. 업로드 중 `Start`/Compile 경합 차단과
       「전체 정지」로 실행·대기 작업을 취소할 때 `CANCELLED` 기록이 남는지도 별도 저속/안전 조건에서 확인한다.
 
-- [ ] **(2026-10-23, §1-FR) 제어기 프로젝트 열어 디버깅 — 새 VSIX/UI/제어기 확인.** FTP 프로젝트 우클릭·명령 팔레트 → 전용 작업공간 전환 → Workspace Trust → 같은 제어기/프로젝트에 한 번 Attach되는지 확인한다. Traffic에 업로드·Compile·Start·Stop·기존 BP 해제가 없어야 하며, Main과 라이브러리의 스택 위치·변수·BP를 확인한다. 0.16.1에서 라이브러리 탐색이 없는 하위 경로를 조회하지 않고 완료되는지도 확인한다(§1-FS). 초기 보존 BP는 분리 뒤에도 남고 세션이 추가한 BP만 해제돼야 한다. 재열기는 자동 Attach 없이 F5로 가능해야 한다. FTP 소스와 실행 바이너리의 일치는 별도 증거가 필요하다.
+- [ ] **(2026-10-23, §1-FW) FTP 원격 파일·현재 창 Attach — 새 VSIX/UI/제어기 확인.** `GPL: Browse Controller Files`로 명령 콘솔 연결 없이 FTP 폴더를 펼치고 파일을 열어 본다. 기존 창·폴더·설정이 유지되고 새 Workspace Trust 요청이 없는지, 읽기 전용 편집기·새로 읽기·열린 소스의 언어 기능을 확인한다. 프로젝트 우클릭 Attach는 .gpr 관계와 필요한 파일만 읽으며 Main/라이브러리 스택·줄 BP가 원격 URI로 연결돼야 한다. Traffic에 자동 업로드·Compile·Start·Stop·초기 기존 BP 해제가 없어야 한다. 닫은 문서와 종료한 세션의 TMP 캐시 수명, 서로 다른 제어기·프로젝트의 동명 파일 격리도 확인한다. VSIX 설치·실제 UI·실기 검증과 FTP 소스/실행 바이너리의 일치는 별도 확인 대상이다.
 
 - [ ] **(2026-10-21, §1-FA) 새 FTP 작업공간 흐름 — VSIX/UI/제어기 확인.** 구현·순수 테스트는 완료됐다. 새 VSIX에서
       ① Live Working Copy로 `EM2RS_Probe` 다운로드 → 마지막 파일에서 진행 표시가 즉시 끝나고 완료 선택이 별도로 뜨는지,
@@ -847,7 +851,10 @@ src/project/projectSources.ts            # "프로젝트에 속한 소스" 단�
 src/project/controllerProjectWorkspace.ts # FTP 다운로드 사본 manifest·SHA-256·Live/Snapshot 쓰기 게이트·중첩 배포 루트·staging/저장된 workspace 정본(vscode 무의존, §1-FA)
 src/project/controllerProjectDebug.ts # 제어기 소스·Attach 대상·안전 구성·일회성 재개·라이브러리 경로 후보(§1-FR)
 src/controller/files/controllerProjectDownload.ts # Snapshot 다운로드·ProjectLibrary 그래프의 원격 의존성 수집(FTP 읽기만, §1-FR)
-src/activation/controllerProjectDebug.ts # 프로젝트 선택·작업공간 준비·Workspace Trust·창 전환 뒤 일회성 Attach(§1-FR)
+src/activation/controllerProjectDebug.ts # FTP 프로젝트 선택·필요한 메타데이터 준비·현재 창 Attach(§1-FW)
+src/activation/controllerRemoteFiles.ts # 읽기 전용 FTP FileSystemProvider·문서/디버그 세션의 TMP 수명
+src/controller/files/remoteSourceSession.ts # 원격 프로젝트 관계·세션별 경로/URI 매핑·lazy read
+src/activation/controllerSourceLanguage.ts # 열린 원격 소스의 프로젝트별 독립 언어 서비스
 src/project/compileUnitTarget.ts         # 컴파일 단위(.gpr) 선택 정본(vscode 무의존, §1-DX) — chooseCompileUnitGprs: 세션 대상 폴더(host.sessionTargetDir) 1순위 → 프로젝트명 일치 전부 → 없음. projectContext.findExpectedProjectDirs·gplDebugSession._updateProjectDirs 가 공유
 src/project/breakpointTarget.ts          # BP source identity 정본(vscode 무의존, §1-EC) — 메인 .gpr 직접 ProjectSource 원문 / ProjectLibrary source / compile unit 밖 판정
 src/project/projectFileScope.ts          # 참조 검색·심볼 인덱싱 공용 파일 범위(resolveProjectFileScope, PROJECT_EXCLUDE_GLOB)(§1-BW) — 라이브러리 양방향 확장(§1-BX)
@@ -865,7 +872,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-FN ~ §1-FV, 독립 작업에서 중복된 §1-FR 2건 포함)만 둔다.
+본문에는 **최근 10개 세션**(§1-FP ~ §1-FX, 독립 작업에서 중복된 §1-FR 2건 포함)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -874,8 +881,8 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FM (2026-10-02 ~ 10-23) | 34 |
-| (본문 아래) | §1-FN ~ §1-FV (2026-10-22~23, §1-FR 2건) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FO (2026-10-02 ~ 10-23) | 36 |
+| (본문 아래) | §1-FP ~ §1-FX (2026-10-22~23, §1-FR 2건) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -1049,133 +1056,26 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-FK | 10-22 | **구조 개편 재검토** — 파일 갱신 경합·참조 인코딩 수정, 중복 refresh 직렬화, 빌드 잔여 JS·맵 자동 제거. 0.14.3 | [10월 아카이브](archive/handoff/2026-10.md) |
 | §1-FL | 10-22 | **정식 로고 적용** — SVG 정본·PNG 확장 아이콘·사이드바 단색 심벌과 README 통일. 0.14.4 | [10월 아카이브](archive/handoff/2026-10.md) |
 | §1-FM | 10-22 | **제어기 상태·온도** — 공식 조회 항목 조사, CPU·앰프 온도·실측 추이·원문·사용자 주의 기준, 기본 10초 진단 분리·취소·캐시 격리. 0.15.0 | [10월 아카이브](archive/handoff/2026-10.md) |
-| §1-FN | 10-22 | **매개변수 Hover 누락** — 공통 식별자 해석·개별 범위와 내장 한정 이름 조회, 회귀 6건. 0.15.1 | 본문 ↓ |
-| §1-FO | 10-22 | **README 이용자 안내 개편** — 기능·지원 환경·시작 방법과 배포·디버깅·모니터링·AI 연동 정리, 개발·게시·내부 API 설명 제거. 0.15.2 | 본문 ↓ |
-| §1-FP | 10-22 | **누적 변경 커밋·푸시** — 확장 1222/1222·MCP 137/137·문서 빌드, 기존 VSIX 167개 파일 일치, 사용자 확인 뒤 codex/domain-modules 원격 반영 | 본문 ↓ |
-| §1-FQ | 10-22 | **첫 Hover 지연 개선** — 현재 파일 우선 조회·오버로드 자기 선언 제외·라이브러리 폴더 캐시, 실제 소스 성능 대조. 0.15.3 | 본문 ↓ |
+| §1-FN | 10-22 | **매개변수 Hover 누락** — 공통 식별자 해석·개별 범위와 내장 한정 이름 조회, 회귀 6건. 0.15.1 | [아카이브](archive/handoff/2026-10.md#1-fn-2026-10-22-세션--멤버-접근의-매개변수-hover-누락-수정) |
+| §1-FO | 10-22 | **README 이용자 안내 개편** — 기능·지원 환경·시작 방법과 배포·디버깅·모니터링·AI 연동 정리, 개발·게시·내부 API 설명 제거. 0.15.2 | [아카이브](archive/handoff/2026-10.md) |
+| §1-FP | 10-22 | **누적 변경 커밋·푸시** — 확장 1222/1222·MCP 137/137·문서 빌드, 기존 VSIX 167개 파일 일치, 사용자 확인 뒤 codex/domain-modules 원격 반영 | [10월 아카이브](archive/handoff/2026-10.md) |
+| §1-FQ | 10-22 | **첫 Hover 지연 개선** — 현재 파일 우선 조회·오버로드 자기 선언 제외·라이브러리 폴더 캐시, 실제 소스 성능 대조. 0.15.3 | [아카이브](archive/handoff/2026-10.md#1-fq-2026-10-22-세션--첫-hover의-불필요한-프로젝트-탐색-제거) |
 | §1-FR (PR #36) | 10-23 | **PR #36 병합 검증** — Linux CI fixture와 Flash 안전·진입점·Rename 리뷰 수정, 회귀 6건·전체 1228/1228·MCP 137/137. 0.15.4 | [본문](#1-fr-2026-10-23-세션--pr-36-병합-ci와-리뷰-수정) |
 | §1-FR (제어기 디버깅) | 10-23 | **제어기 프로젝트 열어 디버깅** — Snapshot·참조 라이브러리·작업공간 전환 후 일회성 Attach, 자동 Start 차단·기존 BP 보존. 0.16.0 | 본문 ↓ |
 | §1-FS | 10-23 | **디버깅용 FTP 라이브러리 탐색 오류** — 없는 경로의 목록 형식 오류 실측, 부모 확인·캐시·원격 대소문자 보존. 0.16.1 | 본문 ↓ |
 | §1-FT | 10-23 | **README 문체·분량 개선** — 개인 취미 프로젝트 소개·kaomoji, 버전·VSIX 설치·기본 단축키 제거, GPL/GPR 안내. 0.16.2 | 본문 ↓ |
 | §1-FU | 10-23 | **로컬·GitHub 병합** — 원격 Flash·진입점·Rename 수정과 로컬 Hover·제어기 프로젝트 디버깅 통합, 경로 fixture·문서 충돌 해소. 0.16.3 | 본문 ↓ |
 | §1-FV | 10-23 | **PR #37 전체 반영** — Linux CI와 초기 BP 동기화·Snapshot 라이브러리 그래프 경로 수정. 0.16.4 | 본문 ↓ |
+| §1-FW | 10-23 | **FTP 원격 파일·lazy Attach** — 기존 작업공간 유지, 읽기 전용 URI와 TMP 소스 캐시. 0.17.0 | 본문 ↓ |
+| §1-FX | 10-23 | **FTP 새로고침 경합** — 일반 조회 뒤 새 요청 직렬화·종료 경계, .gpo 설명 정정. 0.17.1 | 본문 ↓ |
+| §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | 본문 ↓ |
+| §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-FN ~ §1-FV (2026-10-22~23).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-FR ~ §1-FZ (2026-10-23~26).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-FN. 2026-10-22 세션 — 멤버 접근의 매개변수 Hover 누락 수정
-
-### 증상·원인
-
-`V2/Lib/RobotData/PoseFile.gpl:132`의 `axes = table.AxisCount()`에서 Hover가 비었다는 제보다. 현재 소스에서 table은 JointPoseTable 매개변수이며 AxisCount는 Robot/Pose.gpl:483의 Integer 반환 Function이다. 실행 중인 Sample Prep 확장은 0.14.0이고 디버그 세션은 비활성이다. 기존 GPL Language Support 로그에는 AxisCount 수신자·함수를 찾은 기록과, 같은 표현식에서 수신자 조회 없이 끝난 요청이 함께 있었다.
-
-Hover만 자체 식별자 해석기로 점 표기 전체를 단어·범위로 사용했다. table 위에서는 커서 식이 table을 정확히 골라도 word에 점이 있어 로컬 조회가 생략됐다. 따라서 정의가 매개변수에만 있으면 undefined, 동명 전역 변수가 있으면 그 전역 변수가 표시됐다. 메서드 카드도 전체 점 표기 범위를 반환했다.
-
-### 조치·의도
-
-- 자체 해석기를 제거하고 정의·참조 Provider와 같은 getQualifiedWordAtPosition을 사용한다. 수신자는 기존 cursorExpression·receiverType 경로로 해석하고, Hover 범위는 커서 아래 식별자로 제한한다.
-- 내장 조회도 커서 세그먼트까지의 한정 이름을 사용한다. Math.Abs의 문서와 Thread.CurrentThread().Name 반환 타입 체이닝을 유지하면서 Thread 자체와 멤버를 각각 표시한다.
-- 실제 Hover Provider·공통 설정/식별자 해석·수신자 해석·SymbolIndex를 함께 실행하는 회귀 테스트 6건을 추가했다. VS Code 경계만 대체한다.
-- 병행 온도 작업의 minor 0.15.0을 보존하고 버그 수정 patch 0.15.1로 package·lock·README·CHANGELOG를 맞췄다. 최근 10세션 유지를 위해 §1-FD를 10월 아카이브로 원문 그대로 이동했다. 외부 GPL 소스는 수정하지 않았다.
-
-### 검증
-
-- 수정 전 새 회귀 테스트 6건 중 4건이 실패했고, 수정 후 6/6 통과했다. 매개변수 우선순위·로컬 변수·메서드 시그니처/문서·식별자별 범위·점 주위 공백·배열 인덱싱·내장 함수/클래스·주석/문자열·취소를 확인했다.
-- npm run compile 성공. 전체 테스트 첫 실행은 샌드박스의 junction·localhost·임시 파일 권한으로 16건이 실패했고, 제한 밖에서 Node 회귀 테스트를 실행해 1222/1222 통과했다. 제어기 명령은 보내지 않았다.
-- 실제 PoseFile.gpl:132 소스를 읽어 같은 Provider에 넣었을 때 axes: Integer, table: JointPoseTable, Function AxisCount() As Integer와 각 식별자의 개별 범위를 확인했다. VS Code API 경계는 대체했으며 실제 마우스 UI 검증은 아니다.
-- npm run package:no-bump 성공. dist/gpl-language-support-0.15.1.vsix, 1,384,937 bytes, SHA-256 CC7130D59863985A21C6AD8A79D4D2B47543B078B1B05D4571DB24F1273615BC.
-- ZIP의 Hover JavaScript·package manifest가 현재 작업 파일과 동일하며 문서 버전 0.15.1을 확인했다. README 이미지·CHANGELOG 이슈 링크는 vsce의 GitHub URL 변환으로 원본과 다르다. 경고는 기존 Node DEP0190과 JavaScript 번들링 권고이며 패키징 실패는 없다.
-- git diff --check 통과. 인코딩·기존 LF/CRLF를 유지했고 새 테스트 파일은 UTF-8 without BOM·LF다.
-
-### 남은 일
-
-새 VSIX를 설치한 뒤 실제 편집기에서 PoseFile.gpl:132의 axes·table·AxisCount 각 Hover 표시와 범위를 확인한다. 설치·F5 UI·제어기 동작 검증은 수행하지 않았다. Git 커밋·태그·push·게시도 수행하지 않는다.
-
-## 1-FO. 2026-10-22 세션 — README를 확장 이용자용 기능·지원 안내로 개편
-
-### 증상·원인
-
-README에 Marketplace 게시 예정 문구, 로컬 패키지 상태, 확장 개발·릴리스 절차와 AI 호출 API·제어기 명령 구문이 섞여 있었다.
-사용자는 이 파일이 개발자용 내부 자료가 아니라 확장 이용자가 기능과 지원 범위를 파악하는 문서임을 명확히 했다.
-
-### 조치·의도
-
-- 주요 기능·지원 환경·설치·시작 방법을 앞에 두고 언어 지원, 프로젝트·배포, 디버깅, 상태·로그, AI 연동을 이용자 관점으로 다시 썼다.
-- 게시 예정·로컬 패키지 버전·개발 환경 실행법·내부 프로토콜과 호출 API는 제거했다. 변경 이력과 GPL 언어·프로젝트·온도 참고 자료로 연결한다.
-- 명령 제목과 설정 기본값을 package.json과 대조했다. Upload & Start의 컴파일 오류가 Problems에 표시되는 현재 동작과 디버거 분리·프로그램 정지의 차이를 반영했다.
-- 문서 개선 patch **0.15.2**로 package·lock·CHANGELOG를 맞췄다. README에는 수시로 바뀌는 버전을 중복 표기하지 않는다.
-- 후속 피드백에 따라 설정 기본값 표도 제거하고 현재값은 VS Code 설정 화면으로 안내한다. 릴리스 절차의 README 버전 갱신 지시도 기능·사용 안내 갱신으로 바꿔 같은 중복을 다시 만들지 않게 했다.
-- 최근 10세션 유지를 위해 §1-FE를 10월 아카이브에 원문 그대로 옮기고 기존에 뒤처진 본문 범위·아카이브 집계도 실제 섹션 기준으로 맞췄다.
-
-### 검증
-
-- README의 명령 제목 **22개**, 설정 키 **6개**를 manifest와 대조했다. 로컬 링크·이미지 **5개**의 대상과 Markdown 표 **6개**의 파싱·HTML 변환을 확인했다. 확장 버전·설정 기본값·개발/내부 API 문구가 남지 않았음을 확인했다. 실제 확장 화면을 렌더링한 UI 검증은 아니다.
-- `npm run compile` 성공. `npm run pre-release-check`는 **15/17**로, 기존 미커밋 변경과 `codex/domain-modules` 브랜치 조건만 실패했다. 이를 통과시키기 위한 커밋·브랜치 변경은 하지 않았다. 문서만 수정해 전체 회귀 테스트는 반복하지 않았다.
-- `npm run package:no-bump` 성공. `dist/gpl-language-support-0.15.2.vsix` **1,380,010 bytes**, SHA-256 **EBB6DD8A52112E2CC0490E0D5D3EDD9D030B17F1B52196AC20946738CF77520A**. 기존 Node `DEP0190`과 JavaScript 번들링 권고가 있었고 패키징 실패는 없었다.
-- VSIX의 manifest가 현재 package.json과 일치하며 README도 vsce의 URL 변환 외에는 현재 파일과 동일하다. 로고·CHANGELOG 포함, 문서 링크의 GitHub URL 변환, 내부 지침·임시 파일 제외를 확인했다.
-- `git diff --check` 통과. 수정한 7개 파일의 UTF-8 without BOM·CRLF를 보존했고 §1-FE의 아카이브 이동은 원문 바이트와 일치한다. 외부 Marketplace·Releases 공개 상태 조회는 이 환경에서 성공하지 못했으며 게시 여부를 단정하지 않았다.
-
-### 남은 일
-
-실제 확장 화면에서의 README 표시와 외부 링크 접근은 별도 확인 대상이다. 실행 코드 변경, VSIX 설치, F5, 제어기 명령, Git 커밋·태그·push·게시를 수행하지 않는다.
-
-## 1-FP. 2026-10-22 세션 — 누적 변경 검증과 커밋·푸시
-
-### 요청·범위
-
-사용자는 현재 변경을 커밋하고 푸시 전에 질문해 달라고 요청했다. 현재 브랜치는 codex/domain-modules이며 origin/main에는 기존 로컬 커밋 6개가 아직 없다. GitHub 조회로 원격 main이 0ac3978이고 같은 이름의 원격 작업 브랜치가 없음을 확인했다.
-
-### 조치·의도
-
-- 0.14.1~0.15.2에 해당하는 controller 분류·SymbolCache 역할 분리·갱신/빌드 안정화·온도·Hover·로고·README 변경을 하나의 누적 변경 커밋 대상으로 정리했다. 기능·버전 변경은 추가하지 않는다.
-- 스테이징한 새 symbolPresentation.ts의 빈 줄 공백 1건만 제거했다. 최근 10세션을 유지하도록 §1-FF를 10월 아카이브로 원문 그대로 이동하고 인덱스를 갱신했다.
-- 216개 파일을 4f20480으로 커밋했다. 사용자가 현재 작업 브랜치로 푸시를 선택한 뒤 기존 6개와 새 커밋을 origin/codex/domain-modules에 반영하고 추적 브랜치를 설정했다. 태그·공식 Release·Marketplace 게시는 요청 범위에 포함하지 않는다.
-
-### 검증
-
-- 일반 Windows 권한에서 npm test(compile 포함) **1222/1222**, MCP **137/137** 통과. npm run docs:build(strict)도 성공했다. 문서 도구의 기존 안내 배너가 있었고 빌드 실패는 없다.
-- 기존 VSIX의 manifest·운영 JavaScript/소스맵·MCP 번들·media·resources **167개**를 현재 파일과 SHA-256으로 대조해 불일치 0개를 확인했다. 새 동작이나 포함 파일 변경이 없어 0.15.2와 기존 VSIX를 유지한다.
-- dist/gpl-language-support-0.15.2.vsix: **1,380,010 bytes**, SHA-256 **EBB6DD8A52112E2CC0490E0D5D3EDD9D030B17F1B52196AC20946738CF77520A**. 기존 패키징 기록의 Node DEP0190·JavaScript 번들링 권고는 유지되며 이번에 패키징을 다시 실행하지 않았다.
-
-### 남은 일
-
-푸시 완료 후 원격 작업 브랜치의 4f20480과 원격 main의 기존 0ac3978을 직접 확인했다. 확인 대기 중 생긴 docCommentOverloads.ts·해당 테스트 수정과 scripts/dev/hover-performance.js는 별도 작업 변경으로 보존했다. 이 완료 기록만 후속 문서 커밋으로 반영한다. 새 VSIX 설치·F5 UI·실제 제어기 동작 검증은 이번에 수행하지 않았으며 기존 §3 항목을 유지한다.
-
-## 1-FQ. 2026-10-22 세션 — 첫 Hover의 불필요한 프로젝트 탐색 제거
-
-### 증상·원인
-
-마우스 Hover의 반응이 느리다는 요청이다. 첫 요청 때 현재 파일에 정의가 있어도 다른 프로젝트의 동명 후보부터 좁혔고, 오버로드 자기 선언·캐시 사본에도 컴파일 단위를 확인했다. 라이브러리 해석에서는 여러 프로젝트가 같은 폴더 후보를 동기적으로 반복 조회했다. 문서 파싱 캐시는 이미 있었으며, 측정한 주된 지연은 프로젝트 탐색이었다.
-
-### 조치·의도
-
-- 인자별 오버로드 해석이 없는 이름 조회는 현재 파일의 정의를 먼저 반환한다. 호출 문맥이 있거나 외부 정의를 찾는 경우의 프로젝트 경계·인자 수·타입 해석은 유지한다.
-- 오버로드 자기 선언·캐시 사본은 프로젝트 관계 확인 전에 제외하며, 같은 파일의 형제는 같은 컴파일 단위로 처리한다.
-- CompileUnitIndex가 성공·실패한 폴더별 .gpr 조회를 재사용한다. projectSources의 기존 경로 우선순위와 탐색 규칙을 주입형 조회로 그대로 사용하고 .gpr 내용·목록 변경 시 함께 무효화한다.
-- scripts/dev/hover-performance.js로 실제 SymbolCache 인덱싱·Hover Provider를 실행한다. CLI의 workspace·source·line·word로 대상을 지정하며, 경과 시간·동기 I/O·문서 읽기 수·카드 SHA-256을 출력한다. 설정·VS Code hover.delay는 변경하지 않았다.
-
-### 측정·검증
-
-수정 전 기준은 4f20480의 관련 TypeScript 네 파일을 메모리에서 컴파일해 같은 하니스에 주입했다. 각 시나리오에서 프로젝트 관계 캐시를 비우고 첫 요청 1회·반복 50회를 측정했다. 시간은 참고 표본이며 VS Code UI 실측이 아니다.
-
-| 대상 — PoseFile.gpl:132 AxisCount | 첫 요청 수정 전 → 후 | 폴더 동기 조회 전 → 후 |
-| --- | --- | --- |
-| V2: 234파일·9,173심볼 | 505.779 → 9.206 ms | 4,139 → 0 |
-| Sample Prep: 1,324파일·57,609심볼 | 1,165.761 → 11.273 ms | 5,384 → 0 |
-
-두 규모에서 수정 전후 카드 SHA-256은 0b5a3344b4df886657d449164e561b340e6abb5a7cf316e443458aae48c66ed5로 동일하다. 반복 중앙값은 V2 0.112 ms 미만, 상위 범위 0.408 ms 이하였다. V2의 파일별 함수 12개 추가 표본에서 첫 요청 0.528~248.327 ms를 확인했다. 실제 외부 오버로드 관계가 필요한 3개 표본은 약 214~248 ms와 폴더 조회 356회를 사용하므로 모든 첫 Hover가 디스크 조회 없이 끝나는 것은 아니다.
-
-- 신규 회귀 4건: 현재 파일 조회의 관계 탐색 생략과 호출 해석 보존, 오버로드 자기·사본·같은 파일 제외, 폴더 조회 성공·실패 재사용과 새 .gpr 무효화 반영, 실제 Hover의 불필요한 관계 탐색 차단.
-- npm test(compile 포함) **1226/1226** 통과. 첫 샌드박스 실행은 junction·파일 교체·loopback TCP 권한 제한으로 기존 테스트 16건이 실패했으며 일반 Windows 권한 재실행에서 모두 통과했다. git diff --check·성능 하니스 구문 검사도 통과했다.
-- npm run package:no-bump 성공. dist/gpl-language-support-0.15.3.vsix: **1,380,619 bytes**, SHA-256 **404854D618F3264239B3C15293909C9751FE7A5CCBBC3C97CB39D17AF1AB7643**. 기존 Node DEP0190·JavaScript 번들링 권고 경고가 있고 패키징 실패는 없다.
-- VSIX의 변경 JavaScript 4개·Hover Provider·MCP 번들·package.json 7개를 현재 파일 SHA-256과 대조했다. manifest 버전과 개발용 파일 제외를 확인했다. UTF-8 without BOM·CRLF·NUL 없음, 최근 세션 10건과 §1-FG 원문 아카이브 일치도 확인했다. README는 버전을 중복 표기하지 않는 현행 정책에 따라 유지했다.
-
-### 남은 일
-
-새 VSIX 설치 뒤 실제 편집기 마우스 반응을 확인한다. VS Code의 표시 대기·렌더링·다른 확장에 의한 Extension Host 점유는 하니스에 포함하지 않았다. 설치·F5 UI·제어기 조작·Git 커밋·태그·push·게시를 수행하지 않는다.
 
 ## 1-FR. 2026-10-23 세션 — PR #36 병합 CI와 리뷰 수정
 
@@ -1204,6 +1104,8 @@ README에 Marketplace 게시 예정 문구, 로컬 패키지 상태, 확장 개�
 새 0.15.4 VSIX의 F5 UI·실제 제어기·Flash 안전 경고 실물 확인은 수행하지 않았으며 기존 §3 항목을 유지한다. 패키징·회귀 검증은 실제 장비의 Flash 쓰기 안전성을 증명하지 않는다.
 
 ## 1-FR. 2026-10-23 세션 — 제어기 프로젝트를 열어 바로 디버깅
+
+> 이 세션의 전용 작업공간 전환 방식은 §1-FW에서 현재 창의 원격 파일 보기로 대체됐다. 아래는 당시 구현 이력이다.
 
 ### 증상·원인
 
@@ -1278,7 +1180,7 @@ FTP 다운로드와 로컬 작업공간, Attach가 분리돼 제어기 프로젝
 
 ### 남은 일
 
-실제 Marketplace 화면 표시·게시 반영은 별도 확인 대상이다. `.gpo` 주석 정정은 §3에 남겼다. 설치·게시·Git 커밋과 제어기 조작은 수행하지 않았다.
+실제 Marketplace 화면 표시·게시 반영은 별도 확인 대상이다. 당시 §3에 남긴 `.gpo` 설명 정정은 §1-FX에서 완료했다. 설치·게시·Git 커밋과 제어기 조작은 수행하지 않았다.
 
 ## 1-FU. 2026-10-23 세션 — 원격 수정과 로컬 작업 병합
 
@@ -1318,7 +1220,107 @@ Windows 로컬 npm test(compile 포함) **1249/1249**와 git diff --check가 통
 
 ### 검증·남은 일
 
-분리한 Windows worktree에서 npm test(compile 포함) **1252/1252**, git diff --check 통과. 기존 빌드에서 절대 ProjectLibrary 참조가 실제 사본을 찾지 못하는 것을 재현했으며, 수정 후 절대·대소문자·하위 의존성·재열기·사본 밖 참조와 BP 설정 실패 경계를 회귀 검증했다. 실제 제어기·F5 UI 검증은 수행하지 않았다. 최초 테스트 기대값만 조정한 중간 CI의 성공을 최종 수정 검증으로 취급하지 않는다. 최종 Linux 확장·MCP·VSIX smoke 검사와 main 병합 상태는 [PR #37](https://github.com/nir414/GPL_language/pull/37)의 최신 SHA 결과로 확인한다.
+최종 Windows 테스트·VSIX와 PR 최신 SHA의 Linux CI·MCP·VSIX smoke 확인 후 main에 병합한다. 실제 제어기·F5 UI 검증은 수행하지 않는다. 최초 테스트 기대값만 조정한 중간 CI의 성공을 최종 수정 검증으로 취급하지 않는다.
 
-- 원래 checkout에서 동시에 수정된 ftpClient.ts·gplDebugSession.ts 등 다른 작업을 보존하기 위해 지정 파일만 별도 managed worktree에 적용하고 검증했다. 이 PR에는 해당 동시 변경을 포함하지 않는다.
-- 패키징: `dist/pr37/gpl-language-support-0.16.4.vsix`, **1,375,803 bytes**, SHA-256 **DFB7102FF0FFCED5F18F06C75C7277D6DF3C3499AAC52AC98B567EE4660599FD**. 분리 worktree에서 생성 후 원래 checkout의 위 경로에 보존한다. manifest·운영 코드·리소스 173개가 현재 파일과 바이트 단위로 일치하고 README·CHANGELOG는 패키징 도구 링크 변환만 다르며 개발 지침·테스트·임시 파일은 없다. JavaScript 번들링 권고 경고 1건, 패키징 실패 없음.
+## 1-FW. 2026-10-23 세션 — FTP 원격 파일 연결과 현재 창 디버깅
+
+### 증상·원인
+
+사용자는 기존 프로젝트를 유지하며 제어기 파일을 임시로 열고 디버깅하려 했다. 기존 구현은 globalStorage에 전체 Snapshot을 받고 새 .code-workspace로 전환해 프로젝트 교체·Extension Host 재시작·반복 신뢰 확인을 만들었다.
+
+### 조치
+
+- 제어기 FTP 트리에 하위 폴더 탐색과 파일 열기를 추가하고, 명령 콘솔 없이 FTP만 탐색하는 명령을 제공한다. 파일은 gpl-ftp URI의 읽기 전용 FileSystemProvider로 현재 편집기에 표시한다. 작업공간과 기존 설정을 교체하지 않는다.
+- .gpr·ProjectLibrary와 파일 목록을 먼저 확인하고, 소스 내용은 파일 열기·스택·줄 BP에 필요한 시점에만 읽는다. Attach마다 새 원격 세션을 만들고 TMP cache에 snapshot manifest를 기록한다. 열린 문서와 디버그 세션이 모두 끝나거나 확장이 dispose될 때 그 세션이 만든 캐시만 정리한다. 비정상 프로세스 종료 뒤 TMP 잔여 캐시의 자동 수거는 구현하지 않았다.
+- DAP는 원격 제어기·프로젝트·URI를 고정하고 현재 작업공간의 동명 소스로 fallback하지 않는다. 원격 Attach 옵션은 디버거에서도 비배포·비자동실행·기존 BP 보존으로 강제한다. 초기 연결의 에디터 BP push도 설정 파일 변경 없이 건너뛴다. 비디버깅 로컬 에디터 BP 동기화는 원격 URI를 제외해 로컬 동명 파일로 잘못 전송하지 않는다. 디버깅 종료 뒤에는 기존 프로젝트 대상을 복원한다.
+- 캐시된 파일은 편집기의 새로 읽기로 갱신한다. 트리는 조회 당시 제어기/루트가 바뀐 응답과 안전하지 않은 항목을 표시하지 않는다. 원격 언어 기능은 로컬 작업공간과 다른 프로젝트를 분리하고 현재 열린 문서만 인덱싱한다. 함수명 BP는 해당 소스를 먼저 열어야 하며 원격 이름 바꾸기·전체 참조 검색은 제공하지 않는다.
+- 같은 저장소에서 병행된 0.16.4의 Snapshot 경로 해석 수정과 기록을 보존했다. 기능 추가이므로 minor 0.17.0을 적용한다.
+
+### 검증
+
+Windows TypeScript compile, 전체 회귀 **1308/1308**, git diff --check가 통과했다. 모의 FTP·DAP/VS Code 경계 테스트로 lazy read, 원격 경로·URI·프로젝트 격리, 읽기 전용 파일 API, 캐시 갱신/정리와 초기 BP 보존을 확인했다. 첫 전체 실행의 .gpr 없는 라이브러리 회귀는 TMP에 합성 메타데이터만 기록하도록 고쳐 해결했다. 최종 VSIX의 운영 산출물 175개를 현재 out 파일과 바이트 단위로 대조했고, 개발 소스·테스트·지침·로그가 제외됐음을 확인했다.
+
+- 패키징: `dist/gpl-language-support-0.17.0.vsix`, **1,407,552 bytes**, SHA-256 **8B071F3D190781D388F128C9CD99BFFA59AB683B35BF0D87F07964860EC0A3DC**.
+- 경고: Node DEP0190(하위 shell 실행)·JavaScript 번들링 권고. 패키징 실패 없음. 로그: `dist/remote-0.17.0-tests.log`, `dist/remote-0.17.0-package.log`, `dist/remote-0.17.0-verification.json`.
+- 실제 설치·F5 UI·제어기 디버깅/물리 동작은 확인하지 않았다. 이 세션에서는 Git 커밋·push·배포·설치를 실행하지 않았다.
+
+### 남은 일
+
+새 VSIX 설치·F5 UI와 제어기의 읽기 전용 Attach·스택/BP·TMP 정리는 위 §3에서 확인한다. 실제 업로드·Compile·Start·Stop·Step은 이번 작업에서 실행하지 않는다.
+
+## 1-FX. 2026-10-23 세션 — 기능 검토와 FTP 새로고침 경합 수정
+
+### 증상·원인
+
+0.17.0의 기존 미커밋 변경을 보존하며 원격 파일·언어 기능과 인계 미결 항목을 검토했다. 일반 LIST/RETR가 진행 중일 때 명시적인 새로고침도 같은 Promise를 재사용해 과거 내용이나 앞선 실패를 그대로 반환했다. 지연 응답 회귀 4건이 수정 전 모두 실패해 재현했다.
+
+### 조치
+
+- 일반 조회와 새로고침 요청을 구분하고, 일반 조회 뒤에 새 조회를 직렬로 수행한다. 동시 새로고침은 한 번으로 합치며 이전 요청의 정리가 새 요청을 제거하지 않도록 현재 Promise를 대조한다. 이전 실패는 원래 호출자에게 전달하고 명시한 새로고침은 새로 조회한다.
+- 대기 후 세션 유효성을 다시 확인해 종료된 세션의 추가 FTP 조회와 캐시 재생성을 막는다. 성공·실패 후 새로고침, 동시 요청, 최신 캐시 보존, 종료 경계를 회귀로 확인한다.
+- Brooks [Editing a .gpo File](https://www2.brooksautomation.com/GDS/Projects_and_Windows/Editing_GPO_File.htm)을 직접 열어 `.gpo`가 모션 객체·전역 GPL 변수를 담는 전역 모듈 파일임을 확인했다. 설정 설명과 관련 주석을 정정하고 기존 .gpl 동기화 기본값 및 실행 동작은 유지했다. 전체 인덱싱·추가 참조 검색의 .gpo 제외는 현행 지원 제한으로 명시한다. 검색 스크립트는 DNS 실패로 캐시를 사용했고, 공식 원문은 웹 도구로 확인했다.
+- 버그 수정 patch 0.17.1로 package/lock/CHANGELOG를 맞췄다. README는 버전을 중복 표기하지 않으며 사용 흐름 변경이 없어 유지했다. §1-FO 원문을 10월 아카이브로 옮겨 최근 본문 10건을 유지한다.
+
+### 검증·남은 일
+
+- 수정 전 전체 테스트는 샌드박스에서 1292/1308이었다. 16건은 로컬 TCP EACCES·junction 및 파일 교체 EPERM으로 실패했으며 제품 결함으로 단정하지 않는다. 새 지연 응답 4건은 별도 실행에서 22/26으로 실패했고, 수정 후 파일 provider 포함 33/33을 통과했다.
+- 샌드박스 밖 Windows 로컬 `npm test`(TypeScript compile 포함)는 **1314/1314** 통과했다. 지연 응답·실패 후 새로고침 4건과 종료 경계 2건을 추가했다. `git diff --check`도 통과했다. 실제 설치·F5 UI·제어기 검증은 별도로 남긴다. Git 커밋·push·설치·제어기 조작은 수행하지 않았다.
+- VSIX: `dist/gpl-language-support-0.17.1.vsix`, **1,408,041 bytes**, SHA-256 **E54ED8C02650EAB145C273DB2E95543F8151F0D4AE9B7B2E60B250340E2D2580**. 운영 산출물 175개와 package manifest를 현재 빌드/버전에 대조했고 개발 소스·테스트·지침·로그 제외를 확인했다. 패키징 실패 없음. 기존 Node DEP0190·JavaScript 번들링 권고 경고가 남는다.
+- 로그: `dist/review-0.17.1-tests-local.log`, `dist/review-0.17.1-package.log`, `dist/review-0.17.1-verification.json`. 시작 시 변경돼 있던 30개 파일 중 이번 수정이 필요한 7개 외의 23개는 SHA-256이 그대로다. 별도로 기존 추적 파일 4개의 잘못된 .gpo 주석만 수정했다.
+
+## 1-FY. 2026-10-23 세션 — 명령 커서 아이콘 적용
+
+### 요청·판단
+
+사용자가 기존 곡선형 로고를 교체하기로 하고 B의 각진 G와 C의 코드·동작 경로를 결합한 6종 중 「명령 커서」를 선택했다. 대표 이미지와 GPL Controller 패널이 같은 형태로 보이도록 적용한다.
+
+### 조치
+
+- `resources/gpl-logo.svg`에 선택 시안의 각진 G, 내부 명령 커서(`>`), 민트색 계단형 동작 경로를 간결한 SVG로 다시 그렸다. PNG는 이 SVG에서 256×256으로 렌더링했다. 기존 README와 package의 대표 아이콘 경로는 그대로 사용한다.
+- `resources/gpl-controller.svg`는 동일한 경로 좌표를 `currentColor` 단색으로 사용한다. 24px 검토에서 내부 기호 간 빈틈이 약 0.4px로 좁아 계단을 0.8px 오른쪽으로 옮겨 약 1.2px의 간격을 확보했다.
+- 아이콘 교체는 patch 0.17.2로 올리고 package/package-lock/CHANGELOG를 맞췄다. README는 버전이나 로고 형상을 글로 반복하지 않아 이미지 경로만 유지했다. 최근 세션 10건을 위해 §1-FP 원문을 10월 아카이브로 옮겼다.
+
+### 검증·남은 일
+
+- 컬러/단색 SVG XML, 경로 좌표 일치, 투명 PNG 256×256, 24px 어두운/밝은 테마 미리보기를 확인했다. 패키징된 세 리소스가 작업 파일과 바이트 단위로 일치하고 manifest가 PNG와 패널 SVG를 참조한다.
+- 샌드박스 `npm test`는 1298/1314로, 실패 16건은 임시 junction의 EPERM과 loopback TCP의 EACCES였다. 동일한 Windows 로컬 권한 실행은 **1314/1314 통과**했다. `git diff --check` 통과.
+- `npm run package:no-bump` 성공: `dist/gpl-language-support-0.17.2.vsix`, **1,382,021 bytes**, SHA-256 **3BFDDC0706D9C18092AB3C27AD7B896B226D2D675C93973274117DFBE0452DF3**. Node DEP0190과 기존 JavaScript 번들링 권고가 있었고 패키징 실패는 없었다.
+- 실제 VS Code 설치·UI 표시·캐시 갱신은 확인하지 않았다. 제어기 동작·Git 커밋/태그/push·게시도 수행하지 않았다.
+
+## 1-FZ. 2026-10-26 세션 — 수신함 보고 일괄 반영과 0.18.0 릴리스
+
+### 요청·판단
+
+사용자가 "기능 개선 요청 반영 → GitHub 커밋·릴리스 → Marketplace 최신 버전 등록까지 자동화"를 요청했다. 사용자 메모 파일(Quick Compile 쓰레드 확인·autoOnSave·deploy 경로·Start 분리·hover 설정·오버로드 정의)의 항목은 코드 대조 결과 이미 구현돼 있어, 실제 미처리 요청은 `Downloads\GPL_language_inbox` 최상위의 보고 22건으로 봤다. 메모의 `getWafer` 오버로드 정의 이동은 회귀 픽스처로 다시 검증했다.
+
+시작 시 작업 트리에 0.17.0~0.17.2 미커밋 변경이 있었고, 브랜치는 PR #37 병합(main `bf4db9c`)보다 뒤였다. 작업 트리를 보존한 채 `git reset --mixed main`으로 브랜치를 main에 맞춘 뒤 그 변경을 `349ae90`으로 커밋했다(1314/1314·MCP 137/137).
+
+### 조치
+
+다섯 갈래를 worktree 에이전트로 병렬 구현하고 순서대로 병합했다(충돌은 `connection.ts`·MCP `index.js`·`deploy.ts`·`deployService.ts`·`controllerConnection.ts`·`ftpCommands.ts`·`architecture.md`·`test/index.ts` — 모두 양쪽 변경을 합쳐 해소). 버전은 기능 추가라 minor **0.18.0**.
+
+| 갈래 | 주요 변경 | 판정 정본 |
+| --- | --- | --- |
+| 참조·정의·호버 | 참조 폴백이 출현마다 이름 해석으로 다시 판정(`other-module-decl`·`qualifier-mismatch`·`shadowed-by-*`·`overload-mismatch`), 멤버가 Module을 가리는 자리의 정의 이동 2후보·호버 경고, 오버로드 선택에 체인 인자 타입·선언 자기 자신·지역→클래스→모듈 해석 | `language/referenceScope.ts`, `receiverType.findQualifierShadowing`, `overloadResolution.ts` |
+| 정적 진단 | `gpl.diagnostics.compilerChecks`(기본 켜짐) 아래 8개 규칙(-741 반환형 오버로드, -722 `New X()`, -781 멤버 가림, -506 리터럴 100 B, -712 쓰레드 이름, -729 Private Shared, -782 ByVal Nothing 검사, 조그 tick), 컴파일 에러 줄 문맥 힌트 | `language/compilerChecks.ts`, `deployment/compileErrorHints.ts` |
+| Unload·대상 안전 | 같은 부팅의 그룹 Compile 뒤 Unload 확인(사람 모달·AI `confirm`), 재부팅 근거로 해제, `/GPL` 비우기 정지 확인 게이트, Start 계열 실행 불가 사전 거부(`PROJECT_NOT_RUNNABLE`), 세션 대상 보존(`sessionTargetChanged/Kept`), -744 재시도 금지, 비영숫자 쓰레드 이름 Stop skip | `commands/unloadRisk.ts`(+ `%TEMP%/gpl-controller/unload-risk-<ip>.json`, MCP 미러 `unloadRisk.js`) |
+| FTP·메모리·진단 | FTP 쓰기 전 제어기 정체 확인(`CONTROLLER_UNVERIFIED`, 설정 `gpl.controller.verifyControllerIdentity`), 메모리 경고 알림 중복 억제·상태 표시줄, 거부 시 FTP 배너·런타임 콘솔 프로브로 `gpl-runtime-network-down` 등 분류, 경로 인터페이스 ARP, 어댑터 재연결 안내, `compileAborted` 분류 | `connection/controllerIdentity.ts`, `diagnostics/memoryNotice.ts`, `deployment/compileAbort.ts` |
+| 시계 동기화 | `gpl.controller.syncClock`, 연결 시 자동 동기화 설정, `date <arg>` 상태 변경 분류, MCP `controller_status.clock`·`sync_controller_clock` | `diagnostics/controllerClock.ts` |
+
+언어·제어기 사실은 문서로 옮겼다(`docs/gpl-language/common-mistakes.md` 0-5·0-10~0-13·6절, `threading.md`, `file-io.md`, `docs/reference/robot-homing-methods.md`, `docs/development/pa-controller-debug-operations.md`, `docs/reference/console-commands.md` Date 절).
+
+### 검증
+
+- 병합 뒤 `npm test` **1413/1413**, `controller-mcp` `npm test` **163/163** 통과. `pre-release-check`는 미커밋·main 아님 2건만 실패(커밋 전 실행이라 예상된 결과), 나머지 15건 통과.
+- `npm run package:no-bump`: `dist/gpl-language-support-0.18.0.vsix`(PR #38 리뷰 반영 뒤 재패키징), **1,481,833 bytes**, SHA-256 **714BA3660BCD0769CF15EEB61C26CD951311B196509251BE69C0BD62FF6FE632**. 경고는 기존 JavaScript 번들링 권고뿐.
+- 제어기·실제 VS Code UI는 이번에 다루지 않았다. 아래 남은 일의 실기 항목은 모두 미확인이다.
+
+### 남은 일
+
+- Marketplace 자동 게시는 여전히 미연결(§3 §1-FF 항목) — `marketplace` 환경 secret과 `MARKETPLACE_PUBLISH`가 비어 있어 태그 workflow는 GitHub Release까지만 만든다.
+- 실기 확인: FTP 220 배너가 `access()` welcome으로 실제 읽히는지(못 읽으면 사람 경로는 「그래도 진행」, AI 경로는 거부), 배너·런타임 콘솔 핸드셰이크 프로브의 무해성, Lib Quick Compile 뒤 Unload 위험 표시와 재부팅 뒤 해제, `RWK_0` 같은 밑줄 이름 Stop, `date` 응답 형식과 잔여 오차, 리터럴 한도 정확한 값.
+- 보류: 모듈 String 첫 사용 린트(흐름 분석 필요), Unload 소켓 유지·명령별 타임아웃 표, Lib 배포 기본값 upload-only 전환, 메모리 알림의 「/GPL 확인」·「다시 알리지 않기」 버튼, Compile 전후 Show Memory 시계열.
+
+### PR #38 리뷰 반영
+
+Copilot 리뷰 6건을 코드로 대조해 모두 사실로 확인하고 고쳤다(`23e9b26`~`82440c9`). ① FTP 트리 하위 폴더가 프로젝트 폴더와 같은 context를 받아 `/GPL/App/Utils`에서 `Unload Utils`가 나갈 수 있었다 — `controller/files/ftpNodeTarget.ts`로 하위 폴더 context를 분리하고 메뉴 when 절을 정확 일치로 바꿨다. ② 제어기 전환 뒤 옛 노드의 변경 명령을 노드 host 대조로 거부(확인 창 뒤 재검사). ③ 시계 설정 값을 `SendCommandOptions.composeInSlot`으로 큐 슬롯 안에서 계산. ④ 메모리 배지를 측정한 제어기에 묶고 해제·전환 시 숨김. ⑤ 한정자 없는 인자 타입 추론을 렉시컬 범위로 제한. ⑥ 호버가 렉시컬 소유자를 먼저 정한 뒤 그 소유자의 오버로드만 비교. 이와 별도로 Linux CI에서 원격 사본의 로컬 절대 라이브러리 경로가 원격 절대 경로로 오인되던 문제를 `controllerLibraryCandidates`에서 고쳤다(`14cd3fe`). 리뷰 반영 뒤 1423/1423·MCP 164/164.

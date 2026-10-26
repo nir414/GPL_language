@@ -107,7 +107,8 @@ export class ExtensionHost {
 		this.consoleChannel = vscode.window.createOutputChannel('GPL Console');
 		this.deployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-deploy');
 		this.symbolCache = new SymbolCache(this.outputChannel);
-		this.diagnosticProvider = new GPLDiagnosticProvider();
+		// 실기 확인 검사가 다른 파일(참조 라이브러리 포함)의 Module·클래스를 보도록 심볼 캐시를 넘긴다.
+		this.diagnosticProvider = new GPLDiagnosticProvider(this.symbolCache);
 		context.subscriptions.push(this.outputChannel, this.trafficChannel, this.consoleChannel, this.deployDiagnostics);
 	}
 
@@ -287,7 +288,7 @@ export class ExtensionHost {
 		return isControllerSessionConnected();
 	}
 
-	setControllerConnected(connected: boolean, options?: { refreshTree?: boolean; reason?: 'disconnect' | 'lost' }): void {
+	setControllerConnected(connected: boolean, options?: { refreshTree?: boolean; syncBreakpoints?: boolean; reason?: 'disconnect' | 'lost' }): void {
 		const wasConnected = isControllerSessionConnected();
 		// 정본을 먼저 갱신한다 — 아래 소비자와 세션 구독자(대시보드 폴링 등)가 같은 값을 보게.
 		// 해제 뒤에는 전송 계층이 1402 소켓을 보관하지 않는다(connectionSession.effectiveKeepAlive).
@@ -302,7 +303,7 @@ export class ExtensionHost {
 		setIdlePingActive(connected);
 		if (connected && !wasConnected) {
 			// 연결 확립 에지에서 에디터 중단점으로 제어기를 따라잡는다 (설정 켜진 경우만, §1-AP)
-			this.breakpointSync?.onControllerConnected();
+			if (options?.syncBreakpoints !== false) { this.breakpointSync?.onControllerConnected(); }
 		}
 		// 외부 에이전트(MCP)가 확장의 연결 상태를 알 수 있게 presence 갱신(§1-BQ).
 		this.ensureAgentBridge()?.setState({ connected, debugSessionActive: this.isDebugSessionActive });

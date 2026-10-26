@@ -26,7 +26,9 @@ import { isPausedState } from '../controller/threads/threadActivity';
 import type { RuntimeStateSnapshot } from '../controller/debugging/executionMarks';
 import { BreakpointTarget, breakpointKey, orphanControllerBreakpoints } from '../controller/debugging/breakpointReconcile';
 import { editorBreakpointTargets } from '../controller/debugging/breakpointSync';
-import { FtpEntry, listRemoteDirs } from '../controller/files/ftpClient';
+import { FtpEntry, listRemoteDir, listRemoteDirs } from '../controller/files/ftpClient';
+import { isSafeRemoteEntryName } from '../controller/files/remoteSourceSession';
+import { ftpEntryContext, isFlashFtpContext, isFtpFolderContext } from '../controller/files/ftpNodeTarget';
 import { onDebugThreadsUpdated } from '../controller/debugging/debugBridge';
 import { AUTO_REFRESH_MIN_INTERVAL_MS, decideAutoRefresh, formatLastRefreshTime } from './refreshThrottle';
 import { formatConnectionStats, formatDate, formatDateTimeFromTs } from './treeFormat';
@@ -97,7 +99,27 @@ class InfoNode {
 		public readonly tooltip?: string,
 		public readonly remotePath?: string,
 		public readonly projectName?: string,
+		public readonly controllerHost?: string,
 	) {}
+}
+
+/**
+ * 원격 폴더만 펼칠 수 있고, 파일은 현재 창의 읽기 전용 편집기로 연다.
+ * `nested`(펼친 폴더 안의 목록)의 폴더는 프로젝트 폴더가 아니므로 별도 context 를 받는다 — 프로젝트 명령(Run·Stop·Unload)은
+ * 저장 영역 바로 아래 폴더에만 보인다(controller/files/ftpNodeTarget.ts).
+ */
+function ftpNodes(entries: FtpEntry[], basePath: string, controllerHost: string, flash: boolean, nested: boolean): InfoNode[] {
+	if (entries.some(entry => entry.name !== '.' && entry.name !== '..' && !isSafeRemoteEntryName(entry.name))) {
+		return [new InfoNode('안전하지 않은 FTP 목록 항목을 표시하지 않았습니다.', 'error')];
+	}
+	return entries.filter(e => e.name !== '.' && e.name !== '..').map(entry => {
+		const remotePath = `${basePath}/${entry.name}`;
+		const context = ftpEntryContext(entry.isDirectory, flash, nested);
+		const description = [!entry.isDirectory ? formatBytes(entry.size) : '', entry.modifiedAt ? formatDate(entry.modifiedAt) : ''].filter(Boolean).join(' · ');
+		return new InfoNode(entry.name, entry.isDirectory ? 'folder' : 'file', description || undefined, entry.isDirectory ? undefined : {
+				command: 'gpl.controller.openRemoteFile', title: '제어기 파일 열기', arguments: [{ remotePath, controllerHost }],
+			}, context, entry.modifiedAt ? formatDate(entry.modifiedAt) : undefined, remotePath, entry.name, controllerHost);
+	});
 }
 
 // ── Provider ────────────────────────────────────────────
@@ -127,6 +149,8 @@ const FTP_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
 const SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
 
 export class ControllerTreeProvider implements vscode.TreeDataProvider<ControllerNode>, vscode.Disposable {
+	private readonly ftpChildren = new Map<string, Promise<ControllerNode[]>>();
+	private ftpBrowseOnly = false;
 	private readonly _onDidChangeTreeData = new vscode.EventEmitter<ControllerNode | undefined>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 	private _refreshInFlight = false;
@@ -296,7 +320,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		entries: FtpEntry[],
 		error: string | null,
 		folderCtx: string,
-		fileCtx: string,
+		_fileCtx: string,
 	): SectionNode {
 		// 설명에 마지막 조회 시각을 붙여 "연결 플랩 뒤 보존된 캐시"가 낡을 수 있음을 드러낸다(#22).
 		const lastLabel = this.lastFtpRefreshAt > 0 ? formatLastRefreshTime(this.lastFtpRefreshAt) : undefined;
@@ -312,16 +336,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		} else if (entries.length === 0) {
 			sec.children = [new InfoNode('파일 없음', 'info')];
 		} else {
-			sec.children = entries.map(e => {
-				const entryIcon = e.isDirectory ? 'folder' : 'file';
-				const parts: string[] = [];
-				if (!e.isDirectory) { parts.push(formatBytes(e.size)); }
-				if (e.modifiedAt) { parts.push(formatDate(e.modifiedAt)); }
-				const desc = parts.join(' · ');
-				const ctx = e.isDirectory ? folderCtx : fileCtx;
-				const remotePath = `${basePath}/${e.name}`;
-				return new InfoNode(e.name, entryIcon, desc, undefined, ctx, undefined, remotePath, e.name);
-			});
+			const cfg = getControllerConfig();
+			sec.children = this.ftpCacheKey === ControllerTreeProvider.ftpCacheKeyFor(cfg.ip, cfg.ftpBasePath, cfg.ftpFlashProjectsPath)
+				? ftpNodes(entries, basePath, cfg.ip, folderCtx === 'ftpFlashFolder', false)
+				: [new InfoNode('제어기 설정이 바뀌었습니다. FTP 목록을 새로고침하세요.', 'info')];
 		}
 		return sec;
 	}
@@ -538,14 +556,17 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 * 제어 연결(로그인) 2회 + 데이터 연결 2개가 들었다(GitHub #22 제안 7).
 	 */
 	async refreshFtp(): Promise<void> {
-		if (!this._connected) { return; }
+		if (!this._connected && !this.ftpBrowseOnly) { return; }
 		if (this._refreshFtpInFlight) { return; }
+		this.ftpChildren.clear();
 		this._refreshFtpInFlight = true;
 		try {
 		const cfg = getControllerConfig();
 		const cacheKey = ControllerTreeProvider.ftpCacheKeyFor(cfg.ip, cfg.ftpBasePath, cfg.ftpFlashProjectsPath);
 		try {
 			const [gpl, flash] = await listRemoteDirs(cfg.ip, [cfg.ftpBasePath, cfg.ftpFlashProjectsPath]);
+			const latest = getControllerConfig();
+			if (cacheKey !== ControllerTreeProvider.ftpCacheKeyFor(latest.ip, latest.ftpBasePath, latest.ftpFlashProjectsPath)) { return; }
 			this.ftpEntries = gpl.entries ?? [];
 			this.ftpError = gpl.error ?? null;
 			this.ftpFlashEntries = flash.entries ?? [];
@@ -721,10 +742,27 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		}
 	}
 
-	getChildren(element?: ControllerNode): ControllerNode[] {
+	getChildren(element?: ControllerNode): vscode.ProviderResult<ControllerNode[]> {
 		if (!element) { return this.buildRoot(); }
 		if (element.type === 'section') { return element.children; }
+		if (element.type === 'info' && element.remotePath && element.controllerHost && isFtpFolderContext(element.contextValue)) {
+			const key = JSON.stringify([element.controllerHost, element.remotePath]);
+			let pending = this.ftpChildren.get(key);
+			if (!pending) {
+				pending = listRemoteDir(element.controllerHost, element.remotePath).then(entries =>
+					ftpNodes(entries, element.remotePath!, element.controllerHost!, isFlashFtpContext(element.contextValue), true))
+					.catch(error => { this.ftpChildren.delete(key); return [new InfoNode(`조회 실패: ${String(error)}`, 'error')]; });
+				this.ftpChildren.set(key, pending);
+			}
+			return pending;
+		}
 		return [];
+	}
+
+	/** 명령 콘솔 연결 없이 FTP 목록만 표시한다. */
+	async browseFtp(): Promise<void> {
+		this.ftpBrowseOnly = true;
+		await this.refreshFtp();
 	}
 
 	dispose(): void {
@@ -780,7 +818,11 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 					title: 'Connect to Controller',
 				}),
 			];
-			return [sec];
+			if (!this.ftpBrowseOnly) { return [sec]; }
+			const cfg = getControllerConfig();
+			return [sec,
+				this.buildFtpSection('ftp', `FTP ${cfg.ftpBasePath}`, 'folder', cfg.ftpBasePath, this.ftpEntries, this.ftpError, 'ftpFolder', 'ftpFile'),
+				this.buildFtpSection('ftpFlash', `FTP ${cfg.ftpFlashProjectsPath}`, 'folder-library', cfg.ftpFlashProjectsPath, this.ftpFlashEntries, this.ftpFlashError, 'ftpFlashFolder', 'ftpFlashFile')];
 		}
 
 		const cfg = getControllerConfig();
@@ -1571,7 +1613,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	}
 
 	private toInfoItem(node: InfoNode): vscode.TreeItem {
-		const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.None);
+		const directory = isFtpFolderContext(node.contextValue);
+		const item = new vscode.TreeItem(node.label, directory ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+		if (node.remotePath && node.controllerHost) { item.id = `ftp:${node.controllerHost}:${node.remotePath}`; }
 		item.iconPath = new vscode.ThemeIcon(node.iconId);
 		item.description = node.description;
 		if (node.tooltip) {
@@ -1585,6 +1629,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		}
 		(item as any).remotePath = node.remotePath;
 		(item as any).projectName = node.projectName;
+		(item as any).controllerHost = node.controllerHost;
 		return item;
 	}
 

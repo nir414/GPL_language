@@ -61,6 +61,8 @@ export interface ReceiverLookup {
     findAllByName(name: string): GPLSymbol[];
     /** 커서를 감싸는 클래스 이름(`Me.` 해석용). */
     enclosingClassName?: string;
+    /** 커서를 감싸는 모듈 이름 — 한정자 없는 이름의 렉시컬 해석(감싸는 클래스 → 감싸는 모듈)에 쓴다. 모르면 undefined. */
+    enclosingModuleName?: string;
     /** 내장 클래스 사전 훅(선택). */
     builtins?: ReceiverBuiltins;
 }
@@ -224,6 +226,30 @@ function descend(lookup: ReceiverLookup, holder: ReceiverHolder, seg: ReceiverSe
 }
 
 /**
+ * 한정자 없는 이름이 가리키는 타입 있는 비-로컬 심볼 — 그 자리에서 **보이는** 것만, 렉시컬 순서로 찾는다.
+ *   감싸는 클래스의 멤버 → 감싸는 모듈 직속 멤버 → 다른 모듈의 직속 Public 멤버(프로젝트 수준).
+ * 다른 클래스의 필드는 수신자 없이 보이지 않으므로 후보가 아니다 — 종전에는 이름만 맞으면 다른 클래스의
+ * `value As Integer` 가 감싸는 모듈의 `value As String` 을 이겨 오버로드를 잘못 골랐다(PR #38 리뷰).
+ * 한 단계 안에서 후보의 타입이 갈리면(같은 이름이 여러 모듈에) 모른다(undefined) — 오판 대신 판단 보류.
+ */
+function typedNonLocal(lookup: ReceiverLookup, name: string): GPLSymbol | undefined {
+    const named = lookup.findAllByName(name).filter(s => !s.isLocal && !s.isParameter && s.returnType);
+    if (named.length === 0) { return undefined; }
+    const unique = (list: GPLSymbol[]): GPLSymbol | undefined =>
+        list.every(s => ci(s.returnType!, list[0].returnType!)) ? list[0] : undefined;
+    const scopes: ReceiverHolder[] = [];
+    if (lookup.enclosingClassName) { scopes.push({ kind: 'class', name: lookup.enclosingClassName }); }
+    if (lookup.enclosingModuleName) { scopes.push({ kind: 'module', name: lookup.enclosingModuleName }); }
+    for (const holder of scopes) {
+        const inScope = named.filter(s => isDeclaredIn(s, holder));
+        if (inScope.length > 0) { return unique(inScope); }
+    }
+    // 프로젝트 수준 — 클래스 밖(모듈 직속)이고 Private 이 아닌 것. 감싸는 모듈을 알면 그 모듈의 것은 위에서 이미 봤다.
+    const outer = named.filter(s => enclosingClassName(s) === undefined && s.accessModifier !== 'private');
+    return outer.length > 0 ? unique(outer) : undefined;
+}
+
+/**
  * 체인 첫 세그먼트의 타입을 해석한다.
  * `Me` → 감싸는 클래스 / 로컬·파라미터의 타입 / 클래스·모듈 이름(정적 접근) / 타입 있는 비-로컬 심볼 순.
  */
@@ -246,10 +272,7 @@ function firstSegmentType(first: ReceiverSegment, lookup: ReceiverLookup): TypeR
         return { name: staticHolder.name, primitive: false };
     }
 
-    const named = lookup.findAllByName(first.name).filter(s => !s.isLocal && !s.isParameter && s.returnType);
-    const score = (s: GPLSymbol): number =>
-        (s.className && lookup.enclosingClassName && ci(s.className, lookup.enclosingClassName)) ? 1 : 0;
-    const typed = [...named].sort((a, b) => score(b) - score(a))[0];
+    const typed = typedNonLocal(lookup, first.name);
     const userType = typeResolutionOfType(typed?.returnType, indexed);
     if (userType && !userType.primitive) { return userType; }
 
@@ -304,6 +327,66 @@ function resolveReceiverChain(receiver: ReceiverSegment[], lookup: ReceiverLooku
 }
 
 /**
+ * 식(체인) 전체의 **선언 타입 표기** — 오버로드 선택의 인자 타입 추론용.
+ *
+ * `resolveReceiverTypeName` 은 "멤버를 찾을 홀더"가 목적이라 인덱싱 없는 배열(내장 Array)과 원시 타입을
+ * undefined 로 접는다. 인자 대조에는 바로 그 둘이 필요하다 — 배열 인자 `x` ↔ 파라미터 `x()`,
+ * `Integer` ↔ `Integer`. 그래서 마지막 세그먼트의 선언 타입을 표기 그대로(`RobotArm[]`, `Integer`) 돌려준다.
+ *   - `x` → 로컬/파라미터 → 감싸는 클래스의 필드 → 그 밖의 타입 있는 심볼
+ *   - `x(i)` → 배열 변수면 요소 타입, 함수/프로퍼티면 반환 타입
+ *   - `Me` → 감싸는 클래스, `a.b.c` → `a.b` 를 홀더로 해석한 뒤 `c` 멤버의 선언 타입
+ * 모르면 undefined(중립) — 오판 대신 판단 보류.
+ */
+export function resolveExpressionType(segments: ReceiverSegment[], lookup: ReceiverLookup): string | undefined {
+    if (segments.length === 0) { return undefined; }
+    const last = segments[segments.length - 1];
+    const indexed = last.args !== undefined;
+
+    let decl: GPLSymbol | undefined;
+    if (segments.length === 1) {
+        if (!indexed && /^me$/i.test(last.name)) { return lookup.enclosingClassName; }
+        decl = lookup.findLocal(last.name) ?? typedNonLocal(lookup, last.name);
+    } else {
+        const owner = resolveReceiverChain(segments.slice(0, -1), lookup);
+        if (!owner || owner.primitive) { return undefined; }
+        const holder = holderNamed(owner.name, lookup);
+        if (!holder) {
+            // 내장 클래스 멤버 — 사전의 반환 타입(인덱싱 의미는 알 수 없어 그대로)
+            return lookup.builtins?.memberReturnType(owner.name, last.name);
+        }
+        decl = membersNamed(lookup, holder, last.name).find(m => m.returnType);
+    }
+
+    const type = decl?.returnType;
+    if (!decl || !type) { return undefined; }
+    if (!indexed || isProcedureKind(decl.kind)) { return type; }
+    return elementTypeOf(type, true) ?? type;
+}
+
+/**
+ * `X.member` 의 한정자 `X` 가 대소문자 무시로 **감싸는 클래스의 멤버**와 Module/Class 이름에 동시에 맞는 경우.
+ *
+ * GPL 식별자는 대소문자를 가리지 않고, 컴파일러는 가까운 범위(클래스 멤버)를 먼저 잡는다 — `Class RobotUnit` 의
+ * `Num()` 멤버가 있으면 그 클래스 안의 `NUM.FixedText(...)` 는 Module `NUM` 이 아니라 멤버로 해석돼
+ * -781 이 난다(2026-10-23 SamplePrep 실기). 사용자는 Module 을 의도했으므로 정의 이동은 둘 다(Module 먼저)
+ * 보여 주고 호버는 가림 사실을 알린다. 로컬/파라미터가 같은 이름이면 그것이 진짜 수신자라 가림이 아니다(undefined).
+ */
+export function findQualifierShadowing(
+    name: string, lookup: ReceiverLookup,
+): { holders: GPLSymbol[]; members: GPLSymbol[] } | undefined {
+    if (!lookup.enclosingClassName || lookup.findLocal(name)) { return undefined; }
+    const all = lookup.findAllByName(name);
+    const holders = all.filter(s => !s.isLocal && !s.isParameter
+        && (s.kind === GPLSymbolKind.Module || s.kind === GPLSymbolKind.Class));
+    if (holders.length === 0) { return undefined; }
+    const members = membersNamed(lookup, { kind: 'class', name: lookup.enclosingClassName }, name);
+    if (members.length === 0) { return undefined; }
+    const modulesFirst = [...holders].sort((a, b) =>
+        (a.kind === GPLSymbolKind.Module ? 0 : 1) - (b.kind === GPLSymbolKind.Module ? 0 : 1));
+    return { holders: modulesFirst, members };
+}
+
+/**
  * 멤버 목록을 제공할 **대상**으로 체인을 해석한다 (완성 목록용).
  *
  * `resolveReceiverTypeName`과 달리 (1) 내장 클래스인지 사용자 클래스/모듈인지 구분해 주고,
@@ -349,6 +432,7 @@ export function buildDocumentReceiverLookup(
 
     return {
         enclosingClassName: enclosingProc?.className,
+        enclosingModuleName: enclosingProc ? enclosingModuleName(enclosingProc) : undefined,
         builtins,
         findLocal(name: string): GPLSymbol | undefined {
             const locals = docSymbols.filter(s => (s.isLocal || s.isParameter) && ci(s.name, name) && inScope(s));

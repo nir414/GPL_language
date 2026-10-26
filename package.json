@@ -579,6 +579,11 @@
                 "category": "GPL"
             },
             {
+                "command": "gpl.controller.showMemoryStatus",
+                "title": "Show Controller Memory Status (제어기 여유 메모리 상세)",
+                "category": "GPL"
+            },
+            {
                 "command": "gpl.debug.lockThread",
                 "title": "Lock Thread (이 스레드만 Continue/Step)",
                 "category": "GPL",
@@ -1978,6 +1983,11 @@
                     "default": 2.5,
                     "minimum": 0,
                     "description": "Compile/Start 및 배포 전 여유 메모리 차단 기준(MB). 이 값 미만이면 전송하지 않습니다. 0이면 수치 차단을 해제하지만 측정 실패는 차단합니다. 삭제·Unload는 자동 수행하지 않습니다."
+                },
+                "gpl.controller.verifyControllerIdentity": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "FTP로 파일을 올리거나 지우기 전(Upload Only·Upload & Start·Quick Compile·Deploy·autoOnSave·/GPL 비우기) 상대가 PA 제어기인지 확인합니다: 명령 콘솔의 읽기 전용 명령 STATUS와 FTP 220 배너(RTEMS FTP server). 같은 작업 안에서 이미 받은 응답은 재사용합니다. 확인에 실패하면 사람이 실행한 경우 「그래도 진행」을 묻고, AI·자동화 경로는 CONTROLLER_UNVERIFIED로 거부합니다(아무것도 올리지 않음)."
                 }
             }
         },

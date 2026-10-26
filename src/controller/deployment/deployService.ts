@@ -52,8 +52,32 @@ import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../proje
 import { PROJECT_EXCLUDE_GLOB } from '../../project/projectFileScope';
 import { collapseControllerProjectDirs, getControllerProjectWriteBlock } from '../../project/controllerProjectWorkspace';
 import type { UploadProgressEvent, UploadSummary } from './uploadProgress';
-import { checkMemoryBeforeOperation } from '../connection/controllerConnection';
+import {
+    beginMemoryNoticeScope,
+    checkMemoryBeforeOperation,
+    getLastCommandChannelLoss,
+    getLastConsoleStatus,
+    probeControllerCommand,
+} from '../connection/controllerConnection';
 import { MemoryGuardError, MemoryPrecheck } from '../diagnostics/memoryGuard';
+import { SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
+import {
+    decideControllerIdentity,
+    disabledControllerCheck,
+    formatControllerCheckTarget,
+    observeCommandConsole,
+    observeFtpBanner,
+    rebootSuspicionHint,
+} from '../connection/controllerIdentity';
+import type { ConsoleObservation, ControllerCheckRecord } from '../connection/controllerIdentity';
+import { createControllerIdentityIo, recentReachabilityEvidence } from '../connection/controllerIdentityIo';
+import {
+    COMPILE_ABORT_PROBE_TIMEOUT_MS,
+    classifyCompileAbort,
+    livenessFromProbe,
+    summarizeCompileCommand,
+} from './compileAbort';
+import type { CompileAborted, ControllerLiveness } from './compileAbort';
 
 /**
  * 배포 파이프라인의 업로드 진행 알림(§1-EE). 배포가 어느 경로(명령·F5·autoOnSave·MCP)로 시작됐든 같은 이벤트가 나가므로
@@ -114,6 +138,14 @@ export interface DeployOptions {
      */
     confirmStopOnActive?: (activeThreadsDesc: string) => Promise<boolean> | boolean;
     /**
+     * FTP 쓰기 전 제어기 정체 확인(controller/connection/controllerIdentity.ts)이 실패했을 때 사람에게 묻는다.
+     * true 를 돌려주면 「그래도 진행」 — 확인 결과에 overridden 을 남기고 업로드한다. 미지정(AI·자동화·autoOnSave)이면
+     * 묻지 않고 failedPhase 'CONTROLLER_CHECK'(작업 기록 error.code CONTROLLER_UNVERIFIED)로 멈춘다 — 모달은 브리지를 막는다.
+     */
+    confirmUnverifiedController?: (check: ControllerCheckRecord) => Promise<boolean> | boolean;
+    /** 정체 확인을 할지(기본 true). 호출측이 설정 `gpl.controller.verifyControllerIdentity` 를 읽어 넘긴다. */
+    verifyControllerIdentity?: boolean;
+    /**
      * `Start` 에 `-event` 를 붙일지(기본 true — GDE 캡처와 동일하게 쓰레드 상태 변경을 1403 이벤트로 받는다).
      * false 면 `-noevent`. 호출측이 설정(`gpl.controller.startEventMode`)을 읽어 넘긴다.
      */
@@ -164,6 +196,7 @@ export type DeployPhase =
     | 'IN_PROGRESS'       // 같은 idempotencyKey 의 배포가 이미 진행 중 — 새로 시작하지 않음(§10)
     | 'CANCELLED'         // 작업자 Stop -all/VS Code 취소 — 이후 Compile/Start 미전송
     | 'AUTO_GATE'         // autoOnSave: /GPL 폴더 없음 등으로 업로드 전 스킵
+    | 'CONTROLLER_CHECK'  // FTP 쓰기 전 제어기 정체 확인 실패 — 업로드하지 않음(작업 기록 CONTROLLER_UNVERIFIED)
     | 'UPLOAD'
     | 'STOP'
     | 'THREAD_CHECK'      // 활성 쓰레드 + 사용자 미승인 → 업로드는 완료, Compile 미수행
@@ -179,6 +212,8 @@ export interface CompileAttemptLog {
     errors: CompileError[];
     responseMeta?: CommandResponseMeta;
     note?: string;
+    /** 전송부터 응답(또는 끊김)까지(ms). */
+    elapsedMs?: number;
 }
 
 export interface DeployResult {
@@ -229,6 +264,17 @@ export interface DeployResult {
     runtimeError?: PostStartRuntimeError;
     /** Start 뒤 감시의 결과 종류와 소요(§1-EU). 감시하지 않았으면 undefined. */
     postStartWatch?: { outcome: PostStartWatchOutcome['kind']; elapsedMs: number };
+    /**
+     * FTP 쓰기 전 제어기 정체 확인 결과(controllerIdentity.ts) — 어느 장치에 올렸는지의 근거.
+     * 작업 기록 `result.controllerCheck` 에도 그대로 남는다.
+     */
+    controllerCheck?: ControllerCheckRecord;
+    /** `/GPL/<프로젝트>` 가 없고 직전에 채널 유실이 있었을 때의 재부팅 정황 안내(있을 때만). */
+    rebootHint?: string;
+    /** Compile 이 소켓 리셋으로 끊김(컴파일 에러와 구분) — compileAbort.ts. */
+    compileAborted?: CompileAborted;
+    /** compileAborted 뒤 짧은 생존 확인(`Show Thread -web`) 결과. */
+    controllerHealth?: ControllerLiveness;
     trace: string[];
 }
 
@@ -403,12 +449,15 @@ export async function deploy(
 		const startedAt = Date.now();
 		if (!quiet) { output.appendLine(`[Lock] 배포 잠금 획득: ${owner} (pid ${process.pid}, ${operation.operationId})`); }
 		let result: DeployResult | undefined;
+		// 한 배포 = 메모리 경고 알림 최대 1회(업로드 전 검사 + Start -compile 큐 검사가 둘 다 띄우지 않게).
+		const closeMemoryNoticeScope = beginMemoryNoticeScope(cfg.ip);
 		try {
 			result = await deployLocked(options, output, diagnosticCollection, token, cfg,
 				withOperationPhase(acquired.handle, operation), operation.operationId);
 			result.operationId = operation.operationId;
 			return result;
 		} finally {
+			closeMemoryNoticeScope();
 			acquired.handle.release();
 			// ③ 결과를 남긴다 — 잠금은 사라져도 기록은 남아야 타임아웃 뒤에 결과를 되찾을 수 있다(§18 "Result Persist").
 			finishOperation(operation, result);
@@ -447,6 +496,15 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         ...(result.uploadStats ? { uploadStats: result.uploadStats } : {}),
         ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
         ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),
+        // 어느 장치에 올렸는지의 근거 — operation 파일만으로 "그때 진짜 제어기였나" 를 판정할 수 있게.
+        ...(result.controllerCheck ? { controllerCheck: result.controllerCheck } : {}),
+        ...(result.rebootHint ? { rebootHint: result.rebootHint } : {}),
+        // 확장이 보낸 Compile 명령과 결과 — MCP 세션 로그의 "1402 0회" 로 사라지던 것(사고 조사용).
+        ...(result.compileAttemptLogs.length > 0
+            ? { compileCommands: result.compileAttemptLogs.map(a => summarizeCompileCommand(a, result.compileAborted)) }
+            : {}),
+        ...(result.compileAborted ? { compileAborted: result.compileAborted } : {}),
+        ...(result.controllerHealth ? { controllerHealth: result.controllerHealth } : {}),
         // 증적을 기록에 함께 남긴다 — 타임아웃 뒤 결과 조회에서도 "올린 것이 내 소스인가"를 알 수 있게(§12).
         ...(result.provenance ? {
             provenance: {
@@ -476,6 +534,28 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
             message: `${result.failedStatusMessage ?? 'Start 실패'} — 실행 가능한 프로젝트(.gpr 에 ProjectStart)를 지정하세요. 같은 요청을 되풀이하지 마세요.`,
             retryable: false,
             retryMode: 'RESOLVE_PROJECT',
+            safeToRepeat: false,
+        }, summary);
+        return;
+    }
+    if (result.failedPhase === 'CONTROLLER_CHECK') {
+        // 정체 확인 실패 — 아무것도 올리지 않았다(sent:false). 같은 요청을 되풀이해도 원인이 풀리기 전에는 같은 결과다.
+        operation.fail({
+            code: 'CONTROLLER_UNVERIFIED',
+            message: result.failedStatusMessage ?? '제어기 정체를 확인하지 못해 업로드하지 않았습니다.',
+            retryable: false,
+            retryMode: 'NONE',
+            safeToRepeat: true,
+        }, { ...summary, sent: false, reasons: result.controllerCheck?.reasons ?? [] });
+        return;
+    }
+    if (result.compileAborted) {
+        // 컴파일 에러가 아니라 연결 끊김 — 같은 Compile 을 되풀이하지 말고 제어기 생존부터 확인한다.
+        operation.fail({
+            code: 'COMPILE_ABORTED',
+            message: result.failedStatusMessage ?? `${result.compileAborted.command} 가 ${result.compileAborted.reason} 로 끊겼습니다.`,
+            retryable: false,
+            retryMode: 'CHECK_OPERATION',
             safeToRepeat: false,
         }, summary);
         return;
@@ -510,6 +590,8 @@ async function deployLocked(
         errorLog: [],
         trace: [],
     };
+    /** 이 작업의 시작 — 이후에 받은 STATUS·FTP 배너만 "같은 작업 안의 확인" 으로 재사용한다. */
+    const operationStartedAt = Date.now();
 
     const pushTrace = (line: string) => {
         result.trace.push(line);
@@ -611,6 +693,39 @@ async function deployLocked(
         }
     }
 
+    // ── 제어기 정체 확인 IO (controller/connection/controllerIdentity.ts 가 정본) ──
+    // 같은 작업 안에서 이미 받은 명령 콘솔 STATUS(배포의 Show Memory 사전 검사)와 FTP 세션 배너(/GPL 목록 조회)를
+    // 재사용한다 — 확인 때문에 왕복을 더 만들지 않는다. Upload Only 처럼 앞선 STATUS 가 없을 때만 읽기 전용 명령 하나를 보낸다.
+    const identityEnabled = options.verifyControllerIdentity !== false;
+    const identityIo = createControllerIdentityIo(cfg);
+    const recentReachability = () => recentReachabilityEvidence(cfg.ip);
+    let consoleObservation: ConsoleObservation | undefined;
+    let identityOverridden = false;
+
+    /**
+     * 정체 확인 실패 처리. UI 경로(confirmUnverifiedController 지정)는 「그래도 진행」을 물을 수 있고,
+     * 그 밖(AI·자동화·autoOnSave)은 묻지 않고 CONTROLLER_CHECK 로 멈춘다. true 면 계속 진행.
+     */
+    async function gateUnverifiedController(check: ControllerCheckRecord): Promise<boolean> {
+        result.controllerCheck = check;
+        pushTrace(`│  ⚠ 제어기 확인 실패 — ${check.reasons.join(' / ')}`);
+        if (options.confirmUnverifiedController) {
+            let proceed = false;
+            try { proceed = await options.confirmUnverifiedController(check); } catch { proceed = false; }
+            if (proceed) {
+                check.overridden = true;
+                identityOverridden = true;
+                pushTrace('│  ⚠ 사용자가 「그래도 진행」을 선택 — 제어기 미확인 상태로 업로드합니다.');
+                return true;
+            }
+        }
+        result.failedPhase = 'CONTROLLER_CHECK';
+        result.failedCommand = 'Controller identity preflight';
+        result.failedStatusMessage = `CONTROLLER_UNVERIFIED: ${check.reasons.join(' ')} — 업로드하지 않았습니다.`;
+        pushTrace(`✘ ${result.failedStatusMessage}`);
+        return false;
+    }
+
     if (!options.uploadOnly) {
         lock.setStage('MEMORY_CHECK');
         try {
@@ -622,9 +737,28 @@ async function deployLocked(
             result.failedPhase = 'UPLOAD';
             result.failedCommand = 'Show Memory (precheck)';
             result.failedStatusMessage = `${err.code}: ${err.message}`;
+            // 사전 검사가 STATUS 조차 받지 못했으면 명령 콘솔 확인도 실패한 것이다 — 왕복 없이 기록만 남긴다.
+            if (identityEnabled && err.precheck.level === 'unknown' && !getLastConsoleStatus(cfg.ip, operationStartedAt)) {
+                result.controllerCheck = decideControllerIdentity({
+                    console: { state: 'lost', command: 'Show Memory', failureKind: 'other', detail: '사전 검사에서 STATUS 를 받지 못함', at: Date.now(), via: 'same-operation' },
+                    reachability: recentReachability(),
+                    now: Date.now(),
+                });
+            }
             pushTrace(`✘ ${result.failedStatusMessage}`);
             return result;
         }
+    }
+
+    // ── 정체 확인 ① 명령 콘솔 — FTP 를 건드리기 전에(Upload Only 도 생략하지 않는다) ──
+    if (identityEnabled) {
+        lock.setStage('CONTROLLER_CHECK');
+        consoleObservation = await observeCommandConsole(identityIo, operationStartedAt);
+        if (consoleObservation.state === 'lost') {
+            const check = decideControllerIdentity({ console: consoleObservation, reachability: recentReachability(), now: Date.now() });
+            if (!(await gateUnverifiedController(check))) { return result; }
+        }
+        if (isCancelled()) { return cancelResult('제어기 확인 후'); }
     }
 
     // ── Direct /GPL 모드 프로브 ────────────────────
@@ -637,10 +771,15 @@ async function deployLocked(
     let directGplName: string | undefined;
     let directProbeError: string | undefined;
     let directGplCreate = false;
+    /** `/GPL` 목록에 이 프로젝트 폴더가 없었는가(목록을 읽은 경우만) · `/GPL` 에 폴더가 하나도 없었는가 — 재부팅 정황 안내용. */
+    let gplFolderMissing = false;
+    let gplEmpty = false;
     if (options.directGpl) {
         try {
             const gplEntries = await listRemoteDir(cfg.ip, '/GPL');
             const hit = gplEntries.find(e => e.isDirectory && e.name.toLowerCase() === projectName.toLowerCase());
+            gplFolderMissing = !hit;
+            gplEmpty = !gplEntries.some(e => e.isDirectory && e.name !== '.' && e.name !== '..');
             if (hit) {
                 directGplName = hit.name;
                 directGplDir = `/GPL/${hit.name}`;
@@ -660,6 +799,35 @@ async function deployLocked(
             directProbeError = e?.message || String(e);
         }
     }
+
+    // ── 정체 확인 ② FTP 220 배너 — 첫 FTP 쓰기 전에. /GPL 목록 조회(읽기)가 연 세션의 배너를 재사용한다. ──
+    // 목록 조회가 실패했어도 여기서 먼저 판정한다 — 상대가 제어기가 아니면 "/GPL 목록 실패" 보다 그것이 원인이다.
+    if (identityEnabled) {
+        const ftpObservation = await observeFtpBanner(identityIo, operationStartedAt);
+        const check = decideControllerIdentity({
+            console: consoleObservation,
+            ftp: ftpObservation,
+            reachability: recentReachability(),
+            now: Date.now(),
+        });
+        if (identityOverridden) { check.overridden = true; }
+        result.controllerCheck = check;
+        if (!check.verified && !identityOverridden) {
+            if (!(await gateUnverifiedController(check))) { return result; }
+        }
+        if (isCancelled()) { return cancelResult('제어기 확인 후'); }
+    } else {
+        result.controllerCheck = disabledControllerCheck(Date.now());
+    }
+
+    // `/GPL/<프로젝트>` 가 없고 직전에 채널 유실이 있었으면 재부팅 정황 — 다른 프로젝트·라이브러리도 다시 올려야 한다.
+    result.rebootHint = rebootSuspicionHint({
+        folderMissing: gplFolderMissing && !directProbeError,
+        projectName,
+        lastChannelLossAt: getLastCommandChannelLoss(cfg.ip),
+        gplEmpty,
+        now: Date.now(),
+    });
 
     // `/GPL` 목록 조회 실패는 "폴더 없음"이 아니다. 이 상태에서 classic 경로로 내려가면 공용 경로
     // 선택기의 flash 가점만으로 `/flash/projects` 영구 사본을 고를 수 있다(2026-10-16 실측).
@@ -754,7 +922,11 @@ async function deployLocked(
         pushTrace(`│  Selected base path: ${result.selectedRemoteBasePath}`);
         pushTrace(`│  Path candidates: ${(result.candidateRemoteProjectPaths ?? []).join(' | ')}`);
     }
-    pushTrace(`│  Target: ${cfg.ip}:${cfg.port}`);
+    // 확인하지 않은 대상을 확정된 것처럼 쓰지 않는다 — 정체 확인 결과를 그대로 적는다(2026-10-23 보고 1번).
+    pushTrace(`│  Target: ${result.controllerCheck ? formatControllerCheckTarget(cfg.ip, result.controllerCheck) : `${cfg.ip}:${cfg.port}`}`);
+    if (result.rebootHint) {
+        pushTrace(`│  ⚠ ${result.rebootHint}`);
+    }
     // ProjectLibrary 참조가 있으면 어디까지 이 배포에 포함되는지 밝힌다. 업로드 대상은 종전과 같이
     // **프로젝트 폴더 하나**다(제어기 쪽 라이브러리 배치 규칙은 실기기 미검증 — 임의로 넓히지 않는다).
     // 폴더 안의 중첩 라이브러리는 재귀 업로드에 자연히 포함되고, 폴더 밖 라이브러리는 포함되지 않는다.
@@ -1185,7 +1357,13 @@ async function deployLocked(
                 errors: a.errors,
                 responseMeta: a.meta,
                 note: a.note,
+                ...(a.elapsedMs !== undefined ? { elapsedMs: a.elapsedMs } : {}),
             });
+            // 소켓 리셋으로 끊긴 Compile 은 컴파일 에러와 다르다 — 첫 끊김을 기록해 두고 호출부가 생존 확인 후 멈춘다.
+            if (!result.compileAborted) {
+                const aborted = classifyCompileAbort(a);
+                if (aborted) { result.compileAborted = aborted; }
+            }
         }
         // compileProject 는 후보마다 최소 한 번 시도하므로 attempts 는 비지 않는다 — 방어적 폴백만 둔다.
         return outcome.attempts[outcome.attempts.length - 1] ?? {
@@ -1273,11 +1451,28 @@ async function deployLocked(
     // raw 텍스트에서 상태 코드 존재를 확인할 때 부분 문자열 오탐(-745가 -7450에 걸림 등)을 막는다.
     const hasCode = (text: string, code: number): boolean => new RegExp(`(^|\\D)${code}\\b`).test(text);
 
+    /**
+     * Compile 이 소켓 리셋으로 끊긴 경우(2026-10-22 사고) — 다른 후보로 Compile 을 더 보내지 않고, 짧은 생존 확인 한 번으로
+     * controllerHealth 를 채운 뒤 멈춘다. 같은 Compile 을 되풀이하면 끊긴 제어기를 더 자극할 수 있다.
+     */
+    async function stopOnCompileAbort(aborted: CompileAborted): Promise<DeployResult> {
+        pushTrace(`│ ✘ ${aborted.hint} — ${aborted.command} 이 ${aborted.elapsedMs} ms 만에 ${aborted.reason} 로 끊김 (받은 출력 ${aborted.outputLines}줄)`);
+        const probe = await probeControllerCommand(SHOW_THREAD_LIST_CMD, cfg, COMPILE_ABORT_PROBE_TIMEOUT_MS);
+        result.controllerHealth = livenessFromProbe(probe, SHOW_THREAD_LIST_CMD.replace(/\s+/g, ' '), Date.now());
+        pushTrace(`│   생존 확인(${result.controllerHealth.probe}): ${result.controllerHealth.state === 'responsive' ? '응답함' : '응답 없음'} — ${result.controllerHealth.detail}`);
+        result.failedPhase = 'COMPILE';
+        result.failedCommand = aborted.command;
+        result.failedStatusMessage = `COMPILE_ABORTED: ${aborted.hint} (${aborted.reason}, ${aborted.elapsedMs} ms, 출력 ${aborted.outputLines}줄) · `
+            + `명령 콘솔 ${result.controllerHealth.state === 'responsive' ? '응답함' : '응답 없음'}`;
+        return result;
+    }
+
     for (const candidate of options.skipCompile ? [] : compileCandidates) {
         let recoveryFailureRecorded = false; // 복구 분기(cr2)가 실패를 기록했는지 (§1-L cr 덮어쓰기 방지)
         // 전송·판정·일시적 STATUS 재시도·로그는 projectCommands 가 한다(§1-DE). 로드 상태 복구만 아래에 남는다.
         let cr = await compileCandidate(candidate);
         if (isCancelled()) { return cancelResult(`Compile ${candidate} 응답 후`); }
+        if (result.compileAborted) { return stopOnCompileAbort(result.compileAborted); }
         if (result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown') {
             result.failedPhase = 'COMPILE';
             result.failedCommand = `Compile ${candidate} (precheck)`;
@@ -1332,6 +1527,7 @@ async function deployLocked(
             }
             const cr2 = await compileCandidate(candidate);
             if (isCancelled()) { return cancelResult(`Compile ${candidate} 재시도 응답 후`); }
+            if (result.compileAborted) { return stopOnCompileAbort(result.compileAborted); }
             if (cr2.ok) {
                 result.projectName = candidate;
                 result.compileErrors = [];
@@ -1359,6 +1555,7 @@ async function deployLocked(
             }
             const cr2 = await compileCandidate(candidate);
             if (isCancelled()) { return cancelResult(`Compile ${candidate} 재시도 응답 후`); }
+            if (result.compileAborted) { return stopOnCompileAbort(result.compileAborted); }
             if (cr2.ok) {
                 const warning = `Pre-check warning: Compile by name returned ${cr.statusCode}, but Load ${loadPath} + Compile succeeded`;
                 result.precheckWarnings.push(warning);

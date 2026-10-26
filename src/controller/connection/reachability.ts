@@ -26,6 +26,7 @@
 
 import { execFile } from 'child_process';
 import * as net from 'net';
+import { ADAPTER_RECONNECT_GUIDANCE } from './connectionHealth';
 
 export interface PingResult {
     /** true 응답 있음 / false 무응답·도달 불가 / null 판정 불가(ping 미설치 등). */
@@ -59,11 +60,52 @@ export interface ArpLookupResult {
     entries: ArpEntry[];
 }
 
+/** OS 가 고른 경로(`Find-NetRoute`) — 이 인터페이스의 ARP 항목만 "응답 장치" 로 본다(2026-10-22 분석 3번). */
+export interface RouteInterface {
+    interfaceAlias?: string;
+    interfaceIndex?: number;
+    /** 이 경로로 나갈 때의 PC 쪽 IPv4 주소 — `arp -a` 의 `Interface:` 머리글과 같은 값이다. */
+    sourceAddress?: string;
+}
+
+/** PC 의 IPv4 주소 한 건(`Get-NetIPAddress`) — 서브넷 겹침 감지용. */
+export interface InterfaceAddress {
+    interfaceAlias: string;
+    interfaceIndex?: number;
+    address: string;
+    prefixLength: number;
+}
+
+export interface RouteProbe {
+    route?: RouteInterface;
+    addresses: InterfaceAddress[];
+}
+
+/** 명령 콘솔이 거부될 때 함께 보는 다른 채널(핸드셰이크만 — 명령을 보내지 않는다). */
+export interface GplServiceProbe {
+    /** FTP 21 접속 결과와 220 배너(열렸으면). */
+    ftp: { state: TcpProbeResult; banner?: string };
+    /** 런타임 콘솔 포트 접속 결과. */
+    runtimeConsole: TcpProbeResult;
+}
+
+/** 이 세션에서 응답 없이 끝난 채널 교란 가능 명령(Unload/Compile …) — 재부팅 후보 확신도의 근거. */
+export interface PriorDisruptiveCommand {
+    command: string;
+    kind: string;
+    at: number;
+}
+
 export interface ReachabilityInput {
     ip: string;
     tcp1402: TcpProbeResult;
     icmp: PingResult;
     arp: ArpLookupResult;
+    /** OS 경로(있으면). 없으면 종전처럼 모든 어댑터의 ARP 항목을 함께 본다. */
+    route?: RouteProbe;
+    /** 명령 콘솔이 거부됐을 때의 FTP·런타임 콘솔 관측(있으면). */
+    services?: GplServiceProbe;
+    priorDisruptive?: PriorDisruptiveCommand;
 }
 
 export interface ReachabilityReport extends ReachabilityInput {
@@ -72,6 +114,8 @@ export interface ReachabilityReport extends ReachabilityInput {
     verdict: string;
     /** 구조화 판정 - 관측 / 분류+확신도 / 런타임 상태(미확정 여부). */
     assessment: ReachabilityAssessment;
+    /** 측정 시각(epoch ms). */
+    at: number;
 }
 
 /** OUI(MAC 상위 3바이트) → 벤더 힌트. #22 실측 두 건만 등재(확장 시 여기에 추가). */
@@ -175,37 +219,215 @@ export function classifyTcpError(code: string | undefined): TcpProbeResult {
 
 export type ResponderKind = 'controller' | 'other-device' | 'unknown';
 
+// ── 경로 인터페이스 / 서브넷 겹침 (2026-10-22 Sample Prep 분석 3번) ─────────────────
+// 사후 스냅샷이 ARP 표를 인터페이스 구분 없이 나열해, 실제 경로(이더넷 11 → 00-14-FF 제어기)가 아닌 다른 어댑터(이더넷 4 →
+// D8-43-AE 사무실 게이트웨이)의 항목을 "응답 장치" 로 먼저 내세웠다. 그래서 OS 가 고른 경로의 ARP 항목만 판정에 쓰고
+// 다른 어댑터의 같은 IP 항목은 참고로 따로 적는다.
+
+/** `a.b.c.d` → 32비트 정수(형식이 아니면 undefined). */
+export function ipv4ToInt(ip: string): number | undefined {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip ?? '').trim());
+    if (!m) { return undefined; }
+    const parts = m.slice(1).map(Number);
+    if (parts.some(n => n > 255)) { return undefined; }
+    return ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+}
+
+/** `address/prefix` 서브넷이 `ip` 를 포함하는가. */
+export function subnetContains(address: string, prefixLength: number, ip: string): boolean {
+    const a = ipv4ToInt(address);
+    const b = ipv4ToInt(ip);
+    if (a === undefined || b === undefined || !Number.isInteger(prefixLength) || prefixLength < 1 || prefixLength > 32) { return false; }
+    const mask = prefixLength === 32 ? 0xFFFFFFFF : ((0xFFFFFFFF << (32 - prefixLength)) >>> 0);
+    return ((a & mask) >>> 0) === ((b & mask) >>> 0);
+}
+
+/**
+ * `ip` 를 자기 망(on-link)으로 보는 PC 주소들 — 둘 이상의 **서로 다른 인터페이스**면 같은 IP 가 어댑터마다 다른 장치일 수 있다.
+ * 루프백·APIPA(169.254/16)·/32 는 뺀다.
+ */
+export function findOverlappingSubnets(ip: string, addresses: readonly InterfaceAddress[]): InterfaceAddress[] {
+    return (addresses ?? []).filter(a =>
+        a && typeof a.address === 'string'
+        && !a.address.startsWith('127.') && !a.address.startsWith('169.254.')
+        && a.prefixLength < 32
+        && subnetContains(a.address, a.prefixLength, ip));
+}
+
+/** 서브넷 겹침 경고 한 줄(서로 다른 인터페이스 둘 이상일 때만). */
+export function describeSubnetOverlap(ip: string, overlaps: readonly InterfaceAddress[]): string | undefined {
+    const byIface = new Map<string, InterfaceAddress>();
+    for (const a of overlaps) { if (!byIface.has(a.interfaceAlias)) { byIface.set(a.interfaceAlias, a); } }
+    if (byIface.size < 2) { return undefined; }
+    const list = [...byIface.values()].map(a => `${a.interfaceAlias}(${a.address}/${a.prefixLength})`).join('과 ');
+    return `${ip} 이 ${list} 양쪽 망에 있습니다 — 한쪽 링크가 끊기면 같은 IP 가 다른 장치로 갈 수 있습니다.`;
+}
+
+/**
+ * `Find-NetRoute`·`Get-NetIPAddress` 를 묶은 PowerShell 출력(JSON) 파싱. 형식이 아니면 undefined.
+ * 형태: `{ route: { interfaceAlias, interfaceIndex, sourceAddress } | null, addresses: [{ InterfaceAlias, InterfaceIndex, IPAddress, PrefixLength }] }`
+ */
+export function parseRouteProbeJson(text: string): RouteProbe | undefined {
+    let parsed: any;
+    try { parsed = JSON.parse(String(text ?? '').trim()); } catch { return undefined; }
+    if (!parsed || typeof parsed !== 'object') { return undefined; }
+    const r = parsed.route && typeof parsed.route === 'object' ? parsed.route : undefined;
+    const route: RouteInterface | undefined = r ? {
+        interfaceAlias: typeof r.interfaceAlias === 'string' ? r.interfaceAlias : undefined,
+        interfaceIndex: Number.isInteger(r.interfaceIndex) ? r.interfaceIndex : undefined,
+        sourceAddress: typeof r.sourceAddress === 'string' ? r.sourceAddress : undefined,
+    } : undefined;
+    const rawList = Array.isArray(parsed.addresses) ? parsed.addresses : parsed.addresses ? [parsed.addresses] : [];
+    const addresses: InterfaceAddress[] = [];
+    for (const a of rawList) {
+        const address = a?.IPAddress ?? a?.address;
+        const prefix = Number(a?.PrefixLength ?? a?.prefixLength);
+        const alias = a?.InterfaceAlias ?? a?.interfaceAlias;
+        if (typeof address === 'string' && Number.isInteger(prefix) && typeof alias === 'string') {
+            const idx = Number(a?.InterfaceIndex ?? a?.interfaceIndex);
+            addresses.push({ interfaceAlias: alias, address, prefixLength: prefix, ...(Number.isInteger(idx) ? { interfaceIndex: idx } : {}) });
+        }
+    }
+    return { route, addresses };
+}
+
+/**
+ * ARP 항목을 경로 인터페이스의 것과 나머지로 가른다. Windows `arp -a` 의 `Interface:` 머리글 IP(=항목의 iface)가
+ * 경로의 출발 주소와 같으면 경로 항목이다. 경로를 모르거나 맞는 항목이 없으면 matched=false(종전처럼 전부 본다).
+ */
+export function splitArpByRoute(entries: readonly ArpEntry[], route: RouteInterface | undefined): { matched: boolean; routeEntries: ArpEntry[]; otherEntries: ArpEntry[] } {
+    const list = [...(entries ?? [])];
+    const src = route?.sourceAddress;
+    if (!src) { return { matched: false, routeEntries: list, otherEntries: [] }; }
+    const routeEntries = list.filter(e => e.iface === src || (route?.interfaceAlias !== undefined && e.iface === route.interfaceAlias));
+    if (routeEntries.length === 0) { return { matched: false, routeEntries: list, otherEntries: [] }; }
+    return { matched: true, routeEntries, otherEntries: list.filter(e => !routeEntries.includes(e)) };
+}
+
+function describeMac(m: string): string {
+    const v = vendorHintFor(m);
+    return `MAC ${m}${v ? ` (${v})` : ''}`;
+}
+
 /**
  * ping TTL과 ARP MAC으로 "누가 응답했는가"를 가른다.
  * - controller: MAC이 Precise(00-14-FF)이거나, MAC 정보 없이 TTL=255.
  * - other-device: MAC이 Precise가 아닌 것으로 확인되거나, TTL이 255가 아닌 값(64=리눅스 게이트웨이, 128=Windows).
  * - unknown: 판단 재료 없음.
+ * `route` 를 주면 그 경로 인터페이스의 ARP 항목만 판정에 쓰고, 다른 어댑터 항목은 detail 에 "참고" 로만 붙인다.
  */
-export function identifyResponder(icmp: Pick<PingResult, 'ttl'>, arp: Pick<ArpLookupResult, 'mac' | 'entries'>): { kind: ResponderKind; detail: string } {
-    const macs = Array.from(new Set((arp.entries ?? []).map(e => e.mac).concat(arp.mac ? [arp.mac] : [])));
+export function identifyResponder(
+    icmp: Pick<PingResult, 'ttl'>,
+    arp: Pick<ArpLookupResult, 'mac' | 'entries'>,
+    route?: RouteInterface,
+): { kind: ResponderKind; detail: string; routeMatched?: boolean } {
+    const split = splitArpByRoute(arp.entries ?? [], route);
+    const used = split.matched ? split.routeEntries : (arp.entries ?? []);
+    const macs = Array.from(new Set(used.map(e => e.mac).concat(!split.matched && arp.mac ? [arp.mac] : [])));
     const preciseMacs = macs.filter(m => ouiOf(m) === PRECISE_OUI);
     const otherMacs = macs.filter(m => ouiOf(m) !== PRECISE_OUI);
     const parts: string[] = [];
-    if (icmp.ttl !== undefined) { parts.push(`TTL=${icmp.ttl}`); }
-    for (const m of macs) {
-        const v = vendorHintFor(m);
-        parts.push(`MAC ${m}${v ? ` (${v})` : ''}`);
+    if (split.matched && route) {
+        parts.push(`경로 ${route.interfaceAlias ?? '?'}(${route.sourceAddress})`);
     }
+    if (icmp.ttl !== undefined) { parts.push(`TTL=${icmp.ttl}`); }
+    for (const m of macs) { parts.push(describeMac(m)); }
+    const reference = split.matched && split.otherEntries.length
+        ? ` · 참고(다른 어댑터): ${Array.from(new Set(split.otherEntries.map(e => `${describeMac(e.mac)}${e.iface ? ` @${e.iface}` : ''}`))).join(', ')}`
+        : '';
+    const finish = (kind: ResponderKind, detail: string) => ({ kind, detail: detail + reference, ...(route ? { routeMatched: split.matched } : {}) });
     const detail = parts.join(', ');
 
     if (macs.length > 1) {
         // 두 NIC(제어기 직결 + 사무실 LAN)가 같은 IP를 다른 MAC으로 알고 있는 상태 — 어느 경로로 나갔는지 불명.
-        return { kind: otherMacs.length && !preciseMacs.length ? 'other-device' : 'unknown', detail: `${detail} — 인터페이스별 MAC이 서로 다름(어느 경로가 쓰였는지 확인 필요)` };
+        return finish(otherMacs.length && !preciseMacs.length ? 'other-device' : 'unknown', `${detail} — 인터페이스별 MAC이 서로 다름(어느 경로가 쓰였는지 확인 필요)`);
     }
     if (preciseMacs.length) {
         return icmp.ttl !== undefined && icmp.ttl !== CONTROLLER_TTL
-            ? { kind: 'unknown', detail: `${detail} — MAC은 제어기인데 TTL이 ${CONTROLLER_TTL}이 아님` }
-            : { kind: 'controller', detail };
+            ? finish('unknown', `${detail} — MAC은 제어기인데 TTL이 ${CONTROLLER_TTL}이 아님`)
+            : finish('controller', detail);
     }
-    if (otherMacs.length) { return { kind: 'other-device', detail }; }
-    if (icmp.ttl === CONTROLLER_TTL) { return { kind: 'controller', detail }; }
-    if (icmp.ttl !== undefined) { return { kind: 'other-device', detail }; }
-    return { kind: 'unknown', detail };
+    if (otherMacs.length) { return finish('other-device', detail); }
+    if (icmp.ttl === CONTROLLER_TTL) { return finish('controller', detail); }
+    if (icmp.ttl !== undefined) { return finish('other-device', detail); }
+    return finish('unknown', detail);
+}
+
+// ── 명령 콘솔 거부 시 다른 채널로 가르기 (2026-10-23 Sample Prep 보고) ───────────────
+// 1402 refused 하나로는 "채널 교란 뒤 복귀 대기" · "GPL 런타임 네트워크 전체 다운(재부팅 후보)" · "부팅 중/다른 장치" 를
+// 가를 수 없어 전부 wait-and-retry 로 나왔다. FTP(21)는 RTEMS 커널 쪽, 명령/런타임 콘솔은 GPL 런타임 쪽 서비스이므로
+// FTP 배너와 런타임 콘솔 접속을 함께 보면 갈린다. 둘 다 핸드셰이크만 한다(명령 전송 없음 — 모션 안전 게이트와 무관).
+// MCP 대응 구현: controller-mcp/src/outcome.js classifyGplServices — 규칙을 함께 유지할 것.
+
+export type GplServiceState =
+    /** FTP 는 RTEMS 배너로 살아 있고 명령·런타임 콘솔이 모두 거부 — GPL 런타임의 TCP 서비스가 통째로 내려감(재부팅 후보). */
+    | 'gpl-runtime-network-down'
+    /** FTP·런타임 콘솔은 열리는데 명령 콘솔만 거부 — 제어기 쪽 명령 콘솔 세션이 잡혀 있을 수 있음. */
+    | 'command-console-held'
+    /** FTP 도 거부/무응답 — 부팅 중이거나 이 IP 가 다른 장치. */
+    | 'booting-or-other-device'
+    /** FTP 는 열리지만 배너가 PA 제어기의 것이 아님 — 같은 IP 의 다른 장치. */
+    | 'different-device'
+    /** FTP 는 열렸으나 배너를 읽지 못함 등 — 가를 수 없음. */
+    | 'inconclusive';
+
+export interface GplServiceAssessment {
+    state: GplServiceState;
+    /** 재부팅이 필요할 수 있는 후보인가(확정 아님 — 사용자 확인이 필요하다). */
+    rebootCandidate: boolean;
+    confidence: AssessmentConfidence;
+    ftpBanner?: string;
+    summary: string;
+    recommendedAction: string;
+}
+
+/** PA 제어기 FTP 서버 220 배너 표식(실측 `220 RTEMS FTP server (Version 1.1-JWJ) ready.`) — 정본. */
+export const PA_FTP_BANNER_RE = /\bRTEMS\s+FTP\s+server\b/i;
+const DISRUPTIVE_COMMAND_RE = /^\s*(unload|compile|load|start)\b/i;
+
+/** 명령 콘솔이 거부됐을 때 FTP 배너·런타임 콘솔 관측으로 상태를 가른다. 거부가 아니면 undefined. */
+export function assessGplServices(
+    tcp1402: TcpProbeResult,
+    services: GplServiceProbe | undefined,
+    priorDisruptive?: PriorDisruptiveCommand,
+): GplServiceAssessment | undefined {
+    if (tcp1402 !== 'refused' || !services) { return undefined; }
+    const banner = services.ftp.banner ? services.ftp.banner.split(/\r?\n/)[0].trim() : undefined;
+    const afterDisruptive = !!priorDisruptive && DISRUPTIVE_COMMAND_RE.test(priorDisruptive.command);
+    if (services.ftp.state !== 'open') {
+        return {
+            state: 'booting-or-other-device', rebootCandidate: false, confidence: 'medium',
+            summary: `FTP 도 ${services.ftp.state} — 제어기가 부팅 중이거나 이 IP 가 다른 장치일 수 있다.`,
+            recommendedAction: '잠시 뒤 다시 관측하고, 계속 같으면 사용자에게 제어기 전원·네트워크(경로 인터페이스)를 확인할 것.',
+        };
+    }
+    if (!banner) {
+        return {
+            state: 'inconclusive', rebootCandidate: false, confidence: 'low',
+            summary: 'FTP 는 열렸으나 220 배너를 읽지 못했다 — 상대 장치를 가를 수 없다.',
+            recommendedAction: '잠시 뒤 다시 관측할 것.',
+        };
+    }
+    if (!PA_FTP_BANNER_RE.test(banner)) {
+        return {
+            state: 'different-device', rebootCandidate: false, confidence: 'high', ftpBanner: banner,
+            summary: `FTP 배너가 PA 제어기의 것이 아니다("${banner}") — 같은 IP 의 다른 장치가 응답하고 있다.`,
+            recommendedAction: '경로 인터페이스와 ARP MAC(제어기 00-14-FF)을 확인할 것 — 직결 NIC 의 IP·링크 상태를 먼저 볼 일이다.',
+        };
+    }
+    if (services.runtimeConsole === 'open') {
+        return {
+            state: 'command-console-held', rebootCandidate: false, confidence: 'medium', ftpBanner: banner,
+            summary: 'FTP(RTEMS)와 런타임 콘솔은 열리는데 명령 콘솔만 거부 — 제어기 쪽 명령 콘솔 세션이 아직 잡혀 있을 수 있다(단일 세션).',
+            recommendedAction: `채널 교란 명령 뒤라면 수 분 기다린 뒤 다시 관측. 3분이 지나도 같으면 ${ADAPTER_RECONNECT_GUIDANCE}`,
+        };
+    }
+    return {
+        state: 'gpl-runtime-network-down', rebootCandidate: true, confidence: afterDisruptive ? 'high' : 'medium', ftpBanner: banner,
+        summary: 'FTP 는 PA 제어기(RTEMS 배너)로 살아 있고 명령·런타임 콘솔이 모두 거부 — GPL 런타임의 TCP 서비스가 통째로 내려간 상태로 보인다(재부팅 필요 후보).'
+            + (afterDisruptive ? ` 이 세션에서 ${priorDisruptive!.command} 가 응답 없이 끝난(${priorDisruptive!.kind}) 뒤다.` : ''),
+        recommendedAction: `먼저 ${ADAPTER_RECONNECT_GUIDANCE} 그래도 거부되면 재부팅이 필요할 수 있다 — 전원 재투입 전에 사용자에게 확인할 것.`,
+    };
 }
 
 // -- 구조화 판정 (관측 / 추론 / 확신도) -------------------------------------
@@ -243,12 +465,23 @@ export interface ReachabilityAssessment {
         /** ARP 로 본 MAC 목록(정규화). */
         macs: string[];
         route: RouteIdentity;
+        /** OS 가 고른 경로 인터페이스(측정했으면) — macs 는 이 인터페이스의 ARP 항목만이다(일치 항목이 있을 때). */
+        routeInterface?: RouteInterface;
+        /** 같은 IP 의 다른 어댑터 ARP 항목(참고 — 판정에 쓰지 않음). */
+        otherAdapterMacs?: { mac: string; iface?: string }[];
+        /** 제어기 IP 를 자기 망으로 보는 PC 인터페이스가 둘 이상일 때의 경고. */
+        subnetOverlap?: string;
+        /** 명령 콘솔 거부 시의 FTP·런타임 콘솔 관측(측정했으면). */
+        ftp?: { state: TcpProbeResult; banner?: string };
+        runtimeConsole?: TcpProbeResult;
     };
     assessment: {
         state: ChannelAssessment;
         confidence: AssessmentConfidence;
         /** 이 관측을 만들 수 있는 다른 설명들 - 하나로 확정하지 않기 위해 함께 싣는다. */
         alternativeExplanations: string[];
+        /** 명령 콘솔 거부 시 FTP·런타임 콘솔로 가른 상태(측정했으면). */
+        services?: GplServiceAssessment;
     };
     controllerHealth: {
         state: ControllerHealthState;
@@ -262,8 +495,11 @@ export interface ReachabilityAssessment {
  */
 export function assessReachability(input: ReachabilityInput): ReachabilityAssessment {
     const { tcp1402, icmp, arp } = input;
-    const who = identifyResponder(icmp, arp);
-    const macs = Array.from(new Set((arp.entries ?? []).map(e => e.mac).concat(arp.mac ? [arp.mac] : [])));
+    const routeIface = input.route?.route;
+    const who = identifyResponder(icmp, arp, routeIface);
+    const split = splitArpByRoute(arp.entries ?? [], routeIface);
+    const macs = Array.from(new Set((split.matched ? split.routeEntries : (arp.entries ?? [])).map(e => e.mac)
+        .concat(!split.matched && arp.mac ? [arp.mac] : [])));
     const route: RouteIdentity = macs.length > 1
         ? 'ambiguous'
         : who.kind === 'controller' ? 'controller' : who.kind === 'other-device' ? 'other-device' : 'unknown';
@@ -308,6 +544,16 @@ export function assessReachability(input: ReachabilityInput): ReachabilityAssess
         alternativeExplanations = [...alternativeExplanations, `측정 경로가 제어기가 아닐 수 있다(${who.detail || 'route 불명'}) - 판정 자체가 무효일 수 있다`];
     }
 
+    const subnetOverlap = input.route ? describeSubnetOverlap(input.ip, findOverlappingSubnets(input.ip, input.route.addresses)) : undefined;
+    if (subnetOverlap) {
+        alternativeExplanations = [...alternativeExplanations, subnetOverlap];
+    }
+
+    const services = assessGplServices(tcp1402, input.services, input.priorDisruptive);
+    if (services) {
+        alternativeExplanations = [services.summary, ...alternativeExplanations];
+    }
+
     const controllerHealth: ReachabilityAssessment['controllerHealth'] = state === 'host-unreachable'
         ? { state: 'unreachable', reason: 'ICMP·TCP 모두 무응답 - 호스트에 도달하지 못했다. 런타임 상태는 측정 불가.' }
         : { state: 'unconfirmed', reason: '명령 콘솔 도달성만으로는 GPL 런타임 상태를 판정할 수 없다 - 살아 있음의 증거는 명령의 <STATUS> 응답이다.' };
@@ -319,8 +565,12 @@ export function assessReachability(input: ReachabilityInput): ReachabilityAssess
             ttl: icmp.ttl,
             macs,
             route,
+            ...(routeIface ? { routeInterface: routeIface } : {}),
+            ...(split.matched && split.otherEntries.length ? { otherAdapterMacs: split.otherEntries.map(e => ({ mac: e.mac, iface: e.iface })) } : {}),
+            ...(subnetOverlap ? { subnetOverlap } : {}),
+            ...(input.services ? { ftp: input.services.ftp, runtimeConsole: input.services.runtimeConsole } : {}),
         },
-        assessment: { state, confidence, alternativeExplanations },
+        assessment: { state, confidence, alternativeExplanations, ...(services ? { services } : {}) },
         controllerHealth,
     };
 }
@@ -333,8 +583,15 @@ export function assessReachability(input: ReachabilityInput): ReachabilityAssess
  */
 export function describeReachability(input: ReachabilityInput): string {
     const { ip, tcp1402, icmp, arp } = input;
-    const who = identifyResponder(icmp, arp);
+    const who = identifyResponder(icmp, arp, input.route?.route);
     const identity = who.detail ? ` [응답 장치: ${who.kind === 'controller' ? '제어기' : who.kind === 'other-device' ? '제어기 아님' : '불명'} — ${who.detail}]` : '';
+    const routeNote = input.route?.route?.interfaceAlias
+        ? ` 경로 인터페이스: ${input.route.route.interfaceAlias}${input.route.route.sourceAddress ? `(${input.route.route.sourceAddress})` : ''}.`
+        : '';
+    const overlap = input.route ? describeSubnetOverlap(ip, findOverlappingSubnets(ip, input.route.addresses)) : undefined;
+    const services = assessGplServices(tcp1402, input.services, input.priorDisruptive);
+    const serviceNote = services ? ` ${services.summary} 권장: ${services.recommendedAction}` : '';
+    const overlapNote = overlap ? ` 주의: ${overlap}` : '';
 
     let verdict: string;
     if (tcp1402 === 'open') {
@@ -355,7 +612,7 @@ export function describeReachability(input: ReachabilityInput): string {
         verdict += ` 주의: 응답한 장치가 제어기가 아닌 것으로 보입니다 — 제어기 DHCP 임대 상실로 ${ip} 트래픽이 사무실 게이트웨이로 흘러간 경우일 수 있어 이 판정(${tcp1402})은 무효일 수 있습니다. ` +
             `\`arp -a ${ip}\`의 MAC(제어기 ${PRECISE_OUI}=Precise)과 ping TTL(제어기 ${CONTROLLER_TTL} / 게이트웨이 64)을 확인하고, 직결 NIC의 IP가 APIPA(169.254.x)로 떨어졌는지 확인하세요.`;
     }
-    return verdict + identity;
+    return verdict + serviceNote + routeNote + overlapNote + identity;
 }
 
 // ── 프로세스/소켓 래퍼 ─────────────────────────────────────────────────────
@@ -413,6 +670,49 @@ export function tcpProbe(host: string, port: number, timeoutMs = 2000): Promise<
     });
 }
 
+/**
+ * TCP 접속 후 서버가 먼저 보내는 첫 줄(FTP 220 배너 등)만 읽고 닫는다 — 명령을 보내지 않는다.
+ * 열렸는데 시간 안에 줄이 오지 않으면 state 'open' + banner 없음.
+ */
+export function probeTcpBanner(host: string, port: number, timeoutMs = 3000): Promise<{ state: TcpProbeResult; banner?: string }> {
+    return new Promise(resolve => {
+        const socket = new net.Socket();
+        let done = false;
+        let connected = false;
+        let buf = '';
+        const finish = (state: TcpProbeResult, banner?: string) => {
+            if (done) { return; }
+            done = true;
+            clearTimeout(timer);
+            socket.on('error', () => { /* 폐기 중 에러 무시 */ });
+            socket.destroy();
+            resolve(banner ? { state, banner } : { state });
+        };
+        const timer = setTimeout(() => finish(connected ? 'open' : 'timeout', buf.trim() || undefined), timeoutMs);
+        socket.once('connect', () => { connected = true; });
+        socket.on('data', (chunk: Buffer) => {
+            buf += chunk.toString('latin1');
+            if (buf.includes('\n') || buf.length > 512) { finish('open', buf.split(/\r?\n/)[0].trim() || undefined); }
+        });
+        socket.once('error', (err: NodeJS.ErrnoException) => finish(connected ? 'open' : classifyTcpError(err.code), buf.trim() || undefined));
+        socket.once('close', () => finish(connected ? 'open' : 'error', buf.trim() || undefined));
+        const opts: net.TcpSocketConnectOpts = net.isIPv4(host) ? { host, port, family: 4 } : { host, port };
+        socket.connect(opts);
+    });
+}
+
+/** OS 가 `host` 로 가는 경로와 PC 의 IPv4 주소들(Windows 전용, best-effort). 실패·비 Windows 는 undefined. */
+export async function routeLookup(host: string, timeoutMs = 6000): Promise<RouteProbe | undefined> {
+    if (process.platform !== 'win32' || ipv4ToInt(host) === undefined) { return undefined; }
+    const script = '$ErrorActionPreference = \'SilentlyContinue\'; '
+        + `$r = Find-NetRoute -RemoteIPAddress '${host}' | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_NetIPAddress' } | Select-Object -First 1; `
+        + '$route = $null; if ($r) { $route = [pscustomobject]@{ interfaceAlias = [string]$r.InterfaceAlias; interfaceIndex = [int]$r.InterfaceIndex; sourceAddress = [string]$r.IPAddress } }; '
+        + '$a = @(Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, InterfaceIndex, IPAddress, PrefixLength); '
+        + '[pscustomobject]@{ route = $route; addresses = $a } | ConvertTo-Json -Compress -Depth 4';
+    const { stdout } = await runTool('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], timeoutMs);
+    return parseRouteProbeJson(stdout);
+}
+
 /** ARP 캐시 조회(best-effort). Windows `arp -a host`, Linux `ip neigh show host` → 실패 시 `arp -n host`. */
 export async function arpLookup(host: string, timeoutMs = 2500): Promise<ArpLookupResult> {
     let entries: ArpEntry[] = [];
@@ -431,13 +731,60 @@ export async function arpLookup(host: string, timeoutMs = 2500): Promise<ArpLook
     return { mac, vendorHint: vendorHintFor(mac), entries };
 }
 
-/** ICMP·TCP·ARP를 병렬로 조사해 판정 문장까지 만든다 — 연결 유실 사후 스냅샷(#22 제안 4)용 원스톱. */
-export async function probeReachability(ip: string, port = 1402, timeoutMs = 2500): Promise<ReachabilityReport> {
-    const [icmp, tcp1402, arp] = await Promise.all([
+export interface ProbeReachabilityOptions {
+    /** 런타임 콘솔 포트(명령 콘솔 거부 시 접속만 시험). 기본 1403. */
+    runtimeConsolePort?: number;
+    /** FTP 포트(명령 콘솔 거부 시 배너만 읽음). 기본 21. */
+    ftpPort?: number;
+    priorDisruptive?: PriorDisruptiveCommand;
+}
+
+let _lastReport: ReachabilityReport | undefined;
+
+/** 마지막 도달성 스냅샷(같은 IP, maxAgeMs 이내). 업로드 전 정체 확인이 재사용한다. */
+export function getRecentReachability(ip: string, maxAgeMs: number, now: number = Date.now()): ReachabilityReport | undefined {
+    const r = _lastReport;
+    return r && r.ip === ip && now - r.at >= 0 && now - r.at <= maxAgeMs ? r : undefined;
+}
+
+/**
+ * ICMP·TCP·ARP·경로를 병렬로 조사해 판정 문장까지 만든다 — 연결 유실 사후 스냅샷(#22 제안 4)용 원스톱.
+ * 명령 콘솔이 거부되면 FTP 배너와 런타임 콘솔 접속을 추가로 본다(둘 다 핸드셰이크만).
+ */
+export async function probeReachability(ip: string, port = 1402, timeoutMs = 2500, opts: ProbeReachabilityOptions = {}): Promise<ReachabilityReport> {
+    const [icmp, tcp1402, arp, route] = await Promise.all([
         pingHost(ip, timeoutMs),
         tcpProbe(ip, port, Math.min(timeoutMs, 2000)),
         arpLookup(ip, timeoutMs),
+        routeLookup(ip).catch(() => undefined),
     ]);
-    const input: ReachabilityInput = { ip, tcp1402, icmp, arp };
-    return { ...input, port, verdict: describeReachability(input), assessment: assessReachability(input) };
+    let services: GplServiceProbe | undefined;
+    if (tcp1402 === 'refused') {
+        const [ftp, runtimeConsole] = await Promise.all([
+            probeTcpBanner(ip, opts.ftpPort ?? 21, Math.max(timeoutMs, 3000)),
+            tcpProbe(ip, opts.runtimeConsolePort ?? 1403, Math.min(timeoutMs, 2000)),
+        ]);
+        services = { ftp, runtimeConsole };
+    }
+    const input: ReachabilityInput = {
+        ip, tcp1402, icmp, arp,
+        ...(route ? { route } : {}),
+        ...(services ? { services } : {}),
+        ...(opts.priorDisruptive ? { priorDisruptive: opts.priorDisruptive } : {}),
+    };
+    const report: ReachabilityReport = { ...input, port, verdict: describeReachability(input), assessment: assessReachability(input), at: Date.now() };
+    _lastReport = report;
+    return report;
+}
+
+/** 스냅샷 → 정체 확인에 쓰는 응답 장치 판정(경로 인터페이스 기준). */
+export function responderEvidenceOf(report: ReachabilityReport): { mac?: string; responder: ResponderKind; at: number; interfaceAlias?: string } {
+    const who = identifyResponder(report.icmp, report.arp, report.route?.route);
+    const macs = report.assessment.observations.macs;
+    return {
+        responder: who.kind,
+        at: report.at,
+        ...(macs.length === 1 ? { mac: macs[0] } : {}),
+        ...(report.route?.route?.interfaceAlias ? { interfaceAlias: report.route.route.interfaceAlias } : {}),
+    };
 }

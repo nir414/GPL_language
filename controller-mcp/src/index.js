@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -105,7 +106,10 @@ import {
   UnknownCommandMemory,
   unknownCommandResult,
   UNKNOWN_COMMAND_STATUS,
+  classifyCompileAbortError,
+  livenessFromProbe,
 } from './outcome.js';
+import { extensionCommandLogLines } from './operations.js';
 
 const HOST = process.env.GPL_HOST || '192.168.0.1';
 const PORT = parseInt(process.env.GPL_PORT || '1402', 10);
@@ -140,6 +144,20 @@ try {
 
 const logRing = [];
 let cmdSeq = 0; // 1402 명령 누적 수(도구별 왕복 수 계산용)
+let extCmdSeq = 0; // 확장이 대신 보낸 명령 수(배포의 Compile 등 — 2026-10-22 보고: deploy 항목이 "1402 0회" 로 찍혔다)
+
+// 이 세션에서 응답 없이 끝난 채널 교란 가능 명령(Unload/Compile/Load/Start) — controller_status 가 거부를 가를 때
+// "재부팅 후보" 확신도와 "복구 창이 지나도 거부" 안내의 근거로 쓴다(2026-10-23 보고). 관측이지 인과가 아니다.
+let lastDisruptiveFailure = null; // { command, kind, at } | null
+const DISRUPTIVE_COMMAND_RE = /^\s*(unload|compile|load|start)\b/i;
+function noteDisruptiveFailure(command, error) {
+  if (!DISRUPTIVE_COMMAND_RE.test(String(command ?? ''))) return;
+  const text = `${error?.code ?? ''} ${error?.message ?? error ?? ''}`;
+  const kind = /\b(ECONNRESET|EPIPE|ECONNABORTED)\b/.test(text) ? 'reset'
+    : /timed out|time.?out|타임아웃|ETIMEDOUT/i.test(text) ? 'timeout'
+      : /closed without response|ECONNCLOSED/i.test(text) ? 'closed' : null;
+  if (kind) lastDisruptiveFailure = { command: String(command).trim(), kind, at: Date.now() };
+}
 
 function logLine(text) {
   const line = `${new Date().toISOString()} ${text}`;
@@ -161,6 +179,7 @@ const consoleClient = new ControllerConsole({
     cmdSeq++;
     const tag = error ? `ERROR ${error.message}` : `STATUS ${parseStatus(raw).code}`;
     logLine(`  1402> ${command} | ${ms}ms | ${tag}`);
+    if (error) noteDisruptiveFailure(command, error);
   },
 });
 
@@ -505,6 +524,7 @@ async function runCommand(command, opts) {
   try {
     raw = await sendGuarded(command, opts);
   } catch (err) {
+    noteDisruptiveFailure(command, err);
     return withUnloadRiskGuidance(command, commandFailureResult(command, err));
   }
   const status = parseStatus(raw);
@@ -577,10 +597,12 @@ function tool(name, description, shape, handler) {
   server.tool(name, description, shape, async (args) => {
     const t0 = Date.now();
     const c0 = cmdSeq;
+    const e0 = extCmdSeq;
     logLine(`tool ${name} ${clip(JSON.stringify(args ?? {}))}`);
     try {
       const res = await handler(args ?? {});
-      logLine(`tool ${name} 완료 | ${Date.now() - t0}ms | 1402 ${cmdSeq - c0}회`);
+      const ext = extCmdSeq - e0;
+      logLine(`tool ${name} 완료 | ${Date.now() - t0}ms | 1402 ${cmdSeq - c0}회${ext ? ` · 확장 경유 ${ext}회` : ''}`);
       return res;
     } catch (err) {
       logLine(`tool ${name} 실패 | ${Date.now() - t0}ms | ${err?.message ?? String(err)}`);
@@ -793,19 +815,95 @@ function pingOnce(host, timeoutMs = 2500) {
  * 전원 재투입·재부팅 같은 강한 권고는 만들지 않는다 — 여러 독립 증거를 종합해야 하는 판단이다.
  */
 async function probeReachability(err) {
-  const code = err?.code ?? (/timed out/i.test(err?.message ?? '') ? 'ETIMEDOUT' : undefined);
-  const [icmp, localRows] = await Promise.all([pingOnce(HOST), localSocketOwners(HOST, PORT)]);
+  // 브리지 경유 실패는 code 가 없고 메시지에만 errno 가 있다 — 메시지에서도 찾는다.
+  const msg = String(err?.message ?? '');
+  const code = err?.code
+    ?? (/\bECONNREFUSED\b/.test(msg) ? 'ECONNREFUSED' : /timed out/i.test(msg) ? 'ETIMEDOUT' : undefined);
+  const [icmp, localRows, routeProbe] = await Promise.all([pingOnce(HOST), localSocketOwners(HOST, PORT), routeLookup(HOST)]);
   // 이 PC 의 어느 프로세스가 같은 포트를 잡고 있는지(§1-EU) — 확장 인스턴스 pid 는 presence 에서, 나머지는 foreign.
   const localConnections = summarizeLocalConnections(localRows, {
     selfPid: process.pid,
     extensionPids: listExtensionInstances(undefined, {}).map((p) => p.pid).filter((p) => Number.isInteger(p)),
   });
+  // 명령 콘솔이 거부되면 FTP 220 배너와 런타임 콘솔 접속을 본다(2026-10-23) — 핸드셰이크만, 명령 전송 없음(모션 게이트 무관).
+  let services = null;
+  if (code === 'ECONNREFUSED') {
+    const [ftp, runtimeConsole] = await Promise.all([
+      tcpBannerProbe(HOST, FTP_PORT, 3000),
+      tcpBannerProbe(HOST, RUNTIME_CONSOLE_PORT, 2000).then((r) => r.state),
+    ]);
+    services = { ftp, runtimeConsole };
+  }
   return {
     tcp1402: false,
     error: code ?? String(err?.message ?? err),
     icmp,
-    ...classifyReachability({ host: HOST, code, icmpAlive: icmp.alive, localConnections }),
+    ...classifyReachability({
+      host: HOST, code, icmpAlive: icmp.alive, localConnections, routeProbe, services,
+      priorDisruptive: lastDisruptiveFailure,
+    }),
   };
+}
+
+const FTP_PORT = 21;
+const RUNTIME_CONSOLE_PORT = parseInt(process.env.GPL_CONSOLE_PORT || '1403', 10);
+
+/**
+ * TCP 접속 후 서버가 먼저 보내는 첫 줄(FTP 220 배너)만 읽고 닫는다 — 명령을 보내지 않는다.
+ * 런타임 콘솔처럼 배너가 없는 포트는 열렸는지만 본다(state). 확장 reachability.probeTcpBanner 와 같은 동작.
+ */
+function tcpBannerProbe(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let done = false;
+    let connected = false;
+    let buf = '';
+    const finish = (state) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      socket.on('error', () => {});
+      socket.destroy();
+      const banner = buf.split(/\r?\n/)[0].trim();
+      resolve(banner ? { state, banner } : { state });
+    };
+    const timer = setTimeout(() => finish(connected ? 'open' : 'timeout'), timeoutMs);
+    socket.once('connect', () => { connected = true; });
+    socket.on('data', (chunk) => {
+      buf += chunk.toString('latin1');
+      if (buf.includes('\n') || buf.length > 512) finish('open');
+    });
+    socket.once('error', (e) => finish(connected ? 'open'
+      : e?.code === 'ECONNREFUSED' ? 'refused'
+        : /^(EHOSTUNREACH|ENETUNREACH|EHOSTDOWN|ENETDOWN)$/.test(e?.code ?? '') ? 'unreachable'
+          : e?.code === 'ETIMEDOUT' ? 'timeout' : 'error'));
+    socket.once('close', () => finish(connected ? 'open' : 'error'));
+    socket.connect({ host, port, ...(net.isIPv4(host) ? { family: 4 } : {}) });
+  });
+}
+
+/**
+ * OS 가 HOST 로 가는 경로(Find-NetRoute)와 그 IP 의 인터페이스별 ARP(Get-NetNeighbor), PC IPv4 주소들(Windows 전용).
+ * 실패·비 Windows 는 null — "경로 불명" 으로 남는다. 읽기 전용이며 제어기에는 아무것도 보내지 않는다.
+ */
+function routeLookup(host, timeoutMs = 6000) {
+  if (process.platform !== 'win32' || !net.isIPv4(host)) return Promise.resolve(null);
+  const script = '$ErrorActionPreference = \'SilentlyContinue\'; '
+    + `$r = Find-NetRoute -RemoteIPAddress '${host}' | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_NetIPAddress' } | Select-Object -First 1; `
+    + '$route = $null; if ($r) { $route = [pscustomobject]@{ interfaceAlias = [string]$r.InterfaceAlias; interfaceIndex = [int]$r.InterfaceIndex; sourceAddress = [string]$r.IPAddress } }; '
+    + `$n = @(Get-NetNeighbor -IPAddress '${host}' | Select-Object InterfaceAlias, InterfaceIndex, LinkLayerAddress, @{ n = 'State'; e = { [string]$_.State } }); `
+    + '$a = @(Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, InterfaceIndex, IPAddress, PrefixLength); '
+    + '[pscustomobject]@{ route = $route; neighbors = $n; addresses = $a } | ConvertTo-Json -Compress -Depth 4';
+  return new Promise((resolve) => {
+    try {
+      execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: timeoutMs, windowsHide: true }, (e, stdout) => {
+        if (e) return resolve(null);
+        try { resolve(JSON.parse(String(stdout || '').trim())); } catch { resolve(null); }
+      });
+    } catch {
+      resolve(null);
+    }
+  });
 }
 
 /**
@@ -1564,6 +1662,46 @@ function deployOutcome(mode, command, res) {
   }
   // 배포는 끝까지 갔지만 중간 단계에서 멈춘 경우 — DeployResult 는 `ok` 필드가 없고 success/failedPhase 로 말한다.
   // 그것을 그대로 넘기면 호출자가 "명령은 성공했다"로 오독하므로 여기서 단계별 복구 지시로 번역한다(§16·§17).
+  // Compile 이 소켓 리셋으로 끊김(2026-10-22 사고) — 컴파일 에러(DEPLOY_COMPILE: "소스를 고쳐라")와 다른 지시가 필요하다.
+  if (r && typeof r === 'object' && r.success === false && r.compileAborted && typeof r.compileAborted === 'object') {
+    return {
+      ok: false,
+      mode,
+      command,
+      error: 'COMPILE_ABORTED',
+      detail: r.failedStatusMessage ?? r.compileAborted.hint,
+      failedPhase: r.failedPhase ?? 'COMPILE',
+      operationId: r.operationId ?? null,
+      compileAborted: r.compileAborted,
+      controllerHealth: r.controllerHealth ?? null,
+      sentCommand: r.compileAborted.command,
+      hint: r.compileAborted.hint,
+      recovery: {
+        action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: false,
+        detail: r.controllerHealth?.state === 'responsive'
+          ? '명령 콘솔은 다시 응답했다. 같은 Compile 을 곧바로 되풀이하지 말고 show_threads·controller_status 로 상태를 본 뒤 사용자와 다음 단계를 정할 것.'
+          : '명령 콘솔이 응답하지 않는다(controllerHealth). Compile 을 다시 보내지 말고 controller_status 로 관측한 뒤 사용자에게 제어기 상태를 확인할 것.',
+      },
+      result: r,
+      ms: res.ms,
+    };
+  }
+  // FTP 쓰기 전 제어기 정체 확인 실패 — 확장이 구조화 거부(CONTROLLER_UNVERIFIED)로 바꿔 보내지만, 작업 기록에서 복구한 결과 등 원형이 올 때도 같게.
+  if (r && typeof r === 'object' && r.success === false && r.failedPhase === 'CONTROLLER_CHECK') {
+    return {
+      ok: false,
+      mode,
+      command,
+      error: 'CONTROLLER_UNVERIFIED',
+      sent: false,
+      detail: r.failedStatusMessage ?? '제어기 정체를 확인하지 못해 업로드하지 않았다.',
+      reasons: r.controllerCheck?.reasons ?? [],
+      controllerCheck: r.controllerCheck ?? null,
+      operationId: r.operationId ?? null,
+      recovery: deployPhaseRecovery('CONTROLLER_CHECK'),
+      ms: res.ms,
+    };
+  }
   if (r && typeof r === 'object' && r.success === false && typeof r.failedPhase === 'string') {
     return {
       ok: false,
@@ -1628,6 +1766,8 @@ function deployPhaseRecovery(failedPhase, failedStatusCode) {
       return { action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true, detail: '실행 중인 쓰레드가 있어 Compile 을 보내지 않았다(업로드는 끝났다). 정지해도 되는지 사용자에게 확인할 것.' };
     case 'AUTO_GATE':
       return { action: 'NONE', retryCurrentCommand: false, safeToRepeat: true, detail: '자동 게이트 조건이 맞지 않아 업로드하지 않았다(제어기를 건드리지 않음). build 모드로 명시 배포할 것.' };
+    case 'CONTROLLER_CHECK':
+      return { action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true, detail: '업로드 전 확인에서 상대가 PA 제어기인지 확인하지 못해 아무것도 올리지 않았다(CONTROLLER_UNVERIFIED). reasons 를 사용자에게 보여 주고 controller_status 로 관측한 뒤 원인이 풀리면 다시 보낼 것. 우회 업로드 금지.' };
     case 'UPLOAD':
       return { action: 'RETRY_SAME_REQUEST', retryCurrentCommand: true, safeToRepeat: true, detail: '업로드 단계에서 중단됐다. 원인(FTP 연결·경로)을 확인한 뒤 같은 요청을 다시 보내도 된다.' };
     case 'START':
@@ -1738,6 +1878,10 @@ tool('deploy_project',
       const finished = sinceRequest.find((r) => isTerminalOperationState(r.state));
       if (finished) {
         logLine(`  deploy 응답 유실 → 작업 기록 ${finished.operationId}(${finished.state}) 으로 복구`);
+        for (const line of extensionCommandLogLines(finished.result)) {
+          extCmdSeq++;
+          logLine(`  1402(확장)> ${line}`);
+        }
         const targetUpdate = finished.state === 'COMPLETED'
           ? applyDeploySessionTarget(finished.projectName || args.project, finished.projectDir ?? args.projectDir ?? null)
           : {};
@@ -1771,6 +1915,15 @@ tool('deploy_project',
       });
     }
     const out = deployOutcome(m, command, res);
+    // 확장이 대신 보낸 Compile 과 그 결과를 세션 로그에 남긴다 — deploy 항목이 "1402 0회" 로만 찍혀 사고 조사에 쓸 수 없었다.
+    const deployResultBody = res?.ok && res.result && typeof res.result === 'object' ? res.result : null;
+    for (const line of extensionCommandLogLines(deployResultBody)) {
+      extCmdSeq++;
+      logLine(`  1402(확장)> ${line}`);
+    }
+    if (deployResultBody?.compileAborted) {
+      lastDisruptiveFailure = { command: deployResultBody.compileAborted.command, kind: 'reset', at: Date.now() };
+    }
     // 완료 결과를 **여기서 전달했음**을 기록한다 — 같은 operationId 의 operation_status 재조회는 redundant 로 짧게 끝난다(§1-EP).
     const opId = out.result && typeof out.result === 'object' ? out.result.operationId : null;
     let targetUpdate = {};
@@ -1981,7 +2134,29 @@ tool('compile_project',
   '실행이 목적이면 이 도구 대신 start_project만 호출할 것(start_project가 -compile로 컴파일까지 한다 — Compile 직후 Start 연속 호출 금지).',
   { project: z.string().optional().describe('프로젝트명. 생략하면 project_target으로 고정한 세션 대상') },
   async ({ project }) => {
-    const raw = await sendGuarded(`Compile ${proj(project)}`, compilerCommandOptions(TIMEOUT));
+    const cmd = `Compile ${proj(project)}`;
+    const t0 = Date.now();
+    let raw;
+    try {
+      raw = await sendGuarded(cmd, compilerCommandOptions(TIMEOUT));
+    } catch (err) {
+      noteDisruptiveFailure(cmd, err);
+      // 소켓 리셋으로 끊긴 Compile 은 컴파일 에러가 아니다(2026-10-22 사고) — 짧은 생존 확인 한 번으로 controllerHealth 를 채운다.
+      const aborted = classifyCompileAbortError(cmd, err, Date.now() - t0);
+      if (!aborted) return textResult(commandFailureResult(cmd, err));
+      let probeRaw = null;
+      let probeError = null;
+      try { probeRaw = await sendGuarded('Show Thread -web', { timeoutMs: 5000 }); } catch (e) { probeError = e; }
+      const controllerHealth = livenessFromProbe('Show Thread -web', { raw: probeRaw, error: probeError });
+      return textResult({
+        ...commandFailureResult(cmd, err),
+        error: 'COMPILE_ABORTED',
+        compileAborted: aborted,
+        controllerHealth,
+        hint: `${aborted.hint} — 같은 Compile 을 되풀이하지 말 것. controllerHealth=${controllerHealth.state}`
+          + (controllerHealth.state === 'responsive' ? '' : ' — controller_status 로 관측한 뒤 사용자에게 제어기 상태를 확인할 것.'),
+      });
+    }
     const status = parseStatus(raw);
     const { errors, aggregate } = parseCompileErrors(raw);
     const confirmed = controllerResponseOutcome(status) === 'completed';

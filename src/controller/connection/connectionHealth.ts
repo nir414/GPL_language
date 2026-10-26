@@ -340,7 +340,7 @@ export class ConnectionHealthMonitor {
             const failures = this._recoveryFailures;
             this._state = 'suspect';
             this._suspectSince = now;
-            this._suspectReason = `recovery-window-expired: ${describeDisruptiveOperation(this._operation)} 뒤 `
+            this._suspectReason = `${RECOVERY_EXPIRED_PREFIX}: ${describeDisruptiveOperation(this._operation)} 뒤 `
                 + `${(elapsed / 1000).toFixed(0)} s(${failures}회 프로브) 동안 복구되지 않음 — 여기서부터 일반 임계 판정`;
             this._recoveringSince = 0;
             this._recoveryFailures = 0;
@@ -423,6 +423,26 @@ export function describeRecovering(info: RecoveringInfo): string {
     const { operation: op, windowMs } = info;
     return `${op.command} 가 응답 없이 끝남(${op.kind}${op.detail ? ` — ${op.detail}` : ''}) — 명령의 실제 결과는 미확정. `
         + `최대 ${(windowMs / 1000).toFixed(0)} s 동안 채널 복구를 기다린다(이 사이의 연결 거부는 유실로 세지 않음).`;
+}
+
+/**
+ * 실측 조치(2026-10-22 Sample Prep 분석, 두 번): 복구 창이 지나도 명령 콘솔이 거부될 때 PC 어댑터를 껐다 켜자(물리 링크 재연결)
+ * 재부팅 없이 즉시 풀렸다 — 제어기가 링크 단절을 보고 남아 있던 명령 콘솔 세션을 버린 것으로 본다(PC 쪽 소켓 정리만으로는 안 풀림).
+ */
+export const ADAPTER_RECONNECT_GUIDANCE =
+    '제어기와 연결된 PC 네트워크 어댑터를 껐다 켜기(물리 링크 재연결) — 제어기 쪽에 남은 명령 콘솔 세션이 이것으로 풀린 실측이 두 번 있다(2026-10-22, 재부팅 불필요).';
+
+/** recovering 창이 지나 일반 판정으로 강등됐다는 suspect 사유 접두(reportProbe 가 만든다). */
+const RECOVERY_EXPIRED_PREFIX = 'recovery-window-expired';
+
+/**
+ * 유실 안내 문장 — 복구 대기 창(기본 180 s)이 지나도 **거부(refused)** 로 끝난 경우에만 실측 조치를 붙인다.
+ * 그 밖의 유실(타임아웃·도달 불가·교란 명령 없이 거부)은 undefined — 종전 안내를 그대로 쓴다.
+ */
+export function recoveryGuidanceForLoss(summary: Pick<LossSummary, 'suspectReason' | 'lastFailure'>): string | undefined {
+    if (!summary.suspectReason.startsWith(RECOVERY_EXPIRED_PREFIX) || summary.lastFailure.kind !== 'refused') { return undefined; }
+    return '복구 대기 창이 지나도 명령 콘솔이 거부(refused)됩니다 — 제어기 쪽 명령 콘솔 세션이 아직 잡혀 있을 수 있습니다. '
+        + `조치: ${ADAPTER_RECONNECT_GUIDANCE} 그래도 거부되면 재부팅이 필요할 수 있습니다.`;
 }
 
 /** 로그용 한 줄: `3회 연속 실패(확정적 0회) · 마지막 timeout — Command timeout (8000ms): Show Thread -web · 의심 27.3 s (probe: timeout — …)`. */

@@ -27,6 +27,7 @@ import {
 	remoteDeleteGateForThreads,
 	selectRemoteClearTargets,
 } from '../controller/files/remoteFolderClear';
+import { verifyControllerForFtpWrite } from '../controller/connection/controllerIdentityIo';
 import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../controller/projects/remoteProjectPath';
 import { forgetSyncManifest } from '../controller/files/syncManifest';
 import { describeThreadActivity } from '../controller/threads/threadActivity';
@@ -264,6 +265,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	// AI 가 모달 없이 비우는 경로는 `gpl.ai.debug.clearRemoteFolder`(/GPL 만, 동의는 AI 가 받는다)이고 절차는 controller/files/remoteFolderClear.ts 를 같이 쓴다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpClearFolder', async (node: any) => {
+			const clearStartedAt = Date.now();
 			const cfg = getControllerConfig();
 			const isFlash = String(node?.contextValue ?? '') === 'section-ftpFlash';
 			// 섹션 노드가 실제 표시 중인 경로를 최우선으로 쓰고(설정 변경 직후에도 화면과 일치), 없으면 설정값.
@@ -307,6 +309,22 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			const gate = await ensureIdleBeforeRemoteDelete(basePath);
 			if (!gate.proceed) {
 				return outcome({ ok: false, cancelled: gate.reason === 'user-cancelled', reason: `thread-gate: ${gate.reason}`, targets, detail: gate.detail });
+			}
+
+			// 2-1) 제어기 정체 확인 — 위 목록 조회(FTP 배너)·쓰레드 게이트(명령 콘솔 STATUS)를 재사용한다. 실패하면 「그래도 진행」을 묻는다.
+			const controllerCheck = await verifyControllerForFtpWrite(cfg, clearStartedAt,
+				vscode.workspace.getConfiguration('gpl').get<boolean>('controller.verifyControllerIdentity', true) !== false);
+			if (!controllerCheck.verified) {
+				host.log(`[FTP] ${basePath} 비우기 — 제어기 미확인: ${controllerCheck.reasons.join(' / ')}`);
+				const go = await vscode.window.showWarningMessage(
+					`${cfg.ip} 이 제어기인지 확인하지 못했습니다 — ${basePath} 비우기를 시작하지 않았습니다.`,
+					{ modal: true, detail: `${controllerCheck.reasons.join('\n')}\n\n다른 장치의 파일을 지울 수 있습니다. 제어기임을 알고 있을 때만 진행하세요.` },
+					'그래도 진행',
+				);
+				if (go !== '그래도 진행') {
+					return outcome({ ok: false, cancelled: true, reason: 'controller-unverified', targets });
+				}
+				host.log(`[FTP] ${basePath} 비우기 — 사용자가 제어기 미확인 상태로 진행 선택`);
 			}
 
 			// 3) 삭제 확인 — 무엇이 지워지는지 목록으로 보여준다.

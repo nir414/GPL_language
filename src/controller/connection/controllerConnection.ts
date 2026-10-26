@@ -10,10 +10,11 @@ import { IdlePingScheduler } from './idlePing';
 import type { IdlePingStats } from './idlePing';
 import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS, commandChannelTraits } from '../commands/commandPolicy';
 import type { CommandPolicyOptions, CommandChannelTraits } from '../commands/commandPolicy';
-import { parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
+import { parseStatus, parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
 import { effectiveKeepAlive } from './connectionSession';
 import { checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryPrecheck } from '../diagnostics/memoryGuard';
 import { guardBeforeSend, observeAfterResponse, unloadFailureGuidance } from '../commands/unloadRiskGuard';
+import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast } from '../diagnostics/memoryNotice';
 
 export { isPolicyError, PolicyError } from '../commands/commandPolicy';
 export type { PolicyErrorCode } from '../commands/commandPolicy';
@@ -380,6 +381,42 @@ export function sendCommandDetailed(
 	});
 }
 
+// ── 메모리 경고 알림 (2026-10-23 Sample Prep 「경고 알림이 Compile·Start·배포마다 쌓임」) ──────────────
+// 판정(차단·AI 결과 필드)은 종전 그대로이고, 사람 화면의 알림만 controller/diagnostics/memoryNotice.ts 규칙으로 줄인다:
+// 나빠질 때만 알림 · 같은 경고 반복은 Output 한 줄 · 한 작업 안에서는 최대 1회 · 지속 상태는 상태 표시줄 항목.
+const memoryNotices = new MemoryNoticeTracker();
+let _memoryStatusObserver: ((ip: string, check: MemoryPrecheck, badge: { text: string; tooltip: string } | null | undefined) => void) | null = null;
+let _lastMemoryCheck: { ip: string; check: MemoryPrecheck; at: number } | undefined;
+
+/** 메모리 검사 결과 관찰자 — 상태 표시줄 경고 항목이 받는다(badge: null 숨김 / undefined 유지). */
+export function setMemoryStatusObserver(fn: ((ip: string, check: MemoryPrecheck, badge: { text: string; tooltip: string } | null | undefined) => void) | null): void {
+	_memoryStatusObserver = fn;
+}
+
+/** 마지막 메모리 검사(상태 표시줄 클릭 상세용). */
+export function getLastMemoryCheck(): { ip: string; check: MemoryPrecheck; at: number } | undefined {
+	return _lastMemoryCheck;
+}
+
+/** 상세 문구(임계값·안내) — 상태 표시줄 클릭·알림의 「자세히」가 쓴다. 문구 정본은 memoryNotice.formatMemoryDetail. */
+export function describeMemoryCheck(check: MemoryPrecheck): string {
+	return formatMemoryDetail(check);
+}
+
+/**
+ * 한 작업(배포 등)의 메모리 알림 범위를 연다 — 그 안의 검사는 알림을 최대 1회만 띄운다(업로드 전 검사 + Start 큐 검사).
+ * 반환 함수로 닫는다(finally 에서).
+ */
+export function beginMemoryNoticeScope(ip: string): () => void {
+	memoryNotices.beginScope(ip);
+	let closed = false;
+	return () => {
+		if (closed) { return; }
+		closed = true;
+		memoryNotices.endScope(ip);
+	};
+}
+
 /** 배포는 업로드 전, Compile/Start는 해당 명령의 직렬 큐 슬롯에서 각각 현재 Free를 확인한다. */
 export async function checkMemoryBeforeOperation(config?: Partial<ControllerConfig>, insideQueue = false): Promise<MemoryPrecheck> {
 	const settings = vscode.workspace.getConfiguration('gpl.controller');
@@ -388,10 +425,45 @@ export async function checkMemoryBeforeOperation(config?: Partial<ControllerConf
 		blockMb: settings.get<number>('memoryGuard.blockMb', DEFAULT_MEMORY_GUARD.blockMb),
 	};
 	const send = insideQueue ? sendCommandDetailedInternal : sendCommandDetailed;
+	const ip = { ...getControllerConfig(), ...config }.ip;
 	return checkMemory(async () => (await send('Show Memory', config, { waitForStatusClose: true })).raw, options, check => {
+		// Output 에는 매번 전문(긴 안내 포함)을 남긴다 — AI 결과 필드(memoryPrecheck.message)와 같은 문장.
 		logTraffic('---', `memory: ${check.level} — ${check.message}`);
-		if (check.level === 'warning') { void vscode.window.showWarningMessage(check.message); }
+		_lastMemoryCheck = { ip, check, at: Date.now() };
+		const decision = memoryNotices.evaluate(ip, check);
+		if ((check.level === 'warning' || check.level === 'blocked') && !decision.toast) {
+			logTraffic('---', `memory: 알림 생략(${decision.reason}) — 상태 표시줄에 표시 중`);
+		}
+		try { _memoryStatusObserver?.(ip, check, decision.badge); } catch { /* 관찰자 예외는 무시 */ }
+		if (decision.toast) {
+			void vscode.window.showWarningMessage(formatMemoryToast(check), '자세히').then(pick => {
+				if (pick === '자세히') { void vscode.commands.executeCommand(SHOW_MEMORY_STATUS_COMMAND); }
+			});
+		}
 	});
+}
+
+/** 상태 표시줄 메모리 경고 항목·알림의 「자세히」가 여는 명령(activation 에서 등록). */
+export const SHOW_MEMORY_STATUS_COMMAND = 'gpl.controller.showMemoryStatus';
+
+// ── 정체 확인용 관측 기록 (controller/connection/controllerIdentity.ts) ─────────────────────
+// 업로드 전 정체 확인이 "같은 작업 안에서 이미 받은 STATUS" 를 재사용하려면 마지막 STATUS 수신을 알아야 한다.
+let _lastConsoleStatus: { ip: string; at: number; command: string; statusCode: number } | undefined;
+let _lastChannelLoss: { ip: string; at: number } | undefined;
+
+/** `ip` 에서 `sinceMs` 이후 받은 마지막 `<STATUS>`(없으면 undefined). */
+export function getLastConsoleStatus(ip: string, sinceMs = 0): { at: number; command: string; statusCode: number } | undefined {
+	const s = _lastConsoleStatus;
+	return s && s.ip === ip && s.at >= sinceMs ? { at: s.at, command: s.command, statusCode: s.statusCode } : undefined;
+}
+
+/** 명령 콘솔 채널 유실 확정 시각을 기록한다(activation 의 유실 처리). `/GPL` 이 비었을 때 재부팅 정황 안내에 쓴다. */
+export function noteCommandChannelLoss(ip: string, at: number = Date.now()): void {
+	_lastChannelLoss = { ip, at };
+}
+
+export function getLastCommandChannelLoss(ip: string): number | undefined {
+	return _lastChannelLoss && _lastChannelLoss.ip === ip ? _lastChannelLoss.at : undefined;
 }
 
 // ── 채널 교란 관찰자 (2026-08-31) ───────────────────────────────────────────
@@ -477,7 +549,13 @@ function sendCommandDetailedInternal(
 			keepAliveIdleCloseMs: keepAlive.idleCloseMs,
 		},
 		{ log: logTraffic, body: bodyLog },
-	);
+	).then(response => {
+		// 정체 확인(controllerIdentity)이 같은 작업 안의 STATUS 를 재사용할 수 있게 마지막 수신을 기억한다.
+		if (response.meta.statusTagReceived) {
+			_lastConsoleStatus = { ip: cfg.ip, at: Date.now(), command, statusCode: parseStatus(response.raw).code };
+		}
+		return response;
+	});
 }
 
 /**

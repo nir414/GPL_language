@@ -260,13 +260,157 @@ export function summarizeLocalConnections(rows, { selfPid, extensionPids = [] } 
   return { measured: Array.isArray(rows), owners, established: established.length, foreign, note };
 }
 
-export function classifyReachability({ host, code, icmpAlive, localConnections = null }) {
+// ── 경로 인터페이스 / 서브넷 겹침 (2026-10-22 Sample Prep 분석 3번 · 2026-10-23 보고) ─────────────
+// 확장 src/controller/connection/reachability.ts(splitArpByRoute·findOverlappingSubnets)와 같은 규칙.
+
+/** 제어기 OUI(Precise Automation). */
+export const PRECISE_OUI = '00-14-FF';
+
+function ipv4ToInt(ip) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip ?? '').trim());
+  if (!m) return undefined;
+  const parts = m.slice(1).map(Number);
+  if (parts.some((n) => n > 255)) return undefined;
+  return ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+}
+
+/** `address/prefix` 서브넷이 `ip` 를 포함하는가. */
+export function subnetContains(address, prefixLength, ip) {
+  const a = ipv4ToInt(address);
+  const b = ipv4ToInt(ip);
+  if (a === undefined || b === undefined || !Number.isInteger(prefixLength) || prefixLength < 1 || prefixLength > 32) return false;
+  const mask = prefixLength === 32 ? 0xFFFFFFFF : ((0xFFFFFFFF << (32 - prefixLength)) >>> 0);
+  return ((a & mask) >>> 0) === ((b & mask) >>> 0);
+}
+
+function normalizeMac(mac) {
+  return String(mac ?? '').trim().toUpperCase().replace(/:/g, '-');
+}
+
+/**
+ * `Find-NetRoute`·`Get-NetNeighbor`·`Get-NetIPAddress` 묶음 결과 → 경로 관측.
+ * @param {string} host
+ * @param {{ route?: {interfaceAlias?:string, interfaceIndex?:number, sourceAddress?:string}|null,
+ *           neighbors?: Array<{InterfaceAlias?:string, InterfaceIndex?:number, LinkLayerAddress?:string}>,
+ *           addresses?: Array<{InterfaceAlias?:string, IPAddress?:string, PrefixLength?:number}> }|null} probe
+ * @returns {{ route: 'controller'|'other-device'|'ambiguous', routeInterface: object|null, mac: string|null,
+ *             otherAdapterMacs: Array<{mac:string, interfaceAlias:string|null}>, subnetOverlap: string|null } }
+ */
+export function assessRouteProbe(host, probe) {
+  const p = probe && typeof probe === 'object' ? probe : null;
+  const route = p?.route && typeof p.route === 'object' ? p.route : null;
+  const neighbors = (Array.isArray(p?.neighbors) ? p.neighbors : p?.neighbors ? [p.neighbors] : [])
+    .filter((n) => n && n.LinkLayerAddress && !/^0{2}([-:]0{2}){5}$/.test(String(n.LinkLayerAddress)));
+  const onRoute = route ? neighbors.filter((n) => (route.interfaceIndex != null && n.InterfaceIndex === route.interfaceIndex)
+    || (route.interfaceAlias && n.InterfaceAlias === route.interfaceAlias)) : [];
+  const others = route ? neighbors.filter((n) => !onRoute.includes(n)) : neighbors;
+  const mac = onRoute.length ? normalizeMac(onRoute[0].LinkLayerAddress) : null;
+  const addresses = (Array.isArray(p?.addresses) ? p.addresses : p?.addresses ? [p.addresses] : [])
+    .filter((a) => a && typeof a.IPAddress === 'string' && !a.IPAddress.startsWith('127.') && !a.IPAddress.startsWith('169.254.')
+      && Number(a.PrefixLength) < 32 && subnetContains(a.IPAddress, Number(a.PrefixLength), host));
+  const byIface = new Map();
+  for (const a of addresses) if (!byIface.has(a.InterfaceAlias)) byIface.set(a.InterfaceAlias, a);
+  const subnetOverlap = byIface.size >= 2
+    ? `${host} 이 ${[...byIface.values()].map((a) => `${a.InterfaceAlias}(${a.IPAddress}/${a.PrefixLength})`).join('과 ')} 양쪽 망에 있다 — 한쪽 링크가 끊기면 같은 IP 가 다른 장치로 갈 수 있다.`
+    : null;
+  return {
+    // 경로 인터페이스의 ARP 를 못 보면 종전처럼 'ambiguous'(측정 경로 불명)로 남긴다.
+    route: mac ? (mac.startsWith(PRECISE_OUI) ? 'controller' : 'other-device') : 'ambiguous',
+    routeInterface: route ? { interfaceAlias: route.interfaceAlias ?? null, interfaceIndex: route.interfaceIndex ?? null, sourceAddress: route.sourceAddress ?? null } : null,
+    mac,
+    otherAdapterMacs: others.map((n) => ({ mac: normalizeMac(n.LinkLayerAddress), interfaceAlias: n.InterfaceAlias ?? null })),
+    subnetOverlap,
+  };
+}
+
+// ── 명령 콘솔 거부 시 다른 채널로 가르기 (2026-10-23 Sample Prep 보고) ─────────────────────────
+// 확장 src/controller/connection/reachability.ts assessGplServices 와 같은 규칙 — 함께 유지할 것.
+
+/** PA 제어기 FTP 220 배너(실측 `220 RTEMS FTP server (Version 1.1-JWJ) ready.`). */
+export const PA_FTP_BANNER_RE = /\bRTEMS\s+FTP\s+server\b/i;
+
+/** 실측 조치: PC 어댑터 재연결로 제어기 쪽 명령 콘솔 세션이 풀렸다(2026-10-22 두 번, 재부팅 불필요). */
+export const ADAPTER_RECONNECT_GUIDANCE =
+  '제어기와 연결된 PC 네트워크 어댑터를 껐다 켜기(물리 링크 재연결) — 제어기 쪽에 남은 명령 콘솔 세션이 이것으로 풀린 실측이 두 번 있다(2026-10-22, 재부팅 불필요).';
+
+/** 채널 교란 명령 뒤 복구 대기 상한(확장 connectionRecoveryWindowMs 기본값과 같다). */
+export const RECOVERY_WINDOW_MS = 180_000;
+
+const DISRUPTIVE_RE = /^\s*(unload|compile|load|start)\b/i;
+
+/**
+ * 명령 콘솔이 거부됐을 때 FTP 배너·런타임 콘솔 관측으로 상태를 가른다. 거부가 아니거나 관측이 없으면 null.
+ * @param {{ code?: string, ftp?: {state: string, banner?: string}|null, runtimeConsole?: string|null,
+ *           priorDisruptive?: {command: string, kind?: string, at: number}|null }} input
+ */
+export function classifyGplServices({ code, ftp, runtimeConsole, priorDisruptive = null }) {
+  if (code !== 'ECONNREFUSED' || !ftp) return null;
+  const banner = ftp.banner ? String(ftp.banner).split(/\r?\n/)[0].trim() : null;
+  const afterDisruptive = !!priorDisruptive && DISRUPTIVE_RE.test(String(priorDisruptive.command ?? ''));
+  if (ftp.state !== 'open') {
+    return {
+      state: 'booting-or-other-device', rebootCandidate: false, confidence: 'medium', ftpBanner: null,
+      summary: `FTP 도 ${ftp.state} — 제어기가 부팅 중이거나 이 IP 가 다른 장치일 수 있다.`,
+      recommendedAction: 'wait-and-retry — 잠시 뒤 controller_status 로 다시 관측하고, 계속 같으면 사용자에게 제어기 전원·네트워크(경로 인터페이스)를 확인할 것.',
+    };
+  }
+  if (!banner) {
+    return {
+      state: 'inconclusive', rebootCandidate: false, confidence: 'low', ftpBanner: null,
+      summary: 'FTP 는 열렸으나 220 배너를 읽지 못했다 — 상대 장치를 가를 수 없다.',
+      recommendedAction: 'wait-and-retry — 잠시 뒤 다시 관측할 것.',
+    };
+  }
+  if (!PA_FTP_BANNER_RE.test(banner)) {
+    return {
+      state: 'different-device', rebootCandidate: false, confidence: 'high', ftpBanner: banner,
+      summary: `FTP 배너가 PA 제어기의 것이 아니다("${banner}") — 같은 IP 의 다른 장치가 응답하고 있다.`,
+      recommendedAction: 'ask-user — 경로 인터페이스와 ARP MAC(제어기 00-14-FF)을 확인하게 할 것. 직결 NIC 의 IP·링크 상태를 먼저 볼 일이다.',
+    };
+  }
+  if (runtimeConsole === 'open') {
+    return {
+      state: 'command-console-held', rebootCandidate: false, confidence: 'medium', ftpBanner: banner,
+      summary: 'FTP(RTEMS)와 런타임 콘솔은 열리는데 명령 콘솔만 거부 — 제어기 쪽 명령 콘솔 세션이 아직 잡혀 있을 수 있다(단일 세션).',
+      recommendedAction: `wait-and-retry — 채널 교란 명령 뒤라면 수 분 기다린 뒤 다시 관측. 3분이 지나도 같으면 사용자에게 안내: ${ADAPTER_RECONNECT_GUIDANCE}`,
+    };
+  }
+  return {
+    state: 'gpl-runtime-network-down', rebootCandidate: true, confidence: afterDisruptive ? 'high' : 'medium', ftpBanner: banner,
+    summary: 'FTP 는 PA 제어기(RTEMS 배너)로 살아 있고 명령·런타임 콘솔이 모두 거부 — GPL 런타임의 TCP 서비스가 통째로 내려간 상태로 보인다(재부팅 필요 후보).'
+      + (afterDisruptive ? ` 이 세션에서 ${priorDisruptive.command} 가 응답 없이 끝난(${priorDisruptive.kind ?? '?'}) 뒤다.` : ''),
+    recommendedAction: `ask-user — 단명 연결 재시도로 기다리지 말 것. 사용자에게 먼저 ${ADAPTER_RECONNECT_GUIDANCE} 그래도 거부되면 재부팅이 필요할 수 있다 — 전원 재투입은 사용자가 판단한다.`,
+  };
+}
+
+/**
+ * 채널 교란 명령(Unload/Compile …)이 응답 없이 끝난 지 복구 창(180 s)이 지났는데도 거부되면 실측 조치를 붙인다.
+ * 아니면 null.
+ */
+export function recoveryGuidanceAfterDisruptive({ code, priorDisruptive, now = Date.now(), windowMs = RECOVERY_WINDOW_MS }) {
+  if (code !== 'ECONNREFUSED' || !priorDisruptive || !DISRUPTIVE_RE.test(String(priorDisruptive.command ?? ''))) return null;
+  const elapsed = now - priorDisruptive.at;
+  if (!(elapsed > windowMs)) return null;
+  return `${priorDisruptive.command} 가 응답 없이 끝난 지 ${Math.round(elapsed / 1000)} s — 복구 대기 창(${Math.round(windowMs / 1000)} s)이 지나도 명령 콘솔이 거부된다. `
+    + `제어기 쪽 명령 콘솔 세션이 아직 잡혀 있을 수 있다. 사용자에게 안내: ${ADAPTER_RECONNECT_GUIDANCE}`;
+}
+
+export function classifyReachability({ host, code, icmpAlive, localConnections = null, routeProbe = null, services = null, priorDisruptive = null, now = Date.now() }) {
   const local = localConnections && typeof localConnections === 'object' ? localConnections : null;
+  const routeObs = routeProbe ? assessRouteProbe(host, routeProbe) : null;
   const observations = {
     icmp: icmpAlive === true ? 'reachable' : icmpAlive === false ? 'unreachable' : 'unknown',
     tcp1402: code === 'ECONNREFUSED' ? 'refused' : code === 'ETIMEDOUT' ? 'timeout' : (code ?? 'error'),
-    // 이 서버는 라우트/인터페이스를 특정하지 않는다 — 멀티 NIC 환경에서 같은 IP가 다른 장치일 수 있다(#22 함정).
-    route: 'ambiguous',
+    // 경로 인터페이스의 ARP 를 봤으면 그 MAC 으로, 못 봤으면 'ambiguous' — 멀티 NIC 환경에서 같은 IP가 다른 장치일 수 있다(#22 함정).
+    route: routeObs ? routeObs.route : 'ambiguous',
+    ...(routeObs ? {
+      routeInterface: routeObs.routeInterface,
+      mac: routeObs.mac,
+      otherAdapterMacs: routeObs.otherAdapterMacs,
+      ...(routeObs.subnetOverlap ? { subnetOverlap: routeObs.subnetOverlap } : {}),
+    } : {}),
+    // 명령 콘솔 거부 시 함께 본 FTP(배너)·런타임 콘솔(접속만) — 핸드셰이크만 했다.
+    ...(services ? { ftp: services.ftp ?? null, runtimeConsole: services.runtimeConsole ?? null } : {}),
     // 이 PC 에서 같은 제어기 포트로 맺어진 연결(§1-EU). measured:false 면 조회하지 못한 것이지 "없다" 가 아니다.
     localConnections: local
       ? { measured: local.measured !== false, established: local.established, owners: local.owners, foreignOwners: local.foreign }
@@ -303,24 +447,86 @@ export function classifyReachability({ host, code, icmpAlive, localConnections =
   if (local?.note) {
     alternativeExplanations = [local.note, ...alternativeExplanations];
   }
+  if (routeObs?.subnetOverlap) {
+    alternativeExplanations = [...alternativeExplanations, routeObs.subnetOverlap];
+  }
+  // 측정 경로가 다른 장치면 판정 자체가 무효일 수 있다(확장 assessReachability 와 같은 규칙).
+  if (routeObs && routeObs.route === 'other-device') {
+    confidence = confidence === 'high' ? 'medium' : 'low';
+    alternativeExplanations = [...alternativeExplanations, `경로 인터페이스(${routeObs.routeInterface?.interfaceAlias ?? '?'})의 ARP MAC ${routeObs.mac} 이 제어기(${PRECISE_OUI})가 아니다 — 판정 자체가 무효일 수 있다`];
+  }
+
+  // 명령 콘솔 거부 → FTP·런타임 콘솔로 가른 상태(2026-10-23). 가르면 그것이 판정 상태가 된다.
+  const svc = classifyGplServices({ code, ftp: services?.ftp ?? null, runtimeConsole: services?.runtimeConsole ?? null, priorDisruptive });
+  if (svc) {
+    alternativeExplanations = [svc.summary, ...alternativeExplanations];
+    if (svc.state !== 'inconclusive') {
+      state = svc.state;
+      confidence = svc.confidence;
+    }
+  }
+  const guidance = recoveryGuidanceAfterDisruptive({ code, priorDisruptive, now });
+
   const localNote = local?.note ? ` ${local.note}` : '';
-  const verdict = state === 'command-channel-unavailable'
+  const routeNote = routeObs?.routeInterface?.interfaceAlias
+    ? ` 경로 인터페이스: ${routeObs.routeInterface.interfaceAlias}${routeObs.routeInterface.sourceAddress ? `(${routeObs.routeInterface.sourceAddress})` : ''}${routeObs.mac ? `, MAC ${routeObs.mac}` : ''}.`
+    : '';
+  const baseVerdict = state === 'command-channel-unavailable'
     ? `${host}:1402 새 연결이 거부됨(refused) — 지금 명령 채널을 열 수 없다는 관측이다. 제어기 런타임 상태는 이것만으로 확정할 수 없다.${localNote}`
     : state === 'command-channel-unresponsive'
       ? 'ICMP는 응답하나 1402 TCP가 실패 — 부팅 중(서비스 미기동)·소켓 점유·경로 차단 가능. 런타임 상태 미확정.'
       : state === 'host-unreachable'
         ? 'ICMP·TCP 모두 무응답 — 호스트에 도달하지 못했다는 관측. 전원·네트워크·재부팅 초기 단계 중 어느 것인지는 구분되지 않는다.'
-        : 'ICMP 판정 불가(ping 미지원) — TCP 실패만 확인됨.';
+        : svc && svc.state === state
+          ? `${host}:1402 새 연결이 거부됨(refused). ${svc.summary}${localNote}`
+          : 'ICMP 판정 불가(ping 미지원) — TCP 실패만 확인됨.';
+  const verdict = `${baseVerdict}${routeNote}${guidance ? ` ${guidance}` : ''}`;
 
   return {
     observations,
-    assessment: { state, confidence, alternativeExplanations, controllerCrashConfirmed: false },
+    assessment: {
+      state, confidence, alternativeExplanations, controllerCrashConfirmed: false,
+      ...(svc ? { services: svc, rebootCandidate: svc.rebootCandidate } : {}),
+    },
     controllerHealth: state === 'host-unreachable'
       ? { state: 'unreachable', reason: 'ICMP·TCP 모두 무응답 — 호스트에 도달하지 못했다. 런타임 상태는 측정 불가.' }
       : { state: 'unconfirmed', reason: '1402 도달성만으로는 GPL 런타임 상태를 판정할 수 없다 — 살아 있음의 증거는 명령의 <STATUS> 응답이다.' },
-    recommendedAction: state === 'command-channel-unavailable'
-      ? 'wait-and-retry — 수 초~수 분 뒤 controller_status 를 다시 호출해 볼 것. 전원 재투입·재부팅을 권고하기 전에 사용자에게 실제 제어기 상태를 확인할 것.'
-      : 'ask-user — 사용자에게 제어기 전원·네트워크 상태를 확인할 것. 이 서버의 관측만으로는 원인을 확정할 수 없다.',
+    recommendedAction: svc && svc.state !== 'inconclusive'
+      ? svc.recommendedAction
+      : guidance
+        ? `ask-user — ${guidance}`
+        : state === 'command-channel-unavailable'
+          ? 'wait-and-retry — 수 초~수 분 뒤 controller_status 를 다시 호출해 볼 것. 전원 재투입·재부팅을 권고하기 전에 사용자에게 실제 제어기 상태를 확인할 것.'
+          : 'ask-user — 사용자에게 제어기 전원·네트워크 상태를 확인할 것. 이 서버의 관측만으로는 원인을 확정할 수 없다.',
     verdict,
+  };
+}
+
+// ── Compile 이 소켓 리셋으로 끊김 (2026-10-22 22:01 KST 사고) ─────────────────────────────
+// 확장 src/controller/deployment/compileAbort.ts classifyCompileAbort 와 같은 규칙(전송 실패 쪽).
+
+export const COMPILE_ABORT_HINT = '제어기가 컴파일 중 연결을 끊음 — 명령 콘솔 생존 확인 필요';
+
+/**
+ * Compile 전송 실패 → compileAborted. 리셋/끊김(ECONNRESET·EPIPE·ECONNABORTED·연결 종료)만 해당하고
+ * 타임아웃·연결 거부(보내지도 못함)는 null.
+ */
+export function classifyCompileAbortError(command, err, elapsedMs) {
+  const code = typeof err?.code === 'string' ? err.code : '';
+  const msg = String(err?.message ?? err ?? '');
+  const token = /\b(ECONNRESET|EPIPE|ECONNABORTED)\b/.exec(`${code} ${msg}`)?.[1]
+    ?? (/closed without response|ECONNCLOSED|socket hang up/i.test(`${code} ${msg}`) ? 'ECONNCLOSED' : null);
+  if (!token) return null;
+  return { reason: token, command, elapsedMs: Math.max(0, Number(elapsedMs) || 0), outputLines: 0, hint: COMPILE_ABORT_HINT };
+}
+
+/** 생존 확인(`Show Thread -web`) 결과 → controllerHealth. raw 에 STATUS 가 있으면 응답함. */
+export function livenessFromProbe(probe, { raw = null, error = null, at = Date.now() } = {}) {
+  const ok = typeof raw === 'string' && raw.includes('<STATUS>');
+  return {
+    state: ok ? 'responsive' : 'unresponsive',
+    probe,
+    detail: ok ? '명령 콘솔이 STATUS 로 응답함' : String(error?.message ?? error ?? 'STATUS 없음'),
+    checkedAt: new Date(at).toISOString(),
   };
 }

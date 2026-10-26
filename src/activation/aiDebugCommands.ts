@@ -18,6 +18,7 @@ import { AI_BLOCKED_ERROR } from '../controller/automation/aiCommandPolicy';
 import { describeDeployLock } from '../controller/deployment/deployLock';
 import { listRemoteDir, listRemoteDirs, normalizeAbsoluteRemoteDir } from '../controller/files/ftpClient';
 import { classifyRemoteClearRoot, clearRemoteFolderEntries, selectRemoteClearTargets } from '../controller/files/remoteFolderClear';
+import { verifyControllerForFtpWrite } from '../controller/connection/controllerIdentityIo';
 import { getCompiledRecord } from '../controller/deployment/deployRecord';
 import { compileUntilPattern } from '../controller/runtime/runtimeConsoleBuffer';
 import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThreadList } from '../controller/protocol/responseParser';
@@ -521,6 +522,8 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 	// 목록만 돌려준다(dry run). 범위는 설정된 로드 폴더(/GPL)뿐이고, flash 영구 사본은 되돌릴 수 없으므로 AI_BLOCKED 다.
 	// 쓰레드 게이트는 묻지 않고 거절한다 — 정지는 별개의 동의가 필요한 조작이라 AI 가 stop_threads 로 따로 한다.
 	registerAiDebugCommand('gpl.ai.debug.clearRemoteFolder', async (args?: { root?: string; names?: string[]; confirm?: boolean }) => {
+		// 이 호출 안에서 받은 명령 콘솔 STATUS(쓰레드 게이트)·FTP 배너(목록 조회)를 정체 확인에 재사용한다 — 왕복 추가 없음.
+		const startedAt = Date.now();
 		const cfg = getControllerConfig();
 		const root = normalizeAbsoluteRemoteDir((args?.root ?? '').trim() || cfg.ftpBasePath);
 		const kind = classifyRemoteClearRoot(root, { gplBasePath: cfg.ftpBasePath, flashBasePath: cfg.ftpFlashProjectsPath });
@@ -595,6 +598,23 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 				threads: threads.map(t => ({ name: t.name, state: t.state })),
 				detail: `${describeThreadActivity(threads)} — 실행 중에 원격 파일을 지우면 파일 충돌·자원 누수가 생길 수 있습니다.`,
 				recovery: { action: 'ASK_USER', retryCurrentCommand: false, detail: '정지도 사용자 동의를 받아 stop_threads 로 한 뒤 다시 호출할 것.' },
+			};
+		}
+
+		// FTP 쓰기(삭제) 전 제어기 정체 확인 — AI 경로는 묻지 않고 구조화 거부한다(모달은 브리지를 막는다).
+		const controllerCheck = await verifyControllerForFtpWrite(cfg, startedAt,
+			vscode.workspace.getConfiguration('gpl').get<boolean>('controller.verifyControllerIdentity', true) !== false);
+		if (!controllerCheck.verified) {
+			host.log(`[FTP] AI 요청 ${root} 비우기 거부 — 제어기 미확인: ${controllerCheck.reasons.join(' / ')}`);
+			return {
+				ok: false,
+				error: 'CONTROLLER_UNVERIFIED',
+				sent: false,
+				root,
+				reasons: controllerCheck.reasons,
+				controllerCheck,
+				detail: `${cfg.ip} 이 PA 제어기인지 확인하지 못해 지우지 않았습니다: ${controllerCheck.reasons.join(' ')}`,
+				recovery: { action: 'ASK_USER', retryCurrentCommand: false, detail: 'controller_status 로 명령 콘솔·경로를 관측하고 사용자에게 확인할 것. 우회 삭제 금지.' },
 			};
 		}
 

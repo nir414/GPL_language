@@ -39,7 +39,11 @@ import {
 } from '../controller/connection/controllerConnection';
 import { onDebugProbeResult } from '../controller/debugging/debugBridge';
 import { DEPLOY_LOCK_DIR_NAME, describeDeployLock, getDeployLock } from '../controller/deployment/deployLock';
-import { projectNameOf } from '../controller/projects/projectPicker';
+import { buildTargetCandidates, projectNameOf } from '../controller/projects/projectPicker';
+import { listRemoteDir } from '../controller/files/ftpClient';
+import { clearUnloadRisk, judgeRebootEvidence, noteChannelLoss } from '../controller/commands/unloadRisk';
+import { readUnloadRiskState, updateUnloadRiskState } from '../controller/commands/unloadRiskStore';
+import { setProjectKindResolver, setUnloadRiskLogger, unloadFailureGuidance } from '../controller/commands/unloadRiskGuard';
 import { probeReachability } from '../controller/connection/reachability';
 import { SHOW_THREAD_LIST_CMD } from '../controller/protocol/responseParser';
 import { setDashboardConnectionObserver } from '../views/controllerDashboardPanel';
@@ -176,6 +180,47 @@ async function stopDebugSessionAndWait(
 export function activateConnection(host: ExtensionHost): ConnectionApi {
 	const { context, outputChannel } = host;
 
+	// ── 그룹 Compile 뒤 Unload 위험 (controller/commands/unloadRisk.ts) ─────────────────────────────
+	// 그룹 판정(ProjectStart 유무)은 워크스페이스 .gpr 로 한다 — 같은 이름이 여러 과제 폴더에 있으면 하나라도 실행 가능하면
+	// 실행 가능으로 본다(그룹으로 단정하지 않는다). 워크스페이스에 없는 이름은 모름(표시·Start 거부 없음).
+	setUnloadRiskLogger(line => host.log(line));
+	setProjectKindResolver({
+		lookup: async name => {
+			const key = name.trim().toLowerCase();
+			const same = (await buildTargetCandidates()).filter(c => c.projectName.trim().toLowerCase() === key);
+			return same.length === 0 ? undefined : { runnable: same.some(c => c.runnable) };
+		},
+		runnableProjects: async () => [...new Set((await buildTargetCandidates()).filter(c => c.runnable).map(c => c.projectName))],
+	});
+	context.subscriptions.push({ dispose: () => { setProjectKindResolver(undefined); setUnloadRiskLogger(undefined); } });
+
+	/**
+	 * 재부팅 근거 확인 — 표시 뒤 명령 콘솔 유실이 있었고 재연결 뒤 /GPL 에 그룹 폴더가 없으면 위험 표시를 지운다.
+	 * 근거가 모자라면 그대로 둔다(판정: unloadRisk.judgeRebootEvidence). 배포 중이면 FTP 를 더 열지 않는다.
+	 */
+	async function checkUnloadRiskRebootEvidence(trigger: string): Promise<void> {
+		try {
+			const cfg = getControllerConfig();
+			const state = readUnloadRiskState(cfg.ip);
+			if (!state || state.marks.length === 0 || state.channelLossAt === undefined) { return; }
+			if (host.currentDeployLockHolder()) { return; }
+			let names: string[] | null;
+			try {
+				names = (await listRemoteDir(cfg.ip, cfg.ftpBasePath)).map(e => e.name);
+			} catch {
+				names = null;
+			}
+			const judgement = judgeRebootEvidence(state, names);
+			host.log(`[UnloadRisk] ${trigger}: ${judgement.detail}`);
+			if (judgement.rebooted) {
+				updateUnloadRiskState(cfg.ip, s => clearUnloadRisk(s, Date.now(), judgement.reason));
+				host.log('[UnloadRisk] 그룹 Compile 뒤 Unload 위험 표시를 해제했습니다(재부팅 근거).');
+			}
+		} catch (err: any) {
+			host.log(`[UnloadRisk] 재부팅 근거 확인 실패(표시 유지): ${err?.message ?? err}`);
+		}
+	}
+
 	// ── 연결 건강 모니터 (2026-08-28, controller/connection/connectionHealth.ts) ──────────────────────────────
 	// 연결 유실 판정의 단일 출처. 프로브(트리 Show Thread 폴·디버그 어댑터 폴·재프로브) 결과와 힌트(1403 connect-failed/
 	// socket-error·keep-alive 소켓 error·대시보드 프로브 실패·어댑터 실패 종료)를 받아 connected → suspect → lost 로 판정한다.
@@ -188,6 +233,8 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		const lostAt = new Date(summary.lostAt);
 		// setConnected(false) 가 모니터 상태를 초기화하기 전에 스냅샷을 떠 둔다(교란 명령 관측이 사후 파일에 남게).
 		const healthSnapshotAtLoss = host.healthMonitor?.snapshot();
+		// 위험 표시가 있으면 유실 시각을 남긴다 — 재연결 뒤 재부팅 판정의 전제다(unloadRisk.judgeRebootEvidence).
+		updateUnloadRiskState(cfg.ip, s => noteChannelLoss(s, summary.lostAt));
 		host.stopRuntimeConsoleAndSyncTree();
 		// 'lost' 이유를 넘겨 트리가 FTP/시스템 정보 캐시를 보존하게 한다(#22 재연결 플랩 억제).
 		host.setControllerConnected(false, { reason: 'lost' });
@@ -236,6 +283,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 				? `채널 복구 확인 — ${info.disruptiveOperation?.command ?? '(명령 미확인)'} 뒤 일시적 사용 불가였음(그 명령의 실제 결과는 여전히 미확정)`
 				: '연결 복구';
 			host.log(`[Health] ${what} — ${info.failuresBeforeRecovery}회 실패 뒤 응답 재확인 (${(info.durationMs / 1000).toFixed(1)} s, 사유: ${info.suspectReason})`);
+			void checkUnloadRiskRebootEvidence('채널 복구');
 		},
 		onLost: summary => handleConnectionLost(summary),
 	});
@@ -260,7 +308,16 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 	context.subscriptions.push({ dispose: () => { setIdlePingObserver(null); setIdlePingActive(false); } });
 	// 채널 교란 가능 명령(Unload/Load/Compile/Start)이 응답 없이 끝나면 recovering 으로 흡수한다(2026-08-31).
 	// 설정 connectionRecoveryWindowMs=0 이면 종전 판정(교란 뒤 거부 2회 → 유실)으로 되돌아간다.
+	// 그룹 Compile 뒤의 Unload 가 응답 없이 끝났으면 복구 대기(최대 180 s)만 안내하지 말고 바로 알린다 — 이 조합은
+	// 지금까지 재부팅이 필요했다(inbox unload-guard-request ③). 안내만 하고 판정·상태는 바꾸지 않는다.
+	const announceUnloadRisk = (command: string): void => {
+		const guidance = unloadFailureGuidance(command, getControllerConfig().ip);
+		if (!guidance) { return; }
+		host.log(`[UnloadRisk] ${guidance}`);
+		void vscode.window.showWarningMessage(guidance, '출력 보기').then(pick => { if (pick === '출력 보기') { outputChannel.show(true); } });
+	};
 	setDisruptiveCommandObserver(failure => {
+		announceUnloadRisk(failure.command);
 		if (getConnectionRecoveryWindowMs() <= 0) { return; }
 		host.healthMonitor?.noteDisruptiveTimeout({ command: failure.command, kind: failure.kind, detail: failure.detail, at: failure.at });
 	});
@@ -301,6 +358,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 				host.log(`[Controller] Connected: ${cfg.ip}:${cfg.port}`);
 				if (!silent) { vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`); }
 				host.setControllerConnected(true);
+				void checkUnloadRiskRebootEvidence('연결');
 				// controller 연결 성공 시 1403도 바로 유지 연결한다.
 				try { host.ensureRuntimeConsole(); } catch (err: any) {
 					host.log(`[Console] auto-start on connect failed: ${err?.message ?? err}`);

@@ -356,6 +356,13 @@ const SSOT_RULES: readonly SsotRule[] = [
         requires: ['isControllerSessionConnected', 'setControllerSessionConnected', 'onControllerSessionChange', 'effectiveKeepAlive'],
         use: 'host.isControllerConnected / controller/connection/connectionSession.isControllerSessionConnected · onControllerSessionChange',
     },
+    {
+        what: '그룹 Compile 뒤 Unload 위험 판정·문구 (UI 모달·AI 거부·타임아웃 안내·재부팅 해제가 같은 판정을 쓴다)',
+        pattern: /['"`]unload-after-group-compile['"`]|명령 콘솔을 끊었/,
+        ownedBy: ['controller/commands/unloadRisk'],
+        requires: ['assessUnloadRisk', 'judgeRebootEvidence', 'unloadRiskWarning', 'unloadRiskRefusalDetail', 'unloadTimeoutGuidance'],
+        use: 'controller/commands/unloadRisk.assessUnloadRisk / judgeRebootEvidence (전송 가드는 unloadRiskGuard, 저장은 unloadRiskStore)',
+    },
 ];
 
 /**

@@ -33,6 +33,7 @@ import {
 } from '../threads/threadStop';
 import type { SettleOutcome, ThreadProbe, ThreadStopIo, ThreadStopOptions } from '../threads/threadStop';
 import { compileProject, loadProject, startProject, unloadProject } from '../commands/projectCommands';
+import { isNotRunnableStartFailure } from '../commands/unloadRisk';
 import type { CompileAttempt, ProjectCommandIo } from '../commands/projectCommands';
 import { isProjectAlreadyLoaded, isProjectNotLoaded } from '../protocol/controllerStatusCodes';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
@@ -465,6 +466,17 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
     }
     if (result.success) {
         operation.complete(summary);
+        return;
+    }
+    // -744(*Invalid start procedure*) = ProjectStart 없는 그룹을 Start 했다. 되풀이하면 그룹 Compile 만 또 일어난다(2026-10-23).
+    if (isNotRunnableStartFailure(result.failedPhase, result.failedStatusCode)) {
+        operation.fail({
+            code: 'DEPLOY_START',
+            message: `${result.failedStatusMessage ?? 'Start 실패'} — 실행 가능한 프로젝트(.gpr 에 ProjectStart)를 지정하세요. 같은 요청을 되풀이하지 마세요.`,
+            retryable: false,
+            retryMode: 'RESOLVE_PROJECT',
+            safeToRepeat: false,
+        }, summary);
         return;
     }
     operation.fail({

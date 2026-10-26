@@ -83,3 +83,52 @@ export async function clearRemoteFolderEntries(
 	}
 	return result;
 }
+
+// ── 삭제 전 정지 게이트 판정 (2026-10-23 inbox unload-guard-request ③) ─────────────────────
+// 명령 콘솔이 이미 거부(refused) 상태인데 `Stop -all` 실패 뒤에도 FTP 삭제가 이어진 사례가 있었다(`550 DELE failed.`).
+// 원격 파일 삭제는 되돌릴 수 없으므로 **정지가 확인되지 않으면 지우지 않는다** — 상태를 모르는 것도 "확인 안 됨"이다.
+// 사람 경로(트리 「/GPL 비우기」·항목 삭제)가 이 판정을 쓰고, AI 경로(`gpl.ai.debug.clearRemoteFolder`)는 쓰레드가 있으면
+// 정지 없이 거절하는 더 엄격한 규칙을 쓴다.
+
+/** 삭제 진행 여부와, 진행하지 않을 때 사람이 읽을 사유. */
+export type RemoteDeleteGate =
+	| { proceed: true }
+	| { proceed: false; reason: 'thread-state-unknown' | 'user-cancelled' | 'stop-failed' | 'stop-unconfirmed'; detail: string };
+
+/** 쓰레드 목록 조회 결과로 판정 — 목록을 못 받았으면(null) 지우지 않는다. 빈 목록이면 정지 단계 없이 진행. */
+export function remoteDeleteGateForThreads(threadCount: number | null): RemoteDeleteGate | 'needs-stop' {
+	if (threadCount === null) {
+		return {
+			proceed: false,
+			reason: 'thread-state-unknown',
+			detail: '쓰레드 상태를 확인하지 못했습니다(명령 콘솔 응답 없음) — 실행 중인지 모르는 상태에서는 원격 파일을 지우지 않습니다. 연결을 확인한 뒤 다시 실행하세요.',
+		};
+	}
+	return threadCount === 0 ? { proceed: true } : 'needs-stop';
+}
+
+/** `Stop -all` 절차(threadStop.stopAllAndSettle) 결과로 판정 — 전송 실패·정지 미확인이면 지우지 않는다. */
+export function remoteDeleteGateAfterStop(outcome: {
+	sendFailed: boolean;
+	statusCode?: number;
+	message?: string;
+	ok: boolean;
+	unconfirmed: boolean;
+}): RemoteDeleteGate {
+	if (outcome.sendFailed) {
+		const status = outcome.statusCode === undefined ? '' : `STATUS ${outcome.statusCode} `;
+		return {
+			proceed: false,
+			reason: 'stop-failed',
+			detail: `정지 실패: ${`${status}${outcome.message ?? ''}`.trim() || '응답 없음'} — 정지를 확인하지 못해 삭제를 중단합니다(원격 파일은 그대로입니다).`,
+		};
+	}
+	if (!outcome.ok || outcome.unconfirmed) {
+		return {
+			proceed: false,
+			reason: 'stop-unconfirmed',
+			detail: '정지 완료를 확인하지 못해 삭제를 중단합니다(원격 파일은 그대로입니다). 상태를 확인한 뒤 다시 실행하세요.',
+		};
+	}
+	return { proceed: true };
+}

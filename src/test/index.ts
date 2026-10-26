@@ -122,6 +122,7 @@ import './executionMarks.test';
 import './gplBuiltins.test';
 import './architecture.test';
 import './memoryGuard.test';
+import './unloadRisk.test';
 import { run } from './harness';
 
 void run();

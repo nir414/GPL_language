@@ -43,6 +43,10 @@ const TABLE: Record<string, RecoveryHint> = {
         action: 'RESOLVE_PROJECT', retryCurrentCommand: false, safeToRepeat: true,
         detail: '요청한 이름/경로가 이 워크스페이스의 GPL 프로젝트가 아니다. candidates 에서 고르거나 사용자에게 확인할 것.',
     },
+    PROJECT_NOT_RUNNABLE: {
+        action: 'RESOLVE_PROJECT', retryCurrentCommand: false, safeToRepeat: true,
+        detail: '대상이 ProjectStart 없는 그룹(라이브러리)이라 Start 계열을 보내지 않았다(정지·업로드·컴파일 전). candidates 의 실행 가능한 프로젝트를 지정하거나 사용자에게 확인할 것.',
+    },
     NO_GPL_PROJECT: {
         action: 'ASK_USER', retryCurrentCommand: false, safeToRepeat: true,
         detail: '워크스페이스에 .gpr 프로젝트가 없다. 사용자에게 GPL 프로젝트가 포함된 폴더를 열어 달라고 요청할 것.',

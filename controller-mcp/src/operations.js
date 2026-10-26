@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { NO_STATUS_CODE } from './parse.js';
 
 export const OPERATION_VERSION = 1;
 export const OPERATION_STALE_MS = 60_000;
@@ -219,8 +220,44 @@ export function summarizeOperationResult(rec) {
     const e = r.runtimeError;
     parts.push(`runtimeError ${e.statusCode ?? '?'}${e.file ? ` @ ${e.file}:${e.line ?? '?'}` : ''}`);
   }
+  // Compile 이 소켓 리셋으로 끊김(컴파일 에러와 구분, 2026-10-22 사고) + 생존 확인 결과.
+  if (r.compileAborted && typeof r.compileAborted === 'object') {
+    const a = r.compileAborted;
+    parts.push(`compileAborted ${a.reason ?? '?'} (${typeof a.elapsedMs === 'number' ? `${(a.elapsedMs / 1000).toFixed(1)} s` : '?'}, 출력 ${a.outputLines ?? '?'}줄)`);
+  }
+  if (r.controllerHealth && typeof r.controllerHealth === 'object' && typeof r.controllerHealth.state === 'string') {
+    parts.push(`controller ${r.controllerHealth.state}`);
+  }
+  // FTP 쓰기 전 제어기 정체 확인(확장 controller/connection/controllerIdentity.ts).
+  if (r.controllerCheck && typeof r.controllerCheck === 'object' && typeof r.controllerCheck.verified === 'boolean') {
+    const c = r.controllerCheck;
+    parts.push(c.disabled ? 'controllerCheck off' : c.verified ? 'controllerCheck ok' : `controllerCheck unverified${c.overridden ? '(사용자 진행)' : ''}`);
+  }
   if (typeof r.success === 'boolean' && parts.length === 0) parts.push(r.success ? 'success' : 'failed');
   return parts.length ? parts.join(' · ') : null;
+}
+
+/**
+ * 확장이 보낸 제어기 명령(배포의 Compile)을 MCP 세션 로그 줄로 — 종전에는 deploy 항목이 `1402 0회` 로 찍혀
+ * Compile 이 언제 나가서 몇 ms 뒤 끊겼는지 MCP 로그에서 볼 수 없었다(2026-10-22 보고 ③-2).
+ * 확장 DeployResult(`compileAttemptLogs`) 와 작업 기록 요약(`compileCommands`) 모양을 모두 받는다. 모르는 모양이면 [].
+ * 반환: `Compile BINDER_Probe | 22010ms | ABORTED ECONNRESET` 같은 줄(앞에 붙일 접두는 호출측 몫).
+ */
+export function extensionCommandLogLines(result) {
+  if (!result || typeof result !== 'object') return [];
+  const aborted = result.compileAborted && typeof result.compileAborted === 'object' ? result.compileAborted : null;
+  const list = Array.isArray(result.compileCommands) ? result.compileCommands
+    : Array.isArray(result.compileAttemptLogs) ? result.compileAttemptLogs : [];
+  return list
+    .filter((c) => c && typeof c.command === 'string')
+    .map((c) => {
+      const ms = typeof c.elapsedMs === 'number' ? `${c.elapsedMs}ms`
+        : typeof c.responseMeta?.durationMs === 'number' ? `${c.responseMeta.durationMs}ms` : '?ms';
+      const outcome = typeof c.outcome === 'string' ? c.outcome
+        : aborted && aborted.command === c.command && c.statusCode === NO_STATUS_CODE ? `ABORTED ${aborted.reason}`
+          : typeof c.statusCode === 'number' ? (c.statusCode === NO_STATUS_CODE ? 'NO STATUS' : `STATUS ${c.statusCode}`) : '?';
+      return `${c.command} | ${ms} | ${outcome}`;
+    });
 }
 
 /** 축약에서 버리는 키 — 사람이 읽을 일이 없는 내부 식별자/해시(결과 본문의 1/3 을 차지했다). */

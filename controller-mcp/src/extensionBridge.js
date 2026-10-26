@@ -526,6 +526,7 @@ export async function resolveBridge(ip, { dir, mode = 'auto', wake = true, wakeW
 export function isRetrySafeCommand(command) {
   const c = String(command || '').trim();
   if (/(^|\s)-clear\b/i.test(c)) return false;   // ErrorLog -clear 는 상태 변경
+  if (/^date\s*$/i.test(c)) return true;          // date 단독 = 시각 조회(인자가 있으면 시계 설정이라 제외)
   return /^(show|errorlog|dir|directory|pd|pdx|type|memory)\b/i.test(c);
 }
 

@@ -77,7 +77,7 @@ RETR /GPL/MergeCode/MergeCode.gpl
 | `Copy` | flash disk, ROMDISK 같은 장치의 파일을 복사합니다. |
 | `Create` | 파일을 생성하고 데이터를 기록합니다. |
 | `DataLog` | data logger 출력을 콘솔에 표시하거나 파일로 저장합니다. |
-| `Date` | 시스템 날짜와 시간을 표시하거나 설정합니다. |
+| `Date` | 시스템 날짜와 시간을 표시하거나 설정합니다. 아래 [Date — 제어기 시계](#date--제어기-시계) 참조. |
 | `Del` | 파일을 삭제합니다. |
 | `Directory <path>` | 디렉터리 파일 목록 또는 flash disk 여유/전체 공간을 표시합니다. path 인자가 필요합니다. |
 | `ErrorLog` | 시스템 error log를 표시하거나 지웁니다. |
@@ -160,6 +160,31 @@ RETR /GPL/MergeCode/MergeCode.gpl
 5. `Step -into`, `Step -over`, `Step -out`으로 흐름을 추적합니다.
 6. `Set Break`, `Show Break`, `Set NoBreak`으로 breakpoint를 관리합니다.
 7. `ErrorLog`와 `Show StartupLog`로 오류/부팅 증거를 확인합니다.
+
+## Date — 제어기 시계
+
+문서: [Date](https://www2.brooksautomation.com/Controller_Software/Software_Reference/Console_Commands/date_cmnd.htm) — 구문 `Date [mm-dd-yyyy hh:mm:ss]`.
+
+| 형태 | 동작 | 분류 |
+| --- | --- | --- |
+| `date` | 현재 제어기 시각을 `mm-dd-yyyy hh:mm:ss` 로 표시합니다. | 읽기 전용 |
+| `date mm-dd-yyyy hh:mm:ss` | 제어기 시각을 설정합니다(STATUS 0). | 상태 변경(모션 없음) |
+
+실기 관측(2026-10-24, SamplePrep 세션):
+
+- 두 형태 모두 명령 콘솔에서 동작했습니다. 제어기는 PC 보다 약 20초 늦어 있었고, 설정 뒤 확인 읽기의 오차는 약 1초 이내였습니다.
+- 제어기에는 시간대(time zone) 개념이 없습니다. PC 의 **로컬 시각**을 그대로 보냅니다(예: KST 면 KST 시각).
+- 표시가 초 단위라 한 번 읽어서 알 수 있는 오프셋에는 ±0.5초 이상의 오차가 있습니다.
+- `pc 121 "..."`(`=` 없음)는 `-205 *Missing argument*` 였습니다. DataID 121 "Date and time" 으로 시각을 쓰는 경로는 확인하지 않았습니다.
+- **재부팅 뒤에도 설정한 시각이 유지되는지는 미확인**입니다(문서에도 언급 없음).
+
+확장 지원:
+
+- 명령 팔레트 `GPL: Sync Controller Clock to PC (제어기 시계를 PC에 맞추기)`(`gpl.controller.syncClock`) — `date` 로 읽어 오프셋을 구하고,
+  다음 정각 초에 도착하도록 왕복/2 만큼 앞당겨 `date <PC 로컬 시각>` 을 보낸 뒤 다시 읽어 남은 오차를 Output 과 알림으로 보고합니다.
+- 설정 `gpl.controller.syncClockOnConnect`(기본 꺼짐)를 켜면 연결 뒤 오프셋을 읽고, 절댓값이 `gpl.controller.syncClockThresholdSec`(기본 2초)를
+  넘을 때만 맞춥니다. 실패해도 연결에는 영향이 없고 Output 에 로그만 남깁니다.
+- MCP: `controller_status` 의 `clock` 필드(읽기 전용)와 `sync_controller_clock` 도구(`confirm` 없으면 dry run).
 
 ## 자주 헷갈리는 명령
 

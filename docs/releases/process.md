@@ -285,6 +285,22 @@ Entra tenant가 없는 계정은 먼저 [Microsoft의 tenant 준비 안내](http
 `--skip-duplicate`로 건너뛰므로, 재실행 성공만으로 새 업로드를 증명하지 말고 Marketplace 버전을 직접 확인한다.
 Marketplace에는 기존 설치보다 높은 버전을 게시해야 한다.
 
+### 현재 연결 상태 (2026-10-26)
+
+| 항목 | 값 |
+| --- | --- |
+| Entra 디렉터리 | `기본 디렉터리` (tenant `5fd15a3f-d15b-47d8-badb-2d7489faeba4`) |
+| 게시용 앱 등록 | `gpl-language-marketplace-publisher` (client `571bc32b-3272-4eb3-abea-0b5333a52f80`, 서비스 주체 object `2fd6033a-3b4a-47ca-b30e-7a9379755139`) |
+| federated credential | `repo:nir414/GPL_language:environment:marketplace` |
+| Marketplace 멤버 | 게시자 `nir414`에 위 서비스 주체를 Contributor로 추가(Members에 `tenant\object` 형식으로 표시) |
+| GitHub | `marketplace` Environment secrets `AZURE_CLIENT_ID`·`AZURE_TENANT_ID`, Actions variable `MARKETPLACE_PUBLISH=true`, 배포 규칙 `v*.*.*` 태그만 |
+
+연결하면서 확인한 점:
+
+- 구독 없는 개인 계정에서 `az login --allow-no-subscriptions`가 디렉터리 선택 화면에서 `'NoneType' object has no attribute 'get'`으로 죽었다(Azure CLI 2.91.0). `az config set core.login_experience_v2=off` 뒤 `az login --tenant <tenant> --allow-no-subscriptions`로 우회했다.
+- Marketplace 멤버 ID는 서비스 주체로 로그인한 상태에서 `az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798`로 처음 호출할 때 등록·반환된다. `api-version=7.1-preview.3`을 붙인 첫 호출은 `VSS011031 no profile`로 실패했다. 조회에는 1시간짜리 임시 client secret을 쓰고 바로 지웠다(앱에는 secret이 남지 않는다).
+- 이 저장소의 GitHub Release는 immutable이라 게시된 자산을 바꿀 수 없다. 실패한 Release workflow를 다시 실행하면 `release` job이 기존 릴리스의 자산을 받아 SHA-256을 확인하고 그 파일을 게시 대상으로 넘긴다(0.18.1부터). 0.18.0 태그의 workflow는 이 처리 전이라 재실행이 실패했고, Marketplace에는 0.18.1이 첫 자동 게시다.
+- 권한 회수: 앱 등록을 지우거나 Marketplace Members에서 빼면 자동 게시 권한이 없어진다.
 ### 사용자의 자동 업데이트
 
 Marketplace 게시와 사용자의 자동 업데이트 설정은 별개다. VS Code에서 해당 확장의 **Auto Update**가 켜져 있어야 한다.

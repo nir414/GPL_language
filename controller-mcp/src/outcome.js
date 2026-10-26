@@ -54,12 +54,14 @@ export function sendOutcomeOf(err) {
 const CHANNEL_DISRUPTIVE_RE = /^\s*(unload|load|compile|start)\b/i;
 /** 상태를 바꾸지 않는 조회 명령 — 결과가 미확정이어도 그냥 다시 물어보면 된다. */
 const READ_ONLY_RE = /^\s*(show|errorlog|dir|directory|pd|pdx|type|memory)\b/i;
+/** `date` 는 인자 없을 때만 조회다 — `date mm-dd-yyyy hh:mm:ss` 는 제어기 시계 설정(확장 consoleCommandClassifier 와 같은 규칙). */
+export const DATE_READ_RE = /^\s*date\s*$/i;
 const CLEARS_STATE_RE = /(^|\s)-clear\b/i;
 
 /** 명령의 채널 특성. */
 export function commandTraits(command) {
   const c = String(command ?? '');
-  const readOnly = READ_ONLY_RE.test(c) && !CLEARS_STATE_RE.test(c);
+  const readOnly = (READ_ONLY_RE.test(c) || DATE_READ_RE.test(c)) && !CLEARS_STATE_RE.test(c);
   return {
     mutability: readOnly ? 'read-only' : 'state-changing',
     mayDisruptChannel: CHANNEL_DISRUPTIVE_RE.test(c),

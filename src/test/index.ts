@@ -16,6 +16,7 @@ import './gplParserFixes.test';
 import './blockEndLine.test';
 import './outlineModel.test';
 import './consoleCommandClassifier.test';
+import './controllerClock.test';
 import './indentationRules.test';
 import './projectSelection.test';
 import './compileUnitTarget.test';

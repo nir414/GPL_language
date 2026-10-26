@@ -18,8 +18,8 @@ export interface ConsoleCommandClassification {
     detail: string;
 }
 
+// `date` 는 인자 유무로 갈리므로 classifyConsoleCommand 에서 따로 판정한다.
 const READ_ONLY_COMMANDS = new Map<string, ConsoleCommandCategory>([
-    ['date', 'system'],
     ['dir', 'file'],
     ['directory', 'file'],
     ['errorlog', 'event-log'],
@@ -89,6 +89,18 @@ export function classifyConsoleCommand(command: string): ConsoleCommandClassific
             category: 'event-log',
             impact: 'state-changing',
             detail: 'error log clear',
+        };
+    }
+
+    // `date` 는 인자 없이 시각 조회, 인자(`date mm-dd-yyyy hh:mm:ss`)가 있으면 제어기 시계를 바꾸는 설정이다
+    // (2026-10-24 실기 확인). 인자 유무로 갈라야 설정이 읽기 전용으로 조용히 분류되지 않는다.
+    if (commandName === 'date') {
+        const hasArgument = normalized.length > commandName.length;
+        return {
+            commandName,
+            category: 'system',
+            impact: hasArgument ? 'state-changing' : 'read-only',
+            detail: hasArgument ? 'controller clock set' : 'controller clock read',
         };
     }
 

@@ -197,6 +197,18 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   시뮬레이션/실기 판별 명령은 미확인이라 `simulation`은 항상 `null`.
 - `controller_status` 연결 실패 응답은 `observations/assessment/controllerHealth/recommendedAction/verdict` 를 한 번만 싣고(종전엔 `reachable{}` 아래 중복),
   배포 잠금이 있으면 `likelyCause`("확장이 배포/업로드 중 — 그동안 1402 거부 가능")를 1순위 원인으로 표시한다.
+- `controller_status.clock` — `{ controller, pc, offsetSec, uncertaintySec, pcTimeZone }`. 읽기 전용 `date` 1회로 제어기 시각과
+  같은 순간의 PC 로컬 시각을 함께 싣는다(`offsetSec` = 제어기 − PC, 양수면 제어기가 앞섬). 제어기 표시가 초 단위라 추정에 ±0.5 s 이상의
+  오차가 있고(`uncertaintySec`, 확장 브리지 경유면 왕복이 길어져 더 커진다), 읽기에 실패하면 `clock:{ok:false, error, detail}` 만 남기고
+  나머지 상태 조회는 그대로 진행한다.
+- `sync_controller_clock(confirm?)` — 제어기 시계를 PC 로컬 시각에 맞춘다(2026-10-24 실기 확인: `date mm-dd-yyyy hh:mm:ss` → STATUS 0).
+  `confirm` 없이 부르면 **dry run**(`before.offsetSec`·`wouldSend` 만, 아무것도 바꾸지 않음), 사용자 동의 뒤 `confirm:true` 면 다음 정각 초에
+  도착하도록 왕복/2 만큼 앞당겨 보내고(`sent`·`oneWayCompensationMs`) 다시 읽어 `residualSec`(남은 오차)를 보고한다. 제어기 상태(시계)를
+  바꾸지만 **모션은 일으키지 않는다**. 제어기에는 시간대가 없어 PC 로컬 시각을 그대로 보낸다(`pcTimeZone` 은 표시용). 확장 브리지가 있으면
+  확장 명령 `gpl.controller.syncClock` 으로 실행하고(`via:"extension"`, 왕복 측정이 브리지 지연에 오염되지 않음), 없을 때만 이 서버가 같은
+  절차(`src/clock.js`)를 직접 접속으로 돈다(`via:"direct-tcp"`). 실패는 `stage`(`read-before`/`set`/`read-after`)로 가르며, 설정 명령이
+  타임아웃이면 `outcome:"unknown"`(이미 적용됐을 수 있음 — 곧바로 재전송하지 말 것). 재부팅 뒤 시각 유지 여부는 미확인.
+  `controller_command` 의 분류도 같은 규칙이다: `date` 단독은 조회(재전송 안전), 인자가 있으면 상태 변경.
 - `get_session_log(tail?)` — 이 세션의 도구 호출/1402 명령 로그(왕복 낭비 분석·공유용).
   같은 내용이 파일(`GPL_MCP_LOG_DIR`, 서버 시작 시 stderr에 경로 출력)에도 기록되며,
   사용자는 `Get-Content "<로그파일>" -Wait`로 AI의 제어기 조작을 실시간 관찰할 수 있다.

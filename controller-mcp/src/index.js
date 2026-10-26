@@ -78,6 +78,7 @@ import { runBatch, normalizeCommandInput, BATCH_MAX } from './batch.js';
 import { aiBlockedResult, AI_BLOCKED_COMMANDS } from './aiPolicy.js';
 import { SERVER_INSTRUCTIONS, DOC_COMMENT_GUIDE } from './guidelines.js';
 import { captureFilesFor, searchCapture } from './consoleCapture.js';
+import { readControllerClock, syncControllerClock, clockStatusField, summarizeClockSync } from './clock.js';
 import { deployTargetArgs, projectForCommand } from './configuredTarget.js';
 import {
   SEND_OUTCOME_NOT_SENT,
@@ -929,6 +930,7 @@ function deployLockInfo() {
 
 tool('controller_status',
   '제어기 상태 요약 1회: 연결(1402 도달성)·스레드 상태별 개수와 정지 스레드 위치·고전원(Controller.PowerEnabled)·배포 잠금·서버 빌드. ' +
+  'clock={controller, pc, offsetSec(제어기 − PC), uncertaintySec, pcTimeZone}는 읽기 전용 `date` 1회 조회(실패하면 clock.ok:false, 상태 조회는 계속) — 맞추려면 sync_controller_clock. ' +
   '연결 실패 시 응답은 **관측(observations)과 추론(assessment)을 분리**해 돌려준다 — observations는 icmp/tcp1402/route(측정값), ' +
   'assessment는 {state, confidence, alternativeExplanations, controllerCrashConfirmed}, controllerHealth는 런타임 상태다. ' +
   '**1402 실패만으로 제어기 다운·전원 재투입을 결론내지 말 것** — controllerHealth.state="unconfirmed"는 "모른다"는 뜻이고, ' +
@@ -1002,6 +1004,7 @@ tool('controller_status',
       // <STATUS> 응답을 받았다 = 런타임이 명령을 처리했다. 이것이 'healthy' 를 말할 수 있는 유일한 증거다.
       controllerHealth: { state: 'healthy', reason: 'Show Thread -web 에 <STATUS> 응답 — 런타임이 명령을 처리했다.' },
     };
+    result.clock = await probeClock(); // 읽기 전용 date 1회 — 실패해도 상태 조회는 계속(clock.ok:false)
     if (detail) {
       result.threadList = threads.map(compactThread);
       const log = await runCommand('ErrorLog -web ,10');
@@ -1226,6 +1229,76 @@ tool('runtime_console_search',
   async ({ pattern, since, until, project, maxLines, includeMarkers }) => {
     const result = searchCapture({ files: captureFilesFor(HOST), pattern, since, until, project, maxLines: maxLines ?? 200, includeMarkers: includeMarkers ?? true });
     return textResult({ host: HOST, ...result });
+  });
+
+// ── 제어기 시계 (2026-10-24 SamplePrep 요청) ─────────────────────────────────
+// `date` 단독 = 시각 조회, `date mm-dd-yyyy hh:mm:ss` = 설정(실기 STATUS 0). 제어기에는 시간대가 없어 PC 로컬 시각을 그대로 보낸다.
+// 동기화는 확장 브리지가 있으면 확장 명령 gpl.controller.syncClock 으로 보낸다 — 왕복 보정을 확장의 명령 콘솔 큐 안에서
+// 재야 브리지 파일 왕복 지연이 섞이지 않는다. 브리지가 없을 때만 이 서버가 같은 절차(clock.js)를 직접 접속으로 돈다.
+const CLOCK_COMMAND_TIMEOUT_MS = 5000;
+
+function clockIo() {
+  return {
+    send: (command) => sendGuarded(command, { timeoutMs: Math.min(TIMEOUT, CLOCK_COMMAND_TIMEOUT_MS) }),
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms))),
+  };
+}
+
+/** controller_status.clock — date 1회. 브리지 경유면 왕복에 브리지 지연이 섞여 uncertaintySec 가 커진다. */
+async function probeClock() {
+  try {
+    return clockStatusField(await readControllerClock(clockIo()));
+  } catch (err) {
+    return { ok: false, error: 'probe-failed', detail: err?.message ?? String(err) };
+  }
+}
+
+tool('sync_controller_clock',
+  '제어기 시계를 PC 로컬 시각에 맞춘다(명령 콘솔 `date`). **두 단계로 쓴다:** ① `confirm` 없이 호출 → dry run: 현재 오프셋(before.offsetSec = 제어기 − PC)과 ' +
+  '보낼 명령(wouldSend)만 돌려주고 아무것도 바꾸지 않는다. ② 사용자 동의를 받은 뒤 `confirm:true` → 다음 정각 초에 도착하도록 왕복/2 만큼 앞당겨 ' +
+  '`date mm-dd-yyyy hh:mm:ss` 를 보내고(sent), 다시 읽어 남은 오차(residualSec)를 보고한다. ' +
+  '제어기 상태(시계)를 바꾸지만 **모션은 일으키지 않는다**. 제어기에는 시간대가 없어 PC 로컬 시각을 그대로 보낸다(pcTimeZone 은 표시용). ' +
+  '제어기 표시가 초 단위라 오프셋 추정에는 ±0.5 s 이상의 오차가 있다(uncertaintySec). 재부팅 뒤 시각이 유지되는지는 미확인. ' +
+  '확장 브리지가 있으면 확장 명령 gpl.controller.syncClock 으로 실행한다(via:"extension"). 단순 조회는 controller_status 의 clock 필드로 충분하다.',
+  {
+    confirm: z.boolean().optional().describe('true 일 때만 실제로 시계를 설정한다 — 사용자 동의를 받은 뒤에만 넣을 것. 생략하면 dry run'),
+    extensionInstanceId: z.string().optional().describe('실행할 VS Code 창(생략하면 현재 경로)'),
+  },
+  async ({ confirm, extensionInstanceId }) => {
+    const dryRun = confirm !== true;
+    const b = await currentBridge();
+    if (b.available) {
+      let res;
+      try {
+        res = await callExtension('gpl.controller.syncClock', { dryRun }, { timeoutMs: 30_000, instanceId: extensionInstanceId });
+      } catch (err) {
+        return textResult({ ok: false, error: 'bridge-unavailable', detail: err?.message ?? String(err), outcome: SEND_OUTCOME_NOT_SENT, transport: transportInfo() });
+      }
+      if (res?.ok && res.result && typeof res.result === 'object') {
+        const summary = summarizeClockSync(res.result);
+        logLine(`  clock ${dryRun ? 'preview' : 'sync'} via extension — ${JSON.stringify({ before: summary.before?.offsetSec, residual: summary.residualSec ?? null, ok: summary.ok })}`);
+        return textResult({ ...summary, via: 'extension', transport: transportInfo() });
+      }
+      // 확장 창이 명령 콘솔을 쥐고 있으므로 직접 접속으로 우회하지 않는다. 설정 요청이 집어 간 뒤 타임아웃이면 결과 미확정.
+      const unknown = !dryRun && res?.error === 'bridge-timeout' && res.sent !== false;
+      return textResult({
+        ok: false,
+        error: res?.error ?? 'bridge-failed',
+        detail: res?.detail ?? null,
+        outcome: unknown ? SEND_OUTCOME_UNKNOWN : SEND_OUTCOME_NOT_SENT,
+        hint: unknown
+          ? '확장이 동기화를 실행 중일 수 있다 — 같은 요청을 곧바로 다시 보내지 말고 controller_status 의 clock 으로 오프셋을 관측할 것.'
+          : '확장이 gpl.controller.syncClock 을 모르면(구버전) 확장을 갱신할 것. 확장 창이 명령 콘솔을 맡고 있어 직접 접속으로 우회하지 않는다.',
+        transport: transportInfo(),
+      });
+    }
+    if (BRIDGE_MODE === 'only') {
+      return textResult({ ok: false, error: 'bridge-unavailable', detail: `GPL_BRIDGE=only — 확장 브리지를 쓸 수 없다(${b.reason}). ${bridgeHint(b)}`, outcome: SEND_OUTCOME_NOT_SENT, transport: transportInfo() });
+    }
+    const result = summarizeClockSync(await syncControllerClock(clockIo(), { dryRun }));
+    logLine(`  clock ${dryRun ? 'preview' : 'sync'} direct — ${JSON.stringify({ before: result.before?.offsetSec, residual: result.residualSec ?? null, ok: result.ok })}`);
+    return textResult({ ...result, via: 'direct-tcp', transport: transportInfo() });
   });
 
 // ── 제어기 /GPL 폴더 목록 (2026-10-14 §1-EP, 개선 요청 §8) ─────────────────────────

@@ -243,6 +243,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 바이트 → 사람이 읽는 크기(트리 FTP 목록·업로드 진행 바·완료 요약) | `util/formatBytes.ts` (`formatBytes`·`formatBytesAs`·`byteUnitFor`) | `.toFixed(1)} KB/MB/GB` 직접 조립 |
 | 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/deployment/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / 상태바 `업로드 완료 — 변경 없음`·크기 템플릿 직접 조립 |
 | Flash 쓰기 전원 차단 금지 문구(쓰기·`Sync`·10초 안정화·안전 미확인) | `views/flashSafetyPresentation.ts` (`presentFlashSafety`) — 절차·시간은 `controller/deployment/flashSafety.ts` | `FLASH 저장 중`·`FLASH 안전 상태 미확인` 직접 조립 |
+| 그룹 Compile 뒤 Unload 위험 판정·문구(UI 모달·AI 거부·타임아웃 안내·재부팅 해제) | `controller/commands/unloadRisk.ts` (`assessUnloadRisk`·`judgeRebootEvidence`·`unloadRiskWarning` …) — 전송 가드는 `unloadRiskGuard.ts`, 저장은 `unloadRiskStore.ts` | `'unload-after-group-compile'` 리터럴·`명령 콘솔을 끊었` 문구 직접 조립 |
 
 새 정본을 세우면 `SSOT_RULES` 에 한 줄을 더한다(무엇을·정본은 어디·우회 표식·대신 쓸 것).
 규칙을 늘리는 비용이 낮아야 실제로 늘어난다.
@@ -266,6 +267,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | `<ip>.extension.json` · `bridge/<ip>/…` | `controller/automation/agentBridge.ts` | 위의 **레거시(IP) 경로** — 리더 인스턴스 하나만 서비스(구버전 MCP 호환) |
 | `operations/<operationId>.json` | `controller/automation/operationStore.ts` | 장시간 작업의 단계와 **결과** — 끝난 뒤에도 **남는다** |
 | `cancellations/<operationId>.json` | `controller/deployment/deployCancellation.ts` | 명시적 전체 정지를 실행 중·대기 중 업로드/배포에 전달 — 작업이 끝나면 **사라진다** |
+| `unload-risk-<ip>.json` | `controller/commands/unloadRisk.ts`(계약·판정) · `unloadRiskStore.ts`(읽기/쓰기) | 이 부팅의 그룹 Compile 표시 — Unload 확인 요구. 재부팅 근거가 있을 때만 확장이 해제하고 MCP(`controller-mcp/src/unloadRisk.js`)는 읽기·표시 추가만 한다 |
 
 지켜야 할 규약:
 

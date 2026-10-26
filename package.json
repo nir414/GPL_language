@@ -756,6 +756,11 @@
                 "title": "Unload (메모리에서 내리기)",
                 "category": "GPL",
                 "icon": "$(close)"
+            },
+            {
+                "command": "gpl.controller.clearUnloadRisk",
+                "title": "Unload 위험 표시 해제 (그룹 Compile 뒤 — 제어기 재부팅 후)",
+                "category": "GPL"
             }
         ],
         "viewsContainers": {

@@ -109,7 +109,8 @@ export async function runStatusCommand(
     } catch (e: any) {
         const raw = e?.message || String(e);
         const status = parseStatus(raw);
-        return { ok: false, statusCode: status.code, message: e?.sent === false ? raw : status.message, raw };
+        // 보내지 않은 거부(sent:false)와 위험 상태 Unload 타임아웃 안내(unloadRiskGuidance)는 원문을 그대로 보여 준다.
+        return { ok: false, statusCode: status.code, message: e?.sent === false || e?.unloadRiskGuidance ? raw : status.message, raw };
     }
 }
 

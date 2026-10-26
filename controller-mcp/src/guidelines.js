@@ -65,8 +65,7 @@ const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 **명령
 - \`start_project\`는 \`-compile\`을 붙여 보낸다(제어기의 Start는 스위치 없이는 컴파일하지 않고 옛 바이너리를 실행한다 —
   2026-09-10 실기 관측). 따라서 \`compile_project\` 직후 \`start_project\`를 연속으로 보내지 않는다(컴파일 중복).
 - **연결 실패는 관측이고 제어기 장애는 판단이다.** 타임아웃이나 \`ECONNREFUSED\` 하나로 "제어기 다운/재시작 중"이나
-  전원 재투입을 결론내지 않는다 — 실측 2026-08-31: Unload 타임아웃 뒤 약 2.5분간 1402 재접속이 거부되다가 재부팅 없이
-  정상 복귀했다. 응답의 \`outcome\`·\`controllerHealth\`·\`assessment.confidence\`를 그대로 읽고, \`unknown\`/\`unconfirmed\`면
+  전원 재투입을 결론내지 않는다(2026-08-31: Unload 타임아웃 뒤 2.5분 거부 후 재부팅 없이 복귀). 응답의 \`outcome\`·\`controllerHealth\`·\`assessment.confidence\`를 그대로 읽고, \`unknown\`/\`unconfirmed\`면
   \`show_threads\`·\`controller_status\`로 관측한 뒤 판단하며, 확정할 수 없으면 사용자에게 실제 상태를 확인한다.
 - **상태 변경 명령의 타임아웃은 실패가 아니라 결과 미확정(\`outcome:"unknown"\`)이다** — 제어기가 실행했을 수 있다.
   같은 명령을 곧바로 재전송하지 않고 \`recommendedAction\`을 따른다(\`outcome:"not-sent"\`면 다시 보내도 안전하다).
@@ -74,15 +73,16 @@ const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 **명령
   대상을 쓴다. 배포/업로드는 \`deploy_project\`(확장 경유 — 명령 콘솔은 파일을 못 올린다)를 쓰고, 대상을 정할 수
   없으면 \`PROJECT_AMBIGUOUS\`와 후보 목록이 온다 — **사용자에게 프로젝트 선택 UI를 누르거나 파일을 열어 달라고
   요청하지 말고** 후보를 보여 주고 어느 것인지 물을 것. 어느 프로젝트가 쓰였는지는 \`project_target\`으로 확인한다.
-- **flash 영구 저장(\`gpl.saveToFlash\` / "GPL: Save to Flash")은 AI 가 하지 않는다.** \`/flash/projects/<project>\` 의 영구 사본을
-  미러 동기화로 덮어쓰고 로컬에 없는 원격 파일을 지우는 되돌릴 수 없는 조작이라 사람이 판단할 몫이다 — 확장이 브리지·URI·명령
-  자체에서 거부하므로(\`error:"AI_BLOCKED"\`, 전송 안 됨) 우회 경로를 찾지 말고 필요하면 사용자에게 실행을 요청할 것.
-  배포/테스트는 \`/GPL\` 직접 업로드(\`deploy_project\`·\`gpl.quickCompile\`)로 하며 flash 를 건드릴 이유가 없다.
+- **flash 영구 저장(\`gpl.saveToFlash\`)은 AI 가 하지 않는다** — 되돌릴 수 없어 확장이 거부한다(\`AI_BLOCKED\`, 전송 안 됨).
+  필요하면 사용자에게 요청한다. 배포/테스트는 \`/GPL\` 직접 업로드(\`deploy_project\`)로 한다.
+- **같은 부팅에서 그룹(ProjectStart 없는 .gpr) Compile 뒤의 \`Unload\`는 명령 콘솔을 끊어 재부팅이 필요했다(6/6).**
+  \`refused:"unload-after-group-compile"\`가 오면 사용자 동의를 받은 뒤에만 \`confirm:true\`로 보낸다.
+  실행 불가 그룹은 Start 하지 않는다(\`PROJECT_NOT_RUNNABLE\`).
 - **존재하지 않는 명령(\`-714\`)은 표기를 바꿔 재시도하지 않는다.** 같은 명령은 서버가 캐시로 막고(\`sent:false\`),
   같은 계열에서 이미 없다고 확인된 표기는 \`relatedUnknownCommands\`로 알려 준다 — 레퍼런스를 확인하거나 구조화 도구를 쓸 것.
 - **\`Stop <이름>\`은 쓰레드 이름 단위다.** \`Stop <project>\`는 동명 쓰레드 하나만 멈추고 다른 이름으로 띄운 쓰레드(\`LOG_SOCKET\` 등)는
   남아 Unload/Compile이 \`-750\`이 된다(2026-10-14 실측). 정지는 정지 확인을 내장한 \`stop_threads\`로 한다.
-  \`TCPCLI[0]\`처럼 대괄호가 든 이름은 공식 Stop 인용 형식이 없어 이름별 전송을 건너뛴다.
+  영숫자·\`_\` 이외 문자가 든 이름(\`RWK[0]\` 등)은 Stop 이 \`-712\`로 거부해 이름별 전송을 건너뛴다.
   전체 정지가 의도일 때만 범위 없는 \`stop_threads()\`(\`Stop -all\`)를 명시한다. 자동으로 범위를 넓히지 않는다.
   STATUS 0/\`-752\`는 접수이지 완료가 아니다.
 - **받은 결과를 재확인하지 않는다.** 응답에 \`next:"none"\`이 있으면(배포 완료 등) \`operation_status\` 재조회·\`Show Memory\` 같은 확인 없이

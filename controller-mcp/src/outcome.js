@@ -18,6 +18,8 @@
 // 확장 쪽 대응 구현: src/controller/connection/reachability.ts (assessReachability) · src/controller/commands/commandPolicy.ts
 // (TRAITS_BY_KIND) · src/controller/connection/connectionHealth.ts (recovering). 목록/근거를 함께 유지할 것.
 
+import { UNLOAD_RISK_REFUSAL, PROJECT_NOT_RUNNABLE, unloadRiskRefusalResult } from './unloadRisk.js';
+
 /** 제어기에 아무것도 보내지 않았음이 확실 — 원인을 해소한 뒤 같은 명령을 다시 보내도 안전하다. */
 export const SEND_OUTCOME_NOT_SENT = 'not-sent';
 /** 보냈을 수 있으나 완료 응답을 받지 못했다 — 결과 미확정. 상태를 관측하기 전에는 단정 금지. */
@@ -79,6 +81,18 @@ export function commandFailureResult(command, err) {
   const traits = commandTraits(command);
   const message = String(err?.message ?? err);
   const result = { command, ok: false, status: null, outcome, error: message, traits };
+
+  // 그룹 Compile 뒤 Unload — "다시 보내도 안전" 이 아니라 사용자 동의가 필요한 거부다(confirm 으로만 통과).
+  if (err?.code === UNLOAD_RISK_REFUSAL && err.unloadRisk) {
+    return { ...unloadRiskRefusalResult(err.unloadRisk), traits, ...(err.via ? { via: err.via } : {}) };
+  }
+  // 실행 불가(ProjectStart 없는 그룹) Start — 확장의 전송 가드가 보내지 않았다. 같은 Start 를 되풀이해도 결과가 같다.
+  if (err?.code === PROJECT_NOT_RUNNABLE) {
+    return { ...result, outcome: SEND_OUTCOME_NOT_SENT, error: PROJECT_NOT_RUNNABLE, detail: message, sent: false,
+      runnableCandidates: err.runnableCandidates ?? [],
+      recovery: { action: 'RESOLVE_PROJECT', retryCurrentCommand: false },
+      recommendedAction: '실행 가능한 프로젝트(.gpr 에 ProjectStart)를 지정할 것 — 같은 Start 를 다시 보내지 말 것.' };
+  }
 
   if (['LOW_MEMORY', 'MEMORY_UNVERIFIED'].includes(err?.code)) {
     return { ...result, error: err.code, detail: message, sent: false, precheck: err.precheck,

@@ -13,6 +13,7 @@ import type { CommandPolicyOptions, CommandChannelTraits } from '../commands/com
 import { parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
 import { effectiveKeepAlive } from './connectionSession';
 import { checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryPrecheck } from '../diagnostics/memoryGuard';
+import { guardBeforeSend, observeAfterResponse, unloadFailureGuidance } from '../commands/unloadRiskGuard';
 
 export { isPolicyError, PolicyError } from '../commands/commandPolicy';
 export type { PolicyErrorCode } from '../commands/commandPolicy';
@@ -46,6 +47,11 @@ export interface SendCommandOptions {
 	 * 응답이 잘려 STATUS/에러 라인을 놓치는 것을 막는다. 이때 timeoutMs를 충분히 크게 줄 것.
 	 */
 	waitForStatusClose?: boolean;
+	/**
+	 * 그룹 Compile 뒤 Unload 위험(controller/commands/unloadRisk.ts)을 사람이 모달로, 또는 AI 호출자가 사용자 동의를 받아
+	 * `confirm:true` 로 확인했다. 없으면 위험 상태의 Unload 는 보내지 않고 UnloadRiskError 를 던진다.
+	 */
+	confirmUnloadRisk?: boolean;
 }
 
 // Brooks 제어기 고정 포트 (하드웨어 결정, 변경 불가)
@@ -331,6 +337,10 @@ export function sendCommandDetailed(
 	options?: SendCommandOptions,
 ): Promise<CommandResponse> {
 	return enqueueControllerCommand(async () => {
+		// 그룹 Compile 뒤 Unload 확인·실행 불가 프로젝트 Start 거부 — 명령 정책 설정과 무관하게 모든 경로에 건다
+		// (controller/commands/unloadRiskGuard.ts). 거부하면 제어기에는 아무것도 보내지 않는다.
+		const controllerId = config?.ip ?? getControllerConfig().ip;
+		await guardBeforeSend(command, controllerId, { confirmUnloadRisk: options?.confirmUnloadRisk });
 		const policyOn = isCommandPolicyEnabled();
 		if (policyOn) {
 			commandPolicy.updateOptions(readCommandPolicyOptions());
@@ -359,11 +369,13 @@ export function sendCommandDetailed(
 			// 채널 교란 가능 명령이 응답 없이 끝났으면 연결 건강 모니터에 알린다 → recovering (2026-08-31).
 			// 정책이 보류한 경우(PolicyError)는 여기 오지 않는다 — 제어기에 아무것도 보내지 않았으므로.
 			notifyDisruptiveFailure(command, err);
+			attachUnloadRiskGuidance(command, controllerId, err);
 			throw err;
 		}
 		if (policyOn) {
 			commandPolicy.after(command, response.raw, response.meta.statusTagReceived, Date.now());
 		}
+		await observeAfterResponse(command, controllerId, response.raw);
 		return response;
 	});
 }
@@ -416,6 +428,20 @@ function notifyDisruptiveFailure(command: string, err: unknown): void {
 	try {
 		_disruptiveObserver?.({ command, kind, detail, traits, at: Date.now() });
 	} catch { /* 관찰자 예외는 무시 */ }
+}
+
+/**
+ * 위험 상태(그룹 Compile 뒤)의 Unload 가 결과 미확정으로 끝났으면 "이 조합은 재부팅이 필요했다" 를 오류 문구에 붙인다 —
+ * 일반 채널 복구 대기(최대 180 s) 안내만 보고 기다리지 않게(inbox unload-guard-request ③). 보내지 못한 실패(refused)는 제외.
+ */
+function attachUnloadRiskGuidance(command: string, controllerId: string, err: unknown): void {
+	if (!(err instanceof Error)) { return; }
+	if (!DISRUPTIVE_OUTCOME_UNKNOWN_KINDS.has(classifyCommandFailure(err).kind)) { return; }
+	const guidance = unloadFailureGuidance(command, controllerId);
+	if (!guidance) { return; }
+	logTraffic('---', `unload-risk: ${guidance}`);
+	(err as Error & { unloadRiskGuidance?: string }).unloadRiskGuidance = guidance;
+	err.message = `${err.message} — ${guidance}`;
 }
 
 /**

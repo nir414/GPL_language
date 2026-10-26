@@ -171,6 +171,9 @@ export function statusHint(code) {
       return '파일/경로 없음. `/GPL` vs `/flash/projects` 경로 기준과 프로젝트명 대소문자를 확인할 것.';
     case -742:
       return '컴파일 에러 — 응답의 `file:line:(code)` 에러 라인을 읽고 소스를 수정할 것. 이 프로젝트는 실행 불가 상태다.';
+    case -744:
+      return '*Invalid start procedure* — .gpr 에 ProjectStart 가 없는 그룹(라이브러리)을 Start 했다. -compile 로 그룹 Compile 은 이미 끝난 뒤다 — ' +
+        '같은 Start 를 되풀이하지 말고 실행 가능한 프로젝트를 지정할 것(이 부팅의 Unload 는 confirm 이 필요하다).';
     case -745:
       return '이미 로드된 프로젝트일 수 있다. 문맥 없이 치명 실패로 단정하지 말 것.';
     case -750:

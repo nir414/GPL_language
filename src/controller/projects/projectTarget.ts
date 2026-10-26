@@ -238,6 +238,36 @@ export function resolveProjectTarget(
     };
 }
 
+/** 배포·실행 호출이 세션 대상을 어떻게 바꿨는가(또는 왜 바꾸지 않았는가). */
+export interface SessionTargetUpdate {
+    /** 호출 뒤의 세션 대상 폴더. */
+    nextDir: string | undefined;
+    changed: boolean;
+    reason: 'same' | 'adopted' | 'kept-non-runnable' | 'kept-existing';
+}
+
+/**
+ * 대상을 명시한 배포·실행 호출(`gpl.deploy`·`gpl.uploadOnly`·`gpl.start` …)이 **부수 효과로** 세션 대상을 바꾸는 규칙
+ * (2026-10-23 inbox deploy-target-switch-runs-library: `deploy_project(projectDir=Lib)` 가 `project_target` 으로 고정한
+ * BinderR3 를 조용히 Lib 로 바꿨고, 이어진 인자 없는 upload-start 가 실행 불가 그룹을 Stop -all + Compile 했다).
+ *
+ * - 같은 대상 → 그대로.
+ * - 실행 불가(ProjectStart 없는) 프로젝트는 **세션 대상이 되지 않는다** — 인자 없는 Start 가 그쪽으로 가면 안 된다.
+ * - 세션 대상이 없으면 실행 가능한 대상을 받아들인다(첫 호출에 대상을 주면 이후 유지 — 종전 규칙 §19).
+ * - 이미 다른 대상이 있으면 바꾸지 않는다. 바꾸려면 `gpl.automation.target`(MCP `project_target`)으로 명시한다.
+ */
+export function sessionTargetAfterImplicitUse(
+    currentDir: string | undefined,
+    resolved: { dir: string; runnable: boolean },
+): SessionTargetUpdate {
+    if (currentDir && normalizeDirKey(currentDir) === normalizeDirKey(resolved.dir)) {
+        return { nextDir: currentDir, changed: false, reason: 'same' };
+    }
+    if (!resolved.runnable) { return { nextDir: currentDir, changed: false, reason: 'kept-non-runnable' }; }
+    if (!currentDir) { return { nextDir: resolved.dir, changed: true, reason: 'adopted' }; }
+    return { nextDir: currentDir, changed: false, reason: 'kept-existing' };
+}
+
 /** 로그 한 줄: `GPL_Code (argument-name) — c:\\...\\projects\\GPL_Code`. */
 export function describeResolution(result: ResolveTargetResult): string {
     return result.ok

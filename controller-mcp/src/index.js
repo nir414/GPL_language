@@ -79,7 +79,21 @@ import { aiBlockedResult, AI_BLOCKED_COMMANDS } from './aiPolicy.js';
 import { SERVER_INSTRUCTIONS, DOC_COMMENT_GUIDE } from './guidelines.js';
 import { captureFilesFor, searchCapture } from './consoleCapture.js';
 import { readControllerClock, syncControllerClock, clockStatusField, summarizeClockSync } from './clock.js';
-import { deployTargetArgs, projectForCommand } from './configuredTarget.js';
+import { deployTargetArgs, projectForCommand, sessionTargetAfterDeploy, targetSourceOf } from './configuredTarget.js';
+import {
+  UNLOAD_RISK_REFUSAL,
+  PROJECT_NOT_RUNNABLE,
+  readUnloadRiskState,
+  assessUnloadRisk,
+  parseUnloadCommand,
+  unloadRiskRefusalResult,
+  unloadTimeoutGuidance,
+  compiledProjectFromResponse,
+  markGroupCompile,
+  readGprInfo,
+  notRunnableStartDetail,
+  isNotRunnableStartFailure,
+} from './unloadRisk.js';
 import {
   SEND_OUTCOME_NOT_SENT,
   SEND_OUTCOME_UNKNOWN,
@@ -246,6 +260,14 @@ async function callExtension(command, args, { timeoutMs, instanceId } = {}) {
  * 모호한 실패(타임아웃·확장 내부 오류)는 조회 명령만 재전송한다 — 상태 변경 명령 중복 전송 금지.
  */
 async function sendGuarded(command, opts) {
+  // 그룹 Compile 뒤 Unload 는 확인(confirm) 없이는 보내지 않는다 — 확장과 같은 파일·같은 판정(src/unloadRisk.js).
+  // 잠금 대기보다 먼저 본다(어차피 보내지 않을 명령을 기다릴 이유가 없다).
+  const unloadRisk = parseUnloadCommand(command) ? assessUnloadRisk(readUnloadRiskState(HOST), command) : null;
+  if (unloadRisk?.risky && opts?.confirmUnloadRisk !== true) {
+    logLine(`  1402> ${command} | 전송 안 함 | ${UNLOAD_RISK_REFUSAL} (그룹 Compile: ${unloadRisk.groupProjects.join(', ')})`);
+    throw taggedError(unloadRiskRefusalResult(unloadRisk).detail, SEND_OUTCOME_NOT_SENT,
+      { code: UNLOAD_RISK_REFUSAL, refused: UNLOAD_RISK_REFUSAL, unloadRisk });
+  }
   await guardDeployLock(command);
   const b = await currentBridge();
   if (b.available) {
@@ -257,6 +279,8 @@ async function sendGuarded(command, opts) {
       // 확장은 `Set Break`/`Nobreak`를 에디터 중단점에도 반영한다(빨간 점). 스스로 정리하는
       // 임시 BP만 여기서 제외한다 — 안 그러면 빨간 점이 깜빡인다.
       ...(opts?.mirrorBreakpoints === false ? { mirrorBreakpoints: false } : {}),
+      // 사용자 동의를 받은 위험 Unload — 확장의 전송 가드도 같은 확인을 요구한다.
+      ...(opts?.confirmUnloadRisk === true ? { confirmUnloadRisk: true } : {}),
       // 현재 경로 = 제어기에 연결된 창(없으면 리더) — resolveBridge 가 pickConsoleRouteInstance 로 고른 값.
       // 1402 는 단일 클라이언트라 미접속 창(리더라도)으로 보내면 그 창이 새로 접속하다 ECONNREFUSED 가 난다(§1-EK).
     }, { timeoutMs: cmdTimeout + 20_000, instanceId: b.presence?.extensionInstanceId ?? undefined });
@@ -275,6 +299,19 @@ async function sendGuarded(command, opts) {
         SEND_OUTCOME_NOT_SENT,
         { policyCode: res.result.code },
       );
+    }
+    // 확장의 전송 가드가 보내지 않은 경우 — 위험 Unload(확인 필요)·실행 불가 프로젝트 Start. 직접 접속으로 우회하지 않는다.
+    if (res.ok && [UNLOAD_RISK_REFUSAL, PROJECT_NOT_RUNNABLE].includes(res.result?.error)) {
+      logLine(`  1402> ${command} | via extension | ${res.result.error} (보내지 않음)`);
+      throw taggedError(res.result.detail, SEND_OUTCOME_NOT_SENT, {
+        code: res.result.error,
+        via: 'extension-bridge',
+        ...(res.result.error === UNLOAD_RISK_REFUSAL ? {
+          refused: UNLOAD_RISK_REFUSAL,
+          unloadRisk: assessUnloadRisk(readUnloadRiskState(HOST), command)
+            ?? { risky: true, command, scope: 'project', groupProjects: res.result.groupProjects ?? [] },
+        } : { runnableCandidates: res.result.runnableCandidates ?? [] }),
+      });
     }
     if (res.ok && ['LOW_MEMORY', 'MEMORY_UNVERIFIED'].includes(res.result?.error)) {
       throw taggedError(res.result.detail, SEND_OUTCOME_NOT_SENT, {
@@ -340,7 +377,33 @@ async function sendGuarded(command, opts) {
       { bridgeReason: b.reason },
     );
   }
-  return consoleClient.send(command, opts);
+  const raw = await consoleClient.send(command, opts);
+  noteDirectGroupCompile(command, raw);
+  return raw;
+}
+
+/**
+ * 직접 접속(확장 없음)으로 그룹을 컴파일했으면 Unload 위험 표시를 켠다 — 브리지 경로는 확장의 전송 가드가 켠다.
+ * 그룹 판정은 세션 대상 폴더의 `.gpr`(ProjectStart 유무)로만 한다. 모르면 켜지 않는다.
+ */
+function noteDirectGroupCompile(command, raw) {
+  try {
+    const project = compiledProjectFromResponse(command, raw);
+    if (!project || !sessionTarget?.dir || !sameName(project, sessionTarget.project)) return;
+    const info = readGprInfo(sessionTarget.dir);
+    if (info && info.runnable === false && markGroupCompile(HOST, project, 'mcp-direct')) {
+      logLine(`  unload-risk 그룹 프로젝트 ${project} Compile 확인(직접 접속) — 이 부팅의 Unload 는 confirm 이 필요하다`);
+    }
+  } catch { /* 관측 실패는 전송 결과에 영향 없음 */ }
+}
+
+/** 위험 상태 Unload 가 결과 미확정(타임아웃 등)으로 끝났으면 "이 조합은 재부팅이 필요했다" 를 바로 싣는다. */
+function withUnloadRiskGuidance(command, result) {
+  if (result?.outcome !== SEND_OUTCOME_UNKNOWN || !parseUnloadCommand(command)) return result;
+  const risk = assessUnloadRisk(readUnloadRiskState(HOST), command);
+  if (!risk?.risky) return result;
+  const guidance = unloadTimeoutGuidance(risk);
+  return { ...result, unloadRiskGuidance: guidance, recommendedAction: `reboot-likely — ${guidance}` };
 }
 
 /** 현재 전송 경로 요약 — 응답에 실어 AI가 "누가 1402를 쓰는지" 추측하지 않게 한다. */
@@ -442,7 +505,7 @@ async function runCommand(command, opts) {
   try {
     raw = await sendGuarded(command, opts);
   } catch (err) {
-    return commandFailureResult(command, err);
+    return withUnloadRiskGuidance(command, commandFailureResult(command, err));
   }
   const status = parseStatus(raw);
   const ok = isSuccess(status);
@@ -813,17 +876,22 @@ tool('controller_command',
   '결과 배열 {count, okCount, failCount, stoppedAt?, results:[{index, command, status, ok, data, hint?, error?}]}를 한 번에 돌려준다 — ' +
   'DataID/상태 항목 여러 개 조회는 호출 1회로 끝낼 것(호출당 고정 오버헤드 ≈1.5 s). 항목별로 기존 안전 규칙(배포 잠금 가드: Compile/Start/Load/Unload 대기·거부)이 ' +
   '그대로 적용되고, 타임아웃/연결 오류 항목은 {ok:false, error}로 기록된다. stopOnError=true면 첫 실패(ok=false 또는 오류)에서 멈추고 stoppedAt(인덱스)을 준다(기본: 계속). ' +
-  'DataID 조회는 read_dataids가 값을 구조화해 주므로 그쪽을 우선할 것.',
+  'DataID 조회는 read_dataids가 값을 구조화해 주므로 그쪽을 우선할 것. ' +
+  '같은 부팅에서 그룹(ProjectStart 없는 .gpr) Compile 뒤의 `Unload`(-all 포함)는 보내지 않고 `refused:"unload-after-group-compile"` 로 돌아온다 — ' +
+  '이 조합은 6번 중 6번 명령 콘솔을 끊었고 재부팅이 필요했다. **사용자에게 위험을 알리고 동의를 받은 뒤에만** `confirm:true` 로 다시 보낼 것.',
   {
     command: z.string().optional().describe('보낼 콘솔 명령 한 줄(단건). commands와 동시 지정 불가'),
     commands: z.array(z.string()).min(1).max(BATCH_MAX).optional()
       .describe(`순차 실행할 명령 목록(1~${BATCH_MAX}개, 빈 항목 불가). command와 동시 지정 불가`),
     stopOnError: z.boolean().optional().describe('배치 전용: true면 첫 실패 항목에서 중단(기본 false=끝까지 계속)'),
+    confirm: z.boolean().optional()
+      .describe('Unload 전용: 그룹 Compile 뒤 Unload 위험을 사용자가 알고 동의했음을 단언(refused:"unload-after-group-compile" 를 받은 뒤, 동의를 받았을 때만 true)'),
   },
-  async ({ command, commands, stopOnError }) => {
+  async ({ command, commands, stopOnError, confirm }) => {
     const input = normalizeCommandInput({ command, commands });
-    if (input.mode === 'single') return textResult(await runUserCommand(input.command)); // 종전 필드 + 전체 정지 때 취소 operationId
-    return textResult(await runBatch(input.commands, (c) => runUserCommand(c), { stopOnError: !!stopOnError }));
+    const opts = confirm === true ? { confirmUnloadRisk: true } : undefined;
+    if (input.mode === 'single') return textResult(await runUserCommand(input.command, opts)); // 종전 필드 + 전체 정지 때 취소 operationId
+    return textResult(await runBatch(input.commands, (c) => runUserCommand(c, opts), { stopOnError: !!stopOnError }));
   });
 
 tool('read_dataids',
@@ -1509,7 +1577,9 @@ function deployOutcome(mode, command, res) {
       lockHolderIsLocal: r.lockHolderIsLocal ?? null,
       compileErrors: r.compileErrors ?? [],
       provenance: r.provenance ?? null,
-      recovery: deployPhaseRecovery(r.failedPhase),
+      failedStatusCode: r.failedStatusCode ?? null,
+      ...(isNotRunnableStartFailure(r.failedPhase, r.failedStatusCode) ? { retryable: false } : {}),
+      recovery: deployPhaseRecovery(r.failedPhase, r.failedStatusCode),
       result: r,
       ms: res.ms,
     };
@@ -1536,7 +1606,13 @@ function deployOutcome(mode, command, res) {
  * 배포 단계별 복구 지시 — 확장 `controller/automation/automationRecovery.ts` 의 표와 **같은 결론**을 유지할 것.
  * (확장을 거치지 않는 응답 경로에서도 같은 지시를 줘야 호출자가 경로마다 다르게 행동하지 않는다.)
  */
-function deployPhaseRecovery(failedPhase) {
+function deployPhaseRecovery(failedPhase, failedStatusCode) {
+  // -744 *Invalid start procedure* = ProjectStart 없는 그룹을 Start 했다. 같은 요청을 되풀이하면 그룹 Compile 만 또 일어난다.
+  if (isNotRunnableStartFailure(failedPhase, failedStatusCode)) {
+    return { action: 'RESOLVE_PROJECT', retryCurrentCommand: false, safeToRepeat: false, retryable: false,
+      detail: '-744 *Invalid start procedure* — 대상이 ProjectStart 없는 그룹(라이브러리)이다. **같은 요청을 되풀이하지 말고** project_target 으로 '
+        + '실행 가능한 프로젝트를 지정할 것. 이 Start 가 그룹을 컴파일했으므로 이 부팅의 Unload 는 confirm 이 필요하다.' };
+  }
   switch (failedPhase) {
     case 'LOCKED':
       return { action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: true, detail: '다른 배포가 진행 중이다(제어기에 아무것도 보내지 않았다). **다른 명령으로 우회하지 말고** operation_status 로 그 작업을 확인한 뒤 끝나고 다시 보낼 것.' };
@@ -1591,6 +1667,8 @@ tool('deploy_project',
 		? 'gpl.quickCompile'
 		: m === 'upload' ? 'gpl.uploadOnly' : m === 'upload-start' ? 'gpl.uploadStart' : 'gpl.deploy';
     const targetArgs = deployTargetArgs({ project, projectDir, projectFile }, sessionTarget);
+    // 대상 출처 — 인자 없는 호출이 배포가 정한 세션 대상으로 가면 project_target 으로 고정한 것과 구분해 알린다.
+    const targetSource = (project || projectDir || projectFile) ? 'argument' : targetSourceOf(undefined, sessionTarget);
     const args = {
       // 대상을 항상 명시해 보낸다 — 확장이 active editor 를 보거나 QuickPick 을 열 이유를 없앤다(§18·§22).
       // 명시 projectDir/projectFile에는 세션의 다른 프로젝트 이름을 섞지 않는다(예: Lib 폴더 + COM_Probe 이름).
@@ -1660,14 +1738,13 @@ tool('deploy_project',
       const finished = sinceRequest.find((r) => isTerminalOperationState(r.state));
       if (finished) {
         logLine(`  deploy 응답 유실 → 작업 기록 ${finished.operationId}(${finished.state}) 으로 복구`);
-        if (finished.state === 'COMPLETED') {
-          const name = finished.projectName || args.project;
-          setSessionTarget(name, { dir: finished.projectDir ?? args.projectDir ?? sessionTarget?.dir ?? null, verified: true, via: 'deploy' });
-        }
+        const targetUpdate = finished.state === 'COMPLETED'
+          ? applyDeploySessionTarget(finished.projectName || args.project, finished.projectDir ?? args.projectDir ?? null)
+          : {};
         return textResult(operationDetailResult(finished, {
           verbose: verbose === true,
           extra: {
-            mode: m, command,
+            mode: m, command, targetSource, ...targetUpdate,
             recoveredFrom: 'operation-record',
             note: `확장의 응답 전달이 ${res.detail ?? 'bridge-timeout'} 로 끊겼지만 작업 기록은 이미 끝나 있어 그 결과를 돌려준다 — operation_status 재조회 불필요.`,
             transport: transportInfo(),
@@ -1694,14 +1771,17 @@ tool('deploy_project',
       });
     }
     const out = deployOutcome(m, command, res);
-    if (out.ok) {
-      // 성공한 대상만 세션에 고정한다 — 실패(PROJECT_AMBIGUOUS 등)는 대상을 바꾸지 않는다(§3.2).
-      const name = (out.result && typeof out.result === 'object' && typeof out.result.projectName === 'string' && out.result.projectName)
-        || args.project;
-      setSessionTarget(name, { dir: args.projectDir ?? sessionTarget?.dir ?? null, verified: true, via: 'deploy' });
-    }
     // 완료 결과를 **여기서 전달했음**을 기록한다 — 같은 operationId 의 operation_status 재조회는 redundant 로 짧게 끝난다(§1-EP).
     const opId = out.result && typeof out.result === 'object' ? out.result.operationId : null;
+    let targetUpdate = {};
+    if (out.ok) {
+      // 성공한 대상만 세션 대상 후보다 — 실패(PROJECT_AMBIGUOUS 등)는 대상을 바꾸지 않는다(§3.2). 실행 불가 그룹은 세션 대상이
+      // 되지 않고, project_target 으로 고정한 대상은 바꾸지 않는다(configuredTarget.sessionTargetAfterDeploy).
+      const name = (out.result && typeof out.result === 'object' && typeof out.result.projectName === 'string' && out.result.projectName)
+        || args.project;
+      const dir = args.projectDir ?? (opId ? readOperation(opId)?.projectDir : null) ?? null;
+      targetUpdate = applyDeploySessionTarget(name, dir);
+    }
     if (opId) deliveredResults.mark(opId, out.ok ? 'COMPLETED' : 'FAILED');
     const body = verbose === true || !out.result || typeof out.result !== 'object'
       ? out
@@ -1713,10 +1793,38 @@ tool('deploy_project',
         hint: '배포가 끝났고 결과는 이 응답에 다 있다 — operation_status 재조회나 Show Memory 같은 재확인 없이 다음 단계로 진행할 것.',
       } : {}),
       targetSent: args,
+      targetSource,
+      ...targetUpdate,
       extensionInstanceId: instanceId ?? null,
       transport: transportInfo(),
     });
   });
+
+/**
+ * 배포 성공 뒤 세션 대상 갱신 — 바뀌면 `sessionTargetChanged:{from,to}`, 바꾸지 않았으면 `sessionTargetKept` 로 알린다.
+ * 실행 가능 여부는 대상 폴더의 `.gpr` 로 본다(모르면 null — 종전처럼 받아들이되 바뀐 사실은 알린다).
+ */
+function applyDeploySessionTarget(name, dir) {
+  const info = readGprInfo(dir);
+  const r = sessionTargetAfterDeploy(sessionTarget, { project: name, dir, runnable: info ? info.runnable : null });
+  sessionTarget = r.target;
+  if (r.change) {
+    logLine(`  session-target ${r.change.from ?? '(없음)'} → ${r.change.to} (deploy)`);
+    return { sessionTargetChanged: r.change };
+  }
+  if (r.kept) {
+    return {
+      sessionTargetKept: {
+        ...r.kept,
+        current: sessionTarget?.project ?? null,
+        hint: r.kept.reason === 'non-runnable'
+          ? `${r.kept.project} 는 ProjectStart 없는 그룹이라 세션 대상이 되지 않았다 — 인자 없는 호출은 계속 ${sessionTarget?.project ?? '(미확정)'} 로 간다.`
+          : `세션 대상은 project_target 으로 고정한 ${sessionTarget?.project} 그대로다 — 바꾸려면 project_target 을 다시 부를 것.`,
+      },
+    };
+  }
+  return {};
+}
 
 tool('diagnostic_snapshot',
   '자동화가 어긋났을 때 **관계 전체를 한 번에** 본다(2026-09-10 개선안 §22): 살아 있는 VS Code 창 목록 · 진행 중/최근 작업 · ' +
@@ -1879,6 +1987,7 @@ tool('compile_project',
     const confirmed = controllerResponseOutcome(status) === 'completed';
     return textResult({
       command: `Compile ${proj(project)}`,
+      targetSource: targetSourceOf(project, sessionTarget),
       ok: confirmed && isSuccess(status),
       outcome: confirmed ? 'completed' : SEND_OUTCOME_UNKNOWN,
       status,
@@ -1900,13 +2009,43 @@ tool('start_project',
   async ({ project, stopOnEntry }) => {
     // 확장의 startCommand.buildStartCommand 와 같은 형태 — 문서 구문 순서(-bex → -break → -compile → -event).
     // `-compile` 이 없으면 제어기가 옛 바이너리를 실행하고, `-event` 가 없으면 1403 상태 이벤트가 오지 않는다.
+    const name = proj(project);
     const cmd = stopOnEntry
-      ? `Start ${proj(project)} -bex -break -compile -event`
-      : `Start ${proj(project)} -compile -event`;
+      ? `Start ${name} -bex -break -compile -event`
+      : `Start ${name} -compile -event`;
+    const targetSource = targetSourceOf(project, sessionTarget);
+    // 실행 불가(ProjectStart 없는 그룹)는 보내지 않는다 — 그룹을 컴파일한 뒤 -744 로 끝나고 이 부팅을 Unload 위험 상태로 만든다.
+    // 판단 근거는 세션 대상 폴더의 .gpr 뿐이다(이름만 받은 다른 프로젝트는 확장의 전송 가드가 워크스페이스 .gpr 로 다시 본다).
+    const gpr = sameName(name, sessionTarget?.project) ? readGprInfo(sessionTarget?.dir) : null;
+    if (gpr && gpr.runnable === false) {
+      const runnableCandidates = await runnableCandidateNames();
+      return textResult({
+        command: cmd, ok: false, error: PROJECT_NOT_RUNNABLE, sent: false, outcome: SEND_OUTCOME_NOT_SENT, targetSource,
+        detail: notRunnableStartDetail(name, runnableCandidates), runnableCandidates,
+        recovery: { action: 'RESOLVE_PROJECT', retryCurrentCommand: false, detail: 'project_target 으로 실행 가능한 프로젝트를 지정하거나 project 인자로 줄 것.' },
+      });
+    }
     // -compile 이 붙은 Start 는 제어기에서 컴파일까지 돌리므로 응답이 Compile 과 같다(pass 사이 수 초 침묵).
     // 기본 타임아웃(15 s)으로 받으면 compiler pass 도중 끊겨 결과 미확정이 된다 — compile_project 와 같은 상한을 쓴다.
-    return textResult(await runCommand(cmd, compilerCommandOptions(TIMEOUT)));
+    const result = await runCommand(cmd, compilerCommandOptions(TIMEOUT));
+    if (result.status?.code === -744) {
+      // -744 = 진입점 없음(그룹). 되풀이하면 그룹 Compile 만 또 일어난다 — 재시도 금지.
+      return textResult({ ...result, targetSource, retryable: false,
+        recovery: { action: 'RESOLVE_PROJECT', retryCurrentCommand: false, detail: '실행 가능한 프로젝트를 지정할 것. 이 Start 가 그룹을 컴파일했으므로 이 부팅의 Unload 는 confirm 이 필요하다.' } });
+    }
+    return textResult({ ...result, targetSource });
   });
+
+/** 워크스페이스의 실행 가능 프로젝트 이름(확장 브리지가 있을 때만, 실패하면 빈 목록). */
+async function runnableCandidateNames() {
+  try {
+    const res = await callExtension('gpl.automation.target', {}, { timeoutMs: 15_000 });
+    const list = Array.isArray(res?.result?.candidates) ? res.result.candidates : [];
+    return [...new Set(list.filter((c) => c && c.runnable).map((c) => c.project))];
+  } catch {
+    return [];
+  }
+}
 
 tool('unload_project',
   '프로젝트를 메모리에서 제거한다(Unload). 보내기 전에 Show Thread -web 로 **그 프로젝트의 활성 쓰레드**를 확인하고, 있으면 ' +
@@ -1917,16 +2056,27 @@ tool('unload_project',
   '그 사이의 ECONNREFUSED를 제어기 다운의 증거로 쓰지 말고, 같은 명령을 곧바로 재전송하지 말 것 — ' +
   'recommendedAction(wait-and-probe)대로 기다린 뒤 show_threads / controller_status 로 관측할 것. ' +
   '오래 걸릴 수 있으므로 필요하면 timeoutMs를 크게 줄 것(기본은 GPL_TIMEOUT_MS). ' +
-  'Unload 로 풀리는 메모리도 있다 — 2026-10-14 실측: 쓰레드를 다 멈춰도 Free 0.6 Mb 이던 것이 Unload 뒤 4.4 Mb(로드된 프로젝트가 쥔 힙).',
+  'Unload 로 풀리는 메모리도 있다 — 2026-10-14 실측: 쓰레드를 다 멈춰도 Free 0.6 Mb 이던 것이 Unload 뒤 4.4 Mb(로드된 프로젝트가 쥔 힙). ' +
+  '**같은 부팅에서 그룹(ProjectStart 없는 .gpr) Compile 이 있었으면 보내지 않고 `refused:"unload-after-group-compile"` 로 돌아온다** — ' +
+  '이 조합은 6번 중 6번 명령 콘솔을 끊었고 재부팅이 필요했다. 사용자에게 위험을 알리고 **동의를 받은 뒤에만** `confirm:true` 로 다시 호출할 것. ' +
+  '성공하면 `/GPL/<project>` 가 남았는지(`remoteFolder`) 함께 보고, 앱 Unload 로 폴더가 지워졌으면 `next:"redeploy"`(다시 Start 하면 -508).',
   {
     project: z.string().optional(),
     timeoutMs: z.number().int().min(1000).max(600000).optional()
       .describe('응답 대기(ms). 생략하면 GPL_TIMEOUT_MS(기본 15000). Unload가 느린 환경이면 크게 줄 것'),
     skipThreadCheck: z.boolean().optional()
       .describe('true 면 사전 쓰레드 확인 없이 바로 보낸다(Show Thread 의 project 열이 믿기 어려운 경우에만)'),
+    confirm: z.boolean().optional()
+      .describe('그룹 Compile 뒤 Unload 위험을 사용자가 알고 동의했음을 단언 — refused:"unload-after-group-compile" 를 받고 동의를 받았을 때만 true'),
   },
-  async ({ project, timeoutMs, skipThreadCheck }) => {
+  async ({ project, timeoutMs, skipThreadCheck, confirm }) => {
     const name = proj(project);
+    const targetSource = targetSourceOf(project, sessionTarget);
+    // 그룹 Compile 뒤 Unload — 확인 없이는 쓰레드 조회조차 하지 않고 돌려준다(보내지 않음).
+    const risk = assessUnloadRisk(readUnloadRiskState(HOST), `Unload ${name}`);
+    if (risk?.risky && confirm !== true) {
+      return textResult(unloadRiskRefusalResult(risk, { project: name, targetSource }));
+    }
     if (!skipThreadCheck) {
       // 읽기 전용 1회 — 실패하면(연결 등) 사전 확인 없이 진행한다. 거부는 제어기의 -750 이 대신한다.
       const probe = await listThreads().catch(() => null);
@@ -1943,8 +2093,38 @@ tool('unload_project',
         }
       }
     }
-    return textResult(await runCommand(`Unload ${name}`, timeoutMs ? { timeoutMs } : undefined));
+    const result = await runCommand(`Unload ${name}`, {
+      ...(timeoutMs ? { timeoutMs } : {}),
+      ...(confirm === true ? { confirmUnloadRisk: true } : {}),
+    });
+    if (!(result.ok && result.status?.code === 0)) return textResult({ ...result, targetSource });
+    // 4.2K5 실측(2026-10-22): 앱 프로젝트 Unload 는 /GPL/<앱> 폴더까지 지웠다(그룹 Lib 은 남음) — 다음 Start 가 -508 이 되기 전에 알린다.
+    const remoteFolder = await remoteProjectFolderState(name);
+    return textResult({
+      ...result,
+      targetSource,
+      remoteFolder,
+      ...(remoteFolder.exists === false ? {
+        next: 'redeploy',
+        hint: `Unload 뒤 ${remoteFolder.path} 가 없다 — 이 프로젝트를 다시 Start 하려면 먼저 deploy_project 로 다시 올릴 것(그대로 Start 하면 -508).`,
+      } : remoteFolder.exists === true ? { next: 'none' } : {}),
+    });
   });
+
+/** Unload 뒤 `/GPL/<project>` 가 남았는지 — 확장 FTP(list_remote_projects 의 뒷단)로 본다. 모르면 exists:null. */
+async function remoteProjectFolderState(name) {
+  try {
+    const res = await callExtension('gpl.ai.debug.listRemoteProjects', {}, { timeoutMs: 40_000 });
+    const r = res?.result;
+    if (!res?.ok || !r || r.ok === false) {
+      return { exists: null, reason: r?.error ?? res?.error ?? 'bridge-failed', detail: r?.detail ?? res?.detail ?? null };
+    }
+    const root = r.root ?? '/GPL';
+    return { path: `${root}/${name}`, exists: (r.projects ?? []).some((p) => sameName(p.name, name)) };
+  } catch (err) {
+    return { exists: null, reason: 'bridge-unavailable', detail: err?.message ?? String(err) };
+  }
+}
 
 // ── 정지(Stop) ────────────────────────────────────────────────────────────
 // 제어기의 `Stop <이름>` 은 **쓰레드 이름** 단위다 — `Stop MergeCode` 는 이름이 MergeCode 인 쓰레드 하나만 멈추고,
@@ -2008,7 +2188,7 @@ tool('stop_threads',
   '**제어기의 `Stop <이름>` 은 프로젝트가 아니라 쓰레드 이름 단위다** — `Stop MergeCode` 는 이름이 MergeCode 인 쓰레드만 멈추고, ' +
   '프로젝트가 다른 이름(`New Thread(…, "LOG_SOCKET")`)으로 띄운 쓰레드는 Running 으로 남아 Unload/Compile 이 -750 으로 거부된다(2026-10-14 실측). ' +
   '프로젝트 전체를 멈출 때는 controller_command("Stop <project>") 대신 이 도구를 project 범위 또는 전체로 쓸 것. ' +
-  '단, 공식 Stop 구문에는 쓰레드 이름의 따옴표/이스케이프 형식이 없고 `TCPCLI[0]` 같은 대괄호 이름은 실기에서 -712였다. ' +
+  '단, 공식 Stop 구문에는 쓰레드 이름의 따옴표/이스케이프 형식이 없고 영숫자·`_` 이외 문자가 든 이름(`RWK[0]`·`TCPLSN:4000` 등)은 실기에서 -712였다. ' +
   '그런 이름은 임의 문법으로 보내지 않고 `skipped`로 보고하며, 전체 정지가 필요하면 사용자가 범위 없는 호출(Stop -all)을 명시해야 한다. ' +
   'GPL 에는 강제 kill 이 없다 — 재시도 뒤에도 남는 쓰레드는 블로킹 I/O(Read/ReadLine)나 탈출 조건 없는 루프일 수 있으니 ' +
   'extension_command("gpl.controller.diagnoseStuckThread") 로 진단할 것(복구 후보만 제시, 자동 전송 없음). [정지 명령 — 돌던 프로그램·모션을 멈춘다]',
@@ -2069,7 +2249,7 @@ tool('stop_threads',
           return textResult({ ok: false, error: 'stop-rejected', mode: target.mode, attempts: attempt, sent, settled: false, skipped: target.skipped ?? [], outcome: 'completed', ...cancellationInfo,
             threads: target.listed ?? [],
             threadsSample: "before-stop",
-            hint: `제어기가 ${command} 를 STATUS ${code} 로 거부했다 — 쓰레드 이름을 확인하세요. [] 또는 :가 든 이름은 이름별 Stop에서 지원되지 않습니다. 전체 정지는 사용자 의도를 확인한 뒤 별도로 요청하세요.` });
+            hint: `제어기가 ${command} 를 STATUS ${code} 로 거부했다 — 쓰레드 이름을 확인하세요. 영숫자·_ 이외 문자가 든 이름은 이름별 Stop에서 지원되지 않습니다(-712). 전체 정지는 사용자 의도를 확인한 뒤 별도로 요청하세요.` });
         }
       }
       settle = await waitThreadsSettle(target.names, settleOpts);
@@ -2086,7 +2266,7 @@ tool('stop_threads',
             skipped: target.skipped,
             threads: settle.threads.map(compactThread),
             ...cancellationInfo,
-            hint: '표현 가능한 쓰레드는 정지됐지만 대괄호·콜론 등 콘솔 문법으로 표현할 수 없는 이름은 건너뛰었다. 전체 정지는 사용자 의도를 확인한 뒤 stop_threads()로 별도 요청할 것.',
+            hint: '표현 가능한 쓰레드는 정지됐지만 영숫자·_ 이외 문자가 든 이름(콘솔 Stop 이 -712 로 거부)은 건너뛰었다. 전체 정지는 사용자 의도를 확인한 뒤 stop_threads()로 별도 요청할 것.',
           });
         }
         return textResult({ ok: true, mode: target.mode, attempts: attempt, sent, settled: true, skipped: [], threads: settle.threads.map(compactThread), ...cancellationInfo });

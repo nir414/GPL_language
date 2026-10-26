@@ -5,7 +5,7 @@
 
 ## 처리 결과 요약 (2026-10-26, 0.18.0)
 
-원본: `C:\Users\Doyun\Downloads\GPL_language_inbox` 최상위 보고 24건. 코드·테스트로 반영했고(1413/1413, MCP 163/163) 제어기 실기·UI 확인은 하지 않았습니다. 상세는 `docs/ai-handoff.md` §1-FZ, 각 보고 파일 끝의 `## 처리 결과`.
+원본: `C:\Users\Doyun\Downloads\GPL_language_inbox` 최상위 보고 22건. 코드·테스트로 반영했고(1413/1413, MCP 163/163) 제어기 실기·UI 확인은 하지 않았습니다. 상세는 `docs/ai-handoff.md` §1-FZ, 각 보고 파일 끝의 `## 처리 결과`.
 
 | 보고 | 처리 | 남은 범위 |
 | --- | --- | --- |

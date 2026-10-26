@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
 - **최종 갱신: 2026-10-26** · 현재 package 버전 **0.18.0** (수신함 보고 일괄 반영. 검증 결과는 §1-FZ 참조.)
-- **직전 세션: §1-FZ** — 수신함 24건을 다섯 갈래(참조·정의, 정적 진단, Unload·대상 안전, FTP 정체 확인·메모리 알림·연결 진단, 시계 동기화)로 구현·병합했다. 1413/1413·MCP 163/163, VSIX 0.18.0 패키징. 실기·UI 확인과 Marketplace 자동 게시 연결은 남았다.
+- **직전 세션: §1-FZ** — 수신함 22건을 다섯 갈래(참조·정의, 정적 진단, Unload·대상 안전, FTP 정체 확인·메모리 알림·연결 진단, 시계 동기화)로 구현·병합했다. 1413/1413·MCP 163/163, VSIX 0.18.0 패키징. 실기·UI 확인과 Marketplace 자동 게시 연결은 남았다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -1069,7 +1069,7 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-FW | 10-23 | **FTP 원격 파일·lazy Attach** — 기존 작업공간 유지, 읽기 전용 URI와 TMP 소스 캐시. 0.17.0 | 본문 ↓ |
 | §1-FX | 10-23 | **FTP 새로고침 경합** — 일반 조회 뒤 새 요청 직렬화·종료 경계, .gpo 설명 정정. 0.17.1 | 본문 ↓ |
 | §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | 본문 ↓ |
-| §1-FZ | 10-26 | **수신함 24건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | 본문 ↓ |
+| §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | 본문 ↓ |
 
 ---
 
@@ -1291,7 +1291,7 @@ Windows TypeScript compile, 전체 회귀 **1308/1308**, git diff --check가 통
 
 ### 요청·판단
 
-사용자가 "기능 개선 요청 반영 → GitHub 커밋·릴리스 → Marketplace 최신 버전 등록까지 자동화"를 요청했다. 사용자 메모 파일(Quick Compile 쓰레드 확인·autoOnSave·deploy 경로·Start 분리·hover 설정·오버로드 정의)의 항목은 코드 대조 결과 이미 구현돼 있어, 실제 미처리 요청은 `Downloads\GPL_language_inbox` 최상위의 보고 24건으로 봤다. 메모의 `getWafer` 오버로드 정의 이동은 회귀 픽스처로 다시 검증했다.
+사용자가 "기능 개선 요청 반영 → GitHub 커밋·릴리스 → Marketplace 최신 버전 등록까지 자동화"를 요청했다. 사용자 메모 파일(Quick Compile 쓰레드 확인·autoOnSave·deploy 경로·Start 분리·hover 설정·오버로드 정의)의 항목은 코드 대조 결과 이미 구현돼 있어, 실제 미처리 요청은 `Downloads\GPL_language_inbox` 최상위의 보고 22건으로 봤다. 메모의 `getWafer` 오버로드 정의 이동은 회귀 픽스처로 다시 검증했다.
 
 시작 시 작업 트리에 0.17.0~0.17.2 미커밋 변경이 있었고, 브랜치는 PR #37 병합(main `bf4db9c`)보다 뒤였다. 작업 트리를 보존한 채 `git reset --mixed main`으로 브랜치를 main에 맞춘 뒤 그 변경을 `349ae90`으로 커밋했다(1314/1314·MCP 137/137).
 

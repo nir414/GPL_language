@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
 - **최종 갱신: 2026-10-26** · 현재 package 버전 **0.18.0** (수신함 보고 일괄 반영. 검증 결과는 §1-FZ 참조.)
-- **직전 세션: §1-FZ** — 수신함 22건을 다섯 갈래(참조·정의, 정적 진단, Unload·대상 안전, FTP 정체 확인·메모리 알림·연결 진단, 시계 동기화)로 구현·병합했다. 1413/1413·MCP 163/163, VSIX 0.18.0 패키징. 실기·UI 확인과 Marketplace 자동 게시 연결은 남았다.
+- **직전 세션: §1-FZ** — 수신함 22건을 다섯 갈래(참조·정의, 정적 진단, Unload·대상 안전, FTP 정체 확인·메모리 알림·연결 진단, 시계 동기화)로 구현·병합했다. 1423/1423·MCP 164/164(PR #38 리뷰 6건 반영 포함), VSIX 0.18.0 패키징. 실기·UI 확인과 Marketplace 자동 게시 연결은 남았다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -1312,7 +1312,7 @@ Windows TypeScript compile, 전체 회귀 **1308/1308**, git diff --check가 통
 ### 검증
 
 - 병합 뒤 `npm test` **1413/1413**, `controller-mcp` `npm test` **163/163** 통과. `pre-release-check`는 미커밋·main 아님 2건만 실패(커밋 전 실행이라 예상된 결과), 나머지 15건 통과.
-- `npm run package:no-bump`: `dist/gpl-language-support-0.18.0.vsix`, **1,475,317 bytes**, SHA-256 **ED1D4736869466C8DE87F4C8C10FDADD3138E65B5B76DEFC7D7A766DEE2B75EB**. 경고는 기존 JavaScript 번들링 권고뿐.
+- `npm run package:no-bump`: `dist/gpl-language-support-0.18.0.vsix`(PR #38 리뷰 반영 뒤 재패키징), **1,481,833 bytes**, SHA-256 **714BA3660BCD0769CF15EEB61C26CD951311B196509251BE69C0BD62FF6FE632**. 경고는 기존 JavaScript 번들링 권고뿐.
 - 제어기·실제 VS Code UI는 이번에 다루지 않았다. 아래 남은 일의 실기 항목은 모두 미확인이다.
 
 ### 남은 일
@@ -1320,3 +1320,7 @@ Windows TypeScript compile, 전체 회귀 **1308/1308**, git diff --check가 통
 - Marketplace 자동 게시는 여전히 미연결(§3 §1-FF 항목) — `marketplace` 환경 secret과 `MARKETPLACE_PUBLISH`가 비어 있어 태그 workflow는 GitHub Release까지만 만든다.
 - 실기 확인: FTP 220 배너가 `access()` welcome으로 실제 읽히는지(못 읽으면 사람 경로는 「그래도 진행」, AI 경로는 거부), 배너·런타임 콘솔 핸드셰이크 프로브의 무해성, Lib Quick Compile 뒤 Unload 위험 표시와 재부팅 뒤 해제, `RWK_0` 같은 밑줄 이름 Stop, `date` 응답 형식과 잔여 오차, 리터럴 한도 정확한 값.
 - 보류: 모듈 String 첫 사용 린트(흐름 분석 필요), Unload 소켓 유지·명령별 타임아웃 표, Lib 배포 기본값 upload-only 전환, 메모리 알림의 「/GPL 확인」·「다시 알리지 않기」 버튼, Compile 전후 Show Memory 시계열.
+
+### PR #38 리뷰 반영
+
+Copilot 리뷰 6건을 코드로 대조해 모두 사실로 확인하고 고쳤다(`23e9b26`~`82440c9`). ① FTP 트리 하위 폴더가 프로젝트 폴더와 같은 context를 받아 `/GPL/App/Utils`에서 `Unload Utils`가 나갈 수 있었다 — `controller/files/ftpNodeTarget.ts`로 하위 폴더 context를 분리하고 메뉴 when 절을 정확 일치로 바꿨다. ② 제어기 전환 뒤 옛 노드의 변경 명령을 노드 host 대조로 거부(확인 창 뒤 재검사). ③ 시계 설정 값을 `SendCommandOptions.composeInSlot`으로 큐 슬롯 안에서 계산. ④ 메모리 배지를 측정한 제어기에 묶고 해제·전환 시 숨김. ⑤ 한정자 없는 인자 타입 추론을 렉시컬 범위로 제한. ⑥ 호버가 렉시컬 소유자를 먼저 정한 뒤 그 소유자의 오버로드만 비교. 이와 별도로 Linux CI에서 원격 사본의 로컬 절대 라이브러리 경로가 원격 절대 경로로 오인되던 문제를 `controllerLibraryCandidates`에서 고쳤다(`14cd3fe`). 리뷰 반영 뒤 1423/1423·MCP 164/164.

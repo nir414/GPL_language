@@ -69,6 +69,24 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: sha256sum "gpl-language-support-$VERSION.vsix" > SHA256SUMS
 
+      # 릴리스는 immutable 이라 게시된 자산을 바꿀 수 없다(재실행하면 업로드가 실패한다).
+      # 이미 있으면 새로 만든 VSIX 대신 그 릴리스의 자산을 받아 검증하고, 그것을 게시 대상으로 넘긴다.
+      - name: Reuse assets of an existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            rm -f dist/*.vsix dist/SHA256SUMS
+            gh release download "$TAG" --dir dist --pattern '*.vsix' --pattern 'SHA256SUMS'
+            (cd dist && sha256sum --check SHA256SUMS)
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Store verified package
         uses: actions/upload-artifact@v4
         with:
@@ -83,7 +101,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: node scripts/extract-changelog.js "$VERSION" > release_notes.md
 
-      - name: Create or update GitHub Release
+      - name: Create GitHub Release
+        if: steps.existing.outputs.exists != 'true'
         uses: softprops/action-gh-release@v2
         with:
           name: Brooks GPL v${{ steps.version.outputs.version }}

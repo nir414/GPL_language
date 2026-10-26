@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-26** · 현재 package 버전 **0.18.0** (수신함 보고 일괄 반영. 검증 결과는 §1-FZ 참조.)
+- **최종 갱신: 2026-10-26** · 현재 package 버전 **0.18.1** (Marketplace 자동 게시 연결. 검증 결과는 §1-FZ 참조.)
 - **직전 세션: §1-FZ** — 수신함 22건을 다섯 갈래(참조·정의, 정적 진단, Unload·대상 안전, FTP 정체 확인·메모리 알림·연결 진단, 시계 동기화)로 구현·병합했다. 1423/1423·MCP 164/164(PR #38 리뷰 6건 반영 포함), VSIX 0.18.0 패키징. 실기·UI 확인과 Marketplace 자동 게시 연결은 남았다.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -91,8 +91,6 @@
 - [ ] **(2026-10-22, §1-FH) 간단한 hello-project — F5 UI 및 제어기 컴파일·실행 확인.** Main.gpl의 Add·Clamp에서 F12·Shift+F12·F2·호버·시그니처 도움말, counter 객체 완성·Count Property·Outline·접기를 확인한다. 제어기에서는 출력 sum: 3 / clamped: 100 / count: 3과 Increment 호출 중단점의 스텝·변수를 확인한다. 정적 검사와 관련 테스트 55/55만 수행했다.
 
 - [ ] **(2026-10-22, §1-FG) 수신함 후속과 0.14.0 검증.** `REQUESTS.md` 표의 미구현 항목을 유지한다. 새 VSIX에서 메모리 가드의 사람/MCP 차단·측정 실패 표시, Upload Only의 기존 FTP 전용 계약, 수신 대기 중 후속 Stop 접수, 선택 Try 안내를 확인한다. 실제 Compile/Start/Stop은 안전한 시험 조건과 별도 승인 범위에서만 수행한다.
-
-- [ ] **(2026-10-22, §1-FF) Marketplace 실제 등록·게시/자동 업데이트 확인.** 게시자 소유권 확인, 검증 VSIX 최초 게시, Entra identity/Marketplace Contributor·GitHub Environment secrets/OIDC 연결, `MARKETPLACE_PUBLISH=true` 설정 후 정식 태그 job과 Marketplace 공개 버전 확인. VSIX 기존 설치의 Auto Update 전환 확인. 로컬 수정과 실제 서비스 연결은 구분한다.
 
 ### 명령 UI — 남은 결정
 
@@ -1324,3 +1322,7 @@ Windows TypeScript compile, 전체 회귀 **1308/1308**, git diff --check가 통
 ### PR #38 리뷰 반영
 
 Copilot 리뷰 6건을 코드로 대조해 모두 사실로 확인하고 고쳤다(`23e9b26`~`82440c9`). ① FTP 트리 하위 폴더가 프로젝트 폴더와 같은 context를 받아 `/GPL/App/Utils`에서 `Unload Utils`가 나갈 수 있었다 — `controller/files/ftpNodeTarget.ts`로 하위 폴더 context를 분리하고 메뉴 when 절을 정확 일치로 바꿨다. ② 제어기 전환 뒤 옛 노드의 변경 명령을 노드 host 대조로 거부(확인 창 뒤 재검사). ③ 시계 설정 값을 `SendCommandOptions.composeInSlot`으로 큐 슬롯 안에서 계산. ④ 메모리 배지를 측정한 제어기에 묶고 해제·전환 시 숨김. ⑤ 한정자 없는 인자 타입 추론을 렉시컬 범위로 제한. ⑥ 호버가 렉시컬 소유자를 먼저 정한 뒤 그 소유자의 오버로드만 비교. 이와 별도로 Linux CI에서 원격 사본의 로컬 절대 라이브러리 경로가 원격 절대 경로로 오인되던 문제를 `controllerLibraryCandidates`에서 고쳤다(`14cd3fe`). 리뷰 반영 뒤 1423/1423·MCP 164/164.
+
+### Marketplace 자동 게시 연결 (0.18.1)
+
+v0.18.0 Release workflow의 `marketplace` job은 secret 미설정으로 skip됐다. 사용자 계정(`doyunkwack@naver.com`)으로 Entra 앱 등록·서비스 주체·federated credential을 만들고(계정 소유자가 직접 실행 — Claude Code 권한 검사가 인증 정보 생성을 막음), 서비스 주체를 Marketplace 게시자 멤버(Contributor)로 추가, GitHub `marketplace` secrets와 `MARKETPLACE_PUBLISH=true`를 설정했다. 값과 우회 방법은 `docs/releases/process.md` 「현재 연결 상태」. v0.18.0 재실행은 immutable release 자산 교체 거부(`Cannot delete asset from an immutable release`)로 실패해, `release.yml`이 기존 릴리스 자산을 재사용하도록 고치고 patch 0.18.1로 다시 태그했다.

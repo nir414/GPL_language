@@ -2,6 +2,15 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.18.1] - 2026-10-26
+
+### Changed
+
+- 릴리스 태그를 올리면 GitHub Release에 이어 VS Code Marketplace에도 자동으로 게시됩니다(Microsoft Entra ID 연결). 확장 기능 자체의 변경은 없으며 0.18.0과 같은 내용입니다.
+
+### Fixed
+
+- 이미 게시된 GitHub Release는 바꿀 수 없어 Release workflow를 다시 실행하면 실패하던 문제를 고쳤습니다. 다시 실행할 때는 게시된 VSIX를 받아 체크섬을 확인한 뒤 그 파일을 Marketplace에 올립니다.
 ## [0.18.0] - 2026-10-26
 
 ### Added

@@ -84,6 +84,7 @@ import {
   PROJECT_NOT_RUNNABLE,
   readUnloadRiskState,
   assessUnloadRisk,
+  parseUnloadCommand,
   unloadRiskRefusalResult,
   unloadTimeoutGuidance,
   compiledProjectFromResponse,
@@ -260,7 +261,7 @@ async function callExtension(command, args, { timeoutMs, instanceId } = {}) {
 async function sendGuarded(command, opts) {
   // 그룹 Compile 뒤 Unload 는 확인(confirm) 없이는 보내지 않는다 — 확장과 같은 파일·같은 판정(src/unloadRisk.js).
   // 잠금 대기보다 먼저 본다(어차피 보내지 않을 명령을 기다릴 이유가 없다).
-  const unloadRisk = assessUnloadRisk(readUnloadRiskState(HOST), command);
+  const unloadRisk = parseUnloadCommand(command) ? assessUnloadRisk(readUnloadRiskState(HOST), command) : null;
   if (unloadRisk?.risky && opts?.confirmUnloadRisk !== true) {
     logLine(`  1402> ${command} | 전송 안 함 | ${UNLOAD_RISK_REFUSAL} (그룹 Compile: ${unloadRisk.groupProjects.join(', ')})`);
     throw taggedError(unloadRiskRefusalResult(unloadRisk).detail, SEND_OUTCOME_NOT_SENT,
@@ -397,7 +398,7 @@ function noteDirectGroupCompile(command, raw) {
 
 /** 위험 상태 Unload 가 결과 미확정(타임아웃 등)으로 끝났으면 "이 조합은 재부팅이 필요했다" 를 바로 싣는다. */
 function withUnloadRiskGuidance(command, result) {
-  if (result?.outcome !== SEND_OUTCOME_UNKNOWN) return result;
+  if (result?.outcome !== SEND_OUTCOME_UNKNOWN || !parseUnloadCommand(command)) return result;
   const risk = assessUnloadRisk(readUnloadRiskState(HOST), command);
   if (!risk?.risky) return result;
   const guidance = unloadTimeoutGuidance(risk);

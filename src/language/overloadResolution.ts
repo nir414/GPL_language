@@ -11,8 +11,8 @@
  * 기존(인자 개수 기반) 동작을 해치지 않는다. 확실한 정보가 있을 때만
  * 가점/감점으로 순위를 바꾼다.
  */
-import { getParameterArity, argCountMatchesArity } from './cursorExpression';
-import { elementTypeOf, isArrayTypeName } from './receiverType';
+import { getParameterArity, argCountMatchesArity, extractQualifierChainBefore, parseChainSegment } from './cursorExpression';
+import { elementTypeOf, isArrayTypeName, ReceiverLookup, ReceiverSegment, resolveExpressionType } from './receiverType';
 
 /**
  * 호출 문맥. 인자 개수와 (lazy) 인자 타입 공급자를 담는다.
@@ -115,6 +115,68 @@ export function inferLiteralArgType(expr: string): string | undefined {
     return undefined;
 }
 
+/** 인자 식이 순수 체인(`x`, `x(i)`, `Me.a.b`, `a(0).b`)이면 세그먼트로, 아니면(연산식 등) undefined. */
+function parseArgumentChain(expr: string): ReceiverSegment[] | undefined {
+    const normalized = expr.trim().replace(/\s*\.\s*/g, '.');
+    if (!/^[A-Za-z_]/.test(normalized)) { return undefined; }
+    const info = extractQualifierChainBefore(`${normalized}.`);
+    if (!info || info.partial !== '' || info.chain.join('.') !== normalized) { return undefined; }
+    const segments = info.chain.map(parseChainSegment);
+    return segments.every(s => s !== undefined) ? segments as ReceiverSegment[] : undefined;
+}
+
+/**
+ * 호출부 인자 식 하나의 타입을 추론한다(가벼운 경로만). 추론 불가 시 undefined(중립).
+ *   - 리터럴: `"..."` → String, True/False → Boolean, 숫자/&H/&O → NUMERIC_LITERAL_TYPE
+ *   - `New Foo(...)` → Foo
+ *   - 체인(`x`, `x(i)`, `Me.f`, `a.b(0)`) → 수신자 해석 정본(receiverType.resolveExpressionType)의 선언 타입
+ *     — 배열은 `Type[]` 그대로라 배열 인자 ↔ `x()` 파라미터를 가를 수 있다.
+ * 정의 이동·호버·참조 찾기가 같은 규칙을 쓰도록 여기 하나만 둔다.
+ */
+export function inferArgumentType(expr: string, lookup: ReceiverLookup): string | undefined {
+    const s = expr.trim();
+    const literal = inferLiteralArgType(s);
+    if (literal) { return literal; }
+    const ctor = s.match(/^New\s+([A-Za-z_]\w*)/i);
+    if (ctor) { return ctor[1]; }
+    const segments = parseArgumentChain(s);
+    return segments ? resolveExpressionType(segments, lookup) : undefined;
+}
+
+/**
+ * 호출부 인자 식 목록으로 CallContext 를 만든다. 인자가 없으면(호출 문맥 아님) undefined.
+ * 타입 추론은 lazy — 오버로드 후보가 arity 로 걸러도 2개 이상일 때만 `getLookup` 을 부르고, 결과는 캐시한다.
+ */
+export function buildCallContext(
+    callArgs: readonly string[] | undefined,
+    getLookup: () => ReceiverLookup,
+): CallContext | undefined {
+    if (!callArgs) { return undefined; }
+    if (callArgs.length === 0) { return { argCount: 0 }; }
+    let cached: ReadonlyArray<string | undefined> | undefined;
+    return {
+        argCount: callArgs.length,
+        getArgTypes: () => {
+            if (!cached) {
+                const lookup = getLookup();
+                cached = callArgs.map(a => inferArgumentType(a, lookup));
+            }
+            return cached;
+        },
+    };
+}
+
+/**
+ * 호출 문맥에서 `target` 오버로드가 선택되는지(선두 동점 그룹에 남는지).
+ * 형제 오버로드가 없거나 호출 문맥이 없으면 true — 가를 근거가 없으면 빼지 않는다.
+ */
+export function isOverloadSelected<T extends OverloadCandidate>(
+    target: T, siblings: ReadonlyArray<T>, ctx: CallContext | undefined,
+): boolean {
+    if (!ctx || typeof ctx.argCount !== 'number' || siblings.length === 0) { return true; }
+    return rankOverloadMatches([target, ...siblings], ctx).includes(target);
+}
+
 /**
  * 인자 타입 1개 ↔ 파라미터 1개의 적합도 점수.
  *   +3 타입·배열여부 정확 일치 / +2 숫자 리터럴 ↔ 숫자 파라미터
@@ -136,6 +198,9 @@ export function scoreArgTypeAgainstParam(argType: string | undefined, param: Par
 
     if (argIsArray !== param.isArray) { return -2; }
     if (argElem === paramType) { return 3; }
+    // `As Object` 는 무엇이든 받는다 — 불일치(-2)로 깎으면 구체 타입 오버로드가 없을 때 엉뚱한 후보가 이긴다.
+    // 구체 타입 일치(+3)보다는 낮게 둔다(VB 오버로드 해석도 더 구체적인 쪽을 고른다).
+    if (paramType === 'object') { return 0; }
     if (!argIsArray && GPL_NUMERIC_TYPES.has(argElem) && GPL_NUMERIC_TYPES.has(paramType)) { return 1; }
     return -2;
 }

@@ -4,9 +4,13 @@
 
 import * as vscode from 'vscode';
 import {
+	SHOW_MEMORY_STATUS_COMMAND,
+	describeMemoryCheck,
 	formatTrafficTimestamp,
 	getControllerConfig,
+	getLastMemoryCheck,
 	getTrafficLogOptions,
+	setMemoryStatusObserver,
 	isPolicyError,
 	isCleanlyTerminated,
 	recordTrafficLine,
@@ -126,6 +130,26 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		vscode.commands.registerCommand('gpl.controller.showTraffic', () => {
 			trafficChannel.show(true);
 		})
+	);
+
+	// ── 여유 메모리 경고 상태 표시줄 (2026-10-23 보고 — 알림은 나빠질 때만, 지속 상태는 상태 표시줄 한 칸) ──
+	setMemoryStatusObserver((_ip, _check, badge) => { host.statusBar?.setMemoryWarning(badge); });
+	context.subscriptions.push(
+		{ dispose: () => setMemoryStatusObserver(null) },
+		vscode.commands.registerCommand(SHOW_MEMORY_STATUS_COMMAND, async () => {
+			const last = getLastMemoryCheck();
+			if (!last) {
+				void vscode.window.showInformationMessage('아직 여유 메모리 검사 결과가 없습니다 — Compile·Start·배포 전에 자동으로 검사합니다.');
+				return;
+			}
+			const at = new Date(last.at).toLocaleTimeString('ko-KR', { hour12: false });
+			const pick = await vscode.window.showInformationMessage(
+				`${last.ip} 여유 메모리 ${last.check.freeMb ?? '?'} MB (${at} 검사)`,
+				{ modal: true, detail: describeMemoryCheck(last.check) },
+				'명령 콘솔 기록 보기',
+			);
+			if (pick === '명령 콘솔 기록 보기') { trafficChannel.show(true); }
+		}),
 	);
 
 	// 1402 응답 본문 표시(GPL Traffic ` | ` 라인) 켜기/끄기 — 트리 '1402 통신 모니터' 항목 설명도 갱신

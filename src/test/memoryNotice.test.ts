@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from './harness';
-import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast, memoryBadge } from '../controller/diagnostics/memoryNotice';
+import { MemoryBadgeOwner, MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast, memoryBadge } from '../controller/diagnostics/memoryNotice';
 import type { MemoryPrecheck } from '../controller/diagnostics/memoryGuard';
 
 // 2026-10-23 Sample Prep 보고: 경고 구간(2.5~4 MB)에서 Compile·Start·배포마다 같은 경고 알림이 새로 쌓였다.
@@ -80,4 +80,30 @@ test('memoryNotice: 알림 문구는 짧게, 긴 안내(Unload 위험)는 상세
     assert.match(formatMemoryDetail(c), /경고 4 MB 미만 · 차단 2.5 MB 미만/);
     assert.strictEqual(memoryBadge(check(5)), undefined);
     assert.match(memoryBadge(c)!.tooltip, /클릭: 상세 보기/);
+});
+
+// PR #38 리뷰: 관찰자가 IP 를 버려 제어기 A 의 Free 값이 B 연결 뒤에도 남았다.
+test('memoryNotice: 배지는 현재 제어기의 값만 보이고 제어기 변경·연결 해제 시 숨긴다', () => {
+    const A = '192.168.0.1', B = '192.168.0.2';
+    const badge = { text: '$(warning) Free 2.96 MB', tooltip: 't' };
+    const owner = new MemoryBadgeOwner();
+    assert.deepStrictEqual(owner.observe(A, A, badge), badge);
+    assert.strictEqual(owner.ip, A);
+    assert.strictEqual(owner.observe(A, A, undefined), undefined, '같은 제어기의 측정 실패는 표시 유지');
+    assert.strictEqual(owner.reconcile(A), undefined, '같은 제어기면 유지');
+    // 제어기가 B 로 바뀐 뒤 늦게 도착한 A 의 결과 — 표시하지 않고, 남아 있던 A 의 배지는 숨긴다.
+    assert.strictEqual(owner.observe(A, B, badge), null);
+    assert.strictEqual(owner.ip, undefined);
+    assert.strictEqual(owner.observe(A, B, badge), undefined, '이미 숨겼으면 그대로');
+    // B 의 측정 실패는 A 의 값을 살리지 않는다.
+    owner.observe(A, A, badge);
+    assert.strictEqual(owner.observe(B, B, undefined), null);
+    // B 의 경고는 B 의 배지로 보인다.
+    assert.deepStrictEqual(owner.observe(B, B, badge), badge);
+    assert.strictEqual(owner.ip, B);
+    assert.strictEqual(owner.reconcile(A), null, '설정이 A 로 바뀌면 B 의 배지를 숨긴다');
+    owner.observe(A, A, badge);
+    assert.strictEqual(owner.reconcile(undefined), null, '연결 해제면 숨긴다');
+    assert.strictEqual(owner.reconcile(undefined), undefined, '숨긴 뒤에는 할 일 없음');
+    assert.strictEqual(owner.observe(A, A, null), null, 'ok 복귀는 숨김');
 });

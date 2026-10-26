@@ -93,6 +93,54 @@ export function memoryBadge(check: MemoryPrecheck): { text: string; tooltip: str
     };
 }
 
+/** 상태 표시줄 메모리 배지 — 표시 / null(숨김) / undefined(지금 표시 유지). */
+export type MemoryBadgeUpdate = { text: string; tooltip: string } | null | undefined;
+
+const sameIp = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * 상태 표시줄 메모리 배지가 **어느 제어기의 값인지** 기억한다(PR #38 리뷰: 관찰자가 IP 를 버려, 제어기 A 의 Free 값이
+ * 연결 해제·제어기 변경 뒤에도 남아 B 의 값처럼 보였다). 현재 제어기의 결과만 보이고, 다른 제어기의 값은 숨긴다.
+ */
+export class MemoryBadgeOwner {
+    private shownIp: string | undefined;
+
+    /** 표시 중인 배지의 제어기(숨김이면 undefined). */
+    get ip(): string | undefined { return this.shownIp; }
+
+    /**
+     * 검사 결과 한 건 → 상태 표시줄에 줄 갱신. `ip` 는 검사한 제어기, `currentIp` 는 지금 설정된 제어기.
+     * 현재 제어기가 아닌 검사 결과는 표시하지 않고, 표시 중인 값이 다른 제어기의 것이면 숨긴다.
+     */
+    observe(ip: string, currentIp: string, badge: MemoryBadgeUpdate): MemoryBadgeUpdate {
+        const staleShown = this.shownIp !== undefined && !sameIp(this.shownIp, currentIp);
+        if (!sameIp(ip, currentIp)) {
+            return staleShown ? this.clear() : undefined;
+        }
+        if (badge === null) { return this.clear(); }
+        if (badge === undefined) {
+            // 측정 실패는 지금 표시를 유지한다 — 단 그 표시가 다른 제어기의 값이면 유지할 근거가 없다.
+            return staleShown ? this.clear() : undefined;
+        }
+        this.shownIp = ip;
+        return badge;
+    }
+
+    /**
+     * 연결 해제(`currentIp` 없음) 또는 제어기 변경 시 — 표시 중인 값이 현재 제어기의 것이 아니면 숨김(null), 아니면 유지(undefined).
+     */
+    reconcile(currentIp?: string): MemoryBadgeUpdate {
+        if (this.shownIp === undefined) { return undefined; }
+        if (currentIp !== undefined && sameIp(this.shownIp, currentIp)) { return undefined; }
+        return this.clear();
+    }
+
+    private clear(): null {
+        this.shownIp = undefined;
+        return null;
+    }
+}
+
 /**
  * 제어기 IP 별 마지막 수준을 기억해 알림 여부를 정한다. 상태는 메모리에만 있다(세션 한정).
  */

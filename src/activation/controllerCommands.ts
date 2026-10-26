@@ -29,6 +29,8 @@ import {
 	parseThreadList,
 } from '../controller/protocol/responseParser';
 import { getGplErrorGroup } from '../controller/protocol/responseParser';
+import { MemoryBadgeOwner, type MemoryBadgeUpdate } from '../controller/diagnostics/memoryNotice';
+import { onControllerSessionChange } from '../controller/connection/connectionSession';
 import type { ErrorCodeCategory } from '../controller/protocol/responseParser';
 import { probeThreads } from '../controller/threads/threadStop';
 import { isSettledState } from '../controller/threads/threadActivity';
@@ -136,9 +138,18 @@ export function activateControllerCommands(host: ExtensionHost): void {
 	);
 
 	// ── 여유 메모리 경고 상태 표시줄 (2026-10-23 보고 — 알림은 나빠질 때만, 지속 상태는 상태 표시줄 한 칸) ──
-	setMemoryStatusObserver((_ip, _check, badge) => { host.statusBar?.setMemoryWarning(badge); });
+	// 배지는 그 값을 잰 제어기의 것이다 — 현재 제어기의 결과만 보이고, 연결 해제·제어기 변경 시 숨긴다(MemoryBadgeOwner).
+	const memoryBadge = new MemoryBadgeOwner();
+	const applyMemoryBadge = (update: MemoryBadgeUpdate) => { host.statusBar?.setMemoryWarning(update); };
+	setMemoryStatusObserver((ip, _check, badge) => { applyMemoryBadge(memoryBadge.observe(ip, getControllerConfig().ip, badge)); });
 	context.subscriptions.push(
 		{ dispose: () => setMemoryStatusObserver(null) },
+		onControllerSessionChange(change => {
+			applyMemoryBadge(memoryBadge.reconcile(change.connected ? getControllerConfig().ip : undefined));
+		}),
+		vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('gpl.controller.ip')) { applyMemoryBadge(memoryBadge.reconcile(getControllerConfig().ip)); }
+		}),
 		vscode.commands.registerCommand(SHOW_MEMORY_STATUS_COMMAND, async () => {
 			const last = getLastMemoryCheck();
 			if (!last) {

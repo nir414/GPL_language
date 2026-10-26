@@ -35,6 +35,7 @@ import type { SettleOutcome, ThreadProbe, ThreadStopIo, ThreadStopOptions } from
 import { compileProject, loadProject, startProject, unloadProject } from '../commands/projectCommands';
 import type { CompileAttempt, ProjectCommandIo } from '../commands/projectCommands';
 import { isProjectAlreadyLoaded, isProjectNotLoaded } from '../protocol/controllerStatusCodes';
+import { attachCompileErrorHints } from './compileErrorHints';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
 import { KeyedSerialQueue } from './deployQueue';
 import { beginOperation, findActiveByIdempotencyKey, sweepOperations, OperationHandle, OperationRecord } from '../automation/operationStore';
@@ -1388,6 +1389,7 @@ async function deployLocked(
             // 절대경로 `파일:줄:열` 형식으로 출력하면 출력 패널에서 클릭 시 해당 위치로 이동된다.
             const abs = resolveErrorFilePath(err.file, options.projectDir);
             pushTrace(`│   ${abs}:${err.line}:1 (${err.code}) ${err.message}`);
+            if (err.hint) { pushTrace(`│     ↳ 힌트: ${err.hint}`); }
         }
     }
 
@@ -1595,6 +1597,9 @@ export function applyCompileDiagnostics(
     projectDir: string,
     collection: vscode.DiagnosticCollection
 ): void {
+    // 그 줄의 소스를 보고 원인 안내를 붙인다(-741 선언 줄·-722 `New X()`·-737 등). 자동화 결과의 compileErrors 도 같은 값을 쓴다.
+    attachCompileErrorHints(errors, createCompileSourceLineReader(projectDir));
+
     // fsPath 문자열을 키로 사용해 동일 파일의 진단을 묶는다.
     // (Uri.toString() ↔ Uri.parse() 왕복 인코딩으로 인한 경로 불일치를 피하기 위해 Uri를 직접 보관한다.)
     const byFile = new Map<string, { uri: vscode.Uri; diags: vscode.Diagnostic[] }>();
@@ -1609,7 +1614,8 @@ export function applyCompileDiagnostics(
 
         const line = Math.max(0, err.line - 1);
         const range = new vscode.Range(line, 0, line, Number.MAX_SAFE_INTEGER);
-        const diag = new vscode.Diagnostic(range, err.message, vscode.DiagnosticSeverity.Error);
+        const message = err.hint ? `${err.message}\n힌트: ${err.hint}` : err.message;
+        const diag = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Error);
         diag.source = 'GPL Compiler';
         diag.code = err.code;
         byFile.get(key)!.diags.push(diag);
@@ -1618,6 +1624,25 @@ export function applyCompileDiagnostics(
     for (const { uri, diags } of byFile.values()) {
         collection.set(uri, diags);
     }
+}
+
+/**
+ * 컴파일 에러가 가리키는 로컬 소스 줄(1-기준)을 읽는 함수 — 파일마다 한 번만 읽는다. 못 읽으면 undefined.
+ * 컴파일은 업로드한(저장된) 파일을 대상으로 하므로 디스크 내용을 본다. 판정에 쓰는 것은 ASCII 패턴뿐이라 latin1 로 읽는다.
+ */
+function createCompileSourceLineReader(projectDir: string): (file: string, line: number) => string | undefined {
+    const cache = new Map<string, string[] | undefined>();
+    return (file, line) => {
+        const filePath = resolveErrorFilePath(file, projectDir);
+        if (!cache.has(filePath)) {
+            try {
+                cache.set(filePath, fs.readFileSync(filePath, 'latin1').split('\n'));
+            } catch {
+                cache.set(filePath, undefined);
+            }
+        }
+        return cache.get(filePath)?.[line - 1];
+    };
 }
 
 /**

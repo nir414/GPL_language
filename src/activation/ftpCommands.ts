@@ -484,7 +484,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 						await jumpToFirstCompileError(compile.errors, localDir, (msg: string) => host.log(`│ ${msg}`));
 					}
 					for (const e of compile.errors) {
-						host.log(`│ ✘ ${e.file}:${e.line} (${e.code}) ${e.message}`);
+						host.log(`│ ✘ ${e.file}:${e.line} (${e.code}) ${e.message}${e.hint ? ` — 힌트: ${e.hint}` : ''}`);
 					}
 					const first = compile.errors[0];
 					throw new Error(first

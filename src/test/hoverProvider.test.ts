@@ -208,3 +208,33 @@ test('Hover: 오버로드 호출은 인자 타입에 맞는 시그니처를 보�
         assert.ok(h?.contents.value.includes('armlist() As RobotArm'), `line ${line}: ${h?.contents.value}`);
     }
 });
+
+// PR #38 리뷰: 다른 모듈·클래스의 동명 메서드를 오버로드로 보고 인자 타입 순위를 매겨, 렉시컬 대상을 이겼다.
+test('Hover: 한정자 없는 호출은 감싸는 클래스·모듈의 오버로드끼리만 순위를 매긴다', async () => {
+    const s = setupWorld({
+        'C:\\p\\Main.gpl': [
+            'Module MainModule',                                    // 0
+            'Public Sub Process(ByVal x As Integer)', 'End Sub',    // 1-2
+            'Public Sub Use()', 'Process("text")', 'End Sub',       // 3-5
+            'Public Class Worker',                                  // 6
+            'Public Sub Run(ByVal n As Integer)', 'End Sub',        // 7-8
+            'Public Sub Go()', 'Run("text")', 'End Sub',            // 9-11
+            'End Class',                                            // 12
+            'Public Class Other',                                   // 13
+            'Public Sub Run(ByVal s As String)', 'End Sub',         // 14-15
+            'End Class',                                            // 16
+            'End Module',                                           // 17
+        ].join('\n'),
+        'C:\\p\\Util.gpl': [
+            'Module Util',
+            'Public Sub Process(ByVal s As String)', 'End Sub',
+            'End Module',
+        ].join('\n'),
+    });
+    const moduleCall = await s.hover('C:\\p\\Main.gpl', 4, 'Process');
+    assert.ok(moduleCall?.contents.value.includes('x As Integer'), `감싸는 모듈의 Process: ${moduleCall?.contents.value}`);
+    assert.ok(!moduleCall.contents.value.includes('s As String'));
+    const classCall = await s.hover('C:\\p\\Main.gpl', 10, 'Run');
+    assert.ok(classCall?.contents.value.includes('n As Integer'), `감싸는 클래스의 Run: ${classCall?.contents.value}`);
+    assert.ok(classCall.contents.value.includes('Class: `Worker`'));
+});

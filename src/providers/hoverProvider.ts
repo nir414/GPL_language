@@ -12,8 +12,10 @@ import {
     membersNamed,
     resolveReceiverHolder,
     resolveReceiverTypeName,
+    ReceiverHolder,
     ReceiverSegment,
 } from '../language/receiverType';
+import { containerAt } from '../language/referenceScope';
 import { ResolvedOverloadDoc, renderResolvedDocMarkdown, resolveOverloadDoc } from '../language/docCommentOverloads';
 import { buildReceiverContext } from './receiverContext';
 import { findGplKeyword, GplKeyword, GplKeywordKind } from '../language/gplStatements';
@@ -328,6 +330,48 @@ export class GPLHoverProvider implements vscode.HoverProvider {
     }
 
     /**
+     * 한정자 없는 이름을 정의 이동(definitionProvider.resolveUnqualifiedInScope)과 같은 순서로 푼다 —
+     * 감싸는 클래스의 멤버 → 감싸는 모듈의 직속 멤버(같은 컴파일 단위). 찾으면 **그 소유자의 오버로드끼리만**
+     * 호출 인자로 순위를 매긴다. 다른 모듈·클래스의 동명 메서드는 오버로드가 아니다 — 종전에는 이름 전체를
+     * 오버로드로 보고 인자 타입 순위를 매겨, 더 잘 맞는 남의 메서드가 렉시컬 대상을 이겼다(PR #38 리뷰).
+     * 소유자에 없으면 undefined(호출부가 이름 기반 조회로 이어간다).
+     */
+    private findLexicalOwnerMember(
+        document: vscode.TextDocument,
+        atLine: number,
+        name: string,
+        callArgs: string[] | undefined,
+    ): GPLSymbol | undefined {
+        try {
+            const { lookup, docSymbols } = buildReceiverContext(
+                document, atLine, n => this.symbolCache.findAllByName(n), this.getDocumentSymbols(document));
+            const docPath = document.uri.fsPath;
+            const inUnit = (s: GPLSymbol): boolean =>
+                s.filePath === docPath || this.symbolCache.isSameCompileUnit(s.filePath, docPath);
+            const here = containerAt(docSymbols, atLine);
+            const className = lookup.enclosingClassName ?? here.className;
+            const scopes: ReceiverHolder[] = [];
+            if (className) { scopes.push({ kind: 'class', name: className }); }
+            const moduleName = lookup.enclosingModuleName ?? here.module;
+            if (moduleName) { scopes.push({ kind: 'module', name: moduleName }); }
+            for (const holder of scopes) {
+                const members = membersNamed(lookup, holder, name).filter(inUnit);
+                if (members.length === 0) { continue; }
+                const callable = members.filter(m => m.kind === GPLSymbolKind.Function || m.kind === GPLSymbolKind.Sub);
+                const callCtx = callable.length > 1 ? buildCallContext(callArgs, () => lookup) : undefined;
+                const found = (callCtx ? rankOverloadMatches(callable, callCtx,
+                    c => (c.filePath === docPath ? 1 : 0))[0] : undefined)
+                    ?? members.find(m => m.filePath === docPath) ?? members[0];
+                this.log(`[Hover Scope] "${name}" → 감싸는 ${holder.kind} ${holder.name} 의 ${found.kind} (후보 ${members.length})`);
+                return found;
+            }
+        } catch (e) {
+            this.log(`[Hover Scope Error] ${e}`);
+        }
+        return undefined;
+    }
+
+    /**
      * `NUM.FixedText` 의 `NUM` 처럼 한정자 자리의 이름이 감싸는 클래스의 멤버(`Num()`)와 Module/Class 이름에
      * 동시에 맞으면, 컴파일러가 멤버 쪽으로 해석한다는 사실을 한 줄로 알린다(규칙 정본: receiverType.findQualifierShadowing).
      */
@@ -444,6 +488,14 @@ export class GPLHoverProvider implements vscode.HoverProvider {
             if (builtinMember) {
                 return this.buildBuiltinHover(builtinMember, compact, config, wordRange);
             }
+        }
+
+        // 한정자 없는 이름은 감싸는 클래스 → 감싸는 모듈의 멤버를 먼저 본다(정의 이동과 같은 렉시컬 순서).
+        // 오버로드 순위도 그 소유자 안에서만 매긴다 — 다른 모듈의 동명 메서드가 인자 타입으로 끼어들지 않게.
+        // `X.member` 의 한정자 자리(X)는 Module/Class 이름일 수 있으므로 종전 경로(가림 경고 포함)를 그대로 탄다.
+        if (!sym && !receiverSegs && !/^\s*\./.test(line.substring(wordRange.end.character)) && !token.isCancellationRequested) {
+            sym = this.findLexicalOwnerMember(document, position.line, lookupName,
+                extractCallArgumentsFromSuffix(line.substring(wordRange.end.character)));
         }
 
         // Prefer cache definition

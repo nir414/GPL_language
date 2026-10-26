@@ -78,6 +78,7 @@ import './postStartWatch.test';
 import './projectCommands.test';
 import './remoteProjectPath.test';
 import './remoteFolderClear.test';
+import './ftpNodeTarget.test';
 import './sourceTargets.test';
 import './startCommand.test';
 import './launchJsonc.test';

@@ -245,3 +245,37 @@ test('원격 FTP 트리: 손상된 루트·하위 항목에서 열기 명령과 
 		assert.deepStrictEqual(s.commandCalls, []);
 	} finally { s.cleanup(); }
 });
+
+test('원격 FTP 트리: 펼친 폴더 안의 폴더는 프로젝트 context 를 받지 않는다(프로젝트 명령 숨김)', async () => {
+	const s = fixture();
+	try {
+		await s.provider.browseFtp();
+		const project = await s.project();
+		assert.strictEqual(s.provider.getTreeItem(project).contextValue, 'ftpFolder');
+		const children = await s.provider.getChildren(project);
+		const nested = children.find((node: any) => node.label === 'Nested');
+		const item = s.provider.getTreeItem(nested);
+		assert.strictEqual(item.contextValue, 'ftpSubFolder', '하위 폴더에는 Unload/Stop/Run 메뉴가 붙지 않는다');
+		assert.strictEqual(item.collapsibleState, 1, '하위 폴더도 계속 펼칠 수 있다');
+		assert.strictEqual(item.remotePath, '/GPL/Project/Nested');
+		const grandChildren = await s.provider.getChildren(nested);
+		assert.strictEqual(s.provider.getTreeItem(grandChildren[0]).contextValue, 'ftpFile');
+		const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
+		const menus: Array<{ command: string; when?: string }> = pkg.contributes.menus['view/item/context'];
+		const contexts = (cmd: string) => menus.filter(m => m.command === cmd).map(m => {
+			const match = /viewItem =~ \/(.*)\//.exec(m.when ?? '');
+			return new RegExp(match![1]);
+		});
+		for (const cmd of ['gpl.controller.ftpRun', 'gpl.controller.ftpStop', 'gpl.controller.ftpUnload', 'gpl.controller.ftpDownload']) {
+			const res = contexts(cmd);
+			assert.ok(res.length > 0, cmd);
+			for (const re of res) {
+				assert.ok(re.test('ftpFolder') && re.test('ftpFlashFolder'), `${cmd}: 프로젝트 폴더에는 보인다`);
+				assert.ok(!re.test('ftpSubFolder') && !re.test('ftpFlashSubFolder'), `${cmd}: 하위 폴더에는 숨긴다`);
+			}
+		}
+		for (const re of contexts('gpl.controller.ftpDelete')) {
+			assert.ok(['ftpFolder', 'ftpSubFolder', 'ftpFile', 'ftpFlashSubFolder'].every(c => re.test(c)), '삭제는 하위 폴더·파일에도 남는다');
+		}
+	} finally { s.cleanup(); }
+});

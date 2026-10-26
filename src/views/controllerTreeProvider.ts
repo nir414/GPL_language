@@ -28,6 +28,7 @@ import { BreakpointTarget, breakpointKey, orphanControllerBreakpoints } from '..
 import { editorBreakpointTargets } from '../controller/debugging/breakpointSync';
 import { FtpEntry, listRemoteDir, listRemoteDirs } from '../controller/files/ftpClient';
 import { isSafeRemoteEntryName } from '../controller/files/remoteSourceSession';
+import { ftpEntryContext, isFlashFtpContext, isFtpFolderContext } from '../controller/files/ftpNodeTarget';
 import { onDebugThreadsUpdated } from '../controller/debugging/debugBridge';
 import { AUTO_REFRESH_MIN_INTERVAL_MS, decideAutoRefresh, formatLastRefreshTime } from './refreshThrottle';
 import { formatConnectionStats, formatDate, formatDateTimeFromTs } from './treeFormat';
@@ -102,14 +103,18 @@ class InfoNode {
 	) {}
 }
 
-/** 원격 폴더만 펼칠 수 있고, 파일은 현재 창의 읽기 전용 편집기로 연다. */
-function ftpNodes(entries: FtpEntry[], basePath: string, controllerHost: string, flash: boolean): InfoNode[] {
+/**
+ * 원격 폴더만 펼칠 수 있고, 파일은 현재 창의 읽기 전용 편집기로 연다.
+ * `nested`(펼친 폴더 안의 목록)의 폴더는 프로젝트 폴더가 아니므로 별도 context 를 받는다 — 프로젝트 명령(Run·Stop·Unload)은
+ * 저장 영역 바로 아래 폴더에만 보인다(controller/files/ftpNodeTarget.ts).
+ */
+function ftpNodes(entries: FtpEntry[], basePath: string, controllerHost: string, flash: boolean, nested: boolean): InfoNode[] {
 	if (entries.some(entry => entry.name !== '.' && entry.name !== '..' && !isSafeRemoteEntryName(entry.name))) {
 		return [new InfoNode('안전하지 않은 FTP 목록 항목을 표시하지 않았습니다.', 'error')];
 	}
 	return entries.filter(e => e.name !== '.' && e.name !== '..').map(entry => {
 		const remotePath = `${basePath}/${entry.name}`;
-		const context = entry.isDirectory ? (flash ? 'ftpFlashFolder' : 'ftpFolder') : (flash ? 'ftpFlashFile' : 'ftpFile');
+		const context = ftpEntryContext(entry.isDirectory, flash, nested);
 		const description = [!entry.isDirectory ? formatBytes(entry.size) : '', entry.modifiedAt ? formatDate(entry.modifiedAt) : ''].filter(Boolean).join(' · ');
 		return new InfoNode(entry.name, entry.isDirectory ? 'folder' : 'file', description || undefined, entry.isDirectory ? undefined : {
 				command: 'gpl.controller.openRemoteFile', title: '제어기 파일 열기', arguments: [{ remotePath, controllerHost }],
@@ -333,7 +338,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		} else {
 			const cfg = getControllerConfig();
 			sec.children = this.ftpCacheKey === ControllerTreeProvider.ftpCacheKeyFor(cfg.ip, cfg.ftpBasePath, cfg.ftpFlashProjectsPath)
-				? ftpNodes(entries, basePath, cfg.ip, folderCtx === 'ftpFlashFolder')
+				? ftpNodes(entries, basePath, cfg.ip, folderCtx === 'ftpFlashFolder', false)
 				: [new InfoNode('제어기 설정이 바뀌었습니다. FTP 목록을 새로고침하세요.', 'info')];
 		}
 		return sec;
@@ -740,13 +745,12 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	getChildren(element?: ControllerNode): vscode.ProviderResult<ControllerNode[]> {
 		if (!element) { return this.buildRoot(); }
 		if (element.type === 'section') { return element.children; }
-		if (element.type === 'info' && element.remotePath && element.controllerHost
-			&& (element.contextValue === 'ftpFolder' || element.contextValue === 'ftpFlashFolder')) {
+		if (element.type === 'info' && element.remotePath && element.controllerHost && isFtpFolderContext(element.contextValue)) {
 			const key = JSON.stringify([element.controllerHost, element.remotePath]);
 			let pending = this.ftpChildren.get(key);
 			if (!pending) {
 				pending = listRemoteDir(element.controllerHost, element.remotePath).then(entries =>
-					ftpNodes(entries, element.remotePath!, element.controllerHost!, element.contextValue === 'ftpFlashFolder'))
+					ftpNodes(entries, element.remotePath!, element.controllerHost!, isFlashFtpContext(element.contextValue), true))
 					.catch(error => { this.ftpChildren.delete(key); return [new InfoNode(`조회 실패: ${String(error)}`, 'error')]; });
 				this.ftpChildren.set(key, pending);
 			}
@@ -1609,7 +1613,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	}
 
 	private toInfoItem(node: InfoNode): vscode.TreeItem {
-		const directory = node.contextValue === 'ftpFolder' || node.contextValue === 'ftpFlashFolder';
+		const directory = isFtpFolderContext(node.contextValue);
 		const item = new vscode.TreeItem(node.label, directory ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
 		if (node.remotePath && node.controllerHost) { item.id = `ftp:${node.controllerHost}:${node.remotePath}`; }
 		item.iconPath = new vscode.ThemeIcon(node.iconId);

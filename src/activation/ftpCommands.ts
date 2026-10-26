@@ -28,6 +28,7 @@ import {
 	selectRemoteClearTargets,
 } from '../controller/files/remoteFolderClear';
 import { verifyControllerForFtpWrite } from '../controller/connection/controllerIdentityIo';
+import { checkFtpNodeTarget, isFtpFolderContext } from '../controller/files/ftpNodeTarget';
 import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../controller/projects/remoteProjectPath';
 import { forgetSyncManifest } from '../controller/files/syncManifest';
 import { describeThreadActivity } from '../controller/threads/threadActivity';
@@ -61,12 +62,28 @@ export function activateFtpCommands(host: ExtensionHost): void {
 		}
 	};
 
+	/**
+	 * 트리 노드가 지금 조작해도 되는 대상인지 — 노드를 만든 제어기가 현재 제어기인지, 프로젝트 명령이면
+	 * 저장 영역 바로 아래 폴더인지(controller/files/ftpNodeTarget.ts). 확인 창 뒤에도 다시 부른다.
+	 * 거부하면 사유를 알리고 undefined — 제어기에는 아무것도 보내지 않는다.
+	 */
+	const checkNodeTarget = (node: any, action: string, requireProjectFolder: boolean) => {
+		const check = checkFtpNodeTarget(node, getControllerConfig(), { action, requireProjectFolder });
+		if (!check.ok) {
+			host.log(`[FTP] ${check.message}`);
+			void vscode.window.showErrorMessage(check.message);
+			return undefined;
+		}
+		return check;
+	};
+
 	// FTP 프로젝트 다운로드
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpDownload', async (node: any) => {
-			const name: string | undefined = node?.projectName || node?.label;
-			const remotePath: string | undefined = node?.remotePath;
-			if (!name || !remotePath) { return; }
+			const target = checkNodeTarget(node, '다운로드', true);
+			if (!target) { return; }
+			const name = target.projectName!;
+			const remotePath = target.remotePath;
 
 			// 저장 위치 선택
 			const targetUri = await vscode.window.showOpenDialog({
@@ -96,6 +113,8 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				placeHolder: '로컬 사본의 제어기 쓰기 정책을 선택하세요',
 			});
 			if (!modeChoice) { return; }
+			// 대화상자를 기다리는 동안 제어기가 바뀌었으면 다른 제어기의 같은 경로를 받지 않는다.
+			if (!checkNodeTarget(node, '다운로드', true)) { return; }
 
 			const localDir = chooseAvailableDownloadDir(parentDir, name);
 			let stagingDir: string | undefined;
@@ -177,19 +196,24 @@ export function activateFtpCommands(host: ExtensionHost): void {
 		vscode.commands.registerCommand('gpl.controller.ftpDelete', async (node: any) => {
 			const name: string | undefined = node?.projectName || node?.label;
 			const ctx: string | undefined = node?.contextValue;
-			const remotePath: string | undefined = node?.remotePath;
-			if (!name || !ctx || !remotePath) { return; }
+			if (!name || !ctx) { return; }
+			// 노드를 만든 제어기가 현재 제어기일 때만 — 확인 창·정지 게이트 뒤에도 다시 본다(그 사이 전환될 수 있다).
+			const target = checkNodeTarget(node, `"${name}" 삭제`, false);
+			if (!target) { return; }
+			const remotePath = target.remotePath;
 
-			const isDir = ctx === 'ftpFolder' || ctx === 'ftpFlashFolder';
+			const isDir = isFtpFolderContext(ctx);
 			const confirm = await vscode.window.showWarningMessage(
-				`${isDir ? '폴더' : '파일'} "${name}"을(를) 제어기에서 삭제하시겠습니까?`,
+				`${isDir ? '폴더' : '파일'} "${name}"을(를) 제어기 ${target.host}에서 삭제하시겠습니까?`,
 				{ modal: true }, '삭제'
 			);
 			if (confirm !== '삭제') { return; }
+			if (!checkNodeTarget(node, `"${name}" 삭제`, false)) { return; }
 
 			// 폴더 비우기와 같은 정지 게이트 — 정지가 확인되지 않으면 지우지 않는다(사유는 게이트가 보여 준다).
-			const gate = await ensureIdleBeforeRemoteDelete(remotePath);
+			const gate = await ensureIdleBeforeRemoteDelete(remotePath, () => !!checkNodeTarget(node, `"${name}" 삭제`, false));
 			if (!gate.proceed) { return; }
+			if (!checkNodeTarget(node, `"${name}" 삭제`, false)) { return; }
 
 			const cfg = getControllerConfig();
 			try {
@@ -216,7 +240,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	 * 그렇다(2026-10-23: 채널이 거부 상태인데 Stop -all 실패 뒤에도 삭제로 넘어가 `550 DELE failed.`). 판정은
 	 * controller/files/remoteFolderClear.ts 의 remoteDeleteGate* 가 정본이고, 사유는 여기서 사용자에게 보여 준다.
 	 */
-	async function ensureIdleBeforeRemoteDelete(target: string): Promise<RemoteDeleteGate> {
+	async function ensureIdleBeforeRemoteDelete(target: string, stillTarget?: () => boolean): Promise<RemoteDeleteGate> {
 		let threads: ReturnType<typeof parseThreadList> | null = null;
 		try {
 			const resp = await sendCommandDetailed(SHOW_THREAD_LIST_CMD);
@@ -239,6 +263,10 @@ export function activateFtpCommands(host: ExtensionHost): void {
 		);
 		if (pick !== '모두 정지 후 계속') {
 			return { proceed: false, reason: 'user-cancelled', detail: '정지 확인에서 취소했습니다.' };
+		}
+		// 확인 창을 기다리는 동안 제어기가 바뀌었으면 다른 제어기에 Stop -all 을 보내지 않는다(사유는 호출부 검사가 알린다).
+		if (stillTarget && !stillTarget()) {
+			return { proceed: false, reason: 'user-cancelled', detail: '대상 제어기가 바뀌어 정지하지 않았습니다.' };
 		}
 		// 전송·STATUS 판정(-752 = 정지 진행 중)·정지 확인 폴링·재시도는 controller/threads/threadStop.ts 가 한다(§1-DD).
 		const outcome = await stopAllThreads(host, { logTo: (line: string) => host.log(`[Stop] ${line}`) });
@@ -384,9 +412,11 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	// FTP 폴더 컴파일 & 실행 (Load 에러 핸들링 포함)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpRun', async (node: any) => {
-			const name: string | undefined = node?.projectName || node?.label;
-			const loadPath: string | undefined = node?.remotePath;
-			if (!name || !loadPath) { return; }
+			// 프로젝트 폴더(저장 영역 바로 아래)만, 노드를 만든 제어기가 현재 제어기일 때만 — 이름은 폴더 이름이다.
+			const target = checkNodeTarget(node, '컴파일 & 실행', true);
+			if (!target) { return; }
+			const name = target.projectName!;
+			const loadPath = target.remotePath;
 			// `Load <path>` / `Compile <name>` / `Start <name>`은 공백 구분 명령 — 원격 폴더명·경로에 공백이 있으면 보내지 않는다.
 			if (!host.ensureProjectNameSafe(name, 'remote', '컴파일 & 실행') || !host.ensureProjectNameSafe(loadPath, 'remote', '컴파일 & 실행')) { return; }
 			// 업로드 도중 Compile/Start가 겹치면 제어기 이상을 유발할 수 있다 — 배포 잠금(다른 창/프로세스 포함)으로 차단.
@@ -453,6 +483,10 @@ export function activateFtpCommands(host: ExtensionHost): void {
 					if (!unloadCheck.proceed) {
 						throw Object.assign(new Error(`${command} 취소 — 그룹 Compile 뒤 Unload 확인에서 취소했습니다(보내지 않음).`), { sent: false });
 					}
+					// 실행 도중(확인 창 포함) 제어기가 바뀌었으면 남은 단계를 새 제어기에 보내지 않는다.
+					if (!checkNodeTarget(node, '컴파일 & 실행', true)) {
+						throw Object.assign(new Error(`${command} 중단 — 대상 제어기가 바뀌었습니다(보내지 않음).`), { sent: false });
+					}
 					const detailed = await sendCommandDetailed(command, cfg, {
 						// 컴파일은 pass 사이에 수 초간 침묵한다 — 종결자까지 기다리지 않으면 응답이 잘려 거짓 성공이 난다(§0.2).
 						...(sendOpts?.forCompile ? { waitForStatusClose: true, timeoutMs: Math.max(cfg.timeoutMs, 60000) } : {}),
@@ -484,6 +518,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			try {
 				// §0.6: Stop -all의 STATUS 0은 "정지 요청 수리"일 뿐 정지 완료가 아니다.
 				// 전체 정지가 확인되지 않으면 Load/Compile/Start를 진행하지 않고 중단한다.
+				if (!checkNodeTarget(node, '컴파일 & 실행', true)) { return; }
 				const stoppedBeforeRun = await ensureStoppedBeforeCompile();
 				if (!stoppedBeforeRun) {
 					throw new Error('Stop -all 후 전체 정지가 확인되지 않았습니다. 스레드 상태를 확인한 뒤 다시 시도하세요 (Load/Compile/Start 중단).');
@@ -571,8 +606,10 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	// FTP 폴더 중지
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpStop', async (node: any) => {
-			const name: string | undefined = node?.projectName || node?.label;
-			if (!name) { return; }
+			// 하위 폴더 이름으로 `Stop <이름>` 을 보내지 않는다 — 프로젝트 폴더·현재 제어기의 노드만.
+			const target = checkNodeTarget(node, '중지', true);
+			if (!target) { return; }
+			const name = target.projectName!;
 
 			try {
 				// 트리의 「쓰레드 정지」와 같은 절차다(controllerOps.stopThreadWithRecovery, §1-DD).
@@ -586,8 +623,10 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	// FTP 폴더 Unload (메모리 해제)
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpUnload', async (node: any) => {
-			const name: string | undefined = node?.projectName || node?.label;
-			if (!name) { return; }
+			// `/GPL/App/Utils` 의 Unload 가 `Unload Utils` 로 나가 무관한 프로젝트를 내리지 않게 — 프로젝트 폴더·현재 제어기의 노드만.
+			const target = checkNodeTarget(node, 'Unload', true);
+			if (!target) { return; }
+			const name = target.projectName!;
 			if (!host.ensureProjectNameSafe(name, 'remote', 'Unload')) { return; }
 
 			try {
@@ -597,6 +636,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				// 그룹 Compile 뒤 Unload 면 모달로 확인한다(위험 표시가 없으면 묻지 않는다).
 				const unloadCheck = await confirmUnloadRiskInteractive(`Unload ${name}`);
 				if (!unloadCheck.proceed) { return; }
+				if (!checkNodeTarget(node, 'Unload', true)) { return; }
 				const outcome = await unloadProject(
 					{
 						send: async command => ({ raw: (await sendCommandDetailed(command, undefined, { confirmUnloadRisk: unloadCheck.confirmUnloadRisk })).raw }),

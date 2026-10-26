@@ -1365,52 +1365,52 @@
                 },
                 {
                     "command": "gpl.controller.ftpRun",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpStop",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpDownload",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpDelete",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile|ftpFlashFolder|ftpFlashFile/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpSubFolder|ftpFile|ftpFlashFolder|ftpFlashSubFolder|ftpFlashFile)$/",
                     "group": "inline"
                 },
                 {
                     "command": "gpl.controller.ftpRun",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "ftp@1"
                 },
                 {
                     "command": "gpl.controller.ftpStop",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "ftp@2"
                 },
                 {
                     "command": "gpl.controller.ftpDelete",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFile|ftpFlashFolder|ftpFlashFile/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpSubFolder|ftpFile|ftpFlashFolder|ftpFlashSubFolder|ftpFlashFile)$/",
                     "group": "ftp@3"
                 },
                 {
                     "command": "gpl.controller.ftpUnload",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "ftp@4"
                 },
                 {
                     "command": "gpl.controller.ftpDownload",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder)$/",
                     "group": "ftp@5"
                 },
                 {
                     "command": "gpl.controller.openProjectForDebugging",
-                    "when": "view == gplThreads && viewItem =~ /ftpFolder|ftpFlashFolder/",
+                    "when": "view == gplThreads && viewItem =~ /^(ftpFolder|ftpFlashFolder|ftpSubFolder|ftpFlashSubFolder)$/",
                     "group": "ftp@1"
                 },
                 {

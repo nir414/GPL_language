@@ -235,6 +235,8 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 수신자 체인 → 타입/홀더 | `language/receiverType.ts` (순수) | — |
 | 그 해석기에 넘길 컨텍스트 조립 | `providers/receiverContext.ts` (vscode 접착) | `buildDocumentReceiverLookup(` 직접 호출 |
 | 배열 표기·요소 타입 | `language/receiverType.ts` (`elementTypeOf`·`isArrayTypeName`) | `replace(/\[\]$/…)` |
+| 호출 인자 타입 추론(정의 이동·호버·참조 찾기의 오버로드 선택) | `language/overloadResolution.ts` (`buildCallContext`·`inferArgumentType` — 식 타입은 `receiverType.resolveExpressionType`) | `inferLiteralArgType(` 직접 호출 |
+| 참조 찾기의 출현 판정(다른 모듈 동명 선언·한정자 불일치·멤버/로컬 가림) | `language/referenceScope.ts` (`classifyReferenceOccurrence`) | 제외 사유 문자열(`'qualifier-mismatch'` 등) 직접 판정 |
 | "컴파일 검증 필요" 상태의 설명 문장(배지 툴팁·Start 확인 모달·자동화 오류) | `controller/deployment/compileStale.ts` (`describeCompileStale`) — 배지 라벨·툴팁·클릭 대상은 `views/compileStaleBadge.ts` | `소스가 아직 Compile 로 검증되지 않았습니다` 직접 조립 |
 | 쓰레드 목록 표·상태 집계(「전체 쓰레드 복사」·상황 스냅샷) | `controller/threads/threadReport.ts` (`renderThreadTable`·`countThreadStates`·`summarizeThreadStates`) | `\| 이름 \| 상태 \|` 표 직접 조립 / `state === 'Paused' \|\| … 'Break'` |
 | 에러 코드 → 코드/환경 분류(트리 버킷·오류 상세·배포 요약) | `controller/protocol/responseParser.ts` (`classifyErrorEntry`·`describeErrorCategory`·`getGplErrorGroup`) | `category: 'code'/'environment'` 직접 판정 |

@@ -301,6 +301,20 @@ const SSOT_RULES: readonly SsotRule[] = [
         use: 'language/receiverType.elementTypeOf / isArrayTypeName',
     },
     {
+        what: '호출 인자 타입 추론 (정의 이동·호버·참조 찾기의 오버로드 선택이 같은 규칙을 쓰게)',
+        pattern: /inferLiteralArgType\s*\(/,
+        ownedBy: ['language/overloadResolution'],
+        requires: ['inferArgumentType', 'buildCallContext', 'rankOverloadMatches'],
+        use: 'language/overloadResolution.buildCallContext / inferArgumentType',
+    },
+    {
+        what: '참조 찾기의 출현 판정 — 다른 모듈의 동명 선언·한정자 불일치·멤버 가림 (provider 가 이름 매치 뒤 손으로 다시 판정하지 않게)',
+        pattern: /'(other-module-decl|qualifier-mismatch|shadowed-by-member|shadowed-by-local|ambiguous-unqualified)'/,
+        ownedBy: ['language/referenceScope'],
+        requires: ['classifyReferenceOccurrence', 'containerAt', 'declarationAt', 'qualifierAt'],
+        use: 'language/referenceScope.classifyReferenceOccurrence',
+    },
+    {
         what: '"컴파일 검증 필요" 상태의 설명 문장 (배지 툴팁·Start 확인 모달·자동화 COMPILE_UNVERIFIED 가 공유)',
         pattern: /소스가 아직 Compile ?로 검증되지 않았습니다/,
         ownedBy: ['controller/deployment/compileStale'],

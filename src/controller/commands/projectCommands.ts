@@ -226,6 +226,10 @@ export interface CompileAttempt {
     meta?: CommandResponseMeta;
     /** 판정 근거 한 줄(STATUS 미수신 등). */
     note?: string;
+    /** 전송부터 응답(또는 실패)까지 걸린 시간(ms). */
+    elapsedMs?: number;
+    /** 응답 없이 전송이 실패했을 때의 오류(ECONNRESET 등) — 이때 raw 는 오류 문장이고 제어기 출력이 아니다. */
+    transportError?: { code?: string; message: string };
 }
 
 export interface CompileOutcome {
@@ -248,6 +252,7 @@ export interface CompileOutcome {
  */
 export async function compileOnce(io: ProjectCommandIo, projectName: string): Promise<CompileAttempt> {
     const command = `Compile ${projectName}`;
+    const startedAt = Date.now();
     try {
         const resp = await io.send(command, { forCompile: true });
         const status = parseStatus(resp.raw);
@@ -268,6 +273,7 @@ export async function compileOnce(io: ProjectCommandIo, projectName: string): Pr
                 : errors.length > 0
                     ? 'STATUS 미수신이나 에러 라인 검출 → 실패'
                     : 'STATUS 미수신: 컴파일 결과 확인 실패(성공 간주 안 함)',
+            elapsedMs: Date.now() - startedAt,
         };
     } catch (e: any) {
         const raw = e?.message || String(e);
@@ -278,6 +284,8 @@ export async function compileOnce(io: ProjectCommandIo, projectName: string): Pr
             message: raw,
             errors: parseCompileErrors(raw),
             raw,
+            elapsedMs: Date.now() - startedAt,
+            transportError: { ...(typeof e?.code === 'string' ? { code: e.code } : {}), message: raw },
         };
     }
 }

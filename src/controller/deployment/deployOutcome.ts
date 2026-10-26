@@ -305,6 +305,13 @@ export function describeDeployFailure(
     let jumpToCompileErrors = false;
     if (result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown') {
         message = `메모리 사전 검사로 중단: ${result.memoryPrecheck.message}`;
+    } else if (result.compileAborted) {
+        // 컴파일 에러가 아니라 연결 끊김 — 소스를 고칠 일이 아니라 제어기 생존부터 볼 일이다(2026-10-22 사고).
+        const a = result.compileAborted;
+        const health = result.controllerHealth
+            ? ` / 생존 확인: ${result.controllerHealth.state === 'responsive' ? '명령 콘솔 응답함' : `명령 콘솔 응답 없음(${result.controllerHealth.detail})`}`
+            : '';
+        message = `${a.hint} — ${a.command} 이 ${(a.elapsedMs / 1000).toFixed(1)} s 만에 ${a.reason} 로 끊김(받은 출력 ${a.outputLines}줄)${health}`;
     } else if (result.failedPhase === 'UPLOAD') {
         const ftp452 = /\b452\b[\s\S]*error writing file/i.test(result.failedStatusMessage ?? '');
         const action = ftp452

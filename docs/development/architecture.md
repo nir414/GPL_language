@@ -353,3 +353,9 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 ### 메모리 사전 검사
 
 `controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석하고 정책을 판정하는 순수 모듈입니다. `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사하고, `deployService`는 업로드 전에 추가 검사합니다. `memoryGuard.warnMb`(기본 4 MB)·`blockMb`(기본 2.5 MB)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 알 수 없는 측정은 정상으로 간주하지 않습니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. MCP는 Export의 `GPL_BRIDGE=only` 경로를 사용합니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
+
+사람 화면의 경고 알림은 `controller/diagnostics/memoryNotice.ts`(순수)가 정합니다 — 제어기 IP별 마지막 수준을 기억해 나빠질 때(ok→warning, warning→blocked)나 직전 알림 대비 0.5 MB 이상 줄었을 때만 알리고, 한 배포(작업 범위) 안에서는 최대 1회, 지속 상태는 상태 표시줄 항목(`$(warning) Free 2.96 MB`, 클릭 `gpl.controller.showMemoryStatus`)이 맡습니다. 차단·AI 결과 필드(`memoryPrecheck`·`precheckWarnings`)는 이 규칙과 무관하게 매번 남습니다.
+
+### 업로드 전 제어기 확인
+
+FTP 쓰기 경로(Upload Only·Upload & Start·Quick Compile·Deploy·autoOnSave·/GPL 비우기)는 쓰기 전에 상대가 PA 제어기인지 확인합니다. 판정은 `controller/connection/controllerIdentity.ts`(순수), 실제 IO는 `controllerIdentityIo.ts`입니다. 증거는 ① 명령 콘솔 읽기 전용 명령의 `<STATUS>` ② FTP 220 배너(`RTEMS FTP server`) ③ 있으면 최근 도달성 스냅샷의 응답 장치(경로 인터페이스의 ARP)입니다. 같은 작업 안에서 이미 받은 STATUS(배포의 Show Memory)와 FTP 세션 배너(/GPL 목록 조회)는 재사용해 왕복을 늘리지 않습니다. 실패 시 정책은 호출부가 정합니다 — 사람 경로는 「그래도 진행」 모달, AI·자동화·autoOnSave는 `CONTROLLER_UNVERIFIED`(sent:false) 구조화 거부. 결과는 작업 기록 `result.controllerCheck`에 남고 배포 로그의 `Target:` 줄이 그 결과를 그대로 씁니다. 설정 `gpl.controller.verifyControllerIdentity`로 끌 수 있습니다.

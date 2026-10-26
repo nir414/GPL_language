@@ -288,7 +288,31 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 					}
 					: undefined,
 				beforeStart: skipStart ? undefined : () => host.primeRuntimeConsoleForStart('Deploy'),
+				// FTP 쓰기 전 제어기 정체 확인(controller/connection/controllerIdentity.ts). 사람이 누른 경로만 「그래도 진행」을 묻는다 —
+				// AI·자동화(nonInteractive)와 autoOnSave(changedFiles)는 모달 없이 CONTROLLER_UNVERIFIED 로 멈춘다.
+				verifyControllerIdentity: vscode.workspace.getConfiguration('gpl').get<boolean>('controller.verifyControllerIdentity', true) !== false,
+				confirmUnverifiedController: !quickOpts?.nonInteractive && !quickOpts?.changedFiles?.length
+					? async check => {
+						const pick = await vscode.window.showWarningMessage(
+							`${cfg.ip} 이 제어기인지 확인하지 못했습니다 — ${mode} 업로드를 시작하지 않았습니다.`,
+							{ modal: true, detail: `${check.reasons.join('\n')}\n\n명령 콘솔: ${check.commandConsoleDetail}\nFTP 배너: ${check.ftpBanner ?? '(읽지 못함)'}\n\n다른 장치에 파일을 올릴 수 있습니다. 제어기임을 알고 있을 때만 진행하세요.` },
+							'그래도 진행',
+						);
+						return pick === '그래도 진행';
+					}
+					: undefined,
 			}, outputChannel, deployDiagnostics);
+
+			// 제어기 정체 확인 실패 — 아무것도 올리지 않았다. 사람 경로는 이미 모달로 알렸고(취소 선택), 자동 경로는 로그만.
+			if (!result.success && result.failedPhase === 'CONTROLLER_CHECK') {
+				const reasons = result.controllerCheck?.reasons.join(' / ') ?? result.failedStatusMessage ?? '제어기 확인 실패';
+				host.log(`[Deploy] ${mode} 중단(제어기 미확인, 업로드 안 함): ${reasons}`);
+				host.lastDeploySnapshot = makeDeploySnapshot({
+					mode: modeLabel, success: false, lastStage: 'UPLOAD', summary: `제어기 미확인(업로드 안 함) — ${reasons}`,
+					compileErrorCodes: [], controllerSystemCodes: [],
+				});
+				return result;
+			}
 
 			if (result.cancelled) {
 				const reason = result.cancellationReason ?? result.failedStatusMessage ?? '작업자 전체 정지 요청';
@@ -653,6 +677,8 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	type AutomationErrorCode =
 		| 'NO_GPL_PROJECT' | 'PROJECT_NOT_FOUND' | 'PROJECT_AMBIGUOUS'
 		| 'UNSAVED_FILES' | 'INTERACTIVE_UI_REQUIRED' | 'COMPILE_UNVERIFIED'
+		/** FTP 쓰기 전 제어기 정체 확인 실패 — 아무것도 올리지 않았다(controller/connection/controllerIdentity.ts). */
+		| 'CONTROLLER_UNVERIFIED'
 		/** AI/자동화 경로에서 실행할 수 없는 명령(controller/automation/aiCommandPolicy.ts). */
 		| typeof AI_BLOCKED_ERROR;
 
@@ -663,6 +689,12 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		candidates?: TargetCandidateSummary[];
 		candidateCount?: number;
 		files?: string[];
+		/** 제어기에 아무것도 보내지 않았음(CONTROLLER_UNVERIFIED 등). */
+		sent?: false;
+		/** 정체 확인이 통과하지 못한 이유들. */
+		reasons?: string[];
+		controllerCheck?: DeployResult['controllerCheck'];
+		operationId?: string;
 		/**
 		 * 다음에 무엇을 할지 — 호출자(AI/MCP)가 detail 문장을 해석해 행동을 지어내지 않게 한다(개선안 §15~§17).
 		 * 규칙은 `controller/automation/automationRecovery.ts` 가 정본이며 코드마다 하나로 정해져 있다.
@@ -787,7 +819,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 		if (isAutomationFailure(target)) { return target; }
 		const dirty = await handleDirtyForAutomation(target.dir, args, label);
 		if (dirty) { return dirty; }
-		return runDeploy(skipStart, {
+		const result = await runDeploy(skipStart, {
 			...opts,
 			overrideProjectDir: target.dir,
 			nonInteractive: true,
@@ -796,6 +828,21 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			// 겹쳐 들어오는 것이 막으려는 상황이므로, 키가 없다고 중복 방지가 꺼지면 안 된다(§10).
 			idempotencyKey: args.idempotencyKey ?? `${label}:${normalizeDirKey(target.dir)}`,
 		});
+		// 제어기 정체 확인 실패는 구조화 거부로 — 모달을 띄우지 않고(브리지 정지 방지) sent:false 와 이유를 싣는다.
+		if (result && !result.success && result.failedPhase === 'CONTROLLER_CHECK') {
+			const reasons = result.controllerCheck?.reasons ?? [];
+			return automationFailure(
+				'CONTROLLER_UNVERIFIED',
+				`${getControllerConfig().ip} 이 PA 제어기인지 확인하지 못해 업로드하지 않았습니다: ${reasons.join(' ') || (result.failedStatusMessage ?? '')}`,
+				{
+					sent: false,
+					reasons,
+					...(result.controllerCheck ? { controllerCheck: result.controllerCheck } : {}),
+					...(result.operationId ? { operationId: result.operationId } : {}),
+				},
+			);
+		}
+		return result;
 	}
 
 	/**

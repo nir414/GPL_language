@@ -19,6 +19,7 @@ import {
 	LossSummary,
 	describeLoss,
 	describeRecovering,
+	recoveryGuidanceForLoss,
 } from '../controller/connection/connectionHealth';
 import {
 	ControllerConfig,
@@ -29,6 +30,7 @@ import {
 	getConnectionStats,
 	getControllerConfig,
 	getRecentTraffic,
+	noteCommandChannelLoss,
 	probeControllerCommand,
 	setDisruptiveCommandObserver,
 	setHeldSocketObserver,
@@ -76,13 +78,27 @@ export interface ConnectResult {
 * ping TTL/arp MAC 기반 도달성 판정(직결 NIC 임대 상실 시 사무실 게이트웨이가 응답하는 함정 포함) — 를 한 파일로 묶는다.
 * 파일: %TEMP%/gpl-controller/postmortem-<시각>.log. 실패해도 예외를 밖으로 내지 않는다(undefined).
 */
+/** 이 세션에서 이미 알린 서브넷 겹침 경고(한 번만 알린다). */
+const warnedSubnetOverlaps = new Set<string>();
+
 async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: ControllerConfig, lostAt: Date, loss: LossSummary | undefined, health?: HealthSnapshot): Promise<string | undefined> {
 	try {
 		const recent = getRecentTraffic(400);
 		const stats = getConnectionStats();
 		const rc = host.currentRuntimeConsoleStatus();
 		const lock = getDeployLock(cfg.ip).current()?.record;
-		const reach = await probeReachability(cfg.ip, cfg.port);
+		// 명령 콘솔이 거부되면 FTP 배너·런타임 콘솔도 본다(핸드셰이크만). 직전 교란 명령은 재부팅 후보 확신도의 근거다.
+		const prior = health?.disruptiveOperation;
+		const reach = await probeReachability(cfg.ip, cfg.port, undefined, {
+			runtimeConsolePort: cfg.consolePort,
+			...(prior ? { priorDisruptive: { command: prior.command, kind: prior.kind, at: prior.at } } : {}),
+		});
+		const overlap = reach.assessment.observations.subnetOverlap;
+		if (overlap && !warnedSubnetOverlaps.has(overlap)) {
+			// 같은 경고를 유실마다 반복하지 않는다(세션 한 번) — 구성 문제라 한 번 알면 충분하다.
+			warnedSubnetOverlaps.add(overlap);
+			host.log(`[Controller] ⚠ 네트워크 구성: ${overlap}`);
+		}
 		const lines: string[] = [
 			`# GPL Controller 연결 유실 사후 스냅샷 — ${lostAt.toISOString()} (local ${lostAt.toLocaleString()})`,
 			`target: 명령 콘솔 ${cfg.ip}:${cfg.port} · 런타임 콘솔 ${cfg.consolePort}  extension: v${EXTENSION_VERSION}  pid: ${process.pid}`,
@@ -199,12 +215,19 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		// 문구 원칙(2026-08-31): 확장이 "1402 명령 채널을 놓았다"는 것이 우리가 아는 사실이고, 제어기/런타임이 죽었다는
 		// 것은 여러 독립 증거를 종합해야 하는 판단이다. 알림에서 후자를 단정하지 않는다.
 		host.log(`[Controller] 명령 콘솔 채널 유실 — ${cfg.ip}:${cfg.port} @ ${lostAt.toLocaleTimeString()} — ${describeLoss(summary)} (제어기 런타임 상태는 미확정)`);
+		// 업로드 전 정체 확인·재부팅 정황 안내(/GPL 이 비었을 때)가 이 시각을 쓴다.
+		noteCommandChannelLoss(cfg.ip, summary.lostAt);
+		// 복구 대기 창(기본 180 s)이 지나도 거부로 끝났으면 실측 조치(PC 어댑터 재연결)를 안내한다(2026-10-22 두 번 실측).
+		const guidance = recoveryGuidanceForLoss(summary);
+		if (guidance) { host.log(`[Controller] ${guidance}`); }
 		// 사후 스냅샷(#22 제안 4): 알림은 스냅샷이 준비된 뒤 한 번만 — 파일 열기 버튼 제공.
 		void writeConnectionLostPostmortem(host, cfg, lostAt, summary, healthSnapshotAtLoss).then(file => {
 			const actions = file ? ['사후 스냅샷 열기', '출력 보기'] : ['출력 보기'];
 			void vscode.window.showWarningMessage(
 				`GPL Controller 명령 콘솔 연결을 놓았습니다 (${cfg.ip}) — ${summary.failures}회 연속 무응답으로 연결 상태를 해제했습니다. `
-				+ '제어기가 다운됐다는 뜻은 아닙니다(런타임 상태 미확정) — 다시 Connect 해 보세요. '
+				+ (guidance
+					? `${guidance} `
+					: '제어기가 다운됐다는 뜻은 아닙니다(런타임 상태 미확정) — 다시 Connect 해 보세요. ')
 				+ (file ? '마지막 트래픽·도달성 판정은 사후 스냅샷 파일에 있습니다.' : ''),
 				...actions,
 			).then(pick => {

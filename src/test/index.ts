@@ -122,6 +122,10 @@ import './executionMarks.test';
 import './gplBuiltins.test';
 import './architecture.test';
 import './memoryGuard.test';
+import './memoryNotice.test';
+import './controllerIdentity.test';
+import './compileAbort.test';
+import './reachabilityRoute.test';
 import { run } from './harness';
 
 void run();

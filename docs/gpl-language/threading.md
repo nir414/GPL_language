@@ -25,6 +25,11 @@
   - StartProcName: 문자열로 fully-qualified 모듈.서브 이름
   - Argument: (옵션) 스레드로 전달할 인자(환경에 따라 미사용 가능)
   - ThreadName: (옵션) 스레드 식별자/디버그용 이름
+    - **영문자·숫자·`_`만 쓴다.** `New Thread`는 `RWK[0]`·`TCPLSN:4000` 같은 이름도 받고 `Show Thread`에도 그대로 나오지만,
+      명령 콘솔의 `Stop <이름>`은 `[`·`]`·`:`가 든 이름을 `-712` *Invalid syntax*로 거부한다(따옴표 인용도 안 됨).
+      그런 스레드는 이름으로 멈출 수 없어 프로젝트 단위 정지 뒤에도 남고 `Unload`가 `-750`이 된다
+      (2026-10-23 Sample Prep 실측, GPL 4.2K5). 예: `RWK_0`, `TCPLSN_8000`.
+  - StackSize를 생략하면 프로젝트 기본값(관측 4 KB)이 잡힌다(`Show Thread -stack`, 2026-10-23 실측).
 
 ## 공통 API 및 유틸리티
 

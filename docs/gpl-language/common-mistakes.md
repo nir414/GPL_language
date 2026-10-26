@@ -25,6 +25,11 @@
 - [ ] VB 전역 상수 `vbTab`, `vbCrLf` 등을 사용하지 않았는지? (`Utils.TAB`, `Utils.CRLF` 사용)
 - [ ] **정수 비트 마스크에 `And (Not mask)`를 쓰지 않았는지?** (`Not`이 비트 반전으로 동작하지 않음 → 아래 0-8 참고)
 - [ ] **문자열 리터럴에서 따옴표("")를 `\"`로 이스케이프하지 않았는지?** (GPL은 `"` 스타일 미지원 → `""`로 표현)
+- [ ] **모듈 수준 `String`을 첫 사용 전에 `If s Is Nothing Then s = ""`로 정규화했는지?** (Load 직후 Nothing → 비교·ByVal 전달 모두 `-782`, 아래 0-5)
+- [ ] **Nothing일 수 있는 `String`을 받는 도우미는 `ByRef`인지?** (`ByVal`은 호출 자리에서 `-782` 또는 값이 조용히 깨짐)
+- [ ] **클래스 멤버 이름이 프로젝트의 Module 이름과 같지 않은지?** (대소문자 무시 — 멤버가 모듈을 가려 `-781`, 아래 0-10)
+- [ ] **같은 이름 오버로드의 반환형이 모두 같은지?** (다르면 `-741`, 아래 0-11)
+- [ ] **문자열 리터럴 하나가 100바이트를 넘지 않는지?** (118바이트에서 `-506` 관측, 아래 0-12)
 - [ ] VS Code에서 `*.gpl`이 `일반 텍스트`로 열리고 있진 않은지? (기본은 `vb`로 연결해 하이라이팅 유지, 폴딩은 확장에서 보정)
 - [ ] **편집기 진단(Problems)이 실제 컴파일러와 불일치할 수 있음을 인지했는지?** (GPL 특성상 파서/진단 오탐 가능 → 실제 컴파일 로그를 우선 기준으로 판단)
 
@@ -198,7 +203,8 @@ sel = New AxisSelection()   ' ❌ -722 (Sub New 가 없다)
 - 해결: 클래스에 `Public Sub New()`를 명시한다(빈 본문이어도 된다).
 - 실기 확인(2026-10-21, Sample Prep `Lib`, GPL 4.2K5): `New AxisSelection()` 두 줄이 -722였고, `Public Sub New()`를 추가하자 컴파일에 성공했다.
   같은 Lib에서 `Sub New()`가 있는 `New KvFile()`은 문제가 없었다.
-- 괄호 없는 `New X`가 생성자 없이 통과하는지는 아직 확인하지 않았다. 확인 전까지는 `Sub New()`를 명시하는 쪽을 쓴다.
+- 괄호 없는 `New X`는 생성자 없이도 통과한다(2026-10-25 Sample Prep 실기 컴파일 — `New LeadshineFeedbackResult()`가 -722,
+  괄호를 빼거나 `Public Sub New()`를 선언하면 통과). 내장 클래스(`New Mutex()` 등)는 괄호가 있어도 된다.
 
 ---
 
@@ -374,6 +380,36 @@ End If
 - `Len(x)`, `Mid(x, ...)`, `x.Substring(...)`, `x.IndexOf(...)` 호출 전 `x Is Nothing` 방어
 - 로그/파일 경로 같은 핵심 문자열(`logFilePath` 등)은 기본값 세팅 함수(예: `InitDefaults`)를 먼저 호출
 
+### 모듈 수준 `String`은 Load 직후 `Nothing`이다
+
+모듈 수준 `String` 변수(`Private s_prefix As String`)는 Load 뒤 `""`가 아니라 `Nothing`이다.
+처음 쓰는 자리에서 `If s_prefix = "" Then`으로 비교하면 `-782`가 난다. 클래스 필드는 `Sub New`에서 `""`로 채워 두면 안전하다.
+
+```vb
+If s_prefix Is Nothing Then s_prefix = ""   ' 첫 사용 전에 인라인으로 정규화
+```
+
+- 실기 확인(2026-10-22, Sample Prep `PressureSensorCmd.gpl`, GPL 4.2K5): Setup의 첫 비교에서 -782가 Try 밖으로 올라가
+  MAIN이 호스트 포트를 열기 전에 끝났다. `Is Nothing` 검사를 먼저 두어 해결했다.
+- 정규화를 도우미 함수에 맡기려면 그 함수가 `ByRef`로 받아야 한다(바로 아래 절).
+
+### `Nothing`인 `String`은 `ByVal`로 넘길 수 없다 — `ByRef`는 된다
+
+실기 확인(2026-10-22, Sample Prep `NULLSTR_Probe`, GPL 4.2K5):
+
+| 경우 | 결과 |
+| --- | --- |
+| `s Is Nothing` 인라인 검사 | 정상 |
+| Nothing인 `String`을 **ByVal** 인자로 전달(모듈 필드·지역·클래스 필드·`Nothing` 리터럴) | **호출 자리에서 `-782`** — 함수 본문의 `Is Nothing` 검사에 도달하지 못함 |
+| Nothing을 ByVal로 받는 **String 반환 함수**를 식 안에서 호출(`"A" & SafeStr(s) & "B"`) | 예외 없이 **값이 깨짐** — 결과가 `"B"`(앞의 `"A"`가 사라짐) |
+| Nothing을 **ByRef**로 전달(변수·필드·배열 원소) | 정상, 함수 안 `Is Nothing`이 True |
+| ByRef에 속성·함수 결과·리터럴·연결식·`Nothing` 전달 | 컴파일 오류 `-712`/`-205` |
+| `s = ""` (s가 Nothing) | `-782` |
+| `"" & s` (s가 Nothing) | 정상, `""` |
+
+- Nothing을 받아야 하는 `String` 도우미(`IsNullOrEmpty`, `Normalize` 등)는 `ByRef`로 만든다. "Nothing 안전"이라고 적힌 ByVal 함수는 실제로 안전하지 않다.
+- ByRef에는 변수·필드·배열 원소만 넘길 수 있으므로, `ReadLine()`·`Substring(...)`처럼 Nothing을 돌려줄 수 있는 호출 결과는 지역 변수에 받은 뒤 넘긴다.
+
 ---
 
 ## 0-5-1. GPL은 블록 스코프(Block Scope)를 허용하지 않음
@@ -548,6 +584,55 @@ PRS.SplitOnce(w, ":", head, tail)   ' 반환값(Boolean)은 버리고 head/tail(
 
 - 실기 확인(2026-10-21, `BINDER_Probe` `Commands.gpl`): `Start -compile` 성공, 동작 정상.
 - 반환값이 성공 여부라면 버리지 말고 검사하는 편이 안전하다. 이 절은 "문법상 허용된다"는 확인일 뿐이다.
+
+---
+
+## 0-10. 클래스 멤버가 같은 이름의 Module을 가린다 (`-781`)
+
+GPL 식별자는 대소문자를 구분하지 않고, 이름 해석은 가까운 범위(클래스 멤버)를 Module 이름보다 먼저 잡는다.
+그래서 `Num()` 멤버가 있는 클래스 안에서 `NUM.FixedText(...)`를 쓰면 컴파일러는 `NUM`을 `Module NUM`이 아니라 그 멤버로 해석한다.
+
+```vb
+Public Class RobotUnit
+    Public Function Num() As Integer
+        ...
+    End Function
+
+    Public Function Text() As String
+        Return NUM.FixedText(m_value, 3)   ' ❌ -781 *Missing string* Num
+    End Function
+End Class
+```
+
+- 실기 확인(2026-10-23, Sample Prep `RobotUnit.gpl`, GPL 4.2K5): 이 클래스 안의 두 줄만 -781이었고 다른 곳의 `NUM.FixedText`는 컴파일됐다.
+- 해결: 멤버 이름을 바꾸거나(예: `UnitNum()`), 모듈 함수를 클래스 밖의 도우미로 감싸 호출한다.
+- 같은 계열: 배열 `HostCommandLog`와 함수 `hostCommandLog()`가 겹쳐 -760이 난 사례(2026-10-18).
+
+## 0-11. 반환형이 다른 오버로드는 만들 수 없다 (`-741`)
+
+인자 수만 다르고 반환형이 같은 오버로드는 허용된다. 반환형이 다르면 두 번째 선언 줄에서 `-741` *Argument mismatch*가 나고,
+그 함수 본문 전체가 `-733` *Not a top-level statement*·`-773` *Missing module end*로 이어진다(파생 오류).
+
+```vb
+Public Function ReadFeedback(ByRef pos As Double, ByRef vel As Double) As Integer
+Public Function ReadFeedback() As FeedbackResult      ' ❌ -741 — 반환형이 다르다
+```
+
+- 실기 확인(2026-10-25, Sample Prep `LeadshineRS.gpl`·`MotionSystem.gpl`, GPL 4.2K5).
+- 해결: 이름을 나눈다(예: `ReadFeedbackResult()`). `-733`/`-773`이 쏟아지면 첫 `-741`부터 본다.
+
+## 0-12. 문자열 리터럴 하나가 길면 `-506` *Input too long*
+
+줄 전체 길이가 아니라 **리터럴 하나의 길이**에 한도가 있는 것으로 보인다(정확한 값은 미확정).
+
+- 실기 관측(2026-10-23, Sample Prep `MotionSystem.gpl:373`, GPL 4.2K5): 118바이트 리터럴이 든 줄이 -506이었다.
+  같은 빌드에서 304자 줄(긴 리터럴 없음)과 100바이트 리터럴은 통과했다 → 한도는 101~118바이트 사이로 추정.
+- 해결: 긴 안내문은 짧은 리터럴 여러 개를 `&`로 잇는다.
+
+## 0-13. 파일당 오류가 약 20개를 넘으면 `-737` *Too many errors*로 끊긴다
+
+컴파일러는 파일당 약 20개 오류에서 멈추므로, 그 뒤(다음 파일 포함)의 오류는 다음 컴파일에서야 보인다.
+오류를 고친 뒤 다시 컴파일했을 때 새 오류가 나타나는 것은 정상이다(2026-10-25 Sample Prep 관측).
 
 ---
 
@@ -905,6 +990,14 @@ End Module
 
 ### 관련 에러
 - `Illegal use of keyword Shared`
+
+### 클래스 안의 `Private Shared`는 그 클래스 밖에서 보이지 않는다
+
+같은 파일·같은 모듈이라도 다른 클래스에서 `Private Shared` 멤버를 부르면 `-729` *Undefined symbol*이 난다.
+여러 클래스가 함께 쓰는 도우미는 모듈 수준 `Private Function`으로 옮긴다(`Public Shared`는 외부 API가 된다).
+
+- 실기 확인(2026-10-22, Sample Prep `Lib/Robot/Pose.gpl`, GPL 4.2K5): `JointPoseTable.New`가 `JointPose`의
+  `Private Shared Function ClampCount(...)`를 불러 -729.
 
 ---
 

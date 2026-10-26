@@ -156,3 +156,28 @@ test('diagnostics: TypeScript 등 GPL 이외 문서에는 경고하지 않음', 
     assert.strictEqual(s.timers.size, 0);
     s.provider.dispose();
 });
+
+test('diagnostics: 실기 확인 검사는 기본 켜짐 Warning, gpl.diagnostics.compilerChecks=false 로 끈다', () => {
+    const s = setup();
+    s.configuration.clear();
+    s.document.content = [
+        'Module M',
+        '    Public Class Plain',
+        '    End Class',
+        '    Public Sub Main()',
+        '        Dim p As Plain = New Plain()',
+        '    End Sub',
+        'End Module',
+    ].join('\r\n');
+    s.provider.updateDiagnostics(s.document);
+    assert.strictEqual(s.current().length, 1);
+    const diagnostic = s.current()[0];
+    assert.strictEqual(diagnostic.source, 'GPL Compiler Check');
+    assert.strictEqual(diagnostic.code, 'new-parens-without-constructor');
+    assert.strictEqual(diagnostic.severity, 1);
+    assert.deepStrictEqual([diagnostic.range.startLine, diagnostic.range.start, diagnostic.range.end], [4, 34, 36]);
+    s.configuration.set('diagnostics.compilerChecks', false);
+    s.provider.updateDiagnostics(s.document);
+    assert.strictEqual(s.current().length, 0);
+    s.provider.dispose();
+});

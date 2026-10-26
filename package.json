@@ -1812,6 +1812,12 @@
                     "default": false,
                     "description": "Catch 없는 Try에 선택적 호환성 안내(Information)를 표시합니다. 기본 해제. GPL 4.2K5 실측에서 Finally 재실행은 잡히지 않은 예외로 Error 정지한 스레드를 Continue할 때 발생했으며 Catch 후 재던지기로도 방지되지 않았습니다."
                 },
+                "gpl.diagnostics.compilerChecks": {
+                    "scope": "resource",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "실제 제어기(GPL 4.2K5)에서 확인한 컴파일러·제어기 사실을 정적 진단으로 표시합니다. 반환형이 다른 오버로드(-741), Sub New 없는 클래스의 New X()(-722), Module 이름을 가리는 멤버(-781/-729), 다른 클래스의 Private Shared 접근(-729), Stop 으로 멈출 수 없는 쓰레드 이름(-712)은 Warning, 100바이트를 넘는 문자열 리터럴(-506, 한도 미확정)·ByVal String 매개변수의 Is Nothing 검사(-782)·5% 이하 조그 속도(tick 모드)는 Information입니다."
+                },
                 "gpl.diagnostics.experimental": {
                     "scope": "window",
                     "type": "boolean",

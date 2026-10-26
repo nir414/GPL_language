@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { XmlUtils } from '../language/xmlUtils';
 import { provideDocCommentCodeActions } from './docCommentProvider';
+import { COMPILER_CHECK_SOURCE } from './diagnosticProvider';
 
 export class GPLCodeActionProvider implements vscode.CodeActionProvider {
     
@@ -22,6 +23,8 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
                 if (action) {
                     actions.push(action);
                 }
+            } else if (diagnostic.source === COMPILER_CHECK_SOURCE && diagnostic.code === 'new-parens-without-constructor') {
+                actions.push(this.createRemoveNewParensAction(document, diagnostic));
             }
         }
 
@@ -37,6 +40,18 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
         }
 
         return actions;
+    }
+
+    /**
+     * `Sub New` 없는 클래스의 `New X()` → `New X`. 진단 범위가 정확히 `()` 라 그 구간만 지운다(-722 회피).
+     */
+    private createRemoveNewParensAction(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction {
+        const action = new vscode.CodeAction('괄호 제거 — Sub New 없는 클래스는 `New X` 로 생성', vscode.CodeActionKind.QuickFix);
+        action.diagnostics = [diagnostic];
+        action.isPreferred = true;
+        action.edit = new vscode.WorkspaceEdit();
+        action.edit.delete(document.uri, diagnostic.range);
+        return action;
     }
 
     /**

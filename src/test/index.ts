@@ -115,6 +115,8 @@ import './deployOutcome.test';
 import './recentEvents.test';
 import './startProcedureCheck.test';
 import './initHook.test';
+import './compilerChecks.test';
+import './compileErrorHints.test';
 import './tryCatch.test';
 import './diagnosticProvider.test';
 import './errorReport.test';

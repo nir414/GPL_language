@@ -107,7 +107,8 @@ export class ExtensionHost {
 		this.consoleChannel = vscode.window.createOutputChannel('GPL Console');
 		this.deployDiagnostics = vscode.languages.createDiagnosticCollection('gpl-deploy');
 		this.symbolCache = new SymbolCache(this.outputChannel);
-		this.diagnosticProvider = new GPLDiagnosticProvider();
+		// 실기 확인 검사가 다른 파일(참조 라이브러리 포함)의 Module·클래스를 보도록 심볼 캐시를 넘긴다.
+		this.diagnosticProvider = new GPLDiagnosticProvider(this.symbolCache);
 		context.subscriptions.push(this.outputChannel, this.trafficChannel, this.consoleChannel, this.deployDiagnostics);
 	}
 

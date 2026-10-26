@@ -62,6 +62,10 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 		symbolCacheInitPromise = symbolCache.refresh()
 			.then(() => {
 				outputChannel.appendLine('Symbol cache initialized!');
+				// 실기 확인 검사(compilerChecks)는 다른 파일의 Module·클래스를 보므로 인덱스가 찬 뒤 열린 문서를 다시 검사한다.
+				for (const document of vscode.workspace.textDocuments) {
+					if (isGplDocument(document)) { diagnosticProvider.scheduleDiagnostics(document, 0); }
+				}
 				if (isTraceOn(vscode.workspace)) {
 					outputChannel.show(true);
 				}

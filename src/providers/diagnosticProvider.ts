@@ -3,6 +3,10 @@ import { GPLParser } from '../language/gplParser';
 import { findInitHookFindings, InitHookSeverity } from '../language/initHook';
 import { isGplFile } from '../config';
 import { findTryCatchFindings } from '../language/tryCatch';
+import { CompilerCheckSeverity, CompilerSymbolLookup, findCompilerCheckFindings } from '../language/compilerChecks';
+
+/** 실기 확인 컴파일러·제어기 사실 검사의 진단 source — 빠른 수정(codeActionProvider)이 이 값으로 고른다. */
+export const COMPILER_CHECK_SOURCE = 'GPL Compiler Check';
 
 export class GPLDiagnosticProvider {
     private diagnosticCollection: vscode.DiagnosticCollection;
@@ -16,7 +20,11 @@ export class GPLDiagnosticProvider {
         return vscode.workspace.getConfiguration('gpl').get<boolean>('diagnostics.experimental', false) === true;
     }
 
-    constructor() {
+    /**
+     * @param symbolLookup 다른 파일(같은 컴파일 단위·참조 라이브러리)의 심볼 조회 — 보통 `SymbolCache`.
+     *   없으면 실기 확인 검사가 현재 파일만으로 판정한다.
+     */
+    constructor(private readonly symbolLookup?: CompilerSymbolLookup) {
         this.diagnosticCollection = vscode.languages.createDiagnosticCollection('gpl');
     }
 
@@ -40,6 +48,11 @@ export class GPLDiagnosticProvider {
                 diagnostic.code = finding.code;
                 return diagnostic;
             }));
+        }
+
+        // 실기 컴파일러·제어기로 확인한 사실 검사 — 기본 켜짐(gpl.diagnostics.compilerChecks). 규칙은 language/compilerChecks.
+        if (vscode.workspace.getConfiguration('gpl', document.uri).get<boolean>('diagnostics.compilerChecks', true)) {
+            diagnostics.push(...this.detectCompilerCheckIssues(document));
         }
 
         // 선택 활성화한 호환성 안내는 실험 진단과 독립적으로 표시한다.
@@ -501,6 +514,27 @@ export class GPLDiagnosticProvider {
                 severityOf[f.severity],
             );
             diagnostic.source = 'GPL Init Hook';
+            diagnostic.code = f.code;
+            return diagnostic;
+        });
+    }
+
+    /**
+     * 실기 확인 사실 검사(-741·-722·-781·-506·-712·-729·-782·tick 조그)를 vscode.Diagnostic 으로 옮긴다.
+     * 판정은 순수 모듈 `language/compilerChecks` 가 한다.
+     */
+    private detectCompilerCheckIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const severityOf: Record<CompilerCheckSeverity, vscode.DiagnosticSeverity> = {
+            warning: vscode.DiagnosticSeverity.Warning,
+            information: vscode.DiagnosticSeverity.Information,
+        };
+        return findCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup).map(f => {
+            const diagnostic = new vscode.Diagnostic(
+                new vscode.Range(f.line, f.start, f.line, f.end),
+                f.message,
+                severityOf[f.severity],
+            );
+            diagnostic.source = COMPILER_CHECK_SOURCE;
             diagnostic.code = f.code;
             return diagnostic;
         });

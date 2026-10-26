@@ -706,6 +706,12 @@
                 "icon": "$(search)"
             },
             {
+                "command": "gpl.controller.syncClock",
+                "title": "Sync Controller Clock to PC (제어기 시계를 PC에 맞추기)",
+                "category": "GPL",
+                "icon": "$(watch)"
+            },
+            {
                 "command": "gpl.controller.consoleToggle",
                 "title": "Toggle Console (콘솔 토글)",
                 "category": "GPL",
@@ -1653,6 +1659,19 @@
                     "default": 1500,
                     "minimum": 0,
                     "description": "같은 프로젝트의 Compile 응답 완료 뒤 Start를 보내기까지의 완충 시간(ms). 확장이 보내는 Start에는 -compile이 붙어 컴파일까지 수행하므로 Compile 직후 연속 Start(컴파일 중복)를 피합니다(ai-handoff §0.7 — 중복 실행의 안전성은 실기기 미검증이라 거부가 아닌 완충으로 둠). 0이면 완충 없음."
+                },
+                "gpl.controller.syncClockOnConnect": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "제어기에 연결되면 명령 콘솔의 date 로 제어기 시각을 읽고, PC 시각과의 차이가 syncClockThresholdSec 를 넘을 때만 PC 로컬 시각으로 맞춥니다(제어기에는 시간대가 없어 PC 로컬 시각을 그대로 보냄). 런타임 콘솔·ErrorLog 시각을 PC 와 맞추는 용도입니다. 실패해도 연결에는 영향이 없고 Output 에 로그만 남깁니다. 시계 설정은 모션을 일으키지 않습니다."
+                },
+                "gpl.controller.syncClockThresholdSec": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 2,
+                    "minimum": 0,
+                    "description": "syncClockOnConnect 가 켜져 있을 때 자동으로 맞추는 기준(초). 제어기와 PC 의 시각 차이 절댓값이 이 값을 넘을 때만 맞춥니다. 제어기 시각은 초 단위로만 표시돼 측정 오차가 약 ±0.5초이므로 1 이상을 권장합니다."
                 },
                 "gpl.controller.keepAlive1402": {
                     "scope": "window",

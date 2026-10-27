@@ -143,6 +143,9 @@ import './controller/connection/reachabilityRoute.test';
 import './debug/session/commandLanes.test';
 import './debug/execution/pollSchedule.test';
 import './project/remote/remoteSourceMapping.test';
+import './activation/deploy/deployModes.test';
+import './activation/deploy/automationResult.test';
+import './activation/deploy/deployTargetRules.test';
 import { run } from './harness';
 
 void run();

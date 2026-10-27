@@ -7,7 +7,7 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { isGplDocument, isGplFile, isTraceOn, isTraceVerbose } from '../../config';
+import { isGplDocument, isGplFile, isTraceVerbose } from '../../config';
 import { normalizePathKey } from '../../util/pathKey';
 import { fileExists } from '../../language/symbols/symbolLocations';
 import { GPLCodeActionProvider } from '../../providers/diagnostics/codeActionProvider';
@@ -66,9 +66,8 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 				for (const document of vscode.workspace.textDocuments) {
 					if (isGplDocument(document)) { diagnosticProvider.scheduleDiagnostics(document, 0); }
 				}
-				if (isTraceOn(vscode.workspace)) {
-					outputChannel.show(true);
-				}
+				// 종전에는 트레이스가 켜져 있으면 여기서 Output 을 열어, 활성화 수 초 뒤(인덱싱 완료)에 패널이 한 번 더 바뀌었다
+				// (2026-10-27 지적). 로그는 남기되 패널은 열지 않는다.
 			})
 			.catch((err) => {
 				outputChannel.appendLine(`[SymbolCache] Initialization failed: ${err}`);

@@ -56,11 +56,12 @@ export function activate(context: vscode.ExtensionContext) {
 	h.log(`GPL Language Support extension is now active! (v${EXTENSION_VERSION})`);
 
 	// Debug/trace logging (workspace/user settings)
-	// - gpl.trace.server = off | messages | verbose
+	// - gpl.trace.server = off | messages | verbose (베타 기간 기본 verbose — 분석용 로그는 늘 남긴다)
+	// 트레이스 레벨은 "얼마나 자세히 남길지"이지 "패널을 열지"가 아니다 — 종전에는 켜져 있으면 활성화 때 Output 을 강제로 열어
+	// 사용자가 보던 패널(GPL Console·터미널)을 덮었다(2026-10-27 지적). 패널은 사용자가 열 때만 연다.
 	const traceLevel = getTraceServerLevel(vscode.workspace);
 	if (isTraceOn(vscode.workspace)) {
 		h.log(`[Trace] gpl.trace.server = ${traceLevel}`);
-		h.outputChannel.show(true);
 	}
 
 	// ── 언어 기능 ─────────────────────────────────────────────────────────────

@@ -25,16 +25,19 @@ export function isGplDocument(document: vscode.TextDocument | undefined): docume
     return isGplFile(document);
 }
 
+/** 베타 기간 기본값 — 분석용 로그는 늘 남긴다(2026-10-27 사용자 결정). package.json 의 default 와 같아야 한다. */
+export const DEFAULT_TRACE_SERVER_LEVEL: TraceServerLevel = 'verbose';
+
 export function getTraceServerLevel(workspace: WorkspaceConfigHost): TraceServerLevel {
     // Configuration key is declared in package.json as: gpl.trace.server
-    const raw: unknown = workspace.getConfiguration('gpl').get('trace.server', 'off');
-    const rawString = typeof raw === 'string' ? raw : 'off';
+    const raw: unknown = workspace.getConfiguration('gpl').get('trace.server', DEFAULT_TRACE_SERVER_LEVEL);
+    const rawString = typeof raw === 'string' ? raw : DEFAULT_TRACE_SERVER_LEVEL;
 
     if (rawString === 'messages' || rawString === 'verbose' || rawString === 'off') {
         return rawString;
     }
 
-    return 'off';
+    return DEFAULT_TRACE_SERVER_LEVEL;
 }
 
 export function isTraceOn(workspace: WorkspaceConfigHost): boolean {

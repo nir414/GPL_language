@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.19.0** (src/ 전 계층 기능별 하위 폴더 재배치 — 동작 변경 없음, 1447/1447. 상세는 §1-GD.)
-- **직전 세션: §1-GD** — src/ 재배치: `language`·`project`·`debug`·`providers`·`views`·`activation` 을 `controller/` 처럼 기능별 하위 폴더(area)로, `test/` 는 src 를 거울처럼(232개 파일 `git mv` + 경로 재계산, R9 일반화). 동작 변경 없음, 1447/1447, VSIX 0.19.0 재생성. §1-GC 의 사용자 메모 4건 실기·UI 확인은 §3 그대로.
+- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.19.1** (확장 시작 시 Output 강제 열기 제거 · `gpl.trace.server` 기본 verbose. 상세는 §1-GE. src/ 재배치는 §1-GD.)
+- **직전 세션: §1-GE** — 확장 시작 시 Output 패널 강제 열기 2곳(활성화 직후·심볼 인덱싱 완료 뒤, 트레이스 켜짐 조건) 제거 + `gpl.trace.server` 기본값 `off`→`verbose`(베타 기간 분석용 로그 상시). 1447/1447, VSIX 0.19.1. src/ 재배치(§1-GD)는 직전 세션 — 커밋은 아직 없음.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -81,6 +81,8 @@
 - [ ] **(2026-10-23, §1-FY) 명령 커서 아이콘 — 새 VSIX/UI 확인.** 0.17.2 설치 후 확장 목록·README와 활동바/Status 보기에서 컬러·단색 아이콘을 밝은/어두운 테마로 확인한다. 24px 렌더링과 패키지 내용은 정적으로 확인했으며 실제 VS Code 표시와 캐시 갱신은 아직 보지 않았다.
 
 - [ ] **(2026-10-23, §1-FX) FTP 새로고침 UI 확인.** 새 VSIX에서 조회 진행 중 새로고침·연속 클릭·편집기/세션 종료를 확인한다. 모의 FTP 회귀와 로컬 테스트는 실제 제어기·VS Code UI 검증을 대신하지 않는다.
+
+- [ ] **(2026-10-27, §1-GE) 0.19.1 시작 동작 확인(UI만).** 새 VSIX 설치 뒤 GPL Console 또는 터미널을 보이게 둔 채 VS Code 창을 다시 열어 ① 활성화 직후 ② `Symbol cache initialized!` 가 찍히는 시점(대형 워크스페이스는 수 초 뒤) 모두 패널이 Output 으로 바뀌지 않는지, ③ 설정을 건드리지 않은 상태에서 Output 에 `[Trace] gpl.trace.server = verbose` 와 `[SymbolCache] …` 줄이 기본으로 남는지. 「예상 프로젝트가 Upload Only·열린 파일로 바뀌는」 건은 §1-GE 남은 일의 제안 ①② 중 하나를 사용자가 고르면 구현.
 
 - [ ] **(2026-10-27, §1-GC) 0.19.0 실기·UI 확인(Unload·Start 는 정지 상태·저속/시뮬레이션에서).** ① 명령 팔레트/트리 `···` 「GPL: Unload Project」 → `/GPL` 폴더 QuickPick(이름 입력·`-all` 항목 포함) → 앱(BinderR3) 선택 시 모달 없이 `Unload BinderR3` STATUS 로 완료/거부(-750) 보고, **`Lib`(ProjectStart 없음) 선택 시 그룹 Compile 표시가 없어도 「그래도 Unload/취소」 모달**이 뜨고 AI `unload_project`/`sendCommand('Unload Lib')` 는 `refused:"unload-after-group-compile"`(detail 에 "ProjectStart 가 없는 그룹"). 그룹 Unload 로 제어기가 멈추는 현상의 회피 방법은 미확인 — 실기에서 실제로 보낼지는 사용자 판단. ② 여유 메모리 심각(≤2.5 MB) 상태에서 사람이 Build/Deploy → Stop 뒤 Compile 직전 「그래도 Compile/취소」 모달, 취소하면 `[Deploy] … 중단: 여유 메모리 … 사용자가 취소` + 「Unload…」 버튼, 트레이스에 `✘ 사용자가 여유 메모리 심각 경고에서 취소`; `gpl.start`·FTP Run 도 같은 모달; MCP `deploy_project build` 는 모달 없이 `precheckWarnings` 만. 메모리 알림 토스트에 「Unload…」 버튼. ③ Project.gpr: 탐색기 밖(파워셸/SVN)에서 프로젝트 폴더에 `.gpl` 을 만들거나 지우면 1회 알림(「반영/항목 선택…」), 배포 직전에 목록이 다르면 「반영 후 배포/그대로 배포/취소」 모달, 「그대로」면 Output 에 `⚠ Project.gpr 소스 목록이 폴더와 다릅니다 — 추가 N (…)` 와 MCP 응답 `precheckWarnings`·`gprSyncMismatch`. 대량 변경(SVN 갱신)에서 프로젝트당 알림 1회인지. ④ GPL Console/Live Log 를 보는 상태에서 AI 가 `show_threads`·`eval_expression`·`list_remote_projects` 를 30초 넘게 띄엄띄엄 불러도 패널이 Output 으로 바뀌지 않고, `deploy_project`/`stop_threads`/`set_breakpoint` 에는 (30초 조용 뒤) 바뀌는지.
 
@@ -1078,6 +1080,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | 본문 ↓ |
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | 본문 ↓ |
+| §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | 본문 ↓ |
 
 ---
 
@@ -1399,3 +1402,28 @@ Sample Prep 세션이 SendMessage 와 수신함(`Downloads\GPL_language_inbox`)�
 
 - push 는 하지 않았다 — 태그/릴리스는 사용자 요청 시(태그 push = Marketplace 자동 게시).
 - 하위 폴더 간 의존 방향(예: `language/syntax` 가 `language/analysis` 를 모르게)은 아직 강제하지 않는다 — 필요해지면 R9 옆에 추가.
+
+---
+
+## 1-GE. 2026-10-27 세션 — 확장 시작 시 Output 패널 강제 열기 제거 · `gpl.trace.server` 기본 verbose
+
+### 증상·원인
+
+- 사용자 보고: 확장이 시작될 때도 포커스(패널)가 강제 전환된다. 첨부 로그 둘째 줄이 `[Trace] gpl.trace.server = verbose`.
+- 원인 2곳(둘 다 트레이스가 `off` 가 아닐 때만): ① `extension.ts` 활성화 직후 `outputChannel.show(true)` ② `activation/language/languageFeatures.ts` 심볼 캐시 초기화 완료 콜백(`Symbol cache initialized!`)에서 또 `show(true)` — 인덱싱이 9 s 걸린 환경이라 확장이 뜨고 9 s 뒤 패널이 한 번 더 Output 으로 바뀌었다. `preserveFocus` 라 커서는 남지만 패널이 닫혀 있으면 열리고, GPL Console·터미널을 보고 있으면 Output 으로 덮인다(§1-GC D 와 같은 종류).
+- 그 밖의 시작 경로(연결·브리지·프로젝트 컨텍스트 동기화)에는 자동 reveal 이 없다. `gpl.trace.liveTerminal.autoStart`(기본 꺼짐)만 켜면 Live Logs 터미널을 `show(true)` 한다 — 이번 증상과 무관.
+
+### 조치 (사용자 결정: "출력 패널을 굳이 강제로 열 필요 없고, 베타 단계라 로그는 기본 활성화")
+
+- 두 `show(true)` 삭제 — 트레이스 레벨은 "얼마나 자세히 남길지" 이지 "패널을 열지" 가 아니다. 로그 줄(`[Trace] gpl.trace.server = …`)은 그대로.
+- `gpl.trace.server` 기본값 `off` → **`verbose`**(package.json + `config.DEFAULT_TRACE_SERVER_LEVEL` 로 폴백도 같은 값). 설정 설명을 수준별 의미와 "어느 수준이든 패널을 자동으로 열지 않는다" 로 다시 썼다. `verbose` 는 정의/호버/참조/이름 바꾸기 탐색 로그까지 남긴다(providers 의 `isTraceVerbose` 게이트) — 분석 편의가 목적이라 그대로 두되, 조용히 쓰려면 `off`.
+- `languageFeatures.ts` 의 `isTraceOn` import 제거(noUnusedLocals).
+
+### 검증
+
+- `npm test` **1447/1447**(코드 변경은 reveal 2곳 삭제·기본값뿐이라 신규 테스트 없음 — 트레이스 기본값은 provider 하니스가 이미 `verbose` 로 고정해 쓴다). `npm run package:no-bump`: `dist/gpl-language-support-0.19.1.vsix` **1,510,565 bytes**, SHA-256 **0E4EBE94C62FBC87BBA72F8E3FD14CA03EBE56BD170C03A11350161F2B4D8182**. 경고는 기존 JavaScript 번들링 권고뿐. 실제 VS Code 재시작 뒤 패널이 열리지 않는지는 §3 에 남겼다.
+
+### 남은 일
+
+- §3: 새 VSIX 로 VS Code 를 재시작해 활성화·인덱싱 완료 시점에 패널이 바뀌지 않는지, Output 에 `[Trace] gpl.trace.server = verbose` 와 인덱싱 로그가 기본으로 남는지 확인.
+- 사용자 질문(답변만 함, 코드 변경 없음): "FTP /GPL 업로드만 해도 타깃 프로젝트가 바뀌는 이유" — 제어기 쪽 대상은 안 바뀌고(Upload Only 는 1402 명령 0건), 바뀌는 것은 확장의 예상 프로젝트(`projectContext.scheduleExpectedProjectSync` + `deploy.ts` Upload Only 성공 시 `setExpectedProjectContext`). 제안 ① 예상 프로젝트에도 `sessionTargetAfterImplicitUse` 규칙(ProjectStart 없는 라이브러리는 대상으로 삼지 않음, Upload Only 는 실행 가능 앱일 때만 갱신) 적용 ② 표시명을 "마지막 작업 프로젝트" 로. **사용자 결정 대기** — 결정되면 §2 로 옮기거나 구현.

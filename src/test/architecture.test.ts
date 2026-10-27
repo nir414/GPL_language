@@ -56,7 +56,7 @@ const VSCODE_ALLOWED_MODULES: ReadonlySet<string> = new Set([
     'controller/deployment/deployRecord', 'controller/deployment/deployService', 'controller/projects/gprSyncCommand', 'controller/projects/projectPicker',
     'controller/runtime/runtimeConsole',
     // debug — DAP 세션과 구성 provider
-    'debug/session/activateDebug', 'debug/session/gplDebugSession',
+    'debug/session/activateDebug', 'debug/session/gplDebugSession', 'debug/session/attachPreflight',
     // project — 워크스페이스 검색·명령 래퍼
     'project/sources/projectFileScope', 'project/gpr/promoteSourceCommand',
     // views

@@ -26,21 +26,33 @@ function sessionFixture(breakResponse = BREAKS, requireStartConfirmation = true,
         window: { showWarningMessage: () => { throw new Error('Attach에서 Start 확인을 요청하면 안 된다'); } },
     };
     const filename = path.resolve(__dirname, '../../../debug/session/gplDebugSession.js');
-    const realRequire = createRequire(filename);
-    const module = { exports: {} as any };
-    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-        module, exports: module.exports, console, setTimeout, clearTimeout, setInterval, clearInterval, Buffer,
-        require: (id: string) => {
-            if (id === 'vscode') { return vscode; }
-            if (id.endsWith('/controllerConnection')) {
-                return { getControllerConfig: () => config, getConnectionProbeTimeoutMs: () => 1000, sendCommand: async (cmd: string) => { commands.push(cmd); return SUCCESS; } };
-            }
-            if (id.endsWith('/deployService')) { return {}; }
-            if (id.endsWith('/deployRecord')) { return { onDidRecordCompiled: disposable }; }
-            if (id.endsWith('/debugBridge')) { return { onDebugPollTrigger: disposable }; }
-            return realRequire(id);
-        },
-    }, { filename });
+    const loaded = new Map<string, { exports: any }>();
+    const load = (file: string): any => {
+        const hit = loaded.get(file);
+        if (hit) { return hit.exports; }
+        const mod = { exports: {} as any };
+        loaded.set(file, mod);
+        vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
+            module: mod, exports: mod.exports, console, setTimeout, clearTimeout, setInterval, clearInterval, Buffer,
+            require: (id: string) => stubRequire(id, file),
+        }, { filename: file });
+        return mod.exports;
+    };
+    const stubRequire = (id: string, from: string): any => {
+        if (id === 'vscode') { return vscode; }
+        if (id.endsWith('/controllerConnection')) {
+            return { getControllerConfig: () => config, getConnectionProbeTimeoutMs: () => 1000, sendCommand: async (cmd: string) => { commands.push(cmd); return SUCCESS; } };
+        }
+        if (id.endsWith('/deployService')) { return {}; }
+        if (id.endsWith('/deployRecord')) { return { onDidRecordCompiled: disposable }; }
+        if (id.endsWith('/debugBridge')) { return { onDebugPollTrigger: disposable }; }
+        if (id.startsWith('.')) {
+            const target = createRequire(from).resolve(id);
+            if (target.includes(`${path.sep}debug${path.sep}`)) { return load(target); }
+        }
+        return createRequire(from)(id);
+    };
+    const module = { exports: load(filename) };
     const session = new module.exports.GPLDebugSession();
     session._log = () => {};
     session.sendResponse = () => {};
@@ -58,13 +70,13 @@ function sessionFixture(breakResponse = BREAKS, requireStartConfirmation = true,
         return `<DATA>${[...controllerLines].map((line, i) => `${i + 1}, Probe, Main, 1, Main.gpl, ${line}, 0`).join('\n')}\n2, Other, Main, 1, Main.gpl, 20, 0</DATA>${SUCCESS}`;
     };
     if (!realSourceMap) {
-        session._updateProjectDirs = () => {};
-        session._buildSourceFileMap = () => {};
+        session._sources.updateProjectDirs = () => {};
+        session._sources.buildSourceFileMap = () => {};
     }
-    session._evaluateSourceStaleness = () => {};
-    session._startPolling = () => {};
-    session._fastPoll = () => {};
-    if (!realSourceMap) { session._bpFileForms = (file: string) => [file]; }
+    session._stale.evaluateSourceStaleness = () => {};
+    session._poll.startPolling = () => {};
+    session._poll.fastPoll = () => {};
+    if (!realSourceMap) { session._bps.bpFileForms = (file: string) => [file]; }
     session._setLockedThread = () => {};
     const args = controllerDebugConfiguration({
         host: config.ip, port: config.port, consolePort: config.consolePort,
@@ -86,8 +98,8 @@ test('controller project Attach: 초기화와 configurationDone에서 읽기 명
 test('controller project Attach: 기존 BP는 수정·분리 때 남기고 새 BP만 해제한다', async () => {
     const s = sessionFixture();
     await s.session.attachRequest({}, s.args);
-    s.session._resolveBreakpointTarget = () => ({ kind: 'direct-source', file: 'Main.gpl' });
-    s.session._adjustBreakpointLine = (_file: string, line: number) => ({ line, moved: false });
+    s.session._bps.resolveBreakpointTarget = () => ({ kind: 'direct-source', file: 'Main.gpl' });
+    s.session._sources.adjustBreakpointLine = (_file: string, line: number) => ({ line, moved: false });
     s.session._clientSideBpLogicEnabled = () => false;
     await s.session.setBreakPointsRequest({}, { source: { path: 'Main.gpl' }, lines: [10, 11] });
     await s.session.disconnectRequest({}, {});
@@ -98,16 +110,16 @@ test('controller project Attach: 기존 BP는 수정·분리 때 남기고 새 B
 
 test('controller project Attach: basename으로 조회된 기존 BP를 상대 경로 요청에서도 보존한다', async () => {
     const s = sessionFixture();
-    s.session._bpFileForms = (file: string) => file.includes('\\') ? [file] : [file, `Sub\\${file}`];
+    s.session._bps.bpFileForms = (file: string) => file.includes('\\') ? [file] : [file, `Sub\\${file}`];
     await s.session.attachRequest({}, s.args);
     const count = s.commands.length;
-    await s.session._sendBpCommandWithFallback('Nobreak', 'Probe', 'Sub\\Main.gpl', 10);
+    await s.session._bps.sendBpCommandWithFallback('Nobreak', 'Probe', 'Sub\\Main.gpl', 10);
     assert.strictEqual(s.commands.length, count);
 });
 
 test('controller project Attach: 기존 구성의 자동 Start 기본 동작은 유지한다', async () => {
     const s = sessionFixture(BREAKS, false);
-    s.session._waitDeployLockForStart = async () => true;
+    s.session._attach.waitDeployLockForStart = async () => true;
     await s.session.attachRequest({}, { ...s.args, startOnAttach: undefined });
     await s.session.configurationDoneRequest({}, {});
     assert.strictEqual(s.commands.filter(cmd => /^Start Probe\b/.test(cmd)).length, 1);
@@ -141,8 +153,8 @@ test('controller project Attach: 동명 사본이 있어도 선택한 폴더와 
         s.vscode.workspace.workspaceFolders = [{ uri: { fsPath: root } }];
         await s.session.attachRequest({}, { ...s.args, projectDir: main });
         assert.deepStrictEqual(s.errors, []);
-        assert.strictEqual(s.session._resolveSourcePath('Main.gpl'), path.join(main, 'Main.gpl'));
-        assert.strictEqual(s.session._resolveSourcePath('Core.gpl'), path.join(library, 'Core.gpl'));
-        assert.ok(!s.session._projectDirs.includes(copy));
+        assert.strictEqual(s.session._sources.resolveSourcePath('Main.gpl'), path.join(main, 'Main.gpl'));
+        assert.strictEqual(s.session._sources.resolveSourcePath('Core.gpl'), path.join(library, 'Core.gpl'));
+        assert.ok(!s.session._sources.projectDirs.includes(copy));
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

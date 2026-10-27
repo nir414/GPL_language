@@ -73,30 +73,42 @@ function fixture(sources = ['Main.gpl', 'Sub/Space Name.gpl']) {
 		window: { showWarningMessage: () => { throw new Error('원격 Attach에서 Start 확인을 요청하면 안 된다'); } },
 	};
 	const filename = path.resolve(__dirname, '../../../debug/session/gplDebugSession.js');
-	const realRequire = createRequire(filename);
-	const module = { exports: {} as any };
-	vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-		module, exports: module.exports, console, setTimeout, clearTimeout, setInterval, clearInterval, Buffer,
-		require: (id: string) => {
-			if (id === 'vscode') { return vscode; }
-			if (id.endsWith('/remoteSourceSession')) { return { getRemoteSourceSession: (sessionId: string) => sessionId === remote.id ? remote : undefined }; }
-			if (id.endsWith('/controllerConnection')) {
-				return { getControllerConfig: () => config, getConnectionProbeTimeoutMs: () => 1000, sendCommand: async (command: string) => { commands.push(command); return SUCCESS; } };
-			}
-			if (id.endsWith('/deployService')) { return {}; }
-			if (id.endsWith('/deployRecord')) { return { onDidRecordCompiled: disposable }; }
-			if (id.endsWith('/debugBridge')) { return { onDebugPollTrigger: disposable }; }
-			return realRequire(id);
-		},
-	}, { filename });
+	const loaded = new Map<string, { exports: any }>();
+	const load = (file: string): any => {
+		const hit = loaded.get(file);
+		if (hit) { return hit.exports; }
+		const mod = { exports: {} as any };
+		loaded.set(file, mod);
+		vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
+			module: mod, exports: mod.exports, console, setTimeout, clearTimeout, setInterval, clearInterval, Buffer,
+			require: (id: string) => stubRequire(id, file),
+		}, { filename: file });
+		return mod.exports;
+	};
+	const stubRequire = (id: string, from: string): any => {
+		if (id === 'vscode') { return vscode; }
+		if (id.endsWith('/remoteSourceSession')) { return { getRemoteSourceSession: (sessionId: string) => sessionId === remote.id ? remote : undefined }; }
+		if (id.endsWith('/controllerConnection')) {
+			return { getControllerConfig: () => config, getConnectionProbeTimeoutMs: () => 1000, sendCommand: async (command: string) => { commands.push(command); return SUCCESS; } };
+		}
+		if (id.endsWith('/deployService')) { return {}; }
+		if (id.endsWith('/deployRecord')) { return { onDidRecordCompiled: disposable }; }
+		if (id.endsWith('/debugBridge')) { return { onDebugPollTrigger: disposable }; }
+		if (id.startsWith('.')) {
+			const target = createRequire(from).resolve(id);
+			if (target.includes(`${path.sep}debug${path.sep}`)) { return load(target); }
+		}
+		return createRequire(from)(id);
+	};
+	const module = { exports: load(filename) };
 	const session = new module.exports.GPLDebugSession();
 	session._log = () => {};
 	session.sendEvent = () => {};
 	session.sendResponse = (response: unknown) => responses.push(response);
 	session.sendErrorResponse = (_response: unknown, error: unknown) => errors.push(error);
-	session._evaluateSourceStaleness = () => {};
-	session._startPolling = () => {};
-	session._fastPoll = () => {};
+	session._stale.evaluateSourceStaleness = () => {};
+	session._poll.startPolling = () => {};
+	session._poll.fastPoll = () => {};
 	session._setLockedThread = () => {};
 	session._clientSideBpLogicEnabled = () => false;
 	const breakpoints = new Map<string, Set<number>>();
@@ -128,10 +140,10 @@ test('remote DAP: workspace 밖 미다운로드 소스를 선언만으로 매핑
 		assert.strictEqual(s.errors.length, 0);
 		assert.strictEqual(s.prepareCalls(), 1);
 		assert.strictEqual(s.reads.length, 0);
-		assert.strictEqual(s.session._resolveSourcePath('Main.gpl'), s.files[0].localPath);
+		assert.strictEqual(s.session._sources.resolveSourcePath('Main.gpl'), s.files[0].localPath);
 		assert.strictEqual(fs.existsSync(s.files[0].localPath), false);
-		assert.strictEqual(s.session._resolveSourcePath('Other.gpl'), '');
-		assert.strictEqual(s.session._sourceMapWidened, false);
+		assert.strictEqual(s.session._sources.resolveSourcePath('Other.gpl'), '');
+		assert.strictEqual(s.session._sources.sourceMapWidened, false);
 		await s.session.disconnectRequest({}, {});
 		assert.deepStrictEqual(s.commands, ['ErrorLog', 'Show Break']);
 	} finally { s.dispose(); }
@@ -141,8 +153,8 @@ test('remote DAP: 스택 소스는 필요한 파일만 받고 임시 경로 대�
 	const s = fixture();
 	try {
 		await s.session.attachRequest({}, s.args);
-		s.session._threadIdToName.set(1, 'Probe.Main');
-		s.session._getThreadFrames = async () => [
+		s.session._threads.threadIdToName.set(1, 'Probe.Main');
+		s.session._frames.getThreadFrames = async () => [
 			{ file: 'Main.gpl', fileLine: 3, process: 'Main', frameIndex: 0 },
 			{ file: 'Other.gpl', fileLine: 2, process: 'Other', frameIndex: 1 },
 		];
@@ -173,8 +185,8 @@ test('remote DAP: FTP 실패·다른 세션 URI·동명 모호성은 제어기 B
 	const s = fixture(['A/Main.gpl', 'B/Main.gpl']);
 	try {
 		await s.session.attachRequest({}, s.args);
-		assert.strictEqual(s.session._resolveSourcePath('Main.gpl'), '');
-		assert.strictEqual(s.session._resolveSourcePath('A\\Main.gpl'), s.files[0].localPath);
+		assert.strictEqual(s.session._sources.resolveSourcePath('Main.gpl'), '');
+		assert.strictEqual(s.session._sources.resolveSourcePath('A\\Main.gpl'), s.files[0].localPath);
 		const before = s.commands.length;
 		for (const source of ['Main.gpl', s.files[0].uri.replace('test-session', 'another-session')]) {
 			const response: any = {};
@@ -219,7 +231,7 @@ test('remote DAP: 미로딩 함수명 BP는 파일을 받거나 이전 BP를 해
 	try {
 		await s.session.attachRequest({}, s.args);
 		const previous = [{ name: 'Previous', file: 'Main.gpl', line: 3, id: 1 }];
-		s.session._functionBps = previous;
+		s.session._bps.functionBps = previous;
 		const before = s.commands.length;
 		const response: any = {};
 		await s.session.setFunctionBreakPointsRequest(response, { breakpoints: [{ name: 'Main' }] });
@@ -227,7 +239,7 @@ test('remote DAP: 미로딩 함수명 BP는 파일을 받거나 이전 BP를 해
 		assert.match(response.body.breakpoints[0].message, /해당 파일을 먼저 열고/);
 		assert.strictEqual(s.commands.length, before);
 		assert.strictEqual(s.reads.length, 0);
-		assert.strictEqual(s.session._functionBps, previous);
+		assert.strictEqual(s.session._bps.functionBps, previous);
 	} finally { s.dispose(); }
 });
 

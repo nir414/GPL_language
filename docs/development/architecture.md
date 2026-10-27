@@ -235,7 +235,7 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 | `controller/debugging/debugBridge` | 디버그 세션 ↔ 확장 이벤트 버스(`EventEmitter`) |
 | `controller/debugging/breakpointSync` · `breakpointMirror` | 에디터 중단점(`debug.breakpoints`) 양방향 동기화 — 계획 계산은 `breakpointReconcile`(순수) |
 | `controller/projects/projectPicker` · `gprSyncCommand` | QuickPick·WorkspaceEdit·FileSystemWatcher 를 쓰는 명령 래퍼 — 규칙은 `projectPickerCore`·`project/gpr/gprSync`·`project/gpr/gprFolderSync`(순수) |
-| `debug/session/gplDebugSession` · `activateDebug` | DAP 세션 자체(`vscode.debug`)·구성 provider |
+| `debug/session/gplDebugSession` · `activateDebug` · `attachPreflight` | DAP 세션 자체(`vscode.debug`)·구성 provider·Attach 전 배포/정지 절차(모달·출력 채널) |
 | `project/sources/projectFileScope` · `promoteSourceCommand` | `workspace.findFiles`·명령 등록 |
 | `views/*` 3개 | TreeDataProvider·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`compileStaleBadge`·`uploadProgressBar`(순수) |
 | `ai/exportAgentSetup` · `log/liveLogTerminal` | 파일 대화상자·터미널 |

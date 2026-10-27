@@ -127,9 +127,9 @@ flowchart BT
 
 | 하위 폴더 | 책임 |
 | --- | --- |
-| `session/` | DAP 어댑터 등록(`activateDebug`)·세션(`gplDebugSession`)·명령 차선 큐(`commandLanes`)·launch.json 편집 |
-| `execution/` | 정지/스텝 판정 — Step 게이트·스레드 잠금·자발적 Paused·정지 감지 폴 일정·대상 줄/호출 후보(`sourceTargets`) |
-| `evaluation/` | 변수 평가 — `Show Variable` 파싱·평가 실패 문구·REPL 입력 분할 |
+| `session/` | DAP 어댑터 등록(`activateDebug`)·세션(`gplDebugSession` — DAP 요청 처리·정지 상태 머신)·세션 협력자(`sessionIo` 세션 창, `sessionSources` 소스 지도·컴파일 단위, `frameCache`, `threadRegistry`, `sessionBreakpoints` BP 장부·표기 폴백, `sourceStaleness` GitHub #21, `attachPreflight` F5 배포·정지 절차, `errorLocation`)·명령 차선 큐(`commandLanes`)·launch.json 편집 |
+| `execution/` | 정지/스텝 판정 — Step 게이트·스레드 잠금·자발적 Paused·정지 감지 폴 일정(`pollSchedule` 계산·`pollDriver` 타이머 실행)·대상 줄/호출 후보(`sourceTargets`) |
+| `evaluation/` | 변수 평가 — `Show Variable` 파싱·-eval 사다리와 DAP Variable 조립·REPL 평가(`variableEvaluator`, vscode 없음)·소스 심볼 색인(`sourceSymbolIndex`)·평가 실패 문구·REPL 입력 분할 |
 
 **`providers/`**
 
@@ -410,7 +410,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 
 | 항목 | 크기 | 상태 |
 | --- | --- | --- |
-| `debug/session/gplDebugSession.ts` | 약 5,460줄, 클래스 1개 | DAP + 제어기 동작이 한 클래스 — 분해는 실기기 검증 필요(로드맵 P8) |
+| `debug/session/gplDebugSession.ts` | 5,753줄 → 3,056줄 + 협력자 10모듈 | **분해 1차 완료(2026-10-27)** — 남은 것은 DAP 요청 처리와 `_pollThreadStates` 정지 상태 머신(364줄). 실기기 검증 전(ai-handoff §3) |
 | `controller/deployment/deployService.ts` `deployLocked` | 단계 모듈로 분리됨(2026-10-27) | 오케스트레이터 약 70줄 — 단계 본문은 `deploy*Stage.ts`, 동작 불변 |
 | `controller/runtime/runtimeConsole.ts` | 약 1,368줄 | 재연결 상태 머신 → 명시적 상태 머신(로드맵 Phase 3) |
 | `activation/deploy/deploy.ts` | 1,488줄 한 함수 → 허브 70줄 + 형제 모듈 15개 | **분할 완료(2026-10-27)** — 클로저 공유 상태는 `deployContext`, 순수 판정은 `deployModes`·`automationResult`·`deployTargetRules`·`autoOnSaveRules`(테스트 있음). 가장 큰 잔여는 `deployReport.ts`(약 400줄, 결과 보고 세 갈래) |

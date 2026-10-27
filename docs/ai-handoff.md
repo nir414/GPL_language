@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.19.1** (확장 시작 시 Output 강제 열기 제거 · `gpl.trace.server` 기본 verbose. 상세는 §1-GE. src/ 재배치는 §1-GD.)
-- **직전 세션: §1-GE** — 확장 시작 시 Output 패널 강제 열기 2곳(활성화 직후·심볼 인덱싱 완료 뒤, 트레이스 켜짐 조건) 제거 + `gpl.trace.server` 기본값 `off`→`verbose`(베타 기간 분석용 로그 상시). 1447/1447, VSIX 0.19.1. src/ 재배치(§1-GD)는 직전 세션 — 커밋은 아직 없음.
+- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.19.2** (거대 파일 4건 분해 + 조회 성능 — 동작 변경 없음, 1481/1481. 상세는 §1-GF.)
+- **직전 세션: §1-GF** — 루트 정리(`assets/`·`docs/requests.md`·탐색기 중첩) → `gplDebugSession`(5,753→3,056)·`deployService`(2,002→517)·`controllerTreeProvider`(1,665→684)·`activation/deploy/deploy.ts`(1,488→70) 분해 → old/new 재생 하니스로 동일성 확인(배포 151 시나리오·트리 2,842 항목·세션 AST 대조) → 경로 판정 캐시로 호버 2.8→0.4 ms. 0.19.2. 실기·UI 확인은 §3.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -81,6 +81,8 @@
 - [ ] **(2026-10-23, §1-FY) 명령 커서 아이콘 — 새 VSIX/UI 확인.** 0.17.2 설치 후 확장 목록·README와 활동바/Status 보기에서 컬러·단색 아이콘을 밝은/어두운 테마로 확인한다. 24px 렌더링과 패키지 내용은 정적으로 확인했으며 실제 VS Code 표시와 캐시 갱신은 아직 보지 않았다.
 
 - [ ] **(2026-10-23, §1-FX) FTP 새로고침 UI 확인.** 새 VSIX에서 조회 진행 중 새로고침·연속 클릭·편집기/세션 종료를 확인한다. 모의 FTP 회귀와 로컬 테스트는 실제 제어기·VS Code UI 검증을 대신하지 않는다.
+
+- [ ] **(2026-10-27, §1-GF) 0.19.2 분해 뒤 실기·UI 확인.** 재생 하니스·테스트로는 같다고 확인했지만 실기기와 VS Code UI 는 돌리지 않았다. ① F5 Attach → Step/Continue/Pause → 변수·Watch·REPL(`>Show Thread`)·조건부 BP(설정 켜고) → Disconnect 가 종전과 같은지(Debug Console 로그 줄도) ② Deploy & Run·Quick Compile·Upload Only·메모리 심각 모달·쓰레드 정지 모달이 종전 순서대로 ③ 제어기 트리 각 섹션·상황/진단 보고서 복사 결과 ④ `scripts/dev/index-performance.js` 를 실제 워크스페이스(9 s 보고)에서 돌려 어느 단계가 느린지(합성 64파일은 0.3 s 라 재현 안 됨). 이상이 보이면 `node scripts/dev/deployReplay.js <시나리오>`·`compareTreeProvider.js` 로 old/new 를 다시 대조한다.
 
 - [ ] **(2026-10-27, §1-GE) 0.19.1 시작 동작 확인(UI만).** 새 VSIX 설치 뒤 GPL Console 또는 터미널을 보이게 둔 채 VS Code 창을 다시 열어 ① 활성화 직후 ② `Symbol cache initialized!` 가 찍히는 시점(대형 워크스페이스는 수 초 뒤) 모두 패널이 Output 으로 바뀌지 않는지, ③ 설정을 건드리지 않은 상태에서 Output 에 `[Trace] gpl.trace.server = verbose` 와 `[SymbolCache] …` 줄이 기본으로 남는지. 「예상 프로젝트가 Upload Only·열린 파일로 바뀌는」 건은 §1-GE 남은 일의 제안 ①② 중 하나를 사용자가 고르면 구현.
 
@@ -787,6 +789,7 @@ src/views/tree/refreshThrottle.ts             # 트리 FTP/시스템 정보 자�
 src/debug/session/launchJsonc.ts                 # launch.json JSONC 읽기/부분 갱신(jsonc-parser) — 주석·포맷 보존 upsert (§1-BI, #30)
 controller-mcp/src/batch.js              # MCP controller_command 배치 runBatch/normalizeCommandInput (§1-BI, #16)
 src/controller/connection/trafficResponseBody.ts    # ResponseBodyStreamer — 1402 응답 본문 줄 단위 스트리밍·상한 생략 요약(§1-BG, vscode 무의존 순수 모듈)
+src/controller/deployment/deploy*Stage.ts           # (§1-GF) deployLocked 의 단계 본문 — precheck → targetStage → uploadStage(∥ stopStage) → compileStage → startStage → errorCheckStage, 공유 상태는 deployContext.ts(DeployContext)
 src/controller/deployment/deployService.ts          # deploy() = 제어기별 QUEUED 대기→잠금 획득→일반은 UPLOAD ∥ STOP/THREAD_CHECK→COMPILE→START→ERROR CHECK, Upload Only는 UPLOAD만(원격 전용 삭제 보류). tryCompile, directGpl, COMPILE_DEFERRED, findProjectDirs, onDidUploadProgress (§1-BD, §1-EE, §1-FC)
 src/controller/projects/projectPickerCore.ts      # 프로젝트 폴더 선택 순수 규칙 — orderProjectDirs(최근 선택 우선)·projectDirFromResource(폴더 자체/.gpr/포함 파일)·filterDirsByProjectName (§1-BL, vscode 무의존)
 src/controller/projects/projectPicker.ts          # 공용 선택기 pickProjectDir(Detailed)(QuickPick·workspaceState 최근 선택)·readGprProjectName/projectNameOf·context key gpl.projectDirs(탐색기 메뉴) — 명령·F5 provider 공용 (§1-BL)
@@ -809,9 +812,21 @@ src/controller/io/dio.ts                    # Show DIO `signal: 0|1 [*]` 순수 
 src/views/dashboard/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — 상태/I/O 탭, setInterval/pause/config, 확인 후 Set DIO(§1-BF·§1-FB); HTML은 assets/webview/dashboard.html
 controller-mcp/src/parse.js              # MCP 파서 — parseThreadList(이름 키)·compactThread·summarizeThreads·parseShowVariable(§1-BF)
 scripts/bundle-mcp.js                    # MCP 번들 + 빌드 스탬프(define __GPL_MCP_BUILD_JSON__, 사이드카 .build.json)(§1-BF)
+src/debug/session/sessionIo.ts                      # (§1-GF) 협력자가 세션을 보는 창 — 읽기 전용 getter + sendCmd/log/sendEvent. 세션 생성자의 _io 가 구현(지연 getter)
+src/debug/session/sessionSources.ts                 # (§1-GF) 소스 지도·컴파일 단위·원격 소스·프로시저 범위(옛 _resolveSourcePath·_updateProjectDirs·_buildSourceFileMap)
+src/debug/session/sessionBreakpoints.ts             # (§1-GF) BP 장부·Set Break 표기 폴백·-508 안내·임시 BP(옛 _sendBpCommandWithFallback·_bpFileForms)
+src/debug/session/sourceStaleness.ts                # (§1-GF) GitHub #21 stale 판정·BP 강등/복원
+src/debug/session/attachPreflight.ts                # (§1-GF) F5 배포(_runDeployBeforeAttach)·배포 잠금 대기·attach preflight 정지 — vscode 허용 목록
+src/debug/session/frameCache.ts                     # (§1-GF) Show Stack 캐시·프레임 id·세대(invalidateFreshness/clearAll/dropThread)
+src/debug/evaluation/variableEvaluator.ts           # (§1-GF) -eval 사다리·DAP Variable·배열 펼치기·REPL 평가(vscode 없음, io 콜백으로 설정/모달)
+src/debug/evaluation/sourceSymbolIndex.ts           # (§1-GF) 로컬 이름·전역 목록·Property 색인(소스 파싱, 소스맵 세대 캐시)
+src/debug/execution/pollDriver.ts                   # (§1-GF) 인터벌/fast/pending 폴 타이머 — 폴 본문(_pollThreadStates)은 세션에 남음
 src/debug/session/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach(lockOwner 'F5 Deploy'), _waitDeployLockForStart, getDebugDeployDiagnostics
 src/extension.ts                         # activate()/deactivate() — 배선만(195줄). ExtensionHost 생성 → activation/*.ts 의 activateXxx(host) 를 종전 순서로 호출 (§1-CZ)
 src/activation/host.ts                   # ExtensionHost — 클로저가 공유하던 서비스(채널·심볼 캐시)·가변 상태(트리·상태바·런타임 콘솔·건강 모니터·디버그 여부·마지막 스냅샷)·헬퍼(log·배포 잠금·컴파일 검증 상태·런타임 콘솔 싱글톤·연결 상태 반영·Agent Bridge)·하위 API(project/connection/deploy/decorations). **가변 상태는 항상 host.x 로 읽는다** (§1-CZ)
+src/views/tree/treeSections.ts · snapshotMarkdown.ts # (§1-GF) 트리 섹션/루트 빌더와 상황·진단 보고서(순수) — controllerTreeProvider 는 오케스트레이터
+scripts/dev/deployReplay.js · compareTreeProvider.js # (§1-GF) 분할 전 커밋(6882714)과 현재를 같은 입력으로 재생해 대조 — 배포 151 시나리오 / 트리 41 상태. 회귀 의심 시 먼저 돌린다
+scripts/dev/index-performance.js                    # (§1-GF) 합성 워크스페이스 인덱싱·호버 벤치마크(읽기/파싱/색인 단계별 ms + 심볼 digest)
 src/activation/deploy/deploy.ts                 # gpl.deploy/uploadStart/start/saveToFlash/quickCompile + autoOnSave + 자동화 대상 해석·게이트 — runDeploy/runDeployCore(결과 보고부는 controller/deployment/deployOutcome.ts) (§1-CZ, §1-DB) · onDidUploadProgress → 상태바 진행 바 구독, Save to Flash 는 직접 연결(§1-EE) + Sync/10초 안전 확인(§1-FD)
 src/activation/controller/connection.ts             # 연결 건강 모니터 배선·유실 처리·사후 스냅샷·connect/disconnect(대화형+비대화형)·launch.json·startQuickAttachSession(attachOnly=배포 없이 붙기, §1-DC)·debugProject(배포+붙기 — 대상은 QuickPick·우클릭, §1-DQ)
 src/activation/deploy/projectContext.ts         # 기대 프로젝트 감지·launch.json 읽기·GPL 파일명→경로·BP target 해석(resolveGplFilePath/resolveBreakpointTarget) — host.project (§1-CZ, §1-EC)
@@ -1080,6 +1095,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | 본문 ↓ |
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | 본문 ↓ |
+| §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | 본문 ↓ |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | 본문 ↓ |
 
 ---
@@ -1427,3 +1443,34 @@ Sample Prep 세션이 SendMessage 와 수신함(`Downloads\GPL_language_inbox`)�
 
 - §3: 새 VSIX 로 VS Code 를 재시작해 활성화·인덱싱 완료 시점에 패널이 바뀌지 않는지, Output 에 `[Trace] gpl.trace.server = verbose` 와 인덱싱 로그가 기본으로 남는지 확인.
 - 사용자 질문(답변만 함, 코드 변경 없음): "FTP /GPL 업로드만 해도 타깃 프로젝트가 바뀌는 이유" — 제어기 쪽 대상은 안 바뀌고(Upload Only 는 1402 명령 0건), 바뀌는 것은 확장의 예상 프로젝트(`projectContext.scheduleExpectedProjectSync` + `deploy.ts` Upload Only 성공 시 `setExpectedProjectContext`). 제안 ① 예상 프로젝트에도 `sessionTargetAfterImplicitUse` 규칙(ProjectStart 없는 라이브러리는 대상으로 삼지 않음, Upload Only 는 실행 가능 앱일 때만 갱신) 적용 ② 표시명을 "마지막 작업 프로젝트" 로. **사용자 결정 대기** — 결정되면 §2 로 옮기거나 구현.
+
+---
+
+## 1-GF. 2026-10-27 세션 — 거대 파일 4건 분해·저장소 루트 정리·조회 성능 (0.19.2)
+
+### 요청·판단
+
+- 사용자: 루트 폴더/파일이 너무 많다 → ①미추적 산출물 삭제 ②묶을 수 있는 것 묶기 ③나머지는 도구 규약이라 그대로(`controller-mcp/` 이동은 참조 33곳이라 보류) ④`.vscode/settings.json` 정리 ⑤"폴더로는 못 고치는 거대 파일"도 위험을 감수하고 분해 + 성능 최적화. 작업 중 "토큰 가성비를 생각하되 일처리는 제대로, 느려도 된다", 하위 에이전트는 Fable 대신 다른 모델로.
+- 진행 방식: 다른 세션(gpl-language-dd)의 0.19.1 미커밋분을 먼저 별도 커밋(57e8f7e)으로 올린 뒤 작업. 거대 파일 4건과 성능·검증은 격리 git worktree(+node_modules junction)에서 Sonnet 에이전트로 병렬 진행 후 순서대로 병합(충돌은 `test/index.ts` 등록 줄과 architecture.md 표뿐). 첫 Fable 에이전트 3개가 세션 한도(429)로 중단됐고 작업물은 Sonnet 이 이어받았다.
+
+### 조치
+
+- **루트 정리(6882714)**: `resources/`·`media/`·`syntaxes/`·`language-configuration.json` → `assets/{icons,webview,syntaxes}`(package.json contributes·extensionUri 경로·테스트·pre-release-check 갱신, `vsce ls` 로 6파일 포함 확인), `requirements-docs.txt`→`docs/requirements.txt`, `REQUESTS.md`→`docs/requests.md`(외부 세션 지침은 새 경로로), mkdocs `site_dir: dist/site`(`--strict` 통과). `.vscode/settings.json` 에 파일 중첩(package.json·README 아래)·`files.exclude`(out·node_modules·.history·.tmp·*.log). 미추적 `.codex-inbox-*.log`·`debug.log`·`.tmp/`·`site/`·`.history/` 삭제. CLAUDE.md/AGENTS.md 저장소 구조 절 갱신.
+- **gplDebugSession.ts 분해(05dba8a)**: TypeScript AST 스크립트로 멤버를 그룹별로 잘라 모듈로 옮기고 `this._x` 참조를 협력자 경유로 치환, vscode 호출은 `DebugSessionIo`/host 콜백으로 주입(`sessionSources`·`variableEvaluator` 는 vscode 없음). 세션은 DAP 요청 처리와 `_pollThreadStates` 정지 상태 머신만 남김. DAP 테스트 2개의 vm 로더는 `debug/` 지역 모듈을 재귀 로드하도록.
+- **deployService.ts(fef20da·12eed30)**: `deployLocked` → `DeployContext` + 단계 모듈 7개(precheck/target/upload∥stop/compile/start/errorCheck), 오케스트레이터 약 70줄. **activation/deploy/deploy.ts(2ecdd37·a5c5a05)**: 허브 70줄 + 모듈 16개(`deployContext`·`deployModes`·`runDeploy`·`deployReport`·`startProjectCommand`·`saveToFlashCommand`·`autoOnSave` 등), 순수 판정 테스트 17건. **controllerTreeProvider.ts(239c3f2)**: `treeSections`(순수 루트/섹션 빌더)·`snapshotMarkdown`·`treeItems`(vscode)·`treeNodes`·`threadRowPresentation`·`systemInfoItems`·`threadPauseTransition`(죽은 코드였던 것을 실제 연결, e9d8628).
+- **성능(df9381b·53519a9)**: 프로파일 결과 호버/정의 조회 시간의 대부분이 후보 심볼마다 `path.resolve/relative` 로 컴파일 단위를 판정하는 `isPathUnder`·`isSameCompileUnit` 이었다 → `normalizePathKey` 메모(상한 5만)·win32 접두 비교(옛 `path.relative` 로직과 대조하는 테스트). 파서 `endsWithLineContinuation` 은 `_` 없는 줄 조기 반환 + `trimEnd`.
+
+### 검증 (실기·UI 없음 — 전부 로컬 재생/테스트)
+
+- `npm test` **1481/1481** (1447 → 테스트 +34: activation/deploy 17, deployStages 2, snapshotMarkdown 3+6 고정, pathKey 3, sessionStepPoll 3).
+- **배포**: `node scripts/dev/deployReplay.js` — 옛 6882714 트리를 `git archive`+tsc 로 빌드해 가상 시계·스크립트 콘솔·가짜 FTP 위에서 old/new 를 자식 프로세스로 돌려 명령/FTP/출력/모달/잠금/타이머/DeployResult 를 순서대로 비교. **151 시나리오 전부 IDENTICAL**(성공·Upload Only·컴파일 에러/재시도/중단·쓰레드 정지 승인/취소·메모리·Stop -752/정지 불능·단계 경계별 취소·잠금/큐). 업로드∥정지 순서를 바꾸면 DIFFERS 가 나오는 것으로 민감도 확인.
+- **트리**: `node scripts/dev/compareTreeProvider.js` — 옛 provider 를 함께 컴파일해 41개 상태 × 트리 항목(label/description/tooltip/icon/contextValue/collapsible/command)·상황/진단 보고서 2,842개 비교, 차이 0(고의 변형 시 2,590건 검출).
+- **세션**: 옮긴 멤버 257개를 AST 로 정규화 diff → 의도한 수정(vscode→콜백, FrameCache 헬퍼, 시그니처 2건) 외 차이 없음. 지연 getter·캐시 무효화 순서·폴 호출 수·정적 상수 18개 대조. `sessionStepPoll.test` 가 attach→Step→Running→Paused 폴→StoppedEvent(step)→Locals 조회 명령 순서를 고정.
+- **성능**: `node scripts/dev/index-performance.js`(16프로젝트·64 .gpl) 정의 찾기 0.079→0.003 ms, 호버 2.77→0.33~0.47 ms, 파서 245~300→115~200 ms, 심볼 digest 동일. 사용자 보고 "인덱싱 9 s" 는 합성 워크스페이스에서 0.3 s 라 재현 안 됨(실제 PC 의 디스크/폴더 순회로 추정, §3).
+- 패키징: `npm run package` → `dist/gpl-language-support-0.19.2.vsix` **1,579,260 bytes**, SHA-256 **06F34E1C72CDBF6B5C82B2652BA4E03586C79EE589458D3D2491F0C7F2FA879E**(332 files, MCP 번들 1008 KB 포함). 경고는 기존 JavaScript 번들링 권고뿐.
+
+### 남은 일
+
+- §3 항목: 실기·UI 확인 4종, 실제 워크스페이스 벤치마크.
+- 남은 큰 파일: `gplDebugSession.ts` 3,056(`_pollThreadStates` 364줄 상태 머신 — 로드맵 Phase 3 명시적 상태 머신과 함께), `runtimeConsole.ts` 1,367(재연결 상태 머신, 미착수), `referenceProvider.ts` 1,187, `responseParser.ts` 1,132, `gplDictionaryData.ts` 3,027(데이터).
+- push·태그·릴리스는 사용자 요청 시(태그 push = Marketplace 자동 게시). 스냅샷 ref `refs/snapshots/pre-restructure-2026-10-27` 는 삭제해도 된다.

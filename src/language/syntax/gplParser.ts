@@ -865,7 +865,12 @@ export class GPLParser {
      * 그 앞이 공백이어야 한다(식별자 끝의 `foo_`를 연속으로 오인하지 않도록).
      */
     static endsWithLineContinuation(rawLine: string): boolean {
-        const code = GPLParser.stripToCode(rawLine).replace(/\s+$/, '');
+        // stripToCode 는 원문 문자만 이어 붙이거나 공백으로 바꾸므로 `_` 가 없는 줄은 연속일 수 없다 —
+        // 대부분의 줄이 여기서 끝나 줄마다 도는 문자열 재구성·정규식을 건너뛴다.
+        if (rawLine.indexOf('_') < 0) {
+            return false;
+        }
+        const code = GPLParser.stripToCode(rawLine).trimEnd();
         if (!code.endsWith('_')) {
             return false;
         }

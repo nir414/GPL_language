@@ -22,6 +22,12 @@ class EventEmitter {
     dispose(){}
 }
 const Uri = { file: (p)=>({ fsPath: p, scheme: 'file', toString(){ return 'file://'+p; } }) };
+// 트리 비교 하니스(compareTreeProvider.js)용 — TreeItem/ThemeIcon 은 비교 가능한 평문 필드만 가진다.
+class ThemeColor { constructor(id){ this.id = id; } }
+class ThemeIcon { constructor(id, color){ this.id = id; this.color = color; } }
+const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
+class TreeItem { constructor(label, collapsibleState){ this.label = label; this.collapsibleState = collapsibleState; } }
+class SourceBreakpoint {}
 const workspace = {
     getConfiguration: () => ({ get: (_k, d) => d }),
     workspaceFolders: undefined,
@@ -35,7 +41,8 @@ const window = { activeTextEditor: undefined, createOutputChannel: () => ({ appe
 module.exports = {
     Position, Range, Hover, MarkdownString, SnippetString, CompletionItem, CompletionItemKind,
     EventEmitter, Uri, workspace, window,
-    debug: { activeDebugSession: undefined },
+    ThemeColor, ThemeIcon, TreeItemCollapsibleState, TreeItem, SourceBreakpoint,
+    debug: { activeDebugSession: undefined, breakpoints: [] },
     languages: {}, commands: {},
     DiagnosticSeverity: {Error:0,Warning:1,Information:2,Hint:3},
     SymbolKind: new Proxy({}, { get:(t,p)=>p }), Location: class {}, DocumentSymbol: class {},

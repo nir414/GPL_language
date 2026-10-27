@@ -85,6 +85,27 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 - 이 규칙의 목적: **다음 작업자(사람이든 AI든)가 이 파일 → ai-handoff.md 순서로만 읽어도
   전체 맥락과 다음 할 일을 파악할 수 있게 하는 것.**
 
+## 구조 설계 방향 (저장소가 계속 커진다는 전제의 규칙 — 정본은 `docs/development/architecture.md` §2.4)
+
+기능을 먼저 만들지 말고 **책임의 위치부터 정한다**(사용자 방침 2026-09-18: 책임 분리·SSOT·Semantic API·UI/자동화 분리·
+관측 기준 판단·중복 금지·Operation 단위·예외보다 구조 확장). 그 위에 파일 배치 규칙 6개:
+
+1. **두 단계 폴더** — `src/<계층>/<area>/<파일>`. 새 파일은 반드시 기존 area 안에 두고, 새 area 가 필요하면
+   `architecture.test.ts` 의 `LAYER_AREAS` 와 architecture.md §2.1 표를 같은 커밋에서 고친다. 저장소 루트에는 도구
+   규약(npm·tsc·git·vsce·MkDocs·AI 도구)이 요구하는 파일만 둔다 — 새 폴더는 `assets/`·`docs/`·`scripts/` 안에.
+2. **크기 상한은 분해 신호** — 파일 1,000줄 또는 함수/메서드 150줄을 넘기면 architecture.md §7 부채 표에 올리고,
+   다음 작업에서 "협력자 모듈 + 좁은 io 인터페이스" 패턴(`debug/session/sessionIo.ts` 사례)이나 "단계 모듈 + 컨텍스트
+   객체"(`controller/deployment/deployContext.ts` 사례)로 나눈다. 분해는 기능 추가와 섞지 않는다(별도 커밋).
+3. **순수 먼저, 접착은 얇게** — 판단·변환·포맷은 vscode·소켓 없는 순수 모듈 + 단위 테스트로 만들고, vscode 는
+   허용 목록 모듈(R1)에서만 부른다. 새 기능의 첫 커밋은 순수 모듈과 테스트, 둘째가 UI/MCP 배선이다.
+4. **옮기고 나누는 변경은 동작 불변을 증명한다** — 분할 전 코드와 새 코드를 같은 입력으로 돌려 비교하는 재생 하네스
+   (`scripts/dev/deployReplay.js`·`compareTreeProvider.js`)나 출력 고정 테스트를 먼저 만들고, 차이 0 을 확인한 뒤 커밋한다.
+   하네스는 지우지 말고 `scripts/dev/` 에 남긴다.
+5. **상태는 명시적으로** — 플래그 여러 개의 조합으로 상태를 추론하지 말고, 상태 타입 + 전이 함수(순수, 테스트 가능)로 쓴다.
+   남아 있는 암묵 상태 머신(`_pollThreadStates`·`runtimeConsole` 재연결)이 다음 분해 대상이다.
+6. **문서와 테스트가 규칙의 정본** — 구조 규칙은 architecture.md 에 쓰고 architecture.test 가 강제한다. 규칙을 바꾸면
+   테스트·문서·CLAUDE.md 요약을 같은 커밋에서 맞춘다. 구두 합의만 있는 규칙은 없는 규칙이다.
+
 ## 저장소 구조 (요약)
 
 - `src/` — 확장 소스. 계층(util → language → project → controller → debug/views → providers/activation)과

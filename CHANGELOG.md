@@ -2,6 +2,18 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.23.0] - 2026-10-27
+
+### Added
+
+- 패키지(.gpr) 의존 검사: 각 `.gpr`의 `ProjectLibrary`·`ProjectSource` 선언을 소스가 실제로 쓰는 파일(정의 이동과 같은 이름 해석)과 대조합니다. 이 패키지만으로는 이름을 못 찾는 누락은 Warning, 다른 라이브러리를 거쳐서만 들어오는 간접 의존과 쓰지 않는 라이브러리는 Information으로 `.gpr` 해당 줄에 표시하고, 빠른 수정으로 `ProjectLibrary`/`ProjectSource` 줄을 더하거나 지웁니다(「이 .gpr 의 의존 문제 모두 고치기」 포함). 리프 패키지의 루트 기준 경로(`Lib\Core\Text`)·그룹 `.gpr`·하위 패키지 소스를 평탄하게 나열한 루트 `.gpr`를 모두 다룹니다.
+- 루트 `Project.gpr` 주석 `' Dependencies: App -> Config/Gantry/Lib; Gantry -> Lib.`를 계층 규칙으로 읽어, 규칙을 어긴 참조를 `.gpl` 사용 위치에 Warning으로 표시합니다.
+- 명령 `GPL: Check Project Dependencies`(`.gpr` 우클릭)와 설정 `gpl.project.dependencyCheck`(`auto` 기본 — `.gpr`를 열면 검사하고 저장하면 다시 검사, `manual`).
+
+### Fixed
+
+- Requires 헤더 계산이 선언 머리 줄의 매개변수 이름을 참조로 세던 오탐을 고쳤습니다(`Delegate Sub X(ByVal code As Integer)`의 `code`가 다른 모듈의 `Code` 함수로 잡혔습니다).
+
 ## [0.22.0] - 2026-10-27
 
 ### Changed

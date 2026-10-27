@@ -101,7 +101,7 @@ flowchart BT
 | 하위 폴더 | 책임 |
 | --- | --- |
 | `sources/` | 프로젝트 소스 목록(`projectSources`)·컴파일 단위(`compileUnit`·`compileUnitTarget`)·컴파일 순서(`sourceOrder` — Requires 정렬)·워크스페이스 검색 래퍼(`projectFileScope`) |
-| `gpr/` | Project.gpr ↔ 폴더 동기화(`gprSync`·`gprFolderSync`)·소스 승격(`sourcePromotion`·`promoteSourceCommand`) |
+| `gpr/` | Project.gpr ↔ 폴더 동기화(`gprSync`·`gprFolderSync`)·소스 승격(`sourcePromotion`·`promoteSourceCommand`)·패키지 의존 검사(`dependencyCheck` 순수 판정 — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용·계층 규칙, `dependencyModel` 컴파일 루트·.gpr 해석) |
 | `remote/` | 제어기 사본과 로컬의 대응 — 다운로드 작업공간 메타(`controllerProjectWorkspace`)·Attach 대상(`controllerProjectDebug`)·원격 사본 매핑(`remoteSourceMapping`)·`Set Break` 파일 identity(`breakpointTarget`) |
 | `symbols/` | 컴파일 단위 기반 심볼 범위(`symbolProjectScope`) |
 

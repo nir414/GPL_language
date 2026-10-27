@@ -67,6 +67,8 @@ GPL 컴파일은 제어기에서 수행하며, 상태 조회 항목은 제어기
 프로젝트 폴더의 파일에 맞춰 `Project.gpr`의 소스 목록을 정리하려면 `.gpr` 파일을 우클릭한 뒤
 `GPL: Sync Project Sources`를 실행합니다. 파일을 추가하거나 이름을 바꾸거나 삭제했을 때도 목록에 반영할지 확인할 수 있습니다.
 
+`.gpr`를 열면(또는 우클릭 → `GPL: Check Project Dependencies`) 패키지마다 `ProjectLibrary`·`ProjectSource` 선언을 소스가 실제로 쓰는 파일과 대조합니다. 빠진 라이브러리·목록 누락은 Warning, 다른 라이브러리를 거쳐서만 들어오는 의존과 쓰지 않는 라이브러리는 Information으로 `.gpr`에 표시되고, Quick Fix로 줄을 더하거나 지울 수 있습니다. 루트 `Project.gpr` 주석에 `' Dependencies: App -> Config/Gantry/Lib; Gantry -> Lib.`처럼 계층 규칙을 적어 두면 규칙을 어긴 참조를 사용 위치에 표시합니다.
+
 소스만 올릴지, 컴파일하거나 실행할지에 따라 아래 명령을 선택해 주세요.
 
 | 명령                    | 동작                                                                                                  |

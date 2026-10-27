@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.22.0** (제어기 대시보드 — 디지털 I/O 그룹 칩·더블클릭 강제 토글·우클릭 해제, 밀도·주기 옵션 개선, 1556/1556. 상세는 §1-GJ.)
-- **직전 세션: §1-GJ** — "대시보드가 불편하다·2만번대 IO 가 안 보이고 8천번대가 많다": 문서 신호 번호 체계로 Local I/O(Digital·Soft Internal·Dedicated 제어기/축)·Remote I/O(RIO n·Network Node n) 분류(`controller/io/dioGroups.ts`), 8000/18000번대 = dedicated I/O 임을 확인, 인자 없는 `Show DIO` 가 Soft(20001~) 를 안 내줘 따로 조회(64개 한 줄은 -506), Set DIO 확인 모달 제거(사용자 요청), 더블클릭 토글·우클릭 해제·전체 해제, 고정 헤더·카드 접기·주기 0.5~60 s+직접 입력·진단 주기. 0.22.0.
+- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.23.0** (패키지 의존 검사 — ProjectLibrary·계층 규칙, 1560/1560. 상세는 §1-GK.)
+- **직전 세션: §1-GK** — "다른 언어는 라이브러리 참조를 어떻게 다루나" 검토 결과(import 선언 + `go mod tidy`/depcheck/ArchUnit 류 대조 도구, 역방향은 저장 안 함)에 맞춰, GPL 의 유일한 의존 선언인 `.gpr` 의 ProjectLibrary·ProjectSource 를 실제 사용과 대조하는 검사를 추가(`project/gpr/dependencyCheck`·`dependencyModel`, 명령 `gpl.project.checkDependencies`, 설정 `gpl.project.dependencyCheck`). 루트 주석 `' Dependencies:` 를 계층 규칙으로 읽는다. BinderR4 드라이런에서 오탐 2건(Delegate 매개변수) 발견·수정 → 미사용 5·간접 5만 남음. UI 확인은 §3.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-10-27, §1-GK) 패키지 의존 검사 — VSIX·UI 확인(편집기만, 모션 무영향).** BinderR4 의 `Gantry\Station\Project.gpr` 를 열면(인덱싱 뒤 약 1 s) ① Problems 에 `GPL Dependencies` 진단 — Station 의 `ProjectLibrary "Lib\Core\Foundation"`·`"Lib\Core\Text"` 줄에 미사용 Information, `Lib\Device\CantopsIOCmd\Project.gpr` 에 간접 의존 3건, `Lib\Motion\Cmd` 에 간접 1건(드라이런 결과와 같은지) ② Quick Fix 「… 줄 지우기」/「ProjectLibrary=… 추가」와 「이 .gpr 의 의존 문제 모두 고치기」가 뜨고 적용·저장하면 1.5 s 뒤 재검사로 사라지는지 ③ `.gpr` 우클릭 「Check Project Dependencies」 → 요약 알림·Output `[Dependencies]` 목록 ④ App 파일에서 `Lib` 쪽이 App 을 참조하게 임시로 고치면 계층 위반 Warning 이 그 줄에 뜨는지(되돌릴 것) ⑤ `gpl.project.dependencyCheck: manual` 이면 열어도 검사하지 않는지. 미결: 미사용 판정은 "직접 쓰지 않음"이라 라이브러리가 자기 의존을 선언하지 않고 이 패키지에 기대는 경우도 미사용으로 보인다 — 지우기 전에 사람이 확인.
 - [ ] **(2026-10-27, §1-GJ) 0.22.0 대시보드 I/O — 실기 확인(Set DIO 는 실제 신호를 바꾼다: 장비 정지 상태·무해한 신호로).** ① I/O 탭에서 Local I/O(Digital 13~20/10001~10012 · Soft 20001~20064 · Dedicated 제어기 8081~/18001~ · 축 1~6)·Remote I/O 「미검출」이 실기 응답대로 나오는지. ② Soft 신호(예: 20064) 더블클릭 → 강제 ON(`Set DIO 20064 1`)·모서리 표시·탭 숫자, 우클릭 「강제 해제」 → 표시 사라짐, 「모든 강제 해제」가 강제된 것만 `Set DIO n 0` 으로 보내는지(GPL Traffic). ③ 폴링 1 회가 `Show DIO` + Soft 3 줄(160자 분할) 로 끝나고 STATUS 0 인지, 0.5 s 주기에서도 1402 큐가 밀리지 않는지. ④ 우클릭 메뉴가 VS Code 기본 메뉴 대신 뜨고 Shift+F10·Esc 로 열고 닫히는지, 패널 크기 변경·스크롤에서 닫히는지. ⑤ RIO·서보 네트워크가 있는 장비에서 그룹이 RIO n·Network Node n 으로 잡히는지(문서상 node n 일반 I/O 는 +100000·n, 13~20/10001~10012).
 - [ ] **(2026-10-27, §1-GI) 0.21.0 연결 판정 — 실기·UI 확인(읽기 경로·모션 무영향).** ① 연결 중 제어기 LAN 케이블을 뽑거나 전원을 내리면 상태바가 **첫 이상 신호부터** `$(sync~spin) … 응답 확인 중 (실패 n/3)`(경고색)으로 바뀌고 툴팁에 계기·마지막 실패가 보이는지, 클릭하면 바로 해제되는지, 복구되면 정상 표시로 돌아오는지. ② Unload 무응답 뒤 `$(watch) … 복구 대기 n/180 s` 가 1 s 마다 갱신되는지. ③ 다음 유실 때 Output 에 `[Health] 확장 호스트 이벤트 루프 정지 …` 줄과 유실 알림의 「판정이 늦어진 N s 는 … 확장 호스트가 멈춰 있던 시간」, 사후 스냅샷 「확장 호스트 이벤트 루프 정지」 절이 채워지는지 — 채워지면 그 시각의 `%APPDATA%\Code\logs\…\renderer.log` 에서 범인 확장 프로파일을 찾는다. ④ GPL Traffic 에 `CONNECT TIMEOUT (3000ms, no handshake)` 가 정상 운용(부팅 직후 포함) 중에 뜨지 않는지 — 뜨면 `gpl.controller.connectTimeoutMs` 를 올린다.
 - [ ] **(2026-10-27, §1-GG) Requires 헤더 — VSIX·UI 확인(편집기만, 모션 무영향).** BinderR4 를 연 상태에서 ① 인덱싱이 끝난 뒤 `App\Control\Machine.gpl` 의 `'Requires:` 줄에 Information 진단(「추가 2 … · 메모 1줄 → 'Notes:」)과 Quick Fix 「Requires 헤더 갱신」이 뜨는지, 적용하면 MotionSystem.gpl 두 줄이 한 줄로 합쳐지고 Deck 설명이 `'Notes:` 로 가며 `'Used by:` 는 그대로인지, Ctrl+Z 로 한 번에 되돌아가는지 ② `GPL: Update Requires Headers in Project` → Refactor Preview 에 헤더 있는 파일(83개 중 변경분)이 파일별 라벨로 뜨고, 일부만 체크해 적용되는지 ③ `gpl.requiresHeader.mode: onSave` 에서 저장 시 바로 고쳐지는지, 블록 없는 파일은 그대로인지 ④ 인덱싱 중(활성화 직후)에는 진단이 안 뜨는지 ⑤ 큰 파일(LeadshineRS.gpl)에서 타이핑 지연이 체감되는지(드라이런 첫 계산 수백 ms 는 컴파일 단위 캐시 예열, 이후 파일당 수십 ms). 미해결: 문자열로 부르는 프로시저(`AddSync("Name")` 류)·수신자 타입을 모르는 멤버 호출은 목록에 안 들어감(누락 쪽 — 확인 필요하면 SYMBOL_STRING_CONSUMERS 연동 검토).
@@ -1097,7 +1098,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-FX | 10-23 | **FTP 새로고침 경합** — 일반 조회 뒤 새 요청 직렬화·종료 경계, .gpo 설명 정정. 0.17.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GA | 10-26 | **디버그 스텝 체감 지연 재발** — 어댑터 큐를 control/data 차선으로(재개 시 미전송 조회 폐기), pending 백업 폴, 재개 타이밍 한 줄 로그. 0.18.2 | 본문 ↓ |
+| §1-GA | 10-26 | **디버그 스텝 체감 지연 재발** — 어댑터 큐를 control/data 차선으로(재개 시 미전송 조회 폐기), pending 백업 폴, 재개 타이밍 한 줄 로그. 0.18.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | 본문 ↓ |
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | 본문 ↓ |
@@ -1107,45 +1108,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | 본문 ↓ |
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | 본문 ↓ |
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | 본문 ↓ |
+| §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GA ~ §1-GJ (2026-10-26~27).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GB ~ §1-GK (2026-10-26~27).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GA. 2026-10-26 세션 — 디버그 스텝 체감 지연 재발: 명령 차선 큐·pending 백업 폴·타이밍 로그
-
-### 증상·비교
-
-사용자: "제어기 정보 갱신·처리가 많이 느려졌고, 특히 디버깅에서 다음 줄로 넘기는 데 한참 걸린다. 예전에 개선한 적이 있으니 그때 자료와 비교해 달라." 과거 기록은 §1-D(07-03, fast poll 30/120/250/500/1000·1403 트리거 force·Show Thread 캐시, 체감 ~600-750 → ~100-250 ms), §1-L(07-13, 적응형 인터벌 폴·프레임 프리페치), §1-X(07-22, Globals 메모). 그 세 가지는 현재 소스에 그대로 남아 있다(FAST_POLL_DELAYS_MS·THREAD_LIST_CACHE_TTL 300·FRAME_CACHE_TTL 1500 동일). 사용자 설치본은 `code --list-extensions` 와 MCP `extension_status` 모두 **0.13.2**(dist 최신은 0.18.1).
-
-코드 대조로 확인한 "그 뒤 달라진 것" 둘:
-
-1. **어댑터 명령 큐가 단일 FIFO(`_commandQueue`)** — 정지할 때마다 VS Code 가 Locals(지역 변수 수만큼 `Show Variable -eval`)·Watch(Smart 사다리 최대 3~4 왕복)·펼쳐 둔 Globals(MergeCode 42개)를 전부 다시 조회한다. 그 조회가 끝나기 전에 누른 Step/Continue 와 그 뒤 정지 감지 `Show Thread -web` 이 남은 조회 사이에 끼어 1 왕복(RTT+15 ms 큐 gap)씩 밀렸다. 사후 스냅샷의 실측 RTT 는 p50 4 ms·p99 101 ms 지만 Sample Prep 의 `Show Thread -web` 은 14줄·~100 ms 라 변수 30개면 1 s 안팎, Globals 를 펼쳤으면 수 초가 Step 앞에 줄을 선다. `variablesRequest`/`evaluateRequest` 는 pending 중 **시작**만 막았고 이미 도는 루프는 계속 조회했다.
-2. **GitHub #22(08-26) 이후 1403 이 "alive" 면 Running 백업 폴이 사용자 간격(기본 5 s)** — fast poll 체인(~1.9 s)이 끝나도 정지를 못 봤으면 그 다음 관측이 최대 5 s 뒤다. alive 판정은 60 s 안 페이로드만 보므로 디버그 중엔 거의 항상 alive. 1403 `<E>N,N</E>` 이벤트가 스텝 완료를 실제로 알려 주는지는 §1-L 남은 일 그대로 미확정 — Move 처럼 2 s 넘게 걸리는 한 줄을 Step 하면 "다음 줄이 한참 뒤에" 가 된다. 사후 스냅샷에는 `policy:`·stale 재시도·idle ping 지연 흔적은 없었다(명령 정책 R1·R2 는 실제 개입 0건).
-
-그 외 전 명령에 더해진 비용(`guardBeforeSend`·정책 분류·설정 읽기)은 µs~ms 단위라 원인으로 보지 않았다. Compile/Start 앞의 `Show Memory`(실측 563 ms)는 배포 체감에만 해당한다.
-
-### 조치 (모두 읽기 경로·명령 순서 변경 — 모션 무영향)
-
-- `src/debug/session/commandLanes.ts`(신설, 순수) `LaneQueue`: control(Step/Continue/Break·정지 감지 폴·Show Stack·BP 명령 — `_sendCmd` 기본)이 data(변수·Watch·전역·배열 요소 조회 — `_sendCmd(cmd, 'data')`)보다 항상 먼저 나간다. data 작업은 등록 세대를 기억해 `invalidateData()`(= `_clearStaleState`, 모든 재개 경로) 뒤 **보내지 않고 null** 로 끝난다. 실행 중 작업은 끊지 않는다. 실패 뒤 100 ms 휴지는 종전과 같다.
-- Locals·Globals 루프와 `_queryVariableStructuredSmart` 사다리는 `_frameCacheGen`(정지 컨텍스트 세대)·`_pendingAction` 을 보고 재개되면 남은 조회를 중단한다 — data 차선은 "이미 등록된" 조회만 걸러 주고 루프가 새로 등록하는 조회는 새 세대라 실제로 나가기 때문.
-- `src/debug/execution/pollSchedule.ts`(신설, 순수) `pendingPollDelayMs`: fast 체인이 끝나도 pending 이면 step/pause/entry 는 정지 확인까지, continue 는 20 s(`DEFAULT_CONTINUE_FAST_WINDOW_MS`) 동안 `gpl.debug.runningBackupPollMs`(기본 1 s) 간격으로 계속 본다. 그 뒤는 종전 인터벌 정책. 1403 트리거는 그대로 주 신호. Debug Console 에 `정지 확인 대기: step 가 1900ms 째 미확인 → 1000ms 간격 백업 폴` 1회.
-- 타이밍 로그: 재개 액션마다 `_resumeTiming` 을 열고(`_noteResumeSent`: 큐 대기·명령 왕복·완료 시각), 정지를 확인한 `_pollThreadStates` 의 finally 가 `⏱ Step over 총 92ms — 명령 14ms(큐 대기 3ms) · 정지 감지 +75ms(1403 트리거, 폴 2회)` 한 줄을 남긴다(`formatResumeTiming`). 폴 출처(`fast`/`pending`/`1403`/`interval`/`retry`/`trigger`)를 `_pollThreadStates(force, source)` 로 넘긴다. 다음에 느리면 이 줄이 어느 구간인지 말해 준다 — §1-D 때 분해를 추정으로 했던 것의 교훈.
-- 설정 추가 없음(기존 `runningBackupPollMs` 재사용). 버전은 안정화라 patch **0.18.2**.
-
-### 검증
-
-- `npm test` **1433/1433**(신규 `commandLanes.test.ts` 6건: 차선 우선순위·세대 폐기·실행 중 작업 보존·cooldown·대기 통계·재펌프, `pollSchedule.test.ts` 4건). CRLF 유지 확인(`git ls-files --eol`).
-- `npm run package`: `dist/gpl-language-support-0.18.2.vsix` **1,488,414 bytes**, SHA-256 **CE4775F1A141ACCE7AD4A5B388398D4CBED8E5077038DEB8936C2DCD43FFB739**. 경고는 기존 JavaScript 번들링 권고(285 파일 중 221 JS)뿐, 실패 없음.
-- 실기 미확인 — 사용자 제어기는 연결돼 있었지만(Sample Prep 창, 디버그 세션 없음) Step/Continue 는 모션을 유발할 수 있어 보내지 않았다. §3 항목 ①~④ 로 남겼다.
-
-### 남은 일
-
-- 사용자가 0.18.2 를 설치한 뒤 §3 (§1-GA) 항목으로 체감·타이밍 줄 확인. 「정지 감지」 출처가 대부분 `fast poll`/`대기 백업 폴` 이면 1403 이 스텝 완료를 알리지 않는 것이므로 fast 체인 간격 재조정 검토.
-- 변수 조회 자체의 왕복 수(Locals N 회·Globals 42 회)는 그대로다 — 한 번에 프레임 전체를 덤프하는 콘솔 형식이 있는지(GDE 캡처 `captures/gde_1402.pcapng` 의 Locals 패널 트래픽) 확인하면 다음 단계.
-- 1402 명령 간 gap 15 ms 는 keep-alive 재사용 소켓에서도 유지 중 — 실기 ECONNRESET 재현 없이 줄이지 않는다.
 
 ## 1-GB. 2026-10-26 세션 — 수신함 2건: 메모리 사전 검사는 경고만 · 원격 사본의 정의 찾기에 로컬 프로젝트 매핑
 
@@ -1439,3 +1408,33 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 ### 남은 일
 
 - §3 「0.22.0 대시보드 I/O」 실기 확인. Robot Z I/O 번호 체계를 실기(그리퍼 장착 로봇)로 확인하면 그룹 추가 검토.
+
+## 1-GK. 2026-10-27 세션 — 패키지(.gpr) 의존 검사: ProjectLibrary·ProjectSource 대조와 계층 규칙 (0.23.0)
+
+### 증상(요청)
+
+"다른 언어들은 라이브러리 참조를 어떻게 처리하지? 지금 구조가 맞는 방향인지 모르겠다" → 비교 결과를 바탕으로 BinderR4 `Project.gpr` 를 참고해 권장 방향을 개선하고 구현·테스트해 달라. **ProjectLibrary 처리도 되어야 한다.**
+
+### 원인(검토 결론)
+
+- 다른 언어는 의존을 소스의 import 로 **선언**하고 도구가 실제 사용과 대조한다(Organize Imports·IWYU = 파일 단위, `go mod tidy`·depcheck·Bazel strict deps = 패키지 단위, ArchUnit·dependency-cruiser = 계층 규칙). 역방향(누가 쓰나)은 저장하지 않고 필요할 때 계산한다.
+- GPL 에는 import 문이 없고(`gplStatements.ts`) 의존 선언은 `.gpr` 뿐이다. §1-GG 의 Requires 헤더는 IWYU 와 같은 **기록**이고, 강제력 있는 선언(리프 `.gpr` 의 ProjectLibrary)을 검사하는 것이 빠져 있었다.
+- BinderR4 구조: 루트 `Project.gpr`(ProjectStart, 하위 패키지 소스를 평탄하게 나열, 주석에 `' Dependencies: App -> Config/Gantry/Lib; Config -> Gantry/Lib; Gantry -> Lib.`) + 리프 패키지 `.gpr`(자기 소스 + **루트 기준 경로** ProjectLibrary) + 그룹 `.gpr`(ProjectLibrary 만).
+
+### 조치(의도와 방법)
+
+- **`project/gpr/dependencyCheck.ts`(순수)** — 패키지(.gpr) 마다 소스의 의존 파일을 소유 패키지(그 파일을 ProjectSource 로 나열한 가장 깊은 .gpr)로 묶어 대조: `library-missing`(Warning — 자기 소스에도 ProjectLibrary 를 따라간 어디에도 없음), `source-missing`(Warning — 소유 패키지가 없거나 자기를 품은 루트 쪽 파일, 또는 평탄한 루트의 목록 누락; 쓰는 소스 앞에 넣는 수정), `library-indirect`(Information — 다른 라이브러리를 거쳐서만 들어옴, strict deps), `library-unused`(Information), `library-unresolved`(Warning). 그룹 참조는 그 아래 패키지를 직접 제공한 것으로 본다. 새 ProjectLibrary 값은 같은 .gpr 의 기존 참조가 쓰는 기준 폴더를 따른다(BinderR4 리프 → 루트 기준 `Lib\Core\Text`). 계층 규칙은 루트 주석 `' Dependencies:` 를 파싱(`parseLayerRules`) — 그룹 = 루트 바로 아래 폴더, 규칙에 나오는 그룹은 자기 + 오른쪽만, 왼쪽에 없는 그룹(Lib)은 다른 그룹 참조 불가, 규칙에 없는 폴더는 검사 안 함.
+- **`project/gpr/dependencyModel.ts`** — 컴파일 루트(위쪽 .gpr 중 ProjectStart 가 있는 가장 가까운 것 → 그 파일을 나열한 가장 바깥 것 → 가장 가까운 것), 루트 아래 .gpr + 그 ProjectLibrary 가 가리키는 루트 밖 패키지를 `buildLibraryGraph` 로 해석(해석 규칙 정본 그대로).
+- **`activation/language/dependencyCheckCommands.ts`** — 명령 `gpl.project.checkDependencies`(.gpr 우클릭), 설정 `gpl.project.dependencyCheck`(`auto` 기본: .gpr 를 열면 그 루트를 1회, 검사한 루트 안 .gpl/.gpr 저장 시 1.5 s 디바운스 재검사 — 파일 의존은 본문이 같으면 캐시), 진단 컬렉션 `gpl-dependencies`(source `GPL Dependencies`), .gpr 빠른 수정(줄 추가/삭제, 「모두 고치기」). 후보 심볼은 **루트의 컴파일 범위**로 좁힌다 — 다른 과제에 복제된 Lib 사본을 의존으로 세지 않게.
+- **`moduleDependencies`** — 의존마다 첫 사용 위치(`firstUse`, 계층 위반 진단 자리), 선언 머리 줄의 매개변수 이름을 참조에서 제외(`parameterNameColumns`). 원인: Delegate 는 본문이 없어 매개변수가 로컬로 잡히지 않아 `Delegate Sub X(ByVal code As Integer)` 의 `code` 가 `HFM.Code` 로 풀렸다 — 드라이런의 library-missing 2건·계층 위반 2건이 모두 이 오탐이었다.
+
+### 검증
+
+- `npm test` **1560/1560**(신규 dependencyCheck 4건 — BinderR4 축소 구조 임시 폴더: 루트 찾기·루트 기준 경로 해석, 누락/간접/미사용/미해석/목록 누락과 수정 줄 위치, 계층 위반 위치와 Delegate 매개변수 오탐 방지, 규칙 줄 파싱). 구조 테스트 R1~R9 통과.
+- **BinderR4 읽기 전용 드라이런**(scratchpad, 쓰기 없음): 패키지 45 · 파일 85 · 규칙 `app->config/gantry/lib; config->gantry/lib; gantry->lib`. 수정 후 결과 — library-unused 5(Gantry\Station 의 Foundation·Text, Gantry\StationCmd 의 Robot\Cmd, PressureSensorCmd 의 Text·Log; 소스에서 해당 모듈 한정자 사용 없음 확인), library-indirect 5(CantopsIO→Concurrency, CantopsIOCmd→Text·Log·Foundation, Motion\Cmd→LeadshineRS), 누락·계층 위반 0. 37 Oligo MergeCode(단일 패키지 63파일) 0건.
+- 다른 세션과 동시 작업: 0.21.0(연결 판정)·0.22.0(대시보드) 뒤에 0.23.0. 커밋은 hunk 단위로 내 변경만.
+
+### 남은 일
+
+- §3 의 VSIX·UI 확인. 미사용 판정은 "이 패키지가 직접 쓰지 않음"이라, 라이브러리가 자기 의존 선언을 빠뜨리고 이 패키지에 기대는 경우도 미사용으로 보인다(지우기 전 확인 — 그 라이브러리 쪽에 library-missing 이 같이 뜨면 그쪽을 고친다).
+- 선택: Requires 헤더 상세 수준 설정(`symbols`/`modules`)으로 diff 소음 줄이기, Used by 를 CodeLens 로 계산 표시.

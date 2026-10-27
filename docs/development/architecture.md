@@ -145,7 +145,7 @@ flowchart BT
 | 하위 폴더 | 책임 |
 | --- | --- |
 | `statusbar/` | 연결 상태바·업로드 진행 바·Flash 안전 표현·컴파일 검증 필요 배지(`compileStaleBadge`, 트리와 공유) |
-| `tree/` | 제어기 트리(`controllerTreeProvider`)·표시 포맷·1403 트리 행 표현·재조회 억제 |
+| `tree/` | 제어기 트리: `controllerTreeProvider`(오케스트레이터) + 순수 모듈 `treeSnapshot`(상태 평문)·`treeSections`(섹션/루트 빌더)·`snapshotMarkdown`(상황/진단 보고서)·`systemInfoItems`·`threadRowPresentation`·`threadPauseTransition`·`treeNodes`·`treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`(vscode 사용은 provider·`treeItems`뿐) |
 | `dashboard/` | 실시간 상태 대시보드 Webview |
 
 **`activation/`** (`host.ts` 는 루트 — 모든 그룹이 공유하는 허브)
@@ -413,7 +413,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | `debug/session/gplDebugSession.ts` | 약 5,460줄, 클래스 1개 | DAP + 제어기 동작이 한 클래스 — 분해는 실기기 검증 필요(로드맵 P8) |
 | `controller/deployment/deployService.ts` `deployLocked` | 1,100줄 함수 | 배포 파이프라인 단계 분리는 하드웨어 영향(로드맵 P9) |
 | `controller/runtime/runtimeConsole.ts` | 약 1,368줄 | 재연결 상태 머신 → 명시적 상태 머신(로드맵 Phase 3) |
-| `views/tree/controllerTreeProvider.ts` | 약 1,605줄 | 포맷 함수는 분리됨. 섹션별 노드 생성 분리는 후보 |
+| `views/tree/controllerTreeProvider.ts` | 약 680줄 | 2026-10-27 분리 완료(섹션·보고서·노드·표시 모듈) |
 | `activation/deploy/deploy.ts` | 약 1,344줄 | 결과 보고부 분리됨. 자동화 게이트·명령 6개가 남아 있다 |
 | 1403 상태 문구 두 표현 | `controller/runtime/runtimeConsolePresentation`(알림, 영문) vs `views/tree/runtimeConsoleTreePresentation`(트리, 한국어) | 폴링 판정 정규식이 다르다 — 실기기 문구 대조 후 통일 결정 |
 | provider 별 수신자 해석 사본 | definition·hover·완성·디버그 hover | **정리됨(2026-09-10)** — 해석은 `language/analysis/receiverType`, 조립은 `providers/intellisense/receiverContext` 하나로. R7 이 재발을 막는다 |

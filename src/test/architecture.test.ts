@@ -60,7 +60,7 @@ const VSCODE_ALLOWED_MODULES: ReadonlySet<string> = new Set([
     // project — 워크스페이스 검색·명령 래퍼
     'project/sources/projectFileScope', 'project/gpr/promoteSourceCommand',
     // views
-    'views/statusbar/connectionStatusBar', 'views/dashboard/controllerDashboardPanel', 'views/tree/controllerTreeProvider',
+    'views/statusbar/connectionStatusBar', 'views/dashboard/controllerDashboardPanel', 'views/tree/controllerTreeProvider', 'views/tree/treeItems',
     // 단일 파일 계층
     'ai/exportAgentSetup', 'log/liveLogTerminal',
 ]);

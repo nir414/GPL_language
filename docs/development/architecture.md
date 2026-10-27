@@ -120,7 +120,7 @@ flowchart BT
 | `debugging/` | 제어기 중단점 명령·에디터 동기화·디버그 이벤트·실행 표시 |
 | `automation/` | Agent Bridge·AI 정책·복구 안내·작업 기록·URI 전달·AI 에이전트 설정 내보내기/점검(`exportAgentSetup`·`agentSetupChecks`) |
 | `diagnostics/` | 제어기 상태·메모리 검사·자원 프로브·에러 보고·최근 사건 |
-| `io/` | 디지털 I/O 파싱·명령 |
+| `io/` | 디지털 I/O 파싱·명령·신호 번호 분류(`dioGroups` — Local/Remote 그룹, Soft 조회 분할) |
 
 **`debug/`**
 

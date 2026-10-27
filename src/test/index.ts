@@ -11,6 +11,7 @@ import './controller/protocol/threadParser.test';
 import './controller/protocol/errorLogParser.test';
 import './controller/protocol/runtimeConsoleLine.test';
 import './controller/io/dio.test';
+import './controller/io/dioGroups.test';
 import './controller/protocol/controllerStatusCodes.test';
 import './language/dictionary/gplDictionaryData.test';
 import './language/syntax/gplParserDocComment.test';

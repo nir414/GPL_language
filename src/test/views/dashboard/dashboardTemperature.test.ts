@@ -22,7 +22,7 @@ function setup() {
 		return elements.get(id);
 	}
 	const context = vm.createContext({
-		document: { getElementById: element, querySelectorAll: () => [], createElement: () => element('new') },
+		document: { getElementById: element, querySelectorAll: () => [], createElement: () => element('new'), addEventListener() {} },
 		window: { addEventListener() {} }, acquireVsCodeApi: () => ({ postMessage() {} }),
 	});
 	vm.runInContext(script, context, { filename: 'dashboard.html' });

@@ -4,12 +4,15 @@
  * 사이드바 TreeView 대신, 편집기 영역(ViewColumn.Beside)에 코드와 나란히 띄우는
  * "한눈에 보는" 상태 화면. 제어기 웹 Operator 화면(master/jog)을 참고해 기능 중심으로
  * 구성: 상태 배지(연결·고전원·스레드·에러) · 스레드 표 · 축 게이지 · 직교 좌표/XY 플롯 · 로그 (GitHub #18),
- * I/O 탭(Show DIO 상태 그리드 + 확인 후 Set DIO 강제/해제).
+ * I/O 탭(Show DIO 를 웹 Operator 처럼 Local I/O · Remote I/O 그룹으로 묶은 칩 그리드 — 더블클릭 강제 토글,
+ * 우클릭 메뉴로 강제 해제·그룹/전체 해제. Set DIO 는 확인 모달 없이 바로 보낸다 — 2026-10-27 사용자 요청).
  *
  * HTML은 assets/webview/dashboard.html에서 로드하며, 데이터는 postMessage로 주입한다.
  * 웹뷰 → 확장 메시지: `ready`/`refresh`(즉시 1회 폴링), `setInterval {ms}`(이 탭이 열려 있는 동안 폴링 주기 덮어쓰기),
+ * `setDiagnosticInterval {ms}`(온도·자원·과거 에러 조회 간격 덮어쓰기),
  * `pause {paused}`(자동 갱신 일시정지 — 새로고침 버튼은 여전히 1회 폴링), `showPage {page}`,
- * `setDio {signal,value}`. 확장 → 웹뷰: `status`, `dio`, `dioAction`, `config`, `navigate`, `error`.
+ * `setDio {signal,value}`, `toggleDio {signal}`(마지막 관측값의 반대로 강제), `releaseDio {group?}`(강제된 신호 일괄 해제).
+ * 확장 → 웹뷰: `status`, `dio`, `dioAction`, `config`, `navigate`, `error`.
  *
  * 온도·자원·과거 에러는 dashboardDiagnosticIntervalMs(기본 10초)마다 조회하고 시각을 함께 보낸다.
  * 자원 지표(GitHub #22 제안 8)는 설정 `gpl.controller.dashboardResourceProbes`(기본 true)가 켜져 있으면
@@ -28,6 +31,10 @@ import { ResourceHistory, ResourceHistoryPoint, ResourceRates, ResourceSnapshot 
 import { getConnectionStats, getControllerConfig, sendCommand, ConnectionStats } from '../../controller/connection/controllerConnection';
 import { isControllerSessionConnected, onControllerSessionChange } from '../../controller/connection/connectionSession';
 import { buildSetDioCommand, describeDioForce, DioForceValue, DioSignalState, parseDioSignals } from '../../controller/io/dio';
+import {
+	buildShowDioCommands, DioGroupInfo, DioGroupView, forcedSignalsFor, groupDioSignals, SOFT_DIO_SIGNALS,
+	STANDARD_REMOTE_GROUPS, toggleForceValue,
+} from '../../controller/io/dioGroups';
 import { parseStatus } from '../../controller/protocol/responseParser';
 import { ControllerStatusSampler, DEFAULT_DIAGNOSTIC_INTERVAL_MS } from '../../controller/diagnostics/statusSampling';
 import { TemperatureHistory, TemperatureHistoryPoint } from '../../controller/diagnostics/temperature';
@@ -47,6 +54,9 @@ const VIEW_TYPE = 'gplControllerDashboard';
 const DEFAULT_POLL_MS = 1500;
 const MIN_POLL_MS = 500;
 const MAX_POLL_MS = 60000;
+/** 진단(온도·자원·과거 에러) 조회 간격 범위 — 설정 스키마(package.json)와 같다. */
+const MIN_DIAGNOSTIC_MS = 1000;
+const MAX_DIAGNOSTIC_MS = 60000;
 /** 설정 `gpl.controller.dashboardResourceProbes` 기본값(스키마는 package.json). */
 const DEFAULT_RESOURCE_PROBES = true;
 type DashboardPage = 'status' | 'io';
@@ -63,13 +73,16 @@ interface DashboardMessage {
 		connected: boolean;
 		target: { ip: string; port: number };
 		timestamp: number;
-		signals: DioSignalState[];
+		/** Local → Remote, 그룹 순서로 묶은 신호. */
+		groups: DioGroupView[];
+		/** 웹 Operator 가 늘 나열하지만 이번 응답에 신호가 없는 Remote 그룹. */
+		absent: DioGroupInfo[];
 		note?: string;
 	};
 	busy?: boolean;
 	ok?: boolean;
-	signal?: number;
-	value?: DioForceValue;
+	/** dioAction: 처리 중인 신호(웹뷰가 칩에 진행 표시). */
+	signals?: number[];
 	/** 자원 지표 시계열(accepted/s · clustersFree · freeMb). */
 	resourceHistory?: ResourceHistoryPoint[];
 	/** 이번 폴링에 자원 프로브가 포함됐는지(false = 설정으로 꺼짐). */
@@ -96,8 +109,12 @@ export class ControllerDashboardPanel {
 	private webviewReady = false;
 	private activePage: DashboardPage;
 	private dioActionInFlight = false;
+	/** 마지막 DIO 관측값 — 더블클릭 토글·일괄 해제가 웹뷰가 아닌 확장 쪽 관측을 근거로 삼게 한다. */
+	private lastDioSignals: DioSignalState[] = [];
 	/** 웹뷰 주기 선택으로 덮어쓴 폴링 주기(ms). 탭을 닫으면 사라지고 설정값으로 돌아간다. */
 	private pollOverrideMs: number | undefined;
+	/** 웹뷰에서 덮어쓴 진단 조회 간격(ms). 탭을 닫으면 설정값으로 돌아간다. */
+	private diagnosticOverrideMs: number | undefined;
 	/** 자동 갱신 일시정지(수동 새로고침은 계속 동작). */
 	private paused = false;
 	/** 자원 지표 관측 이력(증가율 기준 샘플 + 시계열 링). 패널 수명 동안 유지. */
@@ -192,6 +209,14 @@ export class ControllerDashboardPanel {
 					}
 					break;
 				}
+				case 'setDiagnosticInterval': {
+					const ms = Number(msg.ms);
+					if (Number.isFinite(ms) && ms > 0) {
+						this.diagnosticOverrideMs = Math.min(MAX_DIAGNOSTIC_MS, Math.max(MIN_DIAGNOSTIC_MS, Math.round(ms)));
+						this.postConfig();
+					}
+					break;
+				}
 				case 'pause':
 					this.pollGeneration++;
 					this.paused = !!msg.paused;
@@ -208,8 +233,27 @@ export class ControllerDashboardPanel {
 					}
 					break;
 				case 'setDio':
-					void this.setDio(msg.signal, msg.value);
+					void this.forceDio([{ signal: msg.signal, value: msg.value }]);
 					break;
+				case 'toggleDio': {
+					const known = this.lastDioSignals.find(item => item.signal === msg.signal);
+					if (!known) {
+						this.post({ type: 'dioAction', ok: false, message: `DIO ${msg.signal} — 마지막 조회에 없는 신호라 토글할 수 없습니다.` });
+						break;
+					}
+					void this.forceDio([{ signal: known.signal, value: toggleForceValue(known) }]);
+					break;
+				}
+				case 'releaseDio': {
+					const group = typeof msg.group === 'string' ? msg.group : undefined;
+					const targets = forcedSignalsFor(this.lastDioSignals, group);
+					if (targets.length === 0) {
+						this.post({ type: 'dioAction', ok: true, message: '강제된 신호가 없습니다.' });
+						break;
+					}
+					void this.forceDio(targets.map(signal => ({ signal, value: 0 })));
+					break;
+				}
 			}
 		}, null, this.disposables);
 
@@ -282,10 +326,20 @@ export class ControllerDashboardPanel {
 		return Number.isFinite(raw) ? Math.min(MAX_POLL_MS, Math.max(MIN_POLL_MS, raw)) : DEFAULT_POLL_MS;
 	}
 
+	private diagnosticIntervalMs(): number {
+		if (this.diagnosticOverrideMs !== undefined) {
+			return this.diagnosticOverrideMs;
+		}
+		const raw = vscode.workspace.getConfiguration('gpl.controller').get<number>('dashboardDiagnosticIntervalMs', DEFAULT_DIAGNOSTIC_INTERVAL_MS);
+		return Number.isFinite(raw) ? Math.max(MIN_DIAGNOSTIC_MS, Math.min(MAX_DIAGNOSTIC_MS, raw)) : DEFAULT_DIAGNOSTIC_INTERVAL_MS;
+	}
+
 	/** 웹뷰의 주기 선택/일시정지 버튼 표시를 확장 쪽 실제 상태와 맞춘다. */
 	private postConfig(): void {
 		if (!this.disposed) {
-			void this.panel.webview.postMessage({ type: 'config', pollMs: this.pollIntervalMs(), paused: this.paused });
+			void this.panel.webview.postMessage({
+				type: 'config', pollMs: this.pollIntervalMs(), diagnosticMs: this.diagnosticIntervalMs(), paused: this.paused,
+			});
 		}
 	}
 
@@ -329,8 +383,7 @@ export class ControllerDashboardPanel {
 			const key = `${cfg.ip}:${cfg.port}`;
 			if (this.targetKey !== key) { this.resetDiagnostics(); this.targetKey = key; }
 			const settings = vscode.workspace.getConfiguration('gpl.controller');
-			const rawInterval = settings.get<number>('dashboardDiagnosticIntervalMs', DEFAULT_DIAGNOSTIC_INTERVAL_MS);
-			const diagnosticIntervalMs = Number.isFinite(rawInterval) ? Math.max(1000, Math.min(60000, rawInterval)) : DEFAULT_DIAGNOSTIC_INTERVAL_MS;
+			const diagnosticIntervalMs = this.diagnosticIntervalMs();
 			const includeResources = this.resourceProbesEnabled();
 			const snapshot = await fetchControllerStatus(cfg, { includeResources, includeTemperature: true, diagnosticIntervalMs, forceDiagnostics }, this.sampler, active);
 			if (!active()) { return; }
@@ -372,52 +425,63 @@ export class ControllerDashboardPanel {
 
 	private async pollDio(): Promise<void> {
 		const cfg = getControllerConfig();
+		const postDio = (connected: boolean, signals: DioSignalState[], note?: string) => {
+			const groups = groupDioSignals(signals);
+			const present = new Set(groups.map(group => group.id));
+			this.post({
+				type: 'dio',
+				dio: {
+					connected,
+					target: { ip: cfg.ip, port: cfg.port },
+					timestamp: Date.now(),
+					groups,
+					absent: connected ? STANDARD_REMOTE_GROUPS.filter(group => !present.has(group.id)) : [],
+					note,
+				},
+			});
+		};
 		try {
 			const response = await sendCommand('Show DIO');
 			const status = parseStatus(response);
 			if (status.code !== 0) {
-				this.post({
-					type: 'dio',
-					dio: {
-						connected: true,
-						target: { ip: cfg.ip, port: cfg.port },
-						timestamp: Date.now(),
-						signals: [],
-						note: `Show DIO STATUS ${status.code}: ${status.message}`,
-					},
-				});
+				this.lastDioSignals = [];
+				postDio(true, [], `Show DIO STATUS ${status.code}: ${status.message}`);
 				return;
 			}
-			this.post({
-				type: 'dio',
-				dio: {
-					connected: true,
-					target: { ip: cfg.ip, port: cfg.port },
-					timestamp: Date.now(),
-					signals: parseDioSignals(response),
-				},
-			});
+			const signals = parseDioSignals(response);
+			// 인자 없는 Show DIO 는 Software I/O 를 내주지 않는다(dioGroups.ts 머리 주석) — 번호를 지정해 따로 묻는다.
+			const known = new Set(signals.map(item => item.signal));
+			let softNote: string | undefined;
+			for (const command of buildShowDioCommands(SOFT_DIO_SIGNALS.filter(signal => !known.has(signal)))) {
+				const softResponse = await sendCommand(command);
+				const softStatus = parseStatus(softResponse);
+				if (softStatus.code !== 0) {
+					softNote = `Soft DIO 조회 STATUS ${softStatus.code}: ${softStatus.message}`;
+					break;
+				}
+				signals.push(...parseDioSignals(softResponse));
+			}
+			signals.sort((a, b) => a.signal - b.signal);
+			this.lastDioSignals = signals;
+			postDio(true, signals, softNote);
 		} catch (err) {
 			this.log?.appendLine(`[Dashboard][DIO] 상태 수집 실패: ${err}`);
-			this.post({
-				type: 'dio',
-				dio: {
-					connected: false,
-					target: { ip: cfg.ip, port: cfg.port },
-					timestamp: Date.now(),
-					signals: [],
-					note: String(err),
-				},
-			});
+			this.lastDioSignals = [];
+			postDio(false, [], String(err));
 		}
 	}
 
-	private async setDio(signalValue: unknown, forceValue: unknown): Promise<void> {
+	/**
+	 * Set DIO 를 순서대로 보낸다. 확인 모달은 없다 — 더블클릭·우클릭 메뉴 선택이 곧 의사 표시다(2026-10-27 사용자 요청).
+	 * 하나라도 실패하면 그 자리에서 멈추고 STATUS 를 보인다. 끝나면 즉시 다시 조회해 실제 상태를 그린다.
+	 */
+	private async forceDio(requests: Array<{ signal: unknown; value: unknown }>): Promise<void> {
 		if (this.dioActionInFlight) {
+			this.post({ type: 'dioAction', busy: true, message: '이전 Set DIO 를 처리하는 중입니다.' });
 			return;
 		}
-		const command = buildSetDioCommand(signalValue, forceValue);
-		if (!command) {
+		const commands = requests.map(request => buildSetDioCommand(request.signal, request.value));
+		if (commands.length === 0 || commands.some(command => !command)) {
 			this.post({ type: 'dioAction', ok: false, message: '유효하지 않은 DIO 신호 또는 동작입니다.' });
 			return;
 		}
@@ -425,38 +489,33 @@ export class ControllerDashboardPanel {
 			this.post({ type: 'dioAction', ok: false, message: '제어기에 연결되어 있지 않습니다.' });
 			return;
 		}
-		const signal = signalValue as number;
-		const value = forceValue as DioForceValue;
-		const action = describeDioForce(value);
+		const single = requests.length === 1;
+		const first = requests[0];
+		const label = single
+			? `DIO ${first.signal} — ${describeDioForce(first.value as DioForceValue).label}`
+			: `강제 해제 ${requests.length}개`;
+		const progress = (done: number) => (single ? '' : ` (${done}/${commands.length} 완료 후 중단)`);
 		this.dioActionInFlight = true;
-		this.post({ type: 'dioAction', busy: true, signal, value, message: `${action.label} 확인 대기…` });
-		const confirmation = await vscode.window.showWarningMessage(
-			`DIO ${signal} — ${action.label}\n${action.detail}\n\n장비 동작에 영향을 줄 수 있습니다. 실행할까요?`,
-			{ modal: true },
-			'실행',
-		);
-		if (confirmation !== '실행') {
-			this.dioActionInFlight = false;
-			this.post({ type: 'dioAction', busy: false, signal, value, message: '취소됨' });
-			return;
-		}
-
-		this.post({ type: 'dioAction', busy: true, signal, value, message: `${action.label} 적용 중…` });
+		this.post({ type: 'dioAction', busy: true, signals: requests.map(request => request.signal as number), message: `${label} 적용 중…` });
+		let done = 0;
 		try {
-			const response = await sendCommand(command);
-			this.log?.appendLine(`[DIO] >>> ${command}`);
-			this.log?.appendLine(response || '(empty)');
-			const status = parseStatus(response);
-			if (status.code === 0) {
-				this.post({ type: 'dioAction', busy: false, ok: true, signal, value, message: `DIO ${signal} — ${action.label} 적용됨` });
-				this.scheduleNextPoll(0);
-			} else {
-				this.post({ type: 'dioAction', busy: false, ok: false, signal, value, message: `Set DIO STATUS ${status.code}: ${status.message}` });
+			for (const command of commands as string[]) {
+				const response = await sendCommand(command);
+				this.log?.appendLine(`[DIO] >>> ${command}`);
+				this.log?.appendLine(response || '(empty)');
+				const status = parseStatus(response);
+				if (status.code !== 0) {
+					this.post({ type: 'dioAction', busy: false, ok: false, message: `${command} → STATUS ${status.code}: ${status.message}${progress(done)}` });
+					return;
+				}
+				done++;
 			}
+			this.post({ type: 'dioAction', busy: false, ok: true, message: `${label} 적용됨` });
 		} catch (err) {
-			this.post({ type: 'dioAction', busy: false, ok: false, signal, value, message: `Set DIO 실패: ${err}` });
+			this.post({ type: 'dioAction', busy: false, ok: false, message: `Set DIO 실패: ${err}${progress(done)}` });
 		} finally {
 			this.dioActionInFlight = false;
+			this.scheduleNextPoll(0);
 		}
 	}
 
@@ -475,7 +534,8 @@ export class ControllerDashboardPanel {
 					connected: false,
 					target: { ip: cfg.ip, port: cfg.port },
 					timestamp: Date.now(),
-					signals: [],
+					groups: [],
+					absent: [],
 					note: `${reason} — 제어기에 연결하면 자동 갱신을 다시 시작합니다`,
 				},
 			});

@@ -127,9 +127,12 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | DIO 강제 상태 설정(원시 명령) | GPL: DIO 강제 상태 설정 (Set DIO) — **입력·출력 신호 및 장비 동작에 영향 가능** | `gpl.controller.setDio` |
 
 일반 조작은 `gpl.controller.showIoPanel`을 사용한다. 대시보드의 **디지털 I/O** 탭은 `Show DIO`의
-`signal: 0|1`과 강제 표시 `*`를 카드로 보여 주며, 강제 ON(`1`)·강제 OFF(`-1`)·강제 해제(`0`)를
-각 신호에서 바로 선택한다. `Set DIO` 전 확인 모달은 생략하지 않는다. 강제 해제는 현재 ON/OFF 값을
-바꾸지 않고 force만 제거한다.
+`signal: 0|1`과 강제 표시 `*`를 웹 Operator 처럼 Local I/O(Digital·Soft Internal·Dedicated 제어기/축)·Remote I/O(RIO n·
+Network Node n) 그룹의 작은 칩으로 보여 준다(분류 정본: `controller/io/dioGroups.ts`, 문서 신호 번호 체계 기준).
+칩 더블클릭 = 현재 값의 반대로 강제(`1`/`-1`), 우클릭 = 강제 ON/OFF·강제 해제(`0`)·그룹/전체 해제. **확인 모달은 없다**
+(2026-10-27 사용자 요청 — 더블클릭·메뉴 선택이 의사 표시). 강제 해제는 현재 ON/OFF 값을 바꾸지 않고 force만 제거한다.
+인자 없는 `Show DIO`는 Software I/O(20001~20064)를 내주지 않아(실측) 패널이 번호를 지정해 따로 조회하며, 한 줄 64개는
+`-506 *Input too long*`이라 160자 이하로 나눠 보낸다.
 
 ### AI 에이전트 전용
 

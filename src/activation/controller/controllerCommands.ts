@@ -41,7 +41,7 @@ import { describeStartProcedureMismatch } from '../../controller/commands/startP
 import { renderErrorReport } from '../../controller/diagnostics/errorReport';
 import { asThreadNode } from '../../controller/threads/threadArgs';
 import { formatAgentCommandFailure, formatAgentCommandLines } from '../../controller/automation/agentCommandLog';
-import { buildSetDioCommand, describeDioForce, DioForceValue } from '../../controller/io/dio';
+import { buildSetDioCommand, DioForceValue } from '../../controller/io/dio';
 import { EXTENSION_VERSION } from '../../config';
 import { isStopAllCommand } from '../../controller/deployment/deployCancellation';
 import { confirmUnloadRiskInteractive, createThreadStopIo, requestActiveDeployCancellation, showRuntimeConsoleUserMessage, stopAllThreads, trySoftEStopRecovery } from './controllerOps';
@@ -727,7 +727,7 @@ export function activateControllerCommands(host: ExtensionHost): void {
 		})
 	);
 
-	// Set DIO — 신호 강제 (안전 확인 모달). 기본 UI는 대시보드의 I/O 탭이고 이 명령은 팔레트/외부 호출 호환용.
+	// Set DIO — 신호 강제 (확인 모달 없음). 기본 UI는 대시보드의 I/O 탭이고 이 명령은 팔레트/외부 호출 호환용.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.setDio', async (presetSignal?: number) => {
 			const signalStr = typeof presetSignal === 'number'
@@ -746,14 +746,8 @@ export function activateControllerCommands(host: ExtensionHost): void {
 				{ placeHolder: `신호 ${signal} — Set DIO 동작 선택 (장비 출력에 영향)` }
 			);
 			if (!pick) { return; }
+			// 동작 선택(QuickPick)이 곧 의사 표시라 확인 모달을 더 띄우지 않는다(2026-10-27 사용자 요청, 대시보드와 동일).
 			const value = Number(pick.value) as DioForceValue;
-			const action = describeDioForce(value);
-			const confirm = await vscode.window.showWarningMessage(
-				`DIO ${signal} — ${action.label}\n${action.detail}\n\n장비 동작에 영향을 줄 수 있습니다. 실행할까요?`,
-				{ modal: true },
-				'실행',
-			);
-			if (confirm !== '실행') { return; }
 			try {
 				const cmd = buildSetDioCommand(signal, value);
 				if (!cmd) { throw new Error('유효하지 않은 DIO 신호 또는 동작입니다.'); }

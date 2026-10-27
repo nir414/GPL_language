@@ -13,21 +13,26 @@
 			--err: #f85149;
 			--idle: #8b949e;
 			--accent: var(--vscode-focusBorder, #3794ff);
-			--gap: 12px;
+			--gap: 8px;
 			--card-bg: var(--vscode-editorWidget-background, rgba(127,127,127,0.08));
 			--card-border: var(--vscode-editorWidget-border, rgba(127,127,127,0.25));
 		}
 		* { box-sizing: border-box; }
 		body {
 			margin: 0;
-			padding: 14px;
+			padding: 0 12px 12px;
 			font-family: var(--vscode-font-family, sans-serif);
 			font-size: var(--vscode-font-size, 13px);
 			color: var(--vscode-foreground);
 			background: var(--vscode-editor-background);
 		}
 		/* ── 헤더 ── */
-		.topbar { display: flex; align-items: center; gap: 10px; margin-bottom: var(--gap); flex-wrap: wrap; }
+		/* 헤더(연결·주기·탭)는 스크롤해도 위에 고정한다 */
+		.head {
+			position: sticky; top: 0; z-index: 5; margin: 0 -12px var(--gap); padding: 8px 12px 0;
+			background: var(--vscode-editor-background); border-bottom: 1px solid var(--card-border);
+		}
+		.topbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 		.dot {
 			width: 11px; height: 11px; border-radius: 50%;
 			background: var(--idle); flex: 0 0 auto;
@@ -58,6 +63,8 @@
 		button.secondary:hover, select:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(127,127,127,0.3)); }
 		button:disabled { opacity: 0.48; cursor: not-allowed; }
 		label.ctl { color: var(--idle); font-size: 0.85em; display: inline-flex; align-items: center; gap: 4px; }
+		.ctl input[type=number] { width: 4.5em; padding: 3px 5px; font-size: 0.9em; }
+		kbd { font-family: var(--vscode-editor-font-family, monospace); font-size: 0.85em; padding: 0 4px; border: 1px solid var(--card-border); border-radius: 3px; }
 		input {
 			font-family: inherit; font-size: inherit; color: var(--vscode-input-foreground, var(--vscode-foreground));
 			background: var(--vscode-input-background, rgba(127,127,127,0.12));
@@ -66,11 +73,13 @@
 		input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
 		/* ── 상태 / I/O 화면 전환 ── */
-		.view-tabs { display: flex; gap: 4px; margin: 0 0 var(--gap); border-bottom: 1px solid var(--card-border); }
+		.view-tabs { display: flex; gap: 2px; margin-top: 6px; }
 		.view-tab {
-			color: var(--vscode-foreground); background: transparent; border-radius: 0; padding: 7px 13px;
+			color: var(--vscode-foreground); background: transparent; border-radius: 0; padding: 5px 12px;
 			border-bottom: 2px solid transparent; font-weight: 600;
 		}
+		.view-tab .cnt { margin-left: 5px; padding: 0 6px; border-radius: 9px; font-size: 0.8em; color: var(--warn); background: rgba(210,153,34,0.16); }
+		.view-tab .cnt:empty { display: none; }
 		.view-tab:hover { background: rgba(127,127,127,0.12); }
 		.view-tab.active { color: var(--vscode-textLink-foreground, #3794ff); border-bottom-color: var(--accent); }
 		.page { display: none; }
@@ -79,21 +88,21 @@
 		/* ── 상태 스트립: 흘깃 봐도 정상/이상이 보이는 큰 배지 ── */
 		.strip {
 			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+			grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 			gap: var(--gap);
 			margin-bottom: var(--gap);
 		}
 		.badge {
-			display: flex; flex-direction: column; gap: 4px;
-			padding: 12px 14px; border-radius: 10px;
+			display: flex; flex-direction: column; gap: 2px;
+			padding: 6px 10px; border-radius: 8px;
 			border: 1px solid var(--card-border);
 			background: var(--card-bg);
 			border-left-width: 6px;
 			transition: border-color 0.3s, background 0.3s;
 		}
-		.badge .k { font-size: 0.75em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--idle); }
-		.badge .v { font-size: 1.55em; font-weight: 800; letter-spacing: 0.02em; line-height: 1.1; }
-		.badge .s { font-size: 0.82em; color: var(--idle); }
+		.badge .k { font-size: 0.7em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--idle); }
+		.badge .v { font-size: 1.2em; font-weight: 800; letter-spacing: 0.02em; line-height: 1.1; }
+		.badge .s { font-size: 0.78em; color: var(--idle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 		.badge.ok   { border-left-color: var(--ok); }
 		.badge.ok .v { color: var(--ok); }
 		.badge.warn { border-left-color: var(--warn); }
@@ -111,24 +120,30 @@
 
 		/* ── 카드 그리드 ── */
 		.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--gap); }
-		.card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+		.card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 7px; padding: 8px 11px; min-width: 0; }
 		.card h2 {
-			margin: 0 0 8px 0; display: flex; align-items: center; gap: 8px;
-			font-size: 0.78em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--idle);
+			margin: 0 0 6px 0; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+			font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--idle);
 		}
+		/* 카드 제목을 누르면 접힌다(상태는 탭을 다시 열어도 유지) */
+		.card h2::before { content: '▾'; font-size: 1.1em; transition: transform 0.15s; }
+		.card.collapsed h2 { margin: 0; }
+		.card.collapsed h2::before { transform: rotate(-90deg); }
+		.card.collapsed > :not(h2) { display: none !important; }
+		.hint { color: var(--idle); font-size: 0.8em; margin: 6px 0 0; }
 		.card h2 .sub { font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: auto; }
 		.full { grid-column: 1 / -1; }
 
 		/* ── 스레드 ── */
-		.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-		.chip { display: flex; flex-direction: column; align-items: center; min-width: 56px; padding: 6px 10px; border-radius: 6px; background: rgba(127,127,127,0.1); }
-		.chip .n { font-size: 1.3em; font-weight: 700; font-variant-numeric: tabular-nums; }
+		.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+		.chip { display: flex; align-items: baseline; gap: 5px; padding: 2px 9px; border-radius: 6px; background: rgba(127,127,127,0.1); }
+		.chip .n { font-size: 1.05em; font-weight: 700; font-variant-numeric: tabular-nums; }
 		.chip .l { font-size: 0.72em; color: var(--idle); text-transform: uppercase; }
 		.chip.run .n { color: var(--ok); }
 		.chip.pause .n { color: var(--warn); }
 		.chip.err .n { color: var(--err); }
 		table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-		th, td { text-align: left; padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		th, td { text-align: left; padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 		thead th { font-size: 0.75em; color: var(--idle); font-weight: 600; border-bottom: 1px solid var(--card-border); }
 		tbody tr.dim { opacity: 0.55; }
 		tbody tr.changed td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
@@ -158,7 +173,7 @@
 		.cart table th, .cart table td { text-align: right; padding: 3px 6px; }
 		.cart table td:first-child, .cart table th:first-child { text-align: left; color: var(--idle); }
 		.cart .val { font-weight: 600; }
-		.xy { width: 170px; height: 170px; border-radius: 8px; background: rgba(127,127,127,0.10); display: block; }
+		.xy { width: 140px; height: 140px; border-radius: 8px; background: rgba(127,127,127,0.10); display: block; }
 		.xy .grid-line { stroke: rgba(127,127,127,0.35); stroke-width: 1; }
 		.xy .trail { fill: none; stroke: var(--accent); stroke-opacity: 0.55; stroke-width: 1.5; }
 		.xy .pt { fill: var(--accent); }
@@ -166,7 +181,7 @@
 		.xy text { fill: var(--idle); font-size: 9px; }
 
 		/* ── 로그 ── */
-		.log { max-height: 240px; overflow: auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.85em; line-height: 1.5; }
+		.log { max-height: 200px; overflow: auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.85em; line-height: 1.5; }
 		.log-row { padding: 2px 4px; border-bottom: 1px dashed rgba(127,127,127,0.18); white-space: pre-wrap; word-break: break-all; }
 		.log-row:last-child { border-bottom: none; }
 		.log-row.new { background: rgba(248,81,73,0.12); box-shadow: inset 3px 0 0 var(--err); }
@@ -203,65 +218,115 @@
 		.res-raw pre b { color: var(--idle); }
 
 		/* ── 디지털 I/O ── */
-		.io-head {
-			display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); gap: 8px; margin-bottom: var(--gap);
-		}
-		.io-stat { padding: 10px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--card-bg); }
-		.io-stat .n { display: block; font-size: 1.4em; font-weight: 800; font-variant-numeric: tabular-nums; }
-		.io-stat .l { display: block; color: var(--idle); font-size: 0.78em; margin-top: 2px; }
-		.io-stat.on .n { color: var(--ok); }
-		.io-stat.forced .n { color: var(--warn); }
-		.io-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: var(--gap); }
-		.io-toolbar input { min-width: 180px; flex: 1 1 220px; }
-		.io-filter { display: inline-flex; gap: 3px; padding: 3px; border-radius: 6px; background: rgba(127,127,127,0.10); }
-		.io-filter button { background: transparent; color: var(--vscode-foreground); padding: 4px 9px; }
-		.io-filter button.active { background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.25)); }
-		.io-note { min-height: 1.4em; color: var(--idle); margin: -2px 0 10px; }
+		.io-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+		.io-toolbar input[type=search] { min-width: 140px; flex: 0 1 180px; padding: 4px 8px; }
+		.seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 6px; background: rgba(127,127,127,0.10); }
+		.seg button { background: transparent; color: var(--vscode-foreground); padding: 3px 8px; }
+		.seg button.active { background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.25)); }
+		.io-sum { color: var(--idle); font-size: 0.85em; font-variant-numeric: tabular-nums; }
+		.io-sum b { color: var(--vscode-foreground); }
+		.io-sum b.on { color: var(--ok); }
+		.io-sum b.forced { color: var(--warn); }
+		.io-note { min-height: 1.3em; color: var(--idle); font-size: 0.85em; margin: 0 0 6px; }
 		.io-note.ok { color: var(--ok); }
 		.io-note.err { color: var(--err); }
-		.io-safety { padding: 9px 11px; margin-bottom: var(--gap); border-left: 4px solid var(--warn); background: rgba(210,153,34,0.10); border-radius: 5px; }
-		.io-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 9px; }
-		.io-card { border: 1px solid var(--card-border); border-radius: 8px; background: var(--card-bg); overflow: hidden; }
-		.io-card.forced { border-color: rgba(210,153,34,0.70); box-shadow: inset 0 3px 0 var(--warn); }
-		.io-card-main { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 11px 12px 8px; }
-		.io-signal { font-weight: 700; font-variant-numeric: tabular-nums; }
-		.io-force { display: inline-block; margin-left: 5px; padding: 1px 6px; border-radius: 10px; color: var(--warn); background: rgba(210,153,34,0.16); font-size: 0.72em; }
-		.io-value { display: flex; align-items: center; gap: 7px; font-size: 1.05em; font-weight: 800; }
-		.io-lamp { width: 13px; height: 13px; border-radius: 50%; background: var(--idle); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18); }
-		.io-value.on { color: var(--ok); }
-		.io-value.on .io-lamp { background: var(--ok); box-shadow: 0 0 9px rgba(63,185,80,0.55); }
-		.io-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1px; border-top: 1px solid var(--card-border); background: var(--card-border); }
-		.io-actions button { border-radius: 0; padding: 7px 3px; font-size: 0.78em; }
-		.io-actions .force-off, .io-actions .release { color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.2)); }
-		.io-actions .release { color: var(--warn); }
-		.io-empty { grid-column: 1 / -1; padding: 26px; text-align: center; color: var(--idle); border: 1px dashed var(--card-border); border-radius: 8px; }
-		@media (max-width: 620px) { .io-head { grid-template-columns: repeat(2, 1fr); } }
+		.dio-sec { margin: 10px 0 5px; font-size: 0.75em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--idle); }
+		.dio-sec:first-child { margin-top: 0; }
+		.dio-groups { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+		.dio-group { flex: 1 1 230px; min-width: 0; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); }
+		.dio-group.wide { flex-basis: 460px; }
+		.dio-group.has-forced { border-color: rgba(210,153,34,0.65); }
+		.dio-ghead { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; user-select: none; font-size: 0.85em; }
+		.dio-ghead::before { content: '▾'; color: var(--idle); transition: transform 0.15s; }
+		.dio-group.collapsed .dio-ghead::before { transform: rotate(-90deg); }
+		.dio-group.collapsed .dio-body { display: none; }
+		.dio-ghead .t { font-weight: 700; }
+		.dio-ghead .c { margin-left: auto; color: var(--idle); font-variant-numeric: tabular-nums; }
+		.dio-ghead .f { padding: 0 6px; border-radius: 9px; color: var(--warn); background: rgba(210,153,34,0.16); font-size: 0.9em; }
+		.dio-body { padding: 0 8px 6px; display: grid; gap: 4px; }
+		.dio-row { display: grid; grid-template-columns: 2.6em 1fr; gap: 4px; align-items: start; }
+		.dio-dir { font-size: 0.7em; font-weight: 700; color: var(--idle); padding-top: 4px; }
+		.dio-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+		.dio-chip {
+			position: relative; min-width: 3.9em; padding: 2px 5px 2px 14px; border-radius: 4px;
+			font-size: 0.78em; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right;
+			color: var(--vscode-foreground); background: rgba(127,127,127,0.12); border: 1px solid transparent;
+			user-select: none;
+		}
+		.dio-chip:hover { background: rgba(127,127,127,0.24); }
+		.dio-chip::before { content: ''; position: absolute; left: 5px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: var(--idle); opacity: 0.55; }
+		.dio-chip.on { background: rgba(63,185,80,0.20); }
+		.dio-chip.on:hover { background: rgba(63,185,80,0.32); }
+		.dio-chip.on::before { background: var(--ok); opacity: 1; box-shadow: 0 0 5px rgba(63,185,80,0.8); }
+		.dio-chip.forced { border-color: var(--warn); }
+		.dio-chip.forced::after { content: ''; position: absolute; right: 0; top: 0; border-style: solid; border-width: 0 6px 6px 0; border-color: transparent var(--warn) transparent transparent; }
+		.dio-chip.busy { animation: busy 0.8s ease-in-out infinite alternate; }
+		.dio-chip.chg { animation: chg 0.9s ease-out 1; }
+		@keyframes busy { from { opacity: 1; } to { opacity: 0.35; } }
+		@keyframes chg { from { box-shadow: 0 0 0 2px var(--accent); } to { box-shadow: 0 0 0 2px rgba(55,148,255,0); } }
+		.dio-absent { margin-top: 5px; color: var(--idle); font-size: 0.8em; }
+		.dio-absent span { display: inline-block; margin: 2px 3px 0 0; padding: 0 6px; border: 1px dashed var(--card-border); border-radius: 9px; }
+		.io-empty { padding: 20px; text-align: center; color: var(--idle); border: 1px dashed var(--card-border); border-radius: 6px; }
+		.io-help { color: var(--idle); font-size: 0.8em; margin-top: 10px; }
+		/* 우클릭 메뉴 */
+		.ctx {
+			position: fixed; z-index: 20; min-width: 190px; padding: 4px 0; border-radius: 5px;
+			color: var(--vscode-menu-foreground, var(--vscode-foreground));
+			background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+			border: 1px solid var(--vscode-menu-border, var(--card-border)); box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+		}
+		.ctx[hidden] { display: none; }
+		.ctx .hd { padding: 3px 12px 5px; color: var(--idle); font-size: 0.82em; border-bottom: 1px solid var(--card-border); margin-bottom: 3px; }
+		.ctx button {
+			display: block; width: 100%; text-align: left; border-radius: 0; padding: 4px 12px;
+			color: inherit; background: transparent;
+		}
+		.ctx button:hover:not(:disabled), .ctx button:focus-visible { color: var(--vscode-menu-selectionForeground, #fff); background: var(--vscode-menu-selectionBackground, var(--accent)); outline: none; }
+		.ctx hr { border: none; border-top: 1px solid var(--card-border); margin: 3px 0; }
 	</style>
 </head>
 <body>
+	<header class="head">
 	<div class="topbar">
 		<span id="dot" class="dot"></span>
 		<span id="connLabel" class="conn-label">연결 확인 중…</span>
 		<span id="target" class="target"></span>
 		<span class="spacer"></span>
-		<label class="ctl">주기
-			<select id="intervalSel" title="폴링 주기 — 이 탭이 열려 있는 동안만 적용">
+		<label class="ctl" title="연결·전원·위치·쓰레드·I/O 폴링 주기 — 이 탭이 열려 있는 동안만 설정(dashboardPollIntervalMs)을 덮어씁니다">주기
+			<select id="intervalSel">
 				<option value="500">0.5s</option>
 				<option value="1000">1s</option>
 				<option value="1500">1.5s</option>
+				<option value="2000">2s</option>
 				<option value="3000">3s</option>
 				<option value="5000">5s</option>
+				<option value="10000">10s</option>
+				<option value="15000">15s</option>
+				<option value="30000">30s</option>
+				<option value="60000">60s</option>
+				<option value="custom">직접 입력…</option>
+			</select>
+			<input id="intervalCustom" type="number" min="0.5" max="60" step="0.1" placeholder="초" hidden aria-label="폴링 주기(초) 직접 입력">
+		</label>
+		<label class="ctl" title="온도·자원·과거 에러 로그 조회 간격 — 이 탭이 열려 있는 동안만 설정(dashboardDiagnosticIntervalMs)을 덮어씁니다">진단
+			<select id="diagSel">
+				<option value="2000">2s</option>
+				<option value="5000">5s</option>
+				<option value="10000">10s</option>
+				<option value="30000">30s</option>
+				<option value="60000">60s</option>
 			</select>
 		</label>
-		<button id="pauseBtn" class="secondary" title="자동 갱신 일시정지/재개">일시정지</button>
-		<button id="refreshBtn">새로고침</button>
+		<button id="pauseBtn" class="secondary" title="자동 갱신 일시정지/재개 (P)">일시정지</button>
+		<button id="refreshBtn" title="모든 항목 즉시 조회 (R)">새로고침</button>
 		<span id="updated" class="updated"></span>
 	</div>
 
 	<nav class="view-tabs" aria-label="대시보드 화면">
-		<button id="statusTab" class="view-tab active" data-page="status" aria-selected="true">상태</button>
-		<button id="ioTab" class="view-tab" data-page="io" aria-selected="false">디지털 I/O</button>
+		<button id="statusTab" class="view-tab active" data-page="status" aria-selected="true" title="상태 (1)">상태</button>
+		<button id="ioTab" class="view-tab" data-page="io" aria-selected="false" title="디지털 I/O (2)">디지털 I/O<span id="ioTabCount" class="cnt"></span></button>
 	</nav>
+	</header>
 
 	<section id="statusPage" class="page active">
 	<div class="strip">
@@ -326,7 +391,7 @@
 					<svg id="sparkAmp" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="앰프 최고 온도 추이"></svg>
 				</div>
 			</div>
-			<p class="updated">CPU 내부 센서값은 케이스·주변 온도와 다릅니다. 과열 여부는 모델별 허용 온도와 함께 확인하세요. 앰프 0°C는 센서 미지원일 수 있습니다.</p>
+			<p class="hint">CPU 내부 센서값은 케이스·주변 온도와 다릅니다. 과열 여부는 모델별 허용 온도와 함께 확인하세요. 앰프 0°C는 센서 미지원일 수 있습니다.</p>
 			<details class="res-raw"><summary>온도 응답 원문</summary><pre id="tempRaw">—</pre></details>
 		</div>
 
@@ -381,27 +446,32 @@
 	</section>
 
 	<section id="ioPage" class="page">
-		<div class="io-safety">
-			<strong>Set DIO는 실제 신호를 강제합니다.</strong>
-			버튼을 누르면 실행 전 확인창이 한 번 더 열립니다. <strong>강제 해제</strong>는 현재 ON/OFF 값을 바꾸지 않고 force만 제거합니다.
-		</div>
-		<div class="io-head">
-			<div class="io-stat"><span id="dioTotal" class="n">—</span><span class="l">전체 신호</span></div>
-			<div class="io-stat on"><span id="dioOn" class="n">—</span><span class="l">ON</span></div>
-			<div class="io-stat"><span id="dioOff" class="n">—</span><span class="l">OFF</span></div>
-			<div class="io-stat forced"><span id="dioForced" class="n">—</span><span class="l">강제됨</span></div>
-		</div>
 		<div class="io-toolbar">
-			<input id="dioSearch" type="search" inputmode="numeric" placeholder="신호 번호 검색" aria-label="DIO 신호 번호 검색">
-			<div class="io-filter" aria-label="DIO 상태 필터">
+			<input id="dioSearch" type="search" inputmode="numeric" placeholder="신호 번호 (/)" aria-label="DIO 신호 번호 검색">
+			<div class="seg" aria-label="DIO 상태 필터">
 				<button class="active" data-dio-filter="all">전체</button>
 				<button data-dio-filter="on">ON</button>
 				<button data-dio-filter="off">OFF</button>
 				<button data-dio-filter="forced">강제됨</button>
 			</div>
+			<div class="seg" aria-label="입출력 필터">
+				<button class="active" data-dio-dir="all">IN+OUT</button>
+				<button data-dio-dir="input">IN</button>
+				<button data-dio-dir="output">OUT</button>
+			</div>
+			<button id="dioExpand" class="secondary" title="모든 그룹 펼치기/접기">모두 접기</button>
+			<button id="dioReleaseAll" class="secondary" title="강제된 신호를 모두 해제(Set DIO n 0)합니다" disabled>강제 전체 해제</button>
+			<span class="spacer"></span>
+			<span id="dioSum" class="io-sum"></span>
 		</div>
 		<div id="dioNotice" class="io-note">Show DIO 상태를 불러오는 중…</div>
-		<div id="dioGrid" class="io-grid"><div class="io-empty">데이터 없음</div></div>
+		<div id="dioView"><div class="io-empty">데이터 없음</div></div>
+		<p class="io-help">
+			<kbd>더블클릭</kbd> 강제 토글(ON → 강제 OFF, OFF → 강제 ON) · <kbd>우클릭</kbd> 강제 ON/OFF·해제, 그룹/전체 해제, 번호 복사 ·
+			모서리 표시 = 강제됨 · 강제는 해제하거나 제어기를 재부팅할 때까지 유지되며 GPL 프로그램·외부 신호가 바꾸지 못합니다.
+			분류는 Brooks 문서의 신호 번호 체계(Digital Inputs and Outputs) 기준이고, Soft Internal DIO(20001~20064)는 <code>Show DIO</code> 전체 목록에 나오지 않아 따로 조회합니다.
+		</p>
+		<div id="dioMenu" class="ctx" role="menu" hidden></div>
 	</section>
 
 	<script nonce="${nonce}">
@@ -426,11 +496,31 @@
 			prevClustersFree: null,     // 직전 mbuf clusters free (감소 표시용)
 			targetKey: '',
 			page: 'status',
-			dioSignals: [],
+			dio: { connected: false, groups: [], absent: [] },
 			dioFilter: 'all',
+			dioDir: 'all',
 			dioQuery: '',
 			dioBusy: false,
+			dioBusySignals: new Set(),
+			dioPrev: new Map(),         // signal → on (변화 강조)
+			dioCollapsed: new Set(),    // 접힌 DIO 그룹 id
+			dioLayoutKey: '',
+			dioNoticeTimer: null,
+			collapsedCards: new Set(),  // 접힌 상태 카드 번호
 		};
+		// 접힘·필터는 webview state 로 보존한다(탭을 숨겼다 다시 열거나 다시 로드해도 유지).
+		const saved = (typeof vscode.getState === 'function' && vscode.getState()) || {};
+		if (Array.isArray(saved.dioCollapsed)) saved.dioCollapsed.forEach((id) => state.dioCollapsed.add(String(id)));
+		if (Array.isArray(saved.collapsedCards)) saved.collapsedCards.forEach((i) => state.collapsedCards.add(Number(i)));
+		if (['all', 'on', 'off', 'forced'].includes(saved.dioFilter)) state.dioFilter = saved.dioFilter;
+		if (['all', 'input', 'output'].includes(saved.dioDir)) state.dioDir = saved.dioDir;
+		function saveUiState() {
+			if (typeof vscode.setState !== 'function') return;
+			vscode.setState({
+				dioCollapsed: [...state.dioCollapsed], collapsedCards: [...state.collapsedCards],
+				dioFilter: state.dioFilter, dioDir: state.dioDir,
+			});
+		}
 		const MOVE_EPS = 0.01;
 
 		function showPage(page, notify) {
@@ -445,53 +535,177 @@
 			if (notify !== false) vscode.postMessage({ type: 'showPage', page: next });
 		}
 
-		function setDioNotice(message, cls) {
+		// 동작 결과는 잠시 보이고 사라진다(오류는 다음 동작까지 유지).
+		function setDioNotice(message, cls, sticky) {
 			const el = $('dioNotice');
 			el.textContent = message || '';
 			el.className = 'io-note' + (cls ? ' ' + cls : '');
+			clearTimeout(state.dioNoticeTimer);
+			if (!sticky && cls !== 'err' && message) state.dioNoticeTimer = setTimeout(() => { el.textContent = ''; el.className = 'io-note'; }, 5000);
 		}
 
-		function renderDioGrid() {
-			const query = state.dioQuery.trim();
-			const signals = state.dioSignals.filter((item) => {
-				if (query && !String(item.signal).includes(query)) return false;
-				if (state.dioFilter === 'on' && !item.on) return false;
-				if (state.dioFilter === 'off' && item.on) return false;
-				if (state.dioFilter === 'forced' && !item.forced) return false;
-				return true;
-			});
-			const grid = $('dioGrid');
-			if (signals.length === 0) {
-				const text = state.dioSignals.length === 0 ? '표시할 DIO 신호가 없습니다.' : '검색 조건과 일치하는 신호가 없습니다.';
-				grid.innerHTML = '<div class="io-empty">' + text + '</div>';
-				return;
-			}
-			grid.innerHTML = signals.map((item) => {
-				const forced = item.forced ? '<span class="io-force">FORCED</span>' : '';
-				return '<article class="io-card' + (item.forced ? ' forced' : '') + '">' +
-					'<div class="io-card-main"><div class="io-signal">Signal ' + item.signal + forced + '</div>' +
-					'<div class="io-value' + (item.on ? ' on' : '') + '"><span class="io-lamp"></span>' + (item.on ? 'ON' : 'OFF') + '</div></div>' +
-					'<div class="io-actions">' +
-					'<button data-dio-signal="' + item.signal + '" data-dio-value="1"' + (state.dioBusy ? ' disabled' : '') + '>강제 ON</button>' +
-					'<button class="force-off" data-dio-signal="' + item.signal + '" data-dio-value="-1"' + (state.dioBusy ? ' disabled' : '') + '>강제 OFF</button>' +
-					'<button class="release" data-dio-signal="' + item.signal + '" data-dio-value="0"' + (state.dioBusy ? ' disabled' : '') + '>강제 해제</button>' +
-					'</div></article>';
-			}).join('');
+		const DIR_LABEL = { input: 'IN', output: 'OUT' };
+		const allDioSignals = () => state.dio.groups.flatMap((g) => g.signals.map((s) => Object.assign({ group: g.id }, s)));
+		const findDio = (signal) => allDioSignals().find((s) => s.signal === signal);
+		const groupById = (id) => state.dio.groups.find((g) => g.id === id);
+
+		function dioMatches(s) {
+			if (state.dioQuery && !String(s.signal).includes(state.dioQuery)) return false;
+			if (state.dioFilter === 'on' && !s.on) return false;
+			if (state.dioFilter === 'off' && s.on) return false;
+			if (state.dioFilter === 'forced' && !s.forced) return false;
+			if (state.dioDir !== 'all' && s.direction !== state.dioDir) return false;
+			return true;
+		}
+		const filtering = () => state.dioQuery !== '' || state.dioFilter !== 'all' || state.dioDir !== 'all';
+
+		function chipClass(s) {
+			return 'dio-chip' + (s.on ? ' on' : '') + (s.forced ? ' forced' : '') + (state.dioBusySignals.has(s.signal) ? ' busy' : '');
+		}
+		function chipTitle(s) {
+			return s.signal + ' · ' + (s.direction === 'input' ? '입력' : '출력') + ' · ' + (s.on ? 'ON' : 'OFF') + (s.forced ? ' · 강제됨' : '') +
+				'\n더블클릭: 강제 ' + (s.on ? 'OFF' : 'ON') + ' · 우클릭: 메뉴';
 		}
 
 		function renderDio(snapshot) {
 			renderHeader(snapshot);
-			state.dioSignals = Array.isArray(snapshot.signals) ? snapshot.signals : [];
-			const on = state.dioSignals.filter((item) => item.on).length;
-			const forced = state.dioSignals.filter((item) => item.forced).length;
-			$('dioTotal').textContent = String(state.dioSignals.length);
-			$('dioOn').textContent = String(on);
-			$('dioOff').textContent = String(state.dioSignals.length - on);
-			$('dioForced').textContent = String(forced);
-			if (!snapshot.connected) setDioNotice(snapshot.note || '제어기 연결이 끊겼습니다.', 'err');
-			else if (snapshot.note) setDioNotice(snapshot.note, 'err');
-			else setDioNotice(`Show DIO · ${state.dioSignals.length}개 신호 · ${forced}개 강제 상태`, '');
-			renderDioGrid();
+			state.dio = {
+				connected: !!snapshot.connected,
+				groups: Array.isArray(snapshot.groups) ? snapshot.groups : [],
+				absent: Array.isArray(snapshot.absent) ? snapshot.absent : [],
+				note: snapshot.note,
+			};
+			const all = allDioSignals();
+			const on = all.filter((s) => s.on).length;
+			const forced = all.filter((s) => s.forced).length;
+			$('dioSum').innerHTML = '신호 <b>' + all.length + '</b> · ON <b class="on">' + on + '</b> · 강제 <b class="forced">' + forced + '</b>';
+			$('ioTabCount').textContent = forced > 0 ? String(forced) : '';
+			$('ioTabCount').title = forced > 0 ? '강제된 신호 ' + forced + '개' : '';
+			const release = $('dioReleaseAll');
+			release.disabled = forced === 0 || state.dioBusy;
+			release.textContent = forced > 0 ? '강제 전체 해제 (' + forced + ')' : '강제 전체 해제';
+			if (!snapshot.connected) setDioNotice(snapshot.note || '제어기 연결이 끊겼습니다.', 'err', true);
+			else if (snapshot.note) setDioNotice(snapshot.note, 'err', true);
+			else if ($('dioNotice').classList.contains('err') && !state.dioBusy) setDioNotice('', '');
+			else if ($('dioNotice').textContent === 'Show DIO 상태를 불러오는 중…') setDioNotice('', '');
+			renderDioGroups();
+			state.dioPrev = new Map(all.map((s) => [s.signal, s.on]));
+		}
+
+		function renderDioGroups() {
+			const view = $('dioView');
+			const groups = state.dio.groups
+				.map((g) => Object.assign({}, g, { shown: g.signals.filter(dioMatches) }))
+				.filter((g) => !filtering() || g.shown.length > 0);
+			// 구성(그룹·보이는 신호·접힘)이 같으면 칩의 상태만 바꾼다 — 더블클릭 사이에 DOM 이 바뀌지 않게.
+			const key = groups.map((g) => g.id + (state.dioCollapsed.has(g.id) ? '-' : '+') + ':' + g.shown.map((s) => s.signal).join(',')).join('|') +
+				'#' + state.dio.absent.map((g) => g.id).join(',') + '#' + filtering();
+			if (key === state.dioLayoutKey) {
+				updateDioInPlace(groups);
+				return;
+			}
+			state.dioLayoutKey = key;
+			if (groups.length === 0) {
+				const text = state.dio.groups.length === 0 ? (state.dio.connected ? '표시할 DIO 신호가 없습니다.' : '데이터 없음') : '검색 조건과 일치하는 신호가 없습니다.';
+				view.innerHTML = '<div class="io-empty">' + esc(text) + '</div>';
+				return;
+			}
+			const section = (id, title) => {
+				const list = groups.filter((g) => g.section === id);
+				const absent = id === 'remote' && !filtering() ? state.dio.absent : [];
+				if (list.length === 0 && absent.length === 0) return '';
+				return '<h3 class="dio-sec">' + title + '</h3>' +
+					(list.length ? '<div class="dio-groups">' + list.map(groupHtml).join('') + '</div>' : '') +
+					(absent.length ? '<div class="dio-absent">미검출 ' + absent.map((g) => '<span title="' + esc(g.detail) + '">' + esc(g.title) + '</span>').join('') + '</div>' : '');
+			};
+			view.innerHTML = section('local', 'Local I/O') + section('remote', 'Remote I/O');
+			state.dio.groups.forEach((g) => { if (groupById(g.id)) updateGroupHead(g); });
+		}
+
+		function groupHtml(g) {
+			const rows = ['input', 'output'].map((dir) => {
+				const list = g.shown.filter((s) => s.direction === dir);
+				if (list.length === 0) return '';
+				const label = g.id === 'soft' ? 'REG' : DIR_LABEL[dir];
+				return '<div class="dio-row"><span class="dio-dir">' + label + '</span><div class="dio-chips">' +
+					list.map((s) => {
+						const changed = state.dioPrev.has(s.signal) && state.dioPrev.get(s.signal) !== s.on;
+						return '<button class="' + chipClass(s) + (changed ? ' chg' : '') + '" data-signal="' + s.signal + '" data-group="' + esc(g.id) + '" title="' + esc(chipTitle(s)) + '">' + s.signal + '</button>';
+					}).join('') + '</div></div>';
+			}).join('');
+			return '<section class="dio-group' + (g.signals.length > 24 ? ' wide' : '') + (g.forced ? ' has-forced' : '') + (state.dioCollapsed.has(g.id) ? ' collapsed' : '') + '" data-group="' + esc(g.id) + '">' +
+				'<header class="dio-ghead" data-group="' + esc(g.id) + '" title="' + esc(g.detail) + '"><span class="t">' + esc(g.title) + '</span>' +
+				'<span class="f"></span><span class="c"></span></header>' +
+				'<div class="dio-body">' + rows + '</div></section>';
+		}
+
+		function updateGroupHead(g) {
+			const box = document.querySelector('.dio-group[data-group="' + CSS.escape(g.id) + '"]');
+			if (!box) return;
+			box.classList.toggle('has-forced', g.forced > 0);
+			const f = box.querySelector('.dio-ghead .f');
+			f.textContent = g.forced > 0 ? '강제 ' + g.forced : '';
+			f.style.display = g.forced > 0 ? '' : 'none';
+			box.querySelector('.dio-ghead .c').textContent = 'ON ' + g.on + '/' + g.signals.length;
+		}
+
+		function updateDioInPlace(groups) {
+			groups.forEach((g) => {
+				updateGroupHead(g);
+				g.shown.forEach((s) => {
+					const el = document.querySelector('.dio-chip[data-signal="' + s.signal + '"]');
+					if (!el) return;
+					el.className = chipClass(s);
+					el.title = chipTitle(s);
+					if (state.dioPrev.has(s.signal) && state.dioPrev.get(s.signal) !== s.on) { void el.offsetWidth; el.classList.add('chg'); }
+				});
+			});
+		}
+
+		function setDioBusy(busy, signals) {
+			state.dioBusy = busy;
+			state.dioBusySignals = new Set(busy && Array.isArray(signals) ? signals : []);
+			document.querySelectorAll('.dio-chip').forEach((el) => el.classList.toggle('busy', state.dioBusySignals.has(Number(el.dataset.signal))));
+			const forced = allDioSignals().filter((s) => s.forced).length;
+			$('dioReleaseAll').disabled = forced === 0 || busy;
+		}
+
+		// ── DIO 우클릭 메뉴 ──
+		function closeDioMenu() { $('dioMenu').hidden = true; }
+		function openDioMenu(x, y, signal, groupId) {
+			const menu = $('dioMenu');
+			const s = signal !== undefined ? findDio(signal) : undefined;
+			const g = groupId ? groupById(groupId) : undefined;
+			const totalForced = allDioSignals().filter((it) => it.forced).length;
+			const item = (act, label, disabled, extra) => '<button role="menuitem" data-act="' + act + '"' + (extra || '') + (disabled || state.dioBusy ? ' disabled' : '') + '>' + esc(label) + '</button>';
+			let html = '';
+			if (s) {
+				html += '<div class="hd">' + s.signal + ' · ' + (s.direction === 'input' ? '입력' : '출력') + ' · ' + (s.on ? 'ON' : 'OFF') + (s.forced ? ' · 강제됨' : '') + '</div>';
+				html += item('force', '강제 ON', false, ' data-value="1"') + item('force', '강제 OFF', false, ' data-value="-1"') + item('force', '강제 해제', !s.forced, ' data-value="0"') + '<hr>';
+			} else if (g) {
+				html += '<div class="hd">' + esc(g.title) + ' · ON ' + g.on + '/' + g.signals.length + '</div>';
+			}
+			if (g) html += item('releaseGroup', g.title + ' 강제 해제' + (g.forced ? ' (' + g.forced + ')' : ''), !g.forced);
+			html += item('releaseAll', '모든 강제 해제' + (totalForced ? ' (' + totalForced + ')' : ''), !totalForced);
+			html += '<hr>';
+			if (s) html += '<button role="menuitem" data-act="copy">신호 번호 복사</button>';
+			html += '<button role="menuitem" data-act="expandAll">모두 펼치기</button><button role="menuitem" data-act="collapseAll">모두 접기</button>';
+			menu.innerHTML = html;
+			menu.dataset.signal = s ? String(s.signal) : '';
+			menu.dataset.group = g ? g.id : '';
+			menu.hidden = false;
+			const r = menu.getBoundingClientRect();
+			menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4)) + 'px';
+			menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4)) + 'px';
+			const firstEnabled = menu.querySelector('button:not(:disabled)');
+			if (firstEnabled) firstEnabled.focus();
+		}
+		function setAllCollapsed(collapsed) {
+			state.dioCollapsed = new Set(collapsed ? state.dio.groups.map((g) => g.id) : []);
+			saveUiState();
+			state.dioLayoutKey = '';
+			renderDioGroups();
+			$('dioExpand').textContent = collapsed ? '모두 펼치기' : '모두 접기';
 		}
 
 		function setBadge(id, cls, value, sub) {
@@ -868,17 +1082,20 @@
 			renderLog(s);
 		}
 
-		function applyConfig(cfg) {
-			if (typeof cfg.pollMs === 'number') {
-				const sel = $('intervalSel');
-				const opt = Array.from(sel.options).find((o) => Number(o.value) === cfg.pollMs);
-				if (!opt) {
-					const o = document.createElement('option');
-					o.value = String(cfg.pollMs); o.textContent = (cfg.pollMs / 1000) + 's';
-					sel.appendChild(o);
-				}
-				sel.value = String(cfg.pollMs);
+		// 목록에 없는 값(설정·직접 입력)은 크기 순서 자리에 선택지로 끼워 넣는다.
+		function selectMs(sel, ms) {
+			const options = Array.from(sel.options);
+			if (!options.some((o) => Number(o.value) === ms)) {
+				const o = document.createElement('option');
+				o.value = String(ms); o.textContent = (ms / 1000) + 's';
+				sel.insertBefore(o, options.find((x) => x.value === 'custom' || Number(x.value) > ms) || null);
 			}
+			sel.value = String(ms);
+		}
+
+		function applyConfig(cfg) {
+			if (typeof cfg.pollMs === 'number') { state.pollMs = cfg.pollMs; selectMs($('intervalSel'), cfg.pollMs); }
+			if (typeof cfg.diagnosticMs === 'number') selectMs($('diagSel'), cfg.diagnosticMs);
 			if (typeof cfg.paused === 'boolean') {
 				state.paused = cfg.paused;
 				$('pauseBtn').textContent = cfg.paused ? '재개' : '일시정지';
@@ -896,9 +1113,8 @@
 			} else if (msg.type === 'dio' && msg.dio) {
 				renderDio(msg.dio);
 			} else if (msg.type === 'dioAction') {
-				state.dioBusy = msg.busy === true;
-				setDioNotice(msg.message || '', msg.ok === true ? 'ok' : (msg.ok === false ? 'err' : ''));
-				renderDioGrid();
+				setDioBusy(msg.busy === true, msg.signals);
+				setDioNotice(msg.message || '', msg.ok === true ? 'ok' : (msg.ok === false ? 'err' : ''), msg.busy === true);
 			} else if (msg.type === 'config') {
 				applyConfig(msg);
 			} else if (msg.type === 'navigate') {
@@ -911,30 +1127,124 @@
 		});
 
 		$('refreshBtn').addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
-		$('intervalSel').addEventListener('change', (e) => vscode.postMessage({ type: 'setInterval', ms: Number(e.target.value) }));
+		$('intervalSel').addEventListener('change', (e) => {
+			const custom = e.target.value === 'custom';
+			$('intervalCustom').hidden = !custom;
+			if (custom) { $('intervalCustom').focus(); return; }
+			vscode.postMessage({ type: 'setInterval', ms: Number(e.target.value) });
+		});
+		$('intervalCustom').addEventListener('change', (e) => {
+			const sec = Number(e.target.value);
+			if (!Number.isFinite(sec) || sec <= 0) return;
+			e.target.hidden = true;
+			vscode.postMessage({ type: 'setInterval', ms: Math.round(sec * 1000) });
+		});
+		// 값을 넣지 않고 벗어나면 선택을 현재 주기로 되돌린다.
+		$('intervalCustom').addEventListener('blur', (e) => {
+			setTimeout(() => {
+				if (e.target.hidden) return;
+				e.target.hidden = true;
+				if (state.pollMs) $('intervalSel').value = String(state.pollMs);
+			}, 0);
+		});
+		$('diagSel').addEventListener('change', (e) => vscode.postMessage({ type: 'setDiagnosticInterval', ms: Number(e.target.value) }));
 		$('pauseBtn').addEventListener('click', () => vscode.postMessage({ type: 'pause', paused: !state.paused }));
 		$('statusTab').addEventListener('click', () => showPage('status'));
 		$('ioTab').addEventListener('click', () => showPage('io'));
 		$('dioSearch').addEventListener('input', (e) => {
 			state.dioQuery = String(e.target.value || '').replace(/[^0-9]/g, '');
 			if (e.target.value !== state.dioQuery) e.target.value = state.dioQuery;
-			renderDioGrid();
+			renderDioGroups();
 		});
-		document.querySelectorAll('[data-dio-filter]').forEach((button) => {
-			button.addEventListener('click', () => {
-				state.dioFilter = button.dataset.dioFilter || 'all';
-				document.querySelectorAll('[data-dio-filter]').forEach((item) => item.classList.toggle('active', item === button));
-				renderDioGrid();
+		function bindSeg(attr, key) {
+			const buttons = document.querySelectorAll('[' + attr + ']');
+			const value = (b) => b.getAttribute(attr);
+			buttons.forEach((b) => b.classList.toggle('active', value(b) === state[key]));
+			buttons.forEach((button) => button.addEventListener('click', () => {
+				state[key] = value(button) || 'all';
+				buttons.forEach((b) => b.classList.toggle('active', b === button));
+				saveUiState();
+				renderDioGroups();
+			}));
+		}
+		bindSeg('data-dio-filter', 'dioFilter');
+		bindSeg('data-dio-dir', 'dioDir');
+		$('dioExpand').addEventListener('click', () => setAllCollapsed(state.dioCollapsed.size < state.dio.groups.length));
+		$('dioReleaseAll').addEventListener('click', () => vscode.postMessage({ type: 'releaseDio' }));
+
+		const dioView = $('dioView');
+		dioView.addEventListener('click', (event) => {
+			const head = event.target.closest('.dio-ghead');
+			if (!head) return;
+			const id = head.dataset.group;
+			if (state.dioCollapsed.has(id)) state.dioCollapsed.delete(id); else state.dioCollapsed.add(id);
+			saveUiState();
+			renderDioGroups();
+		});
+		dioView.addEventListener('dblclick', (event) => {
+			const chip = event.target.closest('.dio-chip');
+			if (!chip) return;
+			window.getSelection()?.removeAllRanges();
+			if (state.dioBusy) { setDioNotice('이전 Set DIO 를 처리하는 중입니다.', ''); return; }
+			vscode.postMessage({ type: 'toggleDio', signal: Number(chip.dataset.signal) });
+		});
+		$('ioPage').addEventListener('contextmenu', (event) => {
+			if (event.target.closest('input')) return;
+			event.preventDefault();
+			const chip = event.target.closest('.dio-chip');
+			const head = event.target.closest('.dio-ghead');
+			const anchor = chip || head;
+			let x = event.clientX, y = event.clientY;
+			if (anchor && x === 0 && y === 0) { const r = anchor.getBoundingClientRect(); x = r.left; y = r.bottom; }   // 키보드(Shift+F10)
+			openDioMenu(x, y, chip ? Number(chip.dataset.signal) : undefined, chip ? chip.dataset.group : (head ? head.dataset.group : undefined));
+		});
+		$('dioMenu').addEventListener('click', (event) => {
+			const button = event.target.closest('button[data-act]');
+			if (!button || button.disabled) return;
+			const menu = $('dioMenu');
+			const signal = menu.dataset.signal ? Number(menu.dataset.signal) : undefined;
+			const group = menu.dataset.group || undefined;
+			closeDioMenu();
+			switch (button.dataset.act) {
+				case 'force': vscode.postMessage({ type: 'setDio', signal, value: Number(button.dataset.value) }); break;
+				case 'releaseGroup': vscode.postMessage({ type: 'releaseDio', group }); break;
+				case 'releaseAll': vscode.postMessage({ type: 'releaseDio' }); break;
+				case 'copy':
+					navigator.clipboard.writeText(String(signal)).then(() => setDioNotice('신호 번호 ' + signal + ' 복사됨', 'ok'), () => setDioNotice('클립보드 복사 실패', 'err'));
+					break;
+				case 'expandAll': setAllCollapsed(false); break;
+				case 'collapseAll': setAllCollapsed(true); break;
+			}
+		});
+		document.addEventListener('mousedown', (event) => { if (!event.target.closest('#dioMenu')) closeDioMenu(); });
+		window.addEventListener('blur', closeDioMenu);
+		window.addEventListener('resize', closeDioMenu);
+		document.addEventListener('scroll', closeDioMenu, true);
+
+		// 상태 카드 접기: 제목(h2)을 누르면 접히고, 펼침 상태는 보존된다.
+		document.querySelectorAll('#statusPage .card').forEach((card, index) => {
+			card.classList.toggle('collapsed', state.collapsedCards.has(index));
+			card.querySelector('h2').addEventListener('click', (event) => {
+				if (event.target.closest('.sub')) return;
+				card.classList.toggle('collapsed');
+				if (card.classList.contains('collapsed')) state.collapsedCards.add(index); else state.collapsedCards.delete(index);
+				saveUiState();
 			});
 		});
-		$('dioGrid').addEventListener('click', (event) => {
-			const button = event.target.closest('button[data-dio-signal]');
-			if (!button || state.dioBusy) return;
-			vscode.postMessage({
-				type: 'setDio',
-				signal: Number(button.dataset.dioSignal),
-				value: Number(button.dataset.dioValue),
-			});
+
+		// 단축키(입력 칸 밖): R 새로고침 · P 일시정지 · 1/2 탭 · / I/O 검색 · Esc 메뉴 닫기
+		document.addEventListener('keydown', (event) => {
+			if (event.key === 'Escape') { closeDioMenu(); return; }
+			if (event.ctrlKey || event.metaKey || event.altKey) return;
+			if (event.target.closest('input, select, textarea')) return;
+			const key = event.key.toLowerCase();
+			if (key === 'r') vscode.postMessage({ type: 'refresh' });
+			else if (key === 'p') vscode.postMessage({ type: 'pause', paused: !state.paused });
+			else if (key === '1') showPage('status');
+			else if (key === '2') showPage('io');
+			else if (key === '/' ) { showPage('io'); $('dioSearch').focus(); }
+			else return;
+			event.preventDefault();
 		});
 
 		vscode.postMessage({ type: 'ready' });

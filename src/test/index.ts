@@ -149,6 +149,7 @@ import './activation/deploy/deployTargetRules.test';
 import './controller/deployment/deployStages.test';
 import './views/tree/snapshotMarkdown.test';
 import './util/pathKey.test';
+import './debug/session/sessionStepPoll.test';
 import { run } from './harness';
 
 void run();

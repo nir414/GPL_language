@@ -10,7 +10,7 @@
  * 왜 `gpl.*` 만인가: 접근 제한이 아니라 범위 한정이다 — 이 확장의 진입점이 임의 VS Code 명령(`workbench.action.terminal.sendSequence` 등)의
  * 프록시가 되면 안 된다. 제어기 안전 조건은 명령 계층의 정책(commandPolicy.ts)이 경로와 무관하게 충족시키므로 여기에 허용 목록을 두지 않는다.
  *
- * 단위 테스트: src/test/uriDispatch.test.ts
+ * 단위 테스트: src/test/controller/automation/uriDispatch.test.ts
  */
 
 export type UriAliasAction = 'connect' | 'disconnect' | 'getState' | 'dashboard';

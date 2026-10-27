@@ -28,7 +28,7 @@ export interface CompileStaleCleared {
 }
 
 /**
- * 이 상태가 "무슨 뜻이고 왜 문제인가"를 한 문장으로. 트리·상태바 배지 툴팁(`views/compileStaleBadge`), Start 전 확인 모달,
+ * 이 상태가 "무슨 뜻이고 왜 문제인가"를 한 문장으로. 트리·상태바 배지 툴팁(`views/statusbar/compileStaleBadge`), Start 전 확인 모달,
  * 자동화 오류(`COMPILE_UNVERIFIED`)가 모두 이 문장을 쓴다 — 각자 조립하던 사본 4벌을 정본 하나로(§1-DV, 구조 테스트 R7 이
  * 사본을 잡는다). 앞뒤 맥락(클릭 안내·선택지·재호출 방법)은 호출부가 붙인다. `formatTime` 은 테스트용 주입.
  */

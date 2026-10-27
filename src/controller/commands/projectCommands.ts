@@ -17,7 +17,7 @@
  * 그래서 절차를 여기 하나로 모으고, 호출부는 전송 수단(IO)과 **정책(재시도 여부·복구 허용 여부)** 만 정한다.
  * 결과는 불리언이 아니라 구조화해서 돌려주므로, 진단(Problems) 표시·모달 확인 같은 UI 는 호출부가 그대로 맡는다.
  *
- * 단위 테스트: `src/test/projectCommands.test.ts` (가짜 IO 로 시나리오를 재현한다).
+ * 단위 테스트: `src/test/controller/commands/projectCommands.test.ts` (가짜 IO 로 시나리오를 재현한다).
  */
 
 import { buildStartCommand, commandRunsCompiler, StartCommandOptions } from './startCommand';

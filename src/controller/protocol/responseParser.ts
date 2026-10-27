@@ -637,7 +637,7 @@ export interface GprInfo {
     projectName: string;
     projectStart: string;
     sources: string[];
-    /** `ProjectLibrary="…"` 값(원문 그대로, 0..N). 경로 해석은 `project/projectSources.ts`. */
+    /** `ProjectLibrary="…"` 값(원문 그대로, 0..N). 경로 해석은 `project/sources/projectSources.ts`. */
     libraries: string[];
 }
 

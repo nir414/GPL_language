@@ -14,7 +14,7 @@
  */
 import * as vscode from 'vscode';
 import { SymbolCache } from '../language/vscode/symbolCache';
-import { GPLDiagnosticProvider } from '../providers/diagnosticProvider';
+import { GPLDiagnosticProvider } from '../providers/diagnostics/diagnosticProvider';
 import { getControllerConfig, setIdlePingActive } from '../controller/connection/controllerConnection';
 import { isControllerSessionConnected, setControllerSessionConnected } from '../controller/connection/connectionSession';
 import { AgentBridgeServer, newExtensionInstanceId } from '../controller/automation/agentBridge';
@@ -27,16 +27,16 @@ import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controll
 import { CompileStaleInfo, CompileStaleTracker } from '../controller/deployment/compileStale';
 import { ControllerEventLog } from '../controller/diagnostics/recentEvents';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
-import { ControllerTreeProvider, RuntimeErrorContext } from '../views/controllerTreeProvider';
+import { ControllerTreeProvider, RuntimeErrorContext } from '../views/tree/controllerTreeProvider';
 import type { SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
-import { ConnectionStatusBar } from '../views/connectionStatusBar';
+import { ConnectionStatusBar } from '../views/statusbar/connectionStatusBar';
 import { appendLiveLog } from '../log/liveLogTerminal';
 import { fireDebugPollTrigger } from '../controller/debugging/debugBridge';
 import { EXTENSION_VERSION } from '../config';
-import type { ProjectContextApi } from './projectContext';
-import type { ConnectionApi } from './connection';
-import type { DeployApi } from './deploy';
-import type { ExecutionDecorations } from './debugDecorations';
+import type { ProjectContextApi } from './deploy/projectContext';
+import type { ConnectionApi } from './controller/connection';
+import type { DeployApi } from './deploy/deploy';
+import type { ExecutionDecorations } from './debug/debugDecorations';
 
 export class ExtensionHost {
 	// ── 서비스(불변) ──────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ export class ExtensionHost {
 	/**
 	 * 세션 대상 프로젝트 **폴더**(단일 출처, 메모리 전용) — 자동화 대상 해석(`project_target`·`gpl.automation.target`,
 	 * `controller/projects/projectTarget.ts` 규칙 3), 사람의 QuickPick 선택, 디버그 세션의 `projectDir` 가 갱신한다.
-	 * 배포 대상이면서 **동명 소스 해석의 1순위 기준**이다(`project/compileUnitTarget.ts`) — 제어기는 파일명만
+	 * 배포 대상이면서 **동명 소스 해석의 1순위 기준**이다(`project/sources/compileUnitTarget.ts`) — 제어기는 파일명만
 	 * 주므로, 과제별 동명 프로젝트가 여럿인 워크스페이스에서 이 값이 없으면 어느 사본을 열지 임의로 갈린다.
 	 */
 	sessionTargetDir: string | undefined;

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { extractBaseObjectName } from './language/cursorExpression';
+import { extractBaseObjectName } from './language/syntax/cursorExpression';
 
 /** package.json의 version을 단일 소스로 사용 */
 export const EXTENSION_VERSION: string = require('../package.json').version;
@@ -198,17 +198,17 @@ export function getQualifiedWordAtPosition(
     return { range: segRange, word: chosen.text, qualifier };
 }
 
-// isInCommentOrString의 정본은 language/cursorExpression.ts로 이동했다
+// isInCommentOrString의 정본은 language/syntax/cursorExpression.ts로 이동했다
 // (vscode 비의존 모듈에서도 쓰기 위함). 기존 import 경로 호환을 위해 re-export.
-export { isInCommentOrString } from './language/cursorExpression';
+export { isInCommentOrString } from './language/syntax/cursorExpression';
 
 /**
  * 심볼 해석 대상이 될 수 없는 GPL(VB계열) 예약어(제어문/연산자/리터럴) — 정의 요청에서
  * 조기 반환해 멤버 해석/캐시 미스/텍스트 스캔 낭비를 없앤다.
- * 정본은 language/gplReservedWords.ts (예약어를 보는 모든 곳이 한 목록을 쓰게 통합) —
+ * 정본은 language/syntax/gplReservedWords.ts (예약어를 보는 모든 곳이 한 목록을 쓰게 통합) —
  * 기존 import 경로 호환을 위해 여기서 재노출한다.
  */
-export { GPL_CONTROL_KEYWORDS } from './language/gplReservedWords';
+export { GPL_CONTROL_KEYWORDS } from './language/syntax/gplReservedWords';
 
 /** 1403 런타임 콘솔 자동 시작 — Deploy/Build 성공 뒤. 설정은 사용 시점에 읽는다(재시작 없이 반영). 기본 true(package.json 과 동일). */
 export function isRuntimeConsoleAutoStartOnDeploy(workspace: WorkspaceConfigHost): boolean {

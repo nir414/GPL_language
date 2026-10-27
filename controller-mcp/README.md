@@ -99,7 +99,7 @@ claude mcp add gpl-controller \
 2. **GPL 문서화 주석 규약** — GPL 소스를 쓰거나 고칠 때 선언 바로 위에 남기는 주석 형식.
    설명은 항상, `# Parameters`는 매개변수가 있을 때, `# Returns`는 반환값이 있을 때,
    `# Examples`는 도움이 될 때만. VS Code 확장이 이 형식을 호버·자동완성·시그니처 도움말에
-   구조로 표시한다(형식의 단일 출처는 확장의 `src/language/docComment.ts`).
+   구조로 표시한다(형식의 단일 출처는 확장의 `src/language/documentation/docComment.ts`).
 
 ```gpl
 ' 값을 지정된 범위로 제한합니다.

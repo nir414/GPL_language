@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { isTraceOn } from '../../config';
-import type { GPLSymbol } from '../gplParser';
-import type { CallContext } from '../overloadResolution';
-import { isMissingFile } from '../symbolLocations';
+import type { GPLSymbol } from '../syntax/gplParser';
+import type { CallContext } from '../analysis/overloadResolution';
+import { isMissingFile } from '../symbols/symbolLocations';
 import { SymbolIndex } from '../symbols/symbolIndex';
 import { SymbolProjectScope } from '../../project/symbols/symbolProjectScope';
 import { WorkspaceSourceLoader, FileReferences } from './workspaceSourceLoader';
@@ -20,7 +20,7 @@ export class SymbolCache {
 
     /**
      * @param workspaceFolderFor 경로 근접도 점수(scoreFilePath)의 "최상위 폴더" 기준. 기본은 VS Code 작업공간 폴더.
-     *   원격 소스 세션(activation/controllerSourceLanguage)은 TMP 캐시 루트를 넘겨, 열어 본 원격 사본이 매핑된 로컬 사본보다
+     *   원격 소스 세션(activation/remote/controllerSourceLanguage)은 TMP 캐시 루트를 넘겨, 열어 본 원격 사본이 매핑된 로컬 사본보다
      *   같은 프로젝트 폴더 점수로 앞서게 한다.
      */
     constructor(

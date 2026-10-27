@@ -3,7 +3,7 @@
  *
  * FTP 업로드(`ftpClient.uploadProject`/`mirrorProject`)가 파일 단위·바이트 단위로 알리는 진행을 하나의 스냅샷으로
  * 모아 이벤트로 내보낸다(`UploadProgressTracker`). 어떻게 보이는가(진행 바 글자·툴팁·완료 요약)는
- * `views/uploadProgressBar`(순수)에 있고, 상태바(`views/connectionStatusBar`)가 그것을 그린다(ai-handoff §1-EE).
+ * `views/statusbar/uploadProgressBar`(순수)에 있고, 상태바(`views/statusbar/connectionStatusBar`)가 그것을 그린다(ai-handoff §1-EE).
  * 출력 패널은 한 번 쓴 줄을 제자리에서 고칠 수 없으므로 움직이는 바는 상태바에만 그리고, 출력 패널에는 종전처럼
  * 파일별 한 줄 로그만 남긴다.
  *

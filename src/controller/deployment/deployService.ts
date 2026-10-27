@@ -46,12 +46,12 @@ import { compareProvenance, describeProvenance } from './deployProvenance';
 import type { ProvenanceReport } from './deployProvenance';
 import { checkProjectName, describeProjectNameProblem } from '../projects/projectNameGuard';
 import { isPathUnder } from '../../util/pathKey';
-import { ancestorRelativePathCandidates, resolveProjectLibraryDirs } from '../../project/projectSources';
-import { checkGprFolderSync, describeGprSyncPlan, sourceExtensionsFrom } from '../../project/gprFolderSync';
+import { ancestorRelativePathCandidates, resolveProjectLibraryDirs } from '../../project/sources/projectSources';
+import { checkGprFolderSync, describeGprSyncPlan, sourceExtensionsFrom } from '../../project/gpr/gprFolderSync';
 import { shouldPromptForStartConfirmation } from '../commands/startCommand';
 import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../projects/remoteProjectPath';
-import { PROJECT_EXCLUDE_GLOB } from '../../project/projectFileScope';
-import { collapseControllerProjectDirs, getControllerProjectWriteBlock } from '../../project/controllerProjectWorkspace';
+import { PROJECT_EXCLUDE_GLOB } from '../../project/sources/projectFileScope';
+import { collapseControllerProjectDirs, getControllerProjectWriteBlock } from '../../project/remote/controllerProjectWorkspace';
 import type { UploadProgressEvent, UploadSummary } from './uploadProgress';
 import {
     beginMemoryNoticeScope,

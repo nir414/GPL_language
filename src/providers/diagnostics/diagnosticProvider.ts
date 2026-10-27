@@ -1,0 +1,554 @@
+import * as vscode from 'vscode';
+import { GPLParser } from '../../language/syntax/gplParser';
+import { findInitHookFindings, InitHookSeverity } from '../../language/checks/initHook';
+import { isGplFile } from '../../config';
+import { findTryCatchFindings } from '../../language/checks/tryCatch';
+import { CompilerCheckSeverity, CompilerSymbolLookup, findCompilerCheckFindings } from '../../language/checks/compilerChecks';
+
+/** 실기 확인 컴파일러·제어기 사실 검사의 진단 source — 빠른 수정(codeActionProvider)이 이 값으로 고른다. */
+export const COMPILER_CHECK_SOURCE = 'GPL Compiler Check';
+
+export class GPLDiagnosticProvider {
+    private diagnosticCollection: vscode.DiagnosticCollection;
+    private pendingTimers: Map<string, NodeJS.Timeout> = new Map();
+
+    /**
+     * XML/성능/호환성 등 기존 진단은 실험 설정이 켜진 경우에만 동작한다.
+     * Try/Finally 호환성 안내는 별도 설정으로 선택 활성화한다.
+     */
+    private static isExperimentalDiagnosticsEnabled(): boolean {
+        return vscode.workspace.getConfiguration('gpl').get<boolean>('diagnostics.experimental', false) === true;
+    }
+
+    /**
+     * @param symbolLookup 다른 파일(같은 컴파일 단위·참조 라이브러리)의 심볼 조회 — 보통 `SymbolCache`.
+     *   없으면 실기 확인 검사가 현재 파일만으로 판정한다.
+     */
+    constructor(private readonly symbolLookup?: CompilerSymbolLookup) {
+        this.diagnosticCollection = vscode.languages.createDiagnosticCollection('gpl');
+    }
+
+    /**
+     * 문서의 진단 정보를 업데이트
+     */
+    public updateDiagnostics(document: vscode.TextDocument): void {
+        if (!isGplFile(document)) {
+            return;
+        }
+
+        const diagnostics: vscode.Diagnostic[] = [];
+        if (vscode.workspace.getConfiguration('gpl', document.uri).get<boolean>('diagnostics.tryWithoutCatch', false)) {
+            diagnostics.push(...findTryCatchFindings(document.getText()).map(finding => {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(finding.line, finding.start, finding.line, finding.end),
+                    finding.message,
+                    vscode.DiagnosticSeverity.Information,
+                );
+                diagnostic.source = 'GPL Compatibility';
+                diagnostic.code = finding.code;
+                return diagnostic;
+            }));
+        }
+
+        // 실기 컴파일러·제어기로 확인한 사실 검사 — 기본 켜짐(gpl.diagnostics.compilerChecks). 규칙은 language/checks/compilerChecks.
+        if (vscode.workspace.getConfiguration('gpl', document.uri).get<boolean>('diagnostics.compilerChecks', true)) {
+            diagnostics.push(...this.detectCompilerCheckIssues(document));
+        }
+
+        // 선택 활성화한 호환성 안내는 실험 진단과 독립적으로 표시한다.
+        if (!GPLDiagnosticProvider.isExperimentalDiagnosticsEnabled()) {
+            this.diagnosticCollection.set(document.uri, diagnostics);
+            return;
+        }
+        const content = document.getText();
+        const lines = content.split('\n');
+
+        // XML 관련 함수들 분석
+        const symbols = GPLParser.parseDocument(content, document.uri.fsPath);
+        const xmlFunctions = symbols.filter(symbol => 
+            symbol.isXmlRelated && 
+            (symbol.kind === 'function' || symbol.kind === 'sub')
+        );
+
+        for (const func of xmlFunctions) {
+            if (func.hasXmlIssues && func.hasXmlIssues.length > 0) {
+                for (const issue of func.hasXmlIssues) {
+                    const diagnostic = new vscode.Diagnostic(
+                        new vscode.Range(func.line, 0, func.line, lines[func.line]?.length || 0),
+                        issue,
+                        this.mapIssueToSeverity(issue)
+                    );
+                    diagnostic.source = 'GPL XML Analysis';
+                    diagnostic.code = 'xml-issue';
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+
+        // 위험한 XML 패턴 검사
+        diagnostics.push(...this.detectDangerousXmlPatterns(document));
+        
+        // 성능 이슈 검사
+        diagnostics.push(...this.detectPerformanceIssues(document));
+        
+        // 재인코딩 위험 검사
+        diagnostics.push(...this.detectReencodingRisks(document));
+        
+        // VB.NET 호환성 이슈 검사
+        diagnostics.push(...this.detectVBCompatibilityIssues(document));
+
+        // 함수/서브 명명 규칙 검사 (첫 글자 대문자)
+        diagnostics.push(...this.detectFunctionNameCasingIssues(document));
+
+        // `Init` 모듈 초기화 훅 충돌 — 클래스 멤버 Init(-757 사고 경로)·_Init·모듈 수준 Init(hint). 규칙은 language/checks/initHook.
+        diagnostics.push(...this.detectInitHookIssues(document));
+
+        this.diagnosticCollection.set(document.uri, diagnostics);
+    }
+
+    /**
+     * Debounced diagnostics scheduling to avoid frequent recomputation
+     */
+    public scheduleDiagnostics(document: vscode.TextDocument, delayMs: number = 500): void {
+        if (!isGplFile(document)) {
+            return;
+        }
+
+        const key = document.uri.toString();
+        const existing = this.pendingTimers.get(key);
+        if (existing) {
+            clearTimeout(existing);
+        }
+
+        const timer = setTimeout(() => {
+            this.pendingTimers.delete(key);
+            this.updateDiagnostics(document);
+        }, delayMs);
+
+        this.pendingTimers.set(key, timer);
+    }
+
+    /**
+     * Clear diagnostics and any pending timer for a given document URI.
+     * Useful when files are deleted or renamed to avoid stale ("garbage") diagnostics.
+     */
+    public clearDiagnostics(uri: vscode.Uri): void {
+        const key = uri.toString();
+        const existing = this.pendingTimers.get(key);
+        if (existing) {
+            clearTimeout(existing);
+            this.pendingTimers.delete(key);
+        }
+
+        this.diagnosticCollection.delete(uri);
+    }
+
+    /**
+     * 위험한 XML 패턴 검사
+     */
+    private detectDangerousXmlPatterns(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const diagnostics: vscode.Diagnostic[] = [];
+        const content = document.getText();
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            // 주석 부분만 잘라내고 검사한다(위치 보존). 이 검사들은 문자열 리터럴 "안"의
+            // 엔티티가 검사 대상이므로 stripCommentsAndStrings(문자열까지 공백화)를 쓰면
+            // 검출 자체가 사라진다 — 주석 오탐만 제거하는 최소 적용.
+            const codeLine = this.stripInlineComment(line);
+
+            // 수동 XML 이스케이프 패턴 감지
+            const manualEscapePattern = /outStr\s*=\s*outStr\s*&\s*"&(amp|lt|gt|quot|apos);"/gi;
+            let match;
+            while ((match = manualEscapePattern.exec(codeLine)) !== null) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, match.index, i, match.index + match[0].length),
+                    '수동 XML 이스케이프 감지: 내장 XmlDoc.EncodeEntities 사용을 권장합니다',
+                    vscode.DiagnosticSeverity.Information
+                );
+                diagnostic.source = 'GPL XML Analysis';
+                diagnostic.code = 'manual-xml-escape';
+                diagnostics.push(diagnostic);
+            }
+
+            // 잘못된 엔티티 순서 검사
+            if (this.hasWrongEntityOrder(codeLine)) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, 0, i, line.length),
+                    '엔티티 치환 순서 오류: & 문자를 다른 엔티티보다 먼저 처리해야 합니다',
+                    vscode.DiagnosticSeverity.Error
+                );
+                diagnostic.source = 'GPL XML Analysis';
+                diagnostic.code = 'wrong-entity-order';
+                diagnostics.push(diagnostic);
+            }
+
+            // 재인코딩 위험 패턴
+            if (this.hasReencodingRisk(codeLine)) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, 0, i, line.length),
+                    '재인코딩 위험: 이미 인코딩된 텍스트가 다시 인코딩될 수 있습니다',
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'GPL XML Analysis';
+                diagnostic.code = 'reencode-risk';
+                diagnostics.push(diagnostic);
+            }
+        }
+
+        return diagnostics;
+    }
+
+    /**
+     * 성능 이슈 검사
+     */
+    private detectPerformanceIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const diagnostics: vscode.Diagnostic[] = [];
+        const content = document.getText();
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            // 주석·문자열을 공백화한 코드로만 검사 — 주석/문자열 속 예시 코드 오탐 제거.
+            const codeLine = this.stripCommentsAndStrings(line);
+
+            // O(n²) 문자열 연결 패턴
+            const stringConcatPattern = /(\w+)\s*=\s*\1\s*&/gi;
+            let match;
+            while ((match = stringConcatPattern.exec(codeLine)) !== null) {
+                // XML 관련 변수명인지 확인
+                if (/xml|escape|encode|out/i.test(match[1])) {
+                    const diagnostic = new vscode.Diagnostic(
+                        new vscode.Range(i, match.index, i, match.index + match[0].length),
+                        `O(n²) 성능 이슈: 반복적인 문자열 연결로 인한 성능 저하 (변수: ${match[1]})`,
+                        vscode.DiagnosticSeverity.Warning
+                    );
+                    diagnostic.source = 'GPL Performance Analysis';
+                    diagnostic.code = 'string-concat-performance';
+                    diagnostics.push(diagnostic);
+                }
+            }
+
+            // 불필요한 문자별 처리 감지
+            if (/For\s+i\s+=.*Len\(.*\).*Mid\(/i.test(codeLine) && /xml|escape/i.test(content)) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, 0, i, line.length),
+                    '성능 최적화 기회: 빠른 탈출 로직과 청크 기반 처리를 고려하세요',
+                    vscode.DiagnosticSeverity.Information
+                );
+                diagnostic.source = 'GPL Performance Analysis';
+                diagnostic.code = 'optimization-opportunity';
+                diagnostics.push(diagnostic);
+            }
+        }
+
+        return diagnostics;
+    }
+
+    /**
+     * 재인코딩 위험 검사
+     */
+    private detectReencodingRisks(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const diagnostics: vscode.Diagnostic[] = [];
+        const content = document.getText();
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+
+            // 이미 인코딩된 텍스트를 다시 인코딩하는 패턴
+            if (line.includes('&amp;') && /Replace.*&.*&amp;/i.test(line)) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, 0, i, line.length),
+                    '재인코딩 위험: &amp; → &amp;amp; 변환 가능성',
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'GPL XML Analysis';
+                diagnostic.code = 'double-encoding-risk';
+                diagnostics.push(diagnostic);
+            }
+
+            // 멱등성 부족 감지
+            if (this.lacksIdempotency(line)) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, 0, i, line.length),
+                    '멱등성 부족: 동일한 입력에 대해 여러 번 호출 시 다른 결과 가능',
+                    vscode.DiagnosticSeverity.Information
+                );
+                diagnostic.source = 'GPL XML Analysis';
+                diagnostic.code = 'lack-idempotency';
+                diagnostics.push(diagnostic);
+            }
+        }
+
+        return diagnostics;
+    }
+
+    /**
+     * 이슈를 심각도로 매핑
+     */
+    private mapIssueToSeverity(issue: string): vscode.DiagnosticSeverity {
+        if (issue.includes('O(n²)')) {
+            return vscode.DiagnosticSeverity.Warning;
+        }
+        if (issue.includes('재인코딩') || issue.includes('순서 오류')) {
+            return vscode.DiagnosticSeverity.Error;
+        }
+        if (issue.includes('Null 안전성')) {
+            return vscode.DiagnosticSeverity.Warning;
+        }
+        return vscode.DiagnosticSeverity.Information;
+    }
+
+    /**
+     * 잘못된 엔티티 순서 검사
+     */
+    private hasWrongEntityOrder(line: string): boolean {
+        const ampIndex = line.indexOf('&amp;');
+        const otherEntityIndex = Math.max(
+            line.indexOf('&lt;'),
+            line.indexOf('&gt;'),
+            line.indexOf('&quot;'),
+            line.indexOf('&apos;')
+        );
+        
+        return ampIndex > -1 && otherEntityIndex > -1 && ampIndex > otherEntityIndex;
+    }
+
+    /**
+     * 재인코딩 위험 검사
+     */
+    private hasReencodingRisk(line: string): boolean {
+        return line.includes('&amp;') && 
+               /Replace.*&.*&amp;/i.test(line) && 
+               !line.includes('DecodeEntities');
+    }
+
+    /**
+     * 멱등성 부족 검사
+     */
+    private lacksIdempotency(line: string): boolean {
+        return /escape.*xml|xml.*escape/i.test(line) && 
+               !line.includes('DecodeEntities') && 
+               (line.includes('&amp;') || line.includes('Replace'));
+    }
+
+    /**
+     * 문자열 리터럴은 보존하고 인라인 주석(문자열 밖 `'` 이후)만 잘라낸다.
+     * XML 엔티티 검사류는 문자열 내용이 검사 대상이라 stripCommentsAndStrings를 쓸 수 없다.
+     */
+    private stripInlineComment(line: string): string {
+        let inString = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') {
+                if (inString && i + 1 < line.length && line[i + 1] === '"') {
+                    i++; // 이스케이프된 "" 건너뛰기
+                    continue;
+                }
+                inString = !inString;
+            } else if (ch === "'" && !inString) {
+                return line.slice(0, i);
+            }
+        }
+        return line;
+    }
+
+    /**
+     * 인라인 주석과 문자열 리터럴을 제거하여 실제 코드 부분만 반환
+     */
+    private stripCommentsAndStrings(line: string): string {
+        let result = '';
+        let inString = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inString) {
+                if (ch === '"') {
+                    // VB/GPL: 연속 "" 는 이스케이프된 따옴표
+                    if (i + 1 < line.length && line[i + 1] === '"') {
+                        i++; // skip escaped quote
+                        continue;
+                    }
+                    inString = false;
+                }
+                // 문자열 내부 문자는 공백으로 대체 (위치 보존)
+                result += ' ';
+            } else {
+                if (ch === '"') {
+                    inString = true;
+                    result += ' ';
+                } else if (ch === "'") {
+                    // 인라인 주석 시작 — 나머지 무시
+                    break;
+                } else {
+                    result += ch;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * VB.NET 호환성 이슈 검사
+     *
+     * 참고: Optional 파라미터 진단(optional-parameter)은 삭제됨 — 오버로드 해석 모듈이
+     * Optional/ParamArray를 지원 사양으로 다루므로 "GPL 미지원" 오류 표시는 모순이었다.
+     */
+    private detectVBCompatibilityIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const diagnostics: vscode.Diagnostic[] = [];
+        const lines = document.getText().split('\n');
+        
+        // On Error GoTo 패턴
+        const onErrorPattern = /\bOn\s+Error\s+(GoTo|Resume)\b/i;
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmedLine = line.trim();
+            
+            // 전체 주석 또는 빈 줄 건너뛰기
+            if (trimmedLine.startsWith("'") || trimmedLine === '') {
+                continue;
+            }
+
+            // 인라인 주석·문자열 리터럴을 제거한 코드만 검사
+            const codePart = this.stripCommentsAndStrings(line);
+
+            // On Error GoTo 검사
+            if (onErrorPattern.test(codePart)) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, 0, i, line.length),
+                    'GPL에서는 On Error GoTo를 지원하지 않습니다. Try...Catch 구문을 사용해주세요.',
+                    vscode.DiagnosticSeverity.Error
+                );
+                diagnostic.source = 'GPL VB Compatibility';
+                diagnostic.code = 'on-error-goto';
+                diagnostics.push(diagnostic);
+            }
+            
+            // Dictionary 타입 사용 검사
+            if (/\bDictionary\b/i.test(codePart)) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, 0, i, line.length),
+                    'GPL에서는 Dictionary 타입을 지원하지 않습니다. 배열이나 사용자 정의 타입을 사용해주세요.',
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'GPL VB Compatibility';
+                diagnostic.code = 'dictionary-not-supported';
+                diagnostics.push(diagnostic);
+            }
+            
+            // Object 타입 사용 검사 (다형성 제한)
+            if (/\bAs\s+Object\b/i.test(codePart)) {
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(i, 0, i, line.length),
+                    'GPL에서는 Object 타입의 다형적 사용이 제한됩니다. 구체적인 타입을 사용하세요.',
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'GPL VB Compatibility';
+                diagnostic.code = 'object-type-limitation';
+                diagnostics.push(diagnostic);
+            }
+        }
+        
+        return diagnostics;
+    }
+
+    /**
+     * 함수/서브 이름 첫 글자 대문자 규칙 검사
+     * - 대상: Function, Sub (생성자 New는 제외)
+     * - 심각도: Warning
+     */
+    private detectFunctionNameCasingIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const diagnostics: vscode.Diagnostic[] = [];
+        const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+
+        const callableSymbols = symbols.filter(symbol =>
+            (symbol.kind === 'function' || symbol.kind === 'sub') &&
+            symbol.name.toLowerCase() !== 'new'
+        );
+
+        for (const symbol of callableSymbols) {
+            const name = symbol.name || '';
+            if (!name) {
+                continue;
+            }
+
+            const first = name.charAt(0);
+            if (first !== first.toUpperCase()) {
+                const start = Math.max(0, symbol.range?.start ?? 0);
+                const end = Math.max(start + 1, symbol.range?.end ?? (start + name.length));
+
+                const diagnostic = new vscode.Diagnostic(
+                    new vscode.Range(symbol.line, start, symbol.line, end),
+                    `함수/서브 이름은 첫 글자를 대문자로 시작하세요: ${name}`,
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'GPL Naming Convention';
+                diagnostic.code = 'function-name-first-letter-uppercase';
+                diagnostics.push(diagnostic);
+            }
+        }
+
+        return diagnostics;
+    }
+
+    /**
+     * `Init` 이름 규칙 — GPL 모듈 초기화가 `Init` 을 이름으로 찾아 시작 프로시저보다 먼저 자동 호출한다(문서 modules.htm).
+     * 클래스 멤버까지 잡아채 인스턴스 없이 부르는 것을 2026-09-21 실기로 재현했다(samples/init-probe, ai-handoff §1-EA).
+     * 판정은 순수 모듈 `language/checks/initHook` 이 하고 여기서는 vscode.Diagnostic 으로 옮기기만 한다.
+     */
+    private detectInitHookIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const severityOf: Record<InitHookSeverity, vscode.DiagnosticSeverity> = {
+            error: vscode.DiagnosticSeverity.Error,
+            warning: vscode.DiagnosticSeverity.Warning,
+            hint: vscode.DiagnosticSeverity.Hint,
+        };
+        const symbols = GPLParser.parseDocument(document.getText(), document.uri.fsPath);
+        return findInitHookFindings(symbols).map(f => {
+            const start = Math.max(0, f.symbol.range?.start ?? 0);
+            const end = Math.max(start + 1, f.symbol.range?.end ?? (start + f.symbol.name.length));
+            const diagnostic = new vscode.Diagnostic(
+                new vscode.Range(f.symbol.line, start, f.symbol.line, end),
+                f.message,
+                severityOf[f.severity],
+            );
+            diagnostic.source = 'GPL Init Hook';
+            diagnostic.code = f.code;
+            return diagnostic;
+        });
+    }
+
+    /**
+     * 실기 확인 사실 검사(-741·-722·-781·-506·-712·-729·-782·tick 조그)를 vscode.Diagnostic 으로 옮긴다.
+     * 판정은 순수 모듈 `language/checks/compilerChecks` 가 한다.
+     */
+    private detectCompilerCheckIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const severityOf: Record<CompilerCheckSeverity, vscode.DiagnosticSeverity> = {
+            warning: vscode.DiagnosticSeverity.Warning,
+            information: vscode.DiagnosticSeverity.Information,
+        };
+        return findCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup).map(f => {
+            const diagnostic = new vscode.Diagnostic(
+                new vscode.Range(f.line, f.start, f.line, f.end),
+                f.message,
+                severityOf[f.severity],
+            );
+            diagnostic.source = COMPILER_CHECK_SOURCE;
+            diagnostic.code = f.code;
+            return diagnostic;
+        });
+    }
+
+    /**
+     * 진단 컬렉션 정리
+     */
+    public dispose(): void {
+        for (const [, timer] of this.pendingTimers) {
+            clearTimeout(timer);
+        }
+        this.pendingTimers.clear();
+        this.diagnosticCollection.dispose();
+    }
+
+}

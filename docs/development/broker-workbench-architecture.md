@@ -49,8 +49,8 @@ GUI 야망(제어기 GUI, 시뮬레이터, 풍부한 상태 모니터)이 커질
 | `controller/deployment/deployService.ts` | `deploy()` = (UPLOAD ∥ STOP)→COMPILE 오케스트레이션 + 배포 잠금(`deployLock.ts`, 프로세스 간 파일 — 브로커가 writer를 승계할 대상) | 중 (Diagnostic/Output) | 중 |
 | `controller/runtime/runtimeConsole.ts` | 1403 이벤트 스트림 + 재연결 상태 머신 | **높음** (OutputChannel/Disposable/EventEmitter) | **중~상** |
 | `controller/debugging/debugBridge.ts` | 디버그 스레드/폴 트리거 이벤트 버스 | 높음(vscode EventEmitter) | 낮음(재구현) |
-| `debug/gplDebugSession.ts` | DAP 구현, `sendCommand`로 1402 직접 사용 | 높음(DAP+vscode) | **특수**(§9) |
-| `views/controllerTreeProvider.ts` | 상태 모니터 TreeView | 높음(전적으로 UI) | Workbench로 이전 |
+| `debug/session/gplDebugSession.ts` | DAP 구현, `sendCommand`로 1402 직접 사용 | 높음(DAP+vscode) | **특수**(§9) |
+| `views/tree/controllerTreeProvider.ts` | 상태 모니터 TreeView | 높음(전적으로 UI) | Workbench로 이전 |
 
 ### 결정적 사실 — 단일 명령 스트림은 이미 코드로 강제됨
 

@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { findProjectDirs } from '../deployment/deployService';
 import { parseGpr } from '../protocol/responseParser';
-import { gprPathInDir, resolveProjectLibraryDirs } from '../../project/projectSources';
+import { gprPathInDir, resolveProjectLibraryDirs } from '../../project/sources/projectSources';
 import { disambiguateDirLabels, filterDirsByProjectName, orderProjectDirs, projectDirFromResource } from './projectPickerCore';
 import { normalizeDirKey } from '../../util/pathKey';
 import type { TargetCandidate } from './projectTarget';

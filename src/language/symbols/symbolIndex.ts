@@ -1,11 +1,11 @@
 import * as path from 'path';
-import { GPLParser, GPLSymbol } from '../gplParser';
-import { ciEq } from '../identifiers';
-import { getParameterArity, argCountMatchesArity } from '../cursorExpression';
-import { CallContext, toCallContext, rankOverloadMatches } from '../overloadResolution';
-import { buildSymbolNameIndex } from '../symbolNameIndex';
-import { filterOverloadSiblings } from '../docCommentOverloads';
-import { isDeclaredIn, ReceiverHolder } from '../receiverType';
+import { GPLParser, GPLSymbol } from '../syntax/gplParser';
+import { ciEq } from '../syntax/identifiers';
+import { getParameterArity, argCountMatchesArity } from '../syntax/cursorExpression';
+import { CallContext, toCallContext, rankOverloadMatches } from '../analysis/overloadResolution';
+import { buildSymbolNameIndex } from './symbolNameIndex';
+import { filterOverloadSiblings } from '../documentation/docCommentOverloads';
+import { isDeclaredIn, ReceiverHolder } from '../analysis/receiverType';
 import { normalizePathKey } from '../../util/pathKey';
 
 /** 프로젝트 구성의 구현은 호출부가 소유한다. */

@@ -12,6 +12,7 @@
 
 ### Changed
 
+- 내부 구조: 확장 소스 폴더를 기능별 하위 폴더로 재배치했습니다(`language/`·`project/`·`debug/`·`providers/`·`views/`·`activation/`, 테스트는 같은 폴더 구조). 기능·동작·설정 변경은 없습니다.
 - Unload 위험 확인이 **대상 프로젝트가 ProjectStart 없는 그룹(라이브러리)인 경우**도 잡습니다. 그룹 프로젝트를 Unload하면 제어기가 멈춘 사례가 보고돼(2026-10-27, 회피 방법 미확인) 같은 부팅의 그룹 Compile 표시가 없어도 모달로 확인하며, AI 경로는 `unload-after-group-compile`로 거부해 사용자 동의 뒤 `confirm:true`로만 보냅니다. `Unload -all`은 종전대로 Compile 표시만 봅니다.
 - AI(MCP) 요청이 들어올 때 출력 패널 「GPL Language Support」를 여는 것을 **제어기 상태를 바꾸는 요청**(배포·Compile·Start·Stop·중단점·Unload·쓰기 명령)으로 제한했습니다. Show Thread·변수 읽기·목록·상태 조회 같은 읽기 요청으로는 열지 않으므로 로그를 보는 동안 AI가 데이터를 읽어도 패널이 바뀌지 않습니다. 30초 조용 구간도 상태 변경 요청 기준으로만 잽니다.
 

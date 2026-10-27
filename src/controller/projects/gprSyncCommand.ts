@@ -1,5 +1,5 @@
 /**
- * Project.gpr 소스 목록 동기화 — VS Code 명령·자동 반영·배포 전 대조 (판단은 project/gprFolderSync.ts, 편집은 project/gprSync.ts).
+ * Project.gpr 소스 목록 동기화 — VS Code 명령·자동 반영·배포 전 대조 (판단은 project/gpr/gprFolderSync.ts, 편집은 project/gpr/gprSync.ts).
  *
  * - 명령 `gpl.project.syncSources`: 탐색기에서 .gpr 우클릭(Uri) 또는 팔레트(프로젝트 선택) →
  *   폴더의 소스 파일과 ProjectSource 목록을 대조해 추가/제거 항목을 QuickPick(다중 선택)으로 확인 후 반영.
@@ -20,15 +20,15 @@ import * as path from 'path';
 import { findProjectDirs } from '../deployment/deployService';
 import { pickProjectDir } from './projectPicker';
 import { isPathUnder, normalizeDirKey } from '../../util/pathKey';
-import { GPR_PATH_SEPARATOR, listSourceFilesRecursive } from '../../project/projectSources';
+import { GPR_PATH_SEPARATOR, listSourceFilesRecursive } from '../../project/sources/projectSources';
 import {
     GprFolderSyncCheck,
     checkGprFolderSync,
     describeGprSyncPlan,
     findGprFile,
     sourceExtensionsFrom,
-} from '../../project/gprFolderSync';
-import { applyGprSync, createGprText } from '../../project/gprSync';
+} from '../../project/gpr/gprFolderSync';
+import { applyGprSync, createGprText } from '../../project/gpr/gprSync';
 
 export const GPR_SYNC_COMMAND = 'gpl.project.syncSources';
 

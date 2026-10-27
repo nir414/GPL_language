@@ -37,7 +37,7 @@
  *   분석이라 오식별 가능성이 남는다(오늘도 배열 인덱스가 지역 변수라 소스만으로는 확정 못 했다).
  *   그래서 이 모듈은 후보까지만 만들고, 보낼지는 호출부가 사람에게 묻는다.
  *
- * 단위 테스트: `src/test/threadStuckDiagnosis.test.ts`
+ * 단위 테스트: `src/test/controller/threads/threadStuckDiagnosis.test.ts`
  */
 
 import * as fs from 'fs';

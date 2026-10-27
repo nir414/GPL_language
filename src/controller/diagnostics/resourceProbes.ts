@@ -13,7 +13,7 @@
  *     실패하면 null 을 돌려 UI 가 "형식 미확정" 으로 표시하고 raw 를 툴팁으로 보여 준다.
  *   - 키워드와 숫자는 **같은 줄**에서만 짝지운다. 줄을 넘어 짝지우면 VxWorks 형식의
  *     "N connection accepts\n M connections established" 에서 accepts 가 M 을 집는 오류가 난다.
- *   - vscode 무의존(순수 로직) — 테스트: src/test/resourceProbes.test.ts
+ *   - vscode 무의존(순수 로직) — 테스트: src/test/controller/diagnostics/resourceProbes.test.ts
  *
  * 문서상(Brooks Console Commands > Show Memory): 크기는 MB(2^20), "Segments" 는 단편화로 나뉜
  * 블록 수, `-all` 이면 File Descriptors Free/Used 도 보이며 Free 가 5 이하로 떨어지면 다음 I/O 에서

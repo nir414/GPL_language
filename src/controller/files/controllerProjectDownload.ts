@@ -1,9 +1,9 @@
 /** 디버깅용 소스 다운로드. FTP 읽기만 하며 ProjectLibrary의 기존 경로 해석 규칙을 재사용한다. */
 import * as fs from 'fs';
 import * as path from 'path';
-import { buildLibraryGraph, gprPathInDir } from '../../project/projectSources';
-import { controllerLibraryCandidates } from '../../project/controllerProjectDebug';
-import { writeControllerProjectManifest } from '../../project/controllerProjectWorkspace';
+import { buildLibraryGraph, gprPathInDir } from '../../project/sources/projectSources';
+import { controllerLibraryCandidates } from '../../project/remote/controllerProjectDebug';
+import { writeControllerProjectManifest } from '../../project/remote/controllerProjectWorkspace';
 import { normalizePathKey } from '../../util/pathKey';
 import { downloadProject, listRemoteDir, FtpEntry } from './ftpClient';
 

@@ -19,7 +19,7 @@
  * 같은 PC의 다른 워크스페이스와 기록을 공유하고, mtime 관측치를 함께 들고 다닌다.
  *
  * 저장 위치 연결은 `attachSyncManifestStore(context.globalState)` 한 번(extension.ts activate).
- * 단위 테스트: src/test/syncManifest.test.ts.
+ * 단위 테스트: src/test/controller/files/syncManifest.test.ts.
  */
 
 import * as crypto from 'crypto';

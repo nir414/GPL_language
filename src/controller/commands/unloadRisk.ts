@@ -1,5 +1,5 @@
 /**
- * 그룹 Compile 뒤 Unload 위험 판정의 정본 (vscode 무의존 — 단위 테스트: src/test/unloadRisk.test.ts).
+ * 그룹 Compile 뒤 Unload 위험 판정의 정본 (vscode 무의존 — 단위 테스트: src/test/controller/commands/unloadRisk.test.ts).
  *
  * 배경(2026-10-22~23 Sample Prep 실측, inbox `unload-guard-request_v1` 외 3건):
  *  - 같은 부팅에서 **ProjectStart 없는 그룹 .gpr(Lib 등)을 Compile 한 뒤** `Unload <project>` 또는 `Unload -all` 을 보내면

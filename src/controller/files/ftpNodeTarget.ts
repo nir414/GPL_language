@@ -9,7 +9,7 @@
  *  - 노드는 목록을 만든 제어기(`controllerHost`)를 들고 있지만 명령은 현재 설정의 제어기로 나간다. 제어기 A→B
  *    전환 뒤 A 의 노드로 B 를 조작할 수 있었다 → 변경 명령 전(그리고 확인 창 뒤)마다 노드의 제어기가 현재 제어기인지 본다.
  *
- * 이 모듈은 판정만 한다. 알림·로그는 호출부(activation/ftpCommands)가 맡는다.
+ * 이 모듈은 판정만 한다. 알림·로그는 호출부(activation/remote/ftpCommands)가 맡는다.
  */
 
 import { normalizeAbsoluteRemoteDir } from './ftpClient';

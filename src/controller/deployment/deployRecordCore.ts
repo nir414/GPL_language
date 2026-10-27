@@ -11,7 +11,7 @@
  * 여전히 1402 live `<STATUS>`로만 하며(§0 하드 규칙), 이 비교 결과는 "소스가 컴파일본보다 새로울 수
  * 있다"는 경고의 근거로만 쓴다.
  *
- * vscode 의존 래퍼(EventEmitter/Memento 연결)는 deployRecord.ts. 단위 테스트: src/test/deployRecord.test.ts.
+ * vscode 의존 래퍼(EventEmitter/Memento 연결)는 deployRecord.ts. 단위 테스트: src/test/controller/deployment/deployRecord.test.ts.
  */
 
 import * as crypto from 'crypto';

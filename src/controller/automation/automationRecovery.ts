@@ -1,6 +1,6 @@
 /**
  * 자동화 오류의 **복구 지시** — 호출자(AI/MCP)가 오류 문장을 해석해 다음 행동을 지어내지 않게 한다.
- * vscode 무의존 — 단위 테스트: `src/test/automationRecovery.test.ts`.
+ * vscode 무의존 — 단위 테스트: `src/test/controller/automation/automationRecovery.test.ts`.
  *
  * 왜(2026-09-10 사용자 개선안 §15~§17): 지금까지 자동화 실패는 `error` 코드 + 사람이 읽는 `detail`
  * 이었다. 코드 자체는 구조화돼 있었지만 **"그래서 무엇을 하면 되는가"는 문장 안에만** 있었다. 그러다 보니

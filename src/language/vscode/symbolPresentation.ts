@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import type { GPLSymbol } from '../gplParser';
+import type { GPLSymbol } from '../syntax/gplParser';
 import type { SymbolIndex } from '../symbols/symbolIndex';
-import { renderResolvedDocMarkdown, resolveOverloadDoc } from '../docCommentOverloads';
+import { renderResolvedDocMarkdown, resolveOverloadDoc } from '../documentation/docCommentOverloads';
 
 export function getCompletionItems(index: SymbolIndex): vscode.CompletionItem[] {
     const items: vscode.CompletionItem[] = [];

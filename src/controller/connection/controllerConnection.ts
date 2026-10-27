@@ -471,7 +471,7 @@ export async function checkMemoryBeforeOperation(config?: Partial<ControllerConf
 
 /** 상태 표시줄 메모리 경고 항목·알림의 「자세히」가 여는 명령(activation 에서 등록). */
 export const SHOW_MEMORY_STATUS_COMMAND = 'gpl.controller.showMemoryStatus';
-/** 메모리 알림·상세·배포 중단 안내의 「Unload…」가 여는 명령(activation/ftpCommands 에서 등록) — /GPL 프로젝트를 골라 내린다. */
+/** 메모리 알림·상세·배포 중단 안내의 「Unload…」가 여는 명령(activation/remote/ftpCommands 에서 등록) — /GPL 프로젝트를 골라 내린다. */
 export const UNLOAD_PROJECT_COMMAND = 'gpl.controller.unloadProject';
 
 // ── 정체 확인용 관측 기록 (controller/connection/controllerIdentity.ts) ─────────────────────

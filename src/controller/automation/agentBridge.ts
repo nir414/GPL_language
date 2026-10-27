@@ -1,6 +1,6 @@
 /**
  * Agent Bridge — 외부 AI 에이전트(특히 `controller-mcp` MCP 서버)가 **이 확장의 명령을 실제로 호출하고 결과를 받는** 통로.
- * vscode 무의존(실행자는 주입) — 단위 테스트: `src/test/agentBridge.test.ts`.
+ * vscode 무의존(실행자는 주입) — 단위 테스트: `src/test/controller/automation/agentBridge.test.ts`.
  *
  * 배경(2026-08-28 사용자 지적):
  *  - MCP 서버는 제어기 1402에 **직접 TCP**로 붙는 별도 프로세스다. 확장이 keep-alive 세션을 쥐고 있으면 두 세션이 경쟁하고,

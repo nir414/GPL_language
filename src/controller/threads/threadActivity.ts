@@ -16,7 +16,7 @@
  * ③ 쓰레드 이름 == `_Cmd_<프로젝트명>`(Execute 쓰레드) 중 하나라도 맞으면 그 프로젝트가 동작 중이다.
  * `Start -name` 으로 이름을 바꾼 쓰레드는 ①로 잡힌다.
  *
- * 단위 테스트: src/test/threadActivity.test.ts
+ * 단위 테스트: src/test/controller/threads/threadActivity.test.ts
  */
 
 /** 판정에 필요한 최소 형태 — responseParser.ThreadInfo 가 그대로 들어맞는다. */
@@ -42,7 +42,7 @@ export function isSettledState(state: string | undefined): boolean {
  *
  * `Stopped`(완전 종료)와 달리 **디버거가 붙어 검사 가능한** 상태다 — 트리의 정지 전이 이벤트,
  * AI 디버그 API 의 대상 선택, Break/Step 완료 판정이 모두 이 기준을 쓴다.
- * 종전에는 같은 집합이 activation/controllerOps 와 views/controllerTreeProvider 에 따로 있었다(§1-DD).
+ * 종전에는 같은 집합이 activation/controller/controllerOps 와 views/tree/controllerTreeProvider 에 따로 있었다(§1-DD).
  */
 export const PAUSED_THREAD_STATES: ReadonlySet<string> = new Set(['Paused', 'Break', 'Error']);
 

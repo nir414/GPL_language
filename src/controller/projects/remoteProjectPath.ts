@@ -17,7 +17,7 @@
  *
  * 두 옛 구현의 순서는 이 식으로 모두 재현된다(배포의 300/200/120/100 계단은 exists·flash 조합과 같은 순서다).
  *
- * 단위 테스트: `src/test/remoteProjectPath.test.ts`
+ * 단위 테스트: `src/test/controller/projects/remoteProjectPath.test.ts`
  */
 
 /** 존재 확인에 필요한 최소 형태 — `ftpClient.FtpEntry` 가 그대로 들어맞는다. */

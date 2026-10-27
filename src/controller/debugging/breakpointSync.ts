@@ -4,7 +4,7 @@ import { sendCommand } from '../connection/controllerConnection';
 import { parseStatus, isSuccess, parseBreakList } from '../protocol/responseParser';
 import { BreakpointTarget, controllerTargets, isResolvedBreakpointRecord, planReconcile, ReconcilePlan } from './breakpointReconcile';
 import { formatBreakpointCommand, MirrorEchoMemory, normalizeBreakpointCommandFile } from './breakpointCommand';
-import type { ResolvedBreakpointTarget } from '../../project/breakpointTarget';
+import type { ResolvedBreakpointTarget } from '../../project/remote/breakpointTarget';
 
 /**
  * 에디터 중단점 → 제어기 동기화 (VS Code가 중단점의 단일 원본).

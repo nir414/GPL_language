@@ -9,7 +9,7 @@
 /**
  * GPL 소스를 새로 쓰거나 고칠 때의 문서화 주석 규약.
  * 확장(nir414.gpl-language-support)이 이 형식을 호버·자동완성·시그니처 도움말에 구조로 표시한다.
- * 형식 정의의 단일 출처는 확장의 src/language/docComment.ts.
+ * 형식 정의의 단일 출처는 확장의 src/language/documentation/docComment.ts.
  */
 export const DOC_COMMENT_GUIDE = `## GPL 코드를 쓰거나 고칠 때 — 문서화 주석(Documentation Comment)
 

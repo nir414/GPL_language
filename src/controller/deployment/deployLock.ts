@@ -16,7 +16,7 @@
  *   stale = (pid > 0 && 프로세스 없음) || now - heartbeat > DEPLOY_LOCK_STALE_MS
  *   획득 = O_EXCL 생성('wx'); 갱신 = 임시 파일 + rename(원자적); 해제 = 자기 레코드(pid·since 일치)일 때만 삭제.
  *
- * vscode에 의존하지 않는다(단위 테스트 가능: src/test/deployLock.test.ts).
+ * vscode에 의존하지 않는다(단위 테스트 가능: src/test/controller/deployment/deployLock.test.ts).
  */
 
 import * as fs from 'fs';

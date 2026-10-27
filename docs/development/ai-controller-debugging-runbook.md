@@ -181,7 +181,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
   사람이 QuickPick 에서 고른 값) ③ 실행 가능(`.gpr` 에 `ProjectStart`) 프로젝트가 유일할 때 그것 ④ 후보가 하나뿐이면
   그것 ⑤ 그 밖에는 `PROJECT_AMBIGUOUS`. 영구 기본 프로젝트 설정은 두지 않으며, MCP는 작업 시작 시
   `project_target({projectDir})`으로 정확한 폴더를 세션에 고정한다.
-  규칙 정본은 `src/controller/projects/projectTarget.ts`(순수 로직, 단위 테스트 `src/test/projectTarget.test.ts`).
+  규칙 정본은 `src/controller/projects/projectTarget.ts`(순수 로직, 단위 테스트 `src/test/controller/projects/projectTarget.test.ts`).
 - **외부 진입점(URI, GitHub #25 → 2026-08-28 전체 개방)**: 이 확장의 **모든 `gpl.*` 명령**을 URI로 실행할 수 있다.
   `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>`(인자 1개를 JSON으로), `/<gpl.command.id>?key=value&…`(평면 인자 → 객체 1개,
   숫자/불리언/JSON 리터럴 자동 변환), `/command?id=<gpl.command.id>&args=…`. 별칭(종전 호환): `/connect?ip=192.168.0.1&port=1402[&save=settings]`,

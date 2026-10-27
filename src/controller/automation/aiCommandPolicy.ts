@@ -1,5 +1,5 @@
 /**
- * AI/자동화 경로에서 실행할 수 없는 확장 명령 목록 (vscode 무의존 — 단위 테스트: src/test/aiCommandPolicy.test.ts).
+ * AI/자동화 경로에서 실행할 수 없는 확장 명령 목록 (vscode 무의존 — 단위 테스트: src/test/controller/automation/aiCommandPolicy.test.ts).
  *
  * 배경 — 이것은 `commandPolicy.ts` 와 성격이 다르다:
  *  - `commandPolicy.ts`(2026-08-28): 제어기 사고를 막는 **타이밍 조건**을 확장이 대신 기다려서 충족시킨다. 접근을 막지 않는다.
@@ -8,7 +8,7 @@
  *
  * 범위 — AI/자동화 진입점에서만 막고, 사람의 UI 경로(명령 팔레트·트리/탐색기 컨텍스트 메뉴)는 그대로 둔다:
  *  1. Agent Bridge(`agentBridge.ts`)      — MCP `extension_command` 를 포함한 모든 브리지 클라이언트
- *  2. URI 핸들러(`activation/uriHandler.ts`) — `vscode://…/<command id>` (터미널/에이전트 진입점)
+ *  2. URI 핸들러(`activation/ai/uriHandler.ts`) — `vscode://…/<command id>` (터미널/에이전트 진입점)
  *  3. 명령 자체의 자동화 분기            — `isAutomationInvocation(args)` 로 들어온 직접 호출
  *  4. MCP 서버(`controller-mcp/src/aiPolicy.js`) — 왕복 없이 먼저 거부(같은 목록을 미러링)
  *

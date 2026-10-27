@@ -1,0 +1,1664 @@
+/**
+ * 제어기 상태 통합 TreeView — 연결 정보, 쓰레드, FTP 파일, 시스템 정보, 에러 로그를 사이드바에 표시.
+ * 연결 후 주기적 폴링으로 실시간 상태를 갱신한다.
+ */
+
+import * as vscode from 'vscode';
+import { trySendCommand, getControllerConfig, getTrafficLogOptions, getConnectionStats, probeControllerCommand } from '../../controller/connection/controllerConnection';
+import type { ProbeOutcome } from '../../controller/connection/controllerConnection';
+import { formatRuntimeConsoleStateLabel } from '../../controller/runtime/runtimeConsolePresentation';
+import {
+	parseThreadList,
+	SHOW_THREAD_LIST_CMD,
+	SHOW_THREAD_LIST_STACK_CMD,
+	ThreadInfo,
+	parseErrorLog,
+	parseBreakList,
+	BreakpointInfo,
+	classifyErrorEntry,
+	extractErrorCodeFromEntry,
+	getErrorCodeHint,
+	findKnownErrorChains,
+} from '../../controller/protocol/responseParser';
+import { EXTENSION_VERSION } from '../../config';
+import { channelName } from '../../controller/protocol/channelNames';
+import { isPausedState } from '../../controller/threads/threadActivity';
+import type { RuntimeStateSnapshot } from '../../controller/debugging/executionMarks';
+import { BreakpointTarget, breakpointKey, orphanControllerBreakpoints } from '../../controller/debugging/breakpointReconcile';
+import { editorBreakpointTargets } from '../../controller/debugging/breakpointSync';
+import { FtpEntry, listRemoteDir, listRemoteDirs } from '../../controller/files/ftpClient';
+import { isSafeRemoteEntryName } from '../../controller/files/remoteSourceSession';
+import { ftpEntryContext, isFlashFtpContext, isFtpFolderContext } from '../../controller/files/ftpNodeTarget';
+import { onDebugThreadsUpdated } from '../../controller/debugging/debugBridge';
+import { AUTO_REFRESH_MIN_INTERVAL_MS, decideAutoRefresh, formatLastRefreshTime } from './refreshThrottle';
+import { formatConnectionStats, formatDate, formatDateTimeFromTs } from './treeFormat';
+import { formatBytes } from '../../util/formatBytes';
+import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from '../statusbar/compileStaleBadge';
+import type { CompileStaleInfo } from '../../controller/deployment/compileStale';
+import {
+	buildRuntimeConsoleTreeDescription,
+	buildRuntimeConsoleTreeTooltip,
+	formatRuntimeConsoleStatusDetail,
+	getRuntimeConsoleHypothesis,
+	getRuntimeConsoleTreeIcon,
+	isRuntimeConsoleUnstable,
+} from './runtimeConsoleTreePresentation';
+import type { SituationDeploySnapshot } from '../../controller/deployment/deployOutcome';
+import {
+	countThreadStates,
+	renderThreadListReport,
+	renderThreadTable,
+	summarizeThreadStates,
+	type ThreadStateCounts,
+} from '../../controller/threads/threadReport';
+import { RuntimeConsoleStatusSnapshot } from '../../controller/runtime/runtimeConsole';
+import { parseTemperatureResponse, PROBE_TEMPERATURE_CMD } from '../../controller/diagnostics/temperature';
+
+export interface RuntimeErrorContext {
+	threadName: string;
+	threadId?: number;
+	lastCommand?: string;
+	firstSeenAt?: string;
+	statusText?: string;
+	stackFrames?: string[];
+	relatedFunctions?: string[];
+}
+
+// ── Node types ──────────────────────────────────────────
+
+type ControllerNode = SectionNode | ThreadNode | InfoNode;
+
+class SectionNode {
+	readonly type = 'section' as const;
+	children: ControllerNode[] = [];
+	collapsed = false;
+	/** 섹션이 대표하는 원격 경로(FTP 섹션만). 섹션 헤더 명령이 대상 경로를 화면과 동일하게 받도록 노출한다. */
+	remotePath?: string;
+	constructor(
+		public readonly id: string,
+		public label: string,
+		public iconId: string,
+		public description?: string,
+		public tooltip?: string,
+	) {}
+}
+
+class ThreadNode {
+	readonly type = 'thread' as const;
+	constructor(public readonly thread: ThreadInfo) {}
+}
+
+class InfoNode {
+	readonly type = 'info' as const;
+	constructor(
+		public readonly label: string,
+		public readonly iconId: string,
+		public readonly description?: string,
+		public readonly command?: vscode.Command,
+		public readonly contextValue?: string,
+		public readonly tooltip?: string,
+		public readonly remotePath?: string,
+		public readonly projectName?: string,
+		public readonly controllerHost?: string,
+	) {}
+}
+
+/**
+ * 원격 폴더만 펼칠 수 있고, 파일은 현재 창의 읽기 전용 편집기로 연다.
+ * `nested`(펼친 폴더 안의 목록)의 폴더는 프로젝트 폴더가 아니므로 별도 context 를 받는다 — 프로젝트 명령(Run·Stop·Unload)은
+ * 저장 영역 바로 아래 폴더에만 보인다(controller/files/ftpNodeTarget.ts).
+ */
+function ftpNodes(entries: FtpEntry[], basePath: string, controllerHost: string, flash: boolean, nested: boolean): InfoNode[] {
+	if (entries.some(entry => entry.name !== '.' && entry.name !== '..' && !isSafeRemoteEntryName(entry.name))) {
+		return [new InfoNode('안전하지 않은 FTP 목록 항목을 표시하지 않았습니다.', 'error')];
+	}
+	return entries.filter(e => e.name !== '.' && e.name !== '..').map(entry => {
+		const remotePath = `${basePath}/${entry.name}`;
+		const context = ftpEntryContext(entry.isDirectory, flash, nested);
+		const description = [!entry.isDirectory ? formatBytes(entry.size) : '', entry.modifiedAt ? formatDate(entry.modifiedAt) : ''].filter(Boolean).join(' · ');
+		return new InfoNode(entry.name, entry.isDirectory ? 'folder' : 'file', description || undefined, entry.isDirectory ? undefined : {
+				command: 'gpl.controller.openRemoteFile', title: '제어기 파일 열기', arguments: [{ remotePath, controllerHost }],
+			}, context, entry.modifiedAt ? formatDate(entry.modifiedAt) : undefined, remotePath, entry.name, controllerHost);
+	});
+}
+
+// ── Provider ────────────────────────────────────────────
+
+/**
+ * 섹션 기본 접힘 상태의 "세대". VS Code 는 TreeItem.id 별로 사용자의 접기/펴기 상태를 워크스페이스에
+ * 저장하고, 저장된 상태가 있으면 provider 가 준 collapsibleState 를 무시한다. 그래서 기본값을 바꿔도
+ * 기존 사용자에게는 반영되지 않는다 — 이 값을 올리면 섹션 id 가 달라져 저장된 상태가 한 번만
+ * 초기화되고(이후 사용자가 접은 것은 평소대로 기억된다), 새 기본값이 적용된다.
+ * **기본 접힘 상태를 바꿀 때마다 1 씩 올릴 것.**
+ */
+const SECTION_LAYOUT_EPOCH = 2;
+
+/** threadPollIntervalMs 설정 미지정 시 기본 폴링 간격 */
+const DEFAULT_THREAD_POLL_MS = 5000;
+/** 실행 중 쓰레드가 없을 때 폴링 간격 배수 (1402 부하 완화) */
+const IDLE_POLL_MULTIPLIER = 3;
+/** 상세(ErrorLog/Show Break) 폴링 간격 배수 */
+const DETAIL_POLL_MULTIPLIER = 2;
+/**
+ * 연결 확립 시 FTP 목록 자동 재조회 억제 간격(5분). 마지막 성공 조회가 이 시간 이내이고 캐시가 있으면
+ * setConnected(true)에서 재조회하지 않는다(GitHub #22 제안 7 — 연결 플랩마다 /GPL·Flash를 재조회해
+ * 60초에 FTP passive 데이터 연결 66개 관측). 명시적 새로고침(refreshFtp/refreshAll)은 항상 조회한다.
+ */
+const FTP_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
+/** 시스템 정보(메모리·Flash·CPU·온도)도 같은 규칙으로 억제. */
+const SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
+
+export class ControllerTreeProvider implements vscode.TreeDataProvider<ControllerNode>, vscode.Disposable {
+	private readonly ftpChildren = new Map<string, Promise<ControllerNode[]>>();
+	private ftpBrowseOnly = false;
+	private readonly _onDidChangeTreeData = new vscode.EventEmitter<ControllerNode | undefined>();
+	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+	private _refreshInFlight = false;
+	private _refreshAllInFlight = false;
+	private _refreshFtpInFlight = false;
+	private _refreshSystemInFlight = false;
+
+	/**
+	 * Show Thread 폴(프로브) 결과 — 성공/실패 종류. 유실 판정은 트리가 하지 않고 extension.ts 의
+	 * ConnectionHealthMonitor(controller/connection/connectionHealth.ts)가 한다(2026-08-28: 종전 "3회 연속 실패" 자체 판정을
+	 * 이관 — 디버그 중 트리 폴링이 꺼져도 어댑터 폴·재프로브로 같은 판정이 이어지게).
+	 */
+	private readonly _onDidProbe = new vscode.EventEmitter<ProbeOutcome>();
+	readonly onDidProbe = this._onDidProbe.event;
+
+	/**
+	 * 일반 폴링에서 스레드가 실행→정지(Paused/Break/Error) 전이하거나 정지 상태로 새로
+	 * 나타난 것(stopOnEntry)을 감지하면 발생. 외부(MCP AI/GDE)가 세운 정지를 에디터가
+	 * 따라가는 용도(ai-handoff §1-AP). 디버그 세션 중에는 bridge 경로(enterDebugMode)로
+	 * 갱신되므로 이 이벤트는 발생하지 않는다.
+	 */
+	private readonly _onDidThreadPause = new vscode.EventEmitter<{ name: string; state: string }>();
+	readonly onDidThreadPause = this._onDidThreadPause.event;
+
+	/**
+	 * 쓰레드 목록(과 마지막 ErrorLog 건수)이 바뀔 때마다 발생 — 폴링·디버그 브리지·연결 해제(빈 목록) 모두 같은 경로.
+	 * 에디터의 실행 위치 강조(정지 줄·에러 줄)가 "주인 쓰레드가 아직 그 상태인가"를 여기서 확인해 낡은 강조를 지운다
+	 * (`ExecutionDecorations.reconcile`, §1-EP). 디버그 세션 중에는 ErrorLog 를 재조회하지 않으므로 `errorCount` 는 마지막 값이다.
+	 */
+	private readonly _onDidChangeRuntimeState = new vscode.EventEmitter<RuntimeStateSnapshot>();
+	readonly onDidChangeRuntimeState = this._onDidChangeRuntimeState.event;
+
+	private _connected = false;
+	private threads: ThreadInfo[] = [];
+	private errors: string[] = [];
+	private ftpEntries: FtpEntry[] = [];
+	private ftpError: string | null = null;
+	private ftpFlashEntries: FtpEntry[] = [];
+	private ftpFlashError: string | null = null;
+	/** 마지막 FTP 목록 조회 성공 시각(epoch ms, 0=없음) — 자동 재조회 억제 판정·설명 표기용 (#22) */
+	private lastFtpRefreshAt = 0;
+	/** FTP 캐시가 어느 제어기/경로의 것인지(`ip|/GPL|flash`). 바뀌면 억제 없이 재조회한다. */
+	private ftpCacheKey = '';
+	private sysInfo: { label: string; value: string; tooltip?: string; iconId?: string }[] = [];
+	/** 마지막 시스템 정보 조회 성공 시각(epoch ms, 0=없음) */
+	private lastSystemInfoRefreshAt = 0;
+	/** 시스템 정보 캐시의 제어기 IP */
+	private systemInfoCacheKey = '';
+	private pollTimer: ReturnType<typeof setTimeout> | null = null;
+	/** 폴링 루프 세대 토큰 — stop/start/디버그 진입 시 증가시켜 낡은 콜백의 재스케줄을 차단 */
+	private pollGeneration = 0;
+	/** 진행 중인 refresh 본문 promise — 강제 갱신이 완료를 기다릴 수 있게 보관 */
+	private _refreshPromise: Promise<void> | null = null;
+	private lastDetailPollAt = 0;
+	/** 연결 후 Show Thread 목록을 한 번이라도 수신했는지 — 첫 목록은 정지 전이 비교에서 제외 */
+	private hasReceivedThreadList = false;
+	private breakpoints: BreakpointInfo[] = [];
+	private expectedProjectName = '';
+	private expectedProjectFolderName = '';
+	private runtimeConsoleStatus: RuntimeConsoleStatusSnapshot = {
+		state: 'idle',
+		connected: false,
+		reason: '미연결',
+		noPayloadStreak: 0,
+		immediateEofStreak: 0,
+		lastChangedAt: Date.now(),
+	};
+	/** 런타임 레이아웃 초기화 횟수 — SECTION_LAYOUT_EPOCH 와 함께 섹션 id 를 이루어, 사용자가 명령으로
+	 *  접힘 상태를 기본값으로 되돌릴 수 있게 한다(gpl.controller.resetPanelLayout). */
+	private sectionLayoutSalt = 0;
+	private runtimeErrorContext?: RuntimeErrorContext;
+	/** "컴파일 검증 필요" 상태(정본은 host 의 CompileStaleTracker — 여기는 표시만). */
+	private compileStale?: CompileStaleInfo;
+	private editorBreakpointTargetResolver?: (fsPath: string, line: number) => BreakpointTarget | undefined;
+
+	/** 디버그 세션 중 bridge 이벤트 구독 핸들 */
+	private _debugModeSubscription: vscode.Disposable | undefined;
+
+	get isConnected(): boolean { return this._connected; }
+
+	setEditorBreakpointTargetResolver(
+		resolver: (fsPath: string, line: number) => BreakpointTarget | undefined,
+	): void {
+		this.editorBreakpointTargetResolver = resolver;
+	}
+
+	/**
+	 * 섹션 접힘 상태를 기본값으로 되돌린다(gpl.controller.resetPanelLayout).
+	 * salt 를 올리면 섹션 TreeItem.id 가 바뀌어 VS Code 가 저장해 둔 접기 상태를 잃고,
+	 * provider 가 주는 기본 collapsibleState 를 다시 따른다.
+	 */
+	resetSectionLayout(): void {
+		this.sectionLayoutSalt++;
+		this._onDidChangeTreeData.fire(undefined);
+	}
+
+	/** "컴파일 검증 필요" 상태 표시(프로젝트 상태 섹션). undefined면 해제. */
+	setCompileStale(state?: CompileStaleInfo): void {
+		this.compileStale = state;
+		this._onDidChangeTreeData.fire(undefined);
+	}
+
+	setExpectedProjectName(name?: string): void {
+		this.setExpectedProjectContext(name, name);
+	}
+
+	setExpectedProjectContext(projectName?: string, folderName?: string): void {
+		this.expectedProjectName = (projectName || '').trim();
+		this.expectedProjectFolderName = (folderName || '').trim();
+		this._onDidChangeTreeData.fire(undefined);
+	}
+
+	getExpectedProjectName(): string {
+		return this.expectedProjectName;
+	}
+
+	/** 데이터 변경 없이 트리만 다시 그린다(설정 변경 등으로 라벨/설명이 바뀔 때). 1402 폴링을 유발하지 않는다. */
+	redraw(): void {
+		this._onDidChangeTreeData.fire(undefined);
+	}
+
+	setRuntimeConsoleStatus(status: RuntimeConsoleStatusSnapshot): void {
+		this.runtimeConsoleStatus = status;
+		this._onDidChangeTreeData.fire(undefined);
+	}
+
+	setRuntimeErrorContext(context?: RuntimeErrorContext): void {
+		this.runtimeErrorContext = context;
+		this._onDidChangeTreeData.fire(undefined);
+	}
+
+	/**
+	 * 연결 상태 변경 — 연결 시 즉시 폴링 시작, 해제 시 정리.
+	 *
+	 * - 연결 시 FTP 목록·시스템 정보는 **조건부** 재조회(refreshFtpIfStale/refreshSystemInfoIfStale):
+	 *   유실→재연결 플랩마다 전부 재조회하던 것을, 5분 이내 성공 캐시가 있으면 건너뛴다(GitHub #22 제안 7).
+	 *   쓰레드/에러/BP 폴링(refresh)은 종전대로 즉시 시작한다.
+	 * - 해제 시 `reason`이 'lost'(연결 유실 — extension.ts 의 연결 건강 모니터가 확정)면 FTP/시스템 정보 캐시를
+	 *   보존하고, 'disconnect'(명시적 해제, 기본값)면 종전처럼 모두 비운다.
+	 */
+	setConnected(connected: boolean, options?: { refresh?: boolean; reason?: 'disconnect' | 'lost' }): void {
+		this._connected = connected;
+		this.lastDetailPollAt = 0;
+		this.hasReceivedThreadList = false; // 새 연결마다 정지 전이 비교 기준을 다시 잡는다
+		if (connected) {
+			this._onDidChangeTreeData.fire(undefined);
+			if (options?.refresh !== false) {
+				this.refresh();
+				this.refreshFtpIfStale();
+				this.refreshSystemInfoIfStale();
+				this.startPolling();
+			}
+		} else {
+			const reason = options?.reason ?? 'disconnect';
+			this.stopPolling();
+			this.clearCachedControllerState({ keepOnDemandCaches: reason === 'lost' });
+			this._onDidChangeTreeData.fire(undefined);
+		}
+	}
+
+	/** FTP 목록 섹션 노드 생성 — /GPL(ftp)과 Flash Projects(ftpFlash) 공용. */
+	private buildFtpSection(
+		id: string,
+		title: string,
+		icon: string,
+		basePath: string,
+		entries: FtpEntry[],
+		error: string | null,
+		folderCtx: string,
+		_fileCtx: string,
+	): SectionNode {
+		// 설명에 마지막 조회 시각을 붙여 "연결 플랩 뒤 보존된 캐시"가 낡을 수 있음을 드러낸다(#22).
+		const lastLabel = this.lastFtpRefreshAt > 0 ? formatLastRefreshTime(this.lastFtpRefreshAt) : undefined;
+		const description = error
+			? '조회 실패'
+			: (lastLabel ? `${entries.length}개 · 마지막 조회 ${lastLabel}` : `${entries.length}개`);
+		const sec = new SectionNode(id, title, icon, description,
+			this.buildOnDemandCacheTooltip(this.lastFtpRefreshAt, FTP_AUTO_REFRESH_MIN_INTERVAL_MS));
+		sec.remotePath = basePath;
+		sec.collapsed = false;
+		if (error) {
+			sec.children = [new InfoNode(error, 'error')];
+		} else if (entries.length === 0) {
+			sec.children = [new InfoNode('파일 없음', 'info')];
+		} else {
+			const cfg = getControllerConfig();
+			sec.children = this.ftpCacheKey === ControllerTreeProvider.ftpCacheKeyFor(cfg.ip, cfg.ftpBasePath, cfg.ftpFlashProjectsPath)
+				? ftpNodes(entries, basePath, cfg.ip, folderCtx === 'ftpFlashFolder', false)
+				: [new InfoNode('제어기 설정이 바뀌었습니다. FTP 목록을 새로고침하세요.', 'info')];
+		}
+		return sec;
+	}
+
+	/** 상태별 쓰레드 수 집계 (트리 루트 설명·상태 스냅샷 공용). 판정은 `controller/threads/threadReport` 가 정본. */
+	private countThreadStates(): ThreadStateCounts {
+		return countThreadStates(this.threads);
+	}
+
+	/**
+	 * 온디맨드 캐시 섹션(FTP 목록/시스템 정보) 공용 툴팁 — 연결 플랩 시 자동 재조회하지 않음을 알린다(#22).
+	 */
+	private buildOnDemandCacheTooltip(lastRefreshAt: number, minIntervalMs: number): string {
+		const minutes = Math.round(minIntervalMs / 60_000);
+		return [
+			'연결 플랩(유실 → 재연결) 시 자동 재조회하지 않음 — 새로고침 아이콘으로 갱신하세요.',
+			`(마지막 조회가 ${minutes}분 이내이고 캐시가 있으면 재연결 시 캐시를 유지합니다. 배포 후에는 자동 갱신됩니다.)`,
+			lastRefreshAt > 0 ? `마지막 조회: ${formatDate(new Date(lastRefreshAt))}` : '아직 조회하지 않음',
+		].join('\n');
+	}
+
+	/**
+	 * 제어기에서 받아온 캐시 상태 일괄 초기화 (연결 해제/유실 시).
+	 * keepOnDemandCaches=true(연결 유실)면 폴링 데이터(쓰레드/에러/BP)만 비우고, 온디맨드 캐시
+	 * (FTP 목록·시스템 정보·마지막 조회 시각)는 보존한다 — 재연결 시 5분 억제 판정의 근거가 된다(#22).
+	 * 유실 때도 비우면 플랩 뒤 항상 재조회가 돼 억제가 무의미해지므로, 명시적 disconnect에서만 비운다.
+	 */
+	private clearCachedControllerState(options?: { keepOnDemandCaches?: boolean }): void {
+		this.hasReceivedThreadList = false;
+		this.threads = [];
+		this.errors = [];
+		this.breakpoints = [];
+		this.fireRuntimeStateChanged();
+		if (options?.keepOnDemandCaches) { return; }
+		this.ftpEntries = [];
+		this.ftpError = null;
+		this.ftpFlashEntries = [];
+		this.ftpFlashError = null;
+		this.lastFtpRefreshAt = 0;
+		this.ftpCacheKey = '';
+		this.sysInfo = [];
+		this.lastSystemInfoRefreshAt = 0;
+		this.systemInfoCacheKey = '';
+	}
+
+	startPolling(): void {
+		this.stopPolling();
+		if (!this._connected) { return; }
+		this.scheduleNextPoll();
+	}
+
+	/**
+	 * 적응형 폴링 스케줄러. 실행 중인 쓰레드가 없으면 간격을 3배로 늘려
+	 * 제어기 1402 포트 부하를 줄인다.
+	 */
+	private scheduleNextPoll(): void {
+		if (!this._connected) { return; }
+		const baseInterval = this.baseThreadPollIntervalMs();
+		const interval = this.threads.length > 0 ? baseInterval : baseInterval * IDLE_POLL_MULTIPLIER;
+		const generation = this.pollGeneration;
+		this.pollTimer = setTimeout(async () => {
+			this.pollTimer = null;
+			await this.refresh();
+			// refresh 대기 중 stopPolling/enterDebugMode/startPolling이 호출됐다면 이 콜백은
+			// 낡은 세대다 — 재스케줄하지 않는다 (디버그 중 폴링 지속·이중 루프 방지).
+			if (generation !== this.pollGeneration || this._debugModeSubscription) { return; }
+			this.scheduleNextPoll();
+		}, interval);
+	}
+
+	/** 설정된 기본 폴링 간격(ms) 조회. */
+	private baseThreadPollIntervalMs(): number {
+		const cfg = vscode.workspace.getConfiguration('gpl.controller');
+		return cfg.get<number>('threadPollIntervalMs') ?? DEFAULT_THREAD_POLL_MS;
+	}
+
+	stopPolling(): void {
+		// 세대 토큰 증가 — 진행 중(await refresh) 콜백이 완료돼도 재스케줄하지 못하게 한다.
+		// (enterDebugMode/startPolling도 이 메서드를 거치므로 함께 무효화된다)
+		this.pollGeneration++;
+		if (this.pollTimer) {
+			clearTimeout(this.pollTimer);
+			this.pollTimer = null;
+		}
+	}
+
+	/**
+	 * 디버그 세션 시작 시 호출. 독립 폴링을 중단하고 debugBridge 이벤트를 구독하여
+	 * 디버그 세션의 Show Thread 결과로 쓰레드 섹션을 실시간 갱신한다.
+	 * TCP 추가 호출 없이 사이드바 쓰레드 뷰가 살아 있게 된다.
+	 * (이 동안 연결 유실 프로브도 어댑터 폴이 대신 공급한다 — debugBridge.onDebugProbeResult.)
+	 */
+	enterDebugMode(): void {
+		this.stopPolling();
+		this._debugModeSubscription?.dispose();
+		this._debugModeSubscription = onDebugThreadsUpdated(threads => {
+			this.threads = threads;
+			this.fireRuntimeStateChanged();
+			this._onDidChangeTreeData.fire(undefined);
+		});
+	}
+
+	/** 쓰레드 목록·ErrorLog 건수 스냅샷을 구독자(실행 위치 강조)에 알린다. */
+	private fireRuntimeStateChanged(): void {
+		this._onDidChangeRuntimeState.fire({ threads: this.threads, errorCount: this.errors.length });
+	}
+
+	/**
+	 * 디버그 세션 종료 시 호출. bridge 구독을 해제하고 일반 폴링을 재개한다.
+	 */
+	exitDebugMode(): void {
+		this._debugModeSubscription?.dispose();
+		this._debugModeSubscription = undefined;
+		this.startPolling();
+	}
+
+	/**
+	 * 전체 갱신 — 쓰레드 → 에러 → BP → FTP → 시스템 정보 순차 요청.
+	 * TCP 충돌 방지를 위해 직렬화.
+	 */
+	async refreshAll(): Promise<void> {
+		if (this._refreshAllInFlight) { return; }
+		this._refreshAllInFlight = true;
+		try {
+		await this.refresh(true);
+		await this.refreshFtp();
+		await this.refreshSystemInfo();
+		} finally {
+			this._refreshAllInFlight = false;
+		}
+	}
+
+	/**
+	 * 쓰레드 + 에러 로그 + 브레이크포인트 갱신 (순차).
+	 */
+	async refresh(forceDetails: boolean = false): Promise<void> {
+		if (!this._connected) { return; }
+		if (this._refreshInFlight) {
+			// 폴링 refresh가 진행 중일 때: 일반 폴링 호출은 스킵하되, 강제 갱신(forceDetails)은
+			// 진행 중인 refresh 완료를 기다렸다가 1회 재실행한다 — copySituationForChat/
+			// diagnosticSnapshot이 낡은 스냅샷을 조용히 복사하지 않도록.
+			if (!forceDetails || !this._refreshPromise) { return; }
+			try { await this._refreshPromise; } catch { /* noop */ }
+			if (this._refreshInFlight || !this._connected) { return; }
+		}
+		this._refreshPromise = this.doRefresh(forceDetails);
+		await this._refreshPromise;
+	}
+
+	private async doRefresh(forceDetails: boolean): Promise<void> {
+		this._refreshInFlight = true;
+		try {
+
+		// 경량 주기 폴링: 기본은 경량 Show Thread, 수동 전체 새로고침(forceDetails)일 때만
+		// -stack 상세형으로 thread별 timing까지 받는다(고빈도 폴 페이로드 경량 유지).
+		// 프로브 타임아웃(gpl.controller.connectionProbeTimeoutMs, 기본 8 s)으로 보내고 결과를 연결 건강 모니터에
+		// 보고한다(onDidProbe). 성공 기준은 `<STATUS>` 존재 — 소켓 종료로 잘린 부분 응답은 실패로 친다.
+		const probe = await probeControllerCommand(forceDetails ? SHOW_THREAD_LIST_STACK_CMD : SHOW_THREAD_LIST_CMD);
+		// 연결 해제(disconnect/유실) 후 도착한 늦은 응답 가드 — 해제 상태에서
+		// this.threads 재할당이나 후속 명령(ErrorLog/Show Break) 전송을 막는다.
+		if (!this._connected) { return; }
+
+		this._onDidProbe.fire(probe);
+		if (!probe.ok) {
+			// 실패하면 상세 폴(ErrorLog/Show Break)을 보내지 않는다 — 종전엔 실패 뒤에도 그대로 보내 응답 없는
+			// 제어기에 타임아웃 2회(각 10 s)를 더 기다렸고 그만큼 유실 감지가 늦어졌다(2026-08-28 검토).
+			// 유실 판정·재프로브는 모니터(extension.ts)가 한다; 폴링은 연결 상태가 바뀔 때까지 정규 간격으로 계속된다.
+			return;
+		}
+		const nextThreads = parseThreadList(probe.raw);
+		// 첫 수신 목록은 비교 기준이 없으므로 전이 감지에서 제외한다
+		// (연결 직후 이미 정지돼 있던 스레드로 점프 방지).
+		if (this.hasReceivedThreadList) {
+			this.firePauseTransitions(this.threads, nextThreads);
+		}
+		this.hasReceivedThreadList = true;
+		this.threads = nextThreads;
+
+		const now = Date.now();
+		const baseInterval = this.baseThreadPollIntervalMs();
+		const detailPollIntervalMs = Math.max(baseInterval * DETAIL_POLL_MULTIPLIER, DEFAULT_THREAD_POLL_MS);
+		const shouldPollDetailsByState = this.threads.some(
+			t => t.state === 'Error' || t.state === 'Break' || t.state === 'Paused',
+		);
+		const shouldPollDetails =
+			forceDetails ||
+			shouldPollDetailsByState ||
+			(now - this.lastDetailPollAt >= detailPollIntervalMs);
+
+		if (shouldPollDetails) {
+			const errorResp = await trySendCommand('ErrorLog');
+			if (!this._connected) { return; }
+			const breakResp = await trySendCommand('Show Break');
+			if (!this._connected) { return; }
+			if (errorResp !== null) {
+				this.errors = parseErrorLog(errorResp);
+			}
+			if (breakResp !== null) {
+				this.breakpoints = parseBreakList(breakResp);
+			}
+			this.lastDetailPollAt = now;
+		}
+
+		this.fireRuntimeStateChanged();
+		this._onDidChangeTreeData.fire(undefined);
+		} finally {
+			this._refreshInFlight = false;
+		}
+	}
+
+	/**
+	 * FTP /GPL·Flash Projects 디렉터리 목록 갱신 (강제 — 사용자 새로고침·배포 후·refreshAll).
+	 * 두 경로를 **한 FTP 세션**(listRemoteDirs)으로 조회한다 — 종전엔 경로마다 세션을 열어
+	 * 제어 연결(로그인) 2회 + 데이터 연결 2개가 들었다(GitHub #22 제안 7).
+	 */
+	async refreshFtp(): Promise<void> {
+		if (!this._connected && !this.ftpBrowseOnly) { return; }
+		if (this._refreshFtpInFlight) { return; }
+		this.ftpChildren.clear();
+		this._refreshFtpInFlight = true;
+		try {
+		const cfg = getControllerConfig();
+		const cacheKey = ControllerTreeProvider.ftpCacheKeyFor(cfg.ip, cfg.ftpBasePath, cfg.ftpFlashProjectsPath);
+		try {
+			const [gpl, flash] = await listRemoteDirs(cfg.ip, [cfg.ftpBasePath, cfg.ftpFlashProjectsPath]);
+			const latest = getControllerConfig();
+			if (cacheKey !== ControllerTreeProvider.ftpCacheKeyFor(latest.ip, latest.ftpBasePath, latest.ftpFlashProjectsPath)) { return; }
+			this.ftpEntries = gpl.entries ?? [];
+			this.ftpError = gpl.error ?? null;
+			this.ftpFlashEntries = flash.entries ?? [];
+			this.ftpFlashError = flash.error ?? null;
+		} catch (err: any) {
+			// 세션 자체(접속/로그인) 실패 — 두 목록 모두 같은 사유로 실패 표시
+			const msg = err?.message ?? String(err);
+			this.ftpEntries = [];
+			this.ftpError = msg;
+			this.ftpFlashEntries = [];
+			this.ftpFlashError = msg;
+		}
+		// '성공 조회' = 세션이 열려 목록을 하나라도 받은 경우. 시각·키는 억제 판정과 설명 표기에 쓴다.
+		if (this.ftpError === null || this.ftpFlashError === null) {
+			this.lastFtpRefreshAt = Date.now();
+			this.ftpCacheKey = cacheKey;
+		}
+		this._onDidChangeTreeData.fire(undefined);
+		} finally {
+			this._refreshFtpInFlight = false;
+		}
+	}
+
+	/**
+	 * 연결 확립 시의 조건부 FTP 재조회(#22). 캐시가 없거나, 다른 제어기/경로의 것이거나, 마지막 성공 조회가
+	 * FTP_AUTO_REFRESH_MIN_INTERVAL_MS 이상 지났을 때만 refreshFtp()를 부른다. 건너뛰면 트리는 보존된
+	 * 캐시를 "마지막 조회 HH:mm"과 함께 보여 준다(툴팁에 새로고침 안내).
+	 */
+	private refreshFtpIfStale(): Promise<void> {
+		const cfg = getControllerConfig();
+		const decision = decideAutoRefresh(
+			{
+				lastSuccessAt: this.lastFtpRefreshAt,
+				hasCache: this.ftpError === null || this.ftpFlashError === null,
+				cacheKey: this.ftpCacheKey,
+			},
+			Date.now(),
+			{
+				minIntervalMs: FTP_AUTO_REFRESH_MIN_INTERVAL_MS,
+				currentKey: ControllerTreeProvider.ftpCacheKeyFor(cfg.ip, cfg.ftpBasePath, cfg.ftpFlashProjectsPath),
+			},
+		);
+		// 건너뛸 때 트리 재그리기는 불필요 — setConnected(true)가 직전에 fire 했고 buildRoot가 보존 캐시를 읽는다.
+		if (!decision.refresh) { return Promise.resolve(); }
+		return this.refreshFtp();
+	}
+
+	private static ftpCacheKeyFor(ip: string, basePath: string, flashPath: string): string {
+		return `${ip}|${basePath}|${flashPath}`;
+	}
+
+	/**
+	 * 시스템 정보 갱신 (강제 — 사용자 새로고침·refreshAll). 연결 확립 시에는 refreshSystemInfoIfStale가 대신 불린다.
+	 */
+	async refreshSystemInfo(): Promise<void> {
+		if (!this._connected) { return; }
+		if (this._refreshSystemInFlight) { return; }
+		this._refreshSystemInFlight = true;
+		try {
+		const items: { label: string; value: string; tooltip?: string; iconId?: string }[] = [];
+
+		// TCP 직렬화
+		const memResp = await trySendCommand('Show Memory');
+		const flashResp = await trySendCommand('Show Flash Free');
+		const cpuResp = await trySendCommand('Show CPU Profile');
+		if (!this._connected) { return; }
+		const temperature = parseTemperatureResponse(await trySendCommand(PROBE_TEMPERATURE_CMD));
+		if (!this._connected) { return; }
+
+		// 세 명령 중 하나라도 응답이 왔으면 '성공 조회'로 보고 시각을 기록한다(억제 판정·설명 표기용, #22).
+		// 모두 null(연결 불량)이면 시각을 갱신하지 않아 다음 연결 확립 시 다시 조회된다.
+		if (memResp !== null || flashResp !== null || cpuResp !== null || temperature.complete) {
+			this.lastSystemInfoRefreshAt = Date.now();
+			this.systemInfoCacheKey = getControllerConfig().ip;
+		}
+
+		const memRaw = memResp ? this.extractRaw(memResp) : '';
+		const flashRaw = flashResp ? this.extractRaw(flashResp) : '';
+		const cpuRaw = cpuResp ? this.extractRaw(cpuResp) : '';
+
+		if (memRaw) {
+			items.push({ label: '메모리', value: this.formatMemory(memRaw), tooltip: memRaw, iconId: 'database' });
+		}
+		if (flashRaw) {
+			items.push({ label: '플래시', value: this.formatFlash(flashRaw), tooltip: flashRaw, iconId: 'save-all' });
+		}
+		items.push({
+			label: 'CPU',
+			value: cpuRaw ? this.formatCpu(cpuRaw) : '데이터 없음',
+			tooltip: cpuRaw || 'Show CPU Profile 응답 없음',
+			iconId: 'pulse',
+		});
+		for (const reading of temperature.readings) {
+			items.push({
+				label: `${reading.label} 온도`,
+				value: reading.celsius === null ? `${reading.reportedCelsius.toFixed(1)}°C 반환 · 센서 지원 미확인` : `${reading.celsius.toFixed(1)}°C`,
+				tooltip: `${PROBE_TEMPERATURE_CMD} · ${new Date(temperature.sampledAt).toLocaleTimeString()}\n${reading.note ?? '과열 여부는 모델별 허용 온도와 함께 확인하세요.'}\n${temperature.raw}`,
+				iconId: 'dashboard',
+			});
+		}
+		if (!temperature.readings.length) {
+			items.push({ label: '온도', value: temperature.note ?? '미확인', tooltip: temperature.raw, iconId: 'dashboard' });
+		}
+
+		this.sysInfo = items;
+		this._onDidChangeTreeData.fire(undefined);
+		} finally {
+			this._refreshSystemInFlight = false;
+		}
+	}
+
+	/**
+	 * 연결 확립 시의 조건부 시스템 정보 재조회(#22) — refreshFtpIfStale와 같은 규칙(5분·캐시·IP 일치).
+	 * 메모리·Flash·CPU·온도 조회를 플랩마다 반복하지 않기 위함.
+	 */
+	private refreshSystemInfoIfStale(): Promise<void> {
+		const decision = decideAutoRefresh(
+			{
+				lastSuccessAt: this.lastSystemInfoRefreshAt,
+				hasCache: this.sysInfo.length > 0,
+				cacheKey: this.systemInfoCacheKey,
+			},
+			Date.now(),
+			{ minIntervalMs: SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS, currentKey: getControllerConfig().ip },
+		);
+		if (!decision.refresh) { return Promise.resolve(); }
+		return this.refreshSystemInfo();
+	}
+
+	/** 응답에서 <DATA> 또는 본문 추출 (원시 텍스트) */
+	private extractRaw(resp: string): string {
+		const dataMatch = resp.match(/<DATA>([\s\S]*?)<\/DATA>/);
+		if (dataMatch) {
+			return dataMatch[1].trim();
+		}
+		return resp.replace(/<\/?STATUS[^>]*>.*?<\/STATUS>/gs, '').trim();
+	}
+
+	/** 메모리: "Free: X.XX MB" 핵심 지표만 */
+	private formatMemory(raw: string): string {
+		const freeMatch = raw.match(/Free[:\s]+(\d[\d.]*\s*\w+)/i);
+		if (freeMatch) { return `Free: ${freeMatch[1]}`; }
+		return raw.split(/\r?\n/)[0]?.trim() || raw;
+	}
+
+	/** 플래시: "타입, 크기 · Free: X" */
+	private formatFlash(raw: string): string {
+		const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+		const typeLine = lines[0] || '';
+		const freeMatch = raw.match(/Free[:\s]+(\d[\d.]*\s*\w+)/i);
+		if (freeMatch && typeLine) {
+			// 타입라인이 Free 정보를 이미 포함하면 그대로
+			if (/free/i.test(typeLine)) { return typeLine; }
+			return `${typeLine} · Free: ${freeMatch[1]}`;
+		}
+		return typeLine || raw;
+	}
+
+	/** CPU: 퍼센트 또는 첫 줄 */
+	private formatCpu(raw: string): string {
+		const pctMatch = raw.match(/(\d[\d.]*)\s*%/);
+		if (pctMatch) { return `${pctMatch[1]}%`; }
+		return raw.split(/\r?\n/)[0]?.trim() || raw;
+	}
+
+	// ── TreeDataProvider ────────────────────────────────
+
+	getTreeItem(element: ControllerNode): vscode.TreeItem {
+		switch (element.type) {
+			case 'section': return this.toSectionItem(element);
+			case 'thread': return this.toThreadItem(element);
+			case 'info': return this.toInfoItem(element);
+		}
+	}
+
+	getChildren(element?: ControllerNode): vscode.ProviderResult<ControllerNode[]> {
+		if (!element) { return this.buildRoot(); }
+		if (element.type === 'section') { return element.children; }
+		if (element.type === 'info' && element.remotePath && element.controllerHost && isFtpFolderContext(element.contextValue)) {
+			const key = JSON.stringify([element.controllerHost, element.remotePath]);
+			let pending = this.ftpChildren.get(key);
+			if (!pending) {
+				pending = listRemoteDir(element.controllerHost, element.remotePath).then(entries =>
+					ftpNodes(entries, element.remotePath!, element.controllerHost!, isFlashFtpContext(element.contextValue), true))
+					.catch(error => { this.ftpChildren.delete(key); return [new InfoNode(`조회 실패: ${String(error)}`, 'error')]; });
+				this.ftpChildren.set(key, pending);
+			}
+			return pending;
+		}
+		return [];
+	}
+
+	/** 명령 콘솔 연결 없이 FTP 목록만 표시한다. */
+	async browseFtp(): Promise<void> {
+		this.ftpBrowseOnly = true;
+		await this.refreshFtp();
+	}
+
+	dispose(): void {
+		this._debugModeSubscription?.dispose();
+		this._debugModeSubscription = undefined;
+		this.stopPolling();
+		this._onDidChangeTreeData.dispose();
+		this._onDidProbe.dispose();
+		this._onDidThreadPause.dispose();
+	}
+
+	/**
+	 * Show Break만 즉시 재조회해 브레이크포인트 섹션을 갱신한다.
+	 * 수동 새로고침 버튼과 에디터 중단점 동기화 직후 즉시 반영용(전체 refresh보다 가볍다).
+	 * 성공 시 파싱된 목록을, 미연결/실패 시 null을 돌려준다(pull 명령이 재사용).
+	 */
+	async refreshBreakpointsNow(): Promise<BreakpointInfo[] | null> {
+		if (!this._connected) { return null; }
+		const resp = await trySendCommand('Show Break');
+		if (resp === null || !this._connected) { return null; }
+		this.breakpoints = parseBreakList(resp);
+		this._onDidChangeTreeData.fire(undefined);
+		return this.breakpoints;
+	}
+
+	/**
+	 * 이전/새 스레드 목록을 비교해 정지 전이를 감지한다.
+	 * - 기존 스레드의 비정지→정지 전이, 또는 정지 상태로 새로 나타난 스레드(stopOnEntry —
+	 *   스레드 0개 상태에서 시작해도 잡히도록 빈 previous도 비교 대상이며, 첫 수신 여부는
+	 *   호출부의 hasReceivedThreadList가 거른다)에 발생.
+	 * - 한 폴 주기에 최대 1건만 발생시켜 다중 파일 점프를 막는다.
+	 */
+	private firePauseTransitions(previous: ThreadInfo[], next: ThreadInfo[]): void {
+		const prevStates = new Map(previous.map(t => [t.name, t.state]));
+		for (const t of next) {
+			if (!isPausedState(t.state)) { continue; }
+			const prevState = prevStates.get(t.name);
+			if (prevState === undefined || !isPausedState(prevState)) {
+				this._onDidThreadPause.fire({ name: t.name, state: t.state });
+				return;
+			}
+		}
+	}
+
+	// ── Build tree ──────────────────────────────────────
+
+	private buildRoot(): SectionNode[] {
+		if (!this._connected) {
+			const sec = new SectionNode('disconnected', '연결되지 않음', 'debug-disconnect');
+			sec.children = [
+				new InfoNode('제어기에 연결하기', 'plug', '클릭하여 연결', {
+					command: 'gpl.controller.connect',
+					title: 'Connect to Controller',
+				}),
+			];
+			if (!this.ftpBrowseOnly) { return [sec]; }
+			const cfg = getControllerConfig();
+			return [sec,
+				this.buildFtpSection('ftp', `FTP ${cfg.ftpBasePath}`, 'folder', cfg.ftpBasePath, this.ftpEntries, this.ftpError, 'ftpFolder', 'ftpFile'),
+				this.buildFtpSection('ftpFlash', `FTP ${cfg.ftpFlashProjectsPath}`, 'folder-library', cfg.ftpFlashProjectsPath, this.ftpFlashEntries, this.ftpFlashError, 'ftpFlashFolder', 'ftpFlashFile')];
+		}
+
+		const cfg = getControllerConfig();
+		const sections: SectionNode[] = [];
+
+		if (this.runtimeErrorContext) {
+			const errCtx = this.runtimeErrorContext;
+			const threadLabel = errCtx.threadId !== undefined
+				? `${errCtx.threadName} (#${errCtx.threadId})`
+				: errCtx.threadName;
+			const runtimeErrSec = new SectionNode(
+				'runtimeErrorContext',
+				'런타임 오류 컨텍스트',
+				'error',
+				errCtx.statusText || '최근 오류',
+			);
+			runtimeErrSec.collapsed = true;
+			runtimeErrSec.children = [
+				new InfoNode(`오류 스레드: ${threadLabel}`, 'debug-stop', errCtx.statusText || undefined),
+				new InfoNode(`직전 명령: ${errCtx.lastCommand || '(없음)'}`, 'terminal', undefined),
+				new InfoNode(`최초 발생 시각: ${errCtx.firstSeenAt || '(미확인)'}`, 'history', undefined),
+				...(errCtx.stackFrames && errCtx.stackFrames.length > 0
+					? errCtx.stackFrames.map((frame, idx) => new InfoNode(`프레임 ${idx + 1}: ${frame}`, 'list-tree'))
+					: [new InfoNode('스택 프레임 정보 없음', 'info')]),
+			];
+			sections.push(runtimeErrSec);
+		}
+
+		// ── 프로젝트 컨텍스트 (불일치 가시화)
+		const runningProjects = [...new Set(
+			this.threads.map(t => (t.project || '').trim()).filter(Boolean),
+		)];
+		const ftpDirs = [
+			...this.ftpEntries.filter(e => e.isDirectory).map(e => e.name),
+			...this.ftpFlashEntries.filter(e => e.isDirectory).map(e => e.name),
+		];
+		const expected = this.expectedProjectName;
+		const expectedFolder = this.expectedProjectFolderName || expected;
+		const hasExpectedRunning = expected
+			? runningProjects.some(p => p.toLowerCase() === expected.toLowerCase())
+			: false;
+		const hasExpectedFtp = expectedFolder
+			? ftpDirs.some(p => p.toLowerCase() === expectedFolder.toLowerCase())
+			: false;
+		const hasUnexpectedRunning = !!expected && runningProjects.length > 0 && !hasExpectedRunning;
+		const missingExpectedFtp = !!expectedFolder && !hasExpectedFtp;
+		const buildOnlyReady = !!expected && hasExpectedFtp && runningProjects.length === 0;
+		const stale = this.compileStale;
+		const mismatch = missingExpectedFtp || hasUnexpectedRunning || !!stale;
+		const contextDescription = stale
+			? '컴파일 검증 필요'
+			: mismatch
+				? '불일치 감지'
+				: buildOnlyReady
+					? '빌드 전용 상태'
+					: '정상';
+
+		const ctxSec = new SectionNode(
+			'projectContext',
+			mismatch ? '프로젝트 상태 ⚠' : '프로젝트 상태',
+			mismatch ? 'warning' : 'pass',
+			contextDescription,
+		);
+		ctxSec.collapsed = true;
+		const runSummary = runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)';
+		ctxSec.children = [
+			new InfoNode(`기대: ${expected || '(미설정)'} / 실행: ${runSummary}`, 'target',
+				hasUnexpectedRunning
+					? `${expected} 대신 다른 프로젝트가 실행 중`
+					: buildOnlyReady
+						? 'Build Only 후 미실행 상태일 수 있음'
+						: hasExpectedRunning || !expected
+							? undefined
+							: `${expected} 미실행`),
+			new InfoNode(`FTP: ${expectedFolder || '(미설정)'} / 현재: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}`, 'folder-library',
+				hasExpectedFtp || !expectedFolder ? undefined : `${expectedFolder} 폴더 없음`),
+		];
+		if (stale) {
+			// /GPL 소스만 올라가고 Compile로 검증되지 않은 상태(이슈 #17 재구성의 부수 상태). Start는 `-compile` 로 컴파일하므로(§0.7)
+			// 옛 프로그램이 도는 건 아니지만, 소스 에러가 있으면 Start가 실패해 실행되지 않는다(에러 위치는 §1-EW에서 Problems 연동).
+			ctxSec.collapsed = false;
+			// 문구·클릭 대상은 상태바 배지와 같은 규칙(views/statusbar/compileStaleBadge) — 폴더를 알면 Uri 인자로 선택 창 없이 그 프로젝트.
+			ctxSec.children.unshift(new InfoNode(
+				compileStaleBadgeLabel(stale),
+				'warning',
+				stale.reason,
+				compileStaleBadgeCommand(stale, dir => vscode.Uri.file(dir)),
+				'compileStaleItem',
+				compileStaleBadgeTooltip(stale),
+			));
+		}
+		sections.push(ctxSec);
+
+		// ── 연결 정보 (간소화)
+		const conn = new SectionNode('connection', cfg.ip, 'plug', '연결됨');
+		conn.collapsed = true;
+		const trafficOpts = getTrafficLogOptions();
+		conn.children = [
+			new InfoNode(`${channelName('command')}: ${cfg.ip}:${cfg.port}`, 'server', formatConnectionStats(getConnectionStats()), {
+				command: 'gpl.controller.pingPort',
+				title: '포트 통신 테스트',
+				arguments: ['command', cfg.ip, cfg.port],
+			}),
+			new InfoNode(
+				'통신 모니터',
+				'radio-tower',
+				trafficOpts.responseBody
+					? `명령 + 응답 본문${trafficOpts.maxResponseChars > 0 ? ` (≤${trafficOpts.maxResponseChars}자)` : ''}`
+					: '명령 + STATUS 요약만',
+				{ command: 'gpl.controller.showTraffic', title: 'GPL Traffic 열기' },
+				'trafficMonitorItem',
+				`확장이 ${channelName('command')}로 보내는 모든 명령(>>>)과 제어기 응답( | 본문 줄, <<< STATUS 요약)을 ` +
+				'GPL Traffic 출력 채널에 실시간으로 표시합니다.\n' +
+				'클릭: 채널 열기 · 인라인/우클릭: 응답 본문 표시 켜기/끄기, 채널 지우기\n' +
+				'설정: gpl.controller.trafficLogResponseBody / trafficLogMaxResponseChars',
+			),
+			new InfoNode(
+				channelName('runtime'),
+				getRuntimeConsoleTreeIcon(this.runtimeConsoleStatus),
+				buildRuntimeConsoleTreeDescription(this.runtimeConsoleStatus),
+				{
+					command: 'gpl.console.ensure',
+					title: '런타임 콘솔 연결/재연결/로그 보기',
+				},
+				'runtimeConsoleItem',
+				buildRuntimeConsoleTreeTooltip(this.runtimeConsoleStatus, cfg.ip, cfg.consolePort),
+			),
+			new InfoNode(
+				'명령 보내기',
+				'debug-console',
+				'제어기에 명령 입력',
+				{
+					command: 'gpl.controller.sendCommand',
+					title: 'Send Command to Controller',
+				},
+				'sendCommandItem',
+				'클릭하여 임의 제어기 명령(Show Thread, ErrorLog, date 등)을 입력하고 응답을 출력 패널에서 확인합니다.',
+			),
+		];
+		sections.push(conn);
+
+		// ── 쓰레드
+		const { running, paused, idle, errCount } = this.countThreadStates();
+
+		let threadDesc: string;
+		if (this.threads.length === 0) {
+			threadDesc = '없음';
+		} else {
+			const parts: string[] = [];
+			if (running > 0) { parts.push(`실행 ${running}`); }
+			if (paused > 0) { parts.push(`일시정지 ${paused}`); }
+			if (idle > 0) { parts.push(`대기 ${idle}`); }
+			if (errCount > 0) { parts.push(`에러 ${errCount}`); }
+			threadDesc = parts.join(' · ') || '모두 정지';
+		}
+
+		const threadSec = new SectionNode('threads',
+			`쓰레드 (${this.threads.length})`, 'symbol-event', threadDesc);
+		threadSec.collapsed = true;
+		// 정지/에러 쓰레드를 맨 위로 끌어올려 한눈에 띄게 한다(원본 배열은 보존).
+		const sortedThreads = [...this.threads].sort(
+			(a, b) => this.threadStateRank(a.state) - this.threadStateRank(b.state),
+		);
+		threadSec.children = sortedThreads.length > 0
+			? sortedThreads.map(t => new ThreadNode(t))
+			: [new InfoNode('쓰레드 없음', 'info')];
+		sections.push(threadSec);
+
+		// ── 브레이크포인트 (제어기 기준 — 0개여도 상시 표시해 상태를 보이게 한다, §1-AR)
+		{
+			const totalHits = this.breakpoints.reduce((s, b) => s + b.hitCount, 0);
+			// 제어기에는 있지만 에디터에 빨간 점이 없는 항목 = 어긋남(§1-CJ). 실행하면 여기서 멈추므로
+			// 눈에 보이게 표시한다 — 이 상태가 "F9로 지웠는데 왜 걸리지?"의 정체다.
+			const orphanKeys = new Set(
+				orphanControllerBreakpoints(
+					this.breakpoints,
+					editorBreakpointTargets(false, this.editorBreakpointTargetResolver),
+				)
+					.map(b => breakpointKey({ file: b.file, line: b.fileLine })));
+			const bpSec = new SectionNode('breakpoints',
+				`브레이크포인트 (${this.breakpoints.length})`, 'debug-breakpoint',
+				this.breakpoints.length > 0
+					? `${totalHits} hits${orphanKeys.size > 0 ? ` · ⚠ ${orphanKeys.size} 에디터에 없음` : ''}`
+					: '없음');
+			if (this.breakpoints.length === 0) {
+				bpSec.children = [new InfoNode('제어기에 설정된 브레이크포인트 없음', 'circle-slash')];
+			} else {
+				bpSec.children = this.breakpoints.map(bp => {
+					const loc = `${bp.file}:${bp.fileLine}`;
+					const orphan = orphanKeys.has(breakpointKey({ file: bp.file, line: bp.fileLine }));
+					const parts = [bp.proc];
+					if (bp.hitCount > 0) { parts.push(`${bp.hitCount} hits`); }
+					if (orphan) { parts.push('⚠ 에디터에 없음'); }
+					const tooltip = `${bp.project} · ${bp.proc} (procLine ${bp.procLine})\n클릭하면 해당 위치를 엽니다 (배포본 기준 줄 번호)`
+						+ (orphan
+							? '\n\n⚠ 에디터에 대응하는 중단점이 없습니다 — 제어기에만 남아 있어 실행하면 이 줄에서 멈춥니다.\n'
+							+ '우클릭 → "제어기에서 이 중단점 해제" 또는 "GPL: Sync Breakpoints"로 정리하세요.'
+							: '');
+					return new InfoNode(loc, orphan ? 'debug-breakpoint-unverified' : 'debug-breakpoint-data',
+						parts.join(' · '), {
+							command: 'gpl.controller.openBreakpointLocation',
+							title: '위치 열기',
+							arguments: [{ file: bp.file, line: bp.fileLine }],
+						}, 'breakpointItem', tooltip);
+				});
+			}
+			bpSec.collapsed = true;
+			sections.push(bpSec);
+		}
+
+		// ── FTP 파일 (/GPL)
+		sections.push(this.buildFtpSection('ftp', `FTP 파일 (${cfg.ftpBasePath})`, 'folder-library',
+			cfg.ftpBasePath, this.ftpEntries, this.ftpError, 'ftpFolder', 'ftpFile'));
+
+		// ── Flash Projects (/flash/projects)
+		sections.push(this.buildFtpSection('ftpFlash', `Flash Projects (${cfg.ftpFlashProjectsPath})`, 'archive',
+			cfg.ftpFlashProjectsPath, this.ftpFlashEntries, this.ftpFlashError, 'ftpFlashFolder', 'ftpFlashFile'));
+
+		// ── 시스템 정보
+		const sysSec = new SectionNode('system', '시스템 정보', 'dashboard',
+			this.sysInfo.length > 0
+				? (this.lastSystemInfoRefreshAt > 0 ? `마지막 조회 ${formatLastRefreshTime(this.lastSystemInfoRefreshAt)}` : undefined)
+				: '조회 안됨',
+			this.buildOnDemandCacheTooltip(this.lastSystemInfoRefreshAt, SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS));
+		sysSec.collapsed = true;
+		if (this.sysInfo.length === 0) {
+			sysSec.children = [
+				new InfoNode('새로고침으로 조회하세요', 'info', undefined, {
+					command: 'gpl.controller.refreshSystemInfo',
+					title: '시스템 정보 새로고침',
+				}),
+			];
+		} else {
+			sysSec.children = this.sysInfo.map(s =>
+				new InfoNode(s.label, s.iconId || 'info', s.value, undefined, undefined, s.tooltip));
+		}
+		sections.push(sysSec);
+
+		// ── I/O · 전역변수 (상호작용 진입점)
+		const ioSec = new SectionNode('io', 'I/O · 전역변수', 'symbol-interface', 'I/O 제어판 · 전역변수');
+		ioSec.collapsed = true;
+		ioSec.children = [
+			new InfoNode('디지털 I/O 제어판', 'circuit-board', '상태 확인 · 강제 ON/OFF · 해제', { command: 'gpl.controller.showIoPanel', title: '디지털 I/O 제어판 열기' }, 'ioAction', '모든 설치 신호의 ON/OFF·강제 상태를 한눈에 보고, 확인 후 Set DIO를 실행합니다.'),
+			new InfoNode('전역변수 보기/편집', 'symbol-variable', 'Show/Set Global', { command: 'gpl.controller.showGlobal', title: 'Show Global' }, 'ioAction', '전역변수 값을 조회하고 필요 시 수정합니다.'),
+		];
+		sections.push(ioSec);
+
+		// ── 에러 로그: 코드 오류 / 환경 경고 분리 뷰
+		const classifiedEntries = this.errors.map(raw => {
+			const classified = classifyErrorEntry(raw);
+			const code = extractErrorCodeFromEntry(raw) ?? classified.parsedCode;
+			const hint = typeof code === 'number' ? getErrorCodeHint(code) : undefined;
+			const isEnvironment = classified.isControllerSystem || hint?.category === 'environment';
+			return { raw, classified, code, hint, isEnvironment };
+		});
+		const envErrors = classifiedEntries.filter(e => e.isEnvironment);
+		const codeErrors = classifiedEntries.filter(e => !e.isEnvironment);
+		const errorThreads = this.threads.filter(t => t.state === 'Error');
+		const chainHints = findKnownErrorChains(
+			classifiedEntries
+				.map(e => e.code)
+				.filter((code): code is number => typeof code === 'number'),
+		);
+
+		const codeSec = new SectionNode(
+			'errorsCode',
+			`코드 오류 (${codeErrors.length + errorThreads.length})`,
+			codeErrors.length > 0 || errorThreads.length > 0 ? 'error' : 'pass',
+			errorThreads.length > 0 ? `Thread Error ${errorThreads.length}` : (codeErrors.length > 0 ? '확인 필요' : '정상'),
+		);
+		const codeChildren: ControllerNode[] = [];
+
+		// Error 상태 쓰레드는 쓰레드 섹션과 같은 행(ThreadNode)으로 넣는다 — 종전 InfoNode 는 명령도 메뉴도 없어
+		// 클릭·복사·위치 이동이 아무것도 되지 않았다. 같은 행이면 클릭 = 에러 위치, 우클릭 = Show Stack/Continue/Stop,
+		// 인라인 복사(툴팁 = 이름·상태·파일:줄)가 그대로 붙는다. 인스턴스는 새로 만든다(같은 객체를 두 곳에 두면 VS Code 가 거부).
+		for (const et of errorThreads) {
+			codeChildren.push(new ThreadNode(et));
+		}
+
+		for (const e of codeErrors) {
+			const codeLabel = typeof e.code === 'number' ? `${e.code}` : 'N/A';
+			const hintDesc = e.hint
+				? `${e.hint.title} — ${e.hint.action}`
+				: (e.classified.detail ?? '클릭: 클립보드에 복사');
+			const line = typeof e.code === 'number'
+				? `[${codeLabel}] ${e.classified.summary}`
+				: e.classified.summary;
+			codeChildren.push(new InfoNode(
+				line,
+				'error',
+				hintDesc,
+				{
+					command: 'gpl.controller.showErrorDetail',
+					title: '오류 상세 보기',
+					// 분류는 버킷이 다시 정하지 않고 판정 결과(classifyErrorEntry)를 그대로 넘긴다 — 같은 판단의 사본 금지(R7).
+					arguments: [{ raw: e.raw, code: e.code, category: e.classified.category, groupTitle: e.classified.groupTitle }],
+				},
+				'errorItem',
+				e.hint
+					? `${line}\n해석: ${e.hint.meaning}\n권장 조치: ${e.hint.action}`
+					: line,
+			));
+		}
+
+		if (chainHints.length > 0) {
+			const chainSec = new SectionNode('errorChains', `에러 체인 (${chainHints.length})`, 'git-commit', '연쇄 오류');
+			chainSec.collapsed = true;
+			chainSec.children = chainHints.map(chain => new InfoNode(
+				`추정 체인: ${chain}`,
+				'git-commit',
+				'연속 에러 패턴 감지',
+				undefined,
+				'errorChainItem',
+				`추정 원인 체인: ${chain}`,
+			));
+			codeChildren.push(chainSec);
+		}
+
+		if (codeChildren.length === 0) {
+			codeChildren.push(new InfoNode('활성 코드 오류 없음', 'pass'));
+		}
+		codeSec.children = codeChildren;
+		codeSec.collapsed = false;
+		sections.push(codeSec);
+
+		const envSec = new SectionNode(
+			'errorsEnv',
+			`환경 경고 (${envErrors.length})`,
+			envErrors.length > 0 ? 'warning' : 'pass',
+			envErrors.length > 0 ? '코드와 분리 진단 권장' : '정상',
+		);
+		const envChildren: InfoNode[] = [];
+		for (const e of envErrors) {
+			const prefix = typeof e.code === 'number' ? `[${e.code}] ` : '';
+			envChildren.push(new InfoNode(
+				`${prefix}${e.classified.summary}`,
+				'warning',
+				e.hint
+					? `${e.hint.title} — ${e.hint.action}`
+					: (e.classified.detail ?? '제어기 시스템/환경 경고'),
+				{
+					command: 'gpl.controller.showErrorDetail',
+					title: '오류 상세 보기',
+					arguments: [{ raw: e.raw, code: e.code, category: e.classified.category, groupTitle: e.classified.groupTitle }],
+				},
+				'sysErrorItem',
+				e.hint
+					? `${e.classified.summary}\n해석: ${e.hint.meaning}\n권장 조치: ${e.hint.action}`
+					: `[제어기 시스템] ${e.classified.summary}\n${e.classified.detail ?? ''}`,
+			));
+		}
+		if (envChildren.length === 0) {
+			envChildren.push(new InfoNode('활성 환경 경고 없음', 'pass'));
+		}
+		envSec.children = envChildren;
+		envSec.collapsed = false;
+		sections.push(envSec);
+
+		return sections;
+	}
+
+	/**
+	 * 「전체 쓰레드 복사」가 클립보드에 넣는 보고서. 상황 스냅샷의 `## 쓰레드` 절과 같은 표를 쓴다
+	 * (렌더러 정본: `controller/threads/threadReport`).
+	 */
+	buildThreadReportMarkdown(): string {
+		const cfg = getControllerConfig();
+		return renderThreadListReport({
+			threads: this.threads,
+			connected: this._connected,
+			endpoint: `${cfg.ip}:${cfg.port}`,
+			expectedProject: this.expectedProjectName,
+			extensionVersion: EXTENSION_VERSION,
+		});
+	}
+
+	buildSituationSnapshotMarkdown(extra?: {
+		runtimeConsoleStatus?: RuntimeConsoleStatusSnapshot;
+		deploySnapshot?: SituationDeploySnapshot;
+	}): string {
+		const cfg = getControllerConfig();
+
+		const expected = this.expectedProjectName || '(미설정)';
+		const expectedFolder = this.expectedProjectFolderName || this.expectedProjectName || '(미설정)';
+		const runningProjects = [...new Set(this.threads.map(t => t.project).filter(Boolean))];
+		const ftpDirs = [
+			...this.ftpEntries.filter(e => e.isDirectory).map(e => e.name),
+			...this.ftpFlashEntries.filter(e => e.isDirectory).map(e => e.name),
+		];
+
+		const lines: string[] = [];
+		lines.push('# GPL Controller 상황 스냅샷');
+		lines.push('');
+
+		// ── 연결 상태
+		const consoleStatus = extra?.runtimeConsoleStatus ?? this.runtimeConsoleStatus;
+		lines.push('## 연결');
+		lines.push(`- 명령 포트: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
+		lines.push(`- 콘솔 포트: ${formatRuntimeConsoleStateLabel(consoleStatus)} (${cfg.ip}:${cfg.consolePort})`);
+		lines.push(`- 콘솔 상세: ${formatRuntimeConsoleStatusDetail(consoleStatus)}`);
+		if (consoleStatus.lastPayloadAt) {
+			lines.push(`- 마지막 payload: ${formatDateTimeFromTs(consoleStatus.lastPayloadAt)} (${consoleStatus.lastPayloadBytes ?? 0} bytes)`);
+		}
+		lines.push(`- 시각: ${new Date().toLocaleString('ko-KR')}`);
+		lines.push('');
+
+		// ── 최근 배포 결과
+		lines.push('## 최근 배포 결과');
+		if (!extra?.deploySnapshot) {
+			lines.push('- 최근 배포 기록 없음');
+		} else {
+			const d = extra.deploySnapshot;
+			lines.push(`- 결과: ${d.success ? '성공' : '실패'}`);
+			lines.push(`- 모드: ${d.mode}`);
+			lines.push(`- 마지막 단계: ${d.lastStage}`);
+			lines.push(`- 컴파일 에러 코드: ${d.compileErrorCodes.length > 0 ? d.compileErrorCodes.join(', ') : '(없음)'}`);
+			lines.push(`- 제어기 시스템 코드: ${d.controllerSystemCodes.length > 0 ? d.controllerSystemCodes.join(', ') : '(없음)'}`);
+			lines.push(`- 요약: ${d.summary}`);
+			lines.push(`- 기록 시각: ${new Date(d.updatedAt).toLocaleString('ko-KR')}`);
+		}
+		lines.push('');
+
+		// ── 프로젝트 컨텍스트
+		const hasExpectedRunning = expected !== '(미설정)' && runningProjects.some(p => p.toLowerCase() === expected.toLowerCase());
+		const hasExpectedFtp = expectedFolder !== '(미설정)' && ftpDirs.some(p => p.toLowerCase() === expectedFolder.toLowerCase());
+		const hasUnexpectedRunning = expected !== '(미설정)' && runningProjects.length > 0 && !hasExpectedRunning;
+		const mismatch = (expectedFolder !== '(미설정)' && !hasExpectedFtp) || hasUnexpectedRunning;
+
+		lines.push('## 프로젝트 컨텍스트');
+		lines.push(`- 기대 프로젝트: ${expected}${mismatch ? ' ⚠ 불일치' : ''}`);
+		lines.push(`- 기대 FTP 폴더: ${expectedFolder}`);
+		lines.push(`- 실행 프로젝트: ${runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)'}${hasUnexpectedRunning ? ' ⚠ 다른 프로젝트 실행 중' : expected !== '(미설정)' && !hasExpectedRunning && hasExpectedFtp ? ' (Build Only 가능)' : expected !== '(미설정)' && !hasExpectedRunning ? ' ⚠ 기대 프로젝트 미실행' : ''}`);
+		lines.push(`- FTP 프로젝트 폴더: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}${expectedFolder !== '(미설정)' && !hasExpectedFtp ? ' ⚠ 기대 프로젝트 폴더 없음' : ''}`);
+		lines.push('');
+
+		// ── 쓰레드 (표는 「전체 쓰레드 복사」와 같은 렌더러 — controller/threads/threadReport)
+		lines.push('## 쓰레드');
+		lines.push(`- ${summarizeThreadStates(this.threads)}`);
+		const threadTable = renderThreadTable(this.threads);
+		if (threadTable.length > 0) {
+			lines.push('');
+			lines.push(...threadTable);
+		}
+		lines.push('');
+
+		// ── 브레이크포인트
+		lines.push('## 브레이크포인트');
+		if (this.breakpoints.length === 0) {
+			lines.push('- 없음');
+		} else {
+			lines.push('');
+			lines.push('| 파일:줄 | 프로시저 | hit 횟수 |');
+			lines.push('|---------|----------|----------|');
+			for (const b of this.breakpoints) {
+				lines.push(`| ${b.file}:${b.fileLine} | ${b.proc} | ${b.hitCount} |`);
+			}
+		}
+		lines.push('');
+
+		// ── FTP 파일 상세
+		lines.push('## FTP 파일');
+		if (this.ftpEntries.length === 0) {
+			lines.push('- 파일 없음');
+		} else {
+			lines.push('');
+			lines.push('| 이름 | 유형 | 크기 | 수정일 |');
+			lines.push('|------|------|------|--------|');
+			for (const e of this.ftpEntries) {
+				const type = e.isDirectory ? '폴더' : '파일';
+				const size = e.isDirectory ? '-' : formatBytes(e.size);
+				const date = e.modifiedAt ? formatDate(e.modifiedAt) : '-';
+				lines.push(`| ${e.name} | ${type} | ${size} | ${date} |`);
+			}
+		}
+		if (this.ftpError) {
+			lines.push(`- ⚠ FTP 조회 실패: ${this.ftpError}`);
+		}
+		if (this.lastFtpRefreshAt > 0) {
+			lines.push(`- 마지막 FTP 조회: ${formatDateTimeFromTs(this.lastFtpRefreshAt)} (연결 플랩 시 자동 재조회 안 함 — 새로고침으로 갱신)`);
+		}
+		lines.push('');
+
+		// ── 시스템 정보
+		lines.push('## 시스템 정보');
+		if (this.sysInfo.length === 0) {
+			lines.push('- 조회 안됨');
+		} else {
+			for (const s of this.sysInfo) {
+				lines.push(`- ${s.label}: ${s.value}`);
+			}
+		}
+		lines.push('');
+
+		// ── 에러 로그
+		lines.push('## 에러 로그');
+		if (this.errors.length === 0) {
+			lines.push('- 활성 에러 없음');
+		} else {
+			for (const e of this.errors) {
+				lines.push(`- ${e}`);
+			}
+		}
+
+		if (this.runtimeErrorContext) {
+			lines.push('');
+			lines.push('## 오류 스레드 상세');
+			const ctx = this.runtimeErrorContext;
+			lines.push(`- 스레드: ${ctx.threadId !== undefined ? `${ctx.threadName} (#${ctx.threadId})` : ctx.threadName}`);
+			lines.push(`- 상태: ${ctx.statusText || '(미상)'}`);
+			lines.push(`- 직전 실행 명령: ${ctx.lastCommand || '(미상)'}`);
+			lines.push(`- 최초 발생 시각: ${ctx.firstSeenAt || '(미상)'}`);
+			if (ctx.stackFrames && ctx.stackFrames.length > 0) {
+				lines.push('- 스택:');
+				for (const frame of ctx.stackFrames) {
+					lines.push(`  - ${frame}`);
+				}
+			}
+			if (ctx.relatedFunctions && ctx.relatedFunctions.length > 0) {
+				lines.push(`- 관련 함수: ${ctx.relatedFunctions.join(', ')}`);
+			}
+		}
+
+		return lines.join('\n');
+	}
+
+	buildDiagnosticSnapshotMarkdown(extra?: {
+		runtimeConsoleStatus?: RuntimeConsoleStatusSnapshot;
+		deploySnapshot?: SituationDeploySnapshot;
+	}): string {
+		const cfg = getControllerConfig();
+		const runtime = extra?.runtimeConsoleStatus ?? this.runtimeConsoleStatus;
+		const deploy = extra?.deploySnapshot;
+
+		const codes = this.errors
+			.map(e => extractErrorCodeFromEntry(e))
+			.filter((code): code is number => typeof code === 'number');
+		const codeCounts = new Map<number, number>();
+		for (const code of codes) {
+			codeCounts.set(code, (codeCounts.get(code) ?? 0) + 1);
+		}
+		const topCodes = [...codeCounts.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 5);
+		const chains = findKnownErrorChains(codes);
+
+		const stageMap: Record<string, 'OK' | 'FAIL' | 'SKIP' | 'N/A'> = {
+			STOPPING: 'N/A',
+			UPLOADING: 'N/A',
+			COMPILE: 'N/A',
+			RUNNING: 'N/A',
+		};
+		if (deploy) {
+			if (deploy.success) {
+				stageMap.STOPPING = deploy.mode === 'Upload Only' ? 'SKIP' : 'OK';
+				stageMap.UPLOADING = 'OK';
+				stageMap.COMPILE = deploy.mode === 'Upload Only' ? 'SKIP' : 'OK';
+				stageMap.RUNNING = deploy.mode === 'Build' || deploy.mode === 'Upload Only' ? 'SKIP' : 'OK';
+			} else {
+				// 순서(2026-08-25 재배치, 이슈 #17): UPLOAD → STOP/THREAD_CHECK → COMPILE → START.
+				// THREAD_CHECK(빠른 컴파일의 Compile 전 쓰레드 게이트)·COMPILE_DEFERRED는 STOP 단계 실패와 동급으로 취급.
+				const stage = deploy.lastStage;
+				if (stage === 'CANCELLED') {
+					stageMap.STOPPING = 'N/A';
+					stageMap.UPLOADING = 'N/A';
+					stageMap.COMPILE = 'N/A';
+					stageMap.RUNNING = 'N/A';
+				} else {
+				const uploadFailed = stage === 'UPLOAD' || stage === 'LOCKED';
+				const stoppedStageFailed = stage === 'STOP' || stage === 'THREAD_CHECK' || stage === 'COMPILE_DEFERRED';
+				stageMap.UPLOADING = uploadFailed ? 'FAIL' : 'OK';
+				stageMap.STOPPING = uploadFailed ? 'N/A' : (stoppedStageFailed ? 'FAIL' : 'OK');
+				stageMap.COMPILE = stage === 'COMPILE' ? 'FAIL' : ((stage === 'START' || stage === 'ERROR_CHECK') ? 'OK' : 'N/A');
+				stageMap.RUNNING = deploy.mode === 'Build' || deploy.mode === 'Upload Only'
+					? 'SKIP'
+					: (deploy.lastStage === 'START' ? 'FAIL' : ((deploy.lastStage === 'ERROR_CHECK' || deploy.lastStage === 'SUCCESS') ? 'OK' : 'N/A'));
+				}
+			}
+		}
+
+		const envErrors = this.errors.filter(e => classifyErrorEntry(e).isControllerSystem).length;
+		const codeErrors = this.errors.length - envErrors;
+		const threadErrors = this.threads.filter(t => t.state === 'Error').length;
+		const runtimeReason = runtime.reason || '미연결';
+		const runtimeUnstable = isRuntimeConsoleUnstable(runtime);
+
+		let verdict: '정상' | '간헐' | '실패' = '정상';
+		let verdictReason = '이상 징후 없음';
+		if (!this._connected) {
+			verdict = '실패';
+			verdictReason = `${channelName('command')} 미연결`;
+		} else if (codeErrors > 0 || threadErrors > 0) {
+			verdict = '실패';
+			verdictReason = `코드 오류 ${codeErrors}건 / Error thread ${threadErrors}건`;
+		} else if (runtimeUnstable) {
+			verdict = '간헐';
+			verdictReason = `${channelName('runtime')} 불안정 (${runtimeReason}${runtime.detail ? `, ${runtime.detail}` : ''})`;
+		} else if (envErrors > 0) {
+			verdict = '간헐';
+			verdictReason = `환경 경고 ${envErrors}건`; 
+		}
+
+		const lines: string[] = [];
+		lines.push('# GPL 원클릭 진단 스냅샷');
+		lines.push('');
+		lines.push(`- 생성 시각: ${new Date().toLocaleString('ko-KR')}`);
+		lines.push(`- ${channelName('command')}: ${this._connected ? `Connected (${cfg.ip}:${cfg.port})` : 'Disconnected'}`);
+		lines.push(`- ${channelName('runtime')}: ${formatRuntimeConsoleStateLabel(runtime)} (${cfg.ip}:${cfg.consolePort})`);
+		lines.push(`- ${channelName('runtime')} 상세: ${formatRuntimeConsoleStatusDetail(runtime)}`);
+		lines.push('');
+
+		lines.push(`## ${channelName('runtime')} 관찰 증거`);
+		lines.push(`- 마지막 상태 변경: ${formatDateTimeFromTs(runtime.lastChangedAt)}`);
+		lines.push(`- noPayloadStreak: ${runtime.noPayloadStreak}`);
+		lines.push(`- pollEmptyStreak: ${runtime.immediateEofStreak}`);
+		if (runtime.lastConnectAt) {
+			lines.push(`- 마지막 연결 시도: ${formatDateTimeFromTs(runtime.lastConnectAt)}`);
+		}
+		if (runtime.lastPayloadAt) {
+			lines.push(`- 마지막 payload: ${formatDateTimeFromTs(runtime.lastPayloadAt)} (${runtime.lastPayloadBytes ?? 0} bytes)`);
+		} else {
+			lines.push('- 마지막 payload: 없음');
+		}
+		if (runtime.lastErrorCode) {
+			lines.push(`- 마지막 소켓 오류 코드: ${runtime.lastErrorCode}`);
+		}
+		if (runtime.reconnectDelayMs) {
+			lines.push(`- ${runtime.immediateEofStreak > 0 ? '폴링 대기' : '재연결 대기'}: ${runtime.reconnectDelayMs}ms${runtime.reconnectAttempt ? ` (attempt ${runtime.reconnectAttempt})` : ''}`);
+		}
+		const runtimeHypothesis = getRuntimeConsoleHypothesis(runtime);
+		if (runtimeHypothesis) {
+			lines.push(`- 가설: ${runtimeHypothesis}`);
+		}
+		lines.push('');
+
+		lines.push('## Deploy 단계 판정');
+		lines.push(`- STOPPING: ${stageMap.STOPPING}`);
+		lines.push(`- UPLOADING: ${stageMap.UPLOADING}`);
+		lines.push(`- COMPILE: ${stageMap.COMPILE}`);
+		lines.push(`- RUNNING: ${stageMap.RUNNING}`);
+		if (deploy) {
+			lines.push(`- 최근 배포 요약: ${deploy.summary}`);
+			if (deploy.unverifiableReason) {
+				lines.push(`- 검증 상태: 코드 수정 효과 검증 불가 (${deploy.unverifiableReason})`);
+			}
+			if (deploy.comparisonNote) {
+				lines.push(`- 비교 판정: ${deploy.comparisonNote}`);
+			}
+		}
+		lines.push('');
+
+		if (deploy?.compileRawSummary && deploy.compileRawSummary.length > 0) {
+			lines.push('## COMPILE 원문 로그 요약');
+			for (const raw of deploy.compileRawSummary) {
+				lines.push(`- ${raw}`);
+			}
+			lines.push('');
+		}
+
+		if (this.runtimeErrorContext) {
+			const errCtx = this.runtimeErrorContext;
+			lines.push('## Error Thread 상세');
+			lines.push(`- 스레드: ${errCtx.threadId !== undefined ? `${errCtx.threadName} (#${errCtx.threadId})` : errCtx.threadName}`);
+			lines.push(`- 상태: ${errCtx.statusText || '(미상)'}`);
+			lines.push(`- 직전 실행 명령: ${errCtx.lastCommand || '(미상)'}`);
+			lines.push(`- 최초 발생 시각: ${errCtx.firstSeenAt || '(미상)'}`);
+			if (errCtx.stackFrames && errCtx.stackFrames.length > 0) {
+				for (const frame of errCtx.stackFrames) {
+					lines.push(`- 프레임: ${frame}`);
+				}
+			}
+			if (errCtx.relatedFunctions && errCtx.relatedFunctions.length > 0) {
+				lines.push(`- 관련 함수: ${errCtx.relatedFunctions.join(', ')}`);
+			}
+			lines.push('');
+		}
+
+		lines.push('## 최근 에러 코드 Top N');
+		if (topCodes.length === 0) {
+			lines.push('- 없음');
+		} else {
+			for (const [code, count] of topCodes) {
+				const hint = getErrorCodeHint(code);
+				const meaning = hint ? `${hint.title} — ${hint.meaning}` : '해석 없음';
+				lines.push(`- ${code}: ${count}회 · ${meaning}`);
+			}
+		}
+		lines.push('');
+
+		lines.push('## 원인 체인 (추정)');
+		if (chains.length === 0) {
+			lines.push('- 감지된 대표 체인 없음');
+		} else {
+			for (const chain of chains) {
+				lines.push(`- ${chain}`);
+			}
+		}
+		lines.push('');
+
+		lines.push('## 최종 판정');
+		lines.push(`- ${verdict} (${verdictReason})`);
+		const judgment = [
+			`환경 이슈: ${envErrors > 0 ? '있음' : '없음'}`,
+			`코드 이슈: ${(codeErrors > 0 || threadErrors > 0) ? '있음' : '없음'}`,
+			`표시/UI 이슈: ${runtimeUnstable ? '가능성 높음' : '낮음'}`,
+		].join(' / ');
+		lines.push(`- 판정(환경/코드/UI): ${judgment}`);
+
+		return lines.join('\n');
+	}
+
+	// ── TreeItem converters ─────────────────────────────
+
+	private toSectionItem(node: SectionNode): vscode.TreeItem {
+		const state = node.collapsed
+			? vscode.TreeItemCollapsibleState.Collapsed
+			: vscode.TreeItemCollapsibleState.Expanded;
+		const item = new vscode.TreeItem(node.label, state);
+		// id 를 주지 않으면 VS Code 가 라벨로 핸들을 만들어 사용자의 접기 상태를 저장하고, 그 뒤로는
+		// 위의 collapsibleState 를 무시한다(라벨이 IP·개수를 품고 있어 상태가 흩어지기도 한다).
+		// 안정적인 id 에 세대·초기화 salt 를 붙여, 평소에는 사용자의 선택을 기억하되 기본값을 바꾸거나
+		// 초기화 명령을 실행했을 때만 새 기본 상태로 한 번 되돌아가게 한다.
+		item.id = `section-${node.id}@${SECTION_LAYOUT_EPOCH}.${this.sectionLayoutSalt}`;
+		item.iconPath = new vscode.ThemeIcon(node.iconId);
+		item.description = node.description;
+		if (node.tooltip) { item.tooltip = node.tooltip; }
+		item.contextValue = `section-${node.id}`;
+		// 섹션 헤더 명령(예: FTP 폴더 비우기)이 대상 경로를 인자로 받도록 노드의 원격 경로를 붙여 준다.
+		(item as any).remotePath = node.remotePath;
+		return item;
+	}
+
+	private toThreadItem(node: ThreadNode): vscode.TreeItem {
+		const t = node.thread;
+		const item = new vscode.TreeItem(t.name, vscode.TreeItemCollapsibleState.None);
+
+		// description: 상태 + 파일 + 상태 메시지
+		const descParts: string[] = [t.state];
+		if (t.file) { descParts.push(t.fileLine ? `${t.file}:${t.fileLine}` : t.file); }
+		if (t.lastStatus && t.lastStatus !== '0') { descParts.push(t.lastStatus); }
+		if (t.stackTiming && t.stackTiming.length) { descParts.push(t.stackTiming.join('/')); }
+		item.description = descParts.join(' · ');
+
+		item.tooltip = [
+			t.name,
+			`State: ${t.state}`,
+			t.lastStatus ? `Status: ${t.lastStatus}` : '',
+			t.project ? `Project: ${t.project}` : '',
+			t.file ? (t.fileLine ? `File: ${t.file}:${t.fileLine}` : `File: ${t.file}`) : '',
+			// `Show Thread -stack` trailing 수치. 컬럼 의미는 도움말 미확인(raw 표기).
+			t.stackTiming && t.stackTiming.length ? `Timing(-stack): ${t.stackTiming.join(' / ')}` : '',
+		].filter(Boolean).join('\n');
+		item.iconPath = this.threadIcon(t.state);
+		// Granular contextValue for different thread states
+		switch (t.state) {
+			case 'Running':
+				item.contextValue = 'gplThread-running';
+				break;
+			case 'Paused':
+			case 'Break':
+				item.contextValue = 'gplThread-paused';
+				// Click → navigate to stopped line
+				item.command = {
+					command: 'gpl.controller.threadShowLocation',
+					title: '정지 위치 보기',
+					arguments: [node],
+				};
+				break;
+			case 'Error':
+				item.contextValue = 'gplThread-error';
+				// Click → navigate to error line
+				item.command = {
+					command: 'gpl.controller.threadShowLocation',
+					title: '에러 위치 보기',
+					arguments: [node],
+				};
+				break;
+			default:
+				item.contextValue = 'gplThread-stopped';
+				break;
+		}
+		// 정지/에러 쓰레드는 위 switch에서 클릭 시 바로 정지/에러 위치로 이동하도록 설정된다
+		// (디버거 호출 스택처럼). Continue/Step 등 제어 동작은 컨텍스트 메뉴와 인라인 버튼으로 제공한다.
+		// 그 외 상태(실행/정지됨 등)는 클릭 시 액션 QuickPick을 띄운다.
+		if (t.state !== 'Paused' && t.state !== 'Break' && t.state !== 'Error') {
+			item.command = { command: 'gpl.controller.threadActions', title: '쓰레드 동작', arguments: [node] };
+		}
+		return item;
+	}
+
+	private toInfoItem(node: InfoNode): vscode.TreeItem {
+		const directory = isFtpFolderContext(node.contextValue);
+		const item = new vscode.TreeItem(node.label, directory ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+		if (node.remotePath && node.controllerHost) { item.id = `ftp:${node.controllerHost}:${node.remotePath}`; }
+		item.iconPath = new vscode.ThemeIcon(node.iconId);
+		item.description = node.description;
+		if (node.tooltip) {
+			item.tooltip = node.tooltip;
+		}
+		if (node.command) {
+			item.command = node.command;
+		}
+		if (node.contextValue) {
+			item.contextValue = node.contextValue;
+		}
+		(item as any).remotePath = node.remotePath;
+		(item as any).projectName = node.projectName;
+		(item as any).controllerHost = node.controllerHost;
+		return item;
+	}
+
+	/**
+	 * 쓰레드 목록 정렬용 상태 우선순위(작을수록 위).
+	 * Error → Paused/Break → Stopping/Stopped → Running → Idle → 기타.
+	 */
+	private threadStateRank(state: string): number {
+		switch (state) {
+			case 'Error': return 0;
+			case 'Paused':
+			case 'Break': return 1;
+			case 'Stopping':
+			case 'Stopped': return 2;
+			case 'Running': return 3;
+			case 'Idle': return 4;
+			default: return 5;
+		}
+	}
+
+	private threadIcon(state: string): vscode.ThemeIcon {
+		switch (state) {
+			case 'Running': return new vscode.ThemeIcon('run-all', new vscode.ThemeColor('testing.runAction'));
+			case 'Idle': return new vscode.ThemeIcon('clock', new vscode.ThemeColor('charts.yellow'));
+			case 'Error': return new vscode.ThemeIcon('bug', new vscode.ThemeColor('errorForeground'));
+			case 'Stopped': return new vscode.ThemeIcon('stop-circle', new vscode.ThemeColor('charts.orange'));
+			case 'Paused': return new vscode.ThemeIcon('debug-pause', new vscode.ThemeColor('debugIcon.pauseForeground'));
+			case 'Break': return new vscode.ThemeIcon('debug-breakpoint-data', new vscode.ThemeColor('debugIcon.breakpointForeground'));
+			default: return new vscode.ThemeIcon('circle-outline');
+		}
+	}
+}

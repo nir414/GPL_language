@@ -1,8 +1,8 @@
 /**
- * 배포 결과 보고의 순수 규칙 — activation/deploy.ts `runDeployCore` 의 결과 보고부에서 분리(2026-09-07 §1-DB, 동작 동일).
+ * 배포 결과 보고의 순수 규칙 — activation/deploy/deploy.ts `runDeployCore` 의 결과 보고부에서 분리(2026-09-07 §1-DB, 동작 동일).
  *
  * 무엇을 담는가:
- * - `SituationDeploySnapshot`: 트리(상황 요약)·오류 상세가 읽는 "마지막 배포 결과". 종전에는 views/controllerTreeProvider.ts 에
+ * - `SituationDeploySnapshot`: 트리(상황 요약)·오류 상세가 읽는 "마지막 배포 결과". 종전에는 views/tree/controllerTreeProvider.ts 에
  *   정의돼 있어 생산자(controller/activation)가 views 를 import 했다 — 생산자 쪽으로 옮겨 의존 방향을 views → controller 로 맞췄다.
  * - 결과 서명(`buildDeployOutcomeSignature`)과 이력(`DeployOutcomeHistory`): 같은 결과 패턴이 반복되면 "회귀 아님" 주석을 붙인다.
  * - ErrorLog 분류 로그(`classifyDeployErrorLog`)·COMPILE 원문 로그(`buildCompileRawSectionLines`): Output 채널에 찍을 줄을

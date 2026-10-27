@@ -68,7 +68,7 @@ ProjectEnd
 파싱 시 알려진 관용:
 
 - **[실측]** 값은 큰따옴표로 감싼다. 이 저장소의 파서는 작은따옴표도 허용하고 키워드 대소문자를 무시한다
-  (`src/project/gprSync.ts`의 `SOURCE_RE`).
+  (`src/project/gpr/gprSync.ts`의 `SOURCE_RE`).
 - **[문서]** `ProjectStart`가 가리키는 프로시저는 **`Public`으로 선언되어야** 한다.
 - 순서 규칙·중복 허용 여부·주석 문법(첫 줄 외 위치의 `'`)은 **문서화되어 있지 않다**. 확장은 알 수 없는 줄을
   **그대로 보존**하는 방식으로 대응한다(`applyGprSync`).
@@ -89,7 +89,7 @@ projects/MyProject/MyLibrary/Project.gpl   Public Sub T1()
 
 - 값 `MyProject\MyLibrary`는 **projects 루트 기준 상대 경로**다(프로젝트 폴더 기준이면 `MyLibrary`였을 것).
   단, 표본이 하나뿐이라 확장은 두 기준을 **후보 순서대로 모두 시도**한다
-  (`src/project/projectSources.ts` `resolveProjectLibraryDirs`).
+  (`src/project/sources/projectSources.ts` `resolveProjectLibraryDirs`).
 - 라이브러리는 **메인 프로젝트 폴더 안에 중첩**될 수 있다. 즉 "프로젝트 폴더 = 프로젝트 하나"가 아니다.
 - 라이브러리의 `.gpr`에는 `ProjectStart`가 없어도 된다(관측된 `MyLibrary/Project.gpr`에는 없다).
 
@@ -162,8 +162,8 @@ graph LR
 
 | 항목 | 상태 | 위치 |
 | --- | --- | --- |
-| `ProjectName`/`ProjectStart`/`ProjectSource` 파싱 | 지원 | `src/project/gprSync.ts`, `src/controller/protocol/responseParser.ts` |
-| 하위 폴더 상대 경로(`T1\T2\T2.gpl`) | 지원 | `src/project/projectSources.ts` |
+| `ProjectName`/`ProjectStart`/`ProjectSource` 파싱 | 지원 | `src/project/gpr/gprSync.ts`, `src/controller/protocol/responseParser.ts` |
+| 하위 폴더 상대 경로(`T1\T2\T2.gpl`) | 지원 | `src/project/sources/projectSources.ts` |
 | 첫 줄 타임스탬프 주석 보존·갱신 | 지원 | `formatGprTimestamp` |
 | 알 수 없는 줄 보존 | 지원 | `applyGprSync` (매칭 안 되는 줄은 그대로 통과) |
 | `ProjectLibrary` 인식 | 지원 | `parseGprText().libraries` / `parseGpr().libraries` — 동기화 대상이 아니며 그대로 보존 |

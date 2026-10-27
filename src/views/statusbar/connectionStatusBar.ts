@@ -26,6 +26,14 @@ import { describeUploadProgress, renderUploadProgress, renderUploadSummary } fro
 import { isGplDocument } from '../../config';
 import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from './compileStaleBadge';
 import { presentFlashSafety } from './flashSafetyPresentation';
+import { presentConnectionHealth } from './connectionHealthBadge';
+import type { ConnectionHealthPolicy, HealthSnapshot } from '../../controller/connection/connectionHealth';
+
+/** 연결 건강 모니터의 현재 상태 — 상태바가 "확인 중 / 복구 대기"를 그릴 때 읽는다. 모니터가 없으면 undefined. */
+export type ConnectionHealthSource = () => { snapshot: HealthSnapshot; policy: ConnectionHealthPolicy } | undefined;
+
+/** 확인 중/복구 대기 표시의 경과 시간을 다시 그리는 주기(ms). 그 상태일 때만 돈다. */
+const HEALTH_REFRESH_MS = 1000;
 
 /** 업로드가 끝났을 때 상태바에 잠시 남기는 결과. 실패 문구는 배포 결과 알림이 따로 띄우므로 짧게만. */
 export type UploadEndOutcome =
@@ -69,6 +77,12 @@ export class ConnectionStatusBar implements vscode.Disposable {
      * 지속 상태는 이 한 칸이 맡는다(2026-10-23 보고). 문구 규칙은 controller/diagnostics/memoryNotice.memoryBadge.
      */
     private memoryItem: vscode.StatusBarItem;
+    /**
+     * 연결 건강(suspect·recovering)을 연결 항목 자체에 그린다 — 종전에는 유실 확정 순간까지 정상 표시였다(2026-10-27).
+     * 판정은 connectionHealth 가 하고 여기는 읽어서 그리기만 한다. 클릭(연결 해제)은 그대로라 기다리지 않고 끊을 수 있다.
+     */
+    private healthSource: ConnectionHealthSource | undefined;
+    private healthTimer: ReturnType<typeof setInterval> | undefined;
     private disposables: vscode.Disposable[] = [];
 
     get isConnected(): boolean { return this._isConnected; }
@@ -221,12 +235,32 @@ export class ConnectionStatusBar implements vscode.Disposable {
     setConnected(connected: boolean): void {
         this._isConnected = connected;
         this.item.command = connected ? 'gpl.controller.disconnect' : 'gpl.controller.connect';
-        this.updateDisplay(connected);
+        this.refreshHealth();
         this.updateVisibility();
         this.updateCompileStaleItem();
     }
 
+    setHealthSource(source: ConnectionHealthSource | undefined): void {
+        this.healthSource = source;
+        this.refreshHealth();
+    }
+
+    /**
+     * 건강 상태가 바뀌었을 때(의심·복구 대기 진입/해제) 부른다. 확인 중/복구 대기 동안은 경과 시간을 위해 1 s 마다
+     * 스스로 다시 그리고, 정상·해제로 돌아오면 타이머를 멈춘다.
+     */
+    refreshHealth(): void {
+        const showing = this.updateDisplay(this._isConnected);
+        if (showing && !this.healthTimer) {
+            this.healthTimer = setInterval(() => this.refreshHealth(), HEALTH_REFRESH_MS);
+        } else if (!showing && this.healthTimer) {
+            clearInterval(this.healthTimer);
+            this.healthTimer = undefined;
+        }
+    }
+
     dispose(): void {
+        if (this.healthTimer) { clearInterval(this.healthTimer); this.healthTimer = undefined; }
         this.clearUploadLinger();
         this.disposables.forEach(d => d.dispose());
         this.item.dispose();
@@ -296,8 +330,17 @@ export class ConnectionStatusBar implements vscode.Disposable {
         }
     }
 
-    private updateDisplay(connected: boolean): void {
+    /** 연결 항목을 그린다. 확인 중/복구 대기 표시를 그렸으면 true. */
+    private updateDisplay(connected: boolean): boolean {
         const cfg = getControllerConfig();
+        const health = connected ? this.healthSource?.() : undefined;
+        const badge = health ? presentConnectionHealth(cfg.ip, health.snapshot, health.policy, Date.now()) : undefined;
+        if (badge) {
+            this.item.text = badge.text;
+            this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+            this.item.tooltip = badge.tooltip;
+            return true;
+        }
         if (connected) {
             // "컴파일 검증 필요"는 여기 덧붙이지 않는다 — 별도 항목(updateCompileStaleItem). 이 항목의 클릭은 연결 해제다.
             this.item.text = `$(plug) GPL: ${cfg.ip}`;
@@ -308,5 +351,6 @@ export class ConnectionStatusBar implements vscode.Disposable {
             this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
             this.item.tooltip = `Disconnected (${cfg.ip}:${cfg.port}) — click to connect`;
         }
+        return false;
     }
 }

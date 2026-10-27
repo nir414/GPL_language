@@ -47,6 +47,8 @@ import { clearUnloadRisk, judgeRebootEvidence, noteChannelLoss } from '../../con
 import { readUnloadRiskState, updateUnloadRiskState } from '../../controller/commands/unloadRiskStore';
 import { setProjectKindResolver, setUnloadRiskLogger, unloadFailureGuidance } from '../../controller/commands/unloadRiskGuard';
 import { probeReachability } from '../../controller/connection/reachability';
+import { EventLoopStallMonitor, describeStall, stallOverlapMs, stallsWithin } from '../../controller/connection/eventLoopStall';
+import type { EventLoopStall } from '../../controller/connection/eventLoopStall';
 import { SHOW_THREAD_LIST_CMD } from '../../controller/protocol/responseParser';
 import { setDashboardConnectionObserver } from '../../views/dashboard/controllerDashboardPanel';
 import type { ExtensionHost } from '../host';
@@ -87,7 +89,12 @@ export interface ConnectResult {
 /** 이 세션에서 이미 알린 서브넷 겹침 경고(한 번만 알린다). */
 const warnedSubnetOverlaps = new Set<string>();
 
-async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: ControllerConfig, lostAt: Date, loss: LossSummary | undefined, health?: HealthSnapshot): Promise<string | undefined> {
+/** 유실 판정 소요 중 확장 호스트 정지가 이만큼 이상이면 로그·알림에 그 사실을 밝힌다. */
+const STALL_NOTE_MIN_MS = 5000;
+/** 사후 스냅샷에 남길 이벤트 루프 정지의 범위(유실 시각 기준 과거). */
+const POSTMORTEM_STALL_WINDOW_MS = 10 * 60_000;
+
+async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: ControllerConfig, lostAt: Date, loss: LossSummary | undefined, health?: HealthSnapshot, stalls: readonly EventLoopStall[] = []): Promise<string | undefined> {
 	try {
 		const recent = getRecentTraffic(400);
 		const stats = getConnectionStats();
@@ -119,6 +126,10 @@ async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: Controlle
 				? `${health.disruptiveOperation.command} (${health.disruptiveOperation.kind}) @ ${new Date(health.disruptiveOperation.at).toISOString()} — 그 명령의 실제 결과는 미확정`
 				: '(없음 — 교란 가능 명령 직후가 아니었다)',
 			health ? JSON.stringify(health, null, 1) : '',
+			'',
+			// 판정 지연이 규칙 때문인지, 확장 호스트가 멈춰 타이머·소켓 처리가 밀렸기 때문인지 가른다(2026-10-27 — 10건 중 3건이 후자).
+			'## 확장 호스트 이벤트 루프 정지 (최근 10분, 2 s 이상 — VS Code 확장 호스트는 모든 확장이 함께 쓴다)',
+			...(stalls.length > 0 ? stalls.map(s => `- ${describeStall(s, ms => new Date(ms).toISOString())}`) : ['(없음)']),
 			'',
 			'## 도달성 (ping TTL / TCP / arp) — observations / assessment / controllerHealth 분리',
 			`verdict: ${reach.verdict}`,
@@ -267,19 +278,28 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		// 문구 원칙(2026-08-31): 확장이 "1402 명령 채널을 놓았다"는 것이 우리가 아는 사실이고, 제어기/런타임이 죽었다는
 		// 것은 여러 독립 증거를 종합해야 하는 판단이다. 알림에서 후자를 단정하지 않는다.
 		host.log(`[Controller] 명령 콘솔 채널 유실 — ${cfg.ip}:${cfg.port} @ ${lostAt.toLocaleTimeString()} — ${describeLoss(summary)} (제어기 런타임 상태는 미확정)`);
+		// 판정 소요 중 확장 호스트가 멈춰 있던 시간 — 첫 실패 프로브가 시작된 시점(의심 진입 - 프로브 타임아웃)부터 센다.
+		const judgedFrom = summary.suspectSince - getConnectionProbeTimeoutMs();
+		const stalledMs = stallOverlapMs(stallMonitor.recent(), judgedFrom, summary.lostAt);
+		const stallNote = stalledMs >= STALL_NOTE_MIN_MS
+			? `판정이 늦어진 ${(stalledMs / 1000).toFixed(0)} s 는 VS Code 확장 호스트가 멈춰 있던 시간입니다(이 확장 밖의 원인일 수 있음 — 사후 스냅샷의 이벤트 루프 정지 절).`
+			: undefined;
+		if (stallNote) { host.log(`[Health] ${stallNote}`); }
 		// 업로드 전 정체 확인·재부팅 정황 안내(/GPL 이 비었을 때)가 이 시각을 쓴다.
 		noteCommandChannelLoss(cfg.ip, summary.lostAt);
 		// 복구 대기 창(기본 180 s)이 지나도 거부로 끝났으면 실측 조치(PC 어댑터 재연결)를 안내한다(2026-10-22 두 번 실측).
 		const guidance = recoveryGuidanceForLoss(summary);
 		if (guidance) { host.log(`[Controller] ${guidance}`); }
 		// 사후 스냅샷(#22 제안 4): 알림은 스냅샷이 준비된 뒤 한 번만 — 파일 열기 버튼 제공.
-		void writeConnectionLostPostmortem(host, cfg, lostAt, summary, healthSnapshotAtLoss).then(file => {
+		const recentStalls = stallsWithin(stallMonitor.recent(), summary.lostAt - POSTMORTEM_STALL_WINDOW_MS, summary.lostAt);
+		void writeConnectionLostPostmortem(host, cfg, lostAt, summary, healthSnapshotAtLoss, recentStalls).then(file => {
 			const actions = file ? ['사후 스냅샷 열기', '출력 보기'] : ['출력 보기'];
 			void vscode.window.showWarningMessage(
 				`GPL Controller 명령 콘솔 연결을 놓았습니다 (${cfg.ip}) — ${summary.failures}회 연속 무응답으로 연결 상태를 해제했습니다. `
 				+ (guidance
 					? `${guidance} `
 					: '제어기가 다운됐다는 뜻은 아닙니다(런타임 상태 미확정) — 다시 Connect 해 보세요. ')
+				+ (stallNote ? `${stallNote} ` : '')
 				+ (file ? '마지막 트래픽·도달성 판정은 사후 스냅샷 파일에 있습니다.' : ''),
 				...actions,
 			).then(pick => {
@@ -288,6 +308,18 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			});
 		});
 	}
+
+	// 확장 호스트 이벤트 루프 정지 감지(controller/connection/eventLoopStall.ts) — 판정을 바꾸지 않고 관측만 남긴다.
+	// 연결 중일 때만 Output 에 남긴다(그 밖의 정지는 이 확장의 판정과 무관하다). 기록은 유실 로그·사후 스냅샷이 쓴다.
+	const stallMonitor = new EventLoopStallMonitor({
+		onStall: stall => {
+			if (!host.isControllerConnected) { return; }
+			host.log(`[Health] 확장 호스트 이벤트 루프 정지 ${describeStall(stall)} — 이 사이 프로브·재연결 타이머와 소켓 처리가 밀립니다`
+				+ '(VS Code 확장 호스트는 모든 확장이 함께 씀 — 원인이 이 확장 밖일 수 있음)');
+		},
+	});
+	stallMonitor.start();
+	context.subscriptions.push({ dispose: () => stallMonitor.stop() });
 
 	const connectionHealthPolicy = (): ConnectionHealthPolicy => ({
 		...DEFAULT_CONNECTION_HEALTH_POLICY,
@@ -299,28 +331,36 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			const p = connectionHealthPolicy();
 			host.log(`[Health] 연결 의심 — ${reason} → ${p.reprobeDelayMs}ms 뒤부터 Show Thread 재프로브(타임아웃 ${p.probeTimeoutMs}ms; 연속 ${p.failureThreshold}회 또는 거부/도달불가 ${p.definitiveFailureThreshold}회면 유실) · 현재 실패 ${snapshot.consecutiveFailures}회`);
 			host.healthProber?.start();
+			host.statusBar?.refreshHealth();
 		},
 		onRecovering: (info, snapshot) => {
 			const p = connectionHealthPolicy();
 			host.log(`[Health] 채널 복구 대기 — ${describeRecovering(info)} `
 				+ `→ ${p.recoveryProbeDelayMs}ms 간격 Show Thread 재프로브(이전 상태: ${info.fromState}, 실패 ${snapshot.consecutiveFailures}회는 폐기)`);
 			host.healthProber?.start();
+			host.statusBar?.refreshHealth();
 		},
 		onRecovered: info => {
 			const what = info.fromState === 'recovering'
 				? `채널 복구 확인 — ${info.disruptiveOperation?.command ?? '(명령 미확인)'} 뒤 일시적 사용 불가였음(그 명령의 실제 결과는 여전히 미확정)`
 				: '연결 복구';
 			host.log(`[Health] ${what} — ${info.failuresBeforeRecovery}회 실패 뒤 응답 재확인 (${(info.durationMs / 1000).toFixed(1)} s, 사유: ${info.suspectReason})`);
+			host.statusBar?.refreshHealth();
 			void checkUnloadRiskRebootEvidence('채널 복구');
 		},
 		onLost: summary => handleConnectionLost(summary),
 	});
+	// 상태바 연결 항목이 suspect/recovering 을 첫 신호부터 보인다(종전: 유실 확정까지 정상 표시).
+	host.statusBar?.setHealthSource(() => host.healthMonitor
+		? { snapshot: host.healthMonitor.snapshot(), policy: connectionHealthPolicy() }
+		: undefined);
 	host.healthProber = new ConnectionHealthProber(host.healthMonitor, timeoutMs => probeControllerCommand(SHOW_THREAD_LIST_CMD, undefined, timeoutMs));
 	context.subscriptions.push({
 		dispose: () => {
 			host.healthProber?.stop();
 			host.healthProber = undefined;
 			host.healthMonitor = undefined;
+			host.statusBar?.setHealthSource(undefined);
 			setHeldSocketObserver(null);
 			setDashboardConnectionObserver(undefined);
 		},

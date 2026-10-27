@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.20.1** (responseParser·referenceProvider 분해, 성장 규칙 명문화, 인덱싱 단계 시간 로그 — 동작 변경 없음, 1539/1539. 상세는 §1-GH.)
-- **직전 세션: §1-GH** — §1-GF 후속: 구조 설계 방향을 architecture.md §2.4(정본)+CLAUDE.md 요약으로 명문화, `responseParser`(배럴+12모듈)·`referenceProvider`(1,187→432, 순수 모듈 4개·고정 테스트 48건) 분해, `src/ai`→`controller/automation`, `[SymbolCache]` 탐색/총 소요 ms 로그, 벤치마크 `--workspace`(실제 워크스페이스 0.14~0.33 s — 9 s 미재현), `npm run verify:split`. 0.20.1. 실기·UI 확인은 §3 그대로.
+- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.21.0** (제어기 유실 판정 지연 개선 — 상태바 확인 중 표시·핸드셰이크 상한·정지 뒤 가짜 타임아웃 방지·이벤트 루프 정지 기록, 1550/1550. 상세는 §1-GI.)
+- **직전 세션: §1-GI** — "제어기 죽은 판정이 느리다": 사후 스냅샷 10건을 분해해 지연의 최대 원인이 판정 규칙이 아니라 **VS Code 확장 호스트 정지(22~71 s, 3건 — renderer.log unresponsive 와 1 ms 일치)**임을 확인. 상태바가 suspect/recovering 을 첫 신호부터 표시, 1402 새 연결 핸드셰이크 상한 `connectTimeoutMs`(3 s), 타임아웃 판정을 setImmediate 로 미뤄 정지 직후 가짜 타임아웃 방지, `eventLoopStall` 로 정지 구간을 Output·유실 알림·사후 스냅샷에 남김. 판정 임계(8 s·3회/2회·180 s)는 그대로. 0.21.0.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-10-27, §1-GI) 0.21.0 연결 판정 — 실기·UI 확인(읽기 경로·모션 무영향).** ① 연결 중 제어기 LAN 케이블을 뽑거나 전원을 내리면 상태바가 **첫 이상 신호부터** `$(sync~spin) … 응답 확인 중 (실패 n/3)`(경고색)으로 바뀌고 툴팁에 계기·마지막 실패가 보이는지, 클릭하면 바로 해제되는지, 복구되면 정상 표시로 돌아오는지. ② Unload 무응답 뒤 `$(watch) … 복구 대기 n/180 s` 가 1 s 마다 갱신되는지. ③ 다음 유실 때 Output 에 `[Health] 확장 호스트 이벤트 루프 정지 …` 줄과 유실 알림의 「판정이 늦어진 N s 는 … 확장 호스트가 멈춰 있던 시간」, 사후 스냅샷 「확장 호스트 이벤트 루프 정지」 절이 채워지는지 — 채워지면 그 시각의 `%APPDATA%\Code\logs\…\renderer.log` 에서 범인 확장 프로파일을 찾는다. ④ GPL Traffic 에 `CONNECT TIMEOUT (3000ms, no handshake)` 가 정상 운용(부팅 직후 포함) 중에 뜨지 않는지 — 뜨면 `gpl.controller.connectTimeoutMs` 를 올린다.
 - [ ] **(2026-10-27, §1-GG) Requires 헤더 — VSIX·UI 확인(편집기만, 모션 무영향).** BinderR4 를 연 상태에서 ① 인덱싱이 끝난 뒤 `App\Control\Machine.gpl` 의 `'Requires:` 줄에 Information 진단(「추가 2 … · 메모 1줄 → 'Notes:」)과 Quick Fix 「Requires 헤더 갱신」이 뜨는지, 적용하면 MotionSystem.gpl 두 줄이 한 줄로 합쳐지고 Deck 설명이 `'Notes:` 로 가며 `'Used by:` 는 그대로인지, Ctrl+Z 로 한 번에 되돌아가는지 ② `GPL: Update Requires Headers in Project` → Refactor Preview 에 헤더 있는 파일(83개 중 변경분)이 파일별 라벨로 뜨고, 일부만 체크해 적용되는지 ③ `gpl.requiresHeader.mode: onSave` 에서 저장 시 바로 고쳐지는지, 블록 없는 파일은 그대로인지 ④ 인덱싱 중(활성화 직후)에는 진단이 안 뜨는지 ⑤ 큰 파일(LeadshineRS.gpl)에서 타이핑 지연이 체감되는지(드라이런 첫 계산 수백 ms 는 컴파일 단위 캐시 예열, 이후 파일당 수십 ms). 미해결: 문자열로 부르는 프로시저(`AddSync("Name")` 류)·수신자 타입을 모르는 멤버 호출은 목록에 안 들어감(누락 쪽 — 확인 필요하면 SYMBOL_STRING_CONSUMERS 연동 검토).
 - [ ] **(2026-10-26, §1-FZ) 0.18.0 실기·UI 확인.** ① FTP 쓰기 전 정체 확인: 실제 제어기에서 220 배너(`RTEMS FTP server`)가 읽혀 Upload Only·Quick Compile이 막히지 않는지, 배너·런타임 콘솔 핸드셰이크 프로브가 무해한지. ② 그룹(Lib) Compile 뒤 Unload 확인 모달·MCP `confirm` 흐름과 재부팅 뒤 자동 해제. ③ 참조 찾기(BinderR3 `BRI.Setup`)·정의 이동(`NUM` 2후보, MergeCode `getWafer`) 결과와 놓치는 참조 여부. ④ 새 진단 8종의 대형 코드베이스(V2/Lib) 오탐률. ⑤ `date` 응답 형식·잔여 오차·재부팅 뒤 유지. ⑥ 메모리 경고 상태 표시줄과 배포당 1회 알림. 보류 항목(모듈 String 첫 사용 린트, Unload 소켓 유지, Lib upload-only 기본값)은 §1-FZ 남은 일 참조.
 
@@ -769,6 +770,8 @@ src/controller/threads/threadStuckDiagnosis.ts    # **정지 불가 쓰레드 �
 src/controller/commands/startCommand.ts            # Start 명령 조립(vscode 무의존) — 문서 구문 순서, 기본 `-event`(GDE 동일), `-compile` 금지(하드 규칙 7) (§1-BU)
 src/debug/execution/threadLock.ts                  # 스레드 단일 실행 잠금 판정(vscode 무의존) — resolveExecutionThread(대상 확정·staleLock)·shouldPreserveFocus·isAllThreadsResumeRequest. 어댑터의 StoppedEvent 는 전부 _stoppedEvent 경유(불변식) (§1-BS)
 src/controller/connection/idlePing.ts               # 1402 유휴 ping 판정/스케줄러(vscode 무의존) — GDE 방식 세션 유지(유휴 5 s → 읽기 명령 1개), 1403 안정성의 열쇠 (§1-BM)
+src/controller/connection/eventLoopStall.ts         # (§1-GI) 확장 호스트 이벤트 루프 정지 감지(500 ms 틱, 2 s 이상 기록) — 판정은 안 바꾸고 유실 로그·사후 스냅샷에 "지연 중 몇 초가 정지였나"
+src/views/statusbar/connectionHealthBadge.ts        # (§1-GI) suspect/recovering 상태바 문구(순수) — connectionStatusBar 가 1 s 마다 다시 그림
 src/controller/connection/reachability.ts           # ping TTL·TCP·arp 도달성 판정 + 응답 장치 정체(제어기 vs 게이트웨이) 힌트 (§1-BI, #22)
 src/controller/diagnostics/resourceProbes.ts         # Show Memory / Show Network -tcp / -mbuf 파서(실기기 원문 기준)·증가율·이력 (§1-BI, #22 자원 카드)
 src/controller/diagnostics/statusSampling.ts         # 상태 수집·대시보드별 저빈도 진단 캐시·실제 표본 시각(순수 IO 주입, §1-FM)
@@ -894,7 +897,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-FP ~ §1-FX, 독립 작업에서 중복된 §1-FR 2건 포함)만 둔다.
+본문에는 **최근 10개 세션**(§1-FZ ~ §1-GI)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -903,8 +906,8 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FO (2026-10-02 ~ 10-23) | 36 |
-| (본문 아래) | §1-FP ~ §1-FX (2026-10-22~23, §1-FR 2건) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FY (2026-10-02 ~ 10-23, §1-FR 2건) | 47 |
+| (본문 아래) | §1-FZ ~ §1-GI (2026-10-26~27) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -1088,9 +1091,9 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-FT | 10-23 | **README 문체·분량 개선** — 개인 취미 프로젝트 소개·kaomoji, 버전·VSIX 설치·기본 단축키 제거, GPL/GPR 안내. 0.16.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FU | 10-23 | **로컬·GitHub 병합** — 원격 Flash·진입점·Rename 수정과 로컬 Hover·제어기 프로젝트 디버깅 통합, 경로 fixture·문서 충돌 해소. 0.16.3 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FV | 10-23 | **PR #37 전체 반영** — Linux CI와 초기 BP 동기화·Snapshot 라이브러리 그래프 경로 수정. 0.16.4 | [2026-10](archive/handoff/2026-10.md) |
-| §1-FW | 10-23 | **FTP 원격 파일·lazy Attach** — 기존 작업공간 유지, 읽기 전용 URI와 TMP 소스 캐시. 0.17.0 | 본문 ↓ |
-| §1-FX | 10-23 | **FTP 새로고침 경합** — 일반 조회 뒤 새 요청 직렬화·종료 경계, .gpo 설명 정정. 0.17.1 | 본문 ↓ |
-| §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | 본문 ↓ |
+| §1-FW | 10-23 | **FTP 원격 파일·lazy Attach** — 기존 작업공간 유지, 읽기 전용 URI와 TMP 소스 캐시. 0.17.0 | [2026-10](archive/handoff/2026-10.md) |
+| §1-FX | 10-23 | **FTP 새로고침 경합** — 일반 조회 뒤 새 요청 직렬화·종료 경계, .gpo 설명 정정. 0.17.1 | [2026-10](archive/handoff/2026-10.md) |
+| §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | 본문 ↓ |
 | §1-GA | 10-26 | **디버그 스텝 체감 지연 재발** — 어댑터 큐를 control/data 차선으로(재개 시 미전송 조회 폐기), pending 백업 폴, 재개 타이밍 한 줄 로그. 0.18.2 | 본문 ↓ |
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | 본문 ↓ |
@@ -1100,77 +1103,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | 본문 ↓ |
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | 본문 ↓ |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | 본문 ↓ |
+| §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-FW ~ §1-GG (2026-10-23~27).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-FZ ~ §1-GI (2026-10-26~27).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-FW. 2026-10-23 세션 — FTP 원격 파일 연결과 현재 창 디버깅
-
-### 증상·원인
-
-사용자는 기존 프로젝트를 유지하며 제어기 파일을 임시로 열고 디버깅하려 했다. 기존 구현은 globalStorage에 전체 Snapshot을 받고 새 .code-workspace로 전환해 프로젝트 교체·Extension Host 재시작·반복 신뢰 확인을 만들었다.
-
-### 조치
-
-- 제어기 FTP 트리에 하위 폴더 탐색과 파일 열기를 추가하고, 명령 콘솔 없이 FTP만 탐색하는 명령을 제공한다. 파일은 gpl-ftp URI의 읽기 전용 FileSystemProvider로 현재 편집기에 표시한다. 작업공간과 기존 설정을 교체하지 않는다.
-- .gpr·ProjectLibrary와 파일 목록을 먼저 확인하고, 소스 내용은 파일 열기·스택·줄 BP에 필요한 시점에만 읽는다. Attach마다 새 원격 세션을 만들고 TMP cache에 snapshot manifest를 기록한다. 열린 문서와 디버그 세션이 모두 끝나거나 확장이 dispose될 때 그 세션이 만든 캐시만 정리한다. 비정상 프로세스 종료 뒤 TMP 잔여 캐시의 자동 수거는 구현하지 않았다.
-- DAP는 원격 제어기·프로젝트·URI를 고정하고 현재 작업공간의 동명 소스로 fallback하지 않는다. 원격 Attach 옵션은 디버거에서도 비배포·비자동실행·기존 BP 보존으로 강제한다. 초기 연결의 에디터 BP push도 설정 파일 변경 없이 건너뛴다. 비디버깅 로컬 에디터 BP 동기화는 원격 URI를 제외해 로컬 동명 파일로 잘못 전송하지 않는다. 디버깅 종료 뒤에는 기존 프로젝트 대상을 복원한다.
-- 캐시된 파일은 편집기의 새로 읽기로 갱신한다. 트리는 조회 당시 제어기/루트가 바뀐 응답과 안전하지 않은 항목을 표시하지 않는다. 원격 언어 기능은 로컬 작업공간과 다른 프로젝트를 분리하고 현재 열린 문서만 인덱싱한다. 함수명 BP는 해당 소스를 먼저 열어야 하며 원격 이름 바꾸기·전체 참조 검색은 제공하지 않는다.
-- 같은 저장소에서 병행된 0.16.4의 Snapshot 경로 해석 수정과 기록을 보존했다. 기능 추가이므로 minor 0.17.0을 적용한다.
-
-### 검증
-
-Windows TypeScript compile, 전체 회귀 **1308/1308**, git diff --check가 통과했다. 모의 FTP·DAP/VS Code 경계 테스트로 lazy read, 원격 경로·URI·프로젝트 격리, 읽기 전용 파일 API, 캐시 갱신/정리와 초기 BP 보존을 확인했다. 첫 전체 실행의 .gpr 없는 라이브러리 회귀는 TMP에 합성 메타데이터만 기록하도록 고쳐 해결했다. 최종 VSIX의 운영 산출물 175개를 현재 out 파일과 바이트 단위로 대조했고, 개발 소스·테스트·지침·로그가 제외됐음을 확인했다.
-
-- 패키징: `dist/gpl-language-support-0.17.0.vsix`, **1,407,552 bytes**, SHA-256 **8B071F3D190781D388F128C9CD99BFFA59AB683B35BF0D87F07964860EC0A3DC**.
-- 경고: Node DEP0190(하위 shell 실행)·JavaScript 번들링 권고. 패키징 실패 없음. 로그: `dist/remote-0.17.0-tests.log`, `dist/remote-0.17.0-package.log`, `dist/remote-0.17.0-verification.json`.
-- 실제 설치·F5 UI·제어기 디버깅/물리 동작은 확인하지 않았다. 이 세션에서는 Git 커밋·push·배포·설치를 실행하지 않았다.
-
-### 남은 일
-
-새 VSIX 설치·F5 UI와 제어기의 읽기 전용 Attach·스택/BP·TMP 정리는 위 §3에서 확인한다. 실제 업로드·Compile·Start·Stop·Step은 이번 작업에서 실행하지 않는다.
-
-## 1-FX. 2026-10-23 세션 — 기능 검토와 FTP 새로고침 경합 수정
-
-### 증상·원인
-
-0.17.0의 기존 미커밋 변경을 보존하며 원격 파일·언어 기능과 인계 미결 항목을 검토했다. 일반 LIST/RETR가 진행 중일 때 명시적인 새로고침도 같은 Promise를 재사용해 과거 내용이나 앞선 실패를 그대로 반환했다. 지연 응답 회귀 4건이 수정 전 모두 실패해 재현했다.
-
-### 조치
-
-- 일반 조회와 새로고침 요청을 구분하고, 일반 조회 뒤에 새 조회를 직렬로 수행한다. 동시 새로고침은 한 번으로 합치며 이전 요청의 정리가 새 요청을 제거하지 않도록 현재 Promise를 대조한다. 이전 실패는 원래 호출자에게 전달하고 명시한 새로고침은 새로 조회한다.
-- 대기 후 세션 유효성을 다시 확인해 종료된 세션의 추가 FTP 조회와 캐시 재생성을 막는다. 성공·실패 후 새로고침, 동시 요청, 최신 캐시 보존, 종료 경계를 회귀로 확인한다.
-- Brooks [Editing a .gpo File](https://www2.brooksautomation.com/GDS/Projects_and_Windows/Editing_GPO_File.htm)을 직접 열어 `.gpo`가 모션 객체·전역 GPL 변수를 담는 전역 모듈 파일임을 확인했다. 설정 설명과 관련 주석을 정정하고 기존 .gpl 동기화 기본값 및 실행 동작은 유지했다. 전체 인덱싱·추가 참조 검색의 .gpo 제외는 현행 지원 제한으로 명시한다. 검색 스크립트는 DNS 실패로 캐시를 사용했고, 공식 원문은 웹 도구로 확인했다.
-- 버그 수정 patch 0.17.1로 package/lock/CHANGELOG를 맞췄다. README는 버전을 중복 표기하지 않으며 사용 흐름 변경이 없어 유지했다. §1-FO 원문을 10월 아카이브로 옮겨 최근 본문 10건을 유지한다.
-
-### 검증·남은 일
-
-- 수정 전 전체 테스트는 샌드박스에서 1292/1308이었다. 16건은 로컬 TCP EACCES·junction 및 파일 교체 EPERM으로 실패했으며 제품 결함으로 단정하지 않는다. 새 지연 응답 4건은 별도 실행에서 22/26으로 실패했고, 수정 후 파일 provider 포함 33/33을 통과했다.
-- 샌드박스 밖 Windows 로컬 `npm test`(TypeScript compile 포함)는 **1314/1314** 통과했다. 지연 응답·실패 후 새로고침 4건과 종료 경계 2건을 추가했다. `git diff --check`도 통과했다. 실제 설치·F5 UI·제어기 검증은 별도로 남긴다. Git 커밋·push·설치·제어기 조작은 수행하지 않았다.
-- VSIX: `dist/gpl-language-support-0.17.1.vsix`, **1,408,041 bytes**, SHA-256 **E54ED8C02650EAB145C273DB2E95543F8151F0D4AE9B7B2E60B250340E2D2580**. 운영 산출물 175개와 package manifest를 현재 빌드/버전에 대조했고 개발 소스·테스트·지침·로그 제외를 확인했다. 패키징 실패 없음. 기존 Node DEP0190·JavaScript 번들링 권고 경고가 남는다.
-- 로그: `dist/review-0.17.1-tests-local.log`, `dist/review-0.17.1-package.log`, `dist/review-0.17.1-verification.json`. 시작 시 변경돼 있던 30개 파일 중 이번 수정이 필요한 7개 외의 23개는 SHA-256이 그대로다. 별도로 기존 추적 파일 4개의 잘못된 .gpo 주석만 수정했다.
-
-## 1-FY. 2026-10-23 세션 — 명령 커서 아이콘 적용
-
-### 요청·판단
-
-사용자가 기존 곡선형 로고를 교체하기로 하고 B의 각진 G와 C의 코드·동작 경로를 결합한 6종 중 「명령 커서」를 선택했다. 대표 이미지와 GPL Controller 패널이 같은 형태로 보이도록 적용한다.
-
-### 조치
-
-- `assets/icons/gpl-logo.svg`에 선택 시안의 각진 G, 내부 명령 커서(`>`), 민트색 계단형 동작 경로를 간결한 SVG로 다시 그렸다. PNG는 이 SVG에서 256×256으로 렌더링했다. 기존 README와 package의 대표 아이콘 경로는 그대로 사용한다.
-- `assets/icons/gpl-controller.svg`는 동일한 경로 좌표를 `currentColor` 단색으로 사용한다. 24px 검토에서 내부 기호 간 빈틈이 약 0.4px로 좁아 계단을 0.8px 오른쪽으로 옮겨 약 1.2px의 간격을 확보했다.
-- 아이콘 교체는 patch 0.17.2로 올리고 package/package-lock/CHANGELOG를 맞췄다. README는 버전이나 로고 형상을 글로 반복하지 않아 이미지 경로만 유지했다. 최근 세션 10건을 위해 §1-FP 원문을 10월 아카이브로 옮겼다.
-
-### 검증·남은 일
-
-- 컬러/단색 SVG XML, 경로 좌표 일치, 투명 PNG 256×256, 24px 어두운/밝은 테마 미리보기를 확인했다. 패키징된 세 리소스가 작업 파일과 바이트 단위로 일치하고 manifest가 PNG와 패널 SVG를 참조한다.
-- 샌드박스 `npm test`는 1298/1314로, 실패 16건은 임시 junction의 EPERM과 loopback TCP의 EACCES였다. 동일한 Windows 로컬 권한 실행은 **1314/1314 통과**했다. `git diff --check` 통과.
-- `npm run package:no-bump` 성공: `dist/gpl-language-support-0.17.2.vsix`, **1,382,021 bytes**, SHA-256 **3BFDDC0706D9C18092AB3C27AD7B896B226D2D675C93973274117DFBE0452DF3**. Node DEP0190과 기존 JavaScript 번들링 권고가 있었고 패키징 실패는 없었다.
-- 실제 VS Code 설치·UI 표시·캐시 갱신은 확인하지 않았다. 제어기 동작·Git 커밋/태그/push·게시도 수행하지 않았다.
 
 ## 1-FZ. 2026-10-26 세션 — 수신함 보고 일괄 반영과 0.18.0 릴리스
 
@@ -1469,3 +1408,42 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 - `controller-mcp/` 미커밋 변경 3파일의 주인 확인·정리(이 세션 범위 밖).
 - 분해 후보로 남은 것: `gplDebugSession._pollThreadStates`·`runtimeConsole`(명시적 상태 머신과 함께), `gplParser.ts` 977줄(상한 근접), `errorLogParser` 의 파싱/분류 분리, `gprParser`·`projectSelection`·`sourceCandidates` 를 `project/` 로 옮길지.
 - push·태그·릴리스는 사용자 요청 시.
+
+## 1-GI. 2026-10-27 세션 — 제어기 유실 판정 지연 분석·개선 (0.21.0)
+
+### 요청·판단
+
+- 사용자: "제어기 죽은거 판정이 왜 이렇게 느려 개선좀 해줘. 연결 상태 확인을 어떻게 처리중인거지?"
+- 판정 규칙(프로브 타임아웃 8 s·연속 3회/거부·도달불가 2회·recovering 180 s)은 사용자 결정·실측 근거가 있어 **바꾸지 않았다.** 대신 실제 지연을 분해해 규칙 밖의 원인을 고쳤다.
+
+### 관측 (`%TEMP%\gpl-controller\postmortem-*.log` 10건 + VS Code `renderer.log`)
+
+| 유형 | 사례(의심→유실) | 지연의 정체 |
+| --- | --- | --- |
+| 링크 단절(ENETUNREACH/EHOSTUNREACH) | 0.6 s, 1.0 s | 확정적 실패 2회 — 이미 빠름 |
+| 재부팅 중 거부(ECONNREFUSED) | 4.8~6.1 s | Windows 의 거부 connect 가 회당 ~2 s |
+| 무응답(SYN·응답 없음) | 14.2 s, 19.6 s | 8 s 타임아웃 × 2~3 |
+| **확장 호스트 정지** | 23.5 s, 65.2 s, 90.8 s | 10-26 17:48:06~17:49:17 renderer.log `Extension host is unresponsive` **71 s** — 그동안 재프로브·1403 재연결·워치독 타이머가 모두 멈춤, 풀린 시각과 다음 프로브 송신이 1 ms 차이. 8~11 s 걸린 "거부"도 같은 정지 탓 |
+| 복구 대기 만료 | 185 s | Unload 무응답 → recovering 180 s(2026-08-31 실측 172 s 복귀 근거) → 거부 2회 |
+
+- 프로파일 기록(`took N% of M ms`)은 수 ms 샘플뿐이라 범인 확장 특정 불가 — JS 가 아니라 동기 네이티브 호출·프로세스 정지 형태로 막힌 것으로 보인다(추정). 이 확장 src 에는 execSync/spawnSync 가 없다.
+- 프로브 응답 실측: `Show Thread  -web` p50 45 ms·p99 209 ms(n=2566), `Show Thread` p99 97 ms — 8 s 타임아웃은 넉넉하다. 1403 핸드셰이크 p50 8 ms·최대 1.1 s(n=25).
+- Node v24.11.1(Windows) 실험: 정지가 **check 단계·microtask** 에서 일어나면 풀린 직후 timers 가 poll 보다 먼저 돌아, 이미 도착한 응답을 두고 타임아웃을 선언한다(timer/I/O 콜백 안의 정지는 반대 순서). `setImmediate` 로 판정을 미루면 4가지 경우 모두 응답이 먼저 읽힌다.
+- 상태바는 suspect/recovering 동안에도 유실 확정 순간까지 정상(`$(plug)`)이었다 — 체감 지연의 직접 원인.
+
+### 조치 (7b8e561 순수 계층 → 배선 커밋)
+
+- `consoleSocket`: `connectTimeoutMs`(새 연결만, `CONNECT_TIMEOUT`·`sent:false` — 명령은 아직 안 보냄) + 명령/핸드셰이크 타임아웃 판정을 `afterPendingIo`(setImmediate)로. 설정 `gpl.controller.connectTimeoutMs`(기본 3000, 0=끔, 하한 500). `classifyCommandFailure` 는 `CONNECT_TIMEOUT` → `timeout`(확정적 실패 아님).
+- `eventLoopStall.ts`(순수): 500 ms 틱이 2 s 이상 늦으면 정지 구간 기록. 연결 중이면 Output `[Health] 확장 호스트 이벤트 루프 정지 …`, 유실 시 `[의심 - 프로브 타임아웃, 유실]` 구간 겹침이 5 s 이상이면 로그·알림에 「판정이 늦어진 N s 는 확장 호스트 정지」, 사후 스냅샷에 최근 10분 정지 목록.
+- `connectionHealthBadge.ts`(순수) + `connectionStatusBar.setHealthSource/refreshHealth`: suspect → `$(sync~spin) GPL: <ip> 응답 확인 중 (실패 n/3)`, recovering → `$(watch) … 복구 대기 n/180 s`(경고색, 1 s 갱신, 클릭 = 지금 해제). "다운" 단정 문구 없음.
+
+### 검증
+
+- 새 테스트: 핸드셰이크 상한 2건(HangingSocket 주입), 정지 뒤 판정 1건(worker_threads 서버 + check 단계 400 ms 정지 — **수정 전 코드로 되돌리면 `Command timeout (100ms)` 로 실패** 확인), eventLoopStall 4건, 상태바 문구 4건, 분류 1건. 전체 **1550/1550**(다른 세션의 미커밋 `dioGroups.test` 는 `BANK_SIZE` 초기화 순서 오류로 러너 전체를 막아 제외하고 실행 — 그 세션 소관).
+- 실기·UI 는 미확인 → §3.
+
+### 남은 일
+
+- 확장 호스트 정지의 범인: 다음 정지 때 Output 정지 줄의 시각으로 renderer.log·exthost 프로파일을 대조. 반복되면 사용자가 확장 이분 탐색(Extension Bisect).
+- 원하면 결정할 것(사용자): ① 프로브 타임아웃 8 s → 5 s(2026-08-28 "5 s 는 짧다" 결정 재검토 — 실측 p99 0.2 s), ② recovering 창 180 s 를 줄이거나 recovering 중 거부가 N회 이어지면 조기 종료.
+- 디버그 어댑터의 자체 소켓 경로·controller-mcp `console.js` 에는 핸드셰이크 상한을 넣지 않았다.

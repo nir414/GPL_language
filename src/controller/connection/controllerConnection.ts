@@ -575,6 +575,7 @@ function sendCommandDetailedInternal(
 			// 연결 해제 상태에서는 설정과 무관하게 단발 연결 — 해제된 창이 1402 세션을 쥐지 않게(connectionSession.ts).
 			keepAlive: effectiveKeepAlive(keepAlive.enabled),
 			keepAliveIdleCloseMs: keepAlive.idleCloseMs,
+			connectTimeoutMs: getConnectTimeoutMs(),
 		},
 		{ log: logTraffic, body: bodyLog },
 	).then(response => {
@@ -614,6 +615,19 @@ export function getConnectionProbeTimeoutMs(): number {
 	return typeof raw === 'number' && Number.isFinite(raw)
 		? Math.max(MIN_CONNECTION_PROBE_TIMEOUT_MS, Math.floor(raw))
 		: DEFAULT_CONNECTION_PROBE_TIMEOUT_MS;
+}
+
+// 새 1402 연결의 TCP 핸드셰이크 상한(consoleSocket connectTimeoutMs). 직결 제어기 실측 p50 8 ms·최대 1.1 s(2026-10-27,
+// 사후 스냅샷 25건) — 답 없는 SYN 에 명령 타임아웃(8~10 s) 전체를 쓰지 않게 3 s 로 둔다. 0 이면 끔(종전).
+const DEFAULT_CONNECT_TIMEOUT_MS = 3000;
+const MIN_CONNECT_TIMEOUT_MS = 500;
+
+/** `gpl.controller.connectTimeoutMs` — 명령마다 읽는다. 0 = 끔, 그 외 하한 500. */
+export function getConnectTimeoutMs(): number {
+	const raw = vscode.workspace.getConfiguration('gpl.controller').get<number>('connectTimeoutMs', DEFAULT_CONNECT_TIMEOUT_MS);
+	if (typeof raw !== 'number' || !Number.isFinite(raw)) { return DEFAULT_CONNECT_TIMEOUT_MS; }
+	const v = Math.floor(raw);
+	return v <= 0 ? 0 : Math.max(MIN_CONNECT_TIMEOUT_MS, v);
 }
 
 // 채널 교란 뒤 복구 대기 상한(connectionHealth.recoveryWindowMs). 0 이면 recovering 을 쓰지 않는다(= 종전 판정 그대로).

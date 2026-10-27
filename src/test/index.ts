@@ -150,6 +150,7 @@ import './controller/deployment/deployStages.test';
 import './views/tree/snapshotMarkdown.test';
 import './util/pathKey.test';
 import './debug/session/sessionStepPoll.test';
+import './views/tree/snapshotMarkdownPinned.test';
 import { run } from './harness';
 
 void run();

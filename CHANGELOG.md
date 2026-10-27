@@ -2,6 +2,14 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.20.0] - 2026-10-27
+
+### Added
+
+- 모듈 머리 주석의 `'Requires:` 블록을 자동으로 맞춥니다. 이 파일이 쓰는 다른 파일의 Module·Class·멤버를 정의 이동과 같은 이름 해석(컴파일 단위 기준)으로 계산해 `' - File.gpl (Module X): A, B(m1, m2)` 형식으로 Project.gpr 컴파일 순서대로 씁니다. 같은 파일이 여러 줄로 나뉘어 있으면 합치고, 멤버 이름 목록이 아닌 설명은 지우지 않고 `'Notes:` 블록으로 옮깁니다. 블록이 있는 파일만 대상이며 `'Used by:`는 다루지 않습니다.
+- 설정 `gpl.requiresHeader.mode`: `check`(기본 — 다르면 Information 진단과 Quick Fix 「Requires 헤더 갱신」), `onSave`(저장할 때 바로 고침), `off`.
+- 명령 `GPL: Update Requires Header`(현재 파일 갱신, 블록이 없으면 Module 선언 위에 추가)와 `GPL: Update Requires Headers in Project`(같은 프로젝트의 헤더 있는 파일을 미리보기 후 일괄 갱신).
+
 ## [0.19.2] - 2026-10-27
 
 ### Changed

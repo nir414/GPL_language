@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.19.2** (거대 파일 4건 분해 + 조회 성능 — 동작 변경 없음, 1481/1481. 상세는 §1-GF.)
-- **직전 세션: §1-GF** — 루트 정리(`assets/`·`docs/requests.md`·탐색기 중첩) → `gplDebugSession`(5,753→3,056)·`deployService`(2,002→517)·`controllerTreeProvider`(1,665→684)·`activation/deploy/deploy.ts`(1,488→70) 분해 → old/new 재생 하니스로 동일성 확인(배포 151 시나리오·트리 2,842 항목·세션 AST 대조) → 경로 판정 캐시로 호버 2.8→0.4 ms. 0.19.2. 실기·UI 확인은 §3.
+- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.20.0** (Requires 헤더 자동 동기화 — 1491/1491. 상세는 §1-GG.)
+- **직전 세션: §1-GG** — 모듈 머리 주석 `'Requires:` 블록을 정의 이동·호버와 같은 이름 해석(receiverType·receiverContext·컴파일 단위)으로 계산해 맞춘다. 블록이 있는 파일만(옵트인), 사람이 단 설명은 `'Notes:` 로 옮김, `'Used by:` 는 다루지 않음. `gpl.requiresHeader.mode`(check 기본·onSave·off), 명령 2개, BinderR4 85파일 드라이런으로 손 기록의 오류(MM_DRIVE 소속·중복 줄) 확인. 실기·UI 확인은 §3.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-10-27, §1-GG) Requires 헤더 — VSIX·UI 확인(편집기만, 모션 무영향).** BinderR4 를 연 상태에서 ① 인덱싱이 끝난 뒤 `App\Control\Machine.gpl` 의 `'Requires:` 줄에 Information 진단(「추가 2 … · 메모 1줄 → 'Notes:」)과 Quick Fix 「Requires 헤더 갱신」이 뜨는지, 적용하면 MotionSystem.gpl 두 줄이 한 줄로 합쳐지고 Deck 설명이 `'Notes:` 로 가며 `'Used by:` 는 그대로인지, Ctrl+Z 로 한 번에 되돌아가는지 ② `GPL: Update Requires Headers in Project` → Refactor Preview 에 헤더 있는 파일(83개 중 변경분)이 파일별 라벨로 뜨고, 일부만 체크해 적용되는지 ③ `gpl.requiresHeader.mode: onSave` 에서 저장 시 바로 고쳐지는지, 블록 없는 파일은 그대로인지 ④ 인덱싱 중(활성화 직후)에는 진단이 안 뜨는지 ⑤ 큰 파일(LeadshineRS.gpl)에서 타이핑 지연이 체감되는지(드라이런 첫 계산 수백 ms 는 컴파일 단위 캐시 예열, 이후 파일당 수십 ms). 미해결: 문자열로 부르는 프로시저(`AddSync("Name")` 류)·수신자 타입을 모르는 멤버 호출은 목록에 안 들어감(누락 쪽 — 확인 필요하면 SYMBOL_STRING_CONSUMERS 연동 검토).
 - [ ] **(2026-10-26, §1-FZ) 0.18.0 실기·UI 확인.** ① FTP 쓰기 전 정체 확인: 실제 제어기에서 220 배너(`RTEMS FTP server`)가 읽혀 Upload Only·Quick Compile이 막히지 않는지, 배너·런타임 콘솔 핸드셰이크 프로브가 무해한지. ② 그룹(Lib) Compile 뒤 Unload 확인 모달·MCP `confirm` 흐름과 재부팅 뒤 자동 해제. ③ 참조 찾기(BinderR3 `BRI.Setup`)·정의 이동(`NUM` 2후보, MergeCode `getWafer`) 결과와 놓치는 참조 여부. ④ 새 진단 8종의 대형 코드베이스(V2/Lib) 오탐률. ⑤ `date` 응답 형식·잔여 오차·재부팅 뒤 유지. ⑥ 메모리 경고 상태 표시줄과 배포당 1회 알림. 보류 항목(모듈 String 첫 사용 린트, Unload 소켓 유지, Lib upload-only 기본값)은 §1-FZ 남은 일 참조.
 
 - [ ] **(2026-10-23, §1-FY) 명령 커서 아이콘 — 새 VSIX/UI 확인.** 0.17.2 설치 후 확장 목록·README와 활동바/Status 보기에서 컬러·단색 아이콘을 밝은/어두운 테마로 확인한다. 24px 렌더링과 패키지 내용은 정적으로 확인했으며 실제 VS Code 표시와 캐시 갱신은 아직 보지 않았다.
@@ -1084,9 +1085,9 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-FR (PR #36) | 10-23 | **PR #36 병합 검증** — Linux CI fixture와 Flash 안전·진입점·Rename 리뷰 수정, 회귀 6건·전체 1228/1228·MCP 137/137. 0.15.4 | [2026-10](archive/handoff/2026-10.md#1-fr-2026-10-23-세션--pr-36-병합-ci와-리뷰-수정) |
 | §1-FR (제어기 디버깅) | 10-23 | **제어기 프로젝트 열어 디버깅** — Snapshot·참조 라이브러리·작업공간 전환 후 일회성 Attach, 자동 Start 차단·기존 BP 보존. 0.16.0 | [2026-10](archive/handoff/2026-10.md#1-fr-2026-10-23-세션--제어기-프로젝트를-열어-바로-디버깅) |
 | §1-FS | 10-23 | **디버깅용 FTP 라이브러리 탐색 오류** — 없는 경로의 목록 형식 오류 실측, 부모 확인·캐시·원격 대소문자 보존. 0.16.1 | [2026-10 아카이브](archive/handoff/2026-10.md#1-fs-2026-10-23-세션--ftp-라이브러리-후보-경로-확인-실패) |
-| §1-FT | 10-23 | **README 문체·분량 개선** — 개인 취미 프로젝트 소개·kaomoji, 버전·VSIX 설치·기본 단축키 제거, GPL/GPR 안내. 0.16.2 | 본문 ↓ |
-| §1-FU | 10-23 | **로컬·GitHub 병합** — 원격 Flash·진입점·Rename 수정과 로컬 Hover·제어기 프로젝트 디버깅 통합, 경로 fixture·문서 충돌 해소. 0.16.3 | 본문 ↓ |
-| §1-FV | 10-23 | **PR #37 전체 반영** — Linux CI와 초기 BP 동기화·Snapshot 라이브러리 그래프 경로 수정. 0.16.4 | 본문 ↓ |
+| §1-FT | 10-23 | **README 문체·분량 개선** — 개인 취미 프로젝트 소개·kaomoji, 버전·VSIX 설치·기본 단축키 제거, GPL/GPR 안내. 0.16.2 | [2026-10](archive/handoff/2026-10.md) |
+| §1-FU | 10-23 | **로컬·GitHub 병합** — 원격 Flash·진입점·Rename 수정과 로컬 Hover·제어기 프로젝트 디버깅 통합, 경로 fixture·문서 충돌 해소. 0.16.3 | [2026-10](archive/handoff/2026-10.md) |
+| §1-FV | 10-23 | **PR #37 전체 반영** — Linux CI와 초기 BP 동기화·Snapshot 라이브러리 그래프 경로 수정. 0.16.4 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FW | 10-23 | **FTP 원격 파일·lazy Attach** — 기존 작업공간 유지, 읽기 전용 URI와 TMP 소스 캐시. 0.17.0 | 본문 ↓ |
 | §1-FX | 10-23 | **FTP 새로고침 경합** — 일반 조회 뒤 새 요청 직렬화·종료 경계, .gpo 설명 정정. 0.17.1 | 본문 ↓ |
 | §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | 본문 ↓ |
@@ -1096,78 +1097,14 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | 본문 ↓ |
 | §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | 본문 ↓ |
+| §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | 본문 ↓ |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-FT ~ §1-GC (2026-10-23~27).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-FW ~ §1-GG (2026-10-23~27).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-FT. 2026-10-23 세션 — README 문체와 개인 프로젝트 소개 개선
-
-### 증상·원인
-
-사용자는 README가 다른 이용자에게 배포하는 설명글임을 밝히고, 자연스러운 한국어와 개인 개발자가 취미로 만드는 프로젝트의 편안함을 요청했다. 후속 요청에서 일반 이모지 대신 kaomoji를 쓰고, 최소 버전·VSIX 설치·VS Code 기본 단축키 설명을 줄이라고 했다.
-
-### 조치·의도
-
-- 소개와 문의 안내에 개인 프로젝트의 편안한 말투와 kaomoji를 넣고, 제목의 일반 이모지는 제거했다. 탐색·배포·디버깅·모니터링 문장을 이용자가 따라 읽기 쉽게 다듬었다.
-- 최소 VS Code 버전·VSIX 설치 절차·확장 ID 소개·기본 단축키 표와 단축키 표기를 제거했다. 지원 파일은 `.gpl` 소스와 `.gpr` 프로젝트 파일로 정리했다. Flash 전원 주의와 Snapshot/Live·분리/정지 구분은 유지하며 실행 코드는 수정하지 않았다.
-- 후속 피드백에 따라 도입부의 반복 기능 나열과 「연결 없이 코드 편집 가능」·「프로젝트 없이 파일 편집 가능」 문장을 제거했다. VS Code의 기본 파일 편집을 확장 고유 기능처럼 소개하지 않는다.
-- 문서 개선 patch 0.16.2로 package·lock·CHANGELOG를 맞췄다. 최근 10세션 유지를 위해 §1-FJ를 10월 아카이브에 원문 그대로 옮겼다.
-- Microsoft 공식 문서에서 Marketplace 설명은 게시 패키지의 README를 사용하며, 로컬/GitHub 파일 수정만으로 즉시 동기화되지 않음을 확인했다. VS Code 1.74의 공식 릴리스 노트도 확인했지만 README에는 중복 표기하지 않는다. Brooks [GDS 공식 설명서](https://www.brooksautomation.com/getmedia/b7051664-7d14-4584-8d9b-3474e338e135/GDS.pdf)의 `.gpo` 설명과 기존 소스 주석의 차이는 §3에 후속 항목으로 남겼다.
-
-### 검증
-
-- Markdown 표 5개·로컬 링크/이미지 5개·설정 키 5개, HTML 변환과 굵은 글씨 구문을 확인했다. 요청받은 버전·VSIX 설치·기본 단축키·GPO 표기 제거, 일반 이모지 없음·kaomoji 2개, 그 밖의 명령·설정 보존을 확인했다. 실제 Marketplace 화면 렌더링 검증은 아니다.
-- `npm run package:no-bump` 성공. TypeScript 컴파일과 MCP 번들링을 포함하며, 문서 변경이므로 전체 회귀 테스트는 반복하지 않았다. 기존 Node DEP0190과 JavaScript 번들링 권고 경고가 있었고 최종 패키징 실패는 없다.
-- 최종 VSIX는 `dist/gpl-language-support-0.16.2.vsix`, **1,391,125 bytes**, SHA-256 **1872921939BC34A3480A28FC0369E4D77F6C43F75637009947CD4BEAE6E8B0F2**. README·CHANGELOG는 vsce의 상대 URL 변환·이슈 자동 링크 외에는 현재 원본과 같고, manifest도 현재 package.json과 같다. 소스·테스트·내부 지침·임시 파일 미포함을 확인했다.
-- 수정 파일의 UTF-8 without BOM·CRLF, 최근 세션 10개와 §1-FJ 아카이브 원문 보존을 확인했다. 중간 검증에서 vsce의 이슈 자동 링크 변환을 차이로 잡던 비교 조건을 보완했으며, 마지막 README 수정 뒤 같은 버전을 재패키징하고 원본과의 일치를 확인했다.
-
-### 남은 일
-
-실제 Marketplace 화면 표시·게시 반영은 별도 확인 대상이다. 당시 §3에 남긴 `.gpo` 설명 정정은 §1-FX에서 완료했다. 설치·게시·Git 커밋과 제어기 조작은 수행하지 않았다.
-
-## 1-FU. 2026-10-23 세션 — 원격 수정과 로컬 작업 병합
-
-### 증상·원인
-
-로컬 codex/domain-modules는 원격보다 2커밋 뒤였고, 0.16.2까지의 변경 28개가 미커밋 상태였다. 양쪽의 버전·변경 이력·인계 문서가 겹쳤으며 원격의 OS별 경로 fixture 변경과 로컬 신규 Hover 테스트의 Windows 고정 경로가 충돌했다.
-
-### 조치
-
-- 변경 파일 28개를 SHA-256 manifest와 함께 임시 폴더에 복사하고, 미추적 파일을 포함한 stash `84a93eee1689a4fed1d62322264959309228f4f0` (`pre-merge-local-2026-10-23`)로 보관했다. stash는 복구용으로 유지한다.
-- 원격 `c0541c8`·`e00e0fb`를 fast-forward한 뒤 로컬 변경을 재적용했다. Flash 안전·진입점 진단·Rename 수정과 Hover 성능·제어기 프로젝트 디버깅·README 변경을 함께 유지한다.
-- 충돌 파일 5개의 양쪽 이력을 통합하고 package/package-lock을 0.16.3으로 맞췄다. 신규 테스트 2건의 fixture는 path.resolve와 OS별 별칭으로 정리했다.
-- 중복된 §1-FR은 번호·원문을 보존하고 제목·링크로 구분한다. 최근 본문 10건을 유지하도록 §1-FK·§1-FL을 아카이브로 옮겼다.
-
-### 검증·남은 일
-
-Windows 로컬 npm test(compile 포함) **1249/1249**와 git diff --check가 통과했다. 원래 로컬 변경 28개 중 20개는 내용이 그대로이며, 8개는 버전·문서·테스트 통합에 필요한 변경만 반영했다. 양쪽 인계 문서·아카이브의 모든 세션 원문 보존을 대조했다. VSIX 0.16.3 생성에 성공했고, manifest·운영 코드·리소스 179개가 현재 파일과 바이트 단위로 일치했다. README·CHANGELOG는 패키징 도구의 상대 링크·issue 링크 변환만 다르며 내용 보존을 확인했다. 개발 지침·테스트·임시 파일은 포함되지 않았다. 설치·F5 UI·실제 제어기 검증은 별도로 남아 있다. 병합 직후에는 로컬 변경을 미커밋 상태로 보존했으며, 이후 사용자가 커밋·push까지 진행하도록 승인했다.
-
-- 패키징: `dist/gpl-language-support-0.16.3.vsix`, **1,391,689 bytes**, SHA-256 **846F2966834DCE4F514997276CF72F202B02FF76CDDBB058E30AF93B39F36A03**. JavaScript 번들링 권고 경고 1건, 패키징 실패 없음. 검증 로그는 `dist/merge-0.16.3-tests.log`·`dist/merge-0.16.3-package.log`.
-- Git 병합 직후: HEAD와 origin/codex/domain-modules는 `e00e0fb`로 같고 ahead/behind 0/0, 미해결 충돌·staged 변경이 없었다. 후속 승인에 따라 검증된 28개 파일을 `23ae803`으로 커밋해 같은 작업 브랜치에 push했다. 최신 fetch에서 원격 추가 변경이 없고 테스트 이후 소스·package 변경이 없음을 재확인했다. 이번 검사에서는 Linux CI·MCP 테스트를 새로 실행하지 않았다.
-
-- 푸시 검증: GitHub `refs/heads/codex/domain-modules`와 로컬 HEAD가 `23ae80366aa4d367b16eb203fe1539097ae6dccf`로 일치하고 작업 트리가 깨끗함을 확인했다. 이 완료 기록은 후속 문서 커밋으로 같은 브랜치에 반영한다. main 병합·태그·릴리스 게시·VSIX 설치는 수행하지 않았고 복구용 stash는 유지한다.
-
-- main 전체 반영 중간 조치(후속 수정은 §1-FV 참조): PR #37을 생성했다. 최초 Linux CI는 compile 통과·1248/1249로 실패했으며, 원격 대소문자 보존 테스트가 다운로드 후 로컬 파일 시스템도 대소문자를 무시한다고 가정한 것이 원인이었다. 원격 표기·실제 다운로드 검증은 유지하고, 로컬 그래프의 미해결 참조 기대값은 실제 파일 시스템의 경로 존재 여부로 결정하도록 테스트만 수정했다. 실행 코드는 변경하지 않았다. 수정 후 Windows 테스트·Linux CI·MCP·VSIX smoke를 재확인하고 main 병합을 진행한다.
-
-## 1-FV. 2026-10-23 세션 — PR #37 전체 반영과 Snapshot 경계 수정
-
-### 증상·원인
-
-작업 브랜치 push 이후 사용자가 전체 반영을 요청해 main 대상 PR #37을 생성했다. 첫 Linux CI는 1248/1249로 실패했으며 다운로드 후 로컬 경로의 대소문자 가정이 원인이었다. 최초 테스트 기대값 조정 뒤 CI는 통과했으나 자동 리뷰에서 초기 연결이 DAP보다 먼저 에디터 중단점 동기화를 실행할 수 있고, 라이브러리 그래프가 다운로드 때의 제어기→로컬 경로 대응을 재사용하지 않아 절대 경로·대소문자 참조와 하위 의존성을 놓치는 실제 문제를 확인했다.
-
-### 조치
-
-- Snapshot 작업공간에 에디터 BP 자동 동기화 false를 명시하고, 기존 작업공간도 연결 전에 false로 갱신한다. 갱신 실패 시 연결하지 않으며 사용자 전역 설정은 바꾸지 않는다.
-- 라이브러리 다운로드·그래프·디버거가 같은 Snapshot 경로 해석을 사용하도록 보완한다. 원본 GPL/GPR은 그대로 보존하며 대소문자·절대 제어기 경로·하위 의존성 회귀를 검증한다.
-- 버그 수정 patch 0.16.4로 package/lock/CHANGELOG를 맞췄다. §1-FM을 원문 그대로 10월 아카이브로 옮겨 최근 본문 10건을 유지한다.
-
-### 검증·남은 일
-
-최종 Windows 테스트·VSIX와 PR 최신 SHA의 Linux CI·MCP·VSIX smoke 확인 후 main에 병합한다. 실제 제어기·F5 UI 검증은 수행하지 않는다. 최초 테스트 기대값만 조정한 중간 CI의 성공을 최종 수정 검증으로 취급하지 않는다.
 
 ## 1-FW. 2026-10-23 세션 — FTP 원격 파일 연결과 현재 창 디버깅
 
@@ -1474,3 +1411,30 @@ Sample Prep 세션이 SendMessage 와 수신함(`Downloads\GPL_language_inbox`)�
 - §3 항목: 실기·UI 확인 4종, 실제 워크스페이스 벤치마크.
 - 남은 큰 파일: `gplDebugSession.ts` 3,056(`_pollThreadStates` 364줄 상태 머신 — 로드맵 Phase 3 명시적 상태 머신과 함께), `runtimeConsole.ts` 1,367(재연결 상태 머신, 미착수), `referenceProvider.ts` 1,187, `responseParser.ts` 1,132, `gplDictionaryData.ts` 3,027(데이터).
 - push·태그·릴리스는 사용자 요청 시(태그 push = Marketplace 자동 게시). 스냅샷 ref `refs/snapshots/pre-restructure-2026-10-27` 는 삭제해도 된다.
+
+## 1-GG. 2026-10-27 세션 — Requires 헤더 자동 동기화 (0.20.0)
+
+### 증상(요청)
+
+Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손으로 맞추느라 비효율·실수가 생긴다 — Project.gpr 소스 목록 자동 동기화처럼 자동으로 맞춰 달라. 사용자 결정: **Used by 는 제외**(프로젝트마다 달라지는 정보 — 공용 Lib 파일에 저장하면 프로젝트를 오갈 때마다 바뀜), 나머지는 권장안대로.
+
+### 원인
+
+손 기록이라 같은 파일이 두 줄로 갈라지고(Machine.gpl 의 MotionSystem.gpl), 소속이 틀리고(Machine.gpl 은 `BRT.MM_DRIVE` 를 쓰는데 헤더는 MachineConfig BRC 아래에 적힘 — 드라이런으로 확인), 멤버 목록과 사람 설명이 한 괄호에 섞였다(`IsSet(Home 위치 …)`).
+
+### 조치(의도와 방법)
+
+- **계산 `language/analysis/moduleDependencies.ts`(순수)** — 줄마다 주석·문자열을 지운 코드(`GPLParser.stripToCode`)에서 `a(0).b.c` 체인을 뽑고(`scanChains`), 첫 세그먼트는 로컬 → 자기 파일 선언 → 다른 파일의 Class/모듈 직속 Public 멤버(여러 모듈에 같은 이름이면 제외) 순, 이후 세그먼트는 `receiverType.resolveReceiverHolder`+`ownedByHolder` 로 정의 이동과 같은 규칙으로 해석. 후보는 컴파일 단위 우선(없으면 전체), 다른 프로젝트에 복제된 같은 파일명·모듈은 한 항목으로 접는다. 수신자 조회 조립은 R7 정본 `receiverContext.buildReceiverContextFromText` 를 호출부가 주입(`ReceiverLookupFactory`) — language 계층이 providers 를 import 하지 않게.
+- **블록 `language/documentation/requiresHeader.ts`(순수)** — `'Requires:` 첫 블록을 파싱(같은 파일 여러 줄 병합, `Cls.Member`·`Cls(m1, m2)` 를 같은 뜻으로), 계산 결과로 다시 그림(`(Module …)` 열은 블록 안 최장 파일명에 맞춤, 의존 없으면 `' - (none)`). 멤버 이름 목록이 아닌 괄호·형식 밖 줄·들여쓴 이어쓰기는 `'Notes:` 로 옮긴다(기존 Notes 블록이 있으면 없는 줄만 덧붙임, 없으면 Requires 바로 뒤에 새로 — 맞닿은 두 편집이 겹침으로 거부되지 않게 한 편집으로 합침). 블록이 없는 파일은 대상 아님(옵트인), 명령으로만 첫 `Module` 위에 추가.
+- **순서 `project/sources/sourceOrder.ts`** — 파일에서 위로 올라가며 만나는 `.gpr` 중 의존 파일을 가장 많이 나열한 것의 ProjectSource 순서(같으면 바깥쪽). 리프 패키지 `.gpr` 은 자기 소스만 나열하고 실제 평탄 목록은 루트에 있기 때문.
+- **조립 `providers/diagnostics/requiresHeaderPlan.ts`(vscode 무의존)** — 위 셋을 묶고, 수신자 조회를 **프로시저마다 한 번**(모듈 수준 + 그 프로시저 로컬만) 조립한다. 줄마다 전체 심볼로 조립하면 LeadshineRS.gpl 이 1.7 s 였다.
+- **배선** — 진단: `diagnosticProvider.detectRequiresHeaderIssues`(source `GPL Requires`, code `requires-header-stale`, Information, 문구 `describeRequiresPlan`). 인덱싱 전에는 의존이 통째로 "제거"로 보이므로 `SymbolCache.hasIndexed`(신설)·`isRefreshing` 로 막는다. Quick Fix → `gpl.requiresHeader.update`(현재 파일 갱신/추가), `gpl.requiresHeader.updateProject`(같은 컴파일 단위의 헤더 있는 파일 전부, WorkspaceEdit `needsConfirmation` → Refactor Preview, 목록은 Output), `onWillSaveTextDocument`(mode `onSave` 일 때만). 설정 `gpl.requiresHeader.mode`: `check`(기본)·`onSave`·`off`.
+
+### 검증
+
+- `npm test` **1491/1491**(신규 10: moduleDependencies 5 — 체인 추출·한정자/인스턴스/Shared/타입·로컬 가림·컴파일 단위/사본 접기·순서, requiresHeader 4 — Machine.gpl 실수 재현·멱등·Notes 덧붙임/이어쓰기·(none)/추가 위치, sourceOrder 1). 구조 테스트 R1~R9 통과(처음 R7 이 `buildDocumentReceiverLookup` 직접 조립과 주석의 제외 사유 문자열을 잡아 주입 방식으로 바꿈).
+- **BinderR4 읽기 전용 드라이런**(scratchpad 스크립트, 파일 쓰기 없음): 85파일 중 헤더 83, 변경 80. Machine.gpl — MotionSystem 두 줄 병합, DriveLine/CantopsIO 추가, MM_DRIVE·DRIVE_MODULE_NUM 이 Status.gpl(BRT)로(소스 `BRT.MM_DRIVE` 로 확인), Deck 설명은 Notes. Main.gpl — LogHistory 추가, `Setup(모터 + …)` 설명은 Notes. 계산 시간: 컴파일 단위 캐시가 찬 뒤 85파일 2.5 s(파일당 평균 30 ms), 첫 계산은 기존 `CompileUnitIndex` 예열(리프 .gpr 마다 관련 .gpr 탐색)이 대부분.
+
+### 남은 일
+
+- §3 의 VSIX·UI 확인. 문자열로 부르는 프로시저와 수신자 타입 미상 멤버는 누락된다(확정할 수 없으면 뺀다). 사용자가 쓰던 와일드카드(`ERR_*`)는 Notes 로 옮겨지고 실제 이름이 나열된다 — 줄이 길어지면 줄바꿈 규칙을 추가할지 사용자 판단.

@@ -148,6 +148,7 @@ import './activation/deploy/automationResult.test';
 import './activation/deploy/deployTargetRules.test';
 import './controller/deployment/deployStages.test';
 import './views/tree/snapshotMarkdown.test';
+import './util/pathKey.test';
 import { run } from './harness';
 
 void run();

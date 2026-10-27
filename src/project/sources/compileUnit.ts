@@ -22,7 +22,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { isPathUnder, normalizeDirKey } from '../../util/pathKey';
+import { isPathUnder, normalizeDirKey, normalizePathKey } from '../../util/pathKey';
 import { collectRelatedGprPaths, findNearestGprOnDisk, gprPathInDir, pickOwningGprPath } from './projectSources';
 
 /** 파일→소유 `.gpr` 조회 결과가 "없음"임을 캐시에 남기기 위한 표식. */
@@ -62,7 +62,7 @@ export class CompileUnitIndex {
 
     /** 이 파일을 소유한 `.gpr` 경로 — 워크스페이스 목록 우선, 없으면 디스크에서 위로 탐색. */
     public owningGpr(filePath: string): string | undefined {
-        const key = path.resolve(filePath).toLowerCase();
+        const key = normalizePathKey(filePath);
         const cached = this.ownerByFile.get(key);
         if (cached !== undefined) { return cached === NO_OWNER ? undefined : cached; }
 
@@ -79,7 +79,7 @@ export class CompileUnitIndex {
         const gprPath = this.owningGpr(filePath);
         if (!gprPath) { return []; }
 
-        const key = path.resolve(gprPath).toLowerCase();
+        const key = normalizePathKey(gprPath);
         const cached = this.unitByGpr.get(key);
         if (cached) { return cached; }
 
@@ -109,7 +109,7 @@ export class CompileUnitIndex {
     }
 
     private readGpr(gprPath: string): string {
-        const key = path.resolve(gprPath).toLowerCase();
+        const key = normalizePathKey(gprPath);
         const cached = this.textByGpr.get(key);
         if (cached !== undefined) { return cached; }
         let text: string;

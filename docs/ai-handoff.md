@@ -1440,6 +1440,7 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 ### 검증
 
 - 새 테스트: 핸드셰이크 상한 2건(HangingSocket 주입), 정지 뒤 판정 1건(worker_threads 서버 + check 단계 400 ms 정지 — **수정 전 코드로 되돌리면 `Command timeout (100ms)` 로 실패** 확인), eventLoopStall 4건, 상태바 문구 4건, 분류 1건. 전체 **1550/1550**(다른 세션의 미커밋 `dioGroups.test` 는 `BANK_SIZE` 초기화 순서 오류로 러너 전체를 막아 제외하고 실행 — 그 세션 소관).
+- HEAD(fa5351f) 만 담은 임시 worktree 에서 `npm test` 1550/1550 → `npm run package:no-bump` → `dist/gpl-language-support-0.21.0.vsix` **1,607,629 bytes**, SHA-256 **A38B6F36F4FFD6091B1EEDD0E5F266BDEF625757AAE0BCC14011A341A9C5AB56**(349 files, 경고는 기존 번들링 권고뿐). 작업 트리의 다른 세션 미커밋 변경(dioGroups·controller-mcp guidelines 등)은 들어가지 않았다. 함정: worktree 를 세션 scratchpad(경로에 UUID)에 두면 npm 이 그 경로 조각을 `***` 로 가려 vsce 가 파일 0개로 실패한다 — UUID 없는 경로에 둘 것.
 - 실기·UI 는 미확인 → §3.
 
 ### 남은 일

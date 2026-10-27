@@ -46,6 +46,12 @@ export interface ConsoleSendOptions {
     keepAlive: boolean;
     /** 보관 소켓을 닫기까지의 유휴 시간(ms). */
     keepAliveIdleCloseMs: number;
+    /**
+     * 새 연결의 TCP 핸드셰이크 상한(ms). 없거나 0 이거나 timeoutMs 이상이면 timeoutMs 만 적용한다(종전).
+     * 직결 제어기의 핸드셰이크는 실측 p50 8 ms·최대 1.1 s(2026-10 사후 스냅샷 25건) — SYN 이 답 없이 사라지는
+     * 제어기에 명령 타임아웃 전체(8~10 s)를 기다리지 않게 한다.
+     */
+    connectTimeoutMs?: number;
 }
 
 /** 응답 본문 실시간 표시용 sink(trafficResponseBody.ResponseBodyStreamer 호환). flush는 멱등이어야 한다. */
@@ -57,6 +63,8 @@ export interface ResponseBodySink {
 export interface ConsoleSendHooks {
     log: TrafficLogger;
     body?: ResponseBodySink | null;
+    /** 새 소켓 생성(테스트 주입용 — 응답 없는 핸드셰이크 재현). 기본 `new net.Socket()`. */
+    createSocket?: () => net.Socket;
 }
 
 export interface CommandResponseMeta {
@@ -98,6 +106,15 @@ export interface ConnectionStats {
 const TCP_KEEPALIVE_PROBE_MS = 10_000;
 /** 우리가 FIN을 보낸 뒤 제어기가 FIN을 돌려주지 않을 때 강제 정리까지 기다리는 시간(종전 단명 경로와 동일). */
 const FIN_WAIT_FORCE_CLOSE_MS = 1000;
+
+/**
+ * 타임아웃 판정을 이미 도착한 I/O 처리 뒤로 미룬다. 확장 호스트 이벤트 루프가 멈췄다 풀리면 Node 는 timers 단계를
+ * poll(I/O) 단계보다 먼저 돌린다 — 그 사이 커널 버퍼에 와 있던 응답·connect 완료를 읽기도 전에 타임아웃을 선언하게 된다.
+ * check 단계(setImmediate)에서 판정하면 그 poll 단계가 먼저 지나간다(2026-10-26 17:48 확장 호스트 71 s 정지 실측).
+ */
+function afterPendingIo(fn: () => void): void {
+    setImmediate(fn);
+}
 
 // ── 순수 헬퍼 ──────────────────────────────────────────────────────────────
 
@@ -368,7 +385,7 @@ function attempt(
             _stats.reuses++;
         } else {
             if (_held) { dropHeld('not reusable', true); }
-            socket = new net.Socket();
+            socket = hooks.createSocket ? hooks.createSocket() : new net.Socket();
             connectedAt = Date.now();
             _stats.connects++;
             _stats.lastConnectAt = connectedAt;
@@ -429,17 +446,43 @@ function attempt(
 
         log('>>>', `${endpoint.ip}:${endpoint.port}  ${command}`);
 
-        const timer = setTimeout(() => {
+        const timer = setTimeout(() => afterPendingIo(() => {
             if (settled) { return; }
             settled = true;
             clearIdle();
+            clearConnectTimer();
             // 응답 미완 상태 — 잔류 바이트가 언제 올지 모르므로 재사용 금지, 즉시 폐기.
             closeReason = 'timeout';
             socket.destroy();
             body?.flush();
             log('---', `TIMEOUT (${timeout}ms): ${command}`);
             reject(codedError(`Command timeout (${timeout}ms): ${command}`, 'COMMAND_TIMEOUT'));
-        }, timeout);
+        }), timeout);
+
+        // 새 연결의 핸드셰이크 상한 — 명령 타임아웃보다 짧을 때만 의미가 있다. 재사용 소켓에는 걸지 않는다.
+        const connectTimeout = !reused && opts.connectTimeoutMs && opts.connectTimeoutMs > 0 && opts.connectTimeoutMs < timeout
+            ? opts.connectTimeoutMs : 0;
+        let connectTimer: ReturnType<typeof setTimeout> | null = null;
+        function clearConnectTimer(): void { if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; } }
+        if (connectTimeout > 0) {
+            connectTimer = setTimeout(() => afterPendingIo(() => {
+                connectTimer = null;
+                if (settled || !socket.connecting) { return; }
+                settled = true;
+                clearTimeout(timer);
+                clearIdle();
+                // 명령은 아직 보내지 않았다(write 는 connect 콜백에서) — 호출자가 다시 보내도 이중 실행이 아니다.
+                closeReason = 'connect-timeout';
+                socket.destroy();
+                body?.flush();
+                log('---', `CONNECT TIMEOUT (${connectTimeout}ms, no handshake): ${command}`);
+                reject(Object.assign(
+                    codedError(`Connect timeout (${connectTimeout}ms, ${key}): ${command}`, 'CONNECT_TIMEOUT'),
+                    { sent: false },
+                ));
+            }), connectTimeout);
+            connectTimer.unref?.();
+        }
 
         const completeResponse = () => {
             if (settled) { return; }
@@ -518,6 +561,7 @@ function attempt(
         const onError = (err: Error) => {
             clearGraceful();
             clearIdle();
+            clearConnectTimer();
             if (settled) {
                 if (!closeReason) { closeReason = `error: ${err.message}`; }
                 return;
@@ -534,6 +578,7 @@ function attempt(
         const onClose = () => {
             clearGraceful();
             clearIdle();
+            clearConnectTimer();
             if (!settled) {
                 if (canRetryStale()) { retryStale('closed with no response'); return; }
                 settled = true;
@@ -583,6 +628,7 @@ function attempt(
             ? { host: endpoint.ip, port: endpoint.port, family: 4 }
             : { host: endpoint.ip, port: endpoint.port };
         socket.connect(connectOptions, () => {
+            clearConnectTimer();
             // 요청-응답형 짧은 명령이므로 Nagle을 꺼서 command 전송 지연(및 delayed-ACK 상호작용)을 줄인다.
             // 1403 스트림 소켓과 동일한 정책.
             socket.setNoDelay(true);

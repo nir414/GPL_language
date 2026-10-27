@@ -81,6 +81,8 @@ test('classifyCommandFailure: code 우선 — ECONNREFUSED/EHOSTUNREACH/ECONNRES
     assert.strictEqual(classifyCommandFailure(coded('x', 'ECONNRESET')).kind, 'reset');
     assert.strictEqual(classifyCommandFailure(coded('Command timeout (8000ms): Show Thread -web', 'COMMAND_TIMEOUT')).kind, 'timeout');
     assert.strictEqual(classifyCommandFailure(coded('x', 'ETIMEDOUT')).kind, 'timeout');
+    // 핸드셰이크 상한(consoleSocket connectTimeoutMs) — 확정적 실패(refused/unreachable)가 아니라 일반 타임아웃으로 센다.
+    assert.strictEqual(classifyCommandFailure(coded('x', 'CONNECT_TIMEOUT')).kind, 'timeout');
     assert.strictEqual(classifyCommandFailure(coded('Connection closed without response: Show Thread -web', 'ECONNCLOSED')).kind, 'closed');
 });
 

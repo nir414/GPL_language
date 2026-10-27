@@ -446,3 +446,90 @@ test('응답 본문 sink: chunk 가 push 되고 완료 시 flush 가 한 번 불
         await fake.close();
     }
 });
+
+// ── 핸드셰이크 상한·정지 뒤 타임아웃 판정 (2026-10-27) ─────────────────────────
+
+/** connect() 를 받아도 핸드셰이크가 끝나지 않는 소켓 — SYN 이 답 없이 사라지는 제어기 재현. */
+class HangingSocket extends net.Socket {
+    override connect(..._args: unknown[]): this {
+        (this as unknown as { connecting: boolean }).connecting = true;
+        return this;
+    }
+}
+
+test('connectTimeoutMs: 핸드셰이크가 끝나지 않으면 명령 타임아웃 전에 CONNECT_TIMEOUT(sent:false)으로 끝난다', async () => {
+    closeControllerConnection('test-reset');
+    const { lines, log } = logCollector();
+    const started = Date.now();
+    await assert.rejects(
+        sendConsoleCommand('Show Thread', { ip: '192.0.2.1', port: 1402, preferIPv4: true },
+            opts({ timeoutMs: 5000, connectTimeoutMs: 150 }), { log, createSocket: () => new HangingSocket() }),
+        (err: NodeJS.ErrnoException & { sent?: boolean }) => {
+            assert.strictEqual(err.code, 'CONNECT_TIMEOUT');
+            assert.strictEqual(err.sent, false, '명령은 보내지 않았다 — 재전송해도 이중 실행 아님');
+            assert.match(err.message, /^Connect timeout \(150ms, 192\.0\.2\.1:1402\): Show Thread$/);
+            return true;
+        },
+    );
+    assert.ok(Date.now() - started < 2000, '명령 타임아웃(5 s)까지 기다리지 않는다');
+    assert.ok(lines.includes('--- CONNECT TIMEOUT (150ms, no handshake): Show Thread'), lines.join('\n'));
+    assert.strictEqual(getConnectionStats().keepAliveActive, false);
+});
+
+test('connectTimeoutMs: 정상 핸드셰이크·재사용 소켓에는 영향이 없고, timeoutMs 이상이면 무시된다', async () => {
+    closeControllerConnection('test-reset');
+    const fake = await startFakeConsole();
+    const { lines, log } = logCollector();
+    try {
+        const r1 = await sendConsoleCommand('Show Thread', endpointOf(fake), opts({ connectTimeoutMs: 1000 }), { log });
+        await sleep(1100);  // 재사용 소켓에는 connect 타이머가 걸리지 않으므로 상한이 지나도 무관
+        const r2 = await sendConsoleCommand('ErrorLog', endpointOf(fake), opts({ connectTimeoutMs: 1000 }), { log });
+        assert.strictEqual(r1.meta.responseComplete, true);
+        assert.strictEqual(r2.meta.socketReused, true);
+        assert.ok(!lines.some(l => l.includes('CONNECT TIMEOUT')), lines.join('\n'));
+    } finally {
+        closeControllerConnection('test-cleanup');
+        await fake.close();
+    }
+    // timeoutMs 보다 긴 상한은 의미가 없어 걸지 않는다 → 종전처럼 명령 타임아웃으로 끝난다.
+    await assert.rejects(
+        sendConsoleCommand('Show Thread', { ip: '192.0.2.1', port: 1402, preferIPv4: true },
+            opts({ timeoutMs: 150, connectTimeoutMs: 5000 }), { log, createSocket: () => new HangingSocket() }),
+        (err: NodeJS.ErrnoException) => err.code === 'COMMAND_TIMEOUT',
+    );
+});
+
+test('정지 뒤 타임아웃 판정: 이벤트 루프가 멈춘 사이 도착한 응답은 타임아웃이 아니라 성공으로 읽힌다', async () => {
+    // 서버를 별도 스레드에서 돌려 메인 루프가 멈춘 동안에도 응답이 커널 버퍼에 도착하게 한다(확장 호스트 정지 재현).
+    const { Worker } = await import('worker_threads');
+    const worker = new Worker(`
+        const net = require('net');
+        const { parentPort } = require('worker_threads');
+        const server = net.createServer(s => {
+            s.on('error', () => {});
+            s.on('data', () => s.write('<DATA>x</DATA>\\r\\n<STATUS>0,"Success"</STATUS>\\r\\n'));
+        });
+        server.listen(0, '127.0.0.1', () => parentPort.postMessage(server.address().port));
+        parentPort.on('message', () => server.close(() => process.exit(0)));
+    `, { eval: true });
+    const port = await new Promise<number>(resolve => worker.once('message', resolve));
+    closeControllerConnection('test-reset');
+    const { lines, log } = logCollector();
+    const endpoint = { ip: '127.0.0.1', port, preferIPv4: true };
+    try {
+        await sendConsoleCommand('Show Thread', endpoint, opts(), { log });  // 소켓을 보관해 둔다(write 가 즉시 나가게)
+        // check 단계(setImmediate)에서 막혀야 풀린 직후 timers 가 poll 보다 먼저 돈다 — timer/I/O 콜백 안의 정지는
+        // 순서가 반대라 이 결함을 드러내지 못한다(Node v24.11.1 Windows 실험, 2026-10-27).
+        const r = await new Promise<Awaited<ReturnType<typeof sendConsoleCommand>>>((resolve, reject) => setImmediate(() => {
+            sendConsoleCommand('ErrorLog', endpoint, opts({ timeoutMs: 100 }), { log }).then(resolve, reject);
+            const until = Date.now() + 400;
+            while (Date.now() < until) { /* 확장 호스트 정지 재현: 타임아웃(100 ms)을 넘겨 루프를 막는다 */ }
+        }));
+        assert.strictEqual(r.meta.responseComplete, true, lines.join('\n'));
+        assert.ok(!lines.some(l => l.startsWith('--- TIMEOUT')), lines.join('\n'));
+    } finally {
+        closeControllerConnection('test-cleanup');
+        worker.postMessage('stop');
+        await new Promise<void>(resolve => worker.once('exit', () => resolve()));
+    }
+});

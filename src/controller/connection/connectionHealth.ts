@@ -117,7 +117,7 @@ export function classifyCommandFailure(err: unknown): { kind: ProbeFailureKind; 
     if (/\bECONNREFUSED\b/.test(text)) { return { kind: 'refused', detail }; }
     if (/\b(EHOSTUNREACH|ENETUNREACH|EHOSTDOWN|ENETDOWN)\b/.test(text)) { return { kind: 'unreachable', detail }; }
     if (/\b(ECONNRESET|EPIPE)\b/.test(text)) { return { kind: 'reset', detail }; }
-    if (/\b(ETIMEDOUT|COMMAND_TIMEOUT)\b/.test(text) || /\btimeout\b/i.test(message)) { return { kind: 'timeout', detail }; }
+    if (/\b(ETIMEDOUT|COMMAND_TIMEOUT|CONNECT_TIMEOUT)\b/.test(text) || /\btimeout\b/i.test(message)) { return { kind: 'timeout', detail }; }
     if (/\bECONNCLOSED\b/.test(text) || /closed without response/i.test(message)) { return { kind: 'closed', detail }; }
     return { kind: 'other', detail };
 }

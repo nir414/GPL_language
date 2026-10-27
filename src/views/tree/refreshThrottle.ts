@@ -11,6 +11,15 @@
 
 /** 연결 확립 시 자동 재조회 억제 간격 기본값(5분). */
 export const AUTO_REFRESH_MIN_INTERVAL_MS = 5 * 60_000;
+/**
+ * 연결 확립 시 FTP 목록 자동 재조회 억제 간격(5분). 마지막 성공 조회가 이 시간 이내이고 캐시가 있으면
+ * setConnected(true)에서 재조회하지 않는다(GitHub #22 제안 7 — 연결 플랩마다 /GPL·Flash를 재조회해
+ * 60초에 FTP passive 데이터 연결 66개 관측). 명시적 새로고침(refreshFtp/refreshAll)은 항상 조회한다.
+ * (controllerTreeProvider.ts 에서 옮김 2026-10-27 — 섹션 툴팁(treeSections)과 억제 판정이 같은 값을 읽는다.)
+ */
+export const FTP_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
+/** 시스템 정보(메모리·Flash·CPU·온도)도 같은 규칙으로 억제. */
+export const SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS = AUTO_REFRESH_MIN_INTERVAL_MS;
 
 export interface OnDemandCacheState {
     /** 마지막 성공 조회 시각(epoch ms). 0 이하면 조회한 적 없음. */

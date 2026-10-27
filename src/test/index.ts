@@ -5,7 +5,11 @@
  * 새 테스트 파일을 추가하면 여기에 import 한 줄을 더한다.
  */
 import './language/syntax/cursorExpression.test';
-import './controller/protocol/responseParser.test';
+import './controller/protocol/statusParser.test';
+import './controller/protocol/compileErrorParser.test';
+import './controller/protocol/threadParser.test';
+import './controller/protocol/errorLogParser.test';
+import './controller/protocol/runtimeConsoleLine.test';
 import './controller/io/dio.test';
 import './controller/protocol/controllerStatusCodes.test';
 import './language/dictionary/gplDictionaryData.test';

@@ -112,7 +112,7 @@ flowchart BT
 | --- | --- |
 | `connection/` | 명령 연결·직렬 큐·keep-alive·세션·연결 건강·트래픽 본문 |
 | `commands/` | 명령 정책·분류·Compile/Load/Unload/Start·스텝 명령 생성 |
-| `protocol/` | 응답 파서·상태 코드·채널 이름 |
+| `protocol/` | 응답 파서(`statusParser`·`compileErrorParser`·`threadParser`·`stackParser`·`breakListParser`·`variableParser`·`errorLogParser`·`runtimeConsoleLine`·`gprParser`·`projectSelection`·`sourceCandidates`, 공용 `protocolText`; `responseParser.ts` 는 배럴)·상태 코드·채널 이름 |
 | `runtime/` | 런타임 콘솔 연결·버퍼·재연결 판정·표현 |
 | `deployment/` | 배포·잠금·큐·취소·이력·출처 검증·Flash 안전·진행률. `deployService` 는 오케스트레이터이고 파이프라인은 단계 모듈(`deployPrecheck`→`deployTargetStage`→`deployUploadStage`(∥`deployStopStage`)→`deployCompileStage`→`deployStartStage`→`deployErrorCheckStage`)이 `deployContext` 를 공유해 수행하며 `deployModes`·`deployTypes`·`compileErrorPath` 가 순수 보조 |
 | `files/` | FTP·원격 폴더 정리·동기화 지문 |
@@ -328,7 +328,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 참조 찾기의 출현 판정(다른 모듈 동명 선언·한정자 불일치·멤버/로컬 가림) | `language/analysis/referenceScope.ts` (`classifyReferenceOccurrence`) | 제외 사유 문자열(`'qualifier-mismatch'` 등) 직접 판정 |
 | "컴파일 검증 필요" 상태의 설명 문장(배지 툴팁·Start 확인 모달·자동화 오류) | `controller/deployment/compileStale.ts` (`describeCompileStale`) — 배지 라벨·툴팁·클릭 대상은 `views/statusbar/compileStaleBadge.ts` | `소스가 아직 Compile 로 검증되지 않았습니다` 직접 조립 |
 | 쓰레드 목록 표·상태 집계(「전체 쓰레드 복사」·상황 스냅샷) | `controller/threads/threadReport.ts` (`renderThreadTable`·`countThreadStates`·`summarizeThreadStates`) | `\| 이름 \| 상태 \|` 표 직접 조립 / `state === 'Paused' \|\| … 'Break'` |
-| 에러 코드 → 코드/환경 분류(트리 버킷·오류 상세·배포 요약) | `controller/protocol/responseParser.ts` (`classifyErrorEntry`·`describeErrorCategory`·`getGplErrorGroup`) | `category: 'code'/'environment'` 직접 판정 |
+| 에러 코드 → 코드/환경 분류(트리 버킷·오류 상세·배포 요약) | `controller/protocol/errorLogParser.ts` (`classifyErrorEntry`·`describeErrorCategory`·`getGplErrorGroup`) | `category: 'code'/'environment'` 직접 판정 |
 | 바이트 → 사람이 읽는 크기(트리 FTP 목록·업로드 진행 바·완료 요약) | `util/formatBytes.ts` (`formatBytes`·`formatBytesAs`·`byteUnitFor`) | `.toFixed(1)} KB/MB/GB` 직접 조립 |
 | 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/statusbar/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/deployment/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / 상태바 `업로드 완료 — 변경 없음`·크기 템플릿 직접 조립 |
 | Flash 쓰기 전원 차단 금지 문구(쓰기·`Sync`·10초 안정화·안전 미확인) | `views/statusbar/flashSafetyPresentation.ts` (`presentFlashSafety`) — 절차·시간은 `controller/deployment/flashSafety.ts` | `FLASH 저장 중`·`FLASH 안전 상태 미확인` 직접 조립 |
@@ -436,6 +436,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 1403 상태 문구 두 표현 | `controller/runtime/runtimeConsolePresentation`(알림, 영문) vs `views/tree/runtimeConsoleTreePresentation`(트리, 한국어) | 폴링 판정 정규식이 다르다 — 실기기 문구 대조 후 통일 결정 |
 | provider 별 수신자 해석 사본 | definition·hover·완성·디버그 hover | **정리됨(2026-09-10)** — 해석은 `language/analysis/receiverType`, 조립은 `providers/intellisense/receiverContext` 하나로. R7 이 재발을 막는다 |
 | `config.ts` 안의 언어 헬퍼 | `getQualifiedWordAtPosition`·`isInCommentOrString`·`GPL_CONTROL_KEYWORDS` | `language/` 로 옮길 후보(`ciEq` 는 옮겼다) |
+| `controller/protocol/` 의 `gprParser`·`projectSelection`·`sourceCandidates` | `responseParser.ts` 분해(2026-10-27)로 분리됐으나 영역은 그대로 | 제어기 응답이 아니라 프로젝트 판정이므로 `project/` 로 옮길 후보 — 영역 이동은 별도 작업(배럴 경유 importer 갱신 필요) |
 | `SymbolCache` 책임 혼합 | 인덱스·프로젝트 범위·호스트·소스 로더·표현을 독립 모듈로 구성 | **분리 완료(2026-10-22)** — 공개 메서드 28개 유지, 별도 루트 호환 래퍼 없이 내부 import 이동 |
 | `controller-mcp/src/index.js` | 약 2,351줄 | MCP 서버 도구 정의 한 파일 — 별도 하위 프로젝트, 테스트 137건 |
 

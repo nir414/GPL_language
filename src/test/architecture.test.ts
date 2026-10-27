@@ -351,9 +351,9 @@ const SSOT_RULES: readonly SsotRule[] = [
     {
         what: '에러 코드 → 코드/환경 분류 (트리 버킷·오류 상세 보고서·배포 요약이 공유). 공식 범위 표가 근거',
         pattern: /category:\s*'(code|environment)'/,
-        ownedBy: ['controller/protocol/responseParser'],
+        ownedBy: ['controller/protocol/errorLogParser'],
         requires: ['getGplErrorGroup', 'describeErrorCategory', 'classifyErrorEntry'],
-        use: 'controller/protocol/responseParser.classifyErrorEntry (라벨은 describeErrorCategory, 범위는 getGplErrorGroup)',
+        use: 'controller/protocol/errorLogParser.classifyErrorEntry (라벨은 describeErrorCategory, 범위는 getGplErrorGroup)',
     },
     {
         what: '바이트 → 사람이 읽는 크기 (트리 FTP 목록·업로드 진행 바·완료 요약이 공유 — B 정수, 그 위는 소수 1자리)',

@@ -1,16 +1,35 @@
 {
+  // ── 언어 ──
   "files.associations": {
     "*.gpl": "gpl",
     "*.gpo": "gpl"
   },
   "gpl.trace.server": "verbose",
+
+  // ── 탐색기: 루트 설정 파일을 package.json / README.md 아래로 접고, 생성물·캐시는 숨긴다 ──
+  // (파일을 옮긴 것이 아니라 보이는 방식만 바꾼 것. 숨긴 폴더는 Ctrl+P 로 여전히 열린다.)
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.expand": false,
+  "explorer.fileNesting.patterns": {
+    "package.json": "package-lock.json, tsconfig.json, .editorconfig, .gitignore, .vscodeignore, LICENSE",
+    "README.md": "CHANGELOG.md, CLAUDE.md, AGENTS.md"
+  },
   "files.exclude": {
-    "**/.gitattributes": true
+    "**/.gitattributes": true,
+    "out": true,
+    "node_modules": true,
+    "**/.history": true,
+    "**/.tmp": true,
+    "**/*.log": true
   },
   "search.exclude": {
     "**/node_modules": true,
-    "**/out": true
+    "**/out": true,
+    "**/dist": true,
+    "**/.history": true
   },
+
+  // ── GitHub / Copilot ──
   "githubPullRequests.ignoredPullRequestBranches": [
     "main"
   ],

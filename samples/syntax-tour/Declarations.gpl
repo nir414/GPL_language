@@ -43,7 +43,7 @@ Module Declarations
     '
     ' # Remarks
     ' `SyncSub`의 `Sub`, `TraceClass`의 `Class`처럼 식별자 **안**의 키워드에 색이 칠해지면
-    ' 문법 규칙이 줄 머리 고정을 잃은 것이다(`syntaxes/gpl.tmGrammar.json`, src/test/grammar.test.ts).
+    ' 문법 규칙이 줄 머리 고정을 잃은 것이다(`assets/syntaxes/gpl.tmGrammar.json`, src/test/language/syntax/grammar.test.ts).
     Private SyncSub, AsyncSub As LogSink
 
     ' 선언 문법을 한 번씩 쓴다.

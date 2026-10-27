@@ -4,7 +4,7 @@ import * as path from 'path';
 import { test } from '../../harness';
 import { GPL_PROC_MODIFIERS } from '../../../language/syntax/cursorExpression';
 
-// ─── TextMate 문법(syntaxes/gpl.tmGrammar.json) 구조 테스트 (§1-DT) ─────────────────
+// ─── TextMate 문법(assets/syntaxes/gpl.tmGrammar.json) 구조 테스트 (§1-DT) ─────────────────
 // 발단: `Public Delegate Sub LogSinkSub(ByVal line As String)` 의 `Delegate` 가 색이 없었다 — 확장 문법에도, 위임하는
 // VS Code 내장 VB(ASP) 문법에도 없는 낱말이었다. 문법 파일은 파서 정본을 import 할 수 없으므로 여기서 대조한다.
 
@@ -16,7 +16,7 @@ interface GrammarRule {
 interface Grammar { scopeName: string; patterns: GrammarRule[] }
 
 function loadGrammar(): Grammar {
-    const file = path.resolve(__dirname, '..', '..', '..', '..', 'syntaxes', 'gpl.tmGrammar.json');
+    const file = path.resolve(__dirname, '..', '..', '..', '..', 'assets', 'syntaxes', 'gpl.tmGrammar.json');
     return JSON.parse(fs.readFileSync(file, 'utf-8')) as Grammar;
 }
 

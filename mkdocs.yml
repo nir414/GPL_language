@@ -6,6 +6,7 @@ repo_name: nir414/GPL_language
 edit_uri: edit/main/docs/
 
 docs_dir: docs
+site_dir: dist/site
 
 # ai-handoff.md 와 그 월별 아카이브(archive/handoff/)는 AI 작업자용 저장소 전용 문서이므로
 # 사이트에서 제외한다.
@@ -14,6 +15,8 @@ exclude_docs: |
   .*
   /ai-handoff.md
   /archive/handoff/
+  /requests.md
+  /requirements.txt
 
 theme:
   name: material

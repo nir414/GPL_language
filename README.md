@@ -1,4 +1,4 @@
-<p align="center"><img src="resources/gpl-logo.png" width="112" height="112" alt="Brooks GPL 로고"></p>
+<p align="center"><img src="assets/icons/gpl-logo.png" width="112" height="112" alt="Brooks GPL 로고"></p>
 
 # Brooks GPL
 

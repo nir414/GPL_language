@@ -112,8 +112,8 @@ check('TypeScript compiles without errors', () => {
 // 9. 필수 파일 존재 확인
 const requiredFiles = [
     'src/extension.ts',
-    'syntaxes/gpl.tmGrammar.json',
-    'language-configuration.json',
+    'assets/syntaxes/gpl.tmGrammar.json',
+    'assets/language-configuration.json',
     '.github/workflows/ci.yml',
     '.github/workflows/release.yml'
 ];

@@ -88,9 +88,16 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 ## 저장소 구조 (요약)
 
 - `src/` — 확장 소스. 계층(util → language → project → controller → debug/views → providers/activation)과
-  vscode 의존 허용 목록은 `docs/development/architecture.md`, 핵심 파일 목록은 `docs/ai-handoff.md` §4 참조.
+  그 안의 기능별 하위 폴더(area), vscode 의존 허용 목록은 `docs/development/architecture.md`, 핵심 파일 목록은
+  `docs/ai-handoff.md` §4 참조. 테스트는 `src/test/` 에 src 와 같은 폴더 구조로 둔다.
+- `assets/` — VSIX 에 실리는 정적 자원: `icons/`(확장·뷰 아이콘), `webview/`(대시보드 HTML), `syntaxes/`(TextMate 문법),
+  `language-configuration.json`. package.json 의 `contributes`·소스의 `extensionUri` 경로가 가리키므로 옮기면 함께 고친다.
 - `scripts/` — 빌드/패키징 스크립트 (`package.js`: preflight + bump + vsce 실행).
 - `controller-mcp/` — 제어기 구동용 MCP 서버(별도 하위 프로젝트, VSIX에 미포함).
-- `docs/` — 인계 문서(`ai-handoff.md`), 개발 문서(`development/`), 릴리스 절차(`releases/`).
-- `captures/` — 패킷 캡처 등 분석 자료(VSIX에 미포함).
-- `dist/` — 패키징 산출물 VSIX.
+- `docs/` — 인계 문서(`ai-handoff.md`), 개발 문서(`development/`), 릴리스 절차(`releases/`), 외부 프로젝트 요청 수신함
+  (`requests.md`), MkDocs 빌드 의존성(`requirements.txt`). 사이트 빌드 결과는 `dist/site/`.
+- `samples/` — F5 개발 호스트가 여는 예제 GPL 프로젝트(VSIX에 미포함).
+- `captures/` — 패킷 캡처 등 분석 자료(VSIX에 미포함, git 미추적).
+- `dist/` — 패키징 산출물 VSIX 와 문서 사이트(git 미추적).
+- 루트에 남은 나머지는 도구 규약상 자리가 고정된 파일이다(npm·tsc·git·GitHub·vsce·MkDocs·AI 도구). 탐색기에서는
+  `.vscode/settings.json` 의 파일 중첩·숨김으로 접어 보이고, 새 폴더를 루트에 더하기 전에 위 폴더 안에 둘 수 있는지 먼저 본다.

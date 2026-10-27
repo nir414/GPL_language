@@ -6,7 +6,7 @@
  * 구성: 상태 배지(연결·고전원·스레드·에러) · 스레드 표 · 축 게이지 · 직교 좌표/XY 플롯 · 로그 (GitHub #18),
  * I/O 탭(Show DIO 상태 그리드 + 확인 후 Set DIO 강제/해제).
  *
- * HTML은 media/dashboard.html에서 로드하며, 데이터는 postMessage로 주입한다.
+ * HTML은 assets/webview/dashboard.html에서 로드하며, 데이터는 postMessage로 주입한다.
  * 웹뷰 → 확장 메시지: `ready`/`refresh`(즉시 1회 폴링), `setInterval {ms}`(이 탭이 열려 있는 동안 폴링 주기 덮어쓰기),
  * `pause {paused}`(자동 갱신 일시정지 — 새로고침 버튼은 여전히 1회 폴링), `showPage {page}`,
  * `setDio {signal,value}`. 확장 → 웹뷰: `status`, `dio`, `dioAction`, `config`, `navigate`, `error`.
@@ -124,7 +124,7 @@ export class ControllerDashboardPanel {
 			{
 				enableScripts: true,
 				retainContextWhenHidden: true,
-				localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
+				localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'assets', 'webview')],
 			},
 		);
 		ControllerDashboardPanel.current = new ControllerDashboardPanel(panel, context, log, page);
@@ -227,7 +227,7 @@ export class ControllerDashboardPanel {
 
 	private async buildHtml(): Promise<string> {
 		const webview = this.panel.webview;
-		const htmlUri = vscode.Uri.joinPath(this.context.extensionUri, 'media', 'dashboard.html');
+		const htmlUri = vscode.Uri.joinPath(this.context.extensionUri, 'assets', 'webview', 'dashboard.html');
 		const bytes = await vscode.workspace.fs.readFile(htmlUri);
 		let html = Buffer.from(bytes).toString('utf8');
 
@@ -242,7 +242,7 @@ export class ControllerDashboardPanel {
 		return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"></head>
 <body style="font-family:sans-serif;padding:1rem;">
 <h3>제어기 대시보드</h3>
-<p>media/dashboard.html을 로드하지 못했습니다.</p>
+<p>assets/webview/dashboard.html을 로드하지 못했습니다.</p>
 <pre>${escapeHtml(reason)}</pre>
 </body></html>`;
 	}

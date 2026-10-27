@@ -11,12 +11,12 @@ import type { ExtensionHost } from '../host';
  */
 async function loadXmlBestPracticesHtml(host: ExtensionHost): Promise<string> {
 	try {
-		const uri = vscode.Uri.joinPath(host.context.extensionUri, 'media', 'xmlBestPractices.html');
+		const uri = vscode.Uri.joinPath(host.context.extensionUri, 'assets', 'webview', 'xmlBestPractices.html');
 		const bytes = await vscode.workspace.fs.readFile(uri);
 		return Buffer.from(bytes).toString('utf8');
 	} catch (error) {
 		const message =
-			'Failed to load media/xmlBestPractices.html; falling back to inline XML best practices HTML.'
+			'Failed to load assets/webview/xmlBestPractices.html; falling back to inline XML best practices HTML.'
 			+ (error instanceof Error && error.message ? ` Reason: ${error.message}` : '');
 		host.outputChannel.appendLine(message);
 		return getXmlBestPracticesFallbackHtml();
@@ -54,7 +54,7 @@ export function activateXmlCommands(host: ExtensionHost): void {
 				{}
 			);
 
-			// Load HTML from media/ instead of hardcoding a huge template string in TS.
+			// Load HTML from assets/webview/ instead of hardcoding a huge template string in TS.
 			// This improves maintainability and keeps src/ focused on logic.
 			loadXmlBestPracticesHtml(host)
 				.then(html => {

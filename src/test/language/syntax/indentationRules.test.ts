@@ -12,7 +12,7 @@ import { test } from '../../harness';
  * 처리가 누락되어 If/Else 블록 편집 시 줄바꿈 들여쓰기가 깨졌던 회귀를 잡는다.
  */
 function loadIndentPattern(key: 'increaseIndentPattern' | 'decreaseIndentPattern'): RegExp {
-    const configPath = path.resolve(__dirname, '../../../../language-configuration.json');
+    const configPath = path.resolve(__dirname, '../../../../assets/language-configuration.json');
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     const rule = cfg.indentationRules?.[key];
     assert.ok(rule, `language-configuration.json 에 indentationRules.${key} 가 있어야 한다`);

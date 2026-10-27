@@ -7,7 +7,7 @@ import { parseTemperatureResponse } from '../../../controller/diagnostics/temper
 
 /** 실제 웹뷰 스크립트를 실행하고 DOM 경계만 대체한다. 브라우저 배치 검증은 별도다. */
 function setup() {
-	const html = fs.readFileSync(path.resolve(__dirname, '../../../../media/dashboard.html'), 'utf8');
+	const html = fs.readFileSync(path.resolve(__dirname, '../../../../assets/webview/dashboard.html'), 'utf8');
 	const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(html)![1];
 	const elements = new Map<string, any>();
 	function element(id: string): any {

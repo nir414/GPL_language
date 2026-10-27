@@ -98,7 +98,7 @@
 
 - [ ] **(2026-10-22, §1-FH) 간단한 hello-project — F5 UI 및 제어기 컴파일·실행 확인.** Main.gpl의 Add·Clamp에서 F12·Shift+F12·F2·호버·시그니처 도움말, counter 객체 완성·Count Property·Outline·접기를 확인한다. 제어기에서는 출력 sum: 3 / clamped: 100 / count: 3과 Increment 호출 중단점의 스텝·변수를 확인한다. 정적 검사와 관련 테스트 55/55만 수행했다.
 
-- [ ] **(2026-10-22, §1-FG) 수신함 후속과 0.14.0 검증.** `REQUESTS.md` 표의 미구현 항목을 유지한다. 새 VSIX에서 메모리 가드의 사람/MCP 차단·측정 실패 표시, Upload Only의 기존 FTP 전용 계약, 수신 대기 중 후속 Stop 접수, 선택 Try 안내를 확인한다. 실제 Compile/Start/Stop은 안전한 시험 조건과 별도 승인 범위에서만 수행한다.
+- [ ] **(2026-10-22, §1-FG) 수신함 후속과 0.14.0 검증.** `docs/requests.md` 표의 미구현 항목을 유지한다. 새 VSIX에서 메모리 가드의 사람/MCP 차단·측정 실패 표시, Upload Only의 기존 FTP 전용 계약, 수신 대기 중 후속 Stop 접수, 선택 Try 안내를 확인한다. 실제 Compile/Start/Stop은 안전한 시험 조건과 별도 승인 범위에서만 수행한다.
 
 ### 명령 UI — 남은 결정
 
@@ -806,7 +806,7 @@ src/language/analysis/receiverType.ts             # 멤버 접근 수신자 타�
 src/ai/exportAgentSetup.ts               # Export/Check AI Agent Setup — 번들 동기화·파일 생성·설정/대상 준비 상태(§1-EF)
 src/ai/agentSetupChecks.ts              # 실행 설정·폴더 대상·CLAUDE/AGENTS 안내 검사(vscode 무의존)
 src/controller/io/dio.ts                    # Show DIO `signal: 0|1 [*]` 순수 파서 + Set DIO 명령/동작 설명 정본(§1-FB)
-src/views/dashboard/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — 상태/I/O 탭, setInterval/pause/config, 확인 후 Set DIO(§1-BF·§1-FB); HTML은 media/dashboard.html
+src/views/dashboard/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — 상태/I/O 탭, setInterval/pause/config, 확인 후 Set DIO(§1-BF·§1-FB); HTML은 assets/webview/dashboard.html
 controller-mcp/src/parse.js              # MCP 파서 — parseThreadList(이름 키)·compactThread·summarizeThreads·parseShowVariable(§1-BF)
 scripts/bundle-mcp.js                    # MCP 번들 + 빌드 스탬프(define __GPL_MCP_BUILD_JSON__, 사이드카 .build.json)(§1-BF)
 src/debug/session/gplDebugSession.ts             # attachRequest, _runDeployBeforeAttach(lockOwner 'F5 Deploy'), _waitDeployLockForStart, getDebugDeployDiagnostics
@@ -834,7 +834,7 @@ src/test/language/syntax/sampleSyntaxCoverage.test.ts    # samples/syntax-tour �
 src/controller/automation/aiCommandPolicy.ts        # AI/자동화 경로에서 거부할 명령 목록(정본) — 되돌릴 수 없는 명령만. 브리지·URI·명령 자체가 함께 본다 (§1-DA)
 controller-mcp/src/deployLock.js         # 잠금 파일 읽기 전용 구현(확장과 파일 계약 공유) — Compile/Start/Load/Unload 유한 대기·거부(§1-BD)
 src/language/syntax/gplParser.ts                # Property/Sub/Function 파싱 + parseDocument 메모이즈 캐시(§1-B E) + docComment 수집(§1-J) + Property getter 골격(getterReturnExpr 단순 Return #26 / getterBranch 분기형 §1-DS)
-syntaxes/gpl.tmGrammar.json              # 구문 강조 — GPL 전용 규칙(선언 6종·Delegate 타입 선언·내장 VB 문법이 모르는 키워드 5규칙) 뒤에 source.asp.vb.net 위임. 선언 규칙 수식어 집합 = GPL_PROC_MODIFIERS, src/test/language/syntax/grammar.test.ts 가 강제 (§1-DT)
+assets/syntaxes/gpl.tmGrammar.json       # 구문 강조 — GPL 전용 규칙(선언 6종·Delegate 타입 선언·내장 VB 문법이 모르는 키워드 5규칙) 뒤에 source.asp.vb.net 위임. 선언 규칙 수식어 집합 = GPL_PROC_MODIFIERS, src/test/language/syntax/grammar.test.ts 가 강제 (§1-DT)
 src/language/dictionary/gplBuiltins.ts              # 핵심 빌트인/String 함수 (Trim→메서드, Rnd(seed), Replace 제거, Asc/Chr/… 추가) + Bit 문자열 전역함수(§1-J)
 src/language/dictionary/gplDictionaryData.ts        # Move/Robot/Location/Profile/.../String 클래스 사전 + Controller/Thread/Exception/File/XML/Network 등 +153(§1-J)
 src/language/symbols/outlineModel.ts             # 개요·Ctrl+Shift+O·Ctrl+T 표현 모델 정본(vscode 무의존, §1-EI) — outlineCategoryOf(클래스 멤버 Sub/Function→method, 모듈 프로시저→function, 멤버 변수→field, 로컬→variable, Delegate→delegate)·symbolDetail(시그니처/타입/상수 값/Shared/ReadOnly·WriteOnly)·buildOutlineTree(계층 + 범위: 파서 endLine 정본, 없으면 다음 비-자손 직전·부모 안 폴백)·matchesSymbolQuery(순서 일치)
@@ -1207,8 +1207,8 @@ Windows TypeScript compile, 전체 회귀 **1308/1308**, git diff --check가 통
 
 ### 조치
 
-- `resources/gpl-logo.svg`에 선택 시안의 각진 G, 내부 명령 커서(`>`), 민트색 계단형 동작 경로를 간결한 SVG로 다시 그렸다. PNG는 이 SVG에서 256×256으로 렌더링했다. 기존 README와 package의 대표 아이콘 경로는 그대로 사용한다.
-- `resources/gpl-controller.svg`는 동일한 경로 좌표를 `currentColor` 단색으로 사용한다. 24px 검토에서 내부 기호 간 빈틈이 약 0.4px로 좁아 계단을 0.8px 오른쪽으로 옮겨 약 1.2px의 간격을 확보했다.
+- `assets/icons/gpl-logo.svg`에 선택 시안의 각진 G, 내부 명령 커서(`>`), 민트색 계단형 동작 경로를 간결한 SVG로 다시 그렸다. PNG는 이 SVG에서 256×256으로 렌더링했다. 기존 README와 package의 대표 아이콘 경로는 그대로 사용한다.
+- `assets/icons/gpl-controller.svg`는 동일한 경로 좌표를 `currentColor` 단색으로 사용한다. 24px 검토에서 내부 기호 간 빈틈이 약 0.4px로 좁아 계단을 0.8px 오른쪽으로 옮겨 약 1.2px의 간격을 확보했다.
 - 아이콘 교체는 patch 0.17.2로 올리고 package/package-lock/CHANGELOG를 맞췄다. README는 버전이나 로고 형상을 글로 반복하지 않아 이미지 경로만 유지했다. 최근 세션 10건을 위해 §1-FP 원문을 10월 아카이브로 옮겼다.
 
 ### 검증·남은 일

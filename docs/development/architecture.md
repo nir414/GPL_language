@@ -91,7 +91,7 @@ flowchart BT
 | `syntax/` | 파서(`gplParser`)·문 사전(`gplStatements`)·예약어·블록 문맥(`blockContext`)·선언자 목록·커서 식(`cursorExpression`)·식별자 비교 |
 | `dictionary/` | GPL Dictionary 데이터(`gplDictionaryData`)와 조회 API(`gplBuiltins`) |
 | `symbols/` | 심볼 인덱스(`symbolIndex`)·이름 인덱스·스코프 판정(`symbolScope`)·정의 위치 다듬기·개요 모델(`outlineModel`) |
-| `analysis/` | 수신자 타입·오버로드 해석·분기형 getter·참조 출현 판정(`referenceScope`)·참조 표기·이름 바꾸기 스캔(`renameCore`) |
+| `analysis/` | 수신자 타입·오버로드 해석·분기형 getter·참조 찾기 코어 — 출현 판정(`referenceScope`)·참조 표기(`referenceSyntax`)·후보 텍스트 규칙(`referenceCandidates`)·대상 선언 복원(`referenceTarget`)·검색 계획과 스캔 세션(`referenceScan`)·verbose 트레이스 문구(`referenceTrace`)·이름 바꾸기 스캔(`renameCore`) |
 | `checks/` | 실기 확인 사실의 정적 검사(`compilerChecks`)·`Init` 훅 충돌·Try/Catch 검사 |
 | `documentation/` | 문서화 주석 파서·렌더러(`docComment`)·오버로드 병합 |
 | `xml/` | XML 유틸(완성·코드 액션이 쓴다) |
@@ -135,7 +135,7 @@ flowchart BT
 
 | 하위 폴더 | 책임 |
 | --- | --- |
-| `navigation/` | 정의 이동·참조 찾기·이름 바꾸기 |
+| `navigation/` | 정의 이동·참조 찾기·이름 바꾸기 — `referenceProvider` 는 문서/Uri/설정/워크스페이스 검색 접착과 순서 조율만 한다(판정·스캔·로그 문구는 `language/analysis/reference*`) |
 | `structure/` | 개요(DocumentSymbol)·워크스페이스 심볼·분류 대응표(`symbolKinds`)·접기 |
 | `intellisense/` | 완성·호버·시그니처 도움말·문서화 주석 골격·수신자 컨텍스트(`receiverContext`)·디버그 호버 식 |
 | `diagnostics/` | 진단(`diagnosticProvider`)과 빠른 수정(`codeActionProvider`) |
@@ -435,6 +435,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | `views/tree/controllerTreeProvider.ts` | 약 680줄 | 2026-10-27 분리 완료(섹션·보고서·노드·표시 모듈) |
 | 1403 상태 문구 두 표현 | `controller/runtime/runtimeConsolePresentation`(알림, 영문) vs `views/tree/runtimeConsoleTreePresentation`(트리, 한국어) | 폴링 판정 정규식이 다르다 — 실기기 문구 대조 후 통일 결정 |
 | provider 별 수신자 해석 사본 | definition·hover·완성·디버그 hover | **정리됨(2026-09-10)** — 해석은 `language/analysis/receiverType`, 조립은 `providers/intellisense/receiverContext` 하나로. R7 이 재발을 막는다 |
+| `providers/navigation/referenceProvider.ts` | 1,187줄 → 432줄 | **분해 완료(2026-10-27)** — 대상 복원·검색 계획·출현 스캔·중복 제거·트레이스 문구는 `language/analysis/reference{Target,Scan,Candidates,Trace}`(vscode 없음, 테스트 있음)로 옮겼고 본문은 그대로다. 동작 동일성은 원본 provider 를 vm 하니스로 돌려 얻은 표본(`referenceScan.test`)과 워크스페이스 검색 경로 대조로 확인 |
 | `config.ts` 안의 언어 헬퍼 | `getQualifiedWordAtPosition`·`isInCommentOrString`·`GPL_CONTROL_KEYWORDS` | `language/` 로 옮길 후보(`ciEq` 는 옮겼다) |
 | `SymbolCache` 책임 혼합 | 인덱스·프로젝트 범위·호스트·소스 로더·표현을 독립 모듈로 구성 | **분리 완료(2026-10-22)** — 공개 메서드 28개 유지, 별도 루트 호환 래퍼 없이 내부 import 이동 |
 | `controller-mcp/src/index.js` | 약 2,351줄 | MCP 서버 도구 정의 한 파일 — 별도 하위 프로젝트, 테스트 137건 |

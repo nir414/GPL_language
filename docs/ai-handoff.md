@@ -1403,6 +1403,7 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 
 - `npm test` 1556/1556(다른 세션 작업 포함 작업 트리). 실기 읽기 전용 `Show DIO`·Soft 조회로 분류 입력을 확보(`Set DIO` 는 보내지 않음).
 - Edge headless 로 실기 응답을 넣은 하니스를 렌더해 I/O 탭(그룹 10개·미검출 11개)·우클릭 메뉴·상태 탭 배치를 스크린샷으로 확인, 더블클릭 → `toggleDio`·그룹 머리 클릭 → 접힘·「강제 전체 해제」 → `releaseDio`·`dioAction busy` → 칩 busy 를 DOM 으로 확인.
+- `npm run package:no-bump` — 다른 세션의 미커밋 변경이 섞이지 않게 `ec655aa` 의 별도 worktree 에서 빌드: `dist/gpl-language-support-0.22.0.vsix`, **1,618,615 bytes**, SHA-256 **7CC1C0B8F9AEE7A1FD7CE37DEFDEE917289BA90F76D77EE7F2E21C2B128385E6**(worktree 1556/1556). 경고는 DEP0190·번들링 권고뿐. 참고: worktree 를 `…\Temp\claude\…` 아래에 두면 vsce 가 파일을 하나도 담지 않아(`vsce ls` 빈 목록, 'entrypoint missing') 경로를 옮겨 빌드했다 — `.vscodeignore` 의 `.claude` 패턴이 경로 조각에 걸리는 것으로 추정(미확인).
 - 실제 VS Code 웹뷰 표시·실기 `Set DIO` 동작은 미확인 → §3 체크리스트.
 
 ### 남은 일

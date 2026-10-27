@@ -114,7 +114,7 @@ flowchart BT
 | `commands/` | 명령 정책·분류·Compile/Load/Unload/Start·스텝 명령 생성 |
 | `protocol/` | 응답 파서·상태 코드·채널 이름 |
 | `runtime/` | 런타임 콘솔 연결·버퍼·재연결 판정·표현 |
-| `deployment/` | 배포·잠금·큐·취소·이력·출처 검증·Flash 안전·진행률 |
+| `deployment/` | 배포·잠금·큐·취소·이력·출처 검증·Flash 안전·진행률. `deployService` 는 오케스트레이터이고 파이프라인은 단계 모듈(`deployPrecheck`→`deployTargetStage`→`deployUploadStage`(∥`deployStopStage`)→`deployCompileStage`→`deployStartStage`→`deployErrorCheckStage`)이 `deployContext` 를 공유해 수행하며 `deployModes`·`deployTypes`·`compileErrorPath` 가 순수 보조 |
 | `files/` | FTP·원격 폴더 정리·동기화 지문 |
 | `projects/` | 제어기 대상 프로젝트·이름·원격 경로·선택·GPR 동기화 명령 |
 | `threads/` | 쓰레드 인자·상태·보고서·정지 절차·진단·기동 후 관찰 |
@@ -411,7 +411,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 항목 | 크기 | 상태 |
 | --- | --- | --- |
 | `debug/session/gplDebugSession.ts` | 약 5,460줄, 클래스 1개 | DAP + 제어기 동작이 한 클래스 — 분해는 실기기 검증 필요(로드맵 P8) |
-| `controller/deployment/deployService.ts` `deployLocked` | 1,100줄 함수 | 배포 파이프라인 단계 분리는 하드웨어 영향(로드맵 P9) |
+| `controller/deployment/deployService.ts` `deployLocked` | 단계 모듈로 분리됨(2026-10-27) | 오케스트레이터 약 70줄 — 단계 본문은 `deploy*Stage.ts`, 동작 불변 |
 | `controller/runtime/runtimeConsole.ts` | 약 1,368줄 | 재연결 상태 머신 → 명시적 상태 머신(로드맵 Phase 3) |
 | `views/tree/controllerTreeProvider.ts` | 약 1,605줄 | 포맷 함수는 분리됨. 섹션별 노드 생성 분리는 후보 |
 | `activation/deploy/deploy.ts` | 1,488줄 한 함수 → 허브 70줄 + 형제 모듈 15개 | **분할 완료(2026-10-27)** — 클로저 공유 상태는 `deployContext`, 순수 판정은 `deployModes`·`automationResult`·`deployTargetRules`·`autoOnSaveRules`(테스트 있음). 가장 큰 잔여는 `deployReport.ts`(약 400줄, 결과 보고 세 갈래) |

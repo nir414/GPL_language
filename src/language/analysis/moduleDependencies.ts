@@ -48,17 +48,29 @@ export interface RequiredFile {
     modules: string[];
     /** 대상 파일의 선언 순서 */
     items: RequiredItem[];
+    /** 이 파일을 처음 쓰는 위치(0-기준) — 계층 규칙 위반 진단의 자리 */
+    firstUse: { line: number; character: number };
 }
 
 interface ItemAcc { name: string; line: number; members: Map<string, { name: string; line: number }> }
-interface FileAcc { filePath: string; modules: Map<string, { name: string; line: number }>; items: Map<string, ItemAcc> }
+interface FileAcc {
+    filePath: string;
+    modules: Map<string, { name: string; line: number }>;
+    items: Map<string, ItemAcc>;
+    firstUse: { line: number; character: number };
+}
 
 const IDENT_START = /[A-Za-z_]/;
 const IDENT_CHAR = /[A-Za-z0-9_]/;
 
 /** 한 줄(주석·문자열을 지운 코드)에서 `a(0).b.c` 꼴 체인을 모두 뽑는다. 괄호 안의 체인도 따로 뽑힌다. */
 export function scanChains(code: string): ReceiverSegment[][] {
-    const chains: ReceiverSegment[][] = [];
+    return scanChainsAt(code).map(c => c.segments);
+}
+
+/** `scanChains` + 체인 시작 열. */
+function scanChainsAt(code: string): { start: number; segments: ReceiverSegment[] }[] {
+    const chains: { start: number; segments: ReceiverSegment[] }[] = [];
     for (let i = 0; i < code.length; i++) {
         if (!IDENT_START.test(code[i]) || (i > 0 && IDENT_CHAR.test(code[i - 1]))) { continue; }
         let p = i - 1;
@@ -81,7 +93,7 @@ export function scanChains(code: string): ReceiverSegment[][] {
             if (code[j] === '.' && j + 1 < code.length && IDENT_START.test(code[j + 1])) { j++; continue; }
             break;
         }
-        if (!continuation) { chains.push(segs); }
+        if (!continuation) { chains.push({ start: i, segments: segs }); }
         // 체인의 나머지는 건너뛰지 않는다 — 괄호 인자 안의 체인을 같은 루프가 이어서 뽑고,
         // `.` 뒤 세그먼트는 continuation 이라 새 체인으로 세지 않는다.
         i += segs[0].name.length - 1;
@@ -95,6 +107,19 @@ function matchParen(code: string, open: number): number {
         if (code[k] === '(') { depth++; } else if (code[k] === ')') { depth--; if (depth === 0) { return k; } }
     }
     return -1;
+}
+
+/** 선언 머리 줄의 매개변수 이름이 시작하는 열 — `(`·`,` 뒤, ByVal/ByRef/Optional/ParamArray 를 건너뛴 첫 이름. */
+function parameterNameColumns(code: string): Set<number> {
+    const open = code.indexOf('(');
+    const out = new Set<number>();
+    if (open < 0) { return out; }
+    const re = /[(,]\s*(?:(?:ByVal|ByRef|Optional|ParamArray)\s+)*([A-Za-z_]\w*)/gi;
+    re.lastIndex = open;
+    for (let m = re.exec(code); m; m = re.exec(code)) {
+        out.add(m.index + m[0].length - m[1].length);
+    }
+    return out;
 }
 
 const isProcedureKind = (k: GPLSymbolKind | string): boolean =>
@@ -142,12 +167,13 @@ export function collectRequiredFiles(
 
 
     const files = new Map<string, FileAcc>();
+    let useAt = { line: 0, character: 0 };
     const record = (decl: GPLSymbol, top: GPLSymbol, member?: GPLSymbol): void => {
         const fileName = path.basename(decl.filePath);
         const mod = decl.module ?? top.module;
         const key = `${fileName}|${mod ?? ''}`.toLowerCase();
         let f = files.get(key);
-        if (!f) { f = { filePath: decl.filePath, modules: new Map(), items: new Map() }; files.set(key, f); }
+        if (!f) { f = { filePath: decl.filePath, modules: new Map(), items: new Map(), firstUse: useAt }; files.set(key, f); }
         if (mod && !f.modules.has(mod.toLowerCase())) { f.modules.set(mod.toLowerCase(), { name: mod, line: top.line }); }
         let item = f.items.get(top.name.toLowerCase());
         if (!item) { item = { name: top.name, line: top.line, members: new Map() }; f.items.set(top.name.toLowerCase(), item); }
@@ -166,12 +192,20 @@ export function collectRequiredFiles(
         }
     };
 
+    // 선언 머리 줄 — 매개변수 이름은 참조가 아니다. Delegate 는 본문이 없어 매개변수가 로컬로 잡히지 않으므로
+    // `Delegate Sub X(ByVal code As Integer)` 의 `code` 가 다른 모듈의 `Function Code` 로 풀렸다(2026-10-27 BinderR4 드라이런).
+    const declLines = new Set(ownNonLocal
+        .filter(s => isProcedureKind(s.kind) || s.kind === GPLSymbolKind.Delegate)
+        .map(s => s.line));
     const lines = text.split(/\r?\n/);
     for (let line = 0; line < lines.length; line++) {
         const code = GPLParser.stripToCode(lines[line]);
         if (!code.trim()) { continue; }
         const lk = receiverLookupAt(line, unitFind);
-        for (const segs of scanChains(code)) {
+        const paramNames = declLines.has(line) ? parameterNameColumns(code) : undefined;
+        for (const { start, segments: segs } of scanChainsAt(code)) {
+            if (paramNames?.has(start)) { continue; }
+            useAt = { line, character: start };
             resolveFirst(segs[0].name, line, lk);
             for (let i = 1; i < segs.length; i++) {
                 const holder = resolveReceiverHolder(segs.slice(0, i), lk);
@@ -200,6 +234,7 @@ export function collectRequiredFiles(
 
     return Array.from(files.values()).map(f => ({
         filePath: f.filePath,
+        firstUse: f.firstUse,
         fileName: path.basename(f.filePath),
         modules: Array.from(f.modules.values()).sort((a, b) => a.line - b.line).map(m => m.name),
         items: Array.from(f.items.values()).sort((a, b) => a.line - b.line).map(it => ({

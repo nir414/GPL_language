@@ -6,7 +6,11 @@ import {
 } from '../../../language/documentation/requiresHeader';
 
 const req = (fileName: string, modules: string[], items: Array<[string, string[]?]>): RequiredFile =>
-    ({ filePath: `C:\\p\\${fileName}`, fileName, modules, items: items.map(([name, members]) => ({ name, members: members ?? [] })) });
+    ({
+        filePath: `C:\\p\\${fileName}`, fileName, modules,
+        items: items.map(([name, members]) => ({ name, members: members ?? [] })),
+        firstUse: { line: 0, character: 0 },
+    });
 
 /** 편집을 뒤에서부터 적용한 결과 줄. */
 function apply(lines: readonly string[], edits: readonly LineEdit[]): string[] {

@@ -38,6 +38,12 @@ const splitLines = (text: string): string[] => text.split(/\r?\n/);
  * 조립하면 큰 파일에서 계산이 초 단위가 된다(2026-10-27 BinderR4 드라이런: LeadshineRS.gpl 1.7 s).
  */
 export function computeRequiredFiles(text: string, filePath: string, source: DependencyLookup): RequiredFile[] {
+    const files = computeFileDependencies(text, filePath, source);
+    return orderRequiredFiles(files, sourceOrderFor(filePath, files.map(f => f.filePath)));
+}
+
+/** 의존 파일 목록(순서 없음) — 패키지 의존 검사(project/gpr/dependencyCheck)도 같은 계산을 쓴다. */
+export function computeFileDependencies(text: string, filePath: string, source: DependencyLookup): RequiredFile[] {
     const lines = splitLines(text);
     const docSymbols = GPLParser.parseDocument(text, filePath, { includeLocals: true, includeParameters: true });
     const moduleLevel = docSymbols.filter(s => !s.isLocal && !s.isParameter);
@@ -47,7 +53,7 @@ export function computeRequiredFiles(text: string, filePath: string, source: Dep
         for (let i = proc.line; i <= end; i++) { procOfLine[i] = proc; }
     }
     const byProc = new Map<GPLSymbol | undefined, ReceiverLookup>();
-    const files = collectRequiredFiles(text, filePath, source, (line, findAllByName) => {
+    return collectRequiredFiles(text, filePath, source, (line, findAllByName) => {
         const proc = procOfLine[line];
         let lookup = byProc.get(proc);
         if (!lookup) {
@@ -59,7 +65,6 @@ export function computeRequiredFiles(text: string, filePath: string, source: Dep
         }
         return lookup;
     });
-    return orderRequiredFiles(files, sourceOrderFor(filePath, files.map(f => f.filePath)));
 }
 
 const isProcedure = (s: GPLSymbol): boolean =>

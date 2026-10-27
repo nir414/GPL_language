@@ -38,6 +38,7 @@
         "onCommand:gpl.insertDocComment",
         "onCommand:gpl.requiresHeader.update",
         "onCommand:gpl.requiresHeader.updateProject",
+        "onCommand:gpl.project.checkDependencies",
         "onCommand:gpl.debugSymbolCache",
         "onCommand:gpl.showXmlBestPractices",
         "onCommand:gpl.analyzeXmlEncoding",
@@ -364,6 +365,12 @@
                 "title": "Sync Project Sources (.gpr 소스 목록 동기화)",
                 "category": "GPL",
                 "icon": "$(list-tree)"
+            },
+            {
+                "command": "gpl.project.checkDependencies",
+                "title": "Check Project Dependencies (ProjectLibrary·계층 의존 검사)",
+                "category": "GPL",
+                "icon": "$(type-hierarchy)"
             },
             {
                 "command": "gpl.project.promoteSourceForBreakpoint",
@@ -1034,6 +1041,11 @@
                     "command": "gpl.project.syncSources",
                     "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.gpr$/i",
                     "group": "gpl_project@1"
+                },
+                {
+                    "command": "gpl.project.checkDependencies",
+                    "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.gpr$/i",
+                    "group": "gpl_project@2"
                 },
                 {
                     "command": "gpl.project.promoteSourceForBreakpoint",
@@ -2009,6 +2021,20 @@
                     ],
                     "default": "prompt",
                     "description": "프로젝트 폴더 안의 소스 파일 생성/삭제(VS Code 안팎)를 Project.gpr의 ProjectSource 목록에 반영하는 방식입니다. 대량 변경도 프로젝트당 한 번만 다루며, 파일 내용 변경(저장)에는 반응하지 않습니다. 제어기는 이 목록만 컴파일하므로 배포 직전에도 같은 대조를 합니다."
+                },
+                "gpl.project.dependencyCheck": {
+                    "scope": "window",
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "manual"
+                    ],
+                    "enumDescriptions": [
+                        ".gpr 를 열면 그 컴파일 루트(ProjectStart 가 있는 .gpr)를 검사하고, 검사한 루트 안의 .gpl·.gpr 를 저장하면 다시 검사합니다(기본).",
+                        "'GPL: Check Project Dependencies' 명령(.gpr 우클릭)으로만 검사합니다."
+                    ],
+                    "default": "auto",
+                    "description": "패키지(.gpr) 의존 검사 — 각 .gpr 의 ProjectLibrary·ProjectSource 선언을 소스의 실제 사용(정의 이동과 같은 이름 해석)과 대조해 누락(Warning)·간접 의존·쓰지 않는 라이브러리(Information)를 .gpr 에 표시하고 빠른 수정으로 줄을 더하거나 지웁니다. 루트 .gpr 주석 ' Dependencies: App -> Config/Gantry/Lib; … 가 있으면 계층 규칙 위반을 .gpl 사용 위치에 Warning 으로 표시합니다."
                 },
                 "gpl.project.sourceExtensions": {
                     "scope": "window",

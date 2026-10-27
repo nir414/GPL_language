@@ -24,6 +24,7 @@ import { GPLSignatureHelpProvider } from '../../providers/intellisense/signature
 import { GPLWorkspaceSymbolProvider } from '../../providers/structure/workspaceSymbolProvider';
 import { hasOpenGplDocument } from '../../config';
 import { registerRequiresHeaderFeatures } from './requiresHeaderCommands';
+import { registerDependencyCheck } from './dependencyCheckCommands';
 import type { ExtensionHost } from '../host';
 
 export function activateLanguageFeatures(host: ExtensionHost): () => void {
@@ -211,6 +212,8 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 
 	// Requires 헤더 동기화 — 현재 파일/프로젝트 명령과 저장 훅(진단·빠른 수정은 diagnosticProvider·codeActionProvider)
 	registerRequiresHeaderFeatures(host, ensureSymbolCacheInitialized);
+	// 패키지 의존 검사 — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용, 루트 .gpr 의 계층 규칙(Dependencies:)
+	registerDependencyCheck(host, ensureSymbolCacheInitialized);
 
 	// Refresh symbols command
 	context.subscriptions.push(

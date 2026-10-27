@@ -154,7 +154,7 @@ flowchart BT
 | --- | --- |
 | `controller/` | 연결·제어기 직접 조작 명령·공용 절차(`controllerOps`)·시계 동기화·1403 콘솔/라이브 로그·트리 명령 |
 | `remote/` | FTP 노드 명령·원격 파일 읽기·현재 창 Attach·원격 사본 언어 기능 |
-| `deploy/` | 배포 계열 명령·워크스페이스 프로젝트 컨텍스트 |
+| `deploy/` | 배포 계열 명령(2026-10-27 `deploy.ts` 를 허브로 분할) — 진입점 `runDeploy`·결과 보고 `deployReport`/`errorLogNotice`·대상 확인 `deployTargets`(+순수 `deployTargetRules`)·자동화 `deployAutomation`(+순수 `automationResult`)·명령 등록 `deployCommands`/`startProjectCommand`/`saveToFlashCommand`/`automationCommands`·`autoOnSave`(+순수 `autoOnSaveRules`)·공유 컨텍스트 `deployContext`·순수 모드 판정 `deployModes`·워크스페이스 프로젝트 컨텍스트 `projectContext` |
 | `debug/` | 중단점 명령·실행 위치 데코레이션·디버그 세션 연동 |
 | `language/` | provider 등록·문서 이벤트(`languageFeatures`)·XML 명령 |
 | `ai/` | AI Agent Setup·AI 자율 디버깅 API·URI 핸들러 |
@@ -414,7 +414,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | `controller/deployment/deployService.ts` `deployLocked` | 1,100줄 함수 | 배포 파이프라인 단계 분리는 하드웨어 영향(로드맵 P9) |
 | `controller/runtime/runtimeConsole.ts` | 약 1,368줄 | 재연결 상태 머신 → 명시적 상태 머신(로드맵 Phase 3) |
 | `views/tree/controllerTreeProvider.ts` | 약 1,605줄 | 포맷 함수는 분리됨. 섹션별 노드 생성 분리는 후보 |
-| `activation/deploy/deploy.ts` | 약 1,344줄 | 결과 보고부 분리됨. 자동화 게이트·명령 6개가 남아 있다 |
+| `activation/deploy/deploy.ts` | 1,488줄 한 함수 → 허브 70줄 + 형제 모듈 15개 | **분할 완료(2026-10-27)** — 클로저 공유 상태는 `deployContext`, 순수 판정은 `deployModes`·`automationResult`·`deployTargetRules`·`autoOnSaveRules`(테스트 있음). 가장 큰 잔여는 `deployReport.ts`(약 400줄, 결과 보고 세 갈래) |
 | 1403 상태 문구 두 표현 | `controller/runtime/runtimeConsolePresentation`(알림, 영문) vs `views/tree/runtimeConsoleTreePresentation`(트리, 한국어) | 폴링 판정 정규식이 다르다 — 실기기 문구 대조 후 통일 결정 |
 | provider 별 수신자 해석 사본 | definition·hover·완성·디버그 hover | **정리됨(2026-09-10)** — 해석은 `language/analysis/receiverType`, 조립은 `providers/intellisense/receiverContext` 하나로. R7 이 재발을 막는다 |
 | `config.ts` 안의 언어 헬퍼 | `getQualifiedWordAtPosition`·`isInCommentOrString`·`GPL_CONTROL_KEYWORDS` | `language/` 로 옮길 후보(`ciEq` 는 옮겼다) |

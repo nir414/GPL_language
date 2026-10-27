@@ -11,7 +11,7 @@ import { formatRuntimeError } from '../controller/threads/postStartWatch';
 import * as path from 'path';
 import { isRuntimeConsoleAutoStartOnDeploy } from '../config';
 import { AI_BLOCKED_ERROR, aiBlockedDetail, findAiBlockedCommand } from '../controller/automation/aiCommandPolicy';
-import { getControllerConfig, sendCommandDetailed } from '../controller/connection/controllerConnection';
+import { SHOW_MEMORY_STATUS_COMMAND, UNLOAD_PROJECT_COMMAND, checkMemoryBeforeOperation, getControllerConfig, sendCommandDetailed } from '../controller/connection/controllerConnection';
 import { FLASH_SYNC_TIMEOUT_MS, waitForFlashSafe } from '../controller/deployment/flashSafety';
 import { describeCompileStale } from '../controller/deployment/compileStale';
 import { describeDeployLock, getDeployLock } from '../controller/deployment/deployLock';
@@ -57,6 +57,8 @@ import {
 } from '../controller/deployment/deployOutcome';
 import type { ErrorLogNotice, SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
 import type { ExtensionHost } from './host';
+import { confirmMemoryCriticalInteractive, isMemoryConfirmOnCritical } from './controllerOps';
+import { reconcileProjectGprBeforeDeploy } from '../controller/projects/gprSyncCommand';
 
 export interface DeployApi {
 	runDeploy(skipStart: boolean, quickOpts?: QuickDeployOpts): Promise<DeployResult | undefined>;
@@ -257,6 +259,19 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			for (const f of dirty.savedFiles) { quickCompilePendingFiles.delete(f); }
 		}
 
+		// Project.gpr 소스 목록 ↔ 폴더 대조(2026-10-27) — 제어기는 목록만 컴파일하므로 올리기 전에 맞춘다. 사람 경로는 모달(반영/그대로/취소),
+		// autoOnSave(changedFiles)·비대화형은 `autoSyncSources: auto` 일 때만 반영하고 아니면 그대로(차이는 배포 경고에 남는다).
+		{
+			const gprOutcome = await reconcileProjectGprBeforeDeploy(projectDir, { log: host.log, refreshSymbols: () => host.symbolCache.refresh() }, {
+				interactive: !quickOpts?.nonInteractive && !quickOpts?.changedFiles?.length,
+				action: quickOpts?.uploadOnly ? '업로드' : quickOpts?.quick ? 'Quick Compile' : '배포',
+			});
+			if (gprOutcome === 'cancelled') {
+				host.log('[Deploy] Project.gpr 대조에서 취소됨 — 업로드를 시작하지 않음');
+				return;
+			}
+		}
+
 		const mode = quickOpts?.uploadOnly
 			? 'Upload Only'
 			: quickOpts?.quick
@@ -318,6 +333,11 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				// FTP 쓰기 전 제어기 정체 확인(controller/connection/controllerIdentity.ts). 사람이 누른 경로만 「그래도 진행」을 묻는다 —
 				// AI·자동화(nonInteractive)와 autoOnSave(changedFiles)는 모달 없이 CONTROLLER_UNVERIFIED 로 멈춘다.
 				verifyControllerIdentity: vscode.workspace.getConfiguration('gpl').get<boolean>('controller.verifyControllerIdentity', true) !== false,
+				// 정지 뒤 Compile/Start 직전 여유 메모리 심각 → 사람에게 계속/취소(2026-10-27). AI·자동화·autoOnSave 는 경고만.
+				confirmMemoryCritical: !quickOpts?.nonInteractive && !quickOpts?.changedFiles?.length && !quickOpts?.uploadOnly
+					&& isMemoryConfirmOnCritical()
+					? (check, phase) => confirmMemoryCriticalInteractive(check, phase === 'start' ? 'Start' : 'Compile')
+					: undefined,
 				confirmUnverifiedController: !quickOpts?.nonInteractive && !quickOpts?.changedFiles?.length
 					? async check => {
 						const pick = await vscode.window.showWarningMessage(
@@ -394,6 +414,19 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 			if (!result.success && result.failedPhase === 'COMPILE_DEFERRED') {
 				host.markCompileStale(result.projectName, 'autoOnSave 업로드 후 Compile 보류(쓰레드 존재)', projectDir);
 				host.log(`[QuickCompile] autoOnSave: ${result.failedStatusMessage ?? '업로드 완료, Compile 보류'}`);
+				return result;
+			}
+
+			// 정지 뒤 여유 메모리 심각 + 사용자 취소 — 업로드는 완료, Compile/Start 미전송. 실패가 아닌 "중단"으로 다룬다(사람 경로만).
+			if (!result.success && result.failedPhase === 'MEMORY_CHECK') {
+				host.markCompileStale(result.projectName, `${mode} 업로드 후 Compile 미수행(여유 메모리 심각 — 사용자 취소)`, projectDir);
+				const msg = `${mode} 중단: ${result.failedStatusMessage ?? '여유 메모리 심각 경고에서 취소'}`;
+				host.log(`[Deploy] ${msg}`);
+				host.lastDeploySnapshot = makeDeploySnapshot({ mode: modeLabel, success: false, lastStage: 'MEMORY_CHECK', summary: msg, compileErrorCodes: [], controllerSystemCodes: [] });
+				void vscode.window.showWarningMessage(msg, 'Unload…', '메모리 상세').then(pick => {
+					if (pick === 'Unload…') { void vscode.commands.executeCommand(UNLOAD_PROJECT_COMMAND); }
+					else if (pick === '메모리 상세') { void vscode.commands.executeCommand(SHOW_MEMORY_STATUS_COMMAND); }
+				});
 				return result;
 			}
 
@@ -1084,6 +1117,14 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 				const gate = startMotionGate('gpl.start', auto);
 				if (gate) { return gate; }
 			} else {
+				// 여유 메모리 심각이면 Start 전에 계속/취소를 묻는다(2026-10-27). Start 는 `-compile` 이라 제어기에서 컴파일까지 돈다.
+				if (isMemoryConfirmOnCritical()) {
+					const memory = await checkMemoryBeforeOperation();
+					if (memory.level === 'critical' && !(await confirmMemoryCriticalInteractive(memory, 'Start'))) {
+						host.log(`[Start] 사용자가 여유 메모리 심각 경고에서 취소 (Free ${memory.freeMb ?? '?'} MB) — Start 미전송`);
+						return undefined;
+					}
+				}
 				const requireStartConfirm = vscode.workspace.getConfiguration('gpl')
 					.get<boolean>('controller.requireStartConfirmation', true);
 				if (requireStartConfirm) {

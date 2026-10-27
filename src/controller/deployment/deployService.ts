@@ -47,6 +47,7 @@ import type { ProvenanceReport } from './deployProvenance';
 import { checkProjectName, describeProjectNameProblem } from '../projects/projectNameGuard';
 import { isPathUnder } from '../../util/pathKey';
 import { ancestorRelativePathCandidates, resolveProjectLibraryDirs } from '../../project/projectSources';
+import { checkGprFolderSync, describeGprSyncPlan, sourceExtensionsFrom } from '../../project/gprFolderSync';
 import { shouldPromptForStartConfirmation } from '../commands/startCommand';
 import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../projects/remoteProjectPath';
 import { PROJECT_EXCLUDE_GLOB } from '../../project/projectFileScope';
@@ -56,10 +57,10 @@ import {
     beginMemoryNoticeScope,
     checkMemoryBeforeOperation,
     getLastCommandChannelLoss,
-    getLastConsoleStatus,
+    getLastMemoryCheck,
     probeControllerCommand,
 } from '../connection/controllerConnection';
-import { MemoryGuardError, MemoryPrecheck } from '../diagnostics/memoryGuard';
+import { MemoryPrecheck } from '../diagnostics/memoryGuard';
 import { SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
 import {
     decideControllerIdentity,
@@ -143,6 +144,12 @@ export interface DeployOptions {
      * 묻지 않고 failedPhase 'CONTROLLER_CHECK'(작업 기록 error.code CONTROLLER_UNVERIFIED)로 멈춘다 — 모달은 브리지를 막는다.
      */
     confirmUnverifiedController?: (check: ControllerCheckRecord) => Promise<boolean> | boolean;
+    /**
+     * 정지 뒤 Compile/Start 직전 여유 메모리가 **심각**(criticalMb 미만)일 때 사람에게 계속/취소를 묻는다(2026-10-27 사용자 요청).
+     * true 면 계속, false 면 failedPhase 'MEMORY_CHECK'(업로드는 완료, Compile/Start 미전송). 미지정(AI·자동화·autoOnSave)이면
+     * 묻지 않고 경고만 남기고 계속한다 — 모달은 브리지를 막는다. 업로드 전 측정(실행 중 앱 메모리 포함)으로는 묻지 않는다.
+     */
+    confirmMemoryCritical?: (check: MemoryPrecheck, phase: 'compile' | 'start') => Promise<boolean> | boolean;
     /** 정체 확인을 할지(기본 true). 호출측이 설정 `gpl.controller.verifyControllerIdentity` 를 읽어 넘긴다. */
     verifyControllerIdentity?: boolean;
     /**
@@ -200,6 +207,7 @@ export type DeployPhase =
     | 'UPLOAD'
     | 'STOP'
     | 'THREAD_CHECK'      // 활성 쓰레드 + 사용자 미승인 → 업로드는 완료, Compile 미수행
+    | 'MEMORY_CHECK'      // 정지 뒤 여유 메모리 심각 + 사용자 취소 → 업로드는 완료, Compile/Start 미전송(사람 경로만)
     | 'COMPILE_DEFERRED'  // autoOnSave: 업로드 완료, 쓰레드 존재로 Compile 보류
     | 'COMPILE'
     | 'START'
@@ -225,6 +233,8 @@ export interface DeployResult {
     compileErrors: CompileError[];
     compileAttemptLogs: CompileAttemptLog[];
     precheckWarnings: string[];
+    /** Project.gpr 소스 목록이 폴더와 달랐다(2026-10-27) — 업로드한 목록 기준. 없으면 일치. */
+    gprSyncMismatch?: { toAdd: string[]; toRemove: string[] };
     memoryPrecheck?: MemoryPrecheck;
     errorLog: string[];
     selectedRemoteBasePath?: string;
@@ -561,12 +571,10 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         return;
     }
     operation.fail({
-        code: result.memoryPrecheck?.level === 'blocked' ? 'LOW_MEMORY'
-            : result.memoryPrecheck?.level === 'unknown' ? 'MEMORY_UNVERIFIED'
-            : result.failedPhase ? `DEPLOY_${result.failedPhase}` : 'OPERATION_FAILED',
+        code: result.failedPhase ? `DEPLOY_${result.failedPhase}` : 'OPERATION_FAILED',
         message: result.failedStatusMessage ?? `배포가 ${result.failedPhase ?? '알 수 없는 단계'} 에서 중단됐습니다.`,
-        retryable: result.failedPhase !== 'COMPILE' && result.memoryPrecheck?.level !== 'blocked' && result.memoryPrecheck?.level !== 'unknown',
-        retryMode: result.failedPhase === 'COMPILE' || result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown' ? 'NONE' : 'RETRY_SAME_REQUEST',
+        retryable: result.failedPhase !== 'COMPILE',
+        retryMode: result.failedPhase === 'COMPILE' ? 'NONE' : 'RETRY_SAME_REQUEST',
         // 업로드/Compile 은 제어기 상태를 바꾼다 — 같은 요청을 그대로 되풀이해도 되는지는 단계에 달렸다.
         safeToRepeat: result.failedPhase === 'LOCKED' || result.failedPhase === 'AUTO_GATE' || result.failedPhase === 'IN_PROGRESS',
     }, summary);
@@ -674,6 +682,23 @@ async function deployLocked(
 
     const gprText = fs.readFileSync(path.join(options.projectDir, gprFiles[0]), 'utf8');
     const gprInfo = parseGpr(gprText);
+    // Project.gpr 소스 목록 ↔ 폴더 대조(2026-10-27) — 제어기는 목록만 컴파일한다. 사람 경로는 업로드 전에 이미 물었고(activation
+    // reconcileProjectGprBeforeDeploy), 여기서는 어느 경로든 남은 차이를 결과(`precheckWarnings`·`gprSyncMismatch`)로 알린다.
+    try {
+        const sync = checkGprFolderSync(options.projectDir, path.join(options.projectDir, gprFiles[0]), {
+            extensions: sourceExtensionsFrom(vscode.workspace.getConfiguration('gpl').get<unknown>('project.sourceExtensions')),
+            gprText,
+        });
+        if (!sync.inSync) {
+            result.gprSyncMismatch = { toAdd: sync.plan.toAdd, toRemove: sync.plan.toRemove.map(e => e.path) };
+            const note = `Project.gpr 소스 목록이 폴더와 다릅니다 — ${describeGprSyncPlan(sync.plan)}. 목록에 없는 파일은 컴파일되지 않고, `
+                + '목록에만 있는 파일은 Compile 을 실패시킵니다. 「GPL: Project.gpr 소스 목록 동기화」(.gpr 우클릭)로 맞추세요.';
+            result.precheckWarnings.push(note);
+            pushTrace(`│ ⚠ ${note}`);
+        }
+    } catch (err: any) {
+        pushTrace(`│ ⚠ Project.gpr 대조 실패(무시하고 진행): ${err?.message ?? err}`);
+    }
     const folderName = path.basename(options.projectDir);
     const projectName = gprInfo.projectName || folderName;
     result.projectName = projectName;
@@ -727,26 +752,20 @@ async function deployLocked(
     }
 
     if (!options.uploadOnly) {
+        // 메모리 사전 검사는 **경고만** 한다(2026-10-26 사용자 결정 — 종전엔 criticalMb 미만·측정 실패가 배포를 막았다).
+        // 이 시점은 Stop 전이라 실행 중인 앱의 런타임 메모리(실측 ~3 MB)가 포함된 값이다 — 정지 뒤 Compile 직전 큐 슬롯의
+        // 검사(controllerConnection.needsMemoryGuard)가 다시 재고, 그 값이 result.memoryPrecheck 를 덮어쓴다.
+        // 측정 실패(unknown)로 STATUS 가 없으면 바로 아래 정체 확인이 자체 프로브로 판단한다.
         lock.setStage('MEMORY_CHECK');
-        try {
-            result.memoryPrecheck = await checkMemoryBeforeOperation(cfg);
-            if (result.memoryPrecheck.level === 'warning') { result.precheckWarnings.push(result.memoryPrecheck.message); }
-        } catch (err) {
-            if (!(err instanceof MemoryGuardError)) { throw err; }
-            result.memoryPrecheck = err.precheck;
-            result.failedPhase = 'UPLOAD';
-            result.failedCommand = 'Show Memory (precheck)';
-            result.failedStatusMessage = `${err.code}: ${err.message}`;
-            // 사전 검사가 STATUS 조차 받지 못했으면 명령 콘솔 확인도 실패한 것이다 — 왕복 없이 기록만 남긴다.
-            if (identityEnabled && err.precheck.level === 'unknown' && !getLastConsoleStatus(cfg.ip, operationStartedAt)) {
-                result.controllerCheck = decideControllerIdentity({
-                    console: { state: 'lost', command: 'Show Memory', failureKind: 'other', detail: '사전 검사에서 STATUS 를 받지 못함', at: Date.now(), via: 'same-operation' },
-                    reachability: recentReachability(),
-                    now: Date.now(),
-                });
-            }
-            pushTrace(`✘ ${result.failedStatusMessage}`);
-            return result;
+        const preUpload = await checkMemoryBeforeOperation(cfg);
+        result.memoryPrecheck = preUpload;
+        if (preUpload.level === 'warning' || preUpload.level === 'critical') {
+            const note = `업로드 전 측정 — ${preUpload.message} (실행 중인 앱이 쓰는 메모리가 포함된 값입니다. 정지 뒤 Compile 직전에 다시 측정합니다.)`;
+            result.precheckWarnings.push(note);
+            pushTrace(`│ ⚠ ${note}`);
+        } else if (preUpload.level === 'unknown') {
+            result.precheckWarnings.push(preUpload.message);
+            pushTrace(`│ ⚠ ${preUpload.message}`);
         }
     }
 
@@ -1333,10 +1352,7 @@ async function deployLocked(
                 // 컴파일은 pass 사이에 수 초간 침묵한다. idle 로 조기 완료하면 응답이 잘려 STATUS/에러
                 // 라인을 놓치고 거짓 성공이 난다(GDE 는 종결자까지 받는다) — 반드시 </STATUS> 까지 대기.
                 ? { waitForStatusClose: true, timeoutMs: Math.max(cfg.timeoutMs, 60000) }
-                : undefined).catch(err => {
-                    if (err instanceof MemoryGuardError) { result.memoryPrecheck = err.precheck; }
-                    throw err;
-                });
+                : undefined);
             return { raw: detailed.raw, meta: detailed.meta };
         },
         log: line => pushTrace(`│ ${line}`),
@@ -1467,17 +1483,49 @@ async function deployLocked(
         return result;
     }
 
+    // 정지 뒤 Compile/Start 직전 — 심각 구간이면 사람에게 계속/취소를 묻는다(2026-10-27 사용자 요청). 측정은 어느 수준에서도
+    // 전송을 막지 않고(2026-10-26), 선택은 사람 경로의 모달이 한다. AI·자동화·autoOnSave 는 hook 이 없어 경고만 남기고 계속한다.
+    // (Compile/Start 큐 슬롯의 검사는 그대로 다시 돈다 — 대표 측정값의 정본은 그쪽이고, Show Memory 는 읽기 전용이다.)
+    if (options.confirmMemoryCritical) {
+        const phase: 'compile' | 'start' = options.skipCompile ? 'start' : 'compile';
+        const label = phase === 'start' ? 'Start' : 'Compile';
+        const check = await checkMemoryBeforeOperation(cfg);
+        if (isCancelled()) { return cancelResult('Show Memory 응답 후'); }
+        result.memoryPrecheck = check;
+        if (check.level === 'critical') {
+            pushTrace(`│ ⚠ 정지 뒤 ${label} 직전 측정 — ${check.message}`);
+            pushTrace(`│ … 사용자에게 ${label} 계속 여부 확인 중`);
+            let proceed = false;
+            try { proceed = await options.confirmMemoryCritical(check, phase); } catch { proceed = false; }
+            if (!proceed) {
+                pushTrace(`│ ✘ 사용자가 여유 메모리 심각 경고에서 취소 — ${label} 미전송 (업로드는 완료)`);
+                result.failedPhase = 'MEMORY_CHECK';
+                result.failedCommand = 'Show Memory';
+                result.failedStatusMessage = `여유 메모리 ${check.freeMb ?? '?'} MB (심각 ${check.criticalMb} MB 미만) — 사용자가 취소했습니다. `
+                    + `업로드는 완료, ${label} 미전송.`;
+                return result;
+            }
+            pushTrace(`│ ✔ 사용자 승인 — ${label} 계속 진행`);
+        }
+    }
+
     for (const candidate of options.skipCompile ? [] : compileCandidates) {
         let recoveryFailureRecorded = false; // 복구 분기(cr2)가 실패를 기록했는지 (§1-L cr 덮어쓰기 방지)
         // 전송·판정·일시적 STATUS 재시도·로그는 projectCommands 가 한다(§1-DE). 로드 상태 복구만 아래에 남는다.
+        const compileStartedAt = Date.now();
         let cr = await compileCandidate(candidate);
         if (isCancelled()) { return cancelResult(`Compile ${candidate} 응답 후`); }
         if (result.compileAborted) { return stopOnCompileAbort(result.compileAborted); }
-        if (result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown') {
-            result.failedPhase = 'COMPILE';
-            result.failedCommand = `Compile ${candidate} (precheck)`;
-            result.failedStatusMessage = result.memoryPrecheck.message;
-            return result;
+        // 정지 뒤 Compile 직전 큐 슬롯에서 잰 여유 메모리 — 실행 중 메모리가 빠진 값이라 이것이 배포의 대표 측정이다.
+        // 경고만 남기고 계속한다(2026-10-26 사용자 결정). 측정이 없으면(검사 생략·실패) 업로드 전 값을 그대로 둔다.
+        const slotCheck = getLastMemoryCheck();
+        if (slotCheck && slotCheck.ip === cfg.ip && slotCheck.at >= compileStartedAt) {
+            result.memoryPrecheck = slotCheck.check;
+            if (slotCheck.check.level === 'warning' || slotCheck.check.level === 'critical') {
+                const note = `정지 뒤 Compile 직전 측정 — ${slotCheck.check.message}`;
+                result.precheckWarnings.push(note);
+                pushTrace(`│ ⚠ ${note}`);
+            }
         }
 
         if (cr.ok) {

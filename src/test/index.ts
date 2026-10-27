@@ -22,6 +22,7 @@ import './projectSelection.test';
 import './compileUnitTarget.test';
 import './projectPicker.test';
 import './gprSync.test';
+import './gprFolderSync.test';
 import './overloadResolution.test';
 import './showVariableParser.test';
 import './symbolCache.test';
@@ -139,6 +140,9 @@ import './memoryNotice.test';
 import './controllerIdentity.test';
 import './compileAbort.test';
 import './reachabilityRoute.test';
+import './commandLanes.test';
+import './pollSchedule.test';
+import './remoteSourceMapping.test';
 import { run } from './harness';
 
 void run();

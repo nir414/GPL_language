@@ -160,6 +160,7 @@ VS Code 설정에서 `@ext:nir414.gpl-language-support`를 검색하면 확장 �
 | `gpl.controller.consolePort`  | 런타임 콘솔 포트                        |
 | `gpl.quickCompile.autoOnSave` | 파일 저장 시 업로드·컴파일 방식         |
 | `gpl.project.autoSyncSources` | 소스 파일 변경 시 `.gpr` 목록 반영 방식 |
+| `gpl.controller.memoryGuard.confirmOnCritical` | 여유 메모리 심각 구간에서 Compile/Start 전 계속·취소 확인 |
 
 이 밖의 설정과 기본값도 같은 화면에서 확인할 수 있습니다.
 

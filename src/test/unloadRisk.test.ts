@@ -71,8 +71,29 @@ test('unloadRisk: 표시가 없으면 위험 아님 — 종전 동작 그대로(
     const a = assessUnloadRisk(undefined, 'Unload -all');
     assert.ok(a);
     assert.strictEqual(a!.risky, false);
+    assert.strictEqual(a!.targetIsGroup, false);
     assert.strictEqual(assessUnloadRisk(emptyUnloadRiskState('x', T0), 'Unload App')!.risky, false);
     assert.strictEqual(assessUnloadRisk(riskyState(), 'Show Memory'), undefined, 'Unload 가 아니면 판정 대상이 아니다');
+});
+
+test('unloadRisk: 대상이 그룹(ProjectStart 없음)으로 확인되면 표시가 없어도 위험 — 2026-10-27 관측(Lib_Net Unload 로 제어기 정지)', () => {
+    const a = assessUnloadRisk(undefined, 'Unload Lib_Net', { targetIsGroup: true })!;
+    assert.strictEqual(a.risky, true);
+    assert.strictEqual(a.targetIsGroup, true);
+    assert.strictEqual(a.target, 'Lib_Net');
+    assert.deepStrictEqual(a.groupProjects, []);
+    const w = unloadRiskWarning(a);
+    assert.ok(w.message.includes('Lib_Net') && w.message.includes('ProjectStart'), w.message);
+    assert.ok(!w.message.includes('번 중'), '그룹 Compile 실측 횟수는 이 근거의 것이 아니다');
+    assert.ok(!w.detail.includes('표시 해제'), '표시가 없으니 해제 안내도 없다');
+    assert.ok(unloadRiskRefusalDetail(a).includes('confirm:true'));
+    assert.ok(unloadTimeoutGuidance(a).includes('Lib_Net') && unloadTimeoutGuidance(a).includes('재부팅'));
+    // -all 에는 "대상" 이 없다 — 그룹 판정을 붙여도 표시 없이는 위험 아님.
+    assert.strictEqual(assessUnloadRisk(undefined, 'Unload -all', { targetIsGroup: true })!.risky, false);
+    // 둘 다 있으면 모달 상세에 두 근거가 모두 들어간다.
+    const both = assessUnloadRisk(riskyState(), 'Unload Lib', { targetIsGroup: true })!;
+    assert.ok(both.risky && both.targetIsGroup);
+    assert.ok(unloadRiskWarning(both).detail.includes('ProjectStart') && unloadRiskWarning(both).message.includes('번 중'));
 });
 
 test('unloadRisk: 그룹 Compile 뒤에는 대상이 앱이든 -all 이든 위험', () => {
@@ -223,6 +244,16 @@ test('unloadRiskGuard: 그룹 Compile 성공을 관측하면 표시를 켜고, �
         assert.deepStrictEqual((caught as { runnableCandidates: string[] }).runnableCandidates, ['App']);
         await guardBeforeSend('Start App -compile -event', `other-${id}`);
         await guardBeforeSend('Start Unknown -compile', `other-${id}`);
+
+        // 표시가 없어도 대상이 그룹이면 Unload 는 확인을 거친다(2026-10-27). 앱·모르는 이름·-all 은 종전대로 통과.
+        let groupCaught: unknown;
+        try { await guardBeforeSend('Unload Lib', `other-${id}`); } catch (err) { groupCaught = err; }
+        assert.ok(isUnloadRiskError(groupCaught), '그룹 대상 Unload 는 확인 없이 보내지 않는다');
+        assert.strictEqual((groupCaught as { assessment: { targetIsGroup: boolean } }).assessment.targetIsGroup, true);
+        await guardBeforeSend('Unload Lib', `other-${id}`, { confirmUnloadRisk: true });
+        await guardBeforeSend('Unload App', `other-${id}`);
+        await guardBeforeSend('Unload Unknown', `other-${id}`);
+        await guardBeforeSend('Unload -all', `other-${id}`);
     } finally {
         setProjectKindResolver(undefined);
         try { fs.unlinkSync(file); } catch { /* noop */ }

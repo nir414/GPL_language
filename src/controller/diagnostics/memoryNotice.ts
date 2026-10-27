@@ -10,7 +10,8 @@
  *  - 알림은 **나빠질 때만** — 직전 수준이 없음/ok 에서 warning 이 되면 한 번. 같은 warning 이 이어지면 Output 한 줄만.
  *  - 다만 직전 알림 대비 여유 메모리가 `dropMb`(기본 0.5 MB) 이상 더 떨어지면 다시 알린다.
  *  - ok 로 돌아오면 기억을 지운다(다음 경고는 다시 "나빠짐" 이다).
- *  - blocked·unknown 은 이 모듈이 알림을 정하지 않는다 — 종전처럼 작업을 막고 결과(모달·오류)로 보고된다. 수준 기억만 갱신한다.
+ *  - critical(심각) 은 warning → critical 전이에서 한 번 알린다. unknown(측정 실패) 은 수준 기억을 바꾸지 않는다.
+ *    어느 수준도 작업을 막지 않는다(2026-10-26 사용자 결정 — 종전 blocked 는 전송을 거부했다).
  *  - 한 작업(scope) 안에서는 알림 최대 1회 — 배포의 업로드 전 검사와 이어지는 Start 큐 검사가 둘 다 띄우지 않게.
  *  - AI 결과 필드(`memoryPrecheck`·`precheckWarnings`)는 이 모듈과 무관하게 매번 남는다 — 줄이는 것은 사람 화면의 알림뿐이다.
  *
@@ -25,19 +26,19 @@ export type MemoryLevel = MemoryPrecheck['level'];
 export const MEMORY_TOAST_DROP_MB = 0.5;
 
 export type MemoryNoticeReason =
-    /** 없음/ok → warning, 또는 warning → blocked 처럼 나빠짐. */
+    /** 없음/ok → warning, 또는 warning → critical 처럼 나빠짐. */
     | 'worsened'
     /** 같은 warning 이지만 직전 알림 대비 dropMb 이상 감소. */
     | 'dropped'
     /** 같은 수준 반복 — Output 한 줄만. */
     | 'repeat'
-    /** 나아짐(blocked → warning 등) — 알림 없음. */
+    /** 나아짐(critical → warning 등) — 알림 없음. */
     | 'improved'
     /** 이번 작업 안에서 이미 알렸음. */
     | 'same-operation'
     /** ok — 기억 초기화. */
     | 'ok-reset'
-    /** blocked/unknown — 알림은 작업 결과(오류·모달)가 맡는다. */
+    /** unknown(측정 실패) — 수준을 바꾸지 않는다. 결과 필드·Output 이 알린다. */
     | 'handled-elsewhere';
 
 export interface MemoryNoticeDecision {
@@ -54,7 +55,7 @@ interface IpState {
     lastToastFreeMb?: number;
 }
 
-const SEVERITY: Readonly<Record<'ok' | 'warning' | 'blocked', number>> = { ok: 0, warning: 1, blocked: 2 };
+const SEVERITY: Readonly<Record<'ok' | 'warning' | 'critical', number>> = { ok: 0, warning: 1, critical: 2 };
 
 function fmtMb(mb: number | null): string {
     return mb === null || !Number.isFinite(mb) ? '?' : (Math.round(mb * 100) / 100).toFixed(2);
@@ -63,7 +64,7 @@ function fmtMb(mb: number | null): string {
 /** 알림 본문(짧게) — `여유 메모리 2.96 MB — 경고 구간(4 MB 미만)`. 긴 안내는 상세·Output 쪽(formatMemoryDetail). */
 export function formatMemoryToast(check: MemoryPrecheck): string {
     if (check.level === 'warning') { return `여유 메모리 ${fmtMb(check.freeMb)} MB — 경고 구간(${check.warnMb} MB 미만)`; }
-    if (check.level === 'blocked') { return `여유 메모리 ${fmtMb(check.freeMb)} MB — 차단 구간(${check.blockMb} MB 미만)`; }
+    if (check.level === 'critical') { return `여유 메모리 ${fmtMb(check.freeMb)} MB — 심각(${check.criticalMb} MB 미만, 전송은 막지 않음)`; }
     if (check.level === 'unknown') { return '여유 메모리를 확인하지 못했습니다'; }
     return `여유 메모리 ${fmtMb(check.freeMb)} MB`;
 }
@@ -72,7 +73,7 @@ export function formatMemoryToast(check: MemoryPrecheck): string {
 export function formatMemoryDetail(check: MemoryPrecheck): string {
     const lines = [
         `여유 메모리: ${fmtMb(check.freeMb)} MB (수준: ${check.level})`,
-        `기준: 경고 ${check.warnMb} MB 미만 · 차단 ${check.blockMb} MB 미만 (설정 gpl.controller.memoryGuard.warnMb / blockMb)`,
+        `기준: 경고 ${check.warnMb} MB 미만 · 심각 ${check.criticalMb} MB 미만 (설정 gpl.controller.memoryGuard.warnMb / criticalMb) — 경고만 하며 Compile·Start·배포를 막지 않습니다.`,
     ];
     if (check.level !== 'ok') {
         lines.push(
@@ -84,9 +85,9 @@ export function formatMemoryDetail(check: MemoryPrecheck): string {
     return lines.join('\n');
 }
 
-/** 상태 표시줄 항목 — 경고·차단 구간에서만. */
+/** 상태 표시줄 항목 — 경고·심각 구간에서만. */
 export function memoryBadge(check: MemoryPrecheck): { text: string; tooltip: string } | undefined {
-    if (check.level !== 'warning' && check.level !== 'blocked') { return undefined; }
+    if (check.level !== 'warning' && check.level !== 'critical') { return undefined; }
     return {
         text: `$(warning) Free ${fmtMb(check.freeMb)} MB`,
         tooltip: `${formatMemoryDetail(check)}\n\n클릭: 상세 보기`,
@@ -176,12 +177,11 @@ export class MemoryNoticeTracker {
             this.byIp.delete(ip);
             return { toast: false, reason: 'ok-reset', badge: null };
         }
-        if (check.level === 'blocked') {
-            // 차단 자체(전송 거부·오류 결과)는 종전대로 호출부가 한다. 여기서는 "나빠짐" 알림만 정한다 —
-            // AI 경로의 차단은 사람 화면에 아무것도 남기지 않으므로 warning → blocked 전이는 한 번 알린다.
-            const worsened = !prev || prev.level !== 'blocked';
+        if (check.level === 'critical') {
+            // 심각은 막지 않고 경고만 한다 — AI 경로는 사람 화면에 아무것도 남기지 않으므로 warning → critical 전이는 한 번 알린다.
+            const worsened = !prev || prev.level !== 'critical';
             const decision = this.applyScope(ip, worsened ? 'worsened' : 'repeat');
-            this.byIp.set(ip, { level: 'blocked', lastToastFreeMb: decision.toast && check.freeMb !== null ? check.freeMb : prev?.lastToastFreeMb });
+            this.byIp.set(ip, { level: 'critical', lastToastFreeMb: decision.toast && check.freeMb !== null ? check.freeMb : prev?.lastToastFreeMb });
             return { ...decision, badge };
         }
 

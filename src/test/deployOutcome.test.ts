@@ -17,10 +17,10 @@ import {
 import type { CompileAttemptLog, DeployResult } from '../controller/deployment/deployService';
 import { assessMemory } from '../controller/diagnostics/memoryGuard';
 
-test('deployOutcome: memory precheck rejection is not described as FTP or compile failure', () => {
-    const described = describeDeployFailure(result({ failedPhase: 'UPLOAD', memoryPrecheck: assessMemory('') }), [], undefined);
-    assert.ok(described.message.includes('메모리 사전 검사로 중단'));
-    assert.ok(!described.message.includes('FTP'));
+test('deployOutcome: memory precheck is warning-only — a failure is never described as a memory block (2026-10-26)', () => {
+    const described = describeDeployFailure(result({ failedPhase: 'UPLOAD', failedStatusMessage: 'FTP 연결 실패', memoryPrecheck: assessMemory('') }), [], undefined);
+    assert.ok(!described.message.includes('메모리 사전 검사로 중단'));
+    assert.ok(described.message.includes('업로드 실패'), described.message);
     assert.strictEqual(described.jumpToCompileErrors, false);
 });
 
@@ -104,8 +104,8 @@ test('deployOutcome 이력: countSame 은 push 전 기준, 상한을 넘으면 �
     assert.strictEqual(h.size, 2);
     assert.strictEqual(h.countSame('a'), 0, '상한 초과로 가장 오래된 a 가 밀려났다');
     assert.strictEqual(comparisonNoteFor(0, 'result'), undefined);
-    assert.strictEqual(comparisonNoteFor(1, 'result'), '회귀 아님: 동일 결과 패턴 2회 관측');
-    assert.strictEqual(comparisonNoteFor(2, 'failure'), '회귀 아님: 동일 실패 패턴 3회 관측');
+    assert.strictEqual(comparisonNoteFor(1, 'result'), '같은 결과 2회째');
+    assert.strictEqual(comparisonNoteFor(2, 'failure'), '같은 실패 3회째 (새 회귀가 아니라 같은 원인의 반복)');
 });
 
 test('deployOutcome ErrorLog 분류: 비면 줄 없음, 시스템/코드 항목 집계, 같은 코드의 부가 설명은 한 번만', () => {
@@ -204,8 +204,8 @@ test('deployOutcome 실패 문구 ②: 컴파일 에러가 있으면 개수 표�
         failedPhase: 'COMPILE', compileErrors: [{ file: 'a.gpl', line: 1, code: -760, message: 'x' }, { file: 'b.gpl', line: 2, code: -730, message: 'y' }],
         selectedRemoteProjectPath: '/GPL/MergeCode',
     });
-    const d = describeDeployFailure(r, [], '회귀 아님: 동일 실패 패턴 2회 관측');
-    assert.strictEqual(d.message, '2개 컴파일 에러 (COMPILE 단계) — COMPILE 원문 로그 확인 / 회귀 아님: 동일 실패 패턴 2회 관측 / 경로: /GPL/MergeCode');
+    const d = describeDeployFailure(r, [], '같은 실패 2회째 (새 회귀가 아니라 같은 원인의 반복)');
+    assert.strictEqual(d.message, '2개 컴파일 에러 (COMPILE 단계) — COMPILE 원문 로그 확인 / 같은 실패 2회째 (새 회귀가 아니라 같은 원인의 반복) / 경로: /GPL/MergeCode');
     assert.strictEqual(d.jumpToCompileErrors, true);
     assert.strictEqual(d.unverifiableReason, undefined);
 });

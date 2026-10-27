@@ -18,7 +18,7 @@ import { GPLDiagnosticProvider } from '../providers/diagnosticProvider';
 import { getControllerConfig, setIdlePingActive } from '../controller/connection/controllerConnection';
 import { isControllerSessionConnected, setControllerSessionConnected } from '../controller/connection/connectionSession';
 import { AgentBridgeServer, newExtensionInstanceId } from '../controller/automation/agentBridge';
-import { createRevealGate } from '../controller/automation/agentCommandLog';
+import { agentRequestChangesControllerState, createRevealGate } from '../controller/automation/agentCommandLog';
 import { ConnectionHealthMonitor, ConnectionHealthProber } from '../controller/connection/connectionHealth';
 import { EditorBreakpointSync } from '../controller/debugging/breakpointSync';
 import { ControllerBreakpointMirror } from '../controller/debugging/breakpointMirror';
@@ -323,10 +323,15 @@ export class ExtensionHost {
 	/**
 	 * AI 요청이 **조용한 뒤 처음** 올 때 Output 「GPL Language Support」를 연다(포커스는 유지) — 사용자의 배포·명령은
 	 * 패널을 열어 로그가 보였는데 AI 경유 동작은 보이지 않았다(§1-EO). 판단(`createRevealGate`)은 순수 모듈에 있다.
+	 *
+	 * 단 **조회 요청(Show Thread·변수 읽기·목록·상태 조회)으로는 열지 않는다** — AI 가 데이터를 읽을 때마다 사용자가 보던
+	 * GPL Console/Live Log 가 Output 으로 덮였다(2026-10-27 지적). 조용 구간도 상태 변경 요청 기준으로만 잰다
+	 * (읽기 폴링이 구간을 계속 갱신해 정작 Start/배포에서 안 열리는 일이 없게).
 	 */
 	private readonly agentRevealDue = createRevealGate();
-	private revealOutputForAgentRequest(): void {
+	private revealOutputForAgentRequest(command: string, args: unknown): void {
 		if (vscode.workspace.getConfiguration('gpl.agentBridge').get<boolean>('revealOutput', true) !== true) { return; }
+		if (!agentRequestChangesControllerState(command, args)) { return; }
 		if (this.agentRevealDue(Date.now())) { this.outputChannel.show(true); }
 	}
 
@@ -349,7 +354,7 @@ export class ExtensionHost {
 			// MCP 가 projectDir 로 어느 창에 보낼지 고르는 근거(§6).
 			workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath),
 			execute: (command, args) => {
-				this.revealOutputForAgentRequest();
+				this.revealOutputForAgentRequest(command, args);
 				return Promise.resolve(
 					args === undefined
 						? vscode.commands.executeCommand(command)

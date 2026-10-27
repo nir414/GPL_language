@@ -67,6 +67,7 @@ function fixture() {
 			getConfiguration: () => ({ get: (_key: string, fallback: unknown) => fallback }),
 			getWorkspaceFolder: () => undefined,
 			findFiles: () => { throw new Error('원격 언어 기능은 작업공간을 탐색하면 안 된다'); },
+			fs: { readFile: async (resource: { fsPath: string }) => fs.readFileSync(resource.fsPath) },
 			onDidOpenTextDocument: (callback: any) => { opened.push(callback); return { dispose() {} }; },
 			onDidChangeTextDocument: (callback: any) => { changed.push(callback); return { dispose() {} }; },
 			onDidCloseTextDocument: (callback: any) => { closed.push(callback); return { dispose() {} }; },
@@ -74,7 +75,18 @@ function fixture() {
 		},
 		debug: {},
 		languages: {},
+		window: {
+			showInformationMessage: async (...args: unknown[]) => { notices.push(args); return pickAnswer; },
+			showTextDocument: async (target: unknown) => { shown.push(target); },
+		},
 	};
+	// 로컬 프로젝트 매핑 입력 — deploy record(ip|projectName → projectDir)와 작업공간 .gpr 목록(기본 비어 있음).
+	const records = new Map<string, { projectDir: string }>();
+	const gprPaths: string[] = [];
+	const notices: unknown[][] = [];
+	const shown: unknown[] = [];
+	const logged: string[] = [];
+	let pickAnswer: string | undefined;
 	for (const [api, kind] of [
 		['registerDocumentSymbolProvider', 'symbols'], ['registerFoldingRangeProvider', 'folding'],
 		['registerCompletionItemProvider', 'completion'], ['registerDefinitionProvider', 'definition'],
@@ -99,6 +111,12 @@ function fixture() {
 				if (id.endsWith('/remoteSourceSession')) {
 					return { REMOTE_SOURCE_SCHEME: 'gpl-ftp', getRemoteSourceSession: (key: string) => sessions.get(key) };
 				}
+				if (id.endsWith('/deployRecord')) {
+					return { getCompiledRecord: (ip: string, name: string) => records.get(`${ip}|${name.toLowerCase()}`) };
+				}
+				if (id.endsWith('/projectFileScope')) {
+					return { PROJECT_EXCLUDE_GLOB: '', findWorkspaceGprPaths: async () => [...gprPaths] };
+				}
 				const resolved = realRequire.resolve(id);
 				return id.startsWith('.') && resolved.endsWith('.js') ? load(resolved) : realRequire(id);
 			},
@@ -107,7 +125,7 @@ function fixture() {
 	}
 	const activation = load(path.resolve(__dirname, '../activation/controllerSourceLanguage.js'));
 	const host = {
-		context: { subscriptions }, outputChannel: { appendLine() {} },
+		context: { subscriptions }, outputChannel: { appendLine() {} }, log(message: string) { logged.push(message); },
 		symbolCache: new Proxy({}, { get: () => { throw new Error('로컬 심볼 캐시와 혼합하면 안 된다'); } }),
 	};
 	function addDocument(id: string, remotePath: string, content: string, announce = false) {
@@ -158,8 +176,24 @@ function fixture() {
 		if (announce) { opened.forEach(callback => callback(document)); }
 		return document;
 	}
+	/** 로컬 프로젝트 하나를 만든다 — Project.gpr 와 소스. 작업공간 목록(register)·deploy record(record) 등록은 선택. */
+	function addLocalProject(dir: string, projectName: string | undefined, files: Record<string, string>, opts: { register?: boolean; record?: string } = {}) {
+		const projectDir = path.join(root, dir);
+		fs.mkdirSync(projectDir, { recursive: true });
+		const gpr = path.join(projectDir, 'Project.gpr');
+		fs.writeFileSync(gpr, `${projectName ? `ProjectName="${projectName}"\n` : ''}${Object.keys(files).map(f => `ProjectSource="${f.replace(/\//g, '\\')}"`).join('\n')}\n`);
+		for (const [rel, content] of Object.entries(files)) {
+			const full = path.join(projectDir, ...rel.split('/'));
+			fs.mkdirSync(path.dirname(full), { recursive: true });
+			fs.writeFileSync(full, content);
+		}
+		if (opts.register !== false) { gprPaths.push(gpr); }
+		if (opts.record) { records.set(`192.0.2.1|${opts.record.toLowerCase()}`, { projectDir }); }
+		return { projectDir, gpr, file: (rel: string) => path.join(projectDir, ...rel.split('/')) };
+	}
 	return {
-		providers, selectors, sessions, addDocument, documents,
+		providers, selectors, sessions, addDocument, documents, addLocalProject, notices, shown,
+		answer: (value: string | undefined) => { pickAnswer = value; },
 		activate: () => activation.activateControllerSourceLanguage(host),
 		change(document: any, content: string) {
 			document.content = content; document.version++;
@@ -310,5 +344,102 @@ test('원격 소스 언어: 닫은 문서의 인덱스와 종료된 연결의 �
 		s.sessions.delete('session-a');
 		assert.doesNotThrow(() => s.close(main));
 		assert.strictEqual(await provider.provideDefinition(main, { line: 2, character: 4 }, token), undefined);
+	} finally { s.cleanup(); }
+});
+
+// 2026-10-26 Sample Prep 보고: /GPL/Lib/Motion/Cmd/MotionCmd.gpl 의 `AddressOf MSC.OnErr` 에서 F12 가 안 됨(정의는 같은 파일).
+test('원격 소스 언어: 같은 파일 다른 Module 의 멤버(AddressOf MSC.OnErr)로 이동한다', async () => {
+	const s = fixture();
+	try {
+		const document = s.addDocument('session-a', '/GPL/Lib/Motion/Cmd/MotionCmd.gpl', [
+			'Module MotionCmd',
+			'Public Sub Register(ByVal p As TcpCmdParser)',
+			'    p.AddSync("ERR", New TcpSyncCmdSub(AddressOf MSC.OnErr), 0)',
+			'End Sub',
+			'End Module',
+			'',
+			'Module MSC',
+			'Public Sub OnErr(ByVal code As Integer)',
+			'End Sub',
+			'End Module',
+		].join('\n'));
+		s.activate();
+		const provider = s.providers.get('definition');
+		const onErr = await provider.provideDefinition(document, { line: 2, character: 56 }, token);
+		assert.ok(onErr, 'OnErr 정의를 찾아야 한다');
+		const location = Array.isArray(onErr) ? onErr[0] : onErr;
+		assert.strictEqual(location.uri.toString(), 'gpl-ftp://session-a/GPL/Lib/Motion/Cmd/MotionCmd.gpl');
+		assert.strictEqual(location.range.start.line, 7);
+		const msc = await provider.provideDefinition(document, { line: 2, character: 51 }, token);
+		const mscLocation = Array.isArray(msc) ? msc[0] : msc;
+		assert.strictEqual(mscLocation?.range.start.line, 6, 'MSC 모듈 선언으로 이동');
+	} finally { s.cleanup(); }
+});
+
+/** 비동기 씨앗(로컬 프로젝트 인덱싱)이 끝날 때까지 정의 조회를 되풀이한다. */
+async function definitionEventually(provider: any, document: any, position: { line: number; character: number }): Promise<any> {
+	for (let i = 0; i < 100; i++) {
+		const result = await provider.provideDefinition(document, position, token);
+		if (result) { return Array.isArray(result) ? result[0] : result; }
+		await new Promise(resolve => setTimeout(resolve, 10));
+	}
+	return undefined;
+}
+
+const MOTION_CMD = [
+	'Module MotionCmd',
+	'Public Sub Register(ByVal p As TcpCmdParser)',
+	'    p.AddSync("ERR", New TcpSyncCmdSub(AddressOf MSC.OnErr), 0)',
+	'End Sub',
+	'End Module',
+].join('\n');
+const MSC = 'Module MSC\nPublic Sub OnErr(ByVal code As Integer)\nEnd Sub\nEnd Module\n';
+
+test('원격 소스 언어: 열지 않은 다른 파일의 모듈은 매핑된 로컬 프로젝트(작업공간 ProjectName)에서 찾는다', async () => {
+	const s = fixture();
+	try {
+		const local = s.addLocalProject('ws/task34/Lib', 'Lib', { 'Motion/Cmd/MotionCmd.gpl': MOTION_CMD, 'Motion/Msc.gpl': MSC });
+		s.addLocalProject('ws/task37/Other', 'Other', { 'Main.gpl': 'Module MSC\nPublic Sub OnErr()\nEnd Sub\nEnd Module\n' });
+		const document = s.addDocument('session-a', '/GPL/Lib/Motion/Cmd/MotionCmd.gpl', MOTION_CMD);
+		s.activate();
+		const definition = await definitionEventually(s.providers.get('definition'), document, { line: 2, character: 56 });
+		assert.ok(definition, '로컬 Msc.gpl 의 정의를 찾아야 한다');
+		assert.strictEqual(definition.uri.scheme, 'file');
+		assert.strictEqual(path.normalize(definition.uri.fsPath).toLowerCase(), path.normalize(local.file('Motion/Msc.gpl')).toLowerCase());
+		assert.strictEqual(definition.range.start.line, 1);
+	} finally { s.cleanup(); }
+});
+
+test('원격 소스 언어: deploy record 의 출처가 작업공간 동명 프로젝트보다 앞서고, 열어 본 원격 사본이 로컬보다 앞선다', async () => {
+	const s = fixture();
+	try {
+		s.addLocalProject('ws/Lib', 'Lib', { 'Motion/Msc.gpl': 'Module MSC\nPublic Sub OnErr()\nEnd Sub\nEnd Module\n' });
+		const recorded = s.addLocalProject('deployed/Lib', 'Lib', { 'Motion/Cmd/MotionCmd.gpl': MOTION_CMD, 'Motion/Msc.gpl': `' recorded\n${MSC}` }, { register: false, record: 'Lib' });
+		const document = s.addDocument('session-a', '/GPL/Lib/Motion/Cmd/MotionCmd.gpl', MOTION_CMD);
+		s.activate();
+		const provider = s.providers.get('definition');
+		const viaRecord = await definitionEventually(provider, document, { line: 2, character: 56 });
+		assert.strictEqual(path.normalize(viaRecord.uri.fsPath).toLowerCase(), path.normalize(recorded.file('Motion/Msc.gpl')).toLowerCase());
+		assert.strictEqual(viaRecord.range.start.line, 2, "' recorded 주석 뒤의 선언");
+		// 같은 파일을 원격에서 열면 그 사본(같은 파일 점수)이 로컬보다 앞선다 — 제어기에 올라간 내용이 정본이다.
+		s.addDocument('session-a', '/GPL/Lib/Motion/Msc.gpl', MSC, true);
+		const viaRemote = await definitionEventually(provider, document, { line: 2, character: 56 });
+		assert.strictEqual(viaRemote.uri.toString(), 'gpl-ftp://session-a/GPL/Lib/Motion/Msc.gpl');
+		assert.strictEqual(viaRemote.range.start.line, 1);
+	} finally { s.cleanup(); }
+});
+
+test('원격 소스 언어: 원격 사본이 로컬 파일과 다르면 열 때 한 번 알리고 「로컬 열기」로 로컬을 연다', async () => {
+	const s = fixture();
+	try {
+		const local = s.addLocalProject('ws/Lib', 'Lib', { 'Motion/Cmd/MotionCmd.gpl': MOTION_CMD.replace('"ERR"', '"ERROR"'), 'Motion/Msc.gpl': MSC });
+		s.activate();
+		s.answer('로컬 열기');
+		s.addDocument('session-a', '/GPL/Lib/Motion/Msc.gpl', `${MSC}\r\n`, true);
+		s.addDocument('session-a', '/GPL/Lib/Motion/Cmd/MotionCmd.gpl', MOTION_CMD, true);
+		for (let i = 0; i < 100 && s.shown.length === 0; i++) { await new Promise(resolve => setTimeout(resolve, 10)); }
+		assert.strictEqual(s.notices.length, 1, '내용이 같은 Msc.gpl 은 알리지 않고 다른 MotionCmd.gpl 만 알린다');
+		assert.match(String(s.notices[0][0]), /MotionCmd\.gpl 이 로컬 .*MotionCmd\.gpl 과 다릅니다/);
+		assert.strictEqual(path.normalize((s.shown[0] as any).fsPath).toLowerCase(), path.normalize(local.file('Motion/Cmd/MotionCmd.gpl')).toLowerCase());
 	} finally { s.cleanup(); }
 });

@@ -6,7 +6,9 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { EXTENSION_VERSION } from '../config';
-import { getControllerConfig, sendCommandDetailed } from '../controller/connection/controllerConnection';
+import { UNLOAD_PROJECT_COMMAND, checkMemoryBeforeOperation, getControllerConfig, sendCommandDetailed } from '../controller/connection/controllerConnection';
+import { isControllerSessionConnected } from '../controller/connection/connectionSession';
+import { parseStatus } from '../controller/protocol/responseParser';
 import { isBusyStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from '../controller/protocol/controllerStatusCodes';
 import { applyCompileDiagnostics, findProjectDirs, jumpToFirstCompileError } from '../controller/deployment/deployService';
 import { compileProject, loadProject, startProject, unloadProject } from '../controller/commands/projectCommands';
@@ -40,7 +42,7 @@ import {
 	removeDownloadStagingDir,
 	writeControllerProjectManifest,
 } from '../project/controllerProjectWorkspace';
-import { confirmUnloadRiskInteractive, stopAllThreads, stopThreadWithRecovery } from './controllerOps';
+import { confirmMemoryCriticalInteractive, confirmUnloadRiskInteractive, isMemoryConfirmOnCritical, stopAllThreads, stopThreadWithRecovery } from './controllerOps';
 import { lookupProjectKind, runnableProjectNames } from '../controller/commands/unloadRiskGuard';
 import { notRunnableStartDetail } from '../controller/commands/unloadRisk';
 import type { ExtensionHost } from './host';
@@ -538,6 +540,16 @@ export function activateFtpCommands(host: ExtensionHost): void {
 					await ensureLoadedFromFtp();
 				}
 
+				// 여유 메모리 심각이면 Compile 전에 계속/취소를 묻는다(2026-10-27) — 배포·Start 와 같은 사람 경로 규칙.
+				if (isMemoryConfirmOnCritical()) {
+					const memory = await checkMemoryBeforeOperation();
+					if (memory.level === 'critical' && !(await confirmMemoryCriticalInteractive(memory, 'Compile'))) {
+						host.log(`│ ✘ 사용자가 여유 메모리 심각 경고에서 취소 (Free ${memory.freeMb ?? '?'} MB) — Compile/Start 미전송`);
+						vscode.window.showWarningMessage(`${name} 컴파일 & 실행 중단: 여유 메모리 심각 경고에서 취소했습니다.`);
+						return;
+					}
+				}
+
 				// 1) Compile — 일시적 STATUS(-742/-746/-752) 1회 재시도는 모듈이 한다.
 				host.log('│ Phase: Compile uploaded controller copy');
 				let compile = await compileProject(projectIo, { candidates: [name] });
@@ -627,37 +639,119 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			const target = checkNodeTarget(node, 'Unload', true);
 			if (!target) { return; }
 			const name = target.projectName!;
-			if (!host.ensureProjectNameSafe(name, 'remote', 'Unload')) { return; }
+			await runUnloadInteractive(name, () => !!checkNodeTarget(node, 'Unload', true));
+		}),
 
-			try {
-				// 하드 규칙 2: 성공/실패는 그 명령의 STATUS 로 판정한다. 종전에는 응답을 보지 않고 무조건
-				// "Unload 완료"를 띄워, 쓰레드가 살아 있어 거부된(-750) 경우에도 성공으로 보고했다(§1-DD).
-				// 판정 자체는 controller/commands/projectCommands.unloadProject 가 한다(FTP Run 과 같은 절차, §1-DE).
-				// 그룹 Compile 뒤 Unload 면 모달로 확인한다(위험 표시가 없으면 묻지 않는다).
-				const unloadCheck = await confirmUnloadRiskInteractive(`Unload ${name}`);
-				if (!unloadCheck.proceed) { return; }
-				if (!checkNodeTarget(node, 'Unload', true)) { return; }
-				const outcome = await unloadProject(
-					{
-						send: async command => ({ raw: (await sendCommandDetailed(command, undefined, { confirmUnloadRisk: unloadCheck.confirmUnloadRisk })).raw }),
-						log: line => host.log(`[Unload] ${line}`),
-					},
-					name,
-				);
-				if (outcome.notLoaded) {
-					vscode.window.showInformationMessage(`${name} 은(는) 로드돼 있지 않습니다 (Unload 불필요)`);
-				} else if (outcome.ok) {
-					vscode.window.showInformationMessage(`${name} Unload 완료`);
-				} else {
-					vscode.window.showErrorMessage(
-						`${name} Unload 실패: STATUS ${outcome.failure?.code} ${outcome.failure?.message ?? ''}`.trimEnd()
-						+ (outcome.blockedByActiveThread || isBusyStatus(outcome.failure?.code ?? 0)
-							? ' — 쓰레드를 먼저 정지하세요.' : ''));
-				}
-				host.controllerTree?.refresh();
-			} catch (err: any) {
-				vscode.window.showErrorMessage(`Unload 실패: ${err.message ?? err}`);
+		// ── Unload Project — 팔레트·트리 제목·메모리 알림의 「Unload…」(2026-10-27 사용자 요청: "Unload 할 수 있는 버튼 필요") ──
+		// 메모리 폭주가 Unload 로 상당 부분 회복됨을 사용자가 확인했다. 콘솔에는 로드된 프로젝트를 보는 명령이 없으므로
+		// (`Show Project` 는 -714) /GPL 폴더 목록에서 고른다(읽기 전용 FTP LIST). 위험 판정(그룹 Compile 뒤·대상이 그룹)은
+		// 다른 경로와 같은 모달(confirmUnloadRiskInteractive)과 전송 가드가 맡는다.
+		vscode.commands.registerCommand(UNLOAD_PROJECT_COMMAND, async () => {
+			if (!isControllerSessionConnected()) {
+				vscode.window.showWarningMessage('Unload: 제어기에 연결돼 있지 않습니다 — 먼저 「GPL: Connect」를 실행하세요.');
+				return;
 			}
+			const busy = host.currentDeployLockHolder();
+			if (busy) {
+				host.warnDeployBusy('Unload', busy, '완료 후 다시 시도하세요');
+				return;
+			}
+			const cfg = getControllerConfig();
+			const root = normalizeAbsoluteRemoteDir(cfg.ftpBasePath);
+			let names: string[] = [];
+			let listError: string | undefined;
+			try {
+				names = (await listRemoteDir(cfg.ip, root)).filter(e => e.isDirectory).map(e => e.name)
+					.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+			} catch (err: any) {
+				listError = err?.message ?? String(err);
+				host.log(`[Unload] ${root} 목록 조회 실패: ${listError} — 이름 입력으로 대신합니다`);
+			}
+			type Item = vscode.QuickPickItem & { name?: string; all?: boolean; manual?: boolean };
+			const items: Item[] = [
+				...names.map<Item>(n => ({ label: `$(folder) ${n}`, description: `${root}/${n}`, name: n })),
+				...(names.length > 0 ? [{ label: '', kind: vscode.QuickPickItemKind.Separator } as Item] : []),
+				{ label: '$(edit) 이름 직접 입력…', description: '목록에 없는(또는 조회 실패한) 프로젝트', manual: true },
+				{ label: '$(close-all) 모두 내리기 (Unload -all)', description: '로드된 프로젝트 전부 — 쓰레드가 실행 중이면 -750 으로 거부됩니다', all: true },
+			];
+			const pick = await vscode.window.showQuickPick(items, {
+				placeHolder: listError
+					? `${root} 목록을 읽지 못했습니다 — 이름을 직접 입력하거나 전체 Unload`
+					: `Unload 할 프로젝트 (${root} 폴더 ${names.length}개) — 실행 중인 쓰레드가 있으면 거부됩니다`,
+				matchOnDescription: true,
+			});
+			if (!pick) { return; }
+			let name: string | undefined = pick.name;
+			if (pick.manual) {
+				name = (await vscode.window.showInputBox({ prompt: 'Unload 할 프로젝트 이름', placeHolder: '예: BinderR3', ignoreFocusOut: true }))?.trim();
+				if (!name) { return; }
+			}
+			if (pick.all) {
+				await runUnloadAllInteractive();
+				return;
+			}
+			await runUnloadInteractive(name!);
 		})
 	);
+
+	/**
+	 * `Unload <name>` 사람 경로 — 트리 우클릭과 「Unload Project」가 같은 절차를 쓴다.
+	 * 하드 규칙 2: 성공/실패는 그 명령의 STATUS 로 판정한다. 종전에는 응답을 보지 않고 무조건 "Unload 완료"를 띄워,
+	 * 쓰레드가 살아 있어 거부된(-750) 경우에도 성공으로 보고했다(§1-DD). 판정 자체는
+	 * controller/commands/projectCommands.unloadProject 가 한다(FTP Run 과 같은 절차, §1-DE).
+	 * 그룹 Compile 뒤·대상이 그룹이면 모달로 확인한다(위험 근거가 없으면 묻지 않는다).
+	 * @param recheck 모달 대기 뒤 대상이 여전히 유효한지(트리 노드의 제어기가 바뀌었을 수 있다).
+	 */
+	async function runUnloadInteractive(name: string, recheck?: () => boolean): Promise<void> {
+		if (!host.ensureProjectNameSafe(name, 'remote', 'Unload')) { return; }
+		try {
+			const unloadCheck = await confirmUnloadRiskInteractive(`Unload ${name}`);
+			if (!unloadCheck.proceed) { return; }
+			if (recheck && !recheck()) { return; }
+			const outcome = await unloadProject(
+				{
+					send: async command => ({ raw: (await sendCommandDetailed(command, undefined, { confirmUnloadRisk: unloadCheck.confirmUnloadRisk })).raw }),
+					log: line => host.log(`[Unload] ${line}`),
+				},
+				name,
+			);
+			if (outcome.notLoaded) {
+				vscode.window.showInformationMessage(`${name} 은(는) 로드돼 있지 않습니다 (Unload 불필요)`);
+			} else if (outcome.ok) {
+				vscode.window.showInformationMessage(`${name} Unload 완료`);
+			} else {
+				vscode.window.showErrorMessage(
+					`${name} Unload 실패: STATUS ${outcome.failure?.code} ${outcome.failure?.message ?? ''}`.trimEnd()
+					+ (outcome.blockedByActiveThread || isBusyStatus(outcome.failure?.code ?? 0)
+						? ' — 쓰레드를 먼저 정지하세요.' : ''));
+			}
+			host.controllerTree?.refresh();
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`Unload 실패: ${err.message ?? err}`);
+		}
+	}
+
+	/** `Unload -all` 사람 경로 — 위험 모달·전송 가드는 이름 지정과 같고, 판정은 STATUS 로 한다. */
+	async function runUnloadAllInteractive(): Promise<void> {
+		const command = 'Unload -all';
+		try {
+			const unloadCheck = await confirmUnloadRiskInteractive(command);
+			if (!unloadCheck.proceed) { return; }
+			host.log(`[Unload] CMD ${command}`);
+			const resp = await sendCommandDetailed(command, undefined, { confirmUnloadRisk: unloadCheck.confirmUnloadRisk });
+			const status = parseStatus(resp.raw);
+			if (!resp.meta.statusTagReceived) {
+				vscode.window.showWarningMessage(`${command}: STATUS 종결을 받지 못했습니다 — 결과 미확정(명령 콘솔이 잠시 응답하지 않을 수 있습니다).`);
+			} else if (status.code === 0) {
+				vscode.window.showInformationMessage('모든 프로젝트 Unload 완료');
+			} else {
+				vscode.window.showErrorMessage(
+					`${command} 실패: STATUS ${status.code} ${status.message ?? ''}`.trimEnd()
+					+ (isBusyStatus(status.code) || status.code === -750 ? ' — 쓰레드를 먼저 정지하세요.' : ''));
+			}
+			host.controllerTree?.refresh();
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`${command} 실패: ${err.message ?? err}`);
+		}
+	}
 }

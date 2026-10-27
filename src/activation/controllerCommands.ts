@@ -5,6 +5,7 @@
 import * as vscode from 'vscode';
 import {
 	SHOW_MEMORY_STATUS_COMMAND,
+	UNLOAD_PROJECT_COMMAND,
 	describeMemoryCheck,
 	formatTrafficTimestamp,
 	getControllerConfig,
@@ -160,9 +161,11 @@ export function activateControllerCommands(host: ExtensionHost): void {
 			const pick = await vscode.window.showInformationMessage(
 				`${last.ip} 여유 메모리 ${last.check.freeMb ?? '?'} MB (${at} 검사)`,
 				{ modal: true, detail: describeMemoryCheck(last.check) },
+				'Unload…',
 				'명령 콘솔 기록 보기',
 			);
 			if (pick === '명령 콘솔 기록 보기') { trafficChannel.show(true); }
+			else if (pick === 'Unload…') { void vscode.commands.executeCommand(UNLOAD_PROJECT_COMMAND); }
 		}),
 	);
 
@@ -276,10 +279,6 @@ export function activateControllerCommands(host: ExtensionHost): void {
 							ok: false, error: err.code, detail: err.message, sentToController: false, command,
 							project: err.project, runnableCandidates: err.runnableCandidates,
 						};
-					}
-					if (err?.code === 'LOW_MEMORY' || err?.code === 'MEMORY_UNVERIFIED') {
-						outputChannel.appendLine(formatAgentCommandFailure(command, err.code, err.message));
-						return { ok: false, error: err.code, detail: err.message, precheck: err.precheck, sentToController: false, command };
 					}
 					const policy = isPolicyError(err);
 					outputChannel.appendLine(formatAgentCommandFailure(command, policy ? 'policy-hold' : 'command-failed', err?.message ?? String(err)));

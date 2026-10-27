@@ -439,9 +439,14 @@ export function beginMemoryNoticeScope(ip: string): () => void {
 /** 배포는 업로드 전, Compile/Start는 해당 명령의 직렬 큐 슬롯에서 각각 현재 Free를 확인한다. */
 export async function checkMemoryBeforeOperation(config?: Partial<ControllerConfig>, insideQueue = false): Promise<MemoryPrecheck> {
 	const settings = vscode.workspace.getConfiguration('gpl.controller');
+	// `criticalMb` 가 종전 `blockMb`(deprecated) 를 대체한다 — 사용자가 옛 키만 설정해 뒀으면 그 값을 심각 기준으로 쓴다.
+	const legacyBlock = settings.inspect<number>('memoryGuard.blockMb');
+	const legacyValue = legacyBlock?.workspaceFolderValue ?? legacyBlock?.workspaceValue ?? legacyBlock?.globalValue;
+	const criticalInspect = settings.inspect<number>('memoryGuard.criticalMb');
+	const criticalSet = criticalInspect?.workspaceFolderValue ?? criticalInspect?.workspaceValue ?? criticalInspect?.globalValue;
 	const options = {
 		warnMb: settings.get<number>('memoryGuard.warnMb', DEFAULT_MEMORY_GUARD.warnMb),
-		blockMb: settings.get<number>('memoryGuard.blockMb', DEFAULT_MEMORY_GUARD.blockMb),
+		criticalMb: criticalSet ?? legacyValue ?? DEFAULT_MEMORY_GUARD.criticalMb,
 	};
 	const send = insideQueue ? sendCommandDetailedInternal : sendCommandDetailed;
 	const ip = { ...getControllerConfig(), ...config }.ip;
@@ -450,13 +455,15 @@ export async function checkMemoryBeforeOperation(config?: Partial<ControllerConf
 		logTraffic('---', `memory: ${check.level} — ${check.message}`);
 		_lastMemoryCheck = { ip, check, at: Date.now() };
 		const decision = memoryNotices.evaluate(ip, check);
-		if ((check.level === 'warning' || check.level === 'blocked') && !decision.toast) {
+		if ((check.level === 'warning' || check.level === 'critical') && !decision.toast) {
 			logTraffic('---', `memory: 알림 생략(${decision.reason}) — 상태 표시줄에 표시 중`);
 		}
 		try { _memoryStatusObserver?.(ip, check, decision.badge); } catch { /* 관찰자 예외는 무시 */ }
 		if (decision.toast) {
-			void vscode.window.showWarningMessage(formatMemoryToast(check), '자세히').then(pick => {
+			// 「Unload…」: 메모리 회수 수단을 알림에서 바로 — Unload 로 상당 부분 회복됨을 사용자가 확인(2026-10-27). 위험 판정은 그 명령이 한다.
+			void vscode.window.showWarningMessage(formatMemoryToast(check), 'Unload…', '자세히').then(pick => {
 				if (pick === '자세히') { void vscode.commands.executeCommand(SHOW_MEMORY_STATUS_COMMAND); }
+				else if (pick === 'Unload…') { void vscode.commands.executeCommand(UNLOAD_PROJECT_COMMAND); }
 			});
 		}
 	});
@@ -464,6 +471,8 @@ export async function checkMemoryBeforeOperation(config?: Partial<ControllerConf
 
 /** 상태 표시줄 메모리 경고 항목·알림의 「자세히」가 여는 명령(activation 에서 등록). */
 export const SHOW_MEMORY_STATUS_COMMAND = 'gpl.controller.showMemoryStatus';
+/** 메모리 알림·상세·배포 중단 안내의 「Unload…」가 여는 명령(activation/ftpCommands 에서 등록) — /GPL 프로젝트를 골라 내린다. */
+export const UNLOAD_PROJECT_COMMAND = 'gpl.controller.unloadProject';
 
 // ── 정체 확인용 관측 기록 (controller/connection/controllerIdentity.ts) ─────────────────────
 // 업로드 전 정체 확인이 "같은 작업 안에서 이미 받은 STATUS" 를 재사용하려면 마지막 STATUS 수신을 알아야 한다.

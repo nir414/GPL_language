@@ -22,8 +22,10 @@ import { isBusyStatus } from '../controller/protocol/controllerStatusCodes';
 import { buildRuntimeConsoleUserMessage } from '../controller/runtime/runtimeConsolePresentation';
 import type { RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 import type { ExtensionHost } from './host';
-import { currentUnloadRisk } from '../controller/commands/unloadRiskGuard';
+import { assessUnloadRiskWithProjectKind } from '../controller/commands/unloadRiskGuard';
 import { unloadRiskWarning } from '../controller/commands/unloadRisk';
+import { describeMemoryCheck } from '../controller/connection/controllerConnection';
+import type { MemoryPrecheck } from '../controller/diagnostics/memoryGuard';
 
 /**
  * 사람 경로(명령 팔레트·트리·FTP Run)의 Unload 사전 확인 — 그룹 Compile 뒤 Unload 위험(controller/commands/unloadRisk.ts)이면
@@ -32,13 +34,45 @@ import { unloadRiskWarning } from '../controller/commands/unloadRisk';
  * @returns `proceed:false` 면 사용자가 취소 — 보내지 않는다. `confirmUnloadRisk` 는 전송 옵션에 그대로 넘긴다.
  */
 export async function confirmUnloadRiskInteractive(command: string): Promise<{ proceed: boolean; confirmUnloadRisk: boolean }> {
-	const risk = currentUnloadRisk(command, getControllerConfig().ip);
+	// 그룹 Compile 표시 + 대상이 그룹인지(워크스페이스 .gpr) — 전송 가드(guardBeforeSend)와 같은 판정.
+	const risk = await assessUnloadRiskWithProjectKind(command, getControllerConfig().ip);
 	if (!risk?.risky) { return { proceed: true, confirmUnloadRisk: false }; }
 	const text = unloadRiskWarning(risk);
 	const go: vscode.MessageItem = { title: '그래도 Unload' };
 	const cancel: vscode.MessageItem = { title: '취소', isCloseAffordance: true };
 	const pick = await vscode.window.showWarningMessage(text.message, { modal: true, detail: text.detail }, go, cancel);
 	return pick === go ? { proceed: true, confirmUnloadRisk: true } : { proceed: false, confirmUnloadRisk: false };
+}
+
+/** 설정 `gpl.controller.memoryGuard.confirmOnCritical`(기본 켬) — 사람 경로에서 심각 구간이면 계속/취소를 묻는다. */
+export function isMemoryConfirmOnCritical(): boolean {
+	return vscode.workspace.getConfiguration('gpl.controller').get<boolean>('memoryGuard.confirmOnCritical', true) !== false;
+}
+
+/**
+ * 여유 메모리 **심각** 구간에서 사람에게 계속/취소를 묻는 모달(2026-10-27 사용자 요청: "막는 게 아니라 경고하고, 취소할지
+ * 강제 진행할지 정할 수 있게"). 검사 자체는 어느 수준에서도 전송을 막지 않고(2026-10-26 결정), 이 모달이 사람 경로의 선택이다.
+ * AI·자동화·autoOnSave 경로는 부르지 않는다 — 모달은 브리지를 멈추고, 저장 트리거에 모달은 과하다. 그 경로는 경고만 남긴다.
+ *
+ * @param action 모달 버튼에 들어갈 동작 이름(`Compile`·`Start`). true 면 계속 진행.
+ */
+export async function confirmMemoryCriticalInteractive(check: MemoryPrecheck, action: string): Promise<boolean> {
+	const free = check.freeMb === null ? '?' : (Math.round(check.freeMb * 100) / 100).toFixed(2);
+	const go: vscode.MessageItem = { title: `그래도 ${action}` };
+	const cancel: vscode.MessageItem = { title: '취소', isCloseAffordance: true };
+	const pick = await vscode.window.showWarningMessage(
+		`여유 메모리 ${free} MB — 심각(${check.criticalMb} MB 미만). ${action} 을(를) 계속할까요?`,
+		{
+			modal: true,
+			detail: describeMemoryCheck(check)
+				+ '\n\n계속하면 제어기 Compile 이 실패하거나(-200 No memory available) 제어기가 멈출 수 있습니다. '
+				+ '취소하면 이미 올린 파일은 그대로 두고 Compile/Start 를 보내지 않습니다. '
+				+ '메모리를 회수하려면 「GPL: Unload Project」로 쓰지 않는 프로젝트를 내리세요(그룹 라이브러리 Unload 는 위험 — 모달이 따로 묻습니다).',
+		},
+		go,
+		cancel,
+	);
+	return pick === go;
 }
 
 /**

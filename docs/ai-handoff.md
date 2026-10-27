@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-26** · 현재 package 버전 **0.18.1** (Marketplace 자동 게시 연결. 검증 결과는 §1-FZ 참조.)
-- **직전 세션: §1-FZ** — 수신함 22건을 다섯 갈래(참조·정의, 정적 진단, Unload·대상 안전, FTP 정체 확인·메모리 알림·연결 진단, 시계 동기화)로 구현·병합했다. 1423/1423·MCP 164/164(PR #38 리뷰 6건 반영 포함), VSIX 0.18.0 패키징. 실기·UI 확인과 Marketplace 자동 게시 연결은 남았다.
+- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.19.0** (사용자 메모 4건: Unload 버튼 · 메모리 심각 시 계속/취소 선택 · Project.gpr 자동 동기화 · AI 조회로 패널 안 바뀌게. 검증 결과는 §1-GC 참조.)
+- **직전 세션: §1-GC** — 사용자 업무 메모 반영: ① `GPL: Unload Project`(/GPL 목록 QuickPick·-all, 메모리 알림의 「Unload…」) + Unload 위험 판정에 "대상이 그룹" 근거 추가 ② 메모리 심각이면 사람 경로(배포·Start·FTP Run)에서 정지 뒤 Compile/Start 직전 모달(`confirmOnCritical`, `MEMORY_CHECK`) ③ `project/gprFolderSync.ts` + 외부 변경 워처 + 배포 전 「반영/그대로/취소」 + `precheckWarnings` ④ AI 조회 요청으로는 Output 을 열지 않음(`agentRequestChangesControllerState`). 1447/1447, VSIX 0.19.0. 실기·UI 확인은 §3.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -81,6 +81,12 @@
 - [ ] **(2026-10-23, §1-FY) 명령 커서 아이콘 — 새 VSIX/UI 확인.** 0.17.2 설치 후 확장 목록·README와 활동바/Status 보기에서 컬러·단색 아이콘을 밝은/어두운 테마로 확인한다. 24px 렌더링과 패키지 내용은 정적으로 확인했으며 실제 VS Code 표시와 캐시 갱신은 아직 보지 않았다.
 
 - [ ] **(2026-10-23, §1-FX) FTP 새로고침 UI 확인.** 새 VSIX에서 조회 진행 중 새로고침·연속 클릭·편집기/세션 종료를 확인한다. 모의 FTP 회귀와 로컬 테스트는 실제 제어기·VS Code UI 검증을 대신하지 않는다.
+
+- [ ] **(2026-10-27, §1-GC) 0.19.0 실기·UI 확인(Unload·Start 는 정지 상태·저속/시뮬레이션에서).** ① 명령 팔레트/트리 `···` 「GPL: Unload Project」 → `/GPL` 폴더 QuickPick(이름 입력·`-all` 항목 포함) → 앱(BinderR3) 선택 시 모달 없이 `Unload BinderR3` STATUS 로 완료/거부(-750) 보고, **`Lib`(ProjectStart 없음) 선택 시 그룹 Compile 표시가 없어도 「그래도 Unload/취소」 모달**이 뜨고 AI `unload_project`/`sendCommand('Unload Lib')` 는 `refused:"unload-after-group-compile"`(detail 에 "ProjectStart 가 없는 그룹"). 그룹 Unload 로 제어기가 멈추는 현상의 회피 방법은 미확인 — 실기에서 실제로 보낼지는 사용자 판단. ② 여유 메모리 심각(≤2.5 MB) 상태에서 사람이 Build/Deploy → Stop 뒤 Compile 직전 「그래도 Compile/취소」 모달, 취소하면 `[Deploy] … 중단: 여유 메모리 … 사용자가 취소` + 「Unload…」 버튼, 트레이스에 `✘ 사용자가 여유 메모리 심각 경고에서 취소`; `gpl.start`·FTP Run 도 같은 모달; MCP `deploy_project build` 는 모달 없이 `precheckWarnings` 만. 메모리 알림 토스트에 「Unload…」 버튼. ③ Project.gpr: 탐색기 밖(파워셸/SVN)에서 프로젝트 폴더에 `.gpl` 을 만들거나 지우면 1회 알림(「반영/항목 선택…」), 배포 직전에 목록이 다르면 「반영 후 배포/그대로 배포/취소」 모달, 「그대로」면 Output 에 `⚠ Project.gpr 소스 목록이 폴더와 다릅니다 — 추가 N (…)` 와 MCP 응답 `precheckWarnings`·`gprSyncMismatch`. 대량 변경(SVN 갱신)에서 프로젝트당 알림 1회인지. ④ GPL Console/Live Log 를 보는 상태에서 AI 가 `show_threads`·`eval_expression`·`list_remote_projects` 를 30초 넘게 띄엄띄엄 불러도 패널이 Output 으로 바뀌지 않고, `deploy_project`/`stop_threads`/`set_breakpoint` 에는 (30초 조용 뒤) 바뀌는지.
+
+- [ ] **(2026-10-26, §1-GB) 0.18.3 실기·UI 확인.** ① BinderR3 **실행 중**에 `deploy_project build` → 차단 없이 Stop→Compile 까지 가고, `precheckWarnings` 에 「업로드 전 측정 — …(실행 중인 앱 … 포함)」과 「정지 뒤 Compile 직전 측정 — …」 두 줄, `memoryPrecheck.freeMb` 가 정지 뒤 값(≈3 MB)인지. 상태 표시줄 배지 문구 "심각(… 전송은 막지 않음)". ② FTP 트리에서 `/GPL/Lib/Motion/Cmd/MotionCmd.gpl` 을 열어 `MSC.OnErr` F12 — Output 에 `[Remote Source] … → <로컬 Lib 경로> (deploy-record|project-name|folder-name, 소스 N개)` 가 찍히는지, 정의가 원격 사본(열어 둔 경우) 또는 로컬 파일로 열리는지. 안 되면 그 줄(매핑 없음/실패)과 Debug Console 로그를 보고. ③ 로컬에서 고친 파일의 원격 사본을 열 때 「로컬 열기」 알림 1회.
+
+- [ ] **(2026-10-26, §1-GA) 디버그 스텝 체감 — 0.18.2 실기 확인(읽기 경로·모션 무영향).** ① Locals 가 많은 프로시저(또는 Globals 를 펼친 상태)에서 정지 직후 바로 F10 연타 → Debug Console 의 `⏱ Step over 총 …` 줄에서 **큐 대기(ms)가 0~수십 ms** 인지(종전엔 남은 변수 조회만큼 수백 ms~수 초). ② Move 가 있는 줄을 Step → 1403 트리거 없이도 `정지 확인 대기: step 가 … → 1000ms 간격 백업 폴` 뒤 1 s 안에 정지가 잡히는지, Continue 는 20 s 뒤 백업 폴이 사용자 간격으로 돌아가는지(GPL Traffic 의 Show Thread 간격). ③ 재개 직후 Variables 패널이 일부만 채워진 채 멈추는 일이 없는지(남은 조회는 버리므로 다음 정지에서 다시 채워져야 정상). ④ 타이밍 줄의 「정지 감지」 출처가 평소 `1403 트리거` 인지 — `fast poll`/`대기 백업 폴` 이 대부분이면 1403 `<E>` 이벤트가 스텝 완료를 알리지 않는 것(§1-L 남은 일)이므로 그때는 FAST_POLL_DELAYS 를 더 촘촘히 할지 결정.
 
 - [ ] **(2026-10-22, §1-FQ) Hover 성능 — 새 VSIX 편집기 확인.** PoseFile.gpl:132의 AxisCount와 여러 파일의 함수 이름에서 첫 마우스 Hover·재방문 반응을 확인한다. 실제 소스 하니스에서 VS Code의 표시 대기·렌더링·다른 확장의 경합은 측정하지 않았다.
 
@@ -1058,9 +1064,9 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-FO | 10-22 | **README 이용자 안내 개편** — 기능·지원 환경·시작 방법과 배포·디버깅·모니터링·AI 연동 정리, 개발·게시·내부 API 설명 제거. 0.15.2 | [아카이브](archive/handoff/2026-10.md) |
 | §1-FP | 10-22 | **누적 변경 커밋·푸시** — 확장 1222/1222·MCP 137/137·문서 빌드, 기존 VSIX 167개 파일 일치, 사용자 확인 뒤 codex/domain-modules 원격 반영 | [10월 아카이브](archive/handoff/2026-10.md) |
 | §1-FQ | 10-22 | **첫 Hover 지연 개선** — 현재 파일 우선 조회·오버로드 자기 선언 제외·라이브러리 폴더 캐시, 실제 소스 성능 대조. 0.15.3 | [아카이브](archive/handoff/2026-10.md#1-fq-2026-10-22-세션--첫-hover의-불필요한-프로젝트-탐색-제거) |
-| §1-FR (PR #36) | 10-23 | **PR #36 병합 검증** — Linux CI fixture와 Flash 안전·진입점·Rename 리뷰 수정, 회귀 6건·전체 1228/1228·MCP 137/137. 0.15.4 | [본문](#1-fr-2026-10-23-세션--pr-36-병합-ci와-리뷰-수정) |
-| §1-FR (제어기 디버깅) | 10-23 | **제어기 프로젝트 열어 디버깅** — Snapshot·참조 라이브러리·작업공간 전환 후 일회성 Attach, 자동 Start 차단·기존 BP 보존. 0.16.0 | 본문 ↓ |
-| §1-FS | 10-23 | **디버깅용 FTP 라이브러리 탐색 오류** — 없는 경로의 목록 형식 오류 실측, 부모 확인·캐시·원격 대소문자 보존. 0.16.1 | 본문 ↓ |
+| §1-FR (PR #36) | 10-23 | **PR #36 병합 검증** — Linux CI fixture와 Flash 안전·진입점·Rename 리뷰 수정, 회귀 6건·전체 1228/1228·MCP 137/137. 0.15.4 | [2026-10](archive/handoff/2026-10.md#1-fr-2026-10-23-세션--pr-36-병합-ci와-리뷰-수정) |
+| §1-FR (제어기 디버깅) | 10-23 | **제어기 프로젝트 열어 디버깅** — Snapshot·참조 라이브러리·작업공간 전환 후 일회성 Attach, 자동 Start 차단·기존 BP 보존. 0.16.0 | [2026-10](archive/handoff/2026-10.md#1-fr-2026-10-23-세션--제어기-프로젝트를-열어-바로-디버깅) |
+| §1-FS | 10-23 | **디버깅용 FTP 라이브러리 탐색 오류** — 없는 경로의 목록 형식 오류 실측, 부모 확인·캐시·원격 대소문자 보존. 0.16.1 | [2026-10 아카이브](archive/handoff/2026-10.md#1-fs-2026-10-23-세션--ftp-라이브러리-후보-경로-확인-실패) |
 | §1-FT | 10-23 | **README 문체·분량 개선** — 개인 취미 프로젝트 소개·kaomoji, 버전·VSIX 설치·기본 단축키 제거, GPL/GPR 안내. 0.16.2 | 본문 ↓ |
 | §1-FU | 10-23 | **로컬·GitHub 병합** — 원격 Flash·진입점·Rename 수정과 로컬 Hover·제어기 프로젝트 디버깅 통합, 경로 fixture·문서 충돌 해소. 0.16.3 | 본문 ↓ |
 | §1-FV | 10-23 | **PR #37 전체 반영** — Linux CI와 초기 BP 동기화·Snapshot 라이브러리 그래프 경로 수정. 0.16.4 | 본문 ↓ |
@@ -1068,92 +1074,15 @@ src/providers/referenceProvider.ts       # scanDocumentText 라인별 스캔(ReD
 | §1-FX | 10-23 | **FTP 새로고침 경합** — 일반 조회 뒤 새 요청 직렬화·종료 경계, .gpo 설명 정정. 0.17.1 | 본문 ↓ |
 | §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | 본문 ↓ |
 | §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | 본문 ↓ |
+| §1-GA | 10-26 | **디버그 스텝 체감 지연 재발** — 어댑터 큐를 control/data 차선으로(재개 시 미전송 조회 폐기), pending 백업 폴, 재개 타이밍 한 줄 로그. 0.18.2 | 본문 ↓ |
+| §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | 본문 ↓ |
+| §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-FR ~ §1-FZ (2026-10-23~26).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-FT ~ §1-GC (2026-10-23~27).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-FR. 2026-10-23 세션 — PR #36 병합 CI와 리뷰 수정
-
-### 증상·원인
-
-사용자가 원격 codex/domain-modules의 누적 변경을 main에 병합하도록 요청했다. PR #36의 Linux CI는 compile을 통과했지만 Windows 경로를 전제한 fixture 2건 때문에 1220/1222로 실패했다. 자동 리뷰에서 미완결 Sync STATUS를 성공으로 처리하는 Flash 안전 경계, 작업 쓰레드·잘린 스택의 진입점 오진, 다른 프로젝트를 포함하는 Rename 충돌 검사도 확인했다.
-
-### 조치·범위
-
-- fixture를 실행 OS의 path.resolve·dirname·basename·sep로 만들고 Windows에서만 대소문자·구분자 차이도 검사한다. 운영 경로 정규화 계약은 유지한다.
-- Flash 안전 판정에 기존 isCleanlyTerminated 종결자 규칙을 재사용했다. 숫자 STATUS 0이 있더라도 종결 응답이 없으면 unknown으로 남고 안정화 카운트다운·경고 해제로 넘어가지 않는다.
-- 진입점 대조는 대상 프로젝트·메인 쓰레드와 완결된 전체 스택이 확인될 때만 수행한다. 캐시된 디버그 이벤트의 축약 프레임은 완결 스택으로 간주하지 않고, Show Stack 결과는 전체로 비교하되 표시만 8개로 제한한다.
-- Rename 충돌은 기존 isSameCompileUnit 판정을 재사용한다. 같은 단위의 프로젝트·라이브러리 충돌은 계속 차단하고 무관한 프로젝트의 동명 모듈은 제외한다.
-- 원래 checkout의 진행 중인 0.15.3 작업을 건드리지 않고 f1a26fd에서 만든 독립 worktree에서 수정했다. 별도 작업 버전과 겹치지 않도록 버그 수정 patch 0.15.4를 선택했다. §1-FQ 번호도 재사용하지 않는다.
-- 최근 10개 세션을 유지하도록 §1-FG를 원문 그대로 아카이브로 이동했다.
-
-### 검증·결과 확인
-
-- 수정 전 모의 입력에서 잘린 Sync 응답이 ok:true가 되고 작업 쓰레드가 시작 프로시저 불일치로 표시되는 것을 재현했다. 실제 제어기 명령은 보내지 않았다.
-- 독립 Windows worktree의 npm test(compile 포함) **1228/1228**, MCP **137/137** 통과. Flash·진입점·실제 Rename Provider의 경계 회귀 6건을 추가했다. git diff --check 통과.
-- npm run package:no-bump 성공. dist/gpl-language-support-0.15.4.vsix **1,364,300 bytes**, SHA-256 **5CD0631386F3A49A8D3AA8DB7BBCA6E3E46C2E2F6F020B9E385B96AAD98F87B7**. 내부 manifest·운영 코드·리소스 168개가 현재 파일과 일치하고 임시 파일·내부 지침·테스트 소스가 없음을 확인했다. 초회 ZIP 검사에서 임시 커밋 메시지 포함을 찾아 제외 폴더로 옮긴 뒤 같은 버전으로 재생성했다. 최종 산출물은 원래 checkout의 dist에도 보존했다. 기존 Node DEP0190·JavaScript 번들링 권고가 있고 최종 패키징 실패는 없다.
-- Linux CI·MCP·VSIX smoke 검사의 최종 결과와 main 병합 상태는 [PR #36](https://github.com/nir414/GPL_language/pull/36)에서 확인한다. 원격 head SHA가 달라지면 이전 검사 결과를 새 커밋의 검증으로 취급하지 않는다.
-
-### 남은 일
-
-새 0.15.4 VSIX의 F5 UI·실제 제어기·Flash 안전 경고 실물 확인은 수행하지 않았으며 기존 §3 항목을 유지한다. 패키징·회귀 검증은 실제 장비의 Flash 쓰기 안전성을 증명하지 않는다.
-
-## 1-FR. 2026-10-23 세션 — 제어기 프로젝트를 열어 바로 디버깅
-
-> 이 세션의 전용 작업공간 전환 방식은 §1-FW에서 현재 창의 원격 파일 보기로 대체됐다. 아래는 당시 구현 이력이다.
-
-### 증상·원인
-
-FTP 다운로드와 로컬 작업공간, Attach가 분리돼 제어기 프로젝트를 열어 디버깅하기까지 사용자가 대상과 경로를 직접 맞춰야 했다. 기존 Attach는 stopOnEntry=false여도 configurationDone에서 Start 경로로 들어갔고, preflight를 끄더라도 파일 BP 갱신과 분리에서 기존 BP를 지울 수 있었다.
-
-### 조치
-
-- FTP 폴더 우클릭과 명령 팔레트에 gpl.controller.openProjectForDebugging을 추가했다. 확장의 globalStorageUri/controller-projects 아래 새 세션에 소스 Snapshot을 받고, 원격 폴더 상대 배치를 보존한다. ProjectName은 폴더명과 구분해 .gpr에서 읽고 projectDir과 함께 고정한다.
-- ProjectLibrary 그래프와 기존 조상 경로 후보 규칙을 재사용해 필요한 최상위 라이브러리 폴더를 순차 다운로드한다. 순환·중복 참조를 끊고 미해결 참조를 안내한다. 통신 실패를 폴더 없음으로 숨기지 않는다. 다운로드 사본의 manifest 게이트로 자동 업로드·배포·Flash 쓰기를 막는다.
-- 저장된 .code-workspace, 소스 .vscode/launch.json과 활성화용 marker를 만든다. 전환 전에 globalState에 일회성 요청을 저장하고, 해당 작업공간의 신뢰 확인 뒤 10분 이내에만 한 번 소비한다. 나중에 다시 열거나 첫 연결이 실패하면 F5로 사용한다. 소스 파일은 자동 삭제하지 않는다.
-- 새 startOnAttach=false는 stopOnEntry와 configurationDone 양쪽의 자동 Start를 끈다. 기존 설정의 기본값 true는 유지하되 Attach Only 명령도 false를 명시한다. preserveExistingBreakpoints=true는 Attach에서 종결 STATUS를 확인한 Show Break 목록을 보존하고 BP 갱신·함수/임시 BP·분리 경로에서 해당 위치의 Set Break/Nobreak 전송을 생략한다.
-- FTP 소스와 현재 실행 바이너리의 일치를 검증한 것으로 표시하지 않는다. Main 소스를 열고 명령 콘솔에 세션 주소로 연결해 지정된 프로젝트에 Attach한다. 기존 디버그 세션이 살아 있으면 창 전환으로 종료시키지 않고 먼저 Disconnect하도록 안내한다.
-
-### 검증
-
-- 신규 회귀 **15/15**: 대상 고정·비배포 구성·일회성 재개·신뢰 확인·실패 후 재시도 방지·경로 경계·라이브러리 순환/누락/통신 실패, 실제 DAP의 Start 차단과 기존 BP 보존·새 소스 BP 정리, 실제 소스맵의 동명 사본 제외·라이브러리 매핑을 모의 통신/API로 확인했다.
-- 최종 VSIX 빌드와 같은 산출물로 전체 확장 **1241/1241**, controller-mcp **137/137**, `npm run docs:build` strict, `git diff --check` 통과. 첫 샌드박스 전체 실행의 기존 소켓·junction·파일 교체 16건은 일반 Windows 권한 실행에서 해소했다. 초기 새 BP 테스트는 모의 Show Break에 추가 BP를 반영하도록 고친 뒤 통과했다.
-- `npm run pre-release-check` **15/17**. 미커밋 변경과 현재 `codex/domain-modules` 브랜치 때문에 clean-tree/main 항목만 실패했으며 커밋·브랜치 전환으로 우회하지 않았다.
-- `npm run package:no-bump` 성공: **dist/gpl-language-support-0.16.0.vsix**, **1,390,743 bytes**, SHA-256 **7652DCC60AB3535C325BBC4DFA4176536969D7DBAA0D1A2B55011EBC6461AE83**. 기존 Node DEP0190·JavaScript 다파일 번들링 권고 경고가 있으며 패키징 실패는 없다.
-- VSIX의 새 모듈·DAP·Attach 명령·진입점·MCP 번들·package.json 8개를 현재 파일 SHA-256과 대조했다. CHANGELOG는 vsce의 issue 링크 변환 외에 동일하고, 소스·테스트·내부 지침·임시 조사 파일은 제외됐다. 기존 동시 작업의 변경을 유지했다.
-- 실제 VSIX 설치·F5 UI·제어기 접속·모션 검증·Git 커밋·태그·push·게시를 수행하지 않았다.
-
-### 남은 일
-
-§3의 새 흐름 UI/제어기 확인을 수행한다. FTP 다운로드의 무결성과 실행 바이너리 출처는 구분하며, 다른 도구가 컴파일한 프로그램의 소스 일치는 미확인으로 유지한다.
-
-## 1-FS. 2026-10-23 세션 — FTP 라이브러리 후보 경로 확인 실패
-
-### 증상·원인
-
-사용자가 제어기 프로젝트 열어 디버깅에서 basic-ftp의 MLSD/Unix/DOS 목록 형식 오류를 보고했다. 내려받은 사본을 읽어 BinderR3 본체는 완성됐고 ProjectLibrary 탐색에서 실패했음을 확인했다. 기존 코드는 로컬 상대 경로 후보를 그대로 원격 LIST에 넣고, 없는 폴더는 FTP 550으로만 거절된다고 가정했다.
-
-연결된 0.16.0 확장의 hello-project 창을 extensionInstanceId로 지정해 MCP extension_command의 gpl.ai.debug.listRemoteProjects로 조회했다. /GPL/BinderR3/Lib/Core/Foundation은 동일한 파싱 오류였고, /GPL/BinderR3 목록에는 하위 App만 있었다. /GPL/Lib/Core/Foundation은 Project.gpr·Foundation.gpl·Errors.gpl·Stopwatch.gpl을 정상 반환했다. FTP 조회만 했으며 Compile·Start·Stop·업로드·디버그 Attach는 실행하지 않았다.
-
-### 조치
-
-- controller/files/controllerProjectDownload.ts에서 부모 목록의 디렉터리 항목을 확인하며 경로를 내려가도록 수정했다. 없는 후보는 LIST를 보내지 않고 다음 기준점을 시도한다. 목록은 이 다운로드 호출 안에서 캐시하고, 실제 원격 항목의 대소문자로 다음 경로와 다운로드 루트를 구성한다.
-- 확인된 디렉터리의 파싱 실패·통신 오류는 빈 목록으로 처리하지 않고 후보 경로와 함께 보고한다. 공유 FTP 파서와 기본 전송 동작은 바꾸지 않았다.
-- 테스트의 존재하지 않는 경로 응답을 빈 배열에서 현장과 같은 파싱 예외로 바꿨다. 없는 후보를 조회하지 않는지, 부모 조회가 중복되지 않는지, 정상 폴더의 오류가 유지되는지, 소문자 참조를 원격 표기로 찾는지 확인한다.
-
-### 검증
-
-- 관련 회귀 **17/17**, 전체 확장 **1243/1243**, controller-mcp **137/137**, TypeScript 컴파일·`git diff --check` 통과. 첫 전체 실행에서 발견한 controller→language 의존 위반은 폴더명 비교에서 언어 식별자 모듈의 직접 참조를 제거해 해소했다.
-- `npm run pre-release-check` **15/17**: 현재 `codex/domain-modules` 브랜치와 미커밋 변경 때문에 main/clean-tree 항목만 실패했다. 기존 변경을 유지하며 Git 커밋·브랜치 전환은 하지 않았다.
-- `npm run package:no-bump` 성공. **dist/gpl-language-support-0.16.1.vsix**, **1,391,240 bytes**, SHA-256 **D02DF70F6A02F5B097E24F7478887BE4DE65F45BD492E1245B4402CCC670FA3A**. 기존 Node DEP0190·JavaScript 다파일 번들링 경고가 있고 패키징 실패는 없다.
-- VSIX의 변경 다운로드 모듈·주요 Attach 모듈·MCP 번들·package.json 등 8개 파일의 SHA-256이 현재 빌드와 같다. 소스·테스트·내부 지침·임시 파일 제외를 확인했다. 설치·새 코드의 실제 다운로드/Attach·모션·원격 쓰기·Git 커밋·태그·push·게시는 수행하지 않았다.
-
-### 남은 일
-
-새 VSIX 설치 뒤 같은 BinderR3에서 작업공간 전환·Attach까지 확인한다. 현장 FTP 재현은 설치된 0.16.0 경로의 실패/정상 목록 비교이며 새 코드의 전체 흐름 실기 검증은 아니다. 실행 바이너리와 FTP 소스 일치 여부도 미확인으로 유지한다.
 
 ## 1-FT. 2026-10-23 세션 — README 문체와 개인 프로젝트 소개 개선
 
@@ -1326,3 +1255,103 @@ Copilot 리뷰 6건을 코드로 대조해 모두 사실로 확인하고 고쳤�
 ### Marketplace 자동 게시 연결 (0.18.1)
 
 v0.18.0 Release workflow의 `marketplace` job은 secret 미설정으로 skip됐다. 사용자 계정(`doyunkwack@naver.com`)으로 Entra 앱 등록·서비스 주체·federated credential을 만들고(계정 소유자가 직접 실행 — Claude Code 권한 검사가 인증 정보 생성을 막음), 서비스 주체를 Marketplace 게시자 멤버(Contributor)로 추가, GitHub `marketplace` secrets와 `MARKETPLACE_PUBLISH=true`를 설정했다. 값과 우회 방법은 `docs/releases/process.md` 「현재 연결 상태」. v0.18.0 재실행은 immutable release 자산 교체 거부(`Cannot delete asset from an immutable release`)로 실패해, `release.yml`이 기존 릴리스 자산을 재사용하도록 고치고 patch 0.18.1로 다시 태그했다.
+
+## 1-GA. 2026-10-26 세션 — 디버그 스텝 체감 지연 재발: 명령 차선 큐·pending 백업 폴·타이밍 로그
+
+### 증상·비교
+
+사용자: "제어기 정보 갱신·처리가 많이 느려졌고, 특히 디버깅에서 다음 줄로 넘기는 데 한참 걸린다. 예전에 개선한 적이 있으니 그때 자료와 비교해 달라." 과거 기록은 §1-D(07-03, fast poll 30/120/250/500/1000·1403 트리거 force·Show Thread 캐시, 체감 ~600-750 → ~100-250 ms), §1-L(07-13, 적응형 인터벌 폴·프레임 프리페치), §1-X(07-22, Globals 메모). 그 세 가지는 현재 소스에 그대로 남아 있다(FAST_POLL_DELAYS_MS·THREAD_LIST_CACHE_TTL 300·FRAME_CACHE_TTL 1500 동일). 사용자 설치본은 `code --list-extensions` 와 MCP `extension_status` 모두 **0.13.2**(dist 최신은 0.18.1).
+
+코드 대조로 확인한 "그 뒤 달라진 것" 둘:
+
+1. **어댑터 명령 큐가 단일 FIFO(`_commandQueue`)** — 정지할 때마다 VS Code 가 Locals(지역 변수 수만큼 `Show Variable -eval`)·Watch(Smart 사다리 최대 3~4 왕복)·펼쳐 둔 Globals(MergeCode 42개)를 전부 다시 조회한다. 그 조회가 끝나기 전에 누른 Step/Continue 와 그 뒤 정지 감지 `Show Thread -web` 이 남은 조회 사이에 끼어 1 왕복(RTT+15 ms 큐 gap)씩 밀렸다. 사후 스냅샷의 실측 RTT 는 p50 4 ms·p99 101 ms 지만 Sample Prep 의 `Show Thread -web` 은 14줄·~100 ms 라 변수 30개면 1 s 안팎, Globals 를 펼쳤으면 수 초가 Step 앞에 줄을 선다. `variablesRequest`/`evaluateRequest` 는 pending 중 **시작**만 막았고 이미 도는 루프는 계속 조회했다.
+2. **GitHub #22(08-26) 이후 1403 이 "alive" 면 Running 백업 폴이 사용자 간격(기본 5 s)** — fast poll 체인(~1.9 s)이 끝나도 정지를 못 봤으면 그 다음 관측이 최대 5 s 뒤다. alive 판정은 60 s 안 페이로드만 보므로 디버그 중엔 거의 항상 alive. 1403 `<E>N,N</E>` 이벤트가 스텝 완료를 실제로 알려 주는지는 §1-L 남은 일 그대로 미확정 — Move 처럼 2 s 넘게 걸리는 한 줄을 Step 하면 "다음 줄이 한참 뒤에" 가 된다. 사후 스냅샷에는 `policy:`·stale 재시도·idle ping 지연 흔적은 없었다(명령 정책 R1·R2 는 실제 개입 0건).
+
+그 외 전 명령에 더해진 비용(`guardBeforeSend`·정책 분류·설정 읽기)은 µs~ms 단위라 원인으로 보지 않았다. Compile/Start 앞의 `Show Memory`(실측 563 ms)는 배포 체감에만 해당한다.
+
+### 조치 (모두 읽기 경로·명령 순서 변경 — 모션 무영향)
+
+- `src/debug/commandLanes.ts`(신설, 순수) `LaneQueue`: control(Step/Continue/Break·정지 감지 폴·Show Stack·BP 명령 — `_sendCmd` 기본)이 data(변수·Watch·전역·배열 요소 조회 — `_sendCmd(cmd, 'data')`)보다 항상 먼저 나간다. data 작업은 등록 세대를 기억해 `invalidateData()`(= `_clearStaleState`, 모든 재개 경로) 뒤 **보내지 않고 null** 로 끝난다. 실행 중 작업은 끊지 않는다. 실패 뒤 100 ms 휴지는 종전과 같다.
+- Locals·Globals 루프와 `_queryVariableStructuredSmart` 사다리는 `_frameCacheGen`(정지 컨텍스트 세대)·`_pendingAction` 을 보고 재개되면 남은 조회를 중단한다 — data 차선은 "이미 등록된" 조회만 걸러 주고 루프가 새로 등록하는 조회는 새 세대라 실제로 나가기 때문.
+- `src/debug/pollSchedule.ts`(신설, 순수) `pendingPollDelayMs`: fast 체인이 끝나도 pending 이면 step/pause/entry 는 정지 확인까지, continue 는 20 s(`DEFAULT_CONTINUE_FAST_WINDOW_MS`) 동안 `gpl.debug.runningBackupPollMs`(기본 1 s) 간격으로 계속 본다. 그 뒤는 종전 인터벌 정책. 1403 트리거는 그대로 주 신호. Debug Console 에 `정지 확인 대기: step 가 1900ms 째 미확인 → 1000ms 간격 백업 폴` 1회.
+- 타이밍 로그: 재개 액션마다 `_resumeTiming` 을 열고(`_noteResumeSent`: 큐 대기·명령 왕복·완료 시각), 정지를 확인한 `_pollThreadStates` 의 finally 가 `⏱ Step over 총 92ms — 명령 14ms(큐 대기 3ms) · 정지 감지 +75ms(1403 트리거, 폴 2회)` 한 줄을 남긴다(`formatResumeTiming`). 폴 출처(`fast`/`pending`/`1403`/`interval`/`retry`/`trigger`)를 `_pollThreadStates(force, source)` 로 넘긴다. 다음에 느리면 이 줄이 어느 구간인지 말해 준다 — §1-D 때 분해를 추정으로 했던 것의 교훈.
+- 설정 추가 없음(기존 `runningBackupPollMs` 재사용). 버전은 안정화라 patch **0.18.2**.
+
+### 검증
+
+- `npm test` **1433/1433**(신규 `commandLanes.test.ts` 6건: 차선 우선순위·세대 폐기·실행 중 작업 보존·cooldown·대기 통계·재펌프, `pollSchedule.test.ts` 4건). CRLF 유지 확인(`git ls-files --eol`).
+- `npm run package`: `dist/gpl-language-support-0.18.2.vsix` **1,488,414 bytes**, SHA-256 **CE4775F1A141ACCE7AD4A5B388398D4CBED8E5077038DEB8936C2DCD43FFB739**. 경고는 기존 JavaScript 번들링 권고(285 파일 중 221 JS)뿐, 실패 없음.
+- 실기 미확인 — 사용자 제어기는 연결돼 있었지만(Sample Prep 창, 디버그 세션 없음) Step/Continue 는 모션을 유발할 수 있어 보내지 않았다. §3 항목 ①~④ 로 남겼다.
+
+### 남은 일
+
+- 사용자가 0.18.2 를 설치한 뒤 §3 (§1-GA) 항목으로 체감·타이밍 줄 확인. 「정지 감지」 출처가 대부분 `fast poll`/`대기 백업 폴` 이면 1403 이 스텝 완료를 알리지 않는 것이므로 fast 체인 간격 재조정 검토.
+- 변수 조회 자체의 왕복 수(Locals N 회·Globals 42 회)는 그대로다 — 한 번에 프레임 전체를 덤프하는 콘솔 형식이 있는지(GDE 캡처 `captures/gde_1402.pcapng` 의 Locals 패널 트래픽) 확인하면 다음 단계.
+- 1402 명령 간 gap 15 ms 는 keep-alive 재사용 소켓에서도 유지 중 — 실기 ECONNRESET 재현 없이 줄이지 않는다.
+
+## 1-GB. 2026-10-26 세션 — 수신함 2건: 메모리 사전 검사는 경고만 · 원격 사본의 정의 찾기에 로컬 프로젝트 매핑
+
+Sample Prep 세션이 SendMessage 와 수신함(`Downloads\GPL_language_inbox`)으로 보낸 보고 2건을 처리했다. 둘 다 `done/` 에 처리 결과를 적어 옮겼다. 버전은 patch **0.18.3**.
+
+### A. 메모리 사전 검사가 배포를 막음 → 경고 전용 (`2026-10-26_SamplePrep_메모리사전검사_배포차단_v1.md`)
+
+- **사용자 결정(원문)**: "잘만 실행 되는데, 기능을 완전히 막아 버리네. 경고만 하랬지 기능을 막으란 건 아니었다." 실측(Binder 8Ch): BinderR3 정지 시 Free 3.19 MB, 실행 중 0.18 MB(런타임 버퍼 ~3 MB) — 검사가 Stop **전**에 돌아 실행 중이면 항상 차단됐다.
+- `controller/diagnostics/memoryGuard.ts`: 수준을 ok·warning·**critical**·unknown 으로, `checkMemory` 는 어느 수준에서도 예외를 내지 않는다(`MemoryGuardError`·`LOW_MEMORY`/`MEMORY_UNVERIFIED` 삭제). 설정 `memoryGuard.criticalMb`(기본 2.5) 신설, `blockMb` 는 deprecated(설정돼 있으면 심각 기준으로만 읽음 — `controllerConnection.checkMemoryBeforeOperation` 의 inspect 폴백).
+- `deployService`: 업로드 전 측정은 "실행 중인 앱의 메모리 포함 값, 정지 뒤 Compile 직전에 다시 측정" 주석을 달아 `precheckWarnings` 에만 넣고, Compile 뒤 `getLastMemoryCheck()`(큐 슬롯 측정, Stop 이후)가 있으면 그것으로 `result.memoryPrecheck` 를 덮어쓴다. 실패 코드·`retryMode` 의 메모리 분기, `deployOutcome` 의 "메모리 사전 검사로 중단" 문구, `controllerCommands` 의 AI 응답 분기 제거. MCP 쪽 `LOW_MEMORY` 처리 분기는 옛 확장 호환으로 남겨 뒀다(더 이상 오지 않는다).
+- 「회귀 아님: 동일 실패 패턴 N회 관측」 → 「같은 실패 N회째 (새 회귀가 아니라 같은 원인의 반복)」(`deployOutcome.comparisonNoteFor`). `RETRY_SAME_REQUEST` 안내는 차단이 사라져 해당 없음.
+- `memoryNotice.ts` 는 critical 전이에 한 번 알리고 배지 문구를 "심각(… 미만, 전송은 막지 않음)" 으로. 문서: `docs/development/architecture.md` 「메모리 사전 검사」 전면 수정.
+
+### B. 원격 사본(/GPL/…)에서 F12 가 안 됨 → 로컬 프로젝트 매핑 (`2026-10-26_SamplePrep_원격GPL파일_정의찾기_v1.md`)
+
+- 보고: `\GPL\Lib\Motion\Cmd\MotionCmd.gpl` 의 `AddressOf MSC.OnErr` 에서 이동 안 됨(보고자는 정의가 같은 파일이라고 봤다). 원격 언어 서비스(§1-FW `activation/controllerSourceLanguage.ts`)는 **열어 본 원격 파일만** 인덱싱하므로 다른 파일의 모듈은 못 찾는다. 같은 파일 사례는 하니스 회귀 테스트로 **정상 동작을 확인**했다(`controllerSourceLanguage.test.ts` "같은 파일 다른 Module 의 멤버") — 사용자 환경에서 실제로 같은 파일이었는지는 미확인이라 §3 에 남겼다.
+- `project/remoteSourceMapping.ts`(신설, 순수): 원격 경로의 루트 바로 아래 폴더 = 프로젝트 이름 → 로컬 후보를 deploy record `projectDir` → 작업공간 `.gpr` `ProjectName` → 폴더 이름 순으로 고르고(단계별 후보 2개 이상이면 선택 안 함), 그 컴파일 단위 소스(자기 + ProjectLibrary 재귀, `buildLibraryGraph`)를 돌려준다. `sameSourceText` 는 EOL·BOM·끝 공백 무시.
+- `controllerSourceLanguage.ts`: 탐색 범위 서비스마다 1회 `seedFromLocal` 로 로컬 소스를 `cache.updateFilesFromDisk` 로 씨앗 인덱싱(`host.log` 에 `[Remote Source] … (deploy-record|project-name|folder-name, 소스 N개)`). `location()` 은 TMP 캐시 밖 `file:` 위치를 그대로 통과(로컬 파일 열기). `SymbolCache` 생성자에 `workspaceFolderFor` 주입을 추가해 캐시 경로는 TMP 루트를 최상위 폴더로 보게 — 열어 본 원격 사본이 같은 프로젝트 폴더 점수(500)로 로컬 사본(0)보다 앞선다. 열 때 로컬 파일과 내용이 다르면 `showInformationMessage`(「로컬 열기」) 를 URI 당 1회.
+- 테스트 하니스에 `/deployRecord`·`/projectFileScope` 스텁, `workspace.fs.readFile`, `window.showInformationMessage/showTextDocument` 캡처, `addLocalProject` 추가. 신규 회귀: 작업공간 ProjectName 매핑으로 열지 않은 `Msc.gpl` 정의 이동, deploy record 우선 + 원격 사본 우선, 차이 알림·「로컬 열기」.
+
+### 검증
+
+- `npm test` **1442/1442**(메모리 가드·알림·배포 결과 테스트 갱신, 매핑 4건·원격 언어 4건 추가), `controller-mcp` **164/164**. `git diff --check` 통과(autocrlf 경고만).
+- `npm run package`: `dist/gpl-language-support-0.18.3.vsix` **1,495,120 bytes**, SHA-256 **946B74B8D50CD8847229136CA1D5B600F64887AFBB284AD98C10FCFD9406CA5D**. 경고는 기존 JavaScript 번들링 권고뿐.
+- 실기·UI 미확인(§3 참조). Git 커밋 없음.
+
+### 남은 일
+
+- §3 (§1-GB) 항목: 실행 중 BinderR3 상태에서 `deploy_project build` 가 차단 없이 Compile 까지 가고 `precheckWarnings` 두 줄(업로드 전/정지 뒤)이 맞는 값인지, FTP 트리에서 `MotionCmd.gpl` 을 열어 `MSC.OnErr` F12 와 Output `[Remote Source]` 줄, 로컬과 다른 파일의 「로컬 열기」 안내.
+- 보류: 사용자가 요청한 "로컬과 다름" 표시를 편집기 상단 배너(CodeLens/상태 표시줄)로 바꿀지 — 지금은 알림 1회.
+
+---
+
+## 1-GC. 2026-10-27 세션 — 사용자 업무 메모 4건: Unload 버튼 · 메모리 심각 시 선택 · Project.gpr 자동 동기화 · AI 조회로 패널 안 바뀌게
+
+사용자가 업무 기록 파일(`GPL Language Support.txt`)의 최신 메모를 붙여 넣었다. 네 항목을 모두 반영했고 버전은 minor **0.19.0**(기능 추가). 수신함(`Downloads\GPL_language_inbox`)은 비어 있었다. 작업 중 같은 저장소의 다른 세션(gpl-language-09)이 `src/` 재배치(git mv) 전 조율을 요청해 "편집 중, 끝나면 알림" 으로 답했다 — 미커밋 변경은 이전 세션들이 남긴 것이며 이 세션도 커밋하지 않았다.
+
+### A. "Unload 할 수 있는 버튼 필요" — 메모리 폭주가 Unload 로 회복됨
+
+- 종전 Unload 는 트리의 FTP 폴더 우클릭(`gpl.controller.ftpUnload`)뿐이었고 팔레트에서는 숨김(`when: false`). **`gpl.controller.unloadProject`**(「GPL: Unload Project (프로젝트 내리기 — 메모리 회수)」)를 팔레트·트리 `···` 메뉴(`1_deploy@5`)에 추가 — `/GPL` 폴더 목록(FTP LIST, 읽기 전용)을 QuickPick 으로 고르고, 「이름 직접 입력…」·「모두 내리기 (Unload -all)」 항목을 둔다. 연결 안 됨·배포 잠금이면 보내지 않는다. 트리 우클릭과 공통 절차 `runUnloadInteractive`(STATUS 판정은 `projectCommands.unloadProject`), `-all` 은 `runUnloadAllInteractive`(STATUS 종결 미수신은 "미확정"). 메모리 경고 토스트·상세 모달(`showMemoryStatus`)·배포 `MEMORY_CHECK` 중단 안내에 「Unload…」 버튼(`UNLOAD_PROJECT_COMMAND` 상수는 `controllerConnection.ts`).
+- 메모의 관측 "**타깃 프로젝트의 Project.gpr 에 ProjectStart 가 없으면 Unload 시 제어기가 죽음**(Lib_Net, 회피 방법 미확인)": 종전 가드는 "이 부팅의 그룹 Compile 표시" 만 봤다. `unloadRisk.assessUnloadRisk(state, cmd, { targetIsGroup })` 에 두 번째 근거를 추가 — `unloadRiskGuard.assessUnloadRiskWithProjectKind` 가 워크스페이스 `.gpr`(ProjectStart 유무)로 대상을 확인해 그룹이면 표시가 없어도 `risky`. 전송 가드(`guardBeforeSend`)·사람 모달(`confirmUnloadRiskInteractive`)이 같은 판정을 쓴다. 문구는 근거별로 다르게(그룹 Compile 6/6 실측 문구는 그 근거에만, 대상 그룹은 "2026-10-27 보고, 회피 방법 없음"). `Unload -all` 은 대상이 없어 표시만 본다. MCP 직접 TCP 경로의 `unloadRisk.js` 는 표시만 보는 그대로(브리지 경로는 확장 가드가 잡는다).
+
+### B. "메모리 제한으로 업로드를 막는 게 아닌 경고 — 취소할지 강제 진행할지 정하게"
+
+- §1-GB 가 경고 전용으로 바꿨고(차단 없음), 이번엔 **사람 경로에 선택**을 넣었다. `DeployOptions.confirmMemoryCritical(check, phase)` 훅: `deployService` 가 정지 뒤·Compile 루프 직전(Upload & Start 면 Start 직전)에 `checkMemoryBeforeOperation` 으로 한 번 더 재고 critical 이면 훅을 부른다 — 거부 시 `failedPhase: 'MEMORY_CHECK'`(새 DeployPhase·`SituationDeploySnapshot.lastStage`), 업로드는 유지. 업로드 전 측정(실행 중 앱 메모리 포함)으로는 묻지 않는다(§1-GB 의 "항상 차단" 재발 방지). 큐 슬롯 검사는 그대로 다시 돈다(대표값 정본, Show Memory 는 읽기 전용).
+- `activation/deploy.ts` 는 사람 경로(비대화형·autoOnSave·Upload Only 제외)에만 훅을 넘기고, `MEMORY_CHECK` 결과를 THREAD_CHECK 처럼 "중단" 으로 보고(+「Unload…」「메모리 상세」). `gpl.start`(Start 확인 모달 앞)·FTP Run(Compile 앞)도 `controllerOps.confirmMemoryCriticalInteractive` 로 같은 모달. 설정 **`gpl.controller.memoryGuard.confirmOnCritical`**(기본 true). AI·자동화 경로는 종전대로 경고만(`precheckWarnings`).
+
+### C. "Project.gpr 파일 자동 동기화 기능"
+
+- 자동 반영(`gpl.project.autoSyncSources`)은 이미 있었으나 **VS Code 안의 생성/이름 변경/삭제만** 잡았다. 신설 **`project/gprFolderSync.ts`**(순수: `checkGprFolderSync`·`describeGprSyncPlan`·`findGprFile`·`makeExistsOnDisk`·`sourceExtensionsFrom`)로 대조 계산을 한 곳에 두고, `gprSyncCommand.ts` 가 ① FileSystemWatcher(`**/*.{gpl}`, create/delete 만, 확장자 설정 변경 시 재생성)로 외부 변경(SVN·GDE·탐색기)도 같은 디바운스(프로젝트당 600 ms → 알림 1회)로 처리 ② `reconcileProjectGprBeforeDeploy` — 사람 경로의 배포·Quick Compile·Upload Only 직전에 목록이 다르면 「반영 후 N / 그대로 N / 취소」 모달(auto 면 바로 반영, 비대화형은 auto 일 때만 반영, off 면 건너뜀). `deployService` 는 `.gpr` 파싱 직후 같은 계산으로 남은 차이를 `precheckWarnings`(문구 "목록에 없는 파일은 컴파일되지 않고…") + `result.gprSyncMismatch` 에 남긴다. 탐색 상한(truncated)이면 제거 제안을 비운다.
+
+### D. "AI 가 데이터 읽어올 때마다 포커스가 바뀜 — 로그 보고 있는데 화면이 확확 바뀜"
+
+- 원인: `host.revealOutputForAgentRequest` 가 브리지 요청마다(30초 조용 뒤 첫 요청) `outputChannel.show(true)` — preserveFocus 지만 **패널의 보이는 채널이 Output 으로 바뀌어** 보던 GPL Console/Live Log 가 가려졌다. AI 가 생각하는 동안 30초가 지나면 다음 Show Thread 한 번에도 재현.
+- `agentCommandLog.agentRequestChangesControllerState(command, args)`: 원시 명령(`gpl.controller.sendCommand`)은 `isReadOnlyConsoleCommand` 로, 확장 명령은 `AGENT_READ_ONLY_EXTENSION_COMMANDS`(getState·getConnectionState·listRemoteProjects·runtimeConsoleRead·evaluate·automation.target·diagnosticSnapshot) 예외 목록으로 판정 — **조회면 열지 않고**, 모르는 확장 명령은 연다(§1-EO 의 "AI 가 무엇을 했는지 보이게" 기본 유지). 조용 구간 게이트도 상태 변경 요청만 갱신한다. 설정 `gpl.agentBridge.revealOutput` 설명 갱신.
+
+### 검증
+
+- `npm test` **1447/1447**(신규: gprFolderSync 3건, agentCommandLog 조회/변경 판정 1건, unloadRisk 그룹 대상 2건 — 가드 포함). `git diff --check` 통과. VS Code 마크다운 린트(architecture 표 열 수) 수정.
+- `npm run package:no-bump`(버전은 package.json·package-lock 을 손으로 0.19.0 으로 — bump 스크립트는 빈 섹션 헤더를 남긴다): `dist/gpl-language-support-0.19.0.vsix` **1,506,842 bytes**, SHA-256 **97BAC4FA202A21F7898CC0ABCB993082AD2D11BB0F37C257266677785CA51F68**. 경고는 기존 JavaScript 번들링 권고뿐.
+- 실기·UI 미확인(§3 §1-GC). Git 커밋 없음. controller-mcp 는 코드 변경 없음(브리지 거부 코드·형식 동일).
+
+### 남은 일
+
+- §3 (§1-GC) 실기·UI 확인. 특히 그룹 대상 Unload 로 제어기가 멈추는 현상의 **회피 방법**은 여전히 모른다 — 사용자 메모대로 추가 테스트 필요(가드는 경고+동의일 뿐 막지 않는다).
+- 보류: 메모리 심각 모달을 AI 경로에도 "선택" 으로 줄지(예: `deploy_project` 인자 `confirmMemory:true` 를 요구) — 현재는 경고만. §1-GB 의 사용자 결정("막지 말라")과 2026-08-28 "AI 접근을 승인 모달로 막지 않는다" 방침에 맞춰 두지 않았다.
+- 보류: 워처가 제어기 작업공간 다운로드(대량 `.gpl` 생성)에도 반응한다 — manifest 와 `.gpr` 가 맞으면 조용하지만, 다르면 알림 1회가 뜬다. 문제가 되면 다운로드 중 억제 플래그 추가.

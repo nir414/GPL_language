@@ -6,8 +6,8 @@ import type { MemoryPrecheck } from '../controller/diagnostics/memoryGuard';
 // 2026-10-23 Sample Prep 보고: 경고 구간(2.5~4 MB)에서 Compile·Start·배포마다 같은 경고 알림이 새로 쌓였다.
 const IP = '192.168.0.1';
 function check(freeMb: number | null, level?: MemoryPrecheck['level']): MemoryPrecheck {
-    const lv = level ?? (freeMb === null ? 'unknown' : freeMb < 2.5 ? 'blocked' : freeMb < 4 ? 'warning' : 'ok');
-    return { freeMb, warnMb: 4, blockMb: 2.5, level: lv, message: `여유 메모리 ${freeMb} MB (경고 4 MB / 차단 2.5 MB).` };
+    const lv = level ?? (freeMb === null ? 'unknown' : freeMb < 2.5 ? 'critical' : freeMb < 4 ? 'warning' : 'ok');
+    return { freeMb, warnMb: 4, criticalMb: 2.5, level: lv, message: `여유 메모리 ${freeMb} MB (경고 4 MB / 심각 2.5 MB).` };
 }
 
 test('memoryNotice: ok → warning 에서 한 번 알리고, 같은 warning 반복은 알리지 않는다', () => {
@@ -29,12 +29,12 @@ test('memoryNotice: 직전 알림 대비 0.5 MB 이상 더 떨어지면 다시 �
     assert.strictEqual(t.evaluate(IP, check(2.9)).toast, false, '기준은 마지막 알림(3.1) — 0.2 MB 감소');
 });
 
-test('memoryNotice: warning → blocked 는 나빠짐으로 한 번 알리고, ok 로 돌아오면 기억을 지운다', () => {
+test('memoryNotice: warning → critical 은 나빠짐으로 한 번 알리고, ok 로 돌아오면 기억을 지운다', () => {
     const t = new MemoryNoticeTracker();
     t.evaluate(IP, check(3));
-    const blocked = t.evaluate(IP, check(2.3));
-    assert.deepStrictEqual({ toast: blocked.toast, reason: blocked.reason }, { toast: true, reason: 'worsened' });
-    assert.strictEqual(t.evaluate(IP, check(2.2)).toast, false, '같은 차단 반복은 알리지 않는다(차단 자체는 호출부가 매번 한다)');
+    const critical = t.evaluate(IP, check(2.3));
+    assert.deepStrictEqual({ toast: critical.toast, reason: critical.reason }, { toast: true, reason: 'worsened' });
+    assert.strictEqual(t.evaluate(IP, check(2.2)).toast, false, '같은 심각 반복은 알리지 않는다(결과 필드·Output 에는 매번 남는다)');
     const better = t.evaluate(IP, check(3));
     assert.deepStrictEqual({ toast: better.toast, reason: better.reason }, { toast: false, reason: 'improved' });
     const ok = t.evaluate(IP, check(5));
@@ -77,7 +77,7 @@ test('memoryNotice: 알림 문구는 짧게, 긴 안내(Unload 위험)는 상세
     assert.strictEqual(formatMemoryToast(c), '여유 메모리 2.96 MB — 경고 구간(4 MB 미만)');
     assert.doesNotMatch(formatMemoryToast(c), /Unload/);
     assert.match(formatMemoryDetail(c), /Unload 뒤에는 수 분간 명령 콘솔이 응답하지 않을 수 있습니다/);
-    assert.match(formatMemoryDetail(c), /경고 4 MB 미만 · 차단 2.5 MB 미만/);
+    assert.match(formatMemoryDetail(c), /경고 4 MB 미만 · 심각 2.5 MB 미만/);
     assert.strictEqual(memoryBadge(check(5)), undefined);
     assert.match(memoryBadge(c)!.tooltip, /클릭: 상세 보기/);
 });

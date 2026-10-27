@@ -2,6 +2,9 @@ import * as assert from 'assert';
 import { test } from './harness';
 import {
     AGENT_OUTPUT_REVEAL_QUIET_MS,
+    AGENT_RAW_CONSOLE_COMMAND,
+    AGENT_READ_ONLY_EXTENSION_COMMANDS,
+    agentRequestChangesControllerState,
     createRevealGate,
     formatAgentCommandFailure,
     formatAgentCommandLines,
@@ -53,6 +56,26 @@ test('agentCommandLog: 실패도 같은 자리에 — 정책 보류는 "보내�
         '[Command] >>> Step Main (agent) → 정책 보류(제어기에 보내지 않음): R1: 직전 정지 미확인',
     );
     assert.match(formatAgentCommandFailure('Show Thread', 'command-failed', 'ECONNREFUSED'), /전송 실패: ECONNREFUSED$/);
+});
+
+test('agentCommandLog: 조회 요청으로는 패널을 열지 않는다 — 상태 변경 요청만 (2026-10-27 포커스 지적)', () => {
+    // 원시 명령: 읽기 전용 콘솔 명령은 열지 않고, 상태 변경·미분류 명령은 연다.
+    for (const cmd of ['Show Thread -web', 'show variable -eval Main 0 x', 'Show Memory', 'ErrorLog']) {
+        assert.strictEqual(agentRequestChangesControllerState(AGENT_RAW_CONSOLE_COMMAND, { command: cmd }), false, cmd);
+    }
+    for (const cmd of ['Stop -all', 'Compile App', 'Start App -compile', 'Set Break Main 10', 'Unload Lib', 'Frobnicate']) {
+        assert.strictEqual(agentRequestChangesControllerState(AGENT_RAW_CONSOLE_COMMAND, { command: cmd }), true, cmd);
+    }
+    assert.strictEqual(agentRequestChangesControllerState(AGENT_RAW_CONSOLE_COMMAND, 'Show Thread'), false, '문자열 인자');
+    assert.strictEqual(agentRequestChangesControllerState(AGENT_RAW_CONSOLE_COMMAND, undefined), true, '명령을 모르면 연다');
+    // 확장 명령: 조회 전용 목록만 예외, 나머지는 연다(모르는 명령을 숨기지 않는다).
+    for (const id of ['gpl.ai.debug.getState', 'gpl.ai.debug.listRemoteProjects', 'gpl.ai.debug.runtimeConsoleRead', 'gpl.automation.target']) {
+        assert.ok(AGENT_READ_ONLY_EXTENSION_COMMANDS.has(id));
+        assert.strictEqual(agentRequestChangesControllerState(id, {}), false, id);
+    }
+    for (const id of ['gpl.deploy', 'gpl.start', 'gpl.ai.debug.setBreakpoint', 'gpl.controller.threadBreak', 'gpl.some.newCommand']) {
+        assert.strictEqual(agentRequestChangesControllerState(id, {}), true, id);
+    }
 });
 
 test('agentCommandLog: 패널 열기는 조용한 뒤 첫 요청에만 — 연속 폴링은 열지 않는다', () => {

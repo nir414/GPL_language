@@ -1,5 +1,13 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { REMOTE_SOURCE_SCHEME, getRemoteSourceSession } from '../controller/files/remoteSourceSession';
+import { getCompiledRecord } from '../controller/deployment/deployRecord';
+import { findWorkspaceGprPaths } from '../project/projectFileScope';
+import {
+	describeGprCandidates, localCompileUnitSources, localFileFor, pickLocalProject, remoteProjectLocation, sameSourceText,
+} from '../project/remoteSourceMapping';
+import type { LocalProjectMatch } from '../project/remoteSourceMapping';
 import { SymbolCache } from '../language/vscode/symbolCache';
 import { GPLCompletionProvider } from '../providers/completionProvider';
 import { GPLDefinitionProvider } from '../providers/definitionProvider';
@@ -34,9 +42,13 @@ class SourceLanguageServices {
 	readonly signature: GPLSignatureHelpProvider;
 	readonly evaluatable: GPLEvaluatableExpressionProvider;
 	private readonly versions = new Map<string, { document: vscode.TextDocument; version: number; localPath: string }>();
+	/** 로컬 프로젝트 씨앗 — 서비스(연결·탐색 범위)마다 한 번. undefined 면 아직 시도 전. */
+	private seedTask: Promise<LocalProjectMatch | undefined> | undefined;
 
 	constructor(readonly session: SourceSession, output: vscode.OutputChannel) {
-		this.cache = new SymbolCache(output);
+		// 경로 근접도의 최상위 폴더 기준을 TMP 캐시 루트로 — 열어 본 원격 사본(같은 프로젝트 폴더)이 매핑된 로컬 사본보다 앞선다.
+		this.cache = new SymbolCache(output, filePath =>
+			session.remotePathForLocal(filePath) !== undefined ? session.cacheRoot : vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath);
 		this.completion = new GPLCompletionProvider(this.cache);
 		this.definition = new GPLDefinitionProvider(this.cache, output);
 		this.hover = new GPLHoverProvider(this.cache, output);
@@ -68,16 +80,52 @@ class SourceLanguageServices {
 
 	get isEmpty(): boolean { return this.versions.size === 0; }
 
+	/**
+	 * 원격 프로젝트에 대응하는 로컬 프로젝트의 컴파일 단위를 이 캐시에 넣는다(2026-10-26 Sample Prep 보고 — 종전엔 열어 본
+	 * 원격 파일만 알아 다른 파일의 모듈로 이동하지 못했다). 매핑 규칙은 project/remoteSourceMapping.ts. 한 번만 시도하고,
+	 * 대응이 없으면 종전처럼 열어 본 파일만으로 동작한다.
+	 */
+	seedFromLocal(projectName: string, log: (message: string) => void): Promise<LocalProjectMatch | undefined> {
+		if (!this.seedTask) {
+			this.seedTask = (async () => {
+				const record = getCompiledRecord(this.session.host, projectName);
+				const candidates = describeGprCandidates(await findWorkspaceGprPaths());
+				const match = pickLocalProject(projectName, candidates, record?.projectDir);
+				if (!match) {
+					log(`[Remote Source] ${this.session.host} /${projectName}: 대응하는 로컬 프로젝트 없음 — 열어 본 원격 파일만 조회`);
+					return undefined;
+				}
+				const sources = localCompileUnitSources(match.gprPath);
+				if (sources.length > 0) {
+					await this.cache.updateFilesFromDisk(sources.map(file => vscode.Uri.file(file)));
+				}
+				log(`[Remote Source] ${this.session.host} /${projectName} → ${match.projectDir} (${match.via}, 소스 ${sources.length}개) — 정의·호버·완성에 로컬 컴파일 단위를 사용`);
+				return match;
+			})().catch(error => {
+				try { log(`[Remote Source] 로컬 프로젝트 매핑 실패: ${error instanceof Error ? error.message : String(error)}`); } catch { /* 로거 실패는 무시 */ }
+				return undefined;
+			});
+		}
+		return this.seedTask;
+	}
+
+	/** 이미 끝난 매핑 결과(없거나 아직이면 undefined) — 열 때 로컬과의 차이 안내에 쓴다. */
+	localMatch(): Promise<LocalProjectMatch | undefined> | undefined { return this.seedTask; }
+
 	location(location: vscode.Location): vscode.Location | undefined {
 		if (location.uri.scheme !== 'file') { return undefined; }
 		const remotePath = this.session.remotePathForLocal(location.uri.fsPath);
-		return remotePath ? new vscode.Location(vscode.Uri.parse(this.session.uri(remotePath)), location.range) : undefined;
+		// TMP 캐시 밖의 file: 위치는 매핑된 로컬 프로젝트의 파일이다 — 편집은 로컬이 정본이므로 그대로 연다.
+		return remotePath ? new vscode.Location(vscode.Uri.parse(this.session.uri(remotePath)), location.range) : location;
 	}
 }
 
 /** 원격 읽기 전용 소스에 기존 언어 해석을 재사용한다. 파일 변경 기능은 등록하지 않는다. */
 export function activateControllerSourceLanguage(host: ExtensionHost): void {
 	const services = new Map<string, SourceLanguageServices>();
+	const log = (message: string): void => {
+		try { host.log(message); } catch { host.outputChannel.appendLine(message); }
+	};
 	const selectors: vscode.DocumentSelector = [
 		{ scheme: REMOTE_SOURCE_SCHEME, pattern: '**/*.gpl' },
 		{ scheme: REMOTE_SOURCE_SCHEME, pattern: '**/*.gpo' },
@@ -112,7 +160,37 @@ export function activateControllerSourceLanguage(host: ExtensionHost): void {
 			services.set(key, service);
 		}
 		const adapted = service.document(document);
-		return adapted ? { service, document: adapted } : undefined;
+		if (!adapted) { return undefined; }
+		// 탐색 범위(= /GPL 바로 아래 프로젝트)에 대응하는 로컬 프로젝트를 씨앗으로 넣는다(비동기, 1회). Attach 범위는
+		// 준비한 컴파일 단위를 이미 공유하므로 제외한다.
+		const where = remoteProjectLocation(session.root, remotePath);
+		if (scope !== 'debug' && where) { void service.seedFromLocal(where.projectName, log); }
+		return { service, document: adapted };
+	}
+
+	/** 원격 사본을 열었을 때 대응 로컬 파일과 내용이 다르면 한 번 알린다(편집은 로컬이 정본). URI 마다 한 번. */
+	const differenceNotified = new Set<string>();
+	async function notifyIfDiffersFromLocal(document: vscode.TextDocument): Promise<void> {
+		const session = getRemoteSourceSession(document.uri.authority);
+		const remotePath = session?.remotePathFromUri(document.uri.toString());
+		if (!session || !remotePath) { return; }
+		const where = remoteProjectLocation(session.root, remotePath);
+		const service = services.get(JSON.stringify([session.id, `browse:${where ? where.projectName.toLowerCase() : ''}`]));
+		const match = await service?.localMatch();
+		if (!match || !where?.relative) { return; }
+		const localFile = localFileFor(match.projectDir, where.relative);
+		const key = document.uri.toString();
+		if (differenceNotified.has(key) || !fs.existsSync(localFile)) { return; }
+		let localText: string;
+		try { localText = fs.readFileSync(localFile, 'utf8'); } catch { return; }
+		if (sameSourceText(localText, document.getText())) { return; }
+		differenceNotified.add(key);
+		const open = '로컬 열기';
+		const pick = await vscode.window.showInformationMessage(
+			`제어기 사본 ${path.posix.basename(remotePath)} 이 로컬 ${path.relative(match.projectDir, localFile)} 과 다릅니다 — 로컬이 바뀌었거나 업로드 전입니다.`,
+			open,
+		);
+		if (pick === open) { await vscode.window.showTextDocument(vscode.Uri.file(localFile), { preview: false }); }
 	}
 
 	host.context.subscriptions.push(
@@ -164,7 +242,9 @@ export function activateControllerSourceLanguage(host: ExtensionHost): void {
 				return source?.service.evaluatable.provideEvaluatableExpression(source.document, position);
 			},
 		}),
-		vscode.workspace.onDidOpenTextDocument(document => { prepare(document); }),
+		vscode.workspace.onDidOpenTextDocument(document => {
+			if (prepare(document)) { void notifyIfDiffersFromLocal(document).catch(() => undefined); }
+		}),
 		vscode.workspace.onDidChangeTextDocument(event => { prepare(event.document); }),
 		vscode.workspace.onDidCloseTextDocument(document => {
 			for (const [key, service] of services) {

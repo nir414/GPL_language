@@ -80,6 +80,8 @@ import {
 } from '../controller/deployment/deployRecord';
 import type { CompiledRecord, SnapshotDiff } from '../controller/deployment/deployRecord';
 import { shouldGateStepRequest, StepGateReason } from './stepGate';
+import { LaneQueue, CommandLane } from './commandLanes';
+import { pendingPollDelayMs, formatResumeTiming, DEFAULT_CONTINUE_FAST_WINDOW_MS, ResumeTiming, StopPollSource } from './pollSchedule';
 import { formatEvalError, describeNestedExpandFailure, UNDEFINED_SYMBOL_STATUS } from './evalMessages';
 import {
     formatBlockedReplInput,
@@ -366,8 +368,16 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _fastPollGen = 0;
 
     // Controller console is effectively single-request-at-a-time.
-    // Serialize all commands within a debug session to avoid ECONNRESET.
-    private _commandQueue: Promise<void> = Promise.resolve();
+    // 세션 안의 모든 명령은 차선 큐(commandLanes.ts)로 직렬화한다 — control(Step/Continue/폴/스택)이 data(변수·Watch·전역
+    // 조회)보다 먼저 나가고, 실행 재개 시 아직 보내지 않은 data 조회는 버린다(2026-10-26 "다음 줄로 넘기는 데 한참" 보고).
+    private readonly _lanes = new LaneQueue({ failureCooldownMs: 100 });
+    /** 직전 제어기 명령의 큐 대기·왕복 시간 — 재개 타이밍 로그(_resumeTiming)용. */
+    private _lastCmdTiming: { command: string; queueWaitMs: number; commandMs: number; doneAt: number } | undefined;
+    /** 사용자 재개 액션(step/continue/pause)의 타이밍 — 정지 감지 시 한 줄로 기록하고 비운다(pollSchedule.formatResumeTiming). */
+    private _resumeTiming: ResumeTiming | null = null;
+    /** 현재 pending 액션의 명령이 나간 시각 — pending 백업 폴 일정(pollSchedule.pendingPollDelayMs)의 기준. */
+    private _pendingSinceMs = 0;
+    private _pendingBackupLogged = false;
 
     // Pending action — determines StoppedEvent reason
     private _pendingAction: PendingAction = null;
@@ -920,7 +930,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     // 우회해 트리거가 유실되지 않도록 한다. (가드에 막히면
                     // _pollRetryRequested가 표시되어 직후 재폴된다)
                     this._log('[1403] 런타임 콘솔 데이터 감지 → 즉시 폴 트리거');
-                    void this._pollThreadStates(true);
+                    void this._pollThreadStates(true, '1403');
                 } else {
                     // ⑦ pending 액션이 없어도 폴 — 자유 실행 중 BP 히트/다른 쓰레드 정지도
                     // 1403 상태 이벤트로 먼저 신호가 온다. 코얼레싱 예약이라 이벤트가
@@ -1385,8 +1395,12 @@ export class GPLDebugSession extends LoggingDebugSession {
                 : [];
 
             if (varNames.length > 0) {
-                // 3) 각 변수를 개별 Show Variable로 조회 — 배열/객체는 트리로 확장 가능
+                // 3) 각 변수를 개별 Show Variable로 조회 — 배열/객체는 트리로 확장 가능.
+                //    실행이 재개되면(정지 컨텍스트 세대 변경) 남은 변수는 조회하지 않는다 — 값이 버려질 뿐 아니라
+                //    다음 Step/폴이 그 뒤에 줄을 선다(2026-10-26).
+                const stopGen = this._frameCacheGen;
                 for (const varName of varNames) {
+                    if (this._pendingAction || stopGen !== this._frameCacheGen) { break; }
                     const structured = await this._queryVariableStructured(
                         scopeInfo.threadName, scopeInfo.frameIndex, varName,
                     );
@@ -1416,7 +1430,10 @@ export class GPLDebugSession extends LoggingDebugSession {
             // × 최대 3회 = 126회 → 42회)
             const globals = this._getGlobalVariableDescriptors();
 
+            const stopGen = this._frameCacheGen;
             for (const g of globals) {
+                // 실행이 재개되면 남은 전역은 조회하지 않는다(Locals 와 같은 이유).
+                if (this._pendingAction || stopGen !== this._frameCacheGen) { break; }
                 const memoKey = g.displayName.toLowerCase();
                 const memo = this._globalQueryMemo.get(memoKey);
 
@@ -1720,6 +1737,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             return;
         }
         if (threadName) {
+            const requestedAt = Date.now();
             // Continue 직전 위치를 origin으로 저장 — 폴이 Running 순간을 놓쳐도
             // 위치 변경으로 새 정지(BP 적중)를 확실히 감지하기 위한 기준점.
             const prevFrames = this._cachedFrames.get(threadName);
@@ -1756,6 +1774,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             } finally {
                 this._userActionInFlight = false;
             }
+            this._noteResumeSent('Continue', threadName, requestedAt);
 
             // Continue 직후 빠른 재정지를 놓치지 않도록 fast poll 사용
             this._fastPoll();
@@ -1778,6 +1797,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             return;
         }
         if (threadName) {
+            const requestedAt = Date.now();
             this._cancelGateResync(args.threadId); // GitHub #28: 실제 Step 의 StoppedEvent 가 UI 복귀를 대신한다
             this._clearStaleState();
             this._pendingAction = 'step';
@@ -1791,6 +1811,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             } finally {
                 this._userActionInFlight = false;
             }
+            this._noteResumeSent('Step over', threadName, requestedAt);
             this._fastPoll();
         }
         this.sendResponse(response);
@@ -1810,6 +1831,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             return;
         }
         if (threadName) {
+            const requestedAt = Date.now();
             this._cancelGateResync(args.threadId); // GitHub #28: 실제 Step 의 StoppedEvent 가 UI 복귀를 대신한다
             this._clearStaleState();
             this._pendingAction = 'step';
@@ -1832,6 +1854,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             } finally {
                 this._userActionInFlight = false;
             }
+            this._noteResumeSent('Step into', threadName, requestedAt);
             this._fastPoll();
         }
         this.sendResponse(response);
@@ -1851,6 +1874,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             return;
         }
         if (threadName) {
+            const requestedAt = Date.now();
             this._cancelGateResync(args.threadId); // GitHub #28: 실제 Step 의 StoppedEvent 가 UI 복귀를 대신한다
             this._clearStaleState();
             this._pendingAction = 'step';
@@ -1864,6 +1888,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             } finally {
                 this._userActionInFlight = false;
             }
+            this._noteResumeSent('Step out', threadName, requestedAt);
             this._fastPoll();
         }
         this.sendResponse(response);
@@ -1875,6 +1900,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     ): Promise<void> {
         const threadName = this._threadIdToName.get(args.threadId);
         if (threadName) {
+            const requestedAt = Date.now();
             this._pendingAction = 'pause';
             this._pendingThreadId = args.threadId;
             this._userActionInFlight = true;
@@ -1884,6 +1910,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             } finally {
                 this._userActionInFlight = false;
             }
+            this._noteResumeSent('Pause', threadName, requestedAt);
             this._fastPoll();
         }
         this.sendResponse(response);
@@ -2986,6 +3013,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     // 필요하므로 비어 있으면 스킵한다 (REPL 경로와 동일한 가드).
                     const gResp = await this._sendCmd(
                         `Show Global ${expression}, ${this._projectName}`,
+                        'data',
                     );
                     if (gResp) {
                         const lines = this._showGlobalResponseLines(gResp);
@@ -3017,7 +3045,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 }
             }
             if (!result && this._projectName) {
-                const gResp = await this._sendCmd(`Show Global ${expression}, ${this._projectName}`);
+                const gResp = await this._sendCmd(`Show Global ${expression}, ${this._projectName}`, 'data');
                 if (gResp) { result = this._showGlobalResponseLines(gResp).join('\n'); }
             }
         } else {
@@ -3078,6 +3106,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             if (!result && this._projectName) {
                 const gResp = await this._sendCmd(
                     `Show Global ${expression}, ${this._projectName}`,
+                    'data',
                 );
                 if (gResp) {
                     const lines = this._showGlobalResponseLines(gResp);
@@ -3209,6 +3238,8 @@ export class GPLDebugSession extends LoggingDebugSession {
      * Called before step/continue to prevent old frame IDs from leaking.
      */
     private _clearStaleState(): void {
+        // 아직 보내지 않은 변수·Watch·전역 조회는 버린다 — 정지 컨텍스트가 바뀌어 값이 쓰이지 않는다(commandLanes.ts).
+        this._lanes.invalidateData();
         this._variableHandles.reset();
         this._frameIdToInfo.clear();
         this._frameIdCounter = 0;
@@ -3796,6 +3827,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     ): Promise<{ entry: ParsedVarEntry; members: ParsedVarEntry[]; error?: { code: number; message: string } } | null> {
         const resp = await this._sendCmd(
             `Show Variable -eval ${threadName} ${frameIndex} ${expression}`,
+            'data',
         );
         if (!resp) { return null; }
         const entries = parseShowVariableMulti(resp);
@@ -3837,10 +3869,16 @@ export class GPLDebugSession extends LoggingDebugSession {
         // `Me.x`는 이 제어기 콘솔에서 -712 Invalid syntax(실측 2026-08-25, GitHub #26) — 접두를 벗기고 평가한다.
         expression = expression.replace(/^Me\.(?=[A-Za-z_])/i, '');
 
+        // 실행이 재개되면(정지 컨텍스트 세대 변경) 남은 사다리 단계를 보내지 않는다 — data 차선은 첫 단계만 걸러 주고,
+        // 그 뒤 새로 등록되는 단계는 새 세대라 실제로 나가기 때문이다(2026-10-26).
+        const stopGen = this._frameCacheGen;
+        const resumed = () => this._pendingAction !== null || stopGen !== this._frameCacheGen;
+
         // ① 원식 그대로
         const first = await this._queryVariableStructured(threadName, frameIndex, expression);
         const firstResult = first ? { ...first, resolvedExpression: expression } : null;
         if (!miss(first)) { return firstResult; }
+        if (resumed()) { return firstResult; }
 
         // ② 변수 인덱스 치환
         const tokens = extractIndexIdentifierTokens(expression);
@@ -3869,6 +3907,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         // ②-b 프로퍼티 → 백킹 필드 치환 (GitHub #26). -780은 "식의 마지막 요소가 사용자 프로시저"일 때 난다(실측 2026-08-25).
         //     같은 클래스 프레임이면 점 표기 치환식이 바로 읽히고, 다른 클래스 프레임에서는 Private 필드 점 표기가
         //     -729라 부모 객체 덤프(프레임 무관, Private 포함 전체 필드)에서 멤버 줄을 추출한다.
+        if (resumed()) { return firstResult; }
         if (depth === 0 && first?.error?.code === -780) {
             let candidates = this._propertyBackingCandidates(expression);
             // 부모 객체 덤프는 한 번만 받아 후보 클래스 판별(GitHub #32)과 -729 폴백(#26)에 함께 쓴다.
@@ -3959,6 +3998,7 @@ export class GPLDebugSession extends LoggingDebugSession {
 
         // ③ 점 표기 식 → 부모 덤프에서 멤버 값 추출 (1단계만 — 중첩 객체의 멤버는
         //    부모 덤프에도 "존재"만 실려 와 더 내려갈 수 없다)
+        if (resumed()) { return firstResult; }
         const lastDot = expression.lastIndexOf('.');
         if (depth === 0 && lastDot > 0) {
             const parentExpr = expression.slice(0, lastDot);
@@ -4162,6 +4202,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             const elemExpr = `${scope.expression}(${i}${suffix})`;
             const resp = await this._sendCmd(
                 `Show Variable -eval ${scope.threadName} ${scope.frameIndex} ${elemExpr}`,
+                'data',
             );
             if (!resp) {
                 // 응답 없음(타임아웃/연결 끊김)은 배열 끝이 아니다 — 실패 표식 후 중단.
@@ -4534,6 +4575,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             this._projectName
                 ? `Show Global ${name}, ${this._projectName}`
                 : `Show Global ${name}`,
+            'data',
         );
         if (!resp || !isSuccess(resp)) {
             return '';
@@ -4559,13 +4601,12 @@ export class GPLDebugSession extends LoggingDebugSession {
         return lines.length > 0 ? lines.join(', ') : '';
     }
 
-    private _enqueueCommand<T>(work: () => Promise<T>): Promise<T> {
-        const run = this._commandQueue.then(() => work(), () => work());
-        this._commandQueue = run.then(
-            () => undefined,
-            () => new Promise<void>(r => setTimeout(r, 100)),  // 연결 실패 시 100ms 대기 후 다음 명령
-        );
-        return run;
+    /**
+     * 차선 큐 등록. control 은 data 보다 먼저 나가고, data 는 실행 재개(_clearStaleState → invalidateData) 뒤 보내지 않고
+     * null 로 끝난다. 연결 실패 뒤에는 100ms 쉬고 다음 명령(종전 동작 유지).
+     */
+    private _enqueueCommand<T>(work: (ctx: { waitedMs: number }) => Promise<T>, lane: CommandLane = 'control', staleValue?: T): Promise<T> {
+        return this._lanes.enqueue(lane, work, { staleValue });
     }
 
     /**
@@ -4582,12 +4623,17 @@ export class GPLDebugSession extends LoggingDebugSession {
         });
     }
 
-    private async _sendCmd(command: string): Promise<string | null> {
+    /**
+     * 제어기 명령 1회. `lane` 이 'data'(변수·Watch·전역 조회)면 control 명령 뒤로 밀리고, 실행 재개 뒤에는 보내지 않고
+     * null 을 돌려준다 — 호출측은 null 을 "응답 없음"과 같이 다룬다(어차피 버려질 값이다).
+     */
+    private async _sendCmd(command: string, lane: CommandLane = 'control'): Promise<string | null> {
         if (!this._config || !this._isConnected) { return null; }
         this._lastControllerCommand = command;
-        return this._enqueueCommand(async () => {
+        return this._enqueueCommand<string | null>(async ctx => {
             if (!this._config || !this._isConnected) { return null; }
             try {
+                const started = Date.now();
                 // `-compile` 이 붙은 Start 는 컴파일까지 수행해 응답이 Compile 과 같다(pass 사이 수 초 침묵).
                 // 짧은 idle 완료로 받으면 잘려서 `-9999 No STATUS found` 가 되므로 종결자까지 기다린다(§1-DN).
                 const result = commandRunsCompiler(command)
@@ -4596,6 +4642,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                         timeoutMs: Math.max(this._config.timeoutMs, 60000),
                     })).raw
                     : await sendCommand(command, this._config);
+                const doneAt = Date.now();
+                this._lastCmdTiming = { command, queueWaitMs: ctx.waitedMs, commandMs: doneAt - started, doneAt };
                 // 주요 명령은 응답 첫 줄을 디버그 콘솔에 표시
                 if (/^(Set |Start |Stop |Continue |Step |Break |Compile |Execute )/i.test(command)) {
                     const firstLine = result?.replace(/<[^>]+>/g, '').trim().split(/\r?\n/)[0] || '';
@@ -4606,7 +4654,21 @@ export class GPLDebugSession extends LoggingDebugSession {
                 this._log(`명령 실패 [${command}]: ${err.message ?? err}`);
                 return null;
             }
-        });
+        }, lane, null);
+    }
+
+    /**
+     * 재개 액션(step/continue/pause)의 명령이 끝난 직후 호출 — 타이밍 기록을 열고 pending 백업 폴 기준 시각을 잡는다.
+     * 정지 감지 시 _pollThreadStates 의 finally 가 한 줄로 남긴다.
+     */
+    private _noteResumeSent(kind: string, threadName: string, requestedAt: number): void {
+        const t = this._lastCmdTiming;
+        this._resumeTiming = {
+            kind, threadName, requestedAt, polls: 0,
+            queueWaitMs: t?.queueWaitMs,
+            commandMs: t?.commandMs,
+            commandDoneAt: t?.doneAt,
+        };
     }
 
     /**
@@ -4719,7 +4781,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             if (!this._isConnected) { return; }
             // force=true: 만료 시점 폴이 다시 디바운스에 걸리지 않도록. 폴 진행 중이면
             // _pollRetryRequested(force 경로)로 재폴이 예약된다.
-            void this._pollThreadStates(true);
+            void this._pollThreadStates(true, 'trigger');
         }, delay);
     }
 
@@ -4767,7 +4829,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 if (gen !== this._pollTimerGen || !this._isConnected) { return; }
                 try {
                     if (!this._pollInFlight) {
-                        await this._pollThreadStates();
+                        await this._pollThreadStates(false, 'interval');
                     }
                 } catch (err) {
                     // 폴 1회 예외로 인터벌 체인이 조용히 끊기지 않게 한다 (재스케줄 보장).
@@ -4807,11 +4869,36 @@ export class GPLDebugSession extends LoggingDebugSession {
         this._frameCacheGen++; // ⑧ 진행 중이던 프레임 조회의 캐시 기록도 무효화
         const gen = ++this._fastPollGen;
         const delays = GPLDebugSession.FAST_POLL_DELAYS_MS;
+        // pending 백업 폴 일정의 기준 시각 — 이 함수는 사용자 액션(step/continue/pause/entry Start) 직후에만 불린다.
+        this._pendingSinceMs = Date.now();
+        this._pendingBackupLogged = false;
         const schedule = (idx: number): void => {
             if (gen !== this._fastPollGen) { return; }
-            if (idx >= delays.length) {
-                if (this._isConnected) { this._startPolling(); }
-                return;
+            let delay: number;
+            let source: StopPollSource;
+            if (idx < delays.length) {
+                delay = delays[idx];
+                source = 'fast';
+            } else {
+                // 점감 체인이 끝났는데 아직 사용자 액션의 정지를 못 봤다 — 1403 트리거가 이 정지를 알려 주지 않을 수 있으므로
+                // pending 전용 백업 폴로 잇는다(pollSchedule.ts: step/pause/entry 는 확인까지, continue 는 창 안에서만).
+                const pending = pendingPollDelayMs({
+                    pendingAction: this._pendingAction,
+                    pendingSinceMs: this._pendingSinceMs,
+                    nowMs: Date.now(),
+                    backupPollMs: this._runningBackupPollMs,
+                    continueFastWindowMs: DEFAULT_CONTINUE_FAST_WINDOW_MS,
+                });
+                if (pending === null) {
+                    if (this._isConnected) { this._startPolling(); }
+                    return;
+                }
+                delay = pending;
+                source = 'pending';
+                if (!this._pendingBackupLogged) {
+                    this._pendingBackupLogged = true;
+                    this._log(`정지 확인 대기: ${this._pendingAction} 가 ${Date.now() - this._pendingSinceMs}ms 째 미확인 → ${delay}ms 간격 백업 폴로 계속 확인 (1403 트리거 병행)`);
+                }
             }
             this._fastPollTimer = setTimeout(() => {
                 this._fastPollTimer = undefined;
@@ -4819,7 +4906,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 void (async () => {
                     try {
                         if (!this._pollInFlight) {
-                            await this._pollThreadStates(true);
+                            await this._pollThreadStates(true, source);
                         }
                     } catch (err) {
                         // 폴 1회 예외로 fast poll 체인이 끊기지 않게 한다 (다음 스케줄 유지).
@@ -4833,7 +4920,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                     }
                     schedule(idx + 1);
                 })();
-            }, delays[idx]);
+            }, delay);
         };
         schedule(0);
     }
@@ -4842,7 +4929,7 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _pollCount = 0;
     private static readonly DIAG_POLL_COUNT = 3;
 
-    private async _pollThreadStates(force: boolean = false): Promise<void> {
+    private async _pollThreadStates(force: boolean = false, source: StopPollSource = 'manual'): Promise<void> {
         if (!this._isConnected) { return; }
         if (this._pollInFlight) {
             // ④ 진행 중인 폴이 이번 상태 변화를 이미 지나쳤을 수 있으므로,
@@ -4860,6 +4947,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         //    최소 간격 이내면 스킵 (중복 Show Thread 제거).
         if (!force && Date.now() - this._lastPollCompletedAt < GPLDebugSession.POLL_MIN_GAP_MS) { return; }
         this._pollInFlight = true;
+        const pendingBefore = this._pendingAction;
+        if (this._resumeTiming && pendingBefore) { this._resumeTiming.polls++; }
         try {
             this._pollCount++;
 
@@ -5185,6 +5274,11 @@ export class GPLDebugSession extends LoggingDebugSession {
         } finally {
             this._pollInFlight = false;
             this._lastPollCompletedAt = Date.now();
+            // 재개 액션의 정지가 이 폴에서 확인됐으면 타이밍을 한 줄로 남긴다 — 느릴 때 어느 구간(큐 대기/명령/감지)인지 보인다.
+            if (this._resumeTiming && pendingBefore && !this._pendingAction) {
+                this._log(formatResumeTiming(this._resumeTiming, this._lastPollCompletedAt, source));
+                this._resumeTiming = null;
+            }
             // GitHub #28: pending 이 해소됐으면 게이트로 무시한 요청 수를 1회 요약하고 0 으로
             if (!this._pendingAction && this._stepGateIgnored > 0) {
                 this._log(`Step 게이트: 정지 확인 대기·최소 간격으로 무시한 요청 ${this._stepGateIgnored}건 (GitHub #28)`);
@@ -5194,7 +5288,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             if (this._pollRetryRequested) {
                 this._pollRetryRequested = false;
                 if (this._isConnected) {
-                    setTimeout(() => { void this._pollThreadStates(true); }, 30);
+                    setTimeout(() => { void this._pollThreadStates(true, 'retry'); }, 30);
                 }
             }
         }

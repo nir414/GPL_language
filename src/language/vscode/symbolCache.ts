@@ -11,15 +11,27 @@ import { getCompletionItems, buildSymbolDocumentation, getCompletionItemKind } f
 
 /** 기존 Provider API를 유지하면서 인덱스·프로젝트 경계·VS Code 연동의 수명주기를 조립한다. */
 export class SymbolCache {
-    private readonly projectScope = new SymbolProjectScope(filePath =>
-        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath);
-    private readonly index = new SymbolIndex(this.projectScope);
-    private readonly sourceLoader = new WorkspaceSourceLoader(this.index, this.projectScope, message => this.log(message));
+    private readonly projectScope: SymbolProjectScope;
+    private readonly index: SymbolIndex;
+    private readonly sourceLoader: WorkspaceSourceLoader;
     private refreshTask: Promise<void> | undefined;
     private refreshRequested = false;
     public isRefreshing = false;
 
-    constructor(private readonly outputChannel?: vscode.OutputChannel) {}
+    /**
+     * @param workspaceFolderFor 경로 근접도 점수(scoreFilePath)의 "최상위 폴더" 기준. 기본은 VS Code 작업공간 폴더.
+     *   원격 소스 세션(activation/controllerSourceLanguage)은 TMP 캐시 루트를 넘겨, 열어 본 원격 사본이 매핑된 로컬 사본보다
+     *   같은 프로젝트 폴더 점수로 앞서게 한다.
+     */
+    constructor(
+        private readonly outputChannel?: vscode.OutputChannel,
+        workspaceFolderFor: (filePath: string) => string | undefined = filePath =>
+            vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
+    ) {
+        this.projectScope = new SymbolProjectScope(workspaceFolderFor);
+        this.index = new SymbolIndex(this.projectScope);
+        this.sourceLoader = new WorkspaceSourceLoader(this.index, this.projectScope, message => this.log(message));
+    }
 
     private log(message: string) {
         if (!isTraceOn(vscode.workspace)) {

@@ -20,7 +20,7 @@ export interface SituationDeploySnapshot {
     mode: 'Build' | 'Deploy & Run' | 'Upload & Start' | 'Upload Only';
     success: boolean;
     // 순서(2026-08-25 재배치): UPLOAD → STOP/THREAD_CHECK → COMPILE → START → ERROR_CHECK
-    lastStage: 'LOCKED' | 'CANCELLED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
+    lastStage: 'LOCKED' | 'CANCELLED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'MEMORY_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
     compileErrorCodes: number[];
     controllerSystemCodes: number[];
     updatedAt: number;
@@ -128,10 +128,16 @@ export class DeployOutcomeHistory {
     }
 }
 
-/** 같은 패턴이 이전에 있었으면 "회귀 아님" 주석(성공 경로는 '결과', 실패 경로는 '실패' 패턴으로 표기). */
+/**
+ * 같은 패턴이 이전에 있었으면 반복 횟수 주석(성공 경로는 '결과', 실패 경로는 '실패' 패턴으로 표기).
+ * 종전 문구 `회귀 아님: 동일 실패 패턴 3회 관측` 은 "원인이 아니다"로 읽혀 사용자가 원인을 오해했다(2026-10-26 Sample Prep) —
+ * 뜻은 "이번에 새로 생긴 문제가 아니라 같은 원인이 되풀이된 것"이다.
+ */
 export function comparisonNoteFor(sameCount: number, kind: 'result' | 'failure'): string | undefined {
     if (sameCount <= 0) { return undefined; }
-    return `회귀 아님: 동일 ${kind === 'failure' ? '실패' : '결과'} 패턴 ${sameCount + 1}회 관측`;
+    return kind === 'failure'
+        ? `같은 실패 ${sameCount + 1}회째 (새 회귀가 아니라 같은 원인의 반복)`
+        : `같은 결과 ${sameCount + 1}회째`;
 }
 
 export interface ErrorLogClassification {
@@ -303,9 +309,7 @@ export function describeDeployFailure(
 
     let message: string;
     let jumpToCompileErrors = false;
-    if (result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown') {
-        message = `메모리 사전 검사로 중단: ${result.memoryPrecheck.message}`;
-    } else if (result.compileAborted) {
+    if (result.compileAborted) {
         // 컴파일 에러가 아니라 연결 끊김 — 소스를 고칠 일이 아니라 제어기 생존부터 볼 일이다(2026-10-22 사고).
         const a = result.compileAborted;
         const health = result.controllerHealth

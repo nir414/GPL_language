@@ -163,7 +163,7 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 | `controller/deployment/deployRecord` | `deployRecordCore`(순수)의 Memento 래퍼 |
 | `controller/debugging/debugBridge` | 디버그 세션 ↔ 확장 이벤트 버스(`EventEmitter`) |
 | `controller/debugging/breakpointSync` · `breakpointMirror` | 에디터 중단점(`debug.breakpoints`) 양방향 동기화 — 계획 계산은 `breakpointReconcile`(순수) |
-| `controller/projects/projectPicker` · `gprSyncCommand` | QuickPick·WorkspaceEdit 를 쓰는 명령 래퍼 — 규칙은 `projectPickerCore`·`project/gprSync`(순수) |
+| `controller/projects/projectPicker` · `gprSyncCommand` | QuickPick·WorkspaceEdit·FileSystemWatcher 를 쓰는 명령 래퍼 — 규칙은 `projectPickerCore`·`project/gprSync`·`project/gprFolderSync`(순수) |
 | `debug/gplDebugSession` · `activateDebug` | DAP 세션 자체(`vscode.debug`)·구성 provider |
 | `project/projectFileScope` · `promoteSourceCommand` | `workspace.findFiles`·명령 등록 |
 | `views/*` 3개 | TreeDataProvider·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`compileStaleBadge`·`uploadProgressBar`(순수) |
@@ -243,7 +243,9 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 | 바이트 → 사람이 읽는 크기(트리 FTP 목록·업로드 진행 바·완료 요약) | `util/formatBytes.ts` (`formatBytes`·`formatBytesAs`·`byteUnitFor`) | `.toFixed(1)} KB/MB/GB` 직접 조립 |
 | 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/deployment/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / 상태바 `업로드 완료 — 변경 없음`·크기 템플릿 직접 조립 |
 | Flash 쓰기 전원 차단 금지 문구(쓰기·`Sync`·10초 안정화·안전 미확인) | `views/flashSafetyPresentation.ts` (`presentFlashSafety`) — 절차·시간은 `controller/deployment/flashSafety.ts` | `FLASH 저장 중`·`FLASH 안전 상태 미확인` 직접 조립 |
-| 그룹 Compile 뒤 Unload 위험 판정·문구(UI 모달·AI 거부·타임아웃 안내·재부팅 해제) | `controller/commands/unloadRisk.ts` (`assessUnloadRisk`·`judgeRebootEvidence`·`unloadRiskWarning` …) — 전송 가드는 `unloadRiskGuard.ts`, 저장은 `unloadRiskStore.ts` | `'unload-after-group-compile'` 리터럴·`명령 콘솔을 끊었` 문구 직접 조립 |
+| Unload 위험 판정·문구(그룹 Compile 뒤 + 대상이 그룹 — UI 모달·AI 거부·타임아웃 안내·재부팅 해제) | `controller/commands/unloadRisk.ts` (`assessUnloadRisk(state, cmd, {targetIsGroup})`·`judgeRebootEvidence`·`unloadRiskWarning` …) — 대상 그룹 판정까지 합친 호출은 `unloadRiskGuard.assessUnloadRiskWithProjectKind`, 전송 가드는 `unloadRiskGuard.ts`, 저장은 `unloadRiskStore.ts` | `'unload-after-group-compile'` 리터럴·`명령 콘솔을 끊었` 문구 직접 조립 |
+| AI 요청에 Output 패널을 열지(상태 변경 요청만, 조용 구간) | `controller/automation/agentCommandLog.ts` (`agentRequestChangesControllerState`·`createRevealGate`) | `host.ts` 가 명령 ID 로 직접 판단 |
+| Project.gpr 소스 목록 ↔ 폴더 대조(추가/제거 계획·요약 문구) | `project/gprFolderSync.ts` (`checkGprFolderSync`·`describeGprSyncPlan`) — 자동 반영·배포 전 모달은 `controller/projects/gprSyncCommand.ts`, 배포 경고는 `deployService` | 각 호출부가 `listSourceFilesRecursive`+`planGprSync` 를 따로 조합 |
 
 새 정본을 세우면 `SSOT_RULES` 에 한 줄을 더한다(무엇을·정본은 어디·우회 표식·대신 쓸 것).
 규칙을 늘리는 비용이 낮아야 실제로 늘어난다.
@@ -356,14 +358,26 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 
 ### 메모리 사전 검사
 
-`controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석하고 정책을 판정하는 순수 모듈입니다. `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사하고, `deployService`는 업로드 전에 추가 검사합니다. `memoryGuard.warnMb`(기본 4 MB)·`blockMb`(기본 2.5 MB)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 알 수 없는 측정은 정상으로 간주하지 않습니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. MCP는 Export의 `GPL_BRIDGE=only` 경로를 사용합니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
+`controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석해 수준(ok·warning·critical·unknown)을 판정하는 순수 모듈입니다. **경고 전용입니다** — 어느 수준도 Compile/Start/배포를 막지 않습니다(2026-10-26 사용자 결정; 종전 `blockMb` 차단은 실행 중 앱의 런타임 메모리 ~3 MB 때문에 정지 전 값으로 "잘 돌아가는 배포"를 항상 막았습니다). `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사해 Output·상태 표시줄·`getLastMemoryCheck()`에 남기고, `deployService`는 업로드 전에도 검사하되 그 값은 "실행 중 메모리 포함" 주석을 달아 `precheckWarnings`에만 넣고, 정지 뒤 Compile 직전 슬롯 측정이 있으면 그것으로 `result.memoryPrecheck`를 덮어씁니다. `memoryGuard.warnMb`(기본 4 MB)·`criticalMb`(기본 2.5 MB, 옛 `blockMb`는 deprecated 대체 읽기)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 측정 실패(unknown)는 경고로 알리고 계속합니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
 
-사람 화면의 경고 알림은 `controller/diagnostics/memoryNotice.ts`(순수)가 정합니다 — 제어기 IP별 마지막 수준을 기억해 나빠질 때(ok→warning, warning→blocked)나 직전 알림 대비 0.5 MB 이상 줄었을 때만 알리고, 한 배포(작업 범위) 안에서는 최대 1회, 지속 상태는 상태 표시줄 항목(`$(warning) Free 2.96 MB`, 클릭 `gpl.controller.showMemoryStatus`)이 맡습니다. 차단·AI 결과 필드(`memoryPrecheck`·`precheckWarnings`)는 이 규칙과 무관하게 매번 남습니다.
+사람 화면의 경고 알림은 `controller/diagnostics/memoryNotice.ts`(순수)가 정합니다 — 제어기 IP별 마지막 수준을 기억해 나빠질 때(ok→warning, warning→critical)나 직전 알림 대비 0.5 MB 이상 줄었을 때만 알리고, 한 배포(작업 범위) 안에서는 최대 1회, 지속 상태는 상태 표시줄 항목(`$(warning) Free 2.96 MB`, 클릭 `gpl.controller.showMemoryStatus`)이 맡습니다. AI 결과 필드(`memoryPrecheck`·`precheckWarnings`)는 이 규칙과 무관하게 매번 남습니다.
+
+**심각 구간의 선택은 사람 경로의 모달**이 맡습니다(2026-10-27 사용자 요청 "막지 말고 경고하되 취소/강제 진행을 고르게"). `deployService`는 `confirmMemoryCritical` 훅이 있으면 정지 뒤 Compile/Start 직전에 한 번 더 재고 심각이면 묻습니다(취소 → `failedPhase: MEMORY_CHECK`, 업로드는 유지). `gpl.start`·FTP Run은 `activation/controllerOps.confirmMemoryCriticalInteractive`를 직접 부릅니다. AI·자동화·autoOnSave는 훅을 넘기지 않아 경고만 남기고 계속합니다(모달은 브리지를 막습니다). 설정 `memoryGuard.confirmOnCritical`로 끕니다. 메모리 알림·상세·배포 중단 안내의 「Unload…」는 `gpl.controller.unloadProject`(`/GPL` 목록 QuickPick → 같은 Unload 위험 모달·전송 가드 → `<STATUS>` 판정)를 엽니다.
+
+### AI 요청과 Output 패널
+
+Agent Bridge로 들어온 요청은 `host.revealOutputForAgentRequest`가 Output 「GPL Language Support」를 열지 정합니다. 판단은 `controller/automation/agentCommandLog.ts`(순수) — **제어기 상태를 바꾸는 요청만**(원시 명령은 `consoleCommandClassifier.isReadOnlyConsoleCommand`로, 확장 명령은 `AGENT_READ_ONLY_EXTENSION_COMMANDS` 예외 목록으로) 30초 조용 구간 뒤 첫 요청에 엽니다. 조회 요청은 열지 않습니다(2026-10-27 사용자 지적: 읽기마다 보던 로그가 가려짐). 새 조회 도구를 MCP에 더하면 그 목록에도 올립니다.
+
+### Project.gpr 배포 전 대조
+
+제어기는 `.gpr`의 `ProjectSource` 목록만 컴파일합니다. 대조 계산은 `project/gprFolderSync.ts`(순수) 한 곳이고, 세 곳이 씁니다: ① `controller/projects/gprSyncCommand.ts`의 자동 반영 — VS Code 안의 생성·이름 변경·삭제와 FileSystemWatcher(외부 변경) 모두 프로젝트별 디바운스로 한 번만 묻거나(`prompt`) 반영(`auto`) ② 같은 파일의 `reconcileProjectGprBeforeDeploy` — 사람 경로의 배포·Quick Compile·Upload Only 직전에 「반영 후 / 그대로 / 취소」 모달(auto면 바로 반영, 비대화형은 auto일 때만) ③ `deployService` — 어느 경로든 남은 차이를 `precheckWarnings`·`gprSyncMismatch`로 결과에 남깁니다. 탐색 상한에 걸리면 제거 제안을 내지 않습니다(못 본 파일을 "없다"고 하지 않기 위해).
 
 ### 업로드 전 제어기 확인
 
 FTP 쓰기 경로(Upload Only·Upload & Start·Quick Compile·Deploy·autoOnSave·/GPL 비우기)는 쓰기 전에 상대가 PA 제어기인지 확인합니다. 판정은 `controller/connection/controllerIdentity.ts`(순수), 실제 IO는 `controllerIdentityIo.ts`입니다. 증거는 ① 명령 콘솔 읽기 전용 명령의 `<STATUS>` ② FTP 220 배너(`RTEMS FTP server`) ③ 있으면 최근 도달성 스냅샷의 응답 장치(경로 인터페이스의 ARP)입니다. 같은 작업 안에서 이미 받은 STATUS(배포의 Show Memory)와 FTP 세션 배너(/GPL 목록 조회)는 재사용해 왕복을 늘리지 않습니다. 실패 시 정책은 호출부가 정합니다 — 사람 경로는 「그래도 진행」 모달, AI·자동화·autoOnSave는 `CONTROLLER_UNVERIFIED`(sent:false) 구조화 거부. 결과는 작업 기록 `result.controllerCheck`에 남고 배포 로그의 `Target:` 줄이 그 결과를 그대로 씁니다. 설정 `gpl.controller.verifyControllerIdentity`로 끌 수 있습니다.
 
 ### FTP 원격 소스 보기
+
+원격 사본의 언어 기능(`activation/controllerSourceLanguage`)은 연결·탐색 범위(`/GPL` 바로 아래 프로젝트)마다 독립 `SymbolCache`를 두고 열어 본 원격 파일을 인덱싱한다. 여기에 `project/remoteSourceMapping`(순수)이 고른 **대응 로컬 프로젝트의 컴파일 단위**(deploy record의 `projectDir` → 작업공간 `.gpr`의 `ProjectName` → 폴더 이름 순, 후보가 여럿이면 선택하지 않음)를 씨앗으로 넣어, 열지 않은 다른 파일의 모듈로도 정의·호버·완성이 이어진다(2026-10-26 Sample Prep 보고). 열어 본 원격 사본은 TMP 캐시 루트를 최상위 폴더 기준으로 삼아 로컬 사본보다 앞서고, 로컬 파일의 정의는 `file:` 위치로 그대로 연다(편집은 로컬이 정본). 원격 사본을 열 때 대응 로컬 파일과 내용이 다르면 「로컬 열기」 안내를 한 번 띄운다.
 
 `controller/files/remoteSourceSession`은 VS Code를 참조하지 않고 FTP 메타데이터, 세션별 TMP 캐시와 원격 경로/URI 매핑을 소유한다. `activation/controllerRemoteFiles`가 읽기 전용 FileSystemProvider와 문서·DAP 세션의 수명을 연결하고, `activation/controllerProjectDebug`는 기존 작업공간을 유지한 채 Attach 구성을 전달한다. DAP는 명시한 원격 세션의 소스만 사용한다. `activation/controllerSourceLanguage`는 현재 열린 원격 문서를 별도 SymbolCache에 넣어 로컬 작업공간과 다른 원격 프로젝트의 심볼이 섞이지 않게 한다.

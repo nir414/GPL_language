@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.18.1",
+    "version": "0.19.0",
     "publisher": "nir414",
     "icon": "resources/gpl-logo.png",
     "repository": {
@@ -763,6 +763,12 @@
                 "icon": "$(close)"
             },
             {
+                "command": "gpl.controller.unloadProject",
+                "title": "Unload Project (프로젝트 내리기 — 메모리 회수)",
+                "category": "GPL",
+                "icon": "$(close)"
+            },
+            {
                 "command": "gpl.controller.clearUnloadRisk",
                 "title": "Unload 위험 표시 해제 (그룹 Compile 뒤 — 제어기 재부팅 후)",
                 "category": "GPL"
@@ -1072,6 +1078,11 @@
                 {
                     "command": "gpl.saveToFlash",
                     "group": "1_deploy@4",
+                    "when": "view == gplThreads && gpl.ui.connected"
+                },
+                {
+                    "command": "gpl.controller.unloadProject",
+                    "group": "1_deploy@5",
                     "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
@@ -1685,7 +1696,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "AI 에이전트(MCP)의 요청이 들어오면 출력 패널 「GPL Language Support」를 자동으로 엽니다(포커스는 편집기에 둡니다). 사람이 보내는 명령·배포처럼 AI 가 제어기에 보낸 명령과 응답도 같은 자리에 남습니다. 요청마다 여는 것이 아니라 30초 이상 조용하다가 다시 요청이 올 때(새 작업 시작)만 열므로, 다른 채널을 보고 있는 동안 AI 의 폴링이 패널을 되돌려 놓지 않습니다. 끄면 패널을 열지 않습니다(로그는 그대로 남습니다)."
+                    "description": "AI 에이전트(MCP)가 제어기 상태를 바꾸는 요청(배포·Compile·Start·Stop·중단점·Unload·쓰기 명령)을 보내면 출력 패널 「GPL Language Support」를 엽니다(포커스는 편집기에 둡니다). 조회 요청(Show Thread·변수 읽기·목록·상태 조회)으로는 열지 않으므로 로그를 보는 동안 AI 가 데이터를 읽어도 패널이 바뀌지 않습니다. 상태 변경 요청도 30초 이상 조용하다가 다시 올 때(새 작업 시작)만 엽니다. 끄면 패널을 열지 않습니다(로그는 그대로 남습니다)."
                 },
                 "gpl.controller.commandPolicyEnabled": {
                     "scope": "window",
@@ -1958,12 +1969,12 @@
                         "off"
                     ],
                     "enumDescriptions": [
-                        "VS Code 안에서 소스 파일을 새로 만들거나 이름 변경·삭제하면 Project.gpr에 반영할지 물어봅니다(기본).",
-                        "묻지 않고 바로 Project.gpr를 갱신합니다(상태바에 요약 표시).",
-                        "자동 반영을 하지 않습니다. 'GPL: Project.gpr 소스 목록 동기화' 명령(.gpr 우클릭)만 사용합니다."
+                        "소스 파일이 생기거나 지워지면(VS Code 안의 생성·이름 변경·삭제와 SVN 갱신·GDE·탐색기 같은 외부 변경 모두) Project.gpr에 반영할지 물어봅니다(기본). 배포·Quick Compile 직전에도 목록이 폴더와 다르면 「반영 후 배포 / 그대로 배포 / 취소」를 묻습니다.",
+                        "묻지 않고 바로 Project.gpr를 갱신합니다(상태바에 요약 표시). 배포 직전 차이도 묻지 않고 반영합니다(AI·autoOnSave 경로 포함).",
+                        "자동 반영을 하지 않습니다. 'GPL: Project.gpr 소스 목록 동기화' 명령(.gpr 우클릭)만 사용합니다. 배포 직전 차이는 배포 경고로만 알립니다."
                     ],
                     "default": "prompt",
-                    "description": "프로젝트 폴더 안의 소스 파일 생성/이름 변경/삭제를 Project.gpr의 ProjectSource 목록에 반영하는 방식입니다. 에디터 밖 변경(git checkout 등)에는 반응하지 않습니다."
+                    "description": "프로젝트 폴더 안의 소스 파일 생성/삭제(VS Code 안팎)를 Project.gpr의 ProjectSource 목록에 반영하는 방식입니다. 대량 변경도 프로젝트당 한 번만 다루며, 파일 내용 변경(저장)에는 반응하지 않습니다. 제어기는 이 목록만 컴파일하므로 배포 직전에도 같은 대조를 합니다."
                 },
                 "gpl.project.sourceExtensions": {
                     "scope": "window",
@@ -1980,13 +1991,25 @@
                     "type": "number",
                     "default": 4,
                     "minimum": 0,
-                    "description": "Compile/Start 및 배포 전 여유 메모리 경고 기준(MB). 현장 보고 기반 운영 기준이며 제어기 사양의 절대 한계가 아닙니다."
+                    "description": "Compile/Start 및 배포 전 여유 메모리 경고 기준(MB). 경고만 하며 전송을 막지 않습니다. 현장 보고 기반 운영 기준이며 제어기 사양의 절대 한계가 아닙니다."
+                },
+                "gpl.controller.memoryGuard.criticalMb": {
+                    "type": "number",
+                    "default": 2.5,
+                    "minimum": 0,
+                    "description": "Compile/Start 및 배포 전 여유 메모리 '심각' 경고 기준(MB). 이 값 미만이면 심각 경고를 남기지만 전송은 막지 않습니다(실제로 모자라면 제어기 Compile이 실패를 알립니다). 배포에서는 정지 뒤 Compile 직전 값으로 다시 판단합니다. 삭제·Unload는 자동 수행하지 않습니다."
+                },
+                "gpl.controller.memoryGuard.confirmOnCritical": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "여유 메모리가 '심각'(criticalMb 미만)이면 사람이 실행한 배포·Quick Compile·Start·FTP Run 에서 정지 뒤 Compile/Start 직전에 「그래도 진행」/「취소」를 묻습니다. 취소하면 올린 파일은 그대로 두고 Compile/Start 를 보내지 않습니다. 업로드 전 측정(실행 중 앱의 메모리 포함)으로는 묻지 않습니다. AI·자동화·autoOnSave 경로는 묻지 않고 경고만 남깁니다. 끄면 사람 경로도 경고만 하고 계속합니다."
                 },
                 "gpl.controller.memoryGuard.blockMb": {
                     "type": "number",
                     "default": 2.5,
                     "minimum": 0,
-                    "description": "Compile/Start 및 배포 전 여유 메모리 차단 기준(MB). 이 값 미만이면 전송하지 않습니다. 0이면 수치 차단을 해제하지만 측정 실패는 차단합니다. 삭제·Unload는 자동 수행하지 않습니다."
+                    "deprecationMessage": "더 이상 전송을 막지 않습니다. gpl.controller.memoryGuard.criticalMb 를 사용하세요(이 값은 criticalMb 를 설정하지 않았을 때 심각 기준으로만 읽힙니다).",
+                    "description": "(사용 중단) 종전 여유 메모리 차단 기준(MB). 이제 경고 전용이며 criticalMb 로 대체됐습니다."
                 },
                 "gpl.controller.verifyControllerIdentity": {
                     "type": "boolean",

@@ -70,10 +70,24 @@ export function isNotRunnableStartError(err: unknown): err is NotRunnableStartEr
     return err instanceof NotRunnableStartError || (typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'NotRunnableStartError');
 }
 
-/** 지금 이 Unload 명령의 위험 판정(Unload 가 아니면 undefined). UI 의 사전 확인과 가드가 같은 값을 본다. */
+/**
+ * 지금 이 Unload 명령의 위험 판정(Unload 가 아니면 undefined) — 그룹 Compile 표시만 본다(동기, 파일 읽기).
+ * 대상이 그룹인지까지 보는 판정은 `assessUnloadRiskWithProjectKind`(비동기) — UI 의 사전 확인과 전송 가드는 그쪽을 쓴다.
+ */
 export function currentUnloadRisk(command: string, controllerId: string): UnloadRiskAssessment | undefined {
     if (!parseUnloadCommand(command)) { return undefined; }   // Unload 가 아니면 파일을 읽지 않는다(모든 명령이 지나간다)
     return assessUnloadRisk(readUnloadRiskState(controllerId), command);
+}
+
+/**
+ * 위험 판정의 정본 호출 — 그룹 Compile 표시 + **대상 프로젝트가 그룹인지**(워크스페이스 `.gpr` 의 ProjectStart, 2026-10-27 관측)
+ * 를 함께 본다. UI 모달과 전송 가드가 같은 값을 본다. Unload 가 아니면 undefined.
+ */
+export async function assessUnloadRiskWithProjectKind(command: string, controllerId: string): Promise<UnloadRiskAssessment | undefined> {
+    const unload = parseUnloadCommand(command);
+    if (!unload) { return undefined; }
+    const kind = unload.target && !unload.all ? await lookupKind(unload.target) : undefined;
+    return assessUnloadRisk(readUnloadRiskState(controllerId), command, { targetIsGroup: kind?.runnable === false });
 }
 
 /** 워크스페이스 `.gpr` 기준 프로젝트 성격(주입된 resolver). 모르면 undefined — Start 전 사전 확인에 쓴다. */
@@ -96,13 +110,17 @@ async function lookupKind(project: string): Promise<{ runnable: boolean } | unde
  * @param opts.confirmUnloadRisk 사람의 모달 확인 또는 AI 호출자의 `confirm:true`.
  */
 export async function guardBeforeSend(command: string, controllerId: string, opts?: { confirmUnloadRisk?: boolean }): Promise<void> {
-    const risk = currentUnloadRisk(command, controllerId);
+    const risk = await assessUnloadRiskWithProjectKind(command, controllerId);
     if (risk?.risky) {
+        const why = [
+            ...(risk.groupProjects.length > 0 ? [`그룹 Compile: ${risk.groupProjects.join(', ')}`] : []),
+            ...(risk.targetIsGroup ? [`대상 '${risk.target}' 이 그룹`] : []),
+        ].join(' · ');
         if (opts?.confirmUnloadRisk === true) {
-            logger?.(`[UnloadRisk] ${risk.command}: 그룹 Compile(${risk.groupProjects.join(', ')}) 뒤 Unload — 확인을 받고 보냅니다`);
+            logger?.(`[UnloadRisk] ${risk.command}: 위험 Unload(${why}) — 확인을 받고 보냅니다`);
             return;
         }
-        logger?.(`[UnloadRisk] ${risk.command}: 확인 없이 보내지 않음 (그룹 Compile: ${risk.groupProjects.join(', ')})`);
+        logger?.(`[UnloadRisk] ${risk.command}: 확인 없이 보내지 않음 (${why})`);
         throw new UnloadRiskError(risk);
     }
     const startTarget = startTargetOf(command);

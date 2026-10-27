@@ -10,7 +10,14 @@
  *     본문 상한은 GPL Traffic 과 같은 설정(`gpl.controller.trafficLogMaxResponseChars`)을 쓴다 — 상한을 두 군데서 따로 정하지 않는다.
  *  2. `createRevealGate` — AI 요청이 **조용한 뒤 처음** 올 때만 패널을 열자는 판단. 요청마다 열면 사용자가 다른 채널
  *     (GPL Console 등)로 옮겨 가 있어도 AI 의 폴링마다 되돌려 놓아 방해가 된다.
+ *  3. `agentRequestChangesControllerState` — **조회 요청으로는 패널을 열지 않는다**(2026-10-27 사용자 지적: "AI 가 데이터
+ *     읽어올 때마다 포커스가 바뀐다 — 로그 보고 있는데 화면이 확확 바뀜"). 30초 조용 구간만으로는 부족했다: AI 가 생각하는
+ *     동안 30초가 지나면 다음 Show Thread 한 번에도 패널이 Output 으로 넘어가 사용자가 보던 GPL Console/Live Log 가 가려졌다.
+ *     제어기 상태를 바꾸는 요청(배포·Compile·Start·Stop·BP·Unload·쓰기 명령)만 "AI 가 무엇을 했는지" 보여 줄 가치가 있고,
+ *     읽기(Show Thread·Show Variable·목록 조회·상태 조회)는 Output 에 기록만 남긴다.
  */
+
+import { isReadOnlyConsoleCommand } from '../commands/consoleCommandClassifier';
 
 /** 이 시간 이상 AI 요청이 없다가 다시 오면 "새 작업 시작"으로 보고 Output 을 연다. */
 export const AGENT_OUTPUT_REVEAL_QUIET_MS = 30_000;
@@ -75,4 +82,40 @@ export function createRevealGate(quietMs: number = AGENT_OUTPUT_REVEAL_QUIET_MS)
         lastAt = now;
         return due;
     };
+}
+
+/** 원시 명령 콘솔 명령을 실어 나르는 확장 명령 — 상태 변경 여부는 그 안의 명령(`args.command`)으로 판정한다. */
+export const AGENT_RAW_CONSOLE_COMMAND = 'gpl.controller.sendCommand';
+
+/**
+ * 제어기 상태를 바꾸지 않는 **조회 전용 확장 명령** — 이 요청으로는 Output 을 열지 않는다.
+ * 여기 없는 확장 명령은 상태 변경으로 보고 연다(모르는 명령을 조용히 숨기지 않는다 — §1-EO 의 "AI 가 무엇을 했는지 보이게"
+ * 가 기본이고, 이 목록은 그 예외다). 새 조회 도구를 MCP 에 추가하면 여기에도 올린다.
+ */
+export const AGENT_READ_ONLY_EXTENSION_COMMANDS: ReadonlySet<string> = new Set([
+    'gpl.ai.debug.getState',
+    'gpl.ai.debug.getConnectionState',
+    'gpl.ai.debug.listRemoteProjects',
+    'gpl.ai.debug.runtimeConsoleRead',
+    // 식 평가는 사용자 관점에서 "값 읽기"다(Sub 를 실행할 수 있는 점은 -eval 능력 지도에 따로 적혀 있다).
+    'gpl.ai.debug.evaluate',
+    'gpl.automation.target',
+    'gpl.diagnosticSnapshot',
+]);
+
+/**
+ * 이 AI 요청이 제어기 상태를 바꾸는가 — true 면(조용 구간 조건과 함께) Output 을 열 만하다.
+ *  - 원시 명령(`gpl.controller.sendCommand`)은 `args.command` 를 콘솔 명령 분류기로 판정한다. 분류되지 않은 명령은
+ *    읽기 전용으로 취급하지 않는다(분류기 규칙과 같다).
+ *  - 조회 전용 확장 명령 목록에 있으면 false, 그 밖의 확장 명령은 true.
+ */
+export function agentRequestChangesControllerState(command: string, args: unknown): boolean {
+    const id = String(command ?? '').trim();
+    if (id === AGENT_RAW_CONSOLE_COMMAND) {
+        const raw = args && typeof args === 'object' ? (args as { command?: unknown }).command
+            : typeof args === 'string' ? args : undefined;
+        if (typeof raw !== 'string' || raw.trim() === '') { return true; }
+        return !isReadOnlyConsoleCommand(raw);
+    }
+    return !AGENT_READ_ONLY_EXTENSION_COMMANDS.has(id);
 }

@@ -113,6 +113,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 라이브 로그 중지 | GPL: Stop Live Log Terminal (라이브 로그 중지) | `gpl.logs.liveTerminal.stop` |
 | 직접 명령 | GPL: Send Command to Controller (인자 `{command, confirmUnloadRisk?}` — 그룹 Compile 뒤 Unload 는 확인 필요) | `gpl.controller.sendCommand` |
 | Unload 위험 표시 해제 | GPL: Unload 위험 표시 해제 (그룹 Compile 뒤 — 제어기 재부팅 후) | `gpl.controller.clearUnloadRisk` |
+| 프로젝트 Unload | GPL: Unload Project (프로젝트 내리기 — 메모리 회수; `/GPL` 목록 QuickPick·이름 입력·`-all`, 사람 전용 UI — AI 는 `unload_project`/`sendCommand`) | `gpl.controller.unloadProject` |
 | 중단점 반영 | GPL: Push Editor Breakpoints to Controller | `gpl.controller.pushBreakpoints` |
 | 중단점 가져오기 | GPL: Pull Controller Breakpoints | `gpl.controller.pullBreakpoints` |
 | 중단점 새로고침 | GPL: Refresh Controller Breakpoints | `gpl.controller.refreshBreakpoints` |

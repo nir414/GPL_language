@@ -20,7 +20,6 @@ import {
 	BreakpointInfo,
 } from '../../controller/protocol/responseParser';
 import { EXTENSION_VERSION } from '../../config';
-import { isPausedState } from '../../controller/threads/threadActivity';
 import type { RuntimeStateSnapshot } from '../../controller/debugging/executionMarks';
 import { BreakpointTarget } from '../../controller/debugging/breakpointReconcile';
 import { editorBreakpointTargets } from '../../controller/debugging/breakpointSync';
@@ -47,6 +46,7 @@ import {
 } from './treeSections';
 import { toInfoItem, toSectionItem, toThreadItem } from './treeItems';
 import { buildSystemInfoItems } from './systemInfoItems';
+import { detectPauseTransition } from './threadPauseTransition';
 import {
 	buildDiagnosticSnapshotMarkdown as renderDiagnosticSnapshotMarkdown,
 	buildSituationSnapshotMarkdown as renderSituationSnapshotMarkdown,
@@ -588,23 +588,10 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		return this.breakpoints;
 	}
 
-	/**
-	 * 이전/새 스레드 목록을 비교해 정지 전이를 감지한다.
-	 * - 기존 스레드의 비정지→정지 전이, 또는 정지 상태로 새로 나타난 스레드(stopOnEntry —
-	 *   스레드 0개 상태에서 시작해도 잡히도록 빈 previous도 비교 대상이며, 첫 수신 여부는
-	 *   호출부의 hasReceivedThreadList가 거른다)에 발생.
-	 * - 한 폴 주기에 최대 1건만 발생시켜 다중 파일 점프를 막는다.
-	 */
+	/** 정지 전이 판정은 threadPauseTransition 이 맡고, 여기서는 이벤트만 발화한다(한 폴 주기에 최대 1건). */
 	private firePauseTransitions(previous: ThreadInfo[], next: ThreadInfo[]): void {
-		const prevStates = new Map(previous.map(t => [t.name, t.state]));
-		for (const t of next) {
-			if (!isPausedState(t.state)) { continue; }
-			const prevState = prevStates.get(t.name);
-			if (prevState === undefined || !isPausedState(prevState)) {
-				this._onDidThreadPause.fire({ name: t.name, state: t.state });
-				return;
-			}
-		}
+		const transition = detectPauseTransition(previous, next);
+		if (transition) { this._onDidThreadPause.fire(transition); }
 	}
 
 	// ── Build tree ──────────────────────────────────────

@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as vm from 'vm';
 import { test } from '../../harness';
 import type { TargetCandidate } from '../../../controller/projects/projectTarget';
-import { GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, GUIDE_TOPIC } from '../../../ai/agentSetupChecks';
+import { GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, GUIDE_TOPIC } from '../../../controller/automation/agentSetupChecks';
 
 /** 실제 명령을 실행하되 VS Code와 파일 쓰기는 메모리 안으로 한정한다. */
 function setup() {

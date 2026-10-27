@@ -2037,6 +2037,7 @@
         "package": "node scripts/package.js --bump patch",
         "package:no-bump": "node scripts/package.js",
         "dev:cycle": "npm run package",
+        "verify:split": "npm run compile && node scripts/dev/deployReplay.js && node scripts/dev/compareTreeProvider.js",
         "dev:host": "npm run compile && code --new-window --extensionDevelopmentPath=. --profile=GPL-DevHost samples/hello-project",
         "dev:watch": "npm run watch",
         "docs:serve": "mkdocs serve",

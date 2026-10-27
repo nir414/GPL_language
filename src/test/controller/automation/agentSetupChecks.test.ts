@@ -2,12 +2,12 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { test } from '../harness';
+import { test } from '../../harness';
 import {
 	GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, GUIDE_SETUP_MARK, GUIDE_TOPIC,
 	GuideSetup, inspectWorkspaceSetup, isControllerHost, findMcpHostMismatch, readMcpControllerAddress,
 	SHARED_CONTROLLER_BRIDGE_MODE,
-} from '../../ai/agentSetupChecks';
+} from '../../../controller/automation/agentSetupChecks';
 
 const VERSION = '0.9.11';
 

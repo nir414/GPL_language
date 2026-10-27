@@ -1,5 +1,7 @@
 /**
  * npm run compile 뒤 node scripts/dev/index-performance.js [프로젝트수=16] [반복=5]
+ *   또는 node scripts/dev/index-performance.js --workspace <실제 워크스페이스 폴더> [반복=5]
+ *   (--workspace 는 그 폴더를 읽기만 하고 지우지 않는다 — 사용자 보고 "인덱싱 9 s" 를 실제 경로에서 재는 용도)
  * 합성 워크스페이스(samples/syntax-tour 사본 N개, 깊게 중첩된 폴더, 모듈·클래스 이름 변경)를 임시 폴더에 만들고
  * SymbolCache.refresh() 경로(탐색 → 파일 읽기 → 파싱 → 인덱스 구성)를 단계별로 측정한다.
  * 이어서 호버·정의 조회 중앙값을 출력한다. VS Code 대기 시간과 렌더링은 포함하지 않는다.
@@ -22,8 +24,11 @@ const { SymbolCache } = require(path.join(out, 'language/vscode/symbolCache'));
 const { GPLParser } = require(path.join(out, 'language/syntax/gplParser'));
 const { GPLHoverProvider } = require(path.join(out, 'providers/intellisense/hoverProvider'));
 
-const projects = Number(process.argv[2] || 16);
-const iterations = Number(process.argv[3] || 5);
+const wsFlag = process.argv.indexOf('--workspace');
+const externalRoot = wsFlag >= 0 ? path.resolve(process.argv[wsFlag + 1]) : undefined;
+const positional = process.argv.slice(2).filter((a, i, arr) => a !== '--workspace' && arr[i - 1] !== '--workspace');
+const projects = Number(positional[0] || 16);
+const iterations = Number((externalRoot ? positional[0] : positional[1]) || 5);
 const sampleDir = path.resolve(__dirname, '../../samples/syntax-tour');
 
 function buildWorkspace() {
@@ -57,10 +62,13 @@ function buildWorkspace() {
 const median = a => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
 
 async function main() {
-    const { root, files: fileCount } = buildWorkspace();
+    const { root, files: fileCount } = externalRoot ? { root: externalRoot, files: -1 } : buildWorkspace();
     try {
         const all = [];
+        const walkStart = performance.now();
         walkTree(root, f => all.push(f));
+        const walkMs = +(performance.now() - walkStart).toFixed(1);
+        console.log(`workspace: ${root} — walkTree ${walkMs} ms, 파일 ${all.length}개(.gpl ${all.filter(f => /\.gpl$/i.test(f)).length}, .gpr ${all.filter(f => /\.gpr$/i.test(f)).length})${fileCount >= 0 ? `, 생성 ${fileCount}` : ''}`);
         mock.workspace.workspaceFolders = [{ uri: mock.Uri.file(root) }];
         mock.workspace.getWorkspaceFolder = () => mock.workspace.workspaceFolders[0];
         mock.workspace.findFiles = async pattern => all
@@ -132,7 +140,7 @@ async function main() {
             findDefinition: +median(defTimes).toFixed(4), hover: +median(hoverTimes).toFixed(3),
             hoverCount: hoverTimes.length }));
     } finally {
-        fs.rmSync(root, { recursive: true, force: true });
+        if (!externalRoot) { fs.rmSync(root, { recursive: true, force: true }); }
     }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

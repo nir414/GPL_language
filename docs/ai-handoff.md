@@ -806,8 +806,8 @@ src/controller/debugging/breakpointMirror.ts       # 제어기→에디터 중�
 src/controller/protocol/responseParser.ts         # parseStatus, parseCompileErrors
 src/debug/evaluation/showVariableParser.ts          # Show Variable 파싱 — 2열 Location 멤버(isTypeToken)·summarizeLocation·annotateLocationMember(§1-BF)
 src/language/analysis/receiverType.ts             # 멤버 접근 수신자 타입 정적 해석(resolveReceiverHolder·membersNamed·buildDocumentReceiverLookup) + 소속 판정 ownedByHolder·nestedTypesIn(정의찾기 전역 폴백 차단용, §1-CA) — 디버그 hover 게이트·정적 hover 공용(§1-BJ, #32, vscode 무의존)
-src/ai/exportAgentSetup.ts               # Export/Check AI Agent Setup — 번들 동기화·파일 생성·설정/대상 준비 상태(§1-EF)
-src/ai/agentSetupChecks.ts              # 실행 설정·폴더 대상·CLAUDE/AGENTS 안내 검사(vscode 무의존)
+src/controller/automation/exportAgentSetup.ts            # Export/Check AI Agent Setup — 번들 동기화·파일 생성·설정/대상 준비 상태(§1-EF)
+src/controller/automation/agentSetupChecks.ts            # 실행 설정·폴더 대상·CLAUDE/AGENTS 안내 검사(vscode 무의존)
 src/controller/io/dio.ts                    # Show DIO `signal: 0|1 [*]` 순수 파서 + Set DIO 명령/동작 설명 정본(§1-FB)
 src/views/dashboard/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — 상태/I/O 탭, setInterval/pause/config, 확인 후 Set DIO(§1-BF·§1-FB); HTML은 assets/webview/dashboard.html
 controller-mcp/src/parse.js              # MCP 파서 — parseThreadList(이름 키)·compactThread·summarizeThreads·parseShowVariable(§1-BF)

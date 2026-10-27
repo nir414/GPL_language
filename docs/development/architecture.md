@@ -67,7 +67,6 @@ flowchart BT
 | `debug/` | DAP 어댑터(`gplDebugSession`)·구성 provider·정지/스텝 판정·launch.json 편집 | `controller`, `project`, `language`, `util` | 허용 목록 2개만 |
 | `views/` | 트리·상태바·대시보드와 그 표시 규칙 | `controller`, `util`, `config` | 허용 목록 3개만 |
 | `providers/` | VS Code 언어 provider 구현 13종 + 공용 대응표(`symbolKinds`: 개요 분류 → `SymbolKind`, R7 정본) | `language`, `project`, `util`, `config`, `language/vscode` | 전부 허용(접착 계층) |
-| `ai/` | AI 에이전트 설정 내보내기·점검. 대상 해석은 `controller/projects/projectTarget`, 경로 비교는 `util/pathKey` 사용 | `controller`, `util` | `exportAgentSetup`만 허용 (`agentSetupChecks`는 순수) |
 | `activation/` | 명령 그룹별 `activateXxx(host)` + `ExtensionHost` + 공용 제어기 조작(`controllerOps`) | 위 전부 | 전부 허용(접착 계층) |
 | `extension.ts` | `activate()`/`deactivate()` — 배선만(195줄) | 전부 | 허용 |
 | `test/` | Node 단독 러너(`harness.ts`) + 순수 모듈 테스트 + 구조 테스트 | 전부 | **금지** (러너가 vscode 없이 돈다) |
@@ -82,7 +81,7 @@ flowchart BT
 `views`·`activation`)과 `test/` 를 같은 방식으로 재배치했다(232개 파일 이동, 동작 변경 없음 — ai-handoff §1-GD).
 하위 폴더는 탐색과 책임 분류의 경계이며, 폴더별 독립 공개 API 나 객체 수명주기는 아직 분리하지 않았다.
 계층 루트에 남는 파일은 허브뿐이다(`activation/host.ts`, `test/harness.ts`·`test/index.ts`·`test/architecture.test.ts`).
-파일이 한두 개인 계층(`util/`·`ai/`·`log/`)은 나누지 않는다.
+파일이 한두 개인 계층(`util/`·`log/`)은 나누지 않는다. (옛 `ai/` 계층 2파일은 2026-10-27 `controller/automation/` 으로 — `activation/ai/` 와 이름이 겹쳐 혼동을 줬다.)
 
 **`language/`**
 
@@ -119,7 +118,7 @@ flowchart BT
 | `projects/` | 제어기 대상 프로젝트·이름·원격 경로·선택·GPR 동기화 명령 |
 | `threads/` | 쓰레드 인자·상태·보고서·정지 절차·진단·기동 후 관찰 |
 | `debugging/` | 제어기 중단점 명령·에디터 동기화·디버그 이벤트·실행 표시 |
-| `automation/` | Agent Bridge·AI 정책·복구 안내·작업 기록·URI 전달 |
+| `automation/` | Agent Bridge·AI 정책·복구 안내·작업 기록·URI 전달·AI 에이전트 설정 내보내기/점검(`exportAgentSetup`·`agentSetupChecks`) |
 | `diagnostics/` | 제어기 상태·메모리 검사·자원 프로브·에러 보고·최근 사건 |
 | `io/` | 디지털 I/O 파싱·명령 |
 
@@ -256,7 +255,7 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 | `debug/session/gplDebugSession` · `activateDebug` · `attachPreflight` | DAP 세션 자체(`vscode.debug`)·구성 provider·Attach 전 배포/정지 절차(모달·출력 채널) |
 | `project/sources/projectFileScope` · `promoteSourceCommand` | `workspace.findFiles`·명령 등록 |
 | `views/*` 3개 | TreeDataProvider·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`compileStaleBadge`·`uploadProgressBar`(순수) |
-| `ai/exportAgentSetup` · `log/liveLogTerminal` | 파일 대화상자·터미널 |
+| `controller/automation/exportAgentSetup` · `log/liveLogTerminal` | 파일 대화상자·터미널 |
 | `config` · `extension` | 루트 모듈 |
 
 원칙: **판단은 순수 모듈에, vscode 호출은 얇은 래퍼에.** 새 기능을 넣을 때 "이 판단을 Node 단독 테스트로

@@ -112,6 +112,7 @@ export class WorkspaceSourceLoader {
         // Prefer Project.gpr-based indexing when available.
         // Many GPL projects are single-folder, and Project.gpr defines the actual compile/reference set.
         // This avoids scanning the entire workspace (which can be huge) when only a handful of sources matter.
+        const enumerateStarted = Date.now();
         const projectFiles = await this.getProjectSourcesFromGpr();
 
         const filesToIndex = projectFiles ?? (await vscode.workspace.findFiles(
@@ -120,9 +121,9 @@ export class WorkspaceSourceLoader {
         ));
 
         if (projectFiles) {
-            this.log(`[SymbolCache] Using Project.gpr sources (${filesToIndex.length} files)`);
+            this.log(`[SymbolCache] Using Project.gpr sources (${filesToIndex.length} files, 탐색 ${Date.now() - enumerateStarted} ms)`);
         } else {
-            this.log(`[SymbolCache] Workspace glob: found ${filesToIndex.length} .gpl files`);
+            this.log(`[SymbolCache] Workspace glob: found ${filesToIndex.length} .gpl files (findFiles ${Date.now() - enumerateStarted} ms)`);
         }
 
         // 확장 호스트 스레드를 독점하지 않도록 이 개수마다 이벤트 루프에 한 번 양보한다 —

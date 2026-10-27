@@ -59,9 +59,11 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 	function ensureSymbolCacheInitialized(reason: string): Promise<void> {
 		if (symbolCacheInitPromise) { return symbolCacheInitPromise; }
 		outputChannel.appendLine(`Initializing symbol cache... (${reason})`);
+		const initStarted = Date.now();
 		symbolCacheInitPromise = symbolCache.refresh()
 			.then(() => {
-				outputChannel.appendLine('Symbol cache initialized!');
+				// 소요 시간을 같이 남긴다 — "인덱싱이 느리다" 보고 때 탐색(findFiles)/읽기·파싱 어느 쪽인지 [SymbolCache] 줄과 함께 가른다.
+				outputChannel.appendLine(`Symbol cache initialized! (${Date.now() - initStarted} ms)`);
 				// 실기 확인 검사(compilerChecks)는 다른 파일의 Module·클래스를 보므로 인덱스가 찬 뒤 열린 문서를 다시 검사한다.
 				for (const document of vscode.workspace.textDocuments) {
 					if (isGplDocument(document)) { diagnosticProvider.scheduleDiagnostics(document, 0); }

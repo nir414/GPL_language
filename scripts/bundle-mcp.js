@@ -3,7 +3,7 @@
 // 통째로 싣지 않으므로 과거의 유닉스 심링크 EACCES/용량 문제가 발생하지 않는다.
 //
 // 산출물: out/mcp/gpl-controller-mcp.cjs  (VSIX에 포함 — .vscodeignore가 out/를 허용)
-// 소비자: src/ai/exportAgentSetup.ts 의 `GPL: Export AI Agent Setup` 명령이
+// 소비자: src/controller/automation/exportAgentSetup.ts 의 `GPL: Export AI Agent Setup` 명령이
 //         이 파일을 globalStorage(버전 무관 안정 경로)로 복사해 .mcp.json이 가리키게 한다.
 
 const fs = require('fs');

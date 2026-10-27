@@ -88,7 +88,7 @@ import './providers/intellisense/hoverProvider.test';
 import './controller/connection/connectionHealth.test';
 import './controller/connection/connectionSession.test';
 import './controller/projects/projectTarget.test';
-import './ai/agentSetupChecks.test';
+import './controller/automation/agentSetupChecks.test';
 import './activation/ai/aiAgentSetup.test';
 import './controller/connection/idlePing.test';
 import './controller/commands/commandPolicy.test';

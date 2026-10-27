@@ -25,7 +25,7 @@ const ROOT = path.resolve(__dirname, '../..');
 const SRC = path.join(ROOT, 'src');
 
 type Layer =
-    | 'util' | 'language' | 'project' | 'log' | 'controller' | 'debug' | 'views' | 'providers' | 'activation' | 'ai'
+    | 'util' | 'language' | 'project' | 'log' | 'controller' | 'debug' | 'views' | 'providers' | 'activation'
     | 'config' | 'languageVscode' | 'extension' | 'test';
 
 /** 계층별로 import 해도 되는 다른 계층(같은 계층은 항상 허용). 근거는 docs/development/architecture.md §계층 규칙. */
@@ -40,10 +40,9 @@ const ALLOWED_DEPENDENCIES: Record<Layer, readonly Layer[]> = {
     debug: ['controller', 'project', 'language', 'util'],
     views: ['controller', 'util', 'config'],
     providers: ['language', 'project', 'util', 'config', 'languageVscode'],
-    ai: ['controller', 'util'],
-    activation: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'languageVscode'],
-    extension: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'languageVscode', 'activation'],
-    test: ['util', 'language', 'log', 'project', 'config', 'controller', 'languageVscode', 'debug', 'views', 'providers', 'ai', 'activation'],
+    activation: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'config', 'languageVscode'],
+    extension: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'config', 'languageVscode', 'activation'],
+    test: ['util', 'language', 'log', 'project', 'config', 'controller', 'languageVscode', 'debug', 'views', 'providers', 'activation'],
 };
 
 /** activation/·providers/·language/vscode/ 는 VS Code 접착 계층이라 전부 vscode 를 써도 된다. 그 밖은 여기 있는 모듈만. */
@@ -62,7 +61,7 @@ const VSCODE_ALLOWED_MODULES: ReadonlySet<string> = new Set([
     // views
     'views/statusbar/connectionStatusBar', 'views/dashboard/controllerDashboardPanel', 'views/tree/controllerTreeProvider', 'views/tree/treeItems',
     // 단일 파일 계층
-    'ai/exportAgentSetup', 'log/liveLogTerminal',
+    'controller/automation/exportAgentSetup', 'log/liveLogTerminal',
 ]);
 
 interface ImportEdge { from: string; to: string; typeOnly: boolean; spec: string }
@@ -100,7 +99,7 @@ const LAYER_AREAS: Readonly<Record<string, readonly string[]>> = {
     providers: ['navigation', 'structure', 'intellisense', 'diagnostics'],
     activation: ['controller', 'remote', 'deploy', 'debug', 'language', 'ai'],
     // test/ 는 검사 대상 모듈의 폴더를 거울처럼 따른다(test/<계층>/<area>/…). scripts 는 scripts/*.js 의 테스트.
-    test: ['util', 'language', 'project', 'controller', 'debug', 'views', 'providers', 'activation', 'ai', 'scripts'],
+    test: ['util', 'language', 'project', 'controller', 'debug', 'views', 'providers', 'activation', 'scripts'],
 };
 /** 분류 밖에 남아도 되는 계층 루트 모듈 — 허브와 테스트 러너뿐. */
 const LAYER_ROOT_MODULES: ReadonlySet<string> = new Set(['activation/host', 'test/harness', 'test/index', 'test/architecture.test']);

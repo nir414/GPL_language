@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isIP } from 'net';
-import { normalizeDirKey } from '../util/pathKey';
+import { normalizeDirKey } from '../../util/pathKey';
 
 export const MCP_SERVER_NAME = 'gpl-controller';
 export const GUIDE_VERSION_MARK = '<!-- gpl-controller-mcp guide version:';

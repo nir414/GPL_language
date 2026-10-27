@@ -2,8 +2,8 @@
 import * as vscode from 'vscode';
 import {
 	exportAiAgentSetup, inspectAiAgentSetup, syncStableBundleIfStale, AiAgentSetupReport,
-} from '../../ai/exportAgentSetup';
-import { sameSetupPath, findMcpHostMismatch } from '../../ai/agentSetupChecks';
+} from '../../controller/automation/exportAgentSetup';
+import { sameSetupPath, findMcpHostMismatch } from '../../controller/automation/agentSetupChecks';
 import { getControllerConfig } from '../../controller/connection/controllerConnection';
 import { onControllerSessionChange } from '../../controller/connection/connectionSession';
 import type { ExtensionHost } from '../host';

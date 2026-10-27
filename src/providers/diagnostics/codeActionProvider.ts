@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { XmlUtils } from '../../language/xml/xmlUtils';
 import { provideDocCommentCodeActions } from '../intellisense/docCommentProvider';
 import { COMPILER_CHECK_SOURCE } from './diagnosticProvider';
+import { REQUIRES_HEADER_CODE, REQUIRES_HEADER_SOURCE } from './requiresHeaderPlan';
 
 export class GPLCodeActionProvider implements vscode.CodeActionProvider {
     
@@ -25,6 +26,13 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
                 }
             } else if (diagnostic.source === COMPILER_CHECK_SOURCE && diagnostic.code === 'new-parens-without-constructor') {
                 actions.push(this.createRemoveNewParensAction(document, diagnostic));
+            } else if (diagnostic.source === REQUIRES_HEADER_SOURCE && diagnostic.code === REQUIRES_HEADER_CODE) {
+                // 편집 계산은 명령이 맡는다(심볼 인덱스가 필요하고, 프로젝트 일괄 갱신과 같은 경로를 쓴다).
+                const action = new vscode.CodeAction('Requires 헤더 갱신', vscode.CodeActionKind.QuickFix);
+                action.diagnostics = [diagnostic];
+                action.isPreferred = true;
+                action.command = { command: 'gpl.requiresHeader.update', title: 'Requires 헤더 갱신', arguments: [document.uri] };
+                actions.push(action);
             }
         }
 

@@ -4,6 +4,11 @@ import { findInitHookFindings, InitHookSeverity } from '../../language/checks/in
 import { isGplFile } from '../../config';
 import { findTryCatchFindings } from '../../language/checks/tryCatch';
 import { CompilerCheckSeverity, CompilerSymbolLookup, findCompilerCheckFindings } from '../../language/checks/compilerChecks';
+import { describeRequiresPlan } from '../../language/documentation/requiresHeader';
+import {
+    DEFAULT_REQUIRES_HEADER_MODE, isRequiresSourceReady, planRequiresForText,
+    REQUIRES_HEADER_CODE, REQUIRES_HEADER_SOURCE, RequiresHeaderMode, RequiresSymbolSource,
+} from './requiresHeaderPlan';
 
 /** 실기 확인 컴파일러·제어기 사실 검사의 진단 source — 빠른 수정(codeActionProvider)이 이 값으로 고른다. */
 export const COMPILER_CHECK_SOURCE = 'GPL Compiler Check';
@@ -24,7 +29,7 @@ export class GPLDiagnosticProvider {
      * @param symbolLookup 다른 파일(같은 컴파일 단위·참조 라이브러리)의 심볼 조회 — 보통 `SymbolCache`.
      *   없으면 실기 확인 검사가 현재 파일만으로 판정한다.
      */
-    constructor(private readonly symbolLookup?: CompilerSymbolLookup) {
+    constructor(private readonly symbolLookup?: CompilerSymbolLookup & RequiresSymbolSource) {
         this.diagnosticCollection = vscode.languages.createDiagnosticCollection('gpl');
     }
 
@@ -54,6 +59,9 @@ export class GPLDiagnosticProvider {
         if (vscode.workspace.getConfiguration('gpl', document.uri).get<boolean>('diagnostics.compilerChecks', true)) {
             diagnostics.push(...this.detectCompilerCheckIssues(document));
         }
+
+        // `'Requires:` 블록이 실제 참조와 다르면 알린다(gpl.requiresHeader.mode, 기본 check). 블록이 없는 파일은 대상이 아니다.
+        diagnostics.push(...this.detectRequiresHeaderIssues(document));
 
         // 선택 활성화한 호환성 안내는 실험 진단과 독립적으로 표시한다.
         if (!GPLDiagnosticProvider.isExperimentalDiagnosticsEnabled()) {
@@ -538,6 +546,26 @@ export class GPLDiagnosticProvider {
             diagnostic.code = f.code;
             return diagnostic;
         });
+    }
+
+    /**
+     * Requires 헤더 대조 — 계산은 requiresHeaderPlan(순수 조립). 인덱싱이 끝나기 전에는 의존이 통째로 "제거"로 보이므로 건너뛴다
+     * (인덱싱 완료 뒤 languageFeatures 가 열린 문서를 다시 검사한다).
+     */
+    private detectRequiresHeaderIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
+        const mode = vscode.workspace.getConfiguration('gpl', document.uri)
+            .get<RequiresHeaderMode>('requiresHeader.mode', DEFAULT_REQUIRES_HEADER_MODE);
+        if (mode === 'off' || !isRequiresSourceReady(this.symbolLookup)) { return []; }
+        const plan = planRequiresForText(document.getText(), document.uri.fsPath, this.symbolLookup);
+        if (!plan?.changed) { return []; }
+        const diagnostic = new vscode.Diagnostic(
+            new vscode.Range(plan.headerLine, 0, plan.headerLine, document.lineAt(plan.headerLine).text.length),
+            `Requires 헤더가 실제 참조와 다릅니다 — ${describeRequiresPlan(plan)}`,
+            vscode.DiagnosticSeverity.Information,
+        );
+        diagnostic.source = REQUIRES_HEADER_SOURCE;
+        diagnostic.code = REQUIRES_HEADER_CODE;
+        return [diagnostic];
     }
 
     /**

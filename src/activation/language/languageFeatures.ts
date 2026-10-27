@@ -23,6 +23,7 @@ import { GPLRenameProvider } from '../../providers/navigation/renameProvider';
 import { GPLSignatureHelpProvider } from '../../providers/intellisense/signatureHelpProvider';
 import { GPLWorkspaceSymbolProvider } from '../../providers/structure/workspaceSymbolProvider';
 import { hasOpenGplDocument } from '../../config';
+import { registerRequiresHeaderFeatures } from './requiresHeaderCommands';
 import type { ExtensionHost } from '../host';
 
 export function activateLanguageFeatures(host: ExtensionHost): () => void {
@@ -208,6 +209,9 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 	// Diagnostic provider registration
 	context.subscriptions.push(diagnosticProvider);
 
+	// Requires 헤더 동기화 — 현재 파일/프로젝트 명령과 저장 훅(진단·빠른 수정은 diagnosticProvider·codeActionProvider)
+	registerRequiresHeaderFeatures(host, ensureSymbolCacheInitialized);
+
 	// Refresh symbols command
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.refreshSymbols', async () => {
@@ -361,7 +365,7 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 	// 진단 설정을 바꾸면 열린 문서에도 바로 반영한다.
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeConfiguration(event => {
-			if (!event.affectsConfiguration('gpl.diagnostics')) { return; }
+			if (!event.affectsConfiguration('gpl.diagnostics') && !event.affectsConfiguration('gpl.requiresHeader')) { return; }
 			for (const document of vscode.workspace.textDocuments) {
 				if (isGplDocument(document)) {
 					diagnosticProvider.scheduleDiagnostics(document, 0);

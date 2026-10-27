@@ -17,6 +17,8 @@ export class SymbolCache {
     private refreshTask: Promise<void> | undefined;
     private refreshRequested = false;
     public isRefreshing = false;
+    /** 워크스페이스 전체 인덱싱이 한 번이라도 끝났는가 — 그 전의 "다른 파일 심볼 없음"은 사실이 아니다(Requires 헤더 대조가 본다). */
+    public hasIndexed = false;
 
     /**
      * @param workspaceFolderFor 경로 근접도 점수(scoreFilePath)의 "최상위 폴더" 기준. 기본은 VS Code 작업공간 폴더.
@@ -59,6 +61,7 @@ export class SymbolCache {
                 this.index.clear();
                 await this.sourceLoader.indexWorkspace();
             } while (this.refreshRequested);
+            this.hasIndexed = true;
             this.log(`[SymbolCache] Refresh complete. Total symbols: ${this.getAllSymbols().length}`);
         } finally {
             this.isRefreshing = false;

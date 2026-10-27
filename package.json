@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.19.2",
+    "version": "0.20.0",
     "publisher": "nir414",
     "icon": "assets/icons/gpl-logo.png",
     "repository": {
@@ -36,6 +36,8 @@
         "onView:gplThreads",
         "onCommand:gpl.refreshSymbols",
         "onCommand:gpl.insertDocComment",
+        "onCommand:gpl.requiresHeader.update",
+        "onCommand:gpl.requiresHeader.updateProject",
         "onCommand:gpl.debugSymbolCache",
         "onCommand:gpl.showXmlBestPractices",
         "onCommand:gpl.analyzeXmlEncoding",
@@ -252,6 +254,16 @@
             {
                 "command": "gpl.insertDocComment",
                 "title": "Insert Documentation Comment (문서화 주석 생성)",
+                "category": "GPL"
+            },
+            {
+                "command": "gpl.requiresHeader.update",
+                "title": "Update Requires Header (현재 파일 Requires 헤더 갱신/추가)",
+                "category": "GPL"
+            },
+            {
+                "command": "gpl.requiresHeader.updateProject",
+                "title": "Update Requires Headers in Project (프로젝트 전체 Requires 헤더 갱신)",
                 "category": "GPL"
             },
             {
@@ -1842,6 +1854,22 @@
                     "type": "boolean",
                     "default": true,
                     "description": "실제 제어기(GPL 4.2K5)에서 확인한 컴파일러·제어기 사실을 정적 진단으로 표시합니다. 반환형이 다른 오버로드(-741), Sub New 없는 클래스의 New X()(-722), Module 이름을 가리는 멤버(-781/-729), 다른 클래스의 Private Shared 접근(-729), Stop 으로 멈출 수 없는 쓰레드 이름(-712)은 Warning, 100바이트를 넘는 문자열 리터럴(-506, 한도 미확정)·ByVal String 매개변수의 Is Nothing 검사(-782)·5% 이하 조그 속도(tick 모드)는 Information입니다."
+                },
+                "gpl.requiresHeader.mode": {
+                    "scope": "resource",
+                    "type": "string",
+                    "enum": [
+                        "check",
+                        "onSave",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "모듈 머리 주석의 'Requires: 블록이 실제 참조와 다르면 Information 진단과 빠른 수정(Requires 헤더 갱신)을 표시합니다(기본).",
+                        "저장할 때 'Requires: 블록을 바로 고칩니다. 블록이 없는 파일은 건드리지 않습니다.",
+                        "대조하지 않습니다. 명령(GPL: Update Requires Header)만 사용합니다."
+                    ],
+                    "default": "check",
+                    "description": "'Requires: 블록(파일이 쓰는 다른 파일의 Module·Class·멤버 목록)을 정의 이동과 같은 이름 해석으로 계산해 맞춥니다. 블록이 있는 파일만 대상이고, 형식에 맞지 않는 설명은 'Notes: 블록으로 옮깁니다. 'Used by: 는 다루지 않습니다."
                 },
                 "gpl.diagnostics.experimental": {
                     "scope": "window",

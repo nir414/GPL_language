@@ -90,9 +90,9 @@ flowchart BT
 | `syntax/` | 파서(`gplParser`)·문 사전(`gplStatements`)·예약어·블록 문맥(`blockContext`)·선언자 목록·커서 식(`cursorExpression`)·식별자 비교 |
 | `dictionary/` | GPL Dictionary 데이터(`gplDictionaryData`)와 조회 API(`gplBuiltins`) |
 | `symbols/` | 심볼 인덱스(`symbolIndex`)·이름 인덱스·스코프 판정(`symbolScope`)·정의 위치 다듬기·개요 모델(`outlineModel`) |
-| `analysis/` | 수신자 타입·오버로드 해석·분기형 getter·참조 출현 판정(`referenceScope`)·참조 표기·이름 바꾸기 스캔(`renameCore`) |
+| `analysis/` | 수신자 타입·오버로드 해석·분기형 getter·참조 출현 판정(`referenceScope`)·참조 표기·이름 바꾸기 스캔(`renameCore`)·파일 간 의존 계산(`moduleDependencies` — Requires 헤더) |
 | `checks/` | 실기 확인 사실의 정적 검사(`compilerChecks`)·`Init` 훅 충돌·Try/Catch 검사 |
-| `documentation/` | 문서화 주석 파서·렌더러(`docComment`)·오버로드 병합 |
+| `documentation/` | 문서화 주석 파서·렌더러(`docComment`)·오버로드 병합·모듈 머리 주석 `'Requires:` 블록 읽기/쓰기(`requiresHeader`) |
 | `xml/` | XML 유틸(완성·코드 액션이 쓴다) |
 | `vscode/` | 접착 계층(§2 표의 `language/vscode/`) — `SymbolCache` 조립·소스 로딩·VS Code 표현 |
 
@@ -100,7 +100,7 @@ flowchart BT
 
 | 하위 폴더 | 책임 |
 | --- | --- |
-| `sources/` | 프로젝트 소스 목록(`projectSources`)·컴파일 단위(`compileUnit`·`compileUnitTarget`)·워크스페이스 검색 래퍼(`projectFileScope`) |
+| `sources/` | 프로젝트 소스 목록(`projectSources`)·컴파일 단위(`compileUnit`·`compileUnitTarget`)·컴파일 순서(`sourceOrder` — Requires 정렬)·워크스페이스 검색 래퍼(`projectFileScope`) |
 | `gpr/` | Project.gpr ↔ 폴더 동기화(`gprSync`·`gprFolderSync`)·소스 승격(`sourcePromotion`·`promoteSourceCommand`) |
 | `remote/` | 제어기 사본과 로컬의 대응 — 다운로드 작업공간 메타(`controllerProjectWorkspace`)·Attach 대상(`controllerProjectDebug`)·원격 사본 매핑(`remoteSourceMapping`)·`Set Break` 파일 identity(`breakpointTarget`) |
 | `symbols/` | 컴파일 단위 기반 심볼 범위(`symbolProjectScope`) |

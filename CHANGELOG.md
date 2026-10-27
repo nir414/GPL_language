@@ -2,6 +2,14 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.20.1] - 2026-10-27
+
+### Changed
+
+- 내부 구조(동작 변경 없음): 제어기 응답 파서(`responseParser.ts` 1,132줄)를 응답 종류별 12모듈 + 배럴로, 참조 찾기(`referenceProvider.ts` 1,187줄 → 432줄)의 스캔·대상 복원·트레이스 로직을 vscode 없는 순수 모듈로 나눴습니다(원본 결과를 고정값으로 뽑아 대조한 테스트 48건). AI 에이전트 설정 모듈은 `controller/automation/` 으로 옮겼습니다.
+- 진단: 출력 패널의 `[SymbolCache]` 줄에 파일 탐색 시간, `Symbol cache initialized!` 에 총 소요 ms 를 붙였습니다. "인덱싱이 느리다" 보고 때 탐색(findFiles)과 읽기·파싱 중 어느 쪽인지 바로 가릴 수 있습니다.
+- 구조 설계 방향(성장 규칙)을 `docs/development/architecture.md` §2.4 와 CLAUDE.md 에 명문화했습니다.
+
 ## [0.20.0] - 2026-10-27
 
 ### Added

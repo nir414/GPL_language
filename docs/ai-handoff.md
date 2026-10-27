@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.20.0** (Requires 헤더 자동 동기화 — 1491/1491. 상세는 §1-GG.)
-- **직전 세션: §1-GG** — 모듈 머리 주석 `'Requires:` 블록을 정의 이동·호버와 같은 이름 해석(receiverType·receiverContext·컴파일 단위)으로 계산해 맞춘다. 블록이 있는 파일만(옵트인), 사람이 단 설명은 `'Notes:` 로 옮김, `'Used by:` 는 다루지 않음. `gpl.requiresHeader.mode`(check 기본·onSave·off), 명령 2개, BinderR4 85파일 드라이런으로 손 기록의 오류(MM_DRIVE 소속·중복 줄) 확인. 실기·UI 확인은 §3.
+- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.20.1** (responseParser·referenceProvider 분해, 성장 규칙 명문화, 인덱싱 단계 시간 로그 — 동작 변경 없음, 1539/1539. 상세는 §1-GH.)
+- **직전 세션: §1-GH** — §1-GF 후속: 구조 설계 방향을 architecture.md §2.4(정본)+CLAUDE.md 요약으로 명문화, `responseParser`(배럴+12모듈)·`referenceProvider`(1,187→432, 순수 모듈 4개·고정 테스트 48건) 분해, `src/ai`→`controller/automation`, `[SymbolCache]` 탐색/총 소요 ms 로그, 벤치마크 `--workspace`(실제 워크스페이스 0.14~0.33 s — 9 s 미재현), `npm run verify:split`. 0.20.1. 실기·UI 확인은 §3 그대로.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -1097,6 +1097,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | 본문 ↓ |
 | §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | 본문 ↓ |
+| §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | 본문 ↓ |
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | 본문 ↓ |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | 본문 ↓ |
 
@@ -1438,3 +1439,33 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 ### 남은 일
 
 - §3 의 VSIX·UI 확인. 문자열로 부르는 프로시저와 수신자 타입 미상 멤버는 누락된다(확정할 수 없으면 뺀다). 사용자가 쓰던 와일드카드(`ERR_*`)는 Notes 로 옮겨지고 실제 이름이 나열된다 — 줄이 길어지면 줄바꿈 규칙을 추가할지 사용자 판단.
+
+---
+
+## 1-GH. 2026-10-27 세션 — §1-GF 후속: 성장 규칙 명문화·파서/참조 찾기 분해·인덱싱 진단 (0.20.1)
+
+### 요청·판단
+
+- 사용자: "앞으로 구조층 설계는 이런 방향으로 진행할 수 있도록 간단히 명시", "남은 권장 사항도 이어서", "내가 따로 할 일이 있으면 알려 달라". 토큰 가성비는 지키되 일처리는 제대로(느려도 됨), 하위 에이전트는 Sonnet.
+- 같은 저장소에 세션이 여럿(gpl-language-dd·gpl-language-32 + 샘플 프렙/바인더 세션들). 32 세션의 Requires 헤더 작업(§1-GG, 0.20.0)이 작업 트리에 미커밋으로 있어 마지막 병합을 그쪽 커밋(47d25b8)까지 기다렸다가 올렸다. **작업 트리에 남은 `controller-mcp/README.md`·`src/guidelines.js`·`test/guidelines.test.mjs` 미커밋 변경은 이 세션·dd·32 어느 쪽 것도 아니다**(사용자 말로는 다른 AI 와 함께 고친 것) — 이 세션은 건드리지 않았고 커밋에도 넣지 않았다. 다만 `npm run package` 의 MCP 번들에는 작업 트리 상태가 그대로 들어가므로 0.20.0·0.20.1 VSIX 둘 다 그 변경을 포함한다.
+
+### 조치
+
+- **성장 규칙 명문화(a4aa1c6)**: architecture.md §2.4 가 정본(두 단계 폴더·루트는 도구 규약만·1,000줄/150줄 = 분해 신호·순수 먼저·이동/분할은 동작 불변 증명·명시적 상태·문서와 테스트가 정본·의존 방향), CLAUDE.md/AGENTS.md 「구조 설계 방향」은 요약. 2026-09-18 사용자 설계 방침(책임 위치부터)을 상위에 둔다.
+- **`src/ai` → `controller/automation`(72f4b1e)**: `activation/ai` 와 이름 혼동 제거. 계층 union·허용 목록·area 표·§4 갱신.
+- **responseParser 분해(c47df4e, Sonnet)**: `statusParser`·`threadParser`·`stackParser`·`breakListParser`·`variableParser`·`errorLogParser`(파싱+에러 코드 분류)·`compileErrorParser`·`gprParser`·`projectSelection`·`sourceCandidates`·`runtimeConsoleLine`·`protocolText` + 배럴 `responseParser.ts`(동명 재export, importer 무수정). 테스트는 모듈별 5파일로 옮김(단언 그대로). R7 SSOT 표의 에러 분류 소유자는 `errorLogParser` 로.
+- **referenceProvider 분해(ae80030·4c76233·8f726ab, Sonnet)**: 순수 모듈 `language/analysis/referenceCandidates`(패턴·한정자 규칙)·`referenceTarget`(대상 선언 복원 캐스케이드)·`referenceScan`(검색 계획·스캔 세션·중복 제거)·`referenceTrace`(`[References]` 문구). provider 는 문서/Uri/Location 변환과 `findTextInWorkspace` 만. 분해 전 provider 를 vm 하니스로 돌려 6+3 질의의 위치 순서·로그 줄을 고정값으로 뽑고(`referenceScan.test`·`referenceFixture.ts`), 새 순수 함수가 그 값을 재현하는지 + old/new provider 를 project-fallback·workspace-search 두 경로에서 바이트 비교. 게이트 순서 하나(unqualifiedOnly 검사 위치)가 통일됐으나 부수효과 없는 순수 판정이라 결과 동일.
+- **인덱싱 진단(72f4b1e)**: `workspaceSourceLoader` 의 `[SymbolCache] … (탐색/findFiles N ms)`, `languageFeatures` 의 `Symbol cache initialized! (N ms)`. `scripts/dev/index-performance.js --workspace <폴더>`(읽기만, 삭제 안 함)로 실제 핵산 Oligo 워크스페이스 실측: MergeCode 63파일 read 77/parse 52/index 9 ms(총 0.14 s), 시뮬레이션 루트 114파일 총 0.33 s → **확장의 읽기·파싱·색인은 9 s 의 원인이 아니다.** 남은 후보는 VS Code `findFiles` 열거(SVN 트리 범위)·활성화 대기·다른 워크스페이스. 다음 보고 때 Output 의 두 줄로 가른다.
+- `npm run verify:split` = compile + `deployReplay.js` + `compareTreeProvider.js`.
+
+### 검증
+
+- `npm test` **1539/1539**(1481 → responseParser 테스트 재배치 0, referenceProvider 순수 테스트 +48, 32 세션의 Requires 헤더 테스트 포함). 병합 충돌은 `test/index.ts` 등록 줄과 architecture.md `analysis/` 행뿐(양쪽 보존).
+- 패키징: `npm run package` → `dist/gpl-language-support-0.20.1.vsix` **1,617,016 bytes**, SHA-256 **FE2F12BF9C9599132D786189FEB516D229A616DDA78DA72E2F1A1865EBD65E97**(353 files, MCP 번들 1010 KB — 작업 트리의 controller-mcp 미커밋 변경 포함). 경고는 기존 JavaScript 번들링 권고뿐.
+
+### 남은 일
+
+- §3: §1-GF 실기·UI 확인 4종 그대로 + 느린 워크스페이스에서 `Symbol cache initialized! (N ms)`·`[SymbolCache] … 탐색 N ms` 값 수집.
+- `controller-mcp/` 미커밋 변경 3파일의 주인 확인·정리(이 세션 범위 밖).
+- 분해 후보로 남은 것: `gplDebugSession._pollThreadStates`·`runtimeConsole`(명시적 상태 머신과 함께), `gplParser.ts` 977줄(상한 근접), `errorLogParser` 의 파싱/분류 분리, `gprParser`·`projectSelection`·`sourceCandidates` 를 `project/` 로 옮길지.
+- push·태그·릴리스는 사용자 요청 시.

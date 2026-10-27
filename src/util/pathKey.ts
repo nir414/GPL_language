@@ -17,6 +17,22 @@ import * as path from 'path';
  * (2026-09-02 `docs/ai-handoff.md` §1-CQ).
  */
 export function normalizePathKey(p: string): string {
+    // 절대 경로만 메모한다 — 상대 경로는 cwd 에 따라 결과가 달라진다.
+    // 인덱싱·조회가 같은 경로를 수만 번 정규화하므로 path.resolve(문자열 분해) 비용을 한 번만 낸다.
+    if (!path.isAbsolute(p)) { return computePathKey(p); }
+    let key = pathKeyMemo.get(p);
+    if (key === undefined) {
+        if (pathKeyMemo.size >= PATH_KEY_MEMO_MAX) { pathKeyMemo.clear(); }
+        key = computePathKey(p);
+        pathKeyMemo.set(p, key);
+    }
+    return key;
+}
+
+const PATH_KEY_MEMO_MAX = 50_000;
+const pathKeyMemo = new Map<string, string>();
+
+function computePathKey(p: string): string {
     return path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
 }
 
@@ -28,6 +44,16 @@ export function normalizeDirKey(p: string): string {
 /** filePath가 dirPath 하위(또는 동일)인지 판정. 접두어 비교가 아니라 경로 세그먼트 기준. */
 export function isPathUnder(filePath: string, dirPath: string): boolean {
     try {
+        if (process.platform === 'win32' && path.isAbsolute(filePath) && path.isAbsolute(dirPath)) {
+            // path.relative(resolve(dir), resolve(file)) 와 같은 판정을 접두어 비교로 — 대소문자 무시(Windows).
+            // 정규화 키는 메모되므로 호출마다 path.resolve/relative 를 돌리지 않는다.
+            const dir = normalizePathKey(dirPath);
+            const file = normalizePathKey(filePath);
+            if (file === dir) { return true; }
+            if (!file.startsWith(dir + path.sep)) { return false; }
+            // 종전 판정(`rel.startsWith('..')`)과 같게 첫 세그먼트가 `..` 로 시작하는 이름은 하위로 보지 않는다.
+            return !file.startsWith('..', dir.length + 1);
+        }
         const rel = path.relative(path.resolve(dirPath), path.resolve(filePath));
         return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
     } catch {

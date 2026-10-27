@@ -1433,6 +1433,7 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 - `npm test` **1560/1560**(신규 dependencyCheck 4건 — BinderR4 축소 구조 임시 폴더: 루트 찾기·루트 기준 경로 해석, 누락/간접/미사용/미해석/목록 누락과 수정 줄 위치, 계층 위반 위치와 Delegate 매개변수 오탐 방지, 규칙 줄 파싱). 구조 테스트 R1~R9 통과.
 - **BinderR4 읽기 전용 드라이런**(scratchpad, 쓰기 없음): 패키지 45 · 파일 85 · 규칙 `app->config/gantry/lib; config->gantry/lib; gantry->lib`. 수정 후 결과 — library-unused 5(Gantry\Station 의 Foundation·Text, Gantry\StationCmd 의 Robot\Cmd, PressureSensorCmd 의 Text·Log; 소스에서 해당 모듈 한정자 사용 없음 확인), library-indirect 5(CantopsIO→Concurrency, CantopsIOCmd→Text·Log·Foundation, Motion\Cmd→LeadshineRS), 누락·계층 위반 0. 37 Oligo MergeCode(단일 패키지 63파일) 0건.
 - 다른 세션과 동시 작업: 0.21.0(연결 판정)·0.22.0(대시보드) 뒤에 0.23.0. 커밋은 hunk 단위로 내 변경만.
+- VSIX: `dist/gpl-language-support-0.23.0.vsix` 1,649,627 bytes, SHA-256 `570EE2D15541EF914214BD470CE81F28B4C72C1E9B5252670373808BD51107D1`(359 파일, 경고는 bundle 권장 1건). 작업 트리에서 만들어 MCP 번들에 미커밋 `controller-mcp/src/guidelines.js` 변경(다른 세션 작업)이 들어 있다.
 
 ### 남은 일
 

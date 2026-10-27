@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.21.0** (제어기 유실 판정 지연 개선 — 상태바 확인 중 표시·핸드셰이크 상한·정지 뒤 가짜 타임아웃 방지·이벤트 루프 정지 기록, 1550/1550. 상세는 §1-GI.)
-- **직전 세션: §1-GI** — "제어기 죽은 판정이 느리다": 사후 스냅샷 10건을 분해해 지연의 최대 원인이 판정 규칙이 아니라 **VS Code 확장 호스트 정지(22~71 s, 3건 — renderer.log unresponsive 와 1 ms 일치)**임을 확인. 상태바가 suspect/recovering 을 첫 신호부터 표시, 1402 새 연결 핸드셰이크 상한 `connectTimeoutMs`(3 s), 타임아웃 판정을 setImmediate 로 미뤄 정지 직후 가짜 타임아웃 방지, `eventLoopStall` 로 정지 구간을 Output·유실 알림·사후 스냅샷에 남김. 판정 임계(8 s·3회/2회·180 s)는 그대로. 0.21.0.
+- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.22.0** (제어기 대시보드 — 디지털 I/O 그룹 칩·더블클릭 강제 토글·우클릭 해제, 밀도·주기 옵션 개선, 1556/1556. 상세는 §1-GJ.)
+- **직전 세션: §1-GJ** — "대시보드가 불편하다·2만번대 IO 가 안 보이고 8천번대가 많다": 문서 신호 번호 체계로 Local I/O(Digital·Soft Internal·Dedicated 제어기/축)·Remote I/O(RIO n·Network Node n) 분류(`controller/io/dioGroups.ts`), 8000/18000번대 = dedicated I/O 임을 확인, 인자 없는 `Show DIO` 가 Soft(20001~) 를 안 내줘 따로 조회(64개 한 줄은 -506), Set DIO 확인 모달 제거(사용자 요청), 더블클릭 토글·우클릭 해제·전체 해제, 고정 헤더·카드 접기·주기 0.5~60 s+직접 입력·진단 주기. 0.22.0.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-10-27, §1-GJ) 0.22.0 대시보드 I/O — 실기 확인(Set DIO 는 실제 신호를 바꾼다: 장비 정지 상태·무해한 신호로).** ① I/O 탭에서 Local I/O(Digital 13~20/10001~10012 · Soft 20001~20064 · Dedicated 제어기 8081~/18001~ · 축 1~6)·Remote I/O 「미검출」이 실기 응답대로 나오는지. ② Soft 신호(예: 20064) 더블클릭 → 강제 ON(`Set DIO 20064 1`)·모서리 표시·탭 숫자, 우클릭 「강제 해제」 → 표시 사라짐, 「모든 강제 해제」가 강제된 것만 `Set DIO n 0` 으로 보내는지(GPL Traffic). ③ 폴링 1 회가 `Show DIO` + Soft 3 줄(160자 분할) 로 끝나고 STATUS 0 인지, 0.5 s 주기에서도 1402 큐가 밀리지 않는지. ④ 우클릭 메뉴가 VS Code 기본 메뉴 대신 뜨고 Shift+F10·Esc 로 열고 닫히는지, 패널 크기 변경·스크롤에서 닫히는지. ⑤ RIO·서보 네트워크가 있는 장비에서 그룹이 RIO n·Network Node n 으로 잡히는지(문서상 node n 일반 I/O 는 +100000·n, 13~20/10001~10012).
 - [ ] **(2026-10-27, §1-GI) 0.21.0 연결 판정 — 실기·UI 확인(읽기 경로·모션 무영향).** ① 연결 중 제어기 LAN 케이블을 뽑거나 전원을 내리면 상태바가 **첫 이상 신호부터** `$(sync~spin) … 응답 확인 중 (실패 n/3)`(경고색)으로 바뀌고 툴팁에 계기·마지막 실패가 보이는지, 클릭하면 바로 해제되는지, 복구되면 정상 표시로 돌아오는지. ② Unload 무응답 뒤 `$(watch) … 복구 대기 n/180 s` 가 1 s 마다 갱신되는지. ③ 다음 유실 때 Output 에 `[Health] 확장 호스트 이벤트 루프 정지 …` 줄과 유실 알림의 「판정이 늦어진 N s 는 … 확장 호스트가 멈춰 있던 시간」, 사후 스냅샷 「확장 호스트 이벤트 루프 정지」 절이 채워지는지 — 채워지면 그 시각의 `%APPDATA%\Code\logs\…\renderer.log` 에서 범인 확장 프로파일을 찾는다. ④ GPL Traffic 에 `CONNECT TIMEOUT (3000ms, no handshake)` 가 정상 운용(부팅 직후 포함) 중에 뜨지 않는지 — 뜨면 `gpl.controller.connectTimeoutMs` 를 올린다.
 - [ ] **(2026-10-27, §1-GG) Requires 헤더 — VSIX·UI 확인(편집기만, 모션 무영향).** BinderR4 를 연 상태에서 ① 인덱싱이 끝난 뒤 `App\Control\Machine.gpl` 의 `'Requires:` 줄에 Information 진단(「추가 2 … · 메모 1줄 → 'Notes:」)과 Quick Fix 「Requires 헤더 갱신」이 뜨는지, 적용하면 MotionSystem.gpl 두 줄이 한 줄로 합쳐지고 Deck 설명이 `'Notes:` 로 가며 `'Used by:` 는 그대로인지, Ctrl+Z 로 한 번에 되돌아가는지 ② `GPL: Update Requires Headers in Project` → Refactor Preview 에 헤더 있는 파일(83개 중 변경분)이 파일별 라벨로 뜨고, 일부만 체크해 적용되는지 ③ `gpl.requiresHeader.mode: onSave` 에서 저장 시 바로 고쳐지는지, 블록 없는 파일은 그대로인지 ④ 인덱싱 중(활성화 직후)에는 진단이 안 뜨는지 ⑤ 큰 파일(LeadshineRS.gpl)에서 타이핑 지연이 체감되는지(드라이런 첫 계산 수백 ms 는 컴파일 단위 캐시 예열, 이후 파일당 수십 ms). 미해결: 문자열로 부르는 프로시저(`AddSync("Name")` 류)·수신자 타입을 모르는 멤버 호출은 목록에 안 들어감(누락 쪽 — 확인 필요하면 SYMBOL_STRING_CONSUMERS 연동 검토).
 - [ ] **(2026-10-26, §1-FZ) 0.18.0 실기·UI 확인.** ① FTP 쓰기 전 정체 확인: 실제 제어기에서 220 배너(`RTEMS FTP server`)가 읽혀 Upload Only·Quick Compile이 막히지 않는지, 배너·런타임 콘솔 핸드셰이크 프로브가 무해한지. ② 그룹(Lib) Compile 뒤 Unload 확인 모달·MCP `confirm` 흐름과 재부팅 뒤 자동 해제. ③ 참조 찾기(BinderR3 `BRI.Setup`)·정의 이동(`NUM` 2후보, MergeCode `getWafer`) 결과와 놓치는 참조 여부. ④ 새 진단 8종의 대형 코드베이스(V2/Lib) 오탐률. ⑤ `date` 응답 형식·잔여 오차·재부팅 뒤 유지. ⑥ 메모리 경고 상태 표시줄과 배포당 1회 알림. 보류 항목(모듈 String 첫 사용 린트, Unload 소켓 유지, Lib upload-only 기본값)은 §1-FZ 남은 일 참조.
@@ -813,7 +814,8 @@ src/language/analysis/receiverType.ts             # 멤버 접근 수신자 타�
 src/controller/automation/exportAgentSetup.ts            # Export/Check AI Agent Setup — 번들 동기화·파일 생성·설정/대상 준비 상태(§1-EF)
 src/controller/automation/agentSetupChecks.ts            # 실행 설정·폴더 대상·CLAUDE/AGENTS 안내 검사(vscode 무의존)
 src/controller/io/dio.ts                    # Show DIO `signal: 0|1 [*]` 순수 파서 + Set DIO 명령/동작 설명 정본(§1-FB)
-src/views/dashboard/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — 상태/I/O 탭, setInterval/pause/config, 확인 후 Set DIO(§1-BF·§1-FB); HTML은 assets/webview/dashboard.html
+src/controller/io/dioGroups.ts              # (§1-GJ) 신호 번호 → Local/Remote I/O 그룹 분류(문서 신호 번호 체계), Soft 20001~20064 분할 조회, 토글 값·일괄 해제 대상
+src/views/dashboard/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — 상태/I/O 탭, setInterval/setDiagnosticInterval/pause/config, 모달 없는 Set DIO·toggleDio·releaseDio(§1-BF·§1-FB·§1-GJ); HTML은 assets/webview/dashboard.html
 controller-mcp/src/parse.js              # MCP 파서 — parseThreadList(이름 키)·compactThread·summarizeThreads·parseShowVariable(§1-BF)
 scripts/bundle-mcp.js                    # MCP 번들 + 빌드 스탬프(define __GPL_MCP_BUILD_JSON__, 사이드카 .build.json)(§1-BF)
 src/debug/session/sessionIo.ts                      # (§1-GF) 협력자가 세션을 보는 창 — 읽기 전용 getter + sendCmd/log/sendEvent. 세션 생성자의 _io 가 구현(지연 getter)
@@ -897,7 +899,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-FZ ~ §1-GI)만 둔다.
+본문에는 **최근 10개 세션**(§1-GA ~ §1-GJ)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -906,8 +908,8 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FY (2026-10-02 ~ 10-23, §1-FR 2건) | 47 |
-| (본문 아래) | §1-FZ ~ §1-GI (2026-10-26~27) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FZ (2026-10-02 ~ 10-26, §1-FR 2건) | 48 |
+| (본문 아래) | §1-GA ~ §1-GJ (2026-10-26~27) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -1094,7 +1096,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-FW | 10-23 | **FTP 원격 파일·lazy Attach** — 기존 작업공간 유지, 읽기 전용 URI와 TMP 소스 캐시. 0.17.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FX | 10-23 | **FTP 새로고침 경합** — 일반 조회 뒤 새 요청 직렬화·종료 경계, .gpo 설명 정정. 0.17.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | [2026-10](archive/handoff/2026-10.md) |
-| §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | 본문 ↓ |
+| §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GA | 10-26 | **디버그 스텝 체감 지연 재발** — 어댑터 큐를 control/data 차선으로(재개 시 미전송 조회 폐기), pending 백업 폴, 재개 타이밍 한 줄 로그. 0.18.2 | 본문 ↓ |
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | 본문 ↓ |
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
@@ -1104,54 +1106,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | 본문 ↓ |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | 본문 ↓ |
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | 본문 ↓ |
+| §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-FZ ~ §1-GI (2026-10-26~27).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GA ~ §1-GJ (2026-10-26~27).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-FZ. 2026-10-26 세션 — 수신함 보고 일괄 반영과 0.18.0 릴리스
-
-### 요청·판단
-
-사용자가 "기능 개선 요청 반영 → GitHub 커밋·릴리스 → Marketplace 최신 버전 등록까지 자동화"를 요청했다. 사용자 메모 파일(Quick Compile 쓰레드 확인·autoOnSave·deploy 경로·Start 분리·hover 설정·오버로드 정의)의 항목은 코드 대조 결과 이미 구현돼 있어, 실제 미처리 요청은 `Downloads\GPL_language_inbox` 최상위의 보고 22건으로 봤다. 메모의 `getWafer` 오버로드 정의 이동은 회귀 픽스처로 다시 검증했다.
-
-시작 시 작업 트리에 0.17.0~0.17.2 미커밋 변경이 있었고, 브랜치는 PR #37 병합(main `bf4db9c`)보다 뒤였다. 작업 트리를 보존한 채 `git reset --mixed main`으로 브랜치를 main에 맞춘 뒤 그 변경을 `349ae90`으로 커밋했다(1314/1314·MCP 137/137).
-
-### 조치
-
-다섯 갈래를 worktree 에이전트로 병렬 구현하고 순서대로 병합했다(충돌은 `connection.ts`·MCP `index.js`·`deploy.ts`·`deployService.ts`·`controllerConnection.ts`·`ftpCommands.ts`·`architecture.md`·`test/index.ts` — 모두 양쪽 변경을 합쳐 해소). 버전은 기능 추가라 minor **0.18.0**.
-
-| 갈래 | 주요 변경 | 판정 정본 |
-| --- | --- | --- |
-| 참조·정의·호버 | 참조 폴백이 출현마다 이름 해석으로 다시 판정(`other-module-decl`·`qualifier-mismatch`·`shadowed-by-*`·`overload-mismatch`), 멤버가 Module을 가리는 자리의 정의 이동 2후보·호버 경고, 오버로드 선택에 체인 인자 타입·선언 자기 자신·지역→클래스→모듈 해석 | `language/analysis/referenceScope.ts`, `receiverType.findQualifierShadowing`, `overloadResolution.ts` |
-| 정적 진단 | `gpl.diagnostics.compilerChecks`(기본 켜짐) 아래 8개 규칙(-741 반환형 오버로드, -722 `New X()`, -781 멤버 가림, -506 리터럴 100 B, -712 쓰레드 이름, -729 Private Shared, -782 ByVal Nothing 검사, 조그 tick), 컴파일 에러 줄 문맥 힌트 | `language/checks/compilerChecks.ts`, `deployment/compileErrorHints.ts` |
-| Unload·대상 안전 | 같은 부팅의 그룹 Compile 뒤 Unload 확인(사람 모달·AI `confirm`), 재부팅 근거로 해제, `/GPL` 비우기 정지 확인 게이트, Start 계열 실행 불가 사전 거부(`PROJECT_NOT_RUNNABLE`), 세션 대상 보존(`sessionTargetChanged/Kept`), -744 재시도 금지, 비영숫자 쓰레드 이름 Stop skip | `commands/unloadRisk.ts`(+ `%TEMP%/gpl-controller/unload-risk-<ip>.json`, MCP 미러 `unloadRisk.js`) |
-| FTP·메모리·진단 | FTP 쓰기 전 제어기 정체 확인(`CONTROLLER_UNVERIFIED`, 설정 `gpl.controller.verifyControllerIdentity`), 메모리 경고 알림 중복 억제·상태 표시줄, 거부 시 FTP 배너·런타임 콘솔 프로브로 `gpl-runtime-network-down` 등 분류, 경로 인터페이스 ARP, 어댑터 재연결 안내, `compileAborted` 분류 | `connection/controllerIdentity.ts`, `diagnostics/memoryNotice.ts`, `deployment/compileAbort.ts` |
-| 시계 동기화 | `gpl.controller.syncClock`, 연결 시 자동 동기화 설정, `date <arg>` 상태 변경 분류, MCP `controller_status.clock`·`sync_controller_clock` | `diagnostics/controllerClock.ts` |
-
-언어·제어기 사실은 문서로 옮겼다(`docs/gpl-language/common-mistakes.md` 0-5·0-10~0-13·6절, `threading.md`, `file-io.md`, `docs/reference/robot-homing-methods.md`, `docs/development/pa-controller-debug-operations.md`, `docs/reference/console-commands.md` Date 절).
-
-### 검증
-
-- 병합 뒤 `npm test` **1413/1413**, `controller-mcp` `npm test` **163/163** 통과. `pre-release-check`는 미커밋·main 아님 2건만 실패(커밋 전 실행이라 예상된 결과), 나머지 15건 통과.
-- `npm run package:no-bump`: `dist/gpl-language-support-0.18.0.vsix`(PR #38 리뷰 반영 뒤 재패키징), **1,481,833 bytes**, SHA-256 **714BA3660BCD0769CF15EEB61C26CD951311B196509251BE69C0BD62FF6FE632**. 경고는 기존 JavaScript 번들링 권고뿐.
-- 제어기·실제 VS Code UI는 이번에 다루지 않았다. 아래 남은 일의 실기 항목은 모두 미확인이다.
-
-### 남은 일
-
-- Marketplace 자동 게시는 여전히 미연결(§3 §1-FF 항목) — `marketplace` 환경 secret과 `MARKETPLACE_PUBLISH`가 비어 있어 태그 workflow는 GitHub Release까지만 만든다.
-- 실기 확인: FTP 220 배너가 `access()` welcome으로 실제 읽히는지(못 읽으면 사람 경로는 「그래도 진행」, AI 경로는 거부), 배너·런타임 콘솔 핸드셰이크 프로브의 무해성, Lib Quick Compile 뒤 Unload 위험 표시와 재부팅 뒤 해제, `RWK_0` 같은 밑줄 이름 Stop, `date` 응답 형식과 잔여 오차, 리터럴 한도 정확한 값.
-- 보류: 모듈 String 첫 사용 린트(흐름 분석 필요), Unload 소켓 유지·명령별 타임아웃 표, Lib 배포 기본값 upload-only 전환, 메모리 알림의 「/GPL 확인」·「다시 알리지 않기」 버튼, Compile 전후 Show Memory 시계열.
-
-### PR #38 리뷰 반영
-
-Copilot 리뷰 6건을 코드로 대조해 모두 사실로 확인하고 고쳤다(`23e9b26`~`82440c9`). ① FTP 트리 하위 폴더가 프로젝트 폴더와 같은 context를 받아 `/GPL/App/Utils`에서 `Unload Utils`가 나갈 수 있었다 — `controller/files/ftpNodeTarget.ts`로 하위 폴더 context를 분리하고 메뉴 when 절을 정확 일치로 바꿨다. ② 제어기 전환 뒤 옛 노드의 변경 명령을 노드 host 대조로 거부(확인 창 뒤 재검사). ③ 시계 설정 값을 `SendCommandOptions.composeInSlot`으로 큐 슬롯 안에서 계산. ④ 메모리 배지를 측정한 제어기에 묶고 해제·전환 시 숨김. ⑤ 한정자 없는 인자 타입 추론을 렉시컬 범위로 제한. ⑥ 호버가 렉시컬 소유자를 먼저 정한 뒤 그 소유자의 오버로드만 비교. 이와 별도로 Linux CI에서 원격 사본의 로컬 절대 라이브러리 경로가 원격 절대 경로로 오인되던 문제를 `controllerLibraryCandidates`에서 고쳤다(`14cd3fe`). 리뷰 반영 뒤 1423/1423·MCP 164/164.
-
-### Marketplace 자동 게시 연결 (0.18.1)
-
-v0.18.0 Release workflow의 `marketplace` job은 secret 미설정으로 skip됐다. 사용자 계정(`doyunkwack@naver.com`)으로 Entra 앱 등록·서비스 주체·federated credential을 만들고(계정 소유자가 직접 실행 — Claude Code 권한 검사가 인증 정보 생성을 막음), 서비스 주체를 Marketplace 게시자 멤버(Contributor)로 추가, GitHub `marketplace` secrets와 `MARKETPLACE_PUBLISH=true`를 설정했다. 값과 우회 방법은 `docs/releases/process.md` 「현재 연결 상태」. v0.18.0 재실행은 immutable release 자산 교체 거부(`Cannot delete asset from an immutable release`)로 실패해, `release.yml`이 기존 릴리스 자산을 재사용하도록 고치고 patch 0.18.1로 다시 태그했다.
 
 ## 1-GA. 2026-10-26 세션 — 디버그 스텝 체감 지연 재발: 명령 차선 큐·pending 백업 폴·타이밍 로그
 
@@ -1448,3 +1409,33 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 - 확장 호스트 정지의 범인: 다음 정지 때 Output 정지 줄의 시각으로 renderer.log·exthost 프로파일을 대조. 반복되면 사용자가 확장 이분 탐색(Extension Bisect).
 - 원하면 결정할 것(사용자): ① 프로브 타임아웃 8 s → 5 s(2026-08-28 "5 s 는 짧다" 결정 재검토 — 실측 p99 0.2 s), ② recovering 창 180 s 를 줄이거나 recovering 중 거부가 N회 이어지면 조기 종료.
 - 디버그 어댑터의 자체 소켓 경로·controller-mcp `console.js` 에는 핸드셰이크 상한을 넣지 않았다.
+
+## 1-GJ. 2026-10-27 세션 — 제어기 대시보드 디지털 I/O 분류·강제 조작 단순화·UI 밀도/주기 개선 (0.22.0)
+
+### 요청
+
+- 사용자: 대시보드가 불편하다 — I/O 를 작게 모아 한눈에, 분류·정렬 필요. 강제 ON/OFF 버튼 대신 **더블클릭 토글**, **우클릭으로 강제 해제·전체 해제**. "2만번대 IO 는 왜 안 보이고 8천번대는 왜 많지? IO 정보는 어디서?" 웹 Operator 의 Local I/O(Digital · Soft Internal DIO · Analog · Robot Z · Sample custom)·Remote I/O(RIO 1~4 · Network Node 2~8) 메뉴 구성을 제시. 추가로 "강제할 때마다 경고 띄우지 마", "대시보드 UI 전체 점검, 갱신 주기 옵션이 너무 적다".
+
+### 원인 (문서 + 실측)
+
+- I/O 정보 출처는 명령 콘솔 `Show DIO`(인자 없음 = "all installed signals", 문서상 https://www2.brooksautomation.com/Controller_Software/Software_Reference/Console_Commands/show_dio.htm).
+- 8000번대·18000번대 = **dedicated I/O**. 문서상 번호 = base + 100·bank, general 출력 1/입력 10001(bank 0 로컬, 1~15 RIO·MODBUS/TCP), dedicated 출력 8001/입력 18001(bank 0 제어기, 1~15 축), Software I/O 20001~20064, 서보 네트워크 node n 은 +100000·n (https://www2.brooksautomation.com/Controller_Software/Introduction_To_The_Software/Communications/com_dio.htm , RIO 유닛 대응은 com_rdio.htm). 실기(G2400C 4.2K5) 응답 102개 중 82개가 8081~8096·81xx~86xx·18001~18032·181xx~186xx 였다.
+- 2만번대가 안 보인 이유(**실측**, 2026-10-27): 인자 없는 `Show DIO` 는 Software I/O 를 내주지 않는다. 번호를 지정하면 나온다(`Show DIO 20001,…` STATUS 0). 64개 한 줄(392자)은 `-506 *Input too long*`, 24개(152자)는 성공 → 160자 이하로 나눠 보낸다(64개 = 3줄). 20065·201001 은 조용히 무시(문서 "Invalid signal numbers are ignored"와 일치).
+
+### 조치
+
+- 순수 모듈 `src/controller/io/dioGroups.ts` + 테스트 6건: `classifyDioSignal`(그룹·IN/OUT), `groupDioSignals`(Local→Remote, 그룹 순서, 입력 먼저), `STANDARD_REMOTE_GROUPS`(RIO 1~4·Node 2~8 — 없으면 「미검출」), `buildShowDioCommands`(길이 분할), `toggleForceValue`, `forcedSignalsFor`.
+- 패널(`controllerDashboardPanel.ts`): `pollDio` 가 `Show DIO` + Soft 분할 조회를 합쳐 `groups`/`absent` 로 보냄, 마지막 관측(`lastDioSignals`)을 확장이 보관해 `toggleDio {signal}`(반대 값 강제)·`releaseDio {group?}`(강제된 것만 `Set DIO n 0`, 실패 시 중단·진행 수 표시)를 판단. **확인 모달 제거**(사용자 요청) — 팔레트 `gpl.controller.setDio` 도 동작 선택 뒤 바로 적용. 진단 간격 덮어쓰기 `setDiagnosticInterval`.
+- 웹뷰(`dashboard.html`): 카드 → 그룹별 소형 칩(IN/OUT 행, 모서리 = 강제, 값 변화 강조, 처리 중 깜박임), 구성이 같으면 칩만 제자리 갱신(더블클릭 사이 DOM 교체 방지), 상태/입출력 필터·검색·그룹 접기(`vscode.setState` 보존), 우클릭 메뉴(강제 ON/OFF/해제·그룹/전체 해제·번호 복사·모두 펼치기/접기, Shift+F10·Esc), 「강제 전체 해제 (n)」·탭 강제 수. 전체: 고정 헤더, 배지·카드·표 밀도, 상태 카드 접기(보존), 주기 0.5/1/1.5/2/3/5/10/15/30/60 s + 직접 입력, 진단 2~60 s, 단축키 R/P/1/2/`/`.
+- 테스트 하니스(`dashboardTemperature.test.ts`)의 document 모의에 `addEventListener` 추가(웹뷰가 문서 단위 리스너를 쓰게 됨). 웹뷰는 `getState`/`setState` 가 없으면 보존만 건너뛴다.
+- Analog I/O·Robot Z I/O·Sample custom DIO 는 넣지 않았다: Analog 는 DIO 가 아니고(콘솔 명령 미확인), Robot Z I/O 의 신호 번호는 문서에서 찾지 못했으며(축 dedicated I/O 일 가능성 — 미검증), Sample custom 은 웹 패널 예제다.
+
+### 검증
+
+- `npm test` 1556/1556(다른 세션 작업 포함 작업 트리). 실기 읽기 전용 `Show DIO`·Soft 조회로 분류 입력을 확보(`Set DIO` 는 보내지 않음).
+- Edge headless 로 실기 응답을 넣은 하니스를 렌더해 I/O 탭(그룹 10개·미검출 11개)·우클릭 메뉴·상태 탭 배치를 스크린샷으로 확인, 더블클릭 → `toggleDio`·그룹 머리 클릭 → 접힘·「강제 전체 해제」 → `releaseDio`·`dioAction busy` → 칩 busy 를 DOM 으로 확인.
+- 실제 VS Code 웹뷰 표시·실기 `Set DIO` 동작은 미확인 → §3 체크리스트.
+
+### 남은 일
+
+- §3 「0.22.0 대시보드 I/O」 실기 확인. Robot Z I/O 번호 체계를 실기(그리퍼 장착 로봇)로 확인하면 그룹 추가 검토.

@@ -81,6 +81,7 @@ GPL 컴파일은 제어기에서 수행하며, 상태 조회 항목은 제어기
 | `GPL: Save to Flash`    | 프로젝트를 Flash에 영구 저장합니다. 전원을 끄지 말라는 표시가 사라질 때까지 기다려 주세요.             |
 | `GPL: Stop All Threads` | 모든 스레드의 정지를 요청하고, 진행 중이거나 대기 중인 업로드·배포도 취소합니다.                      |
 
+업로드할 때 `.gpr`의 `ProjectLibrary`가 같은 projects 폴더의 다른 폴더(예: `projects/Main` → `projects/Libraries`)를 가리키면 그 라이브러리도 함께 올립니다(`gpl.deploy.uploadLibraries`). `ProjectStart`가 있는 상위 프로젝트 안의 하위 패키지(내장형)는 상위 프로젝트가 컴파일 단위이므로 그 라이브러리를 따로 올리지 않습니다.
 `Upload Only`로 올린 소스를 실행하려면 먼저 컴파일해야 합니다. `Upload & Start`에서 발생한 컴파일 오류도 Problems 패널에 표시됩니다.
 제어기 파일 트리의 `Compile & Run`은 **제어기에 있는 소스**를 컴파일하고 실행합니다. PC에서 수정한 내용을 실행하려면 먼저 업로드해 주세요.
 

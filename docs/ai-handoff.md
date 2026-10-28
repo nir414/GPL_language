@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-28** · 현재 package 버전 **0.26.0** ("컴파일 검증 필요" 목록화·영속 + Unload -all 전 /GPL 비우기, 1571/1571. 상세는 §1-GN.)
-- **직전 세션: §1-GN** — 사용자 지적 "컴파일 검증 필요 알림이 Upload Only·다중 프로젝트에서 잘 동작 못함" — 상태를 제어기(ip)별·workspaceState 영속 목록으로 바꾸고 트리는 프로젝트마다 한 줄, 상태바는 「최근 외 n」+선택 창(`gpl.compileStale.pick`), `GPL: Start` 성공이 배지를 해제하지 않던 버그 수정. 사용자 요청 "Unload -all 전에 /GPL 비우기"(UI 절차 재사용, MCP 는 `gpl-not-empty` 거부) + Unload 대기 하한 180 s. inbox 4건 처리, 다른 세션의 MCP 지침 변경 커밋 통합. 실기 확인은 §3.
+- **최종 갱신: 2026-10-28** · 현재 package 버전 **0.27.0** (라이브러리 함께 업로드·내장형 구분, 1578/1578. 상세는 §1-GO.)
+- **직전 세션: §1-GO** — 사용자 요청 "projects/Main 을 올리면 .gpr 을 보고 projects/Libraries 도 함께" + "BinderR4 같은 내장형은 따로 구분" — 라이브러리 그래프(재귀)의 참조 중 컴파일 루트(`findCompileRootGpr`) 밖·같은 projects 폴더 안이고 값이 projects 기준 경로와 맞는 것을 `/GPL/<값>` 으로 프로젝트 업로드 뒤 이어 올린다(변경분만, 원격 삭제 없음, 설정 `gpl.deploy.uploadLibraries` 기본 켬). 내장형 패키지는 루트 안 라이브러리를 올리지 않고 트레이스로 알린다. 형제 배치에서 제어기가 라이브러리를 찾는지는 실기 미확인(§3).
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-10-28, §1-GO) 라이브러리 함께 업로드 — 실기 확인(FTP·Compile, 모션 무영향).** `projects/Main`(ProjectStart, `ProjectLibrary="Libraries"`) + `projects/Libraries` 를 만들어 ① Upload Only 출력에 「함께 업로드: Libraries → /GPL/Libraries」와 Library done 줄, 알림 끝에 「+ 라이브러리 Libraries」 ② **Compile Main 이 STATUS 0** 인지 — 제어기가 `/GPL/Libraries` 를 라이브러리로 찾는지(문서 표본은 중첩 배치 1건뿐; 실패하면 `-508`/미정의 심볼 류가 나올 것이고, 그때는 원격 경로 규칙을 고친다) ③ 라이브러리 파일을 고친 뒤 다시 올리면 그 파일만 sent ④ BinderR4 의 `Gantry\Data` 를 올리면 「내장형 패키지 — 컴파일 단위는 BinderR4」 줄만 나오고 추가 업로드 없음.
 - [ ] **(2026-10-28, §1-GN) 0.26.0 — "컴파일 검증 필요" 목록·Unload -all 전 비우기 — VSIX·실기 확인(Unload 는 정지 상태에서).** ① Upload Only 로 프로젝트 3개를 올리면 트리 「프로젝트 상태 ⚠ 컴파일 검증 필요 3개」에 세 줄, 상태바 `$(warning) 컴파일 검증 필요: <마지막> 외 2` ② 상태바 클릭 → 다중 선택 QuickPick(전부 체크) → 고른 순서대로 Quick Compile, 하나 실패 시 중단 ③ 한 프로젝트만 Compile 하면 그 줄만 사라지고 라벨이 「외 1」로 ④ `GPL: Start`(모달 「그대로 Start」) STATUS 0 뒤 배지 해제 + Output `[Start] ✔ 컴파일 스냅샷 기록` ⑤ 창 다시 열기(Reload Window) 뒤에도 미검증 목록이 남고, 다른 IP 로 설정을 바꾸면 사라졌다가 되돌리면 다시 뜨는지 ⑥ 「GPL: Unload Project」→「모두 내리기」: 위험 모달 → /GPL 비우기 모달(문구에 "비운 뒤 Unload -all") → 삭제 → `Unload -all` STATUS 0, 취소하면 Unload 미전송·Output 한 줄, /GPL 이 비어 있으면 모달 없이 바로 ⑦ MCP `unload_project {project:"-all"}` 가 /GPL 비어 있지 않을 때 `refused:"gpl-not-empty"` + 목록, 활성 쓰레드가 있으면 `threads-active` ⑧ 실행 뒤 앱 Unload 가 15 s 를 넘겨도(GPL Traffic 의 소요 시간) 타임아웃 없이 STATUS 가 오는지 — 그래도 inbox 의 `_Cmd_<project>` 유발 무응답(§1-GN 남은 일)은 별건.
 - [ ] **(2026-10-28, §1-GN inbox) 상태 샘플러의 `Execute` 가 Unload 를 막는다는 보고 — 결정 필요.** `controller/diagnostics/statusSampling.ts` 가 대시보드 폴링에 `Execute Controller.PowerEnabled`·`Robot.WhereAngles`·`Robot.Where` 를 쓰면 제어기가 `_Cmd_<project>` Idle 쓰레드를 만들고, 그 뒤 `Unload <project>` 가 응답하지 않았다(2026-10-27 inbox unload-slow-not-hang: 최소 프로브 재현 3회, `Stop _Cmd_…` 로도 실제 앱은 회피 실패). 선택지: (a) 프로젝트가 로드돼 있는 동안 Execute 샘플링 중지(DataID/`Show` 대체 가능 여부 조사) (b) 설정으로 끄기 (c) Unload 전에 `_Cmd_` 가 보이면 경고. 문서상 Idle 쓰레드는 Unload 를 막지 않아야 하므로 제어기 결함으로 보이나 실기 재현이 근거.
 - [ ] **(2026-10-28, §1-GM) Upload Only 여러 프로젝트 — VSIX·실기 확인(FTP 만, 모션 무영향).** ① 탐색기에서 프로젝트 폴더 2개 이상 Ctrl 선택 → 우클릭 `GPL: Upload Only` 가 고른 순서대로 올리고 끝에 「Upload Only 완료 n/n」 한 번만 뜨는지(프로젝트별 토스트 없음) ② 프로젝트 아닌 폴더를 섞으면 「n개만 업로드」 모달 ③ 팔레트에서 다중 선택 QuickPick, 직전 선택이 미리 체크되는지 ④ 둘째 프로젝트에서 실패(예: FTP 끊김)·미저장 확인 취소 시 셋째 이후가 「미실행」으로 남는지 ⑤ 정체 확인(`verifyControllerIdentity`)이 프로젝트마다 반복되는 지연이 체감되면 묶음 1회로 줄일지 결정.
@@ -1110,44 +1111,20 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | 본문 ↓ |
 | §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | 본문 ↓ |
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | 본문 ↓ |
-| §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | 본문 ↓ |
+| §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | 본문 ↓ |
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | 본문 ↓ |
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |
 | §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | 본문 ↓ |
 | §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | 본문 ↓ |
 | §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | 본문 ↓ |
+| §1-GO | 10-28 | **라이브러리 함께 업로드·내장형 구분** — ProjectLibrary 그래프에서 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 `/GPL/<값>` 으로(`libraryUploadPlan.ts`), 내장형 패키지(BinderR4)는 루트 소속이라 생략. 재생 하니스 ALL IDENTICAL. 0.27.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GE ~ §1-GN (2026-10-27~28).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GF ~ §1-GO (2026-10-27~28).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GE. 2026-10-27 세션 — 확장 시작 시 Output 패널 강제 열기 제거 · `gpl.trace.server` 기본 verbose
-
-### 증상·원인
-
-- 사용자 보고: 확장이 시작될 때도 포커스(패널)가 강제 전환된다. 첨부 로그 둘째 줄이 `[Trace] gpl.trace.server = verbose`.
-- 원인 2곳(둘 다 트레이스가 `off` 가 아닐 때만): ① `extension.ts` 활성화 직후 `outputChannel.show(true)` ② `activation/language/languageFeatures.ts` 심볼 캐시 초기화 완료 콜백(`Symbol cache initialized!`)에서 또 `show(true)` — 인덱싱이 9 s 걸린 환경이라 확장이 뜨고 9 s 뒤 패널이 한 번 더 Output 으로 바뀌었다. `preserveFocus` 라 커서는 남지만 패널이 닫혀 있으면 열리고, GPL Console·터미널을 보고 있으면 Output 으로 덮인다(§1-GC D 와 같은 종류).
-- 그 밖의 시작 경로(연결·브리지·프로젝트 컨텍스트 동기화)에는 자동 reveal 이 없다. `gpl.trace.liveTerminal.autoStart`(기본 꺼짐)만 켜면 Live Logs 터미널을 `show(true)` 한다 — 이번 증상과 무관.
-
-### 조치 (사용자 결정: "출력 패널을 굳이 강제로 열 필요 없고, 베타 단계라 로그는 기본 활성화")
-
-- 두 `show(true)` 삭제 — 트레이스 레벨은 "얼마나 자세히 남길지" 이지 "패널을 열지" 가 아니다. 로그 줄(`[Trace] gpl.trace.server = …`)은 그대로.
-- `gpl.trace.server` 기본값 `off` → **`verbose`**(package.json + `config.DEFAULT_TRACE_SERVER_LEVEL` 로 폴백도 같은 값). 설정 설명을 수준별 의미와 "어느 수준이든 패널을 자동으로 열지 않는다" 로 다시 썼다. `verbose` 는 정의/호버/참조/이름 바꾸기 탐색 로그까지 남긴다(providers 의 `isTraceVerbose` 게이트) — 분석 편의가 목적이라 그대로 두되, 조용히 쓰려면 `off`.
-- `languageFeatures.ts` 의 `isTraceOn` import 제거(noUnusedLocals).
-
-### 검증
-
-- `npm test` **1447/1447**(코드 변경은 reveal 2곳 삭제·기본값뿐이라 신규 테스트 없음 — 트레이스 기본값은 provider 하니스가 이미 `verbose` 로 고정해 쓴다). `npm run package:no-bump`: `dist/gpl-language-support-0.19.1.vsix` **1,510,565 bytes**, SHA-256 **0E4EBE94C62FBC87BBA72F8E3FD14CA03EBE56BD170C03A11350161F2B4D8182**. 경고는 기존 JavaScript 번들링 권고뿐. 실제 VS Code 재시작 뒤 패널이 열리지 않는지는 §3 에 남겼다.
-
-### 남은 일
-
-- §3: 새 VSIX 로 VS Code 를 재시작해 활성화·인덱싱 완료 시점에 패널이 바뀌지 않는지, Output 에 `[Trace] gpl.trace.server = verbose` 와 인덱싱 로그가 기본으로 남는지 확인.
-- 사용자 질문(답변만 함, 코드 변경 없음): "FTP /GPL 업로드만 해도 타깃 프로젝트가 바뀌는 이유" — 제어기 쪽 대상은 안 바뀌고(Upload Only 는 1402 명령 0건), 바뀌는 것은 확장의 예상 프로젝트(`projectContext.scheduleExpectedProjectSync` + `deploy.ts` Upload Only 성공 시 `setExpectedProjectContext`). 제안 ① 예상 프로젝트에도 `sessionTargetAfterImplicitUse` 규칙(ProjectStart 없는 라이브러리는 대상으로 삼지 않음, Upload Only 는 실행 가능 앱일 때만 갱신) 적용 ② 표시명을 "마지막 작업 프로젝트" 로. **사용자 결정 대기** — 결정되면 §2 로 옮기거나 구현.
-
----
 
 ## 1-GF. 2026-10-27 세션 — 거대 파일 4건 분해·저장소 루트 정리·조회 성능 (0.19.2)
 
@@ -1436,3 +1413,35 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 - §3 결정: 상태 샘플러 `Execute` 와 `_Cmd_<project>` Unload 무응답(inbox ④) — 회피 설계는 실기 재현 뒤.
 - 보류(inbox ②): 업로드 provenance 에서 컴파일 제외 문서(README)를 `staleRemote` 가 아닌 별도 분류로.
 - 선택 창의 "전부 Quick Compile" 은 하나씩 await 라 프로젝트마다 정체 확인·FTP 비교가 반복된다 — 체감 지연이 크면 §1-GM 과 같이 묶음 1회로.
+
+## 1-GO. 2026-10-28 세션 — 라이브러리 함께 업로드 · 내장형(BinderR4) 구분 (0.27.0)
+
+### 증상(요청)
+
+"프로젝트 업로드할 때 라이브러리를 찾아서 같은 폴더 안에 존재하는 경우 같이 업로드" — 예시 `projects/{Main, Libraries}` 에서 Main 을 올리면 `.gpr` 을 보고 Libraries 도 함께. 이어서 "BinderR4 같은 내장형은 따로 구분해야 한다".
+
+### 원인
+
+- 업로드 대상은 프로젝트 폴더 하나였다. 폴더 안 라이브러리는 재귀 업로드에 포함됐지만 형제 폴더 라이브러리는 트레이스에 「폴더 밖 — 포함되지 않습니다, 따로 Deploy 하세요」만 남겼다(`deployTargetStage.traceDeployHeader`).
+- BinderR4 는 루트(`ProjectStart`)만 실행 단위이고, 하위 패키지 `.gpr` 의 `ProjectLibrary` 값은 **루트 기준**(`Lib\Core\Text`)이다 — projects 기준(문서 표본 `MyProject\MyLibrary`)과 다르다. 그래서 projects 기준 규칙을 하위 패키지에 그대로 쓰면 안 된다.
+
+### 조치(의도와 방법)
+
+- 순수: `controller/deployment/libraryUploadPlan.planLibraryUploads` — 입력은 프로젝트 폴더·컴파일 루트·라이브러리 그래프 전체의 `{raw, dir}` 참조. 분류: `covered`(프로젝트 폴더 안, 또는 함께 올릴 다른 라이브러리 폴더 안) · `embedded`(배포 대상이 내장형 패키지일 때 컴파일 루트 안) · `uploads`(컴파일 루트 밖 · projects 폴더 안 · `resolve(projects, 값) == 폴더`, 원격 `/GPL/<값, \→/>` — 값의 대소문자 유지) · `skipped`(projects 밖, 값과 위치 불일치 — 알려진 .gpr 폴백 등으로 찾은 경우) · `unresolved`. 테스트 6건.
+- 컴파일 루트는 §1-GK 의 `dependencyModel.findCompileRootGpr`(위로 올라가며 ProjectStart 가 있는 가장 가까운 .gpr)를 그대로 쓴다 — 내장형 판별 규칙을 새로 만들지 않았다.
+- `deployTargetStage.resolveDeployTarget` 끝에서 direct 모드 · `options.uploadLibraries` · changedFiles 없음 · ProjectLibrary 있음일 때만 `target.libraryPlan` 계산(실패는 경고만). 헤더는 계획이 있으면 「함께 업로드 / 이미 포함 / 내장형 패키지 — 컴파일 단위는 X / 올리지 않음(사유) / 미해석」, 없으면 종전 문구.
+- `deployUploadStage.runUpload` = 프로젝트 업로드(종전 그대로 `runProjectUpload`) → 성공하면 `runLibraryUploads`(하나씩 `uploadProject(skipUnchanged + 지문 manifest)`, `mergeSyncManifest`, 원격 전용 파일 삭제 없음). 하나라도 실패하면 업로드 실패(옛 라이브러리로 Compile 이 엉뚱하게 성공하는 것 방지). 정지 게이트와의 병행(UPLOAD ∥ STOP)은 그대로. `DeployResult.libraryUploads` 추가, Upload Only 알림에 「+ 라이브러리 …」.
+- 설정 `gpl.deploy.uploadLibraries`(기본 true)를 `runDeploy` 가 넘긴다 — 모든 사람·MCP 배포 경로가 runDeploy 를 지난다. `DeployOptions` 에서 생략하면 끔(재생 하니스의 옛 시나리오가 그대로 재현되도록).
+
+### 검증
+
+- `npm test` **1578/1578**. 배포 재생 하니스 `node scripts/dev/deployReplay.js --old-rev f6ca529` **ALL IDENTICAL**(옵션 생략 = 종전 동작).
+- 새 경로는 하니스에 일회성 시나리오 2개를 붙여 new 쪽 로그로 확인하고 되돌렸다(old 에는 기능이 없어 DIFFERS 가 정상이라 상설 시나리오로 두지 않음): 형제 `Libraries` + 그 라이브러리가 참조하는 `Common` 이 `/GPL/Libraries`·`/GPL/Common` 으로 sent, `Main\Inner` 는 이미 포함, `Missing` 미해석 경고 / 내장형 패키지는 「내장형 패키지 — 컴파일 단위는 …」만 나오고 추가 FTP 없음.
+- BinderR4 읽기 전용 드라이런: 루트 BinderR4 참조 0 → 추가 없음, `Gantry` 참조 112 → embedded 20·covered 5·업로드 0, `Gantry\Data` embedded 13, `Lib\Core\Text` embedded 1 — 내장형에서 형제 패키지를 따로 올리는 일 없음.
+- VSIX: `dist/gpl-language-support-0.27.0.vsix` 1,668,062 bytes, SHA-256 `FAAD3261DD6BA2239B1A020297DA89BA1EDE58F975314A3B626EAA7C3D93D35D`(경고는 bundle 권장 1건).
+- 실기 미확인 — §3 항목(특히 형제 배치에서 제어기가 라이브러리를 찾는지).
+
+### 남은 일
+
+- §3 실기 확인. 형제 배치가 제어기에서 안 되면 원격 경로 규칙(`remoteDir`)만 고치면 된다(분류는 그대로).
+- 선택: 라이브러리 업로드도 상태 표시줄 진행 바에 태우기(지금은 출력 창 줄만), 함께 올린 라이브러리를 「컴파일 검증 필요」 목록에 반영할지(§1-GN — 지금은 메인만 표시).

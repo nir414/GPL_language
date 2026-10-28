@@ -2,6 +2,14 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.27.0] - 2026-10-28
+
+### Added
+
+- **업로드할 때 `.gpr`의 `ProjectLibrary`를 따라 형제 폴더의 라이브러리도 함께 올립니다.** `projects/Main`이 `ProjectLibrary="Libraries"`로 `projects/Libraries`를 참조하면 Main을 올릴 때 `/GPL/Libraries`도 함께 올라갑니다(라이브러리가 참조하는 라이브러리까지). Upload Only·Deploy·Upload & Start·Quick Compile에 적용되고, 변경분만 올리며 원격 전용 파일은 지우지 않습니다. 프로젝트 폴더 안의 라이브러리는 원래대로 함께 올라갑니다.
+- **내장형 구조를 구분합니다.** `ProjectStart`가 있는 상위 `.gpr`(예: `BinderR4`) 안의 하위 패키지(`BinderR4\Gantry\Data`)를 올리면, 그 패키지의 라이브러리는 컴파일 단위인 BinderR4에 속하므로 따로 올리지 않고 출력 창에 "내장형 패키지 — 컴파일 단위는 BinderR4"라고 알립니다.
+- 값이 projects 폴더 기준 경로와 맞지 않거나 projects 폴더 밖에 있는 라이브러리는 올리지 않고 사유를 출력 창에 남깁니다. 끄려면 설정 `gpl.deploy.uploadLibraries`를 `false`로 바꿉니다. 저장 시 자동 업로드에는 적용되지 않습니다.
+
 ## [0.26.0] - 2026-10-28
 
 ### Added

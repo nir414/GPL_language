@@ -100,6 +100,13 @@ projects/MyProject/MyLibrary/Project.gpl   Public Sub T1()
 
 **[미검증]** 라이브러리를 2개 이상 참조할 때 줄이 반복되는지(vs. 한 줄 콤마 구분) — §8.
 
+**확장의 업로드 규칙(0.27.0, `controller/deployment/libraryUploadPlan.ts`).** 위 "projects 루트 기준" 관측을 근거로,
+배포하는 프로젝트의 라이브러리 그래프(재귀)에서 **컴파일 루트 밖 · 같은 projects 폴더 안**이고 값을 projects 폴더에 붙이면
+그 폴더가 나오는 라이브러리를 `/GPL/<값>` 으로 함께 올린다(설정 `gpl.deploy.uploadLibraries`). 프로젝트 폴더 안 라이브러리는
+원래 재귀 업로드에 포함되고, `ProjectStart` 가 있는 상위 `.gpr` 안의 하위 패키지(내장형, 예: BinderR4 — 값이 루트 기준)는
+라이브러리가 그 컴파일 루트에 속하므로 따로 올리지 않는다. **[미검증]** 형제 폴더(`/GPL/Main` + `/GPL/Libraries`)
+배치에서 제어기가 라이브러리를 찾는지는 실기 확인 전이다.
+
 GDS 문서 "GPL Project Libraries" 절의 서술:
 
 - **[문서]** 어떤 프로젝트든 다른 GPL 프로젝트를 **라이브러리로 참조**해 그 `Public` 루틴·데이터를 쓸 수 있다.

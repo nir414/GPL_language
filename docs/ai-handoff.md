@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-28** · 현재 package 버전 **0.24.0** (ProjectName = 폴더 이름 검사, 1561/1561. 상세는 §1-GL.)
-- **직전 세션: §1-GL** — 사용자 규칙 "Project.gpr ProjectName 은 폴더명과 같아야 한다"를 패키지 의존 검사(`project/gpr/dependencyCheck.projectNameMismatch`)에 넣었다 — 모든 .gpr(루트·그룹·리프)에 대해 대소문자까지 비교, Warning + 「ProjectName="<폴더>" 로 바꾸기」 빠른 수정(폴더 이름은 ProjectLibrary 경로가 가리켜 바꾸지 않음). BinderR4 드라이런 45개 중 42개 불일치, 고치면 이름이 겹치는 쌍 2개(Gantry\Data·Lib\Data, Lib\Motion\Cmd·Lib\Robot\Cmd) — 문구로 알림, 제어기 동작은 미확인.
+- **최종 갱신: 2026-10-28** · 현재 package 버전 **0.25.0** (Upload Only 여러 프로젝트, 1563/1563. 상세는 §1-GM.)
+- **직전 세션: §1-GM** — 사용자 요청 "폴더 2개 이상 선택해서 Upload Only" — 탐색기 다중 선택과 팔레트·제어기 패널의 다중 선택 QuickPick 을 받아 고른 순서대로 하나씩 `runDeploy`(Upload Only) 하고 끝에 요약 1회. 실패·취소가 나오면 남은 프로젝트는 올리지 않는다. Upload Only 만 다중(Stop/Compile 변형은 단일 유지). 실기 확인은 §3.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-10-28, §1-GM) Upload Only 여러 프로젝트 — VSIX·실기 확인(FTP 만, 모션 무영향).** ① 탐색기에서 프로젝트 폴더 2개 이상 Ctrl 선택 → 우클릭 `GPL: Upload Only` 가 고른 순서대로 올리고 끝에 「Upload Only 완료 n/n」 한 번만 뜨는지(프로젝트별 토스트 없음) ② 프로젝트 아닌 폴더를 섞으면 「n개만 업로드」 모달 ③ 팔레트에서 다중 선택 QuickPick, 직전 선택이 미리 체크되는지 ④ 둘째 프로젝트에서 실패(예: FTP 끊김)·미저장 확인 취소 시 셋째 이후가 「미실행」으로 남는지 ⑤ 정체 확인(`verifyControllerIdentity`)이 프로젝트마다 반복되는 지연이 체감되면 묶음 1회로 줄일지 결정.
 - [ ] **(2026-10-28, §1-GL) ProjectName = 폴더 이름 — 결정·실기 확인.** ① BinderR4 리프·그룹 42개를 Quick Fix 로 고칠지(일괄은 .gpr 마다 「모두 고치기」) 사용자 결정 ② 고치면 `Data`(Gantry\Data·Lib\Data)·`Cmd`(Lib\Motion\Cmd·Lib\Robot\Cmd) 가 겹친다 — 폴더를 `GantryData`/`MotionCmd` 처럼 바꿀지(그러면 이 폴더를 가리키는 ProjectLibrary 경로·루트 ProjectSource 도 함께) 결정 ③ 라이브러리 ProjectName 이 폴더와 다를 때/겹칠 때 제어기 Compile·Start 가 실제로 어떻게 되는지는 미확인 — 바꾼 뒤 `Compile BinderR4` STATUS 로 확인.
 - [ ] **(2026-10-27, §1-GK) 패키지 의존 검사 — VSIX·UI 확인(편집기만, 모션 무영향).** BinderR4 의 `Gantry\Station\Project.gpr` 를 열면(인덱싱 뒤 약 1 s) ① Problems 에 `GPL Dependencies` 진단 — Station 의 `ProjectLibrary "Lib\Core\Foundation"`·`"Lib\Core\Text"` 줄에 미사용 Information, `Lib\Device\CantopsIOCmd\Project.gpr` 에 간접 의존 3건, `Lib\Motion\Cmd` 에 간접 1건(드라이런 결과와 같은지) ② Quick Fix 「… 줄 지우기」/「ProjectLibrary=… 추가」와 「이 .gpr 의 의존 문제 모두 고치기」가 뜨고 적용·저장하면 1.5 s 뒤 재검사로 사라지는지 ③ `.gpr` 우클릭 「Check Project Dependencies」 → 요약 알림·Output `[Dependencies]` 목록 ④ App 파일에서 `Lib` 쪽이 App 을 참조하게 임시로 고치면 계층 위반 Warning 이 그 줄에 뜨는지(되돌릴 것) ⑤ `gpl.project.dependencyCheck: manual` 이면 열어도 검사하지 않는지. 미결: 미사용 판정은 "직접 쓰지 않음"이라 라이브러리가 자기 의존을 선언하지 않고 이 패키지에 기대는 경우도 미사용으로 보인다 — 지우기 전에 사람이 확인.
 - [ ] **(2026-10-27, §1-GJ) 0.22.0 대시보드 I/O — 실기 확인(Set DIO 는 실제 신호를 바꾼다: 장비 정지 상태·무해한 신호로).** ① I/O 탭에서 Local I/O(Digital 13~20/10001~10012 · Soft 20001~20064 · Dedicated 제어기 8081~/18001~ · 축 1~6)·Remote I/O 「미검출」이 실기 응답대로 나오는지. ② Soft 신호(예: 20064) 더블클릭 → 강제 ON(`Set DIO 20064 1`)·모서리 표시·탭 숫자, 우클릭 「강제 해제」 → 표시 사라짐, 「모든 강제 해제」가 강제된 것만 `Set DIO n 0` 으로 보내는지(GPL Traffic). ③ 폴링 1 회가 `Show DIO` + Soft 3 줄(160자 분할) 로 끝나고 STATUS 0 인지, 0.5 s 주기에서도 1402 큐가 밀리지 않는지. ④ 우클릭 메뉴가 VS Code 기본 메뉴 대신 뜨고 Shift+F10·Esc 로 열고 닫히는지, 패널 크기 변경·스크롤에서 닫히는지. ⑤ RIO·서보 네트워크가 있는 장비에서 그룹이 RIO n·Network Node n 으로 잡히는지(문서상 node n 일반 I/O 는 +100000·n, 13~20/10001~10012).
@@ -1101,7 +1102,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GA | 10-26 | **디버그 스텝 체감 지연 재발** — 어댑터 큐를 control/data 차선으로(재개 시 미전송 조회 폐기), pending 백업 폴, 재개 타이밍 한 줄 로그. 0.18.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
+| §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | 본문 ↓ |
 | §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | 본문 ↓ |
 | §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | 본문 ↓ |
@@ -1111,47 +1112,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | 본문 ↓ |
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |
 | §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | 본문 ↓ |
+| §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GC ~ §1-GL (2026-10-27~28).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GD ~ §1-GM (2026-10-27~28).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GC. 2026-10-27 세션 — 사용자 업무 메모 4건: Unload 버튼 · 메모리 심각 시 선택 · Project.gpr 자동 동기화 · AI 조회로 패널 안 바뀌게
-
-사용자가 업무 기록 파일(`GPL Language Support.txt`)의 최신 메모를 붙여 넣었다. 네 항목을 모두 반영했고 버전은 minor **0.19.0**(기능 추가). 수신함(`Downloads\GPL_language_inbox`)은 비어 있었다. 작업 중 같은 저장소의 다른 세션(gpl-language-09)이 `src/` 재배치(git mv) 전 조율을 요청해 "편집 중, 끝나면 알림" 으로 답했다 — 미커밋 변경은 이전 세션들이 남긴 것이며 이 세션도 커밋하지 않았다.
-
-### A. "Unload 할 수 있는 버튼 필요" — 메모리 폭주가 Unload 로 회복됨
-
-- 종전 Unload 는 트리의 FTP 폴더 우클릭(`gpl.controller.ftpUnload`)뿐이었고 팔레트에서는 숨김(`when: false`). **`gpl.controller.unloadProject`**(「GPL: Unload Project (프로젝트 내리기 — 메모리 회수)」)를 팔레트·트리 `···` 메뉴(`1_deploy@5`)에 추가 — `/GPL` 폴더 목록(FTP LIST, 읽기 전용)을 QuickPick 으로 고르고, 「이름 직접 입력…」·「모두 내리기 (Unload -all)」 항목을 둔다. 연결 안 됨·배포 잠금이면 보내지 않는다. 트리 우클릭과 공통 절차 `runUnloadInteractive`(STATUS 판정은 `projectCommands.unloadProject`), `-all` 은 `runUnloadAllInteractive`(STATUS 종결 미수신은 "미확정"). 메모리 경고 토스트·상세 모달(`showMemoryStatus`)·배포 `MEMORY_CHECK` 중단 안내에 「Unload…」 버튼(`UNLOAD_PROJECT_COMMAND` 상수는 `controllerConnection.ts`).
-- 메모의 관측 "**타깃 프로젝트의 Project.gpr 에 ProjectStart 가 없으면 Unload 시 제어기가 죽음**(Lib_Net, 회피 방법 미확인)": 종전 가드는 "이 부팅의 그룹 Compile 표시" 만 봤다. `unloadRisk.assessUnloadRisk(state, cmd, { targetIsGroup })` 에 두 번째 근거를 추가 — `unloadRiskGuard.assessUnloadRiskWithProjectKind` 가 워크스페이스 `.gpr`(ProjectStart 유무)로 대상을 확인해 그룹이면 표시가 없어도 `risky`. 전송 가드(`guardBeforeSend`)·사람 모달(`confirmUnloadRiskInteractive`)이 같은 판정을 쓴다. 문구는 근거별로 다르게(그룹 Compile 6/6 실측 문구는 그 근거에만, 대상 그룹은 "2026-10-27 보고, 회피 방법 없음"). `Unload -all` 은 대상이 없어 표시만 본다. MCP 직접 TCP 경로의 `unloadRisk.js` 는 표시만 보는 그대로(브리지 경로는 확장 가드가 잡는다).
-
-### B. "메모리 제한으로 업로드를 막는 게 아닌 경고 — 취소할지 강제 진행할지 정하게"
-
-- §1-GB 가 경고 전용으로 바꿨고(차단 없음), 이번엔 **사람 경로에 선택**을 넣었다. `DeployOptions.confirmMemoryCritical(check, phase)` 훅: `deployService` 가 정지 뒤·Compile 루프 직전(Upload & Start 면 Start 직전)에 `checkMemoryBeforeOperation` 으로 한 번 더 재고 critical 이면 훅을 부른다 — 거부 시 `failedPhase: 'MEMORY_CHECK'`(새 DeployPhase·`SituationDeploySnapshot.lastStage`), 업로드는 유지. 업로드 전 측정(실행 중 앱 메모리 포함)으로는 묻지 않는다(§1-GB 의 "항상 차단" 재발 방지). 큐 슬롯 검사는 그대로 다시 돈다(대표값 정본, Show Memory 는 읽기 전용).
-- `activation/deploy/deploy.ts` 는 사람 경로(비대화형·autoOnSave·Upload Only 제외)에만 훅을 넘기고, `MEMORY_CHECK` 결과를 THREAD_CHECK 처럼 "중단" 으로 보고(+「Unload…」「메모리 상세」). `gpl.start`(Start 확인 모달 앞)·FTP Run(Compile 앞)도 `controllerOps.confirmMemoryCriticalInteractive` 로 같은 모달. 설정 **`gpl.controller.memoryGuard.confirmOnCritical`**(기본 true). AI·자동화 경로는 종전대로 경고만(`precheckWarnings`).
-
-### C. "Project.gpr 파일 자동 동기화 기능"
-
-- 자동 반영(`gpl.project.autoSyncSources`)은 이미 있었으나 **VS Code 안의 생성/이름 변경/삭제만** 잡았다. 신설 **`project/gpr/gprFolderSync.ts`**(순수: `checkGprFolderSync`·`describeGprSyncPlan`·`findGprFile`·`makeExistsOnDisk`·`sourceExtensionsFrom`)로 대조 계산을 한 곳에 두고, `gprSyncCommand.ts` 가 ① FileSystemWatcher(`**/*.{gpl}`, create/delete 만, 확장자 설정 변경 시 재생성)로 외부 변경(SVN·GDE·탐색기)도 같은 디바운스(프로젝트당 600 ms → 알림 1회)로 처리 ② `reconcileProjectGprBeforeDeploy` — 사람 경로의 배포·Quick Compile·Upload Only 직전에 목록이 다르면 「반영 후 N / 그대로 N / 취소」 모달(auto 면 바로 반영, 비대화형은 auto 일 때만 반영, off 면 건너뜀). `deployService` 는 `.gpr` 파싱 직후 같은 계산으로 남은 차이를 `precheckWarnings`(문구 "목록에 없는 파일은 컴파일되지 않고…") + `result.gprSyncMismatch` 에 남긴다. 탐색 상한(truncated)이면 제거 제안을 비운다.
-
-### D. "AI 가 데이터 읽어올 때마다 포커스가 바뀜 — 로그 보고 있는데 화면이 확확 바뀜"
-
-- 원인: `host.revealOutputForAgentRequest` 가 브리지 요청마다(30초 조용 뒤 첫 요청) `outputChannel.show(true)` — preserveFocus 지만 **패널의 보이는 채널이 Output 으로 바뀌어** 보던 GPL Console/Live Log 가 가려졌다. AI 가 생각하는 동안 30초가 지나면 다음 Show Thread 한 번에도 재현.
-- `agentCommandLog.agentRequestChangesControllerState(command, args)`: 원시 명령(`gpl.controller.sendCommand`)은 `isReadOnlyConsoleCommand` 로, 확장 명령은 `AGENT_READ_ONLY_EXTENSION_COMMANDS`(getState·getConnectionState·listRemoteProjects·runtimeConsoleRead·evaluate·automation.target·diagnosticSnapshot) 예외 목록으로 판정 — **조회면 열지 않고**, 모르는 확장 명령은 연다(§1-EO 의 "AI 가 무엇을 했는지 보이게" 기본 유지). 조용 구간 게이트도 상태 변경 요청만 갱신한다. 설정 `gpl.agentBridge.revealOutput` 설명 갱신.
-
-### 검증
-
-- `npm test` **1447/1447**(신규: gprFolderSync 3건, agentCommandLog 조회/변경 판정 1건, unloadRisk 그룹 대상 2건 — 가드 포함). `git diff --check` 통과. VS Code 마크다운 린트(architecture 표 열 수) 수정.
-- `npm run package:no-bump`(버전은 package.json·package-lock 을 손으로 0.19.0 으로 — bump 스크립트는 빈 섹션 헤더를 남긴다): `dist/gpl-language-support-0.19.0.vsix` — 최초 빌드(재배치 전) 1,506,842 bytes / 97BAC4FA… 는 폐기. **src/ 재배치(§1-GD) 뒤 같은 버전으로 재생성한 것이 정본**: **1,509,772 bytes**, SHA-256 **D55A5465B2C088C910BC97BBF95C92824955F86EDEA4B281D0823D47B38864CB**(2026-10-27 dist 파일 실측). 경고는 기존 JavaScript 번들링 권고뿐.
-- 실기·UI 미확인(§3 §1-GC). Git 커밋 없음. controller-mcp 는 코드 변경 없음(브리지 거부 코드·형식 동일).
-
-### 남은 일
-
-- §3 (§1-GC) 실기·UI 확인. 특히 그룹 대상 Unload 로 제어기가 멈추는 현상의 **회피 방법**은 여전히 모른다 — 사용자 메모대로 추가 테스트 필요(가드는 경고+동의일 뿐 막지 않는다).
-- 보류: 메모리 심각 모달을 AI 경로에도 "선택" 으로 줄지(예: `deploy_project` 인자 `confirmMemory:true` 를 요구) — 현재는 경고만. §1-GB 의 사용자 결정("막지 말라")과 2026-08-28 "AI 접근을 승인 모달로 막지 않는다" 방침에 맞춰 두지 않았다.
-- 보류: 워처가 제어기 작업공간 다운로드(대량 `.gpl` 생성)에도 반응한다 — manifest 와 `.gpr` 가 맞으면 조용하지만, 다르면 알림 1회가 뜬다. 문제가 되면 다운로드 중 억제 플래그 추가.
 
 ## 1-GD. 2026-10-27 세션 — src/ 전 계층 기능별 하위 폴더(area) 재배치 · test/ 거울 구조
 
@@ -1437,3 +1404,31 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 ### 남은 일
 
 - §3 의 결정·실기 확인(일괄 수정 여부, 겹치는 폴더 처리, 제어기 Compile 결과).
+
+## 1-GM. 2026-10-28 세션 — Upload Only 여러 프로젝트 (0.25.0)
+
+### 증상(요청)
+
+"폴더 2개 이상 여러 개 선택해서 업로드 only 기능 가능해? 개선 좀" — 탐색기에서 프로젝트 폴더를 여러 개 골라도 우클릭한 하나만 올라갔다.
+
+### 원인
+
+- `deployCommands.deployVariantHandler` 가 명령 첫 인자(우클릭한 Uri)만 보고, VS Code 가 탐색기 메뉴에 넘기는 둘째 인자(선택된 Uri[])를 버렸다. 팔레트·제어기 패널 경로도 단일 선택 QuickPick 이었다.
+
+### 조치(의도와 방법)
+
+- 순수: `controller/projects/projectPickerCore.projectDirsFromResources` — 리소스마다 `projectDirFromResource` 규칙 그대로, 같은 프로젝트는 한 번(선택 순서 유지), 못 찾은 항목은 `unresolved`. `activation/deploy/deployModes.uploadBatchSummary` — 요약 문구(전부 성공 / 중단 프로젝트·완료 n/N·미실행 목록).
+- `projectPicker.pickProjectDirs` — 리소스가 있으면 위 규칙, 없으면 후보 1개 즉시·여러 개는 `canPickMany` QuickPick(직전 다중 선택 `gpl.projectPicker.lastDirs` 를 미리 체크). QuickPick 항목 생성은 `buildPickItems` 로 단일 선택과 공유.
+- `deployCommands` — 변형에 `multiProject` 를 두고 Upload Only 만 켰다(Stop/Compile 변형은 프로젝트마다 제어기 상태를 바꾸므로 단일 유지). 탐색기에서 2개 이상이면, 팔레트·트리면 `runMultiProject`: 하나로 정해지면 종전 단일 경로(세션 대상 기억 포함), 여럿이면 고른 순서대로 `runDeploy` 를 **await 로 하나씩**(같은 제어기 작업은 어차피 deploy 큐로 직렬) 돌리고 실패·취소(결과 없음 포함)에서 멈춘 뒤 요약을 1회 띄운다. 묶음의 각 건은 `QuickDeployOpts.inBatch` 로 성공 토스트만 생략(로그·스냅샷·FTP 새로고침은 그대로). 여러 프로젝트를 고른 경우 세션 대상은 바꾸지 않는다.
+- 프로젝트가 아닌 항목이 섞이면 「n개만 업로드」 확인 모달. 하나도 없으면 경고 후 중단(명시 리소스 → 다른 대상으로 넘어가지 않는 종전 원칙).
+- 자동화(MCP·`{project…}` 인자) 경로는 바꾸지 않았다 — 여전히 한 호출에 한 프로젝트.
+
+### 검증
+
+- `npm test` **1563/1563**(신규 2건 — 다중 리소스 해석: 중복·순서·.gpr·소스 파일·상위 폴더 unresolved / 요약 문구 3종). 처음에 요약 문구 `업로드 완료 ${…}` 가 구조 R7(업로드 진행 바 문구 SSOT)에 걸려 `Upload Only 완료` 로 바꿨다.
+- VSIX: `dist/gpl-language-support-0.25.0.vsix` 1,653,597 bytes, SHA-256 `A013D2AF83A3038DEABD2112055D70EB433F913A7019B53F75156DFF6F921724`(경고는 bundle 권장 1건). MCP 번들에는 여전히 미커밋 `controller-mcp/src/guidelines.js` 변경(다른 세션 작업)이 들어 있다.
+- UI·실기 미확인 — §3 항목.
+
+### 남은 일
+
+- §3 의 UI·실기 확인. 정체 확인이 프로젝트마다 반복되는 비용이 크면 묶음 1회로 합칠지.

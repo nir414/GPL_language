@@ -227,19 +227,18 @@ test('deployLock: IP별 파일명 정규화', () => {
 
 test('deployLock: 잠금 갱신 rename 이 EPERM(공유 위반)으로 한 번 거절돼도 짧게 재시도해 성공한다 (2026-10-27 inbox)', () => {
     const t = makeEnv();
-    const realRename = fs.renameSync;
     let failures = 0;
-    (fs as any).renameSync = (from: fs.PathLike, to: fs.PathLike) => {
+    const renameFile = (from: string, to: string) => {
         if (failures < 2) {
             failures++;
             const err: any = new Error('EPERM: operation not permitted, rename');
             err.code = 'EPERM';
             throw err;
         }
-        return realRename(from, to);
+        fs.renameSync(from, to);
     };
     try {
-        const lock = new DeployLock('10.0.0.1', t.env);
+        const lock = new DeployLock('10.0.0.1', { ...t.env, renameFile });
         const r = lock.acquire('Deploy', 'PREPARE');
         assert.ok(r.ok, '획득 자체는 O_EXCL 생성이라 rename 을 거치지 않는다');
         if (!r.ok) { return; }
@@ -248,23 +247,21 @@ test('deployLock: 잠금 갱신 rename 이 EPERM(공유 위반)으로 한 번 �
         assert.strictEqual(t.readRaw().stage, 'UPLOAD');
         assert.ok(!fs.existsSync(path.join(t.dir, `${deployLockFileName('10.0.0.1')}.1001.tmp`)), '임시 파일을 남기지 않는다');
     } finally {
-        (fs as any).renameSync = realRename;
         t.cleanup();
     }
 });
 
 test('deployLock: 재시도 가능한 코드가 아니면(ENOENT 등) 바로 던지고 임시 파일을 치운다', () => {
     const t = makeEnv();
-    const realRename = fs.renameSync;
     let calls = 0;
-    (fs as any).renameSync = () => {
+    const renameFile = () => {
         calls++;
         const err: any = new Error('ENOENT');
         err.code = 'ENOENT';
         throw err;
     };
     try {
-        const lock = new DeployLock('10.0.0.1', t.env);
+        const lock = new DeployLock('10.0.0.1', { ...t.env, renameFile });
         const r = lock.acquire('Deploy', 'PREPARE');
         assert.ok(r.ok);
         if (!r.ok) { return; }
@@ -272,7 +269,6 @@ test('deployLock: 재시도 가능한 코드가 아니면(ENOENT 등) 바로 던
         assert.strictEqual(calls, 1);
         assert.ok(!fs.existsSync(path.join(t.dir, `${deployLockFileName('10.0.0.1')}.1001.tmp`)));
     } finally {
-        (fs as any).renameSync = realRename;
         t.cleanup();
     }
 });

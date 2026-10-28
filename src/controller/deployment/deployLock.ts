@@ -103,6 +103,8 @@ export interface DeployLockEnv {
 	/** 0이면 heartbeat 타이머를 돌리지 않는다(테스트). */
 	heartbeatIntervalMs?: number;
 	staleMs?: number;
+	/** 잠금 파일 교체(rename) — 테스트가 EPERM 공유 위반을 재현할 때 주입한다. 기본 `fs.renameSync`. */
+	renameFile?: (from: string, to: string) => void;
 }
 
 export function defaultDeployLockDir(): string {
@@ -145,6 +147,7 @@ export class DeployLock {
 	private readonly pidAlive: (pid: number) => boolean;
 	private readonly heartbeatIntervalMs: number;
 	private readonly staleMs: number;
+	private readonly renameFile: (from: string, to: string) => void;
 
 	constructor(readonly ip: string, env: DeployLockEnv = {}) {
 		this.dir = env.dir ?? defaultDeployLockDir();
@@ -154,6 +157,7 @@ export class DeployLock {
 		this.pidAlive = env.pidAlive ?? isPidAlive;
 		this.heartbeatIntervalMs = env.heartbeatIntervalMs ?? DEPLOY_LOCK_HEARTBEAT_MS;
 		this.staleMs = env.staleMs ?? DEPLOY_LOCK_STALE_MS;
+		this.renameFile = env.renameFile ?? ((from, to) => fs.renameSync(from, to));
 	}
 
 	get filePath(): string {
@@ -328,7 +332,7 @@ export class DeployLock {
 		let lastErr: unknown;
 		for (let attempt = 1; attempt <= DEPLOY_LOCK_RENAME_ATTEMPTS; attempt++) {
 			try {
-				fs.renameSync(tmp, file);
+				this.renameFile(tmp, file);
 				return;
 			} catch (err: any) {
 				lastErr = err;

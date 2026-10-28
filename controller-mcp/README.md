@@ -91,12 +91,14 @@ claude mcp add gpl-controller \
 
 ## 5. 연결 시 전달되는 지침 (instructions · 리소스)
 
-서버는 `initialize` 응답의 **`instructions`**로 두 가지를 함께 알린다(`src/guidelines.js`).
+서버는 `initialize` 응답의 **`instructions`**로 세 가지를 함께 알린다(`src/guidelines.js`).
 도구 설명과 달리 **도구를 부르기 전에** 읽히므로, 작업을 시작하기 전에 알아야 할 규약만 담는다.
 
 1. **제어기 안전 규칙** — 원시 TCP 소켓 금지, `</STATUS>`까지 읽고 판정, 모션 유발 명령은 사용자 확인,
    Compile 직후 Start 연속 호출 금지.
-2. **GPL 문서화 주석 규약** — GPL 소스를 쓰거나 고칠 때 선언 바로 위에 남기는 주석 형식.
+2. **GPL 근거 규칙** — GPL 문법·내장 클래스·콘솔 명령·DataID는 추측하지 말고 Brooks GPL Dictionary 등
+   공식 문서로 확인한다(Prerequisites·Remarks·Attr 중심). 문서는 가설이고 실기 응답이 사실이다.
+3. **GPL 문서화 주석 규약** — GPL 소스를 쓰거나 고칠 때 선언 바로 위에 남기는 주석 형식.
    설명은 항상, `# Parameters`는 매개변수가 있을 때, `# Returns`는 반환값이 있을 때,
    `# Examples`는 도움이 될 때만. VS Code 확장이 이 형식을 호버·자동완성·시그니처 도움말에
    구조로 표시한다(형식의 단일 출처는 확장의 `src/language/documentation/docComment.ts`).

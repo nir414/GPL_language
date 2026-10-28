@@ -54,6 +54,16 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 - 기존 코드의 머리글 없는 평범한 주석은 그대로 두어도 된다(종전과 같이 표시된다). 손대는 김에
   형식을 맞추는 것은 좋지만, 무관한 파일을 일괄 변환하지는 않는다.`;
 
+/** GPL 언어·제어기 동작의 근거를 어디서 확인하는지 — 기억이나 기존 코드 관용구로 추측하지 않게 한다. */
+export const GPL_REFERENCE_GUIDE = `## GPL 언어·제어기 동작의 근거 — Brooks 공식 문서
+
+- GPL 문법·내장 클래스/메서드(Move·Location·Profile·Robot·Thread 등)·콘솔 명령·DataID·오류 코드는 기억이나
+  다른 언어 관습으로 추측하지 말고 Brooks GPL Dictionary
+  (https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/intro.htm)와
+  같은 사이트의 Console Commands·PDB 페이지로 확인한 뒤 쓴다. 인자 의미·단위, Prerequisites·Remarks
+  (파워·Attach 조건, 블로킹 여부), DataID Attr(\`NP\` 등)이 핵심이다. 보고·커밋에 근거 URL을 남긴다.
+- 문서는 가설이고 실기 응답이 사실이다 — 어긋나면 실측을 따르고 차이를 기록한다.`;
+
 /** 서버가 무엇이고 무엇을 하지 말아야 하는지 — 도구 호출 전에 알아야 할 최소 규칙. */
 const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 **명령 콘솔**(ASCII, 기본 1402)로 조작하는 서버다.
 제어기 채널은 번호가 아니라 이름으로 부른다 — 명령 콘솔(1402) · 런타임 콘솔(1403) · FTP(21).
@@ -91,4 +101,4 @@ const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 **명령
   \`clear_remote_folder\`(먼저 confirm 없이 목록 → 동의 → \`confirm:true\`, flash 는 \`AI_BLOCKED\`)로 한다.`;
 
 /** initialize 응답의 instructions 본문. */
-export const SERVER_INSTRUCTIONS = `${SERVER_OVERVIEW}\n\n${DOC_COMMENT_GUIDE}`;
+export const SERVER_INSTRUCTIONS = `${SERVER_OVERVIEW}\n\n${GPL_REFERENCE_GUIDE}\n\n${DOC_COMMENT_GUIDE}`;

@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.23.0",
+    "version": "0.24.0",
     "publisher": "nir414",
     "icon": "assets/icons/gpl-logo.png",
     "repository": {
@@ -2034,7 +2034,7 @@
                         "'GPL: Check Project Dependencies' 명령(.gpr 우클릭)으로만 검사합니다."
                     ],
                     "default": "auto",
-                    "description": "패키지(.gpr) 의존 검사 — 각 .gpr 의 ProjectLibrary·ProjectSource 선언을 소스의 실제 사용(정의 이동과 같은 이름 해석)과 대조해 누락(Warning)·간접 의존·쓰지 않는 라이브러리(Information)를 .gpr 에 표시하고 빠른 수정으로 줄을 더하거나 지웁니다. 루트 .gpr 주석 ' Dependencies: App -> Config/Gantry/Lib; … 가 있으면 계층 규칙 위반을 .gpl 사용 위치에 Warning 으로 표시합니다."
+                    "description": "패키지(.gpr) 의존 검사 — 각 .gpr 의 ProjectLibrary·ProjectSource 선언을 소스의 실제 사용(정의 이동과 같은 이름 해석)과 대조해 누락(Warning)·간접 의존·쓰지 않는 라이브러리(Information)를 .gpr 에 표시하고 빠른 수정으로 줄을 더하거나 지웁니다. 루트 .gpr 주석 ' Dependencies: App -> Config/Gantry/Lib; … 가 있으면 계층 규칙 위반을 .gpl 사용 위치에 Warning 으로 표시합니다. ProjectName 이 .gpr 폴더 이름과 (대소문자까지) 다르면 Warning 과 ProjectName 고치기 빠른 수정을 냅니다."
                 },
                 "gpl.project.sourceExtensions": {
                     "scope": "window",

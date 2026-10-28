@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-27** · 현재 package 버전 **0.23.0** (패키지 의존 검사 — ProjectLibrary·계층 규칙, 1560/1560. 상세는 §1-GK.)
-- **직전 세션: §1-GK** — "다른 언어는 라이브러리 참조를 어떻게 다루나" 검토 결과(import 선언 + `go mod tidy`/depcheck/ArchUnit 류 대조 도구, 역방향은 저장 안 함)에 맞춰, GPL 의 유일한 의존 선언인 `.gpr` 의 ProjectLibrary·ProjectSource 를 실제 사용과 대조하는 검사를 추가(`project/gpr/dependencyCheck`·`dependencyModel`, 명령 `gpl.project.checkDependencies`, 설정 `gpl.project.dependencyCheck`). 루트 주석 `' Dependencies:` 를 계층 규칙으로 읽는다. BinderR4 드라이런에서 오탐 2건(Delegate 매개변수) 발견·수정 → 미사용 5·간접 5만 남음. UI 확인은 §3.
+- **최종 갱신: 2026-10-28** · 현재 package 버전 **0.24.0** (ProjectName = 폴더 이름 검사, 1561/1561. 상세는 §1-GL.)
+- **직전 세션: §1-GL** — 사용자 규칙 "Project.gpr ProjectName 은 폴더명과 같아야 한다"를 패키지 의존 검사(`project/gpr/dependencyCheck.projectNameMismatch`)에 넣었다 — 모든 .gpr(루트·그룹·리프)에 대해 대소문자까지 비교, Warning + 「ProjectName="<폴더>" 로 바꾸기」 빠른 수정(폴더 이름은 ProjectLibrary 경로가 가리켜 바꾸지 않음). BinderR4 드라이런 45개 중 42개 불일치, 고치면 이름이 겹치는 쌍 2개(Gantry\Data·Lib\Data, Lib\Motion\Cmd·Lib\Robot\Cmd) — 문구로 알림, 제어기 동작은 미확인.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-10-28, §1-GL) ProjectName = 폴더 이름 — 결정·실기 확인.** ① BinderR4 리프·그룹 42개를 Quick Fix 로 고칠지(일괄은 .gpr 마다 「모두 고치기」) 사용자 결정 ② 고치면 `Data`(Gantry\Data·Lib\Data)·`Cmd`(Lib\Motion\Cmd·Lib\Robot\Cmd) 가 겹친다 — 폴더를 `GantryData`/`MotionCmd` 처럼 바꿀지(그러면 이 폴더를 가리키는 ProjectLibrary 경로·루트 ProjectSource 도 함께) 결정 ③ 라이브러리 ProjectName 이 폴더와 다를 때/겹칠 때 제어기 Compile·Start 가 실제로 어떻게 되는지는 미확인 — 바꾼 뒤 `Compile BinderR4` STATUS 로 확인.
 - [ ] **(2026-10-27, §1-GK) 패키지 의존 검사 — VSIX·UI 확인(편집기만, 모션 무영향).** BinderR4 의 `Gantry\Station\Project.gpr` 를 열면(인덱싱 뒤 약 1 s) ① Problems 에 `GPL Dependencies` 진단 — Station 의 `ProjectLibrary "Lib\Core\Foundation"`·`"Lib\Core\Text"` 줄에 미사용 Information, `Lib\Device\CantopsIOCmd\Project.gpr` 에 간접 의존 3건, `Lib\Motion\Cmd` 에 간접 1건(드라이런 결과와 같은지) ② Quick Fix 「… 줄 지우기」/「ProjectLibrary=… 추가」와 「이 .gpr 의 의존 문제 모두 고치기」가 뜨고 적용·저장하면 1.5 s 뒤 재검사로 사라지는지 ③ `.gpr` 우클릭 「Check Project Dependencies」 → 요약 알림·Output `[Dependencies]` 목록 ④ App 파일에서 `Lib` 쪽이 App 을 참조하게 임시로 고치면 계층 위반 Warning 이 그 줄에 뜨는지(되돌릴 것) ⑤ `gpl.project.dependencyCheck: manual` 이면 열어도 검사하지 않는지. 미결: 미사용 판정은 "직접 쓰지 않음"이라 라이브러리가 자기 의존을 선언하지 않고 이 패키지에 기대는 경우도 미사용으로 보인다 — 지우기 전에 사람이 확인.
 - [ ] **(2026-10-27, §1-GJ) 0.22.0 대시보드 I/O — 실기 확인(Set DIO 는 실제 신호를 바꾼다: 장비 정지 상태·무해한 신호로).** ① I/O 탭에서 Local I/O(Digital 13~20/10001~10012 · Soft 20001~20064 · Dedicated 제어기 8081~/18001~ · 축 1~6)·Remote I/O 「미검출」이 실기 응답대로 나오는지. ② Soft 신호(예: 20064) 더블클릭 → 강제 ON(`Set DIO 20064 1`)·모서리 표시·탭 숫자, 우클릭 「강제 해제」 → 표시 사라짐, 「모든 강제 해제」가 강제된 것만 `Set DIO n 0` 으로 보내는지(GPL Traffic). ③ 폴링 1 회가 `Show DIO` + Soft 3 줄(160자 분할) 로 끝나고 STATUS 0 인지, 0.5 s 주기에서도 1402 큐가 밀리지 않는지. ④ 우클릭 메뉴가 VS Code 기본 메뉴 대신 뜨고 Shift+F10·Esc 로 열고 닫히는지, 패널 크기 변경·스크롤에서 닫히는지. ⑤ RIO·서보 네트워크가 있는 장비에서 그룹이 RIO n·Network Node n 으로 잡히는지(문서상 node n 일반 I/O 는 +100000·n, 13~20/10001~10012).
 - [ ] **(2026-10-27, §1-GI) 0.21.0 연결 판정 — 실기·UI 확인(읽기 경로·모션 무영향).** ① 연결 중 제어기 LAN 케이블을 뽑거나 전원을 내리면 상태바가 **첫 이상 신호부터** `$(sync~spin) … 응답 확인 중 (실패 n/3)`(경고색)으로 바뀌고 툴팁에 계기·마지막 실패가 보이는지, 클릭하면 바로 해제되는지, 복구되면 정상 표시로 돌아오는지. ② Unload 무응답 뒤 `$(watch) … 복구 대기 n/180 s` 가 1 s 마다 갱신되는지. ③ 다음 유실 때 Output 에 `[Health] 확장 호스트 이벤트 루프 정지 …` 줄과 유실 알림의 「판정이 늦어진 N s 는 … 확장 호스트가 멈춰 있던 시간」, 사후 스냅샷 「확장 호스트 이벤트 루프 정지」 절이 채워지는지 — 채워지면 그 시각의 `%APPDATA%\Code\logs\…\renderer.log` 에서 범인 확장 프로파일을 찾는다. ④ GPL Traffic 에 `CONNECT TIMEOUT (3000ms, no handshake)` 가 정상 운용(부팅 직후 포함) 중에 뜨지 않는지 — 뜨면 `gpl.controller.connectTimeoutMs` 를 올린다.
@@ -1099,7 +1100,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-FY | 10-23 | **명령 커서 아이콘 적용** — 컬러 대표 이미지·테마 단색 패널 아이콘, 24px 가독성 조정. 0.17.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-FZ | 10-26 | **수신함 22건 일괄 반영** — 참조 모듈 범위·오버로드 선택, 컴파일러 사실 진단 8종, 그룹 Compile 뒤 Unload 확인, FTP 쓰기 전 제어기 정체 확인, 메모리 알림 억제, 시계 동기화. 0.18.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GA | 10-26 | **디버그 스텝 체감 지연 재발** — 어댑터 큐를 control/data 차선으로(재개 시 미전송 조회 폐기), pending 백업 폴, 재개 타이밍 한 줄 로그. 0.18.2 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | 본문 ↓ |
+| §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | 본문 ↓ |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | 본문 ↓ |
 | §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | 본문 ↓ |
@@ -1109,44 +1110,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | 본문 ↓ |
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | 본문 ↓ |
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |
+| §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GB ~ §1-GK (2026-10-26~27).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GC ~ §1-GL (2026-10-27~28).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GB. 2026-10-26 세션 — 수신함 2건: 메모리 사전 검사는 경고만 · 원격 사본의 정의 찾기에 로컬 프로젝트 매핑
-
-Sample Prep 세션이 SendMessage 와 수신함(`Downloads\GPL_language_inbox`)으로 보낸 보고 2건을 처리했다. 둘 다 `done/` 에 처리 결과를 적어 옮겼다. 버전은 patch **0.18.3**.
-
-### A. 메모리 사전 검사가 배포를 막음 → 경고 전용 (`2026-10-26_SamplePrep_메모리사전검사_배포차단_v1.md`)
-
-- **사용자 결정(원문)**: "잘만 실행 되는데, 기능을 완전히 막아 버리네. 경고만 하랬지 기능을 막으란 건 아니었다." 실측(Binder 8Ch): BinderR3 정지 시 Free 3.19 MB, 실행 중 0.18 MB(런타임 버퍼 ~3 MB) — 검사가 Stop **전**에 돌아 실행 중이면 항상 차단됐다.
-- `controller/diagnostics/memoryGuard.ts`: 수준을 ok·warning·**critical**·unknown 으로, `checkMemory` 는 어느 수준에서도 예외를 내지 않는다(`MemoryGuardError`·`LOW_MEMORY`/`MEMORY_UNVERIFIED` 삭제). 설정 `memoryGuard.criticalMb`(기본 2.5) 신설, `blockMb` 는 deprecated(설정돼 있으면 심각 기준으로만 읽음 — `controllerConnection.checkMemoryBeforeOperation` 의 inspect 폴백).
-- `deployService`: 업로드 전 측정은 "실행 중인 앱의 메모리 포함 값, 정지 뒤 Compile 직전에 다시 측정" 주석을 달아 `precheckWarnings` 에만 넣고, Compile 뒤 `getLastMemoryCheck()`(큐 슬롯 측정, Stop 이후)가 있으면 그것으로 `result.memoryPrecheck` 를 덮어쓴다. 실패 코드·`retryMode` 의 메모리 분기, `deployOutcome` 의 "메모리 사전 검사로 중단" 문구, `controllerCommands` 의 AI 응답 분기 제거. MCP 쪽 `LOW_MEMORY` 처리 분기는 옛 확장 호환으로 남겨 뒀다(더 이상 오지 않는다).
-- 「회귀 아님: 동일 실패 패턴 N회 관측」 → 「같은 실패 N회째 (새 회귀가 아니라 같은 원인의 반복)」(`deployOutcome.comparisonNoteFor`). `RETRY_SAME_REQUEST` 안내는 차단이 사라져 해당 없음.
-- `memoryNotice.ts` 는 critical 전이에 한 번 알리고 배지 문구를 "심각(… 미만, 전송은 막지 않음)" 으로. 문서: `docs/development/architecture.md` 「메모리 사전 검사」 전면 수정.
-
-### B. 원격 사본(/GPL/…)에서 F12 가 안 됨 → 로컬 프로젝트 매핑 (`2026-10-26_SamplePrep_원격GPL파일_정의찾기_v1.md`)
-
-- 보고: `\GPL\Lib\Motion\Cmd\MotionCmd.gpl` 의 `AddressOf MSC.OnErr` 에서 이동 안 됨(보고자는 정의가 같은 파일이라고 봤다). 원격 언어 서비스(§1-FW `activation/remote/controllerSourceLanguage.ts`)는 **열어 본 원격 파일만** 인덱싱하므로 다른 파일의 모듈은 못 찾는다. 같은 파일 사례는 하니스 회귀 테스트로 **정상 동작을 확인**했다(`controllerSourceLanguage.test.ts` "같은 파일 다른 Module 의 멤버") — 사용자 환경에서 실제로 같은 파일이었는지는 미확인이라 §3 에 남겼다.
-- `project/remote/remoteSourceMapping.ts`(신설, 순수): 원격 경로의 루트 바로 아래 폴더 = 프로젝트 이름 → 로컬 후보를 deploy record `projectDir` → 작업공간 `.gpr` `ProjectName` → 폴더 이름 순으로 고르고(단계별 후보 2개 이상이면 선택 안 함), 그 컴파일 단위 소스(자기 + ProjectLibrary 재귀, `buildLibraryGraph`)를 돌려준다. `sameSourceText` 는 EOL·BOM·끝 공백 무시.
-- `controllerSourceLanguage.ts`: 탐색 범위 서비스마다 1회 `seedFromLocal` 로 로컬 소스를 `cache.updateFilesFromDisk` 로 씨앗 인덱싱(`host.log` 에 `[Remote Source] … (deploy-record|project-name|folder-name, 소스 N개)`). `location()` 은 TMP 캐시 밖 `file:` 위치를 그대로 통과(로컬 파일 열기). `SymbolCache` 생성자에 `workspaceFolderFor` 주입을 추가해 캐시 경로는 TMP 루트를 최상위 폴더로 보게 — 열어 본 원격 사본이 같은 프로젝트 폴더 점수(500)로 로컬 사본(0)보다 앞선다. 열 때 로컬 파일과 내용이 다르면 `showInformationMessage`(「로컬 열기」) 를 URI 당 1회.
-- 테스트 하니스에 `/deployRecord`·`/projectFileScope` 스텁, `workspace.fs.readFile`, `window.showInformationMessage/showTextDocument` 캡처, `addLocalProject` 추가. 신규 회귀: 작업공간 ProjectName 매핑으로 열지 않은 `Msc.gpl` 정의 이동, deploy record 우선 + 원격 사본 우선, 차이 알림·「로컬 열기」.
-
-### 검증
-
-- `npm test` **1442/1442**(메모리 가드·알림·배포 결과 테스트 갱신, 매핑 4건·원격 언어 4건 추가), `controller-mcp` **164/164**. `git diff --check` 통과(autocrlf 경고만).
-- `npm run package`: `dist/gpl-language-support-0.18.3.vsix` **1,495,120 bytes**, SHA-256 **946B74B8D50CD8847229136CA1D5B600F64887AFBB284AD98C10FCFD9406CA5D**. 경고는 기존 JavaScript 번들링 권고뿐.
-- 실기·UI 미확인(§3 참조). Git 커밋 없음.
-
-### 남은 일
-
-- §3 (§1-GB) 항목: 실행 중 BinderR3 상태에서 `deploy_project build` 가 차단 없이 Compile 까지 가고 `precheckWarnings` 두 줄(업로드 전/정지 뒤)이 맞는 값인지, FTP 트리에서 `MotionCmd.gpl` 을 열어 `MSC.OnErr` F12 와 Output `[Remote Source]` 줄, 로컬과 다른 파일의 「로컬 열기」 안내.
-- 보류: 사용자가 요청한 "로컬과 다름" 표시를 편집기 상단 배너(CodeLens/상태 표시줄)로 바꿀지 — 지금은 알림 1회.
-
----
 
 ## 1-GC. 2026-10-27 세션 — 사용자 업무 메모 4건: Unload 버튼 · 메모리 심각 시 선택 · Project.gpr 자동 동기화 · AI 조회로 패널 안 바뀌게
 
@@ -1440,3 +1410,29 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 
 - §3 의 VSIX·UI 확인. 미사용 판정은 "이 패키지가 직접 쓰지 않음"이라, 라이브러리가 자기 의존 선언을 빠뜨리고 이 패키지에 기대는 경우도 미사용으로 보인다(지우기 전 확인 — 그 라이브러리 쪽에 library-missing 이 같이 뜨면 그쪽을 고친다).
 - 선택: Requires 헤더 상세 수준 설정(`symbols`/`modules`)으로 diff 소음 줄이기, Used by 를 CodeLens 로 계산 표시.
+
+## 1-GL. 2026-10-28 세션 — ProjectName = 폴더 이름 규칙 (0.24.0)
+
+### 증상(요청)
+
+"Project.gpr ProjectName 폴더명하고 똑같아야 해" — §1-GK 패키지 의존 검사에 이어 받은 규칙.
+
+### 원인
+
+- 문서상 "폴더 이름과 프로젝트 이름은 동의어"이고 플래시 이름은 대소문자를 가린다(`docs/reference/project-file-gpr.md` §1·§5). 확장의 배포 경로도 `/GPL/<ProjectName>`.
+- BinderR4 는 루트·그룹 3개(BinderR4·Gantry·Lib)만 같고, 리프·하위 그룹 42개가 `Lib_Text`·`GantryStation`·`Lib_MotionSystem` 처럼 폴더(`Text`·`Station`·`System`)와 다른 이름을 쓴다. 이를 잡는 검사가 없었다.
+
+### 조치(의도와 방법)
+
+- `project/gpr/dependencyCheck.ts` — `projectNameMismatch`(export, 순수): ProjectName 줄 값과 `.gpr` 폴더 이름을 **정확히**(대소문자·공백까지) 비교. 다르면 Warning `project-name-mismatch` + 빠른 수정 `replace`(그 줄을 `ProjectName="<폴더>"` 로, 들여쓰기 유지), ProjectName 줄이 없으면 ProjectBegin 뒤에 넣는 `insert`. 대소문자만 다르면 문구가 그렇게 말한다. 루트·그룹·리프 모든 `.gpr` 에 적용(그룹도 검사 루프 맨 앞).
+- **고치면 겹치는 이름**: 같은 컴파일 루트 아래 폴더 이름이 같은 `.gpr` 들을 모아, 해당 진단 문구에 "고치면 ProjectName 이 겹친다 — 폴더 이름을 구분되게 바꾸는 것도 검토" 를 덧붙인다. 폴더 이름을 바꾸는 수정은 제안하지 않는다(다른 `.gpr` 의 ProjectLibrary·루트 ProjectSource 경로가 그 폴더를 가리킨다).
+- `GprFix` 에 `replace` 종류를 더하고 `dependencyCheckCommands.toEdit` 가 줄 내용을 바꾼다. 설정 `gpl.project.dependencyCheck` 설명과 `project-file-gpr.md` §1 에 규칙을 적었다.
+
+### 검증
+
+- `npm test` **1561/1561**(신규 1건 — 픽스처 7개 .gpr 모두 불일치·수정 줄, 일치·대소문자만 다름·들여쓰기 유지·ProjectName 없음·겹침 문구). 시작 시 `node_modules` 가 비어 있어(10-27 17:04 이후, 원인 미상 — 다른 세션 작업 추정) `npm ci` 로 lockfile 그대로 복구했다.
+- BinderR4 읽기 전용 드라이런: 패키지 45, 불일치 42, 고치면 겹치는 쌍 2(`Data`, `Cmd`).
+
+### 남은 일
+
+- §3 의 결정·실기 확인(일괄 수정 여부, 겹치는 폴더 처리, 제어기 Compile 결과).

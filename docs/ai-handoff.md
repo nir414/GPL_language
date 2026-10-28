@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-28** · 현재 package 버전 **0.25.0** (Upload Only 여러 프로젝트, 1563/1563. 상세는 §1-GM.)
-- **직전 세션: §1-GM** — 사용자 요청 "폴더 2개 이상 선택해서 Upload Only" — 탐색기 다중 선택과 팔레트·제어기 패널의 다중 선택 QuickPick 을 받아 고른 순서대로 하나씩 `runDeploy`(Upload Only) 하고 끝에 요약 1회. 실패·취소가 나오면 남은 프로젝트는 올리지 않는다. Upload Only 만 다중(Stop/Compile 변형은 단일 유지). 실기 확인은 §3.
+- **최종 갱신: 2026-10-28** · 현재 package 버전 **0.26.0** ("컴파일 검증 필요" 목록화·영속 + Unload -all 전 /GPL 비우기, 1571/1571. 상세는 §1-GN.)
+- **직전 세션: §1-GN** — 사용자 지적 "컴파일 검증 필요 알림이 Upload Only·다중 프로젝트에서 잘 동작 못함" — 상태를 제어기(ip)별·workspaceState 영속 목록으로 바꾸고 트리는 프로젝트마다 한 줄, 상태바는 「최근 외 n」+선택 창(`gpl.compileStale.pick`), `GPL: Start` 성공이 배지를 해제하지 않던 버그 수정. 사용자 요청 "Unload -all 전에 /GPL 비우기"(UI 절차 재사용, MCP 는 `gpl-not-empty` 거부) + Unload 대기 하한 180 s. inbox 4건 처리, 다른 세션의 MCP 지침 변경 커밋 통합. 실기 확인은 §3.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,8 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-10-28, §1-GN) 0.26.0 — "컴파일 검증 필요" 목록·Unload -all 전 비우기 — VSIX·실기 확인(Unload 는 정지 상태에서).** ① Upload Only 로 프로젝트 3개를 올리면 트리 「프로젝트 상태 ⚠ 컴파일 검증 필요 3개」에 세 줄, 상태바 `$(warning) 컴파일 검증 필요: <마지막> 외 2` ② 상태바 클릭 → 다중 선택 QuickPick(전부 체크) → 고른 순서대로 Quick Compile, 하나 실패 시 중단 ③ 한 프로젝트만 Compile 하면 그 줄만 사라지고 라벨이 「외 1」로 ④ `GPL: Start`(모달 「그대로 Start」) STATUS 0 뒤 배지 해제 + Output `[Start] ✔ 컴파일 스냅샷 기록` ⑤ 창 다시 열기(Reload Window) 뒤에도 미검증 목록이 남고, 다른 IP 로 설정을 바꾸면 사라졌다가 되돌리면 다시 뜨는지 ⑥ 「GPL: Unload Project」→「모두 내리기」: 위험 모달 → /GPL 비우기 모달(문구에 "비운 뒤 Unload -all") → 삭제 → `Unload -all` STATUS 0, 취소하면 Unload 미전송·Output 한 줄, /GPL 이 비어 있으면 모달 없이 바로 ⑦ MCP `unload_project {project:"-all"}` 가 /GPL 비어 있지 않을 때 `refused:"gpl-not-empty"` + 목록, 활성 쓰레드가 있으면 `threads-active` ⑧ 실행 뒤 앱 Unload 가 15 s 를 넘겨도(GPL Traffic 의 소요 시간) 타임아웃 없이 STATUS 가 오는지 — 그래도 inbox 의 `_Cmd_<project>` 유발 무응답(§1-GN 남은 일)은 별건.
+- [ ] **(2026-10-28, §1-GN inbox) 상태 샘플러의 `Execute` 가 Unload 를 막는다는 보고 — 결정 필요.** `controller/diagnostics/statusSampling.ts` 가 대시보드 폴링에 `Execute Controller.PowerEnabled`·`Robot.WhereAngles`·`Robot.Where` 를 쓰면 제어기가 `_Cmd_<project>` Idle 쓰레드를 만들고, 그 뒤 `Unload <project>` 가 응답하지 않았다(2026-10-27 inbox unload-slow-not-hang: 최소 프로브 재현 3회, `Stop _Cmd_…` 로도 실제 앱은 회피 실패). 선택지: (a) 프로젝트가 로드돼 있는 동안 Execute 샘플링 중지(DataID/`Show` 대체 가능 여부 조사) (b) 설정으로 끄기 (c) Unload 전에 `_Cmd_` 가 보이면 경고. 문서상 Idle 쓰레드는 Unload 를 막지 않아야 하므로 제어기 결함으로 보이나 실기 재현이 근거.
 - [ ] **(2026-10-28, §1-GM) Upload Only 여러 프로젝트 — VSIX·실기 확인(FTP 만, 모션 무영향).** ① 탐색기에서 프로젝트 폴더 2개 이상 Ctrl 선택 → 우클릭 `GPL: Upload Only` 가 고른 순서대로 올리고 끝에 「Upload Only 완료 n/n」 한 번만 뜨는지(프로젝트별 토스트 없음) ② 프로젝트 아닌 폴더를 섞으면 「n개만 업로드」 모달 ③ 팔레트에서 다중 선택 QuickPick, 직전 선택이 미리 체크되는지 ④ 둘째 프로젝트에서 실패(예: FTP 끊김)·미저장 확인 취소 시 셋째 이후가 「미실행」으로 남는지 ⑤ 정체 확인(`verifyControllerIdentity`)이 프로젝트마다 반복되는 지연이 체감되면 묶음 1회로 줄일지 결정.
 - [ ] **(2026-10-28, §1-GL) ProjectName = 폴더 이름 — 결정·실기 확인.** ① BinderR4 리프·그룹 42개를 Quick Fix 로 고칠지(일괄은 .gpr 마다 「모두 고치기」) 사용자 결정 ② 고치면 `Data`(Gantry\Data·Lib\Data)·`Cmd`(Lib\Motion\Cmd·Lib\Robot\Cmd) 가 겹친다 — 폴더를 `GantryData`/`MotionCmd` 처럼 바꿀지(그러면 이 폴더를 가리키는 ProjectLibrary 경로·루트 ProjectSource 도 함께) 결정 ③ 라이브러리 ProjectName 이 폴더와 다를 때/겹칠 때 제어기 Compile·Start 가 실제로 어떻게 되는지는 미확인 — 바꾼 뒤 `Compile BinderR4` STATUS 로 확인.
 - [ ] **(2026-10-27, §1-GK) 패키지 의존 검사 — VSIX·UI 확인(편집기만, 모션 무영향).** BinderR4 의 `Gantry\Station\Project.gpr` 를 열면(인덱싱 뒤 약 1 s) ① Problems 에 `GPL Dependencies` 진단 — Station 의 `ProjectLibrary "Lib\Core\Foundation"`·`"Lib\Core\Text"` 줄에 미사용 Information, `Lib\Device\CantopsIOCmd\Project.gpr` 에 간접 의존 3건, `Lib\Motion\Cmd` 에 간접 1건(드라이런 결과와 같은지) ② Quick Fix 「… 줄 지우기」/「ProjectLibrary=… 추가」와 「이 .gpr 의 의존 문제 모두 고치기」가 뜨고 적용·저장하면 1.5 s 뒤 재검사로 사라지는지 ③ `.gpr` 우클릭 「Check Project Dependencies」 → 요약 알림·Output `[Dependencies]` 목록 ④ App 파일에서 `Lib` 쪽이 App 을 참조하게 임시로 고치면 계층 위반 Warning 이 그 줄에 뜨는지(되돌릴 것) ⑤ `gpl.project.dependencyCheck: manual` 이면 열어도 검사하지 않는지. 미결: 미사용 판정은 "직접 쓰지 않음"이라 라이브러리가 자기 의존을 선언하지 않고 이 패키지에 기대는 경우도 미사용으로 보인다 — 지우기 전에 사람이 확인.
@@ -785,7 +787,8 @@ src/controller/runtime/runtimeConsoleGuards.ts   # 1403 접속 카운터(슬라�
 src/controller/runtime/runtimeConsoleBuffer.ts   # 1403 수신 줄 링버퍼(seq 커서 read·untilPattern/waitFor 대기·dropped 보고, 순수) — MCP runtime_console_read 의 뒷단 gpl.ai.debug.runtimeConsoleRead 가 읽는다; 파일 캡처(gpl.runtimeConsole.captureFile)는 runtimeConsole.ts 의 appendCapture (§1-EQ)
 src/controller/deployment/deployRecordCore.ts       # 컴파일 스냅샷(sha1) 기록/대조 순수 로직 + Memento 스토어 (§1-BI, #21)
 src/controller/deployment/deployRecord.ts           # deployRecordCore vscode 래퍼 — recordCompiled/getCompiledRecord/onDidRecordCompiled/attachDeployRecordStore (§1-BI)
-src/controller/deployment/compileStale.ts           # "컴파일 검증 필요" 배지 상태(CompileStaleTracker, vscode 무의존) — 해제는 onDidRecordCompiled 구독으로 경로 무관 (§1-CU)
+src/controller/deployment/compileStale.ts           # "컴파일 검증 필요" 상태(CompileStaleTracker, vscode 무의존) — 제어기(ip)별 키·Memento 영속·markedAt, 뷰는 list(ip) 전체를 받음(§1-GN); 해제는 onDidRecordCompiled 구독으로 경로 무관 (§1-CU)
+src/activation/deploy/compileStaleCommands.ts       # gpl.compileStale.pick — 미검증 프로젝트 다중 선택 → 고른 순서대로 Quick Compile(실패 시 중단). 상태바 배지가 여럿일 때 연다 (§1-GN)
 src/controller/deployment/flashSafety.ts            # Save to Flash 안전 확인 상태기계(순수) — Sync 종결 STATUS 0 뒤 10초 안정화, 실패 시 unknown 유지 (§1-FD)
 src/debug/execution/stepGate.ts                    # Step/Continue 게이트 순수 판정 shouldGateStepRequest(pending-entry/pending-same-thread/min-interval) (§1-BI, #28)
 src/debug/evaluation/evalMessages.ts                # 평가 실패 문구 정본(vscode 무의존) — formatEvalError(hover/Watch/REPL 공용, 세션에서 이관)·describeNestedExpandFailure(중첩 객체 펼치기 실패 행: 코드·원인 앞, 대처 뒤, Debug Console 용 detail)·UNDEFINED_SYMBOL_STATUS/UNSUPPORTED_PROCEDURE_STATUS (§1-DS)
@@ -803,7 +806,7 @@ src/controller/projects/projectPickerCore.ts      # 프로젝트 폴더 선택 �
 src/controller/projects/projectPicker.ts          # 공용 선택기 pickProjectDir(Detailed)(QuickPick·workspaceState 최근 선택)·readGprProjectName/projectNameOf·context key gpl.projectDirs(탐색기 메뉴) — 명령·F5 provider 공용 (§1-BL)
 src/controller/projects/projectNameGuard.ts       # 프로젝트명/Load 경로 안전성 단일 규칙(vscode 무의존) — 1402 명령은 공백 구분·인용 불가 → 공백·제어 문자 검출 checkProjectName/checkRemotePath·안내 문구 describeProjectNameProblem; deploy/Start/ftpRun·Unload/F5 attach/MCP proj()가 공유 (§1-BQ)
 src/debug/session/activateDebug.ts               # DebugConfigurationProvider — 중복 세션 처리 + fillProjectTarget(다중 프로젝트 QuickPick, projectDir/projectName 보충) (§1-BL), InlineDebugAdapterFactory
-src/controller/deployment/deployLock.ts             # 배포 잠금 — 메모리+파일(%TEMP%/gpl-controller/<ip>.lock.json), pid/heartbeat stale 자동 만료, describeDeployLock (§1-BD, 이슈 #15·#17)
+src/controller/deployment/deployLock.ts             # 배포 잠금 — 메모리+파일(%TEMP%/gpl-controller/<ip>.lock.json), pid/heartbeat stale 자동 만료, describeDeployLock (§1-BD, 이슈 #15·#17); 파일 교체 rename 의 EPERM/EBUSY 공유 위반은 4회 재시도(§1-GN, env.renameFile 주입)
 src/controller/files/ftpClient.ts              # uploadProject onlyFiles, mirrorProject deferDelete + removeRemoteFiles(§1-BD), 지문 스킵 판정(§1-BV), 진행 이벤트 onProgress(event) = 파일 완료 + basic-ftp trackProgress 바이트(§1-EE)
 src/controller/deployment/uploadProgress.ts         # 업로드 진행 집계(vscode 무의존) — UploadProgressTracker(파일 완료 + 전송 중 바이트, 스킵은 즉시 완료, 크기 클램프)·UploadProgressEvent; 표시는 views/statusbar/uploadProgressBar (§1-EE)
 src/util/formatBytes.ts                  # 바이트 → 사람이 읽는 크기 정본(vscode 무의존, R7) — formatBytes/formatBytesAs/byteUnitFor(B 정수·그 위 소수 1자리·GB 까지); 종전 views/tree/treeFormat.formatSize 통합 (§1-EE)
@@ -1103,7 +1106,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GA | 10-26 | **디버그 스텝 체감 지연 재발** — 어댑터 큐를 control/data 차선으로(재개 시 미전송 조회 폐기), pending 백업 폴, 재개 타이밍 한 줄 로그. 0.18.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | 본문 ↓ |
+| §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | 본문 ↓ |
 | §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | 본문 ↓ |
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | 본문 ↓ |
@@ -1113,57 +1116,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |
 | §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | 본문 ↓ |
 | §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | 본문 ↓ |
+| §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GD ~ §1-GM (2026-10-27~28).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GE ~ §1-GN (2026-10-27~28).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GD. 2026-10-27 세션 — src/ 전 계층 기능별 하위 폴더(area) 재배치 · test/ 거울 구조
-
-### 요청·판단
-
-- 사용자: "구조가 전부 앞으로 다 나와 있어 난잡하다 — 중첩 폴더 계층으로 정리해 달라." 검토 결과 `controller/` 만 2026-10-22 에
-  기능별로 묶였고(§2.1·R9), 나머지 계층은 평면이었다: `test/` 141개, `language/` 25개, `activation/` 21개, `providers/` 15개,
-  `debug/` 12개, `project/` 11개, `views/` 9개. 저장소 루트의 추적 파일은 15개뿐이라 손대지 않았다(나머지 `.codex-inbox-*.log`·
-  `debug.log`·`.tmp/`·`site/`·`.history/` 는 전부 .gitignore 대상).
-- 같은 저장소에서 세션 `gpl-language-dd`(§1-GC) 가 편집 중이어서 SendMessage 로 조율 — src/ 편집 종료 통보를 받은 뒤 이동했고,
-  docs/·CHANGELOG·package.json 은 그쪽 편집이 끝난 뒤에 치환했다. 그 사이 이동 스크립트는 HEAD 기준 격리 워크트리에서 먼저 검증했다.
-
-### 조치 (동작 변경 없음 — 파일 이동과 경로 재계산만)
-
-- **기능별 area 재배치 232개 파일**(src 91 + test 141): `language/{syntax,dictionary,symbols,analysis,checks,documentation,xml}`,
-  `project/{sources,gpr,remote}`(+기존 `symbols`), `debug/{session,execution,evaluation}`, `providers/{navigation,structure,intellisense,diagnostics}`,
-  `views/{statusbar,tree,dashboard}`, `activation/{controller,remote,deploy,debug,language,ai}`(+루트 `host.ts`). 분류표는
-  `docs/development/architecture.md` §2.1.
-- **`test/` 는 src 를 거울처럼** — `test/<계층>/<area>/<이름>.test.ts`. 배치 규칙: 이름이 같은 대상 모듈 → 첫 import 모듈의 폴더,
-  예외는 명시(문법·indentation·샘플 커버리지 → `language/syntax`, `buildOutputs` → `test/scripts/`, provider 통합 테스트·
-  `providerHarness` → `test/providers/…`, `controllerProjectAttach`·`remoteSourceDebug` → `test/debug/session/` 등). 루트에는
-  `harness`·`index`·`architecture.test` 만.
-- **경로 재계산**: `git mv` 뒤 모든 `'../…'` 상대 리터럴(import·require·`path.resolve(__dirname, …)`·vm 스텁 키)을 옛 위치 기준으로
-  풀어 새 위치 기준으로 다시 썼다(224개 파일). `'..', '..'` 세그먼트 형식은 깊이 차이만큼 `'..'` 추가. 로드 대상 모듈 기준의
-  스텁 키 2곳(`referenceProvider.test` 의 `projectFileScope`, `diagnosticProvider.test` 의 `config`)은 손으로 맞췄다.
-  주석·SSOT 목록·문서의 모듈 식별자(`language/gplParser` → `language/syntax/gplParser`)도 치환(코드 118건 + docs 122건,
-  `docs/archive/`·CHANGELOG 는 이력이라 제외). `scripts/dev/hover-performance.js` 의 out/ 경로도 갱신.
-- **구조 테스트 R9 일반화**: `CONTROLLER_AREAS` → `LAYER_AREAS`(계층별 area 목록) + `LAYER_ROOT_MODULES`(허브 예외). 테스트 폴더는
-  src 에 대응 폴더가 있어야 한다는 검사 추가. R4 는 중첩 경로를 그대로 처리(`import './language/syntax/x.test'`).
-- 커밋(사용자 "권장 방향으로 진행" 요청, push 없음): ① baseline `034a206` = 재배치 직전 작업 트리(§1-GA~GC 의 미커밋분, 미추적 포함 — 스냅샷 `refs/snapshots/pre-restructure-2026-10-27` 13274e6 의 트리 그대로) ② 그 위에 재배치 커밋(이 기록 포함, rename 감지 유지).
-  이동 스크립트는 세션 스크래치(`restructure.js`)에만 두었다 — 구조는 R9 가 지키므로 저장소에 넣지 않았다.
-
-### 검증
-
-- 격리 워크트리(HEAD 0.18.1 기준) 1423/1423 → 실제 트리(0.19.0 미커밋분 포함) `npm test` **1447/1447**. CRLF/LF 파일별 보존 확인
-  (`gplDebugSession.ts` 5,752줄 전부 CRLF 유지), rename-aware diff 에서 이동 파일의 변경은 import 줄뿐(최대 38줄).
-- `npm run package:no-bump` 로 0.19.0 VSIX 재생성(§1-GC 의 크기·SHA-256 줄을 갱신). F5 개발 호스트·실기 확인은 하지 않았다
-  (import 경로만 바뀌었고 tsc·구조 테스트·vm 로드 테스트가 통과).
-
-### 남은 일
-
-- push 는 하지 않았다 — 태그/릴리스는 사용자 요청 시(태그 push = Marketplace 자동 게시).
-- 하위 폴더 간 의존 방향(예: `language/syntax` 가 `language/analysis` 를 모르게)은 아직 강제하지 않는다 — 필요해지면 R9 옆에 추가.
-
----
 
 ## 1-GE. 2026-10-27 세션 — 확장 시작 시 Output 패널 강제 열기 제거 · `gpl.trace.server` 기본 verbose
 
@@ -1432,3 +1391,48 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 ### 남은 일
 
 - §3 의 UI·실기 확인. 정체 확인이 프로젝트마다 반복되는 비용이 크면 묶음 1회로 합칠지.
+
+---
+
+## 1-GN. 2026-10-28 세션 — "컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기 (0.26.0)
+
+### 증상(요청)
+
+1. "컴파일 검증 필요 알람 갱신 시스템이 좀 아쉽다 — Upload Only 라든지 다중 프로젝트에서 잘 동작 못한다."
+2. "최근 업데이트 버전 통합도 해 달라" — 작업 트리에 남아 있던 다른 세션의 `controller-mcp` 지침 변경(미커밋)과 수신함(inbox) 보고 4건을 이번 버전에 함께 담는 것으로 해석했다.
+3. "`Unload -all` 동작 전에는 FTP /GPL 비우는 동작을 넣어 달라."
+
+### 원인
+
+- 뷰 인터페이스가 **대표 1건**이었다: `setCompileStale(info?: CompileStaleInfo)` 에 host 가 mark 땐 방금 항목, clear 땐 `current()`(가장 최근 표시)를 꽂았다. Upload Only 로 A·B·C 를 올리면 셋 다 추적되지만 배지는 C 하나, C 를 컴파일하면 B 로 "바뀌어" 보여 해제가 아니라 다른 프로젝트가 새로 걸린 것처럼 읽혔다. 트리도 한 줄만 unshift.
+- `GPL: Start`(`startProjectCommand.ts`) 는 STATUS 0 에서 알림과 트리 새로고침만 하고 `recordCompiled`/`clearCompileStale` 을 부르지 않았다 — Start 는 `-compile` 이라 성공 = 컴파일 성공인데 배지가 남는 거짓 경고(Upload Only → 모달 「그대로 Start」 흐름에서 매번).
+- 트래커가 메모리 전용·프로젝트명 키였다: 창을 다시 열면 미검증 상태가 사라지고, IP 를 바꿔도 배지가 따라왔다(`deployRecord` 는 ip+이름 키로 Memento 영속인 것과 대조).
+
+### 조치(의도와 방법)
+
+- **`controller/deployment/compileStale.ts`** — `CompileStaleInfo` 에 `ip`·`markedAt` 추가, 키 `compileStaleKey(ip, name)`, `attach(memento)`/`persist()`(Memento 키 `gpl.compileStale`, `deployRecordCore.DeployRecordStore` 와 같은 꼴, 로드 시 `markedAt` 오름차순으로 표시 순서 복원·메모리 쪽과 겹치면 더 최근 표시), `clear` 는 `remaining`(같은 ip 의 남은 목록), `list(ip?)`. 설명 문장 `describeCompileStale` 은 그대로(R7).
+- **`views/statusbar/compileStaleBadge.ts`** — 단일 항목 규칙(트리 한 줄)은 유지하고 툴팁에 `markedAt`(최초와 다를 때만) 추가. 목록 요약 `compileStaleSummaryLabel/Tooltip/Command`(대표 = 가장 최근 표시, 「외 n」, 여럿이면 `gpl.compileStale.pick`). `compileStaleLatestFirst` 가 트리·상태바 공통 순서.
+- **트리/상태바/스냅샷** — `setCompileStale(items?: readonly CompileStaleInfo[])`, `ProjectContextInput.compileStale: readonly[]`, 섹션 설명 「컴파일 검증 필요 n개」, 프로젝트마다 `InfoNode` 한 줄(최근 표시가 위). 단일 항목 출력은 종전과 바이트 단위로 같다(pinned 스냅샷 테스트 통과, 픽스처만 배열로).
+- **`activation/host.ts`** — mark/clear/find 는 설정의 현재 ip 에 묶고 `clearCompileStale(name, ip?)` 는 `onDidRecordCompiled` 의 `rec.ip` 로. `syncCompileStaleViews(ip?)` 가 현재 ip 목록을 뷰에 반영(활성화 직후·`setControllerConnected`·mark/clear). `listCompileStale()` 은 선택 창·상황 스냅샷(`gpl.ai.debug.situation` 의 `compileStale`)이 쓴다. `extension.ts` 가 `attach(context.workspaceState)`.
+- **`activation/deploy/compileStaleCommands.ts`(신규)** — `gpl.compileStale.pick`: 다중 선택 QuickPick(전부 미리 체크) → 고른 순서대로 `gpl.quickCompile`(폴더 Uri 인자) 를 await 로 하나씩, `result.success` 가 아니면 중단(§1-GM 묶음 규칙과 동일). package.json `contributes.commands` 등재.
+- **`startProjectCommand.ts`** — Start -compile STATUS 0(또는 비차단) 이면 `host.deployDiagnostics.clear()` + `recordCompiled({ip, projectName, projectDir, files: snapshotProjectFiles})` → 구독이 배지 해제 + GitHub #21 소스 변경 판정 스냅샷도 함께. `commandRunsCompiler(startCmd)` 일 때만.
+- **Unload -all 전 /GPL 비우기(`activation/remote/ftpCommands.ts`)** — 트리 「폴더 비우기」 핸들러 본문을 `clearRemoteFolderInteractive({ rawPath, isFlash, purpose? })` 로 추출(결과형 `ClearFolderOutcome` 명시, `cancelled` 는 항상 boolean). `runUnloadAllInteractive` 는 위험 모달 뒤 이 절차를 `purpose:'Unload -all'` 로 호출 — 모달 문구가 "비운 뒤 Unload -all 을 보냅니다 — 취소하면 Unload -all 도 보내지 않습니다". `ok:false` 면(취소·잠금·정체 미확인·부분 실패) Unload 미전송 + Output 한 줄(취소는 알림 없음), `already-empty` 면 바로 전송.
+- **Unload 대기 하한** — `projectCommands.UNLOAD_TIMEOUT_MIN_MS = 180_000`·`unloadTimeoutMs(cfg)`; 이름 Unload·`-all` 모두 `{ timeoutMs, waitForStatusClose: true }`. 근거는 inbox(아래). 배포 경로의 Unload(`deployCompileStage`, 클래식 Load 동기화)는 손대지 않았다.
+- **MCP `unload_project`(`controller-mcp/src/index.js`)** — `-all` 이면 ① 활성 쓰레드가 하나라도 있으면 `refused:"threads-active"`(종전엔 `sameName(project, '-all')` 이라 검사가 비어 있었다) ② `listRemoteProjectFolders()`(`gpl.ai.debug.listRemoteProjects`)로 /GPL 에 프로젝트가 남아 있으면 `refused:"gpl-not-empty"` + 목록·힌트(사용자 동의 → `clear_remote_folder` → 재호출), 목록을 못 읽으면 `gpl-state-unknown`; `skipGplCheck:true` 로 우회. 기본 `timeoutMs = max(GPL_TIMEOUT_MS, 180 s)`. AI 경로는 삭제에 동의가 필요하므로 확장 UI 처럼 자동으로 비우지 않는다(`feedback_ai_access_not_restricted` 와 충돌하지 않게 "막는" 게 아니라 "순서를 요구"하는 구조).
+- **잠금 rename EPERM 재시도(`deployLock.ts`)** — `writeAtomic` 이 `EPERM/EBUSY/EACCES` 에 한해 15·30·45 ms 간격 4회 재시도(`Atomics.wait` 동기 대기), `DeployLockEnv.renameFile` 주입으로 테스트(inbox ① 반영).
+- **다른 세션 작업 통합** — 2026-10-27 다른 GPL_language 세션이 남긴 `controller-mcp` 지침 변경(`GPL_REFERENCE_GUIDE`: Brooks 공식 문서 확인 규칙, README §5, 테스트 상한 4900)을 별도 커밋(e3068fd)으로 그대로 통합. 165/165.
+- **inbox 4건 처리**(`Downloads\GPL_language_inbox\done\`): ① rename EPERM → 반영(위) ② README 가 `staleRemote` 로 표시 → 보류(provenance 분류는 별건, 판정 근거 `compiledSnapshotFiles` 가 소스만 세는 것과 업로드 집합 차이 — §3 에 두지 않고 done 에 사유 기록) ③ 앱 Unload 무응답(그룹 Compile 기록 없음) → ④ 와 같은 원인으로 정리 ④ Unload 느림·`_Cmd_<project>`·`Execute` 샘플러 → 타임아웃 하한 180 s 반영, `Execute` 샘플링 중지/경고는 §3 결정 항목으로.
+
+### 검증
+
+- `npm test` **1571/1571**(신규 8건 — 트래커 ip 분리·Memento 영속/복원/깨진 저장분·저장 실패 콜백, 배지 요약 라벨/툴팁/명령, 잠금 rename 재시도 2건). `controller-mcp` `node --test` 165/165, `node --check index.js`.
+- pinned 스냅샷(단일 항목) 바이트 동일. `scripts/dev/compareTreeProvider.js` 는 새 provider 에 배열을 넘기도록 `apply(p, fx, staleAsList)` 로 갱신(옛 BASE 와 비교 시 `COMPARE_TREE_OLD_STALE_IS_LIST` 환경 변수).
+- VSIX: `dist/gpl-language-support-0.26.0.vsix` 1,662,915 bytes(360 files), SHA-256 `2AF92E3774CBBF4B5221D6E43D07CD7A5EEB8BD7359BC18FC39597058FA0FC2D`(경고는 bundle 권장 1건, 종전과 같음). MCP 번들에 §1-GM 이 적어 둔 다른 세션의 `guidelines.js` 변경은 이번에 커밋(e3068fd)됐다.
+- UI·실기 미확인 — §3 항목.
+
+### 남은 일
+
+- §3 의 UI·실기 확인(특히 ⑥ Unload -all 흐름과 ⑧ Unload 소요 시간).
+- §3 결정: 상태 샘플러 `Execute` 와 `_Cmd_<project>` Unload 무응답(inbox ④) — 회피 설계는 실기 재현 뒤.
+- 보류(inbox ②): 업로드 provenance 에서 컴파일 제외 문서(README)를 `staleRemote` 가 아닌 별도 분류로.
+- 선택 창의 "전부 Quick Compile" 은 하나씩 await 라 프로젝트마다 정체 확인·FTP 비교가 반복된다 — 체감 지연이 크면 §1-GM 과 같이 묶음 1회로.

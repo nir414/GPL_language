@@ -220,7 +220,9 @@ const DEPLOYS = [
 ];
 const CONSOLE_OVERRIDES = [undefined, { ...connConsole, state: 'reconnecting', connected: false, reason: 'r', detail: 'd', reconnectDelayMs: 1000, reconnectAttempt: 2, lastErrorCode: 'EPIPE' }];
 
-function apply(p, fx) {
+// 새 provider 의 setCompileStale 은 목록을 받는다(2026-10-28 §1-GN). BASE 가 그 이전 커밋이면 옛 쪽엔 단일 항목을 그대로 준다.
+const NEW_STALE_AS_LIST = process.env.COMPARE_TREE_OLD_STALE_IS_LIST !== '1';
+function apply(p, fx, staleAsList = false) {
     p._connected = !!fx.connected;
     p.ftpBrowseOnly = !!fx.ftpBrowseOnly;
     if (fx.threads) { p.threads = fx.threads.map(t => ({ ...t })); }
@@ -236,7 +238,7 @@ function apply(p, fx) {
     if (fx.lastSystemInfoRefreshAt) { p.lastSystemInfoRefreshAt = fx.lastSystemInfoRefreshAt; }
     if (fx.runtimeConsoleStatus) { p.runtimeConsoleStatus = fx.runtimeConsoleStatus; }
     if (fx.runtimeErrorContext) { p.setRuntimeErrorContext(fx.runtimeErrorContext); }
-    if (fx.compileStale) { p.setCompileStale(fx.compileStale); }
+    if (fx.compileStale) { p.setCompileStale(staleAsList ? [fx.compileStale] : fx.compileStale); }
     if (fx.expected) { p.setExpectedProjectContext(fx.expected[0], fx.expected[1]); }
     if (fx.salt) { p.sectionLayoutSalt = fx.salt; }
     mock.debug.breakpoints = (fx.editorBps || []).map(([fsPath, line]) => Object.assign(new mock.SourceBreakpoint(), {
@@ -269,7 +271,7 @@ async function main() {
 
     for (const [name, fx] of FIXTURES) {
         const o = new Old(), n = new New();
-        apply(o, fx); apply(n, fx);
+        apply(o, fx); apply(n, fx, NEW_STALE_AS_LIST);
         compare(`${name} :: tree`, await dumpTree(o), await dumpTree(n));
         compare(`${name} :: threadReport`, o.buildThreadReportMarkdown(), n.buildThreadReportMarkdown());
         for (const [di, deploy] of DEPLOYS.entries()) {
@@ -287,7 +289,7 @@ async function main() {
     for (const bad of [false, true]) {
         const o = new Old(), n = new New();
         const fx = { ...base, ftpEntries: [...ftpFiles, { name: 'Bad', isDirectory: true, size: 0 }], ftpFlashEntries: flashFiles };
-        apply(o, fx); apply(n, fx);
+        apply(o, fx); apply(n, fx, NEW_STALE_AS_LIST);
         const grab = async (p) => {
             const [, , , , ftp, flash] = await p.getChildren();
             const out = [];
@@ -316,7 +318,7 @@ async function main() {
     for (const [sn, resp] of Object.entries(sysScenarios)) {
         env.responses = resp;
         const o = new Old(), n = new New();
-        apply(o, base); apply(n, base);
+        apply(o, base); apply(n, base, NEW_STALE_AS_LIST);
         await o.refreshSystemInfo(); await n.refreshSystemInfo();
         compare(`refreshSystemInfo[${sn}] :: sysInfo`, JSON.stringify(norm(o.sysInfo)), JSON.stringify(norm(n.sysInfo)));
         compare(`refreshSystemInfo[${sn}] :: timestamps`, `${o.lastSystemInfoRefreshAt}|${o.systemInfoCacheKey}`, `${n.lastSystemInfoRefreshAt}|${n.systemInfoCacheKey}`);

@@ -23,7 +23,7 @@ import {
 import type { RuntimeConsoleStatusSnapshot } from '../../controller/runtime/runtimeConsole';
 import { countThreadStates } from '../../controller/threads/threadReport';
 import { formatBytes } from '../../util/formatBytes';
-import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from '../statusbar/compileStaleBadge';
+import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip, compileStaleLatestFirst } from '../statusbar/compileStaleBadge';
 import { FTP_AUTO_REFRESH_MIN_INTERVAL_MS, SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS, formatLastRefreshTime } from './refreshThrottle';
 import {
 	buildRuntimeConsoleTreeDescription,
@@ -156,8 +156,8 @@ export interface ProjectContextInput<TResource = unknown> {
 	ftpFlashEntries: readonly FtpEntry[];
 	expectedProjectName: string;
 	expectedProjectFolderName: string;
-	/** "컴파일 검증 필요" 상태(정본은 host 의 CompileStaleTracker — 여기는 표시만). */
-	compileStale?: CompileStaleInfo;
+	/** "컴파일 검증 필요" 목록 — 현재 제어기 것, 오래된 → 최근 표시 순(정본은 host 의 CompileStaleTracker — 여기는 표시만). */
+	compileStale?: readonly CompileStaleInfo[];
 	/** 컴파일 검증 배지 클릭 명령의 리소스 인자(접착 계층에서는 `vscode.Uri.file`). */
 	toResource: (dir: string) => TResource;
 }
@@ -182,11 +182,14 @@ export function buildProjectContextSection(input: ProjectContextInput): SectionN
 	const hasUnexpectedRunning = !!expected && runningProjects.length > 0 && !hasExpectedRunning;
 	const missingExpectedFtp = !!expectedFolder && !hasExpectedFtp;
 	const buildOnlyReady = !!expected && hasExpectedFtp && runningProjects.length === 0;
-	const stale = input.compileStale;
-	const mismatch = missingExpectedFtp || hasUnexpectedRunning || !!stale;
-	const contextDescription = stale
-		? '컴파일 검증 필요'
-		: mismatch
+	// 최근 표시 순(방금 손댄 프로젝트가 맨 위) — 상태바 요약과 같은 순서(views/statusbar/compileStaleBadge).
+	const stale = compileStaleLatestFirst(input.compileStale ?? []);
+	const mismatch = missingExpectedFtp || hasUnexpectedRunning || stale.length > 0;
+	const contextDescription = stale.length > 1
+		? `컴파일 검증 필요 ${stale.length}개`
+		: stale.length === 1
+			? '컴파일 검증 필요'
+			: mismatch
 			? '불일치 감지'
 			: buildOnlyReady
 				? '빌드 전용 상태'
@@ -212,19 +215,20 @@ export function buildProjectContextSection(input: ProjectContextInput): SectionN
 		new InfoNode(`FTP: ${expectedFolder || '(미설정)'} / 현재: ${ftpDirs.length > 0 ? ftpDirs.join(', ') : '(없음)'}`, 'folder-library',
 			hasExpectedFtp || !expectedFolder ? undefined : `${expectedFolder} 폴더 없음`),
 	];
-	if (stale) {
+	if (stale.length > 0) {
 		// /GPL 소스만 올라가고 Compile로 검증되지 않은 상태(이슈 #17 재구성의 부수 상태). Start는 `-compile` 로 컴파일하므로(§0.7)
 		// 옛 프로그램이 도는 건 아니지만, 소스 에러가 있으면 Start가 실패해 실행되지 않는다(에러 위치는 §1-EW에서 Problems 연동).
 		ctxSec.collapsed = false;
+		// 프로젝트마다 한 줄 — Upload Only 로 여러 개를 올리면 전부 보여야 "하나 컴파일하니 다른 프로젝트로 바뀐다"로 읽히지 않는다(§1-GN).
 		// 문구·클릭 대상은 상태바 배지와 같은 규칙(views/statusbar/compileStaleBadge) — 폴더를 알면 Uri 인자로 선택 창 없이 그 프로젝트.
-		ctxSec.children.unshift(new InfoNode(
-			compileStaleBadgeLabel(stale),
+		ctxSec.children.unshift(...stale.map(info => new InfoNode(
+			compileStaleBadgeLabel(info),
 			'warning',
-			stale.reason,
-			compileStaleBadgeCommand(stale, input.toResource),
+			info.reason,
+			compileStaleBadgeCommand(info, input.toResource),
 			'compileStaleItem',
-			compileStaleBadgeTooltip(stale),
-		));
+			compileStaleBadgeTooltip(info),
+		)));
 	}
 	return ctxSec;
 }

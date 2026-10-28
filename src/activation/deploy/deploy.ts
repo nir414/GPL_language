@@ -22,6 +22,7 @@ import type { DeployResult } from '../../controller/deployment/deployService';
 import type { ExtensionHost } from '../host';
 import { registerAutomationCommands } from './automationCommands';
 import { activateAutoOnSave } from './autoOnSave';
+import { registerCompileStalePickCommand } from './compileStaleCommands';
 import { registerDeployCommand, registerQuickCompileCommand, registerUploadOnlyCommand, registerUploadStartCommand } from './deployCommands';
 import { createDeployContext } from './deployContext';
 import type { QuickDeployOpts } from './deployContext';
@@ -60,6 +61,7 @@ export function activateDeployCommands(host: ExtensionHost): DeployApi {
 	registerStartCommand(ctx);
 	registerSaveToFlashCommand(ctx);
 	registerQuickCompileCommand(ctx);
+	registerCompileStalePickCommand(ctx);
 	activateAutoOnSave(ctx);
 
 	return {

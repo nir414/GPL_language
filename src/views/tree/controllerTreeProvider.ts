@@ -137,8 +137,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 *  접힘 상태를 기본값으로 되돌릴 수 있게 한다(gpl.controller.resetPanelLayout). */
 	private sectionLayoutSalt = 0;
 	private runtimeErrorContext?: RuntimeErrorContext;
-	/** "컴파일 검증 필요" 상태(정본은 host 의 CompileStaleTracker — 여기는 표시만). */
-	private compileStale?: CompileStaleInfo;
+	/** "컴파일 검증 필요" 목록 — 현재 제어기 것(정본은 host 의 CompileStaleTracker — 여기는 표시만). */
+	private compileStale?: readonly CompileStaleInfo[];
 	private editorBreakpointTargetResolver?: (fsPath: string, line: number) => BreakpointTarget | undefined;
 
 	/** 디버그 세션 중 bridge 이벤트 구독 핸들 */
@@ -162,9 +162,9 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this._onDidChangeTreeData.fire(undefined);
 	}
 
-	/** "컴파일 검증 필요" 상태 표시(프로젝트 상태 섹션). undefined면 해제. */
-	setCompileStale(state?: CompileStaleInfo): void {
-		this.compileStale = state;
+	/** "컴파일 검증 필요" 목록 표시(프로젝트 상태 섹션, 프로젝트마다 한 줄). 빈 목록·undefined면 해제. */
+	setCompileStale(items?: readonly CompileStaleInfo[]): void {
+		this.compileStale = items && items.length > 0 ? items : undefined;
 		this._onDidChangeTreeData.fire(undefined);
 	}
 

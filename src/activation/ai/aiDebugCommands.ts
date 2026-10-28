@@ -413,7 +413,8 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 			commandPolicy: getCommandPolicySnapshot(),
 			expectedProject: (await host.project.resolveExpectedProjectName()) || undefined,
 			deployLock: lock ? { owner: lock.owner, stage: lock.stage, describe: describeDeployLock(lock) } : null,
-			compileStale: host.compileStaleProjects.list(),
+			// 현재 제어기의 미검증 목록(오래된 → 최근 표시 순). 다른 제어기 것은 섞지 않는다(§1-GN).
+			compileStale: host.listCompileStale(),
 		};
 	});
 

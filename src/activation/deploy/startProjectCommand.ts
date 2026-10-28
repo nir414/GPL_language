@@ -10,6 +10,7 @@ import * as path from 'path';
 import { checkMemoryBeforeOperation, getControllerConfig, sendCommandDetailed } from '../../controller/connection/controllerConnection';
 import { buildStartCommand, commandRunsCompiler } from '../../controller/commands/startCommand';
 import { describeCompileStale } from '../../controller/deployment/compileStale';
+import { recordCompiled, snapshotProjectFiles } from '../../controller/deployment/deployRecord';
 import { readGprProjectName } from '../../controller/projects/projectPicker';
 import { checkProjectName, describeProjectNameProblem } from '../../controller/projects/projectNameGuard';
 import { isAutomationInvocation } from '../../controller/projects/projectTarget';
@@ -152,6 +153,18 @@ export function registerStartCommand(ctx: DeployContext): void {
 				if (status.code === 0 || isControllerNonBlockingStatus(status.code)) {
 					if (status.code !== 0) {
 						host.log(`[Start] STATUS ${status.code} non-blocking (controller environment warning)`);
+					}
+					if (commandRunsCompiler(startCmd)) {
+						// Start -compile 이 STATUS 0 = 제어기가 /GPL 소스를 방금 컴파일해 실행 중이다(§0.7) — 현재 소스의 컴파일 성공
+						// 근거이므로 업로드 스타트(deployStartStage)와 같이 컴파일 스냅샷을 기록한다. 기록은 onDidRecordCompiled 로
+						// "컴파일 검증 필요" 를 해제하고(§1-GN — 종전엔 Upload Only → Start 성공 뒤에도 배지가 남았다), 이전 gpl-deploy 진단도 지운다.
+						host.deployDiagnostics.clear();
+						try {
+							recordCompiled({ ip: startCfg.ip, projectName, projectDir, compiledAt: Date.now(), files: snapshotProjectFiles(projectDir) });
+							host.log(`[Start] ✔ 컴파일 스냅샷 기록 — Start -compile 성공 (${projectName})`);
+						} catch (e: any) {
+							host.log(`[Start] ⚠ 컴파일 스냅샷 기록 실패(무시): ${e?.message ?? e}`);
+						}
 					}
 					vscode.window.showInformationMessage(`Start 완료: ${projectName}`);
 					consoleChannel.show(true);

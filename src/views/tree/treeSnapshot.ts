@@ -56,6 +56,6 @@ export interface ControllerStatusSnapshot {
 	lastSystemInfoRefreshAt: number;
 	runtimeConsoleStatus: RuntimeConsoleStatusSnapshot;
 	runtimeErrorContext?: RuntimeErrorContext;
-	/** "컴파일 검증 필요" 상태(정본은 host 의 CompileStaleTracker — 여기는 표시만). */
-	compileStale?: CompileStaleInfo;
+	/** "컴파일 검증 필요" 목록 — 현재 제어기 것, 오래된 → 최근 표시 순(정본은 host 의 CompileStaleTracker — 여기는 표시만). */
+	compileStale?: readonly CompileStaleInfo[];
 }

@@ -94,8 +94,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// "컴파일 검증 필요" 배지 해제를 배포 경로와 분리한다(§1-CT 원인 ①). 종전에는 runDeploy 래퍼만 해제해서
 	// F5 의 deployBeforeAttach(deployService.deploy() 직접 호출)나 MCP 경유 배포는 Compile 이 성공해도 배지가 남았다.
-	// recordCompiled 는 Compile 성공 확정 지점과 업로드 스타트의 Start 성공 지점에서만 발화하므로 해제 조건과 일치한다.
-	context.subscriptions.push(onDidRecordCompiled(rec => h.clearCompileStale(rec.projectName)));
+	// recordCompiled 는 Compile 성공 확정 지점·업로드 스타트의 Start 성공 지점·`GPL: Start`(-compile) 성공 지점에서만 발화하므로
+	// 해제 조건과 일치한다. 상태는 제어기별이라 기록의 ip 로 해제한다(§1-GN).
+	context.subscriptions.push(onDidRecordCompiled(rec => h.clearCompileStale(rec.projectName, rec.ip)));
+	// "컴파일 검증 필요" 상태도 같은 workspaceState 에 영속한다 — 창을 다시 열어도 "아직 검증 안 됨"은 사실 그대로다(§1-GN).
+	h.compileStaleProjects.attach(context.workspaceState);
 
 	// 업로드 동기화 지문(syncManifest) — 미러/업로드의 스킵 판정을 크기뿐 아니라 내용(SHA-1) 기준으로 만든다.
 	// 기록 대상이 "그 제어기 경로에 올려 둔 내용"이라 워크스페이스에 매이지 않는다 → globalState.
@@ -116,6 +119,8 @@ export function activate(context: vscode.ExtensionContext) {
 	const controllerTree = new ControllerTreeProvider();
 	h.controllerTree = controllerTree;
 	controllerTree.setRuntimeConsoleStatus(h.currentRuntimeConsoleStatus());
+	// 영속된 "컴파일 검증 필요" 목록을 트리·상태바에 올린다(상태바는 연결 전까지 숨김).
+	h.syncCompileStaleViews();
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider('gplThreads', controllerTree)
 	);

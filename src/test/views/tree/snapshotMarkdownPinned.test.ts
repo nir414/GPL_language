@@ -82,7 +82,7 @@ const flapping = snapshot({
     connected: true,
     runtimeConsoleStatus: flappingConsole,
     ftpEntries: [{ name: 'Demo', isDirectory: true, size: 0 }],
-    compileStale: { projectName: 'Demo', projectDir: 'C:/proj/Demo', since: at(9, 28), reason: '/GPL 소스만 업로드됨' },
+    compileStale: [{ ip: '192.168.0.50', projectName: 'Demo', projectDir: 'C:/proj/Demo', since: at(9, 28), markedAt: at(9, 28), reason: '/GPL 소스만 업로드됨' }],
 });
 
 const failedCompile: SituationDeploySnapshot = {

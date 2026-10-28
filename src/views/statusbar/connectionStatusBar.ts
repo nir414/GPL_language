@@ -24,7 +24,7 @@ import type { FlashSafetyState } from '../../controller/deployment/flashSafety';
 import type { UploadProgressEvent, UploadSummary } from '../../controller/deployment/uploadProgress';
 import { describeUploadProgress, renderUploadProgress, renderUploadSummary } from './uploadProgressBar';
 import { isGplDocument } from '../../config';
-import { compileStaleBadgeCommand, compileStaleBadgeLabel, compileStaleBadgeTooltip } from './compileStaleBadge';
+import { compileStaleSummaryCommand, compileStaleSummaryLabel, compileStaleSummaryTooltip } from './compileStaleBadge';
 import { presentFlashSafety } from './flashSafetyPresentation';
 import { presentConnectionHealth } from './connectionHealthBadge';
 import type { ConnectionHealthPolicy, HealthSnapshot } from '../../controller/connection/connectionHealth';
@@ -58,7 +58,8 @@ export class ConnectionStatusBar implements vscode.Disposable {
     private _isConnected = false;
     /** "컴파일 검증 필요" 배지 — 연결 중이고 미검증 프로젝트가 있을 때만. 클릭 = 그 프로젝트 Quick Compile. */
     private compileStaleItem: vscode.StatusBarItem;
-    private compileStale: CompileStaleInfo | undefined;
+    /** 현재 제어기의 미검증 목록(오래된 → 최근 표시 순) — 라벨은 대표 1건 + "외 n", 툴팁은 전체(§1-GN). */
+    private compileStale: readonly CompileStaleInfo[] = [];
     /** Attach only 디버깅 중 소스 stale 경고(GitHub #21) — 빈 목록이면 숨김. */
     private staleItem: vscode.StatusBarItem;
     private sourceStale: StatusBarSourceStale | undefined;
@@ -135,10 +136,11 @@ export class ConnectionStatusBar implements vscode.Disposable {
     /**
      * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트(이슈 #17 재구성의 부수 상태).
      * Start 는 `-compile` 로 컴파일까지 하므로(ai-handoff §0.7) 소스 에러가 있으면 Start가 실패한다 — 놓치지 않게 상태바에
-     * **별도 항목**의 경고 배지로 보인다(연결 항목의 클릭 = 연결 해제와 섞이지 않게, §1-DV). undefined면 해제.
+     * **별도 항목**의 경고 배지로 보인다(연결 항목의 클릭 = 연결 해제와 섞이지 않게, §1-DV). 빈 목록·undefined면 해제.
+     * 여럿이면 라벨은 가장 최근 표시 + "외 n", 클릭은 선택 창(views/statusbar/compileStaleBadge 의 요약 규칙, §1-GN).
      */
-    setCompileStale(state?: CompileStaleInfo): void {
-        this.compileStale = state;
+    setCompileStale(items?: readonly CompileStaleInfo[]): void {
+        this.compileStale = items ?? [];
         this.updateCompileStaleItem();
     }
 
@@ -290,14 +292,15 @@ export class ConnectionStatusBar implements vscode.Disposable {
     private updateCompileStaleItem(): void {
         const stale = this.compileStale;
         // 연결이 끊긴 동안은 숨긴다(상태 자체는 유지 — 재연결하면 미검증이 남아 있는 한 다시 뜬다).
-        if (!stale || !this._isConnected) {
+        if (stale.length === 0 || !this._isConnected) {
             this.compileStaleItem.hide();
             return;
         }
-        // 문구·클릭 대상은 트리와 같은 규칙(views/statusbar/compileStaleBadge) — 폴더를 알면 Uri 인자로 선택 창 없이 그 프로젝트.
-        this.compileStaleItem.text = `$(warning) ${compileStaleBadgeLabel(stale)}`;
-        this.compileStaleItem.command = compileStaleBadgeCommand(stale, dir => vscode.Uri.file(dir));
-        this.compileStaleItem.tooltip = compileStaleBadgeTooltip(stale);
+        // 문구·클릭 대상은 트리와 같은 규칙(views/statusbar/compileStaleBadge) — 1건이면 폴더 Uri 인자로 선택 창 없이 그 프로젝트,
+        // 여럿이면 대표 + "외 n" 과 선택 창(gpl.compileStale.pick).
+        this.compileStaleItem.text = `$(warning) ${compileStaleSummaryLabel(stale)}`;
+        this.compileStaleItem.command = compileStaleSummaryCommand(stale, dir => vscode.Uri.file(dir));
+        this.compileStaleItem.tooltip = compileStaleSummaryTooltip(stale);
         this.compileStaleItem.show();
     }
 

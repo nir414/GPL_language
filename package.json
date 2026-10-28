@@ -343,6 +343,12 @@
                 "icon": "$(zap)"
             },
             {
+                "command": "gpl.compileStale.pick",
+                "title": "Quick Compile Unverified Projects (컴파일 검증 필요 프로젝트 골라서 컴파일)",
+                "category": "GPL",
+                "icon": "$(warning)"
+            },
+            {
                 "command": "gpl.debug.generateLaunch",
                 "title": "Create/Update launch.json (디버그 구성 만들기)",
                 "category": "GPL",

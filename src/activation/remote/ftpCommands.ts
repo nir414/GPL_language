@@ -11,7 +11,7 @@ import { isControllerSessionConnected } from '../../controller/connection/connec
 import { parseStatus } from '../../controller/protocol/responseParser';
 import { isBusyStatus, isProjectAlreadyLoaded, isProjectNotLoaded } from '../../controller/protocol/controllerStatusCodes';
 import { applyCompileDiagnostics, findProjectDirs, jumpToFirstCompileError } from '../../controller/deployment/deployService';
-import { compileProject, loadProject, startProject, unloadProject } from '../../controller/commands/projectCommands';
+import { compileProject, loadProject, startProject, unloadProject, unloadTimeoutMs } from '../../controller/commands/projectCommands';
 import type { ProjectCommandIo } from '../../controller/commands/projectCommands';
 import {
 	FtpEntry,
@@ -295,16 +295,42 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	// AI 가 모달 없이 비우는 경로는 `gpl.ai.debug.clearRemoteFolder`(/GPL 만, 동의는 AI 가 받는다)이고 절차는 controller/files/remoteFolderClear.ts 를 같이 쓴다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpClearFolder', async (node: any) => {
-			const clearStartedAt = Date.now();
 			const cfg = getControllerConfig();
 			const isFlash = String(node?.contextValue ?? '') === 'section-ftpFlash';
 			// 섹션 노드가 실제 표시 중인 경로를 최우선으로 쓰고(설정 변경 직후에도 화면과 일치), 없으면 설정값.
 			const rawPath: string = node?.remotePath || (isFlash ? cfg.ftpFlashProjectsPath : cfg.ftpBasePath);
+			return clearRemoteFolderInteractive({ rawPath, isFlash });
+		})
+	);
+
+	/** 비우기 결과 — 자동화 호출자(extension_command)와 `Unload -all` 전 정리가 "모달 취소"와 "삭제 완료"를 가린다. */
+	interface ClearFolderOutcome {
+		root: string;
+		ok: boolean;
+		cancelled: boolean;
+		reason?: string;
+		detail?: string;
+		targets: string[];
+		deleted: string[];
+		failed: { name: string; error: string }[];
+	}
+
+	/**
+	 * 원격 폴더 비우기 절차(사람 경로) — 트리 섹션 헤더의 「폴더 비우기」와 `Unload -all` 전 /GPL 정리(§1-GN)가 같이 쓴다.
+	 * 배포 잠금 → 지울 목록 확인 → 쓰레드 정지 게이트 → 제어기 정체 확인 → 목록을 보여주는 모달 확인 → 삭제.
+	 * `purpose` 를 주면 확인 모달이 "비운 뒤 무엇을 하는지"(예: `Unload -all`)를 함께 말한다.
+	 */
+	async function clearRemoteFolderInteractive(opts: { rawPath: string; isFlash: boolean; purpose?: string }): Promise<ClearFolderOutcome> {
+			const clearStartedAt = Date.now();
+			const cfg = getControllerConfig();
+			const { rawPath, isFlash } = opts;
 			const basePath = normalizeAbsoluteRemoteDir(rawPath);
-			const outcome = (fields: { ok: boolean; cancelled?: boolean; reason?: string; detail?: string; targets?: FtpEntry[]; deleted?: string[]; failed?: { name: string; error: string }[] }) => ({
+			const outcome = (fields: { ok: boolean; cancelled?: boolean; reason?: string; detail?: string; targets?: FtpEntry[]; deleted?: string[]; failed?: { name: string; error: string }[] }): ClearFolderOutcome => ({
 				root: basePath,
-				cancelled: false,
-				...fields,
+				ok: fields.ok,
+				cancelled: fields.cancelled ?? false,
+				reason: fields.reason,
+				detail: fields.detail,
 				targets: (fields.targets ?? []).map(e => (e.isDirectory ? `${e.name}/` : e.name)),
 				deleted: fields.deleted ?? [],
 				failed: fields.failed ?? [],
@@ -365,7 +391,9 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			const more = targets.length > PREVIEW_MAX ? `\n… 외 ${targets.length - PREVIEW_MAX}개` : '';
 			const note = isFlash
 				? '⚠ 플래시에 저장된 프로젝트가 지워집니다. 제어기 재부팅으로도 복구되지 않습니다.'
-				: '로드본 소스가 지워집니다. 다시 쓰려면 Deploy로 업로드하거나 flash에서 Load 하세요. 제어기에 로드된 프로젝트 상태는 별개이므로 필요하면 Unload도 함께 하세요.';
+				: opts.purpose
+					? `로드본 소스가 지워집니다. 비운 뒤 ${opts.purpose} 을(를) 보냅니다 — 취소하면 ${opts.purpose} 도 보내지 않습니다.`
+					: '로드본 소스가 지워집니다. 다시 쓰려면 Deploy로 업로드하거나 flash에서 Load 하세요. 제어기에 로드된 프로젝트 상태는 별개이므로 필요하면 Unload도 함께 하세요.';
 			const confirm = await vscode.window.showWarningMessage(
 				`${basePath}의 항목 ${targets.length}개를 제어기에서 모두 삭제할까요?`,
 				{ modal: true, detail: `${preview}${more}\n\n${note}` },
@@ -408,8 +436,7 @@ export function activateFtpCommands(host: ExtensionHost): void {
 					}
 				},
 			);
-		})
-	);
+	}
 
 	// FTP 폴더 컴파일 & 실행 (Load 에러 핸들링 포함)
 	context.subscriptions.push(
@@ -710,7 +737,14 @@ export function activateFtpCommands(host: ExtensionHost): void {
 			if (recheck && !recheck()) { return; }
 			const outcome = await unloadProject(
 				{
-					send: async command => ({ raw: (await sendCommandDetailed(command, undefined, { confirmUnloadRisk: unloadCheck.confirmUnloadRisk })).raw }),
+					// 실행 뒤 앱 Unload 는 수십 초 걸릴 수 있다 — 짧은 타임아웃으로 소켓을 닫으면 1402 가 거부 상태로 남는다(UNLOAD_TIMEOUT_MIN_MS).
+					send: async command => ({
+						raw: (await sendCommandDetailed(command, undefined, {
+							confirmUnloadRisk: unloadCheck.confirmUnloadRisk,
+							timeoutMs: unloadTimeoutMs(getControllerConfig().timeoutMs),
+							waitForStatusClose: true,
+						})).raw,
+					}),
 					log: line => host.log(`[Unload] ${line}`),
 				},
 				name,
@@ -731,14 +765,34 @@ export function activateFtpCommands(host: ExtensionHost): void {
 		}
 	}
 
-	/** `Unload -all` 사람 경로 — 위험 모달·전송 가드는 이름 지정과 같고, 판정은 STATUS 로 한다. */
+	/**
+	 * `Unload -all` 사람 경로 — 위험 모달·전송 가드는 이름 지정과 같고, 판정은 STATUS 로 한다.
+	 * **보내기 전에 /GPL 을 비운다**(2026-10-28 사용자 요청, §1-GN): 비우기 절차(배포 잠금·쓰레드 정지 게이트·정체 확인·목록 모달)를
+	 * 그대로 거치고, 취소·실패면 Unload 도 보내지 않는다. 이미 비어 있으면 바로 Unload 로 간다.
+	 */
 	async function runUnloadAllInteractive(): Promise<void> {
 		const command = 'Unload -all';
 		try {
 			const unloadCheck = await confirmUnloadRiskInteractive(command);
 			if (!unloadCheck.proceed) { return; }
+			const gplRoot = getControllerConfig().ftpBasePath;
+			host.log(`[Unload] ${command} 전에 ${normalizeAbsoluteRemoteDir(gplRoot)} 을 비웁니다`);
+			const cleared = await clearRemoteFolderInteractive({ rawPath: gplRoot, isFlash: false, purpose: command });
+			if (!cleared.ok) {
+				const why = cleared.cancelled ? '취소' : `실패(${cleared.reason ?? 'unknown'})`;
+				host.log(`[Unload] ${cleared.root} 비우기 ${why} — ${command} 을 보내지 않았습니다`);
+				if (!cleared.cancelled) {
+					vscode.window.showWarningMessage(`${cleared.root} 비우기 ${why} — ${command} 을 보내지 않았습니다.`);
+				}
+				return;
+			}
+			host.log(`[Unload] ${cleared.root} ${cleared.reason === 'already-empty' ? '이미 비어 있음' : `비움(${cleared.deleted.length}개)`} → ${command}`);
 			host.log(`[Unload] CMD ${command}`);
-			const resp = await sendCommandDetailed(command, undefined, { confirmUnloadRisk: unloadCheck.confirmUnloadRisk });
+			const resp = await sendCommandDetailed(command, undefined, {
+				confirmUnloadRisk: unloadCheck.confirmUnloadRisk,
+				timeoutMs: unloadTimeoutMs(getControllerConfig().timeoutMs),
+				waitForStatusClose: true,
+			});
 			const status = parseStatus(resp.raw);
 			if (!resp.meta.statusTagReceived) {
 				vscode.window.showWarningMessage(`${command}: STATUS 종결을 받지 못했습니다 — 결과 미확정(명령 콘솔이 잠시 응답하지 않을 수 있습니다).`);

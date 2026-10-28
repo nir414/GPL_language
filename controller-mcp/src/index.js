@@ -114,6 +114,8 @@ import { extensionCommandLogLines } from './operations.js';
 const HOST = process.env.GPL_HOST || '192.168.0.1';
 const PORT = parseInt(process.env.GPL_PORT || '1402', 10);
 const TIMEOUT = parseInt(process.env.GPL_TIMEOUT_MS || '15000', 10);
+/** Unload 응답 대기 하한(ms) — 확장 `controller/commands/projectCommands.UNLOAD_TIMEOUT_MIN_MS` 와 같은 값(2026-10-27 inbox 실측 근거). */
+const UNLOAD_TIMEOUT_MIN_MS = 180_000;
 const IDLE_CLOSE = parseInt(process.env.GPL_IDLE_CLOSE_MS || '30000', 10);
 const LOCK_WAIT_MS = parseInt(process.env.GPL_LOCK_WAIT_MS || '20000', 10);
 
@@ -2230,21 +2232,25 @@ tool('unload_project',
   '실측 2026-08-31: Unload 타임아웃 뒤 약 2.5분간 1402 새 연결이 거부되다가 재부팅 없이 정상 복귀했다. ' +
   '그 사이의 ECONNREFUSED를 제어기 다운의 증거로 쓰지 말고, 같은 명령을 곧바로 재전송하지 말 것 — ' +
   'recommendedAction(wait-and-probe)대로 기다린 뒤 show_threads / controller_status 로 관측할 것. ' +
-  '오래 걸릴 수 있으므로 필요하면 timeoutMs를 크게 줄 것(기본은 GPL_TIMEOUT_MS). ' +
+  '기본 대기는 max(GPL_TIMEOUT_MS, 180 s) — 실행 뒤 Unload 는 힙 세그먼트 수에 비례해 수십 초 걸린다(2026-10-27 실측 18.4 s). ' +
+  '**`project:"-all"` 은 /GPL 이 비어 있어야 보낸다** — 남은 프로젝트가 있으면 `refused:"gpl-not-empty"` 와 목록을 돌려주니 사용자 동의를 받아 ' +
+  '`clear_remote_folder` 로 비운 뒤 다시 호출할 것(확장 UI 의 Unload -all 도 같은 순서, 2026-10-28). ' +
   'Unload 로 풀리는 메모리도 있다 — 2026-10-14 실측: 쓰레드를 다 멈춰도 Free 0.6 Mb 이던 것이 Unload 뒤 4.4 Mb(로드된 프로젝트가 쥔 힙). ' +
   '**같은 부팅에서 그룹(ProjectStart 없는 .gpr) Compile 이 있었으면 보내지 않고 `refused:"unload-after-group-compile"` 로 돌아온다** — ' +
   '이 조합은 6번 중 6번 명령 콘솔을 끊었고 재부팅이 필요했다. 사용자에게 위험을 알리고 **동의를 받은 뒤에만** `confirm:true` 로 다시 호출할 것. ' +
   '성공하면 `/GPL/<project>` 가 남았는지(`remoteFolder`) 함께 보고, 앱 Unload 로 폴더가 지워졌으면 `next:"redeploy"`(다시 Start 하면 -508).',
   {
-    project: z.string().optional(),
+    project: z.string().optional().describe('프로젝트 이름, 또는 "-all"(로드된 프로젝트 전부 — /GPL 이 비어 있어야 보낸다)'),
     timeoutMs: z.number().int().min(1000).max(600000).optional()
-      .describe('응답 대기(ms). 생략하면 GPL_TIMEOUT_MS(기본 15000). Unload가 느린 환경이면 크게 줄 것'),
+      .describe('응답 대기(ms). 생략하면 max(GPL_TIMEOUT_MS, 180000) — 실행 뒤 Unload 는 수십 초 걸리고, 타임아웃으로 소켓을 닫으면 1402 가 거부 상태로 남는다'),
     skipThreadCheck: z.boolean().optional()
       .describe('true 면 사전 쓰레드 확인 없이 바로 보낸다(Show Thread 의 project 열이 믿기 어려운 경우에만)'),
+    skipGplCheck: z.boolean().optional()
+      .describe('"-all" 전용. true 면 /GPL 이 비어 있는지 확인하지 않고 보낸다 — 사용자가 /GPL 을 그대로 두라고 한 경우에만'),
     confirm: z.boolean().optional()
       .describe('그룹 Compile 뒤 Unload 위험을 사용자가 알고 동의했음을 단언 — refused:"unload-after-group-compile" 를 받고 동의를 받았을 때만 true'),
   },
-  async ({ project, timeoutMs, skipThreadCheck, confirm }) => {
+  async ({ project, timeoutMs, skipThreadCheck, skipGplCheck, confirm }) => {
     const name = proj(project);
     const targetSource = targetSourceOf(project, sessionTarget);
     // 그룹 Compile 뒤 Unload — 확인 없이는 쓰레드 조회조차 하지 않고 돌려준다(보내지 않음).
@@ -2252,24 +2258,51 @@ tool('unload_project',
     if (risk?.risky && confirm !== true) {
       return textResult(unloadRiskRefusalResult(risk, { project: name, targetSource }));
     }
+    const unloadAll = isUnloadAllName(name);
     if (!skipThreadCheck) {
-      // 읽기 전용 1회 — 실패하면(연결 등) 사전 확인 없이 진행한다. 거부는 제어기의 -750 이 대신한다.
+      // 읽기 전용 1회 — 실패하면(연결 등) 사전 확인 없이 진행한다. 거부는 제어기의 -750 이 대신한다. `-all` 은 어느 프로젝트든 활성이면 거부.
       const probe = await listThreads().catch(() => null);
       if (probe?.ok) {
-        const active = probe.threads.filter((t) => isActiveThread(t) && sameName(t.project, name));
+        const active = probe.threads.filter((t) => isActiveThread(t) && (unloadAll || sameName(t.project, name)));
         if (active.length > 0) {
           return textResult({
             ok: false, refused: 'threads-active', project: name, sent: false, outcome: SEND_OUTCOME_NOT_SENT,
             activeThreads: active.map(compactThread),
-            hint: `Unload 는 프로젝트의 쓰레드가 하나라도 활성이면 -750 으로 거부된다. 먼저 stop_threads({ project: "${name}" }) 로 ` +
-              `위 쓰레드(${active.map((t) => t.name).join(', ')})를 멈춘 뒤 다시 호출할 것 — controller_command("Stop ${name}") 은 ` +
-              '이름이 같은 쓰레드 하나만 멈춘다.',
+            hint: unloadAll
+              ? `Unload -all 은 활성 쓰레드가 하나라도 있으면 -750 으로 거부된다. 먼저 사용자 동의를 받아 stop_threads() 로 전부 멈춘 뒤 다시 호출할 것 ` +
+                `(활성: ${active.map((t) => t.name).join(', ')}).`
+              : `Unload 는 프로젝트의 쓰레드가 하나라도 활성이면 -750 으로 거부된다. 먼저 stop_threads({ project: "${name}" }) 로 ` +
+                `위 쓰레드(${active.map((t) => t.name).join(', ')})를 멈춘 뒤 다시 호출할 것 — controller_command("Stop ${name}") 은 ` +
+                '이름이 같은 쓰레드 하나만 멈춘다.',
           });
         }
       }
     }
+    // `Unload -all` 은 /GPL 을 먼저 비운 뒤 보낸다(2026-10-28 사용자 결정 — 확장 UI 의 Unload -all 도 같은 순서). AI 경로는 삭제에
+    // 사용자 동의가 필요하므로 여기서 지우지 않고, /GPL 에 프로젝트가 남아 있으면 보내지 않고 목록과 함께 돌려준다.
+    if (unloadAll && skipGplCheck !== true) {
+      const remote = await listRemoteProjectFolders();
+      if (remote.exists === null) {
+        return textResult({
+          ok: false, refused: 'gpl-state-unknown', project: name, sent: false, outcome: SEND_OUTCOME_NOT_SENT,
+          detail: `${remote.path ?? '/GPL'} 목록을 읽지 못해(${remote.reason ?? 'unknown'}) Unload -all 을 보내지 않았다 — ` +
+            'list_remote_projects 로 확인한 뒤, 확인이 불가능하면 skipGplCheck:true 로 다시 호출할 것.',
+        });
+      }
+      if (remote.names.length > 0) {
+        return textResult({
+          ok: false, refused: 'gpl-not-empty', project: name, sent: false, outcome: SEND_OUTCOME_NOT_SENT,
+          remoteFolder: { path: remote.path, projects: remote.names },
+          hint: `Unload -all 전에 ${remote.path} 을 비워야 한다(남은 프로젝트 ${remote.names.length}개: ${remote.names.join(', ')}). ` +
+            '사용자에게 목록을 보여 주고 동의를 받은 뒤 clear_remote_folder({ confirm:true, names }) 로 비우고 다시 호출할 것. ' +
+            '/GPL 을 그대로 둔 채 보내야 하는 특별한 이유가 있을 때만 skipGplCheck:true.',
+        });
+      }
+    }
     const result = await runCommand(`Unload ${name}`, {
-      ...(timeoutMs ? { timeoutMs } : {}),
+      // Unload 는 실행 뒤 수십 초 걸릴 수 있고(2026-10-27 실측 18.4 s), 짧은 타임아웃으로 소켓을 닫으면 1402 가 거부 상태로 남는다 —
+      // 확장과 같은 하한(UNLOAD_TIMEOUT_MIN_MS)을 둔다.
+      timeoutMs: timeoutMs ?? Math.max(TIMEOUT, UNLOAD_TIMEOUT_MIN_MS),
       ...(confirm === true ? { confirmUnloadRisk: true } : {}),
     });
     if (!(result.ok && result.status?.code === 0)) return textResult({ ...result, targetSource });
@@ -2285,6 +2318,24 @@ tool('unload_project',
       } : remoteFolder.exists === true ? { next: 'none' } : {}),
     });
   });
+
+/** `Unload -all` 의 대상 표기(대소문자 무시). */
+const isUnloadAllName = (name) => String(name ?? '').trim().toLowerCase() === '-all';
+
+/** `/GPL` 프로젝트 폴더 목록 — 확장 FTP(list_remote_projects 의 뒷단). 못 읽으면 `exists:null` + 사유. */
+async function listRemoteProjectFolders() {
+  try {
+    const res = await callExtension('gpl.ai.debug.listRemoteProjects', {}, { timeoutMs: 40_000 });
+    const r = res?.result;
+    if (!res?.ok || !r || r.ok === false) {
+      return { exists: null, path: r?.root ?? '/GPL', names: [], reason: r?.error ?? res?.error ?? 'bridge-failed', detail: r?.detail ?? res?.detail ?? null };
+    }
+    const names = (r.projects ?? []).map((p) => p.name).filter(Boolean);
+    return { exists: names.length > 0, path: r.root ?? '/GPL', names };
+  } catch (err) {
+    return { exists: null, path: '/GPL', names: [], reason: 'bridge-unavailable', detail: err?.message ?? String(err) };
+  }
+}
 
 /** Unload 뒤 `/GPL/<project>` 가 남았는지 — 확장 FTP(list_remote_projects 의 뒷단)로 본다. 모르면 exists:null. */
 async function remoteProjectFolderState(name) {

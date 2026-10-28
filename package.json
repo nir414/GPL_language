@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.26.0",
+    "version": "0.27.0",
     "publisher": "nir414",
     "icon": "assets/icons/gpl-logo.png",
     "repository": {
@@ -1661,6 +1661,12 @@
                     "type": "boolean",
                     "default": true,
                     "description": "On compile failure during Deploy/Build, open the first compile error's file at its line and reveal the Problems panel."
+                },
+                "gpl.deploy.uploadLibraries": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "업로드(Upload Only·Deploy·Upload & Start·Quick Compile) 때 .gpr 의 ProjectLibrary 를 따라가, 프로젝트 폴더 밖이지만 같은 projects 폴더 안에 있는 라이브러리(예: projects/Main 이 참조하는 projects/Libraries)를 /GPL/<ProjectLibrary 값> 으로 함께 올립니다. 프로젝트 폴더 안의 라이브러리는 원래 함께 올라갑니다. 내장형 패키지(ProjectStart 가 있는 상위 .gpr 안의 하위 패키지, 예: BinderR4\\Gantry\\Data)의 라이브러리는 그 컴파일 루트에 속하므로 따로 올리지 않습니다. 변경분만 올리고 원격 전용 파일은 지우지 않습니다. 저장 시 자동 업로드(autoOnSave)에는 적용되지 않습니다."
                 },
                 "gpl.deploy.errorLogQuietCodes": {
                     "scope": "window",

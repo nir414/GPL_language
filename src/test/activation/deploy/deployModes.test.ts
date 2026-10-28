@@ -13,7 +13,14 @@ import {
 	newErrorLogNoticeParts,
 	remotePathSuffix,
 	uploadBatchSummary,
+	libraryUploadNote,
 } from '../../../activation/deploy/deployModes';
+
+test('deployModes: 함께 올린 라이브러리 조각 — 없으면 빈 문자열', () => {
+	assert.strictEqual(libraryUploadNote(undefined), '');
+	assert.strictEqual(libraryUploadNote([]), '');
+	assert.strictEqual(libraryUploadNote([{ raw: 'Libraries' }, { raw: 'Common\\Util' }]), ' + 라이브러리 Libraries, Common\\Util');
+});
 
 test('deployModes: 여러 프로젝트 Upload Only 요약 — 전부 성공 / 중간 실패 뒤 미실행 / 첫 건 취소', () => {
 	const ok = uploadBatchSummary([{ name: 'A', outcome: 'uploaded' }, { name: 'B', outcome: 'uploaded' }]);

@@ -48,6 +48,12 @@ export interface DeployOptions {
      */
     skipCompile?: boolean;
     /**
+     * `ProjectLibrary` 가 가리키는 라이브러리 중 컴파일 루트 밖·같은 projects 폴더 안의 것을 `/GPL/<값>` 으로 함께 올린다
+     * (규칙: libraryUploadPlan.ts). direct `/GPL` 모드·전체 업로드에서만 — autoOnSave(changedFiles)는 제외.
+     * 설정 `gpl.deploy.uploadLibraries` 를 호출측(runDeploy)이 넘긴다. 생략하면 끔(종전 동작).
+     */
+    uploadLibraries?: boolean;
+    /**
      * 지정 시 이 파일들(로컬 절대경로)만 업로드한다. 저장 파일만 올리는 빠른 컴파일 경로에서 사용.
      * projectDir 하위 파일만 대상이 되며, 변경을 확신하는 것으로 보고 크기 비교 없이 업로드한다.
      * 업로드 후 Compile은 평소대로 프로젝트 전체를 대상으로 수행된다.
@@ -173,6 +179,8 @@ export interface DeployResult {
     selectedRemoteProjectPath?: string;
     candidateRemoteProjectPaths?: string[];
     uploadStats?: { uploaded: number; skipped: number; totalBytes: number; deleted?: number };
+    /** 함께 올린 라이브러리(`uploadLibraries`) — 올린 순서. 실패하면 거기까지(실패한 것 제외). */
+    libraryUploads?: { raw: string; localDir: string; remoteDir: string; uploaded: number; skipped: number }[];
     failedPhase?: DeployPhase;
     failedCommand?: string;
     failedStatusCode?: number;

@@ -1,5 +1,6 @@
 /**
  * 배포 단계 3 — Phase 1: UPLOAD ∥ STOP(정지 게이트) 동시 진행, 그 뒤 지연된 원격 전용 파일 삭제·배포 증적 대조·Upload Only 완료.
+ * UPLOAD 는 프로젝트 폴더, 이어서 함께 올릴 라이브러리(`target.libraryPlan`, 2026-10-28)다.
  * 2026-10-27 `deployService.ts` 의 `deployLocked` 에서 분리. 정지 게이트 자체는 `deployStopStage.runStopGate`.
  *
  * 2026-08-25(이슈 #17 + 보충 코멘트): 목적은 속도. "쓰레드 실행 중 FTP 업로드"는 무해(사용자 관찰)하고, 업로드(FTP 21)와
@@ -23,6 +24,7 @@ import type { UploadProgressEvent, UploadSummary } from './uploadProgress';
 import type { DeployContext } from './deployContext';
 import type { DeployProjectInfo } from './deployPrecheck';
 import type { DeployTarget } from './deployTargetStage';
+import type { LibraryUpload } from './libraryUploadPlan';
 import { stopGateLabelFor, uploadLockStageFor } from './deployModes';
 import { runStopGate } from './deployStopStage';
 
@@ -113,8 +115,54 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
     const fireUploadEnd = (summary: UploadSummary): void => {
         host.emitUploadEvent({ kind: 'end', projectName, remoteDir: ftpProjectDir, ok: true, summary });
     };
-    /** 업로드 작업. 예외를 던지지 않고 결과로 돌려준다(Promise.all에서 다른 쪽을 끝까지 기다리기 위해). */
+    /** 업로드 작업 — 프로젝트 폴더, 이어서 함께 올릴 라이브러리. 예외를 던지지 않고 결과로 돌려준다(Promise.all에서 다른 쪽을 끝까지 기다리기 위해). */
     async function runUpload(): Promise<UploadOutcome> {
+        const main = await runProjectUpload();
+        const libraries = target.libraryPlan?.uploads ?? [];
+        if (!main.ok || libraries.length === 0) { return main; }
+        const libs = await runLibraryUploads(libraries);
+        return libs.ok ? main : libs;
+    }
+
+    /**
+     * 함께 올릴 라이브러리(libraryUploadPlan.ts) — 프로젝트 업로드 뒤 하나씩. 변경분만 올리고(지문 스킵) 원격 전용 파일은
+     * 지우지 않는다(그 폴더를 다른 프로젝트도 참조할 수 있고, 실행 중 삭제는 미검증). 하나라도 실패하면 업로드 실패다 —
+     * 라이브러리가 옛 상태면 Compile 이 엉뚱한 코드로 성공할 수 있다.
+     */
+    async function runLibraryUploads(uploads: readonly LibraryUpload[]): Promise<UploadOutcome> {
+        result.libraryUploads = [];
+        for (const lib of uploads) {
+            try {
+                pushTrace(`│ ↑ Library ${lib.raw} → ${lib.remoteDir}`);
+                const stats = await uploadProject(cfg.ip, lib.localDir, lib.remoteDir, {
+                    skipUnchanged: true,
+                    manifest: getSyncManifest(cfg.ip, lib.remoteDir),
+                    onProgress: progress => {
+                        if (progress.type !== 'file') { return; }
+                        lock.heartbeat();
+                        if (progress.action === 'uploaded') {
+                            pushTrace(`│ ↑ [${progress.doneFiles}/${progress.totalFiles}] ${lib.raw}\\${progress.file}`);
+                        }
+                    },
+                    isCancelled,
+                });
+                mergeSyncManifest(cfg.ip, lib.remoteDir, stats.manifest);
+                result.libraryUploads.push({ ...lib, uploaded: stats.uploaded, skipped: stats.skipped });
+                pushTrace(`│ ✔ Library done: ${stats.uploaded} sent, ${stats.skipped} skipped (${lib.remoteDir})`);
+            } catch (e: any) {
+                const cancelled = isUploadCancelledError(e) || isCancelled();
+                const message = cancelled
+                    ? (cancellationStatus().reason ?? '업로드 취소')
+                    : `라이브러리 ${lib.raw} 업로드 실패(${lib.remoteDir}): ${e?.message || 'Upload failed'}`;
+                pushTrace(cancelled ? `│ ■ Upload cancelled: ${message}` : `│ ✘ ${message}`);
+                return { ok: false, message };
+            }
+        }
+        return { ok: true, pendingDeletes: [] };
+    }
+
+    /** 프로젝트 폴더 업로드. */
+    async function runProjectUpload(): Promise<UploadOutcome> {
         try {
             if (useMirror) {
                 const remoteOnlyPolicy = options.uploadOnly

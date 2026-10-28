@@ -31,6 +31,7 @@ import {
 	compileStaleReasonAfterFailure,
 	deployRunSuccessSummary,
 	newErrorLogNoticeParts,
+	libraryUploadNote,
 	remotePathSuffix,
 } from './deployModes';
 import { CLEAR_ERROR_LOG, clearControllerErrorLog, takeErrorLogNotice } from './errorLogNotice';
@@ -197,7 +198,8 @@ export async function reportDeploySuccess(ctx: DeployContext, p: DeployReportInp
 		const signature = buildDeployOutcomeSignature(result, []);
 		const comparisonNote = comparisonNoteFor(deployOutcomeHistory.countSame(signature), 'result');
 		deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: '업로드 성공' });
-		const summary = `업로드 완료: ${result.projectName}${remotePathInfo} (Stop/Compile/Start 미실행)`;
+		const libraryNote = libraryUploadNote(result.libraryUploads);
+		const summary = `업로드 완료: ${result.projectName}${remotePathInfo}${libraryNote} (Stop/Compile/Start 미실행)`;
 		host.log(`[Deploy] ✔ ${summary}`);
 		if (!quickOpts.inBatch) { void vscode.window.showInformationMessage(summary); }
 		outputChannel.show(true);

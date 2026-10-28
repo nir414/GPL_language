@@ -96,6 +96,8 @@ export async function runDeploy(ctx: DeployContext, skipStart: boolean, quickOpt
 			skipStop: quickOpts?.skipStop,
 			// 업로드 스타트: Compile을 보내지 않는다 — Start 의 `-compile` 이 컴파일하므로(§0.7) 중복이다.
 			skipCompile: quickOpts?.skipCompile,
+			// ProjectLibrary 중 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 /GPL/<값> 으로 함께(libraryUploadPlan.ts).
+			uploadLibraries: vscode.workspace.getConfiguration('gpl').get<boolean>('deploy.uploadLibraries', true) !== false,
 			skipUnchanged: quickOpts?.skipUnchanged,
 			changedFiles: quickOpts?.changedFiles,
 			autoGate: quickOpts?.autoGate,

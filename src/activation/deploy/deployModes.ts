@@ -52,6 +52,13 @@ export function remotePathSuffix(selectedRemoteProjectPath: string | undefined):
 	return selectedRemoteProjectPath ? ` / 경로: ${selectedRemoteProjectPath}` : '';
 }
 
+/** 함께 올린 라이브러리 조각(` + 라이브러리 Libraries, Common`), 없으면 빈 문자열. */
+export function libraryUploadNote(libraryUploads: readonly { raw: string }[] | undefined): string {
+	return libraryUploads && libraryUploads.length > 0
+		? ` + 라이브러리 ${libraryUploads.map(l => l.raw).join(', ')}`
+		: '';
+}
+
 /**
  * 업로드는 됐고 Compile(또는 업로드 스타트의 Start -compile)이 실패했을 때 "컴파일 검증 필요" 상태에 남기는 사유.
  * 컴파일본은 이전 상태이므로 Start 전 확인 대상이다.

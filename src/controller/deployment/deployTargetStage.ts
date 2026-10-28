@@ -19,10 +19,13 @@ import { listRemoteDir } from '../files/ftpClient';
 import { checkProjectName, describeProjectNameProblem } from '../projects/projectNameGuard';
 import { describeRemotePathCandidates, resolveRemoteProjectPath } from '../projects/remoteProjectPath';
 import { isPathUnder } from '../../util/pathKey';
-import { resolveProjectLibraryDirs } from '../../project/sources/projectSources';
+import { buildLibraryGraph, resolveProjectLibraryDirs } from '../../project/sources/projectSources';
+import { findCompileRootGpr } from '../../project/gpr/dependencyModel';
 import type { DeployContext } from './deployContext';
 import type { DeployProjectInfo } from './deployPrecheck';
 import { modeSuffixFor } from './deployModes';
+import { planLibraryUploads } from './libraryUploadPlan';
+import type { LibraryUploadPlan } from './libraryUploadPlan';
 
 /** 대상 결정의 산출 — 업로드·컴파일·Start 단계가 그대로 쓴다. */
 export interface DeployTarget {
@@ -40,6 +43,19 @@ export interface DeployTarget {
     ftpProjectDir: string;
     /** 클래식 경로의 `Load` 인자(direct 모드면 빈 문자열). */
     loadPath: string;
+    /** 함께 올릴 라이브러리 계획 — `uploadLibraries` 이고 direct 전체 업로드일 때만(libraryUploadPlan.ts). */
+    libraryPlan?: LibraryUploadPlan;
+}
+
+/**
+ * 이 배포에 함께 올릴 라이브러리 계획 — 라이브러리 그래프(재귀) 전체의 `ProjectLibrary` 참조와 컴파일 루트로 계산한다.
+ * 디스크(.gpr)만 읽고 제어기는 건드리지 않는다. 해석 실패는 배포를 막지 않는다(계획 없음 = 종전 동작).
+ */
+export function resolveLibraryUploadPlan(project: DeployProjectInfo, projectDir: string, remoteRoot: string): LibraryUploadPlan {
+    const graph = buildLibraryGraph(project.gprPath, project.gprText);
+    const refs = [...graph.nodes.values()].flatMap(node => node.refs);
+    const rootGpr = findCompileRootGpr(project.gprPath);
+    return planLibraryUploads({ projectDir, compileRootDir: rootGpr ? path.dirname(rootGpr) : undefined, refs, remoteRoot });
 }
 
 /** `/GPL` 목록 한 번의 판독 — 어느 폴더를 direct 대상으로 삼을지. */
@@ -286,7 +302,16 @@ export async function resolveDeployTarget(ctx: DeployContext, project: DeployPro
         result.selectedRemoteProjectPath = remotePath.projectPath;
     }
 
-    return { directActive, directGplName, directGplDir, directGplCreate, directProbeError, ftpProjectDir, loadPath };
+    let libraryPlan: LibraryUploadPlan | undefined;
+    if (directActive && options.uploadLibraries && (options.changedFiles ?? []).length === 0 && project.gprInfo.libraries.length > 0) {
+        try {
+            libraryPlan = resolveLibraryUploadPlan(project, options.projectDir, '/GPL');
+        } catch (e: any) {
+            pushTrace(`│  ⚠ 라이브러리 계획 실패(함께 올리지 않음): ${e?.message ?? e}`);
+        }
+    }
+
+    return { directActive, directGplName, directGplDir, directGplCreate, directProbeError, ftpProjectDir, loadPath, libraryPlan };
 }
 
 /** 배포 트레이스 헤더 — 프로젝트·모드·경로·대상 제어기·라이브러리 포함 범위. 제어기를 건드리지 않는다. */
@@ -319,10 +344,12 @@ export function traceDeployHeader(ctx: DeployContext, project: DeployProjectInfo
     if (result.rebootHint) {
         pushTrace(`│  ⚠ ${result.rebootHint}`);
     }
-    // ProjectLibrary 참조가 있으면 어디까지 이 배포에 포함되는지 밝힌다. 업로드 대상은 종전과 같이
-    // **프로젝트 폴더 하나**다(제어기 쪽 라이브러리 배치 규칙은 실기기 미검증 — 임의로 넓히지 않는다).
-    // 폴더 안의 중첩 라이브러리는 재귀 업로드에 자연히 포함되고, 폴더 밖 라이브러리는 포함되지 않는다.
-    if (gprInfo.libraries.length > 0) {
+    // ProjectLibrary 참조가 있으면 어디까지 이 배포에 포함되는지 밝힌다. 함께 올리기(`uploadLibraries`)가 켜져 있으면
+    // 그 계획을, 아니면(설정 끔·클래식·autoOnSave) 종전처럼 프로젝트 폴더 하나 기준의 안/밖만 적는다.
+    if (target.libraryPlan) {
+        pushTrace(`│  Library: ${gprInfo.libraries.join(' | ')}`);
+        traceLibraryPlan(pushTrace, target.libraryPlan);
+    } else if (gprInfo.libraries.length > 0) {
         const resolved = resolveProjectLibraryDirs(gprPath, gprText);
         const inside = resolved.dirs.filter(d => isPathUnder(d, options.projectDir));
         const outside = resolved.dirs.filter(d => !isPathUnder(d, options.projectDir));
@@ -338,5 +365,28 @@ export function traceDeployHeader(ctx: DeployContext, project: DeployProjectInfo
         if (resolved.unresolved.length > 0) {
             pushTrace(`│    ⚠ 로컬에서 폴더를 찾지 못한 라이브러리: ${resolved.unresolved.join(', ')}`);
         }
+    }
+}
+
+/** 라이브러리 계획을 트레이스 헤더에 — 함께 올림 / 이미 포함 / 내장형(루트 소속) / 올리지 않음 / 미해석. */
+function traceLibraryPlan(pushTrace: (line: string) => void, plan: LibraryUploadPlan): void {
+    const shortList = (items: readonly string[]): string =>
+        items.length > 6 ? `${items.slice(0, 6).join(', ')} 외 ${items.length - 6}개` : items.join(', ');
+    if (plan.uploads.length > 0) {
+        pushTrace(`│    ↳ 함께 업로드: ${plan.uploads.map(u => `${u.raw} → ${u.remoteDir}`).join(', ')}`);
+    }
+    if (plan.covered.length > 0) {
+        pushTrace(`│    ↳ 폴더 안이라 이미 포함: ${shortList(plan.covered)}`);
+    }
+    if (plan.embeddedIn) {
+        const rootName = path.basename(plan.embeddedIn);
+        pushTrace(`│    ↳ 내장형 패키지 — 컴파일 단위는 ${rootName}. 루트 안 라이브러리 ${plan.embedded.length}개는 ${rootName} 업로드에 포함되므로 따로 올리지 않습니다.`);
+        if (plan.embedded.length > 0) { pushTrace(`│      (${shortList(plan.embedded)})`); }
+    }
+    for (const s of plan.skipped) {
+        pushTrace(`│    ⚠ 올리지 않음(${s.reason}): ${s.raw} → ${s.dir}`);
+    }
+    if (plan.unresolved.length > 0) {
+        pushTrace(`│    ⚠ 로컬에서 폴더를 찾지 못한 라이브러리: ${plan.unresolved.join(', ')}`);
     }
 }

@@ -24,6 +24,11 @@ GDS·Controller Software 문서 어디에도 `ProjectBegin` 등의 리터럴이 
 - **[문서]** 프로젝트를 메모리에 올려 실행하면 GPL이 **`Project.gpr`를 가장 먼저 읽는다**.
 - **[문서]** 폴더 이름과 프로젝트 이름은 동의어다. 제어기 플래시에서는 `/flash/projects/` 아래에 놓인다.
   (이 확장의 FTP 배포 경로는 `/GPL/<ProjectName>` — `src/controller/deployment/deployService.ts` 참조.)
+- **[규칙]** 그래서 `ProjectName` 은 `.gpr` 이 있는 폴더 이름과 **대소문자까지 같게** 쓴다(2026-10-28 사용자 규칙). 리프·그룹
+  라이브러리 `.gpr` 도 같다. 확장의 패키지 의존 검사(`gpl.project.dependencyCheck`)가 어긋난 `.gpr` 에 Warning 과
+  「ProjectName 바꾸기」 빠른 수정을 낸다 — 폴더 이름은 다른 `.gpr` 의 `ProjectLibrary` 경로가 가리키므로 바꾸지 않는다.
+  같은 이름의 폴더가 둘이면(예: `Gantry\Data`·`Lib\Data`) 고친 뒤 ProjectName 이 겹치므로 문구로 알린다 — 겹친 라이브러리
+  이름을 제어기가 어떻게 다루는지는 **미확인**이다.
 
 ## 2. 최소 형식 **[실측]**
 

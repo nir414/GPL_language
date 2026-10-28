@@ -15,6 +15,12 @@
  * - **library-unused** (information): 선언했지만 이 패키지의 소스가 그 패키지(그룹이면 그 아래)의 파일을 쓰지 않는다.
  * - **library-unresolved** (warning): ProjectLibrary 경로를 어느 폴더로도 풀지 못했다.
  *
+ * 모든 `.gpr`(그룹·루트 포함)에 대해:
+ * - **project-name-mismatch** (warning): `ProjectName` 이 `.gpr` 이 있는 폴더 이름과 정확히(대소문자까지) 같지 않거나 없다.
+ *   문서상 "폴더 이름과 프로젝트 이름은 동의어"이고 제어기 플래시 이름은 대소문자를 가린다(docs/reference/project-file-gpr.md §1·§5).
+ *   2026-10-28 사용자 규칙 "ProjectName 은 폴더명과 같아야 한다". 빠른 수정은 ProjectName 을 폴더 이름으로 바꾼다 —
+ *   폴더 이름을 바꾸면 다른 `.gpr` 의 ProjectLibrary 경로가 깨지므로 그쪽은 제안하지 않는다.
+ *
  * 계층 규칙은 루트 `.gpr` 주석 `' Dependencies: App -> Config/Gantry/Lib; Config -> Gantry/Lib; Gantry -> Lib.` 를 읽는다.
  * 그룹 = 루트 폴더 바로 아래 폴더 이름. 규칙에 나오는 그룹은 자기 자신과 화살표 오른쪽 그룹만 참조할 수 있다
  * (왼쪽에 없는 그룹 — 위 예의 Lib — 은 다른 그룹을 참조할 수 없다). 규칙에 나오지 않는 폴더는 검사하지 않는다.
@@ -47,12 +53,15 @@ export interface DependencyCheckInput {
     depsOf(filePath: string): readonly RequiredFile[];
 }
 
-export type GprFindingCode = 'library-missing' | 'source-missing' | 'library-indirect' | 'library-unused' | 'library-unresolved';
+export type GprFindingCode =
+    | 'library-missing' | 'source-missing' | 'library-indirect' | 'library-unused' | 'library-unresolved'
+    | 'project-name-mismatch';
 
-/** `.gpr` 텍스트 줄 편집 — `insertLine` 앞에 줄을 넣거나 `removeLine` 을 지운다. */
+/** `.gpr` 텍스트 줄 편집 — `insertLine` 앞에 줄을 넣거나, `removeLine` 을 지우거나, `replaceLine` 의 내용을 바꾼다. */
 export type GprFix =
     | { kind: 'insert'; insertLine: number; text: string; title: string }
-    | { kind: 'remove'; removeLine: number; title: string };
+    | { kind: 'remove'; removeLine: number; title: string }
+    | { kind: 'replace'; replaceLine: number; text: string; title: string };
 
 export interface GprFinding {
     code: GprFindingCode;
@@ -166,8 +175,14 @@ export function checkPackageDependencies(input: DependencyCheckInput): Dependenc
         return d;
     };
 
+    // 폴더 이름이 같은 패키지 — ProjectName 을 폴더 이름으로 맞추면 이름이 겹친다(BinderR4: Gantry\Data·Lib\Data, Motion\Cmd·Robot\Cmd)
+    const sameFolderName = new Map<string, string[]>();
+    for (const p of pkgs) { push(sameFolderName, path.basename(p.dir).toLowerCase(), [] as string[]).push(p.gprPath); }
+
     const gprFindings: GprFinding[] = [];
     for (const p of pkgs) {
+        const nameFinding = projectNameMismatch(p, sameFolderName.get(path.basename(p.dir).toLowerCase())?.filter(o => o !== p.gprPath));
+        if (nameFinding) { gprFindings.push(nameFinding); }
         if (p.sources.length === 0) {
             for (const [i, r] of p.refs.entries()) {
                 if (!r.dir) { gprFindings.push(unresolved(p, i, r.raw)); }
@@ -264,6 +279,38 @@ const list = (files: readonly string[]): string =>
     files.slice(0, 3).map(fileLabel).join(', ') + (files.length > 3 ? ` 외 ${files.length - 3}` : '');
 
 /** 진단 자리 — ProjectName 줄(없으면 0). */
+/**
+ * ProjectName ↔ 폴더 이름. 같으면 undefined. 값 앞뒤 공백도 차이로 본다(제어기 명령 인자가 된다).
+ * `sameFolderName` 은 같은 이름의 폴더를 가진 다른 `.gpr` — 고치면 이름이 겹친다는 사실을 문구에 덧붙인다
+ * (겹친 라이브러리 이름을 제어기가 어떻게 다루는지는 미확인).
+ */
+export function projectNameMismatch(p: { gprPath: string; text: string }, sameFolderName: readonly string[] = []): GprFinding | undefined {
+    const folder = path.basename(path.dirname(path.resolve(p.gprPath)));
+    const lines = p.text.split(/\r?\n/);
+    const line = lines.findIndex(l => /^\s*ProjectName\s*=/i.test(l));
+    const wanted = `ProjectName="${folder}"`;
+    if (line < 0) {
+        const begin = lines.findIndex(l => /^\s*ProjectBegin\s*$/i.test(l));
+        return {
+            code: 'project-name-mismatch', severity: 'warning', gprPath: p.gprPath, line: Math.max(0, begin),
+            message: `ProjectName 이 없습니다 — 폴더 이름 "${folder}" 와 같은 ProjectName 이 있어야 합니다.`,
+            fix: { kind: 'insert', insertLine: begin + 1, text: wanted, title: `${wanted} 추가` },
+        };
+    }
+    const value = /^\s*ProjectName\s*=\s*["']([^"']*)["']/i.exec(lines[line])?.[1];
+    if (value === folder) { return undefined; }
+    const caseOnly = value !== undefined && value.toLowerCase() === folder.toLowerCase();
+    return {
+        code: 'project-name-mismatch', severity: 'warning', gprPath: p.gprPath, line,
+        message: `ProjectName "${value ?? lines[line].trim()}" 이(가) 폴더 이름 "${folder}" 와 ${caseOnly ? '대소문자가 ' : ''}다릅니다 — `
+            + 'ProjectName 은 폴더 이름과 같아야 합니다(문서상 동의어, 제어기 플래시 이름은 대소문자를 가림).'
+            + (sameFolderName.length > 0
+                ? ` 주의: 같은 이름의 폴더가 ${sameFolderName.map(g => path.basename(path.dirname(path.dirname(g))) + '\\' + folder).join(', ')} 에도 있어 고치면 ProjectName 이 겹칩니다 — 폴더 이름을 구분되게 바꾸는 것도 검토하세요.`
+                : ''),
+        fix: { kind: 'replace', replaceLine: line, text: lines[line].replace(/^(\s*)ProjectName\s*=.*$/i, `$1${wanted}`), title: `${wanted} 로 바꾸기` },
+    };
+}
+
 function headLine(p: Pkg): number {
     const i = p.parsed.lines.findIndex(l => /^\s*ProjectName\s*=/i.test(l));
     return i >= 0 ? i : 0;

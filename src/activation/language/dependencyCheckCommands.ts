@@ -193,13 +193,15 @@ function toEdit(document: vscode.TextDocument, list: readonly GprFix[]): vscode.
     const edit = new vscode.WorkspaceEdit();
     const seen = new Set<string>();
     for (const f of list) {
-        const key = f.kind === 'insert' ? `i:${f.text.toLowerCase()}` : `r:${f.removeLine}`;
+        const key = f.kind === 'insert' ? `i:${f.text.toLowerCase()}` : f.kind === 'remove' ? `r:${f.removeLine}` : `c:${f.replaceLine}`;
         if (seen.has(key)) { continue; }
         seen.add(key);
         if (f.kind === 'insert') {
             edit.insert(document.uri, new vscode.Position(Math.min(f.insertLine, document.lineCount), 0), f.text + eol);
-        } else {
+        } else if (f.kind === 'remove') {
             edit.delete(document.uri, new vscode.Range(f.removeLine, 0, f.removeLine + 1, 0));
+        } else {
+            edit.replace(document.uri, document.lineAt(f.replaceLine).range, f.text);
         }
     }
     return edit;

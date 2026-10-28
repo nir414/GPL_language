@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { test } from '../../harness';
 import { GPLParser, GPLSymbol } from '../../../language/syntax/gplParser';
-import { checkPackageDependencies, parseLayerRules } from '../../../project/gpr/dependencyCheck';
+import { checkPackageDependencies, GprFix, parseLayerRules, projectNameMismatch } from '../../../project/gpr/dependencyCheck';
 import { buildPackageInputs, findCompileRootGpr } from '../../../project/gpr/dependencyModel';
 import { computeFileDependencies } from '../../../providers/diagnostics/requiresHeaderPlan';
 import { isPathUnder } from '../../../util/pathKey';
@@ -69,6 +69,8 @@ const FILES: Record<string, string> = {
     'App/Main.gpl': mod('Module APP', '    Public Sub Foo()', '    End Sub', '    Public Sub MAIN()', '        DEV.Run()', '    End Sub', 'End Module'),
 };
 
+const fixLine = (f: GprFix): number => f.kind === 'insert' ? f.insertLine : f.kind === 'remove' ? f.removeLine : f.replaceLine;
+
 function run(root: string) {
     const rootGpr = findCompileRootGpr(path.join(root, 'Lib', 'Dev', 'Dev.gpl'))!;
     const packages = buildPackageInputs(rootGpr);
@@ -107,7 +109,7 @@ test('dependencyCheck: 누락·간접·미사용·미해석 ProjectLibrary 와 P
     const root = makeProject(FILES);
     try {
         const { result, rel } = run(root);
-        const view = result.gprFindings.map(f => `${rel(f.gprPath)} ${f.code}${f.fix ? ` [${f.fix.title} @${(f.fix.kind === 'insert' ? f.fix.insertLine : f.fix.removeLine) + 1}]` : ''}`).sort();
+        const view = result.gprFindings.filter(f => f.code !== 'project-name-mismatch').map(f => `${rel(f.gprPath)} ${f.code}${f.fix ? ` [${f.fix.title} @${fixLine(f.fix) + 1}]` : ''}`).sort();
         assert.deepStrictEqual(view, [
             'Lib/Core/Log/Project.gpr library-missing [ProjectLibrary="Lib\\Core\\Clock" 추가 @4]',
             'Lib/Dev/Project.gpr library-indirect [ProjectLibrary="Lib\\Core\\Text" 추가 @6]',
@@ -119,7 +121,8 @@ test('dependencyCheck: 누락·간접·미사용·미해석 ProjectLibrary 와 P
         ]);
         const outside = result.gprFindings.find(f => f.code === 'source-missing' && !f.fix)!;
         assert.ok(outside.message.includes('Main.gpl') && outside.message.includes('폴더 밖'), '루트에만 있는 App 파일은 라이브러리로 고칠 수 없다');
-        assert.ok(!result.gprFindings.some(f => rel(f.gprPath) === 'Lib/Core/Project.gpr'), '그룹 .gpr 은 참조만 확인');
+        assert.ok(!result.gprFindings.some(f => rel(f.gprPath) === 'Lib/Core/Project.gpr' && f.code !== 'project-name-mismatch'),
+            '그룹 .gpr 은 참조(와 ProjectName)만 확인');
         assert.ok(!result.gprFindings.some(f => f.message.includes('Clock.gpl') && rel(f.gprPath) === 'Project.gpr'), '평탄한 루트는 나열한 파일로 충분');
     } finally { cleanup(root); }
 });
@@ -133,6 +136,30 @@ test('dependencyCheck: 루트 Dependencies 규칙 위반을 사용 위치에 낸
         assert.ok(!result.gprFindings.some(f => f.message.includes('Clock.gpl') && rel(f.gprPath).startsWith('Lib/Dev')),
             '`ByVal ticks` 가 CLK.Ticks 로 풀리지 않는다');
     } finally { cleanup(root); }
+});
+
+test('dependencyCheck: ProjectName 은 폴더 이름과 같아야 한다 — 그룹·루트 포함 모든 .gpr, 수정은 ProjectName 쪽', () => {
+    const root = makeProject(FILES);
+    try {
+        const { result, rel } = run(root);
+        const names = result.gprFindings.filter(f => f.code === 'project-name-mismatch');
+        assert.strictEqual(names.length, 7, '이 픽스처는 BinderR4 처럼 Lib_Text·Lib_Core 등 폴더와 다른 이름을 쓴다');
+        const text = names.find(f => rel(f.gprPath) === 'Lib/Core/Text/Project.gpr')!;
+        assert.strictEqual(text.severity, 'warning');
+        assert.strictEqual(text.line, 1);
+        assert.deepStrictEqual(text.fix, { kind: 'replace', replaceLine: 1, text: 'ProjectName="Text"', title: 'ProjectName="Text" 로 바꾸기' });
+    } finally { cleanup(root); }
+
+    const at = (dir: string, body: string) => projectNameMismatch({ gprPath: path.join('C:\\p', dir, 'Project.gpr'), text: body });
+    assert.strictEqual(at('BinderR4', 'ProjectBegin\r\nProjectName="BinderR4"\r\nProjectEnd'), undefined);
+    const caseOnly = at('BinderR4', 'ProjectBegin\r\n  ProjectName="binderr4"\r\nProjectEnd')!;
+    assert.ok(caseOnly.message.includes('대소문자가 다릅니다'));
+    assert.strictEqual((caseOnly.fix as { text: string }).text, '  ProjectName="BinderR4"', '들여쓰기는 유지');
+    const dup = projectNameMismatch({ gprPath: 'C:\\p\\Lib\\Data\\Project.gpr', text: 'ProjectBegin\nProjectName="Lib_Data"\nProjectEnd' },
+        ['C:\\p\\Gantry\\Data\\Project.gpr'])!;
+    assert.ok(dup.message.includes('Gantry\\Data') && dup.message.includes('겹칩니다'), '고치면 겹치는 폴더 이름을 알린다');
+    assert.deepStrictEqual(at('X', 'ProjectBegin\nProjectSource="a.gpl"\nProjectEnd')!.fix,
+        { kind: 'insert', insertLine: 1, text: 'ProjectName="X"', title: 'ProjectName="X" 추가' });
 });
 
 test('dependencyCheck: 규칙 줄 파싱 — 화살표 오른쪽 / 구분, 세미콜론, 끝 마침표', () => {

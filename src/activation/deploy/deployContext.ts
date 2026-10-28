@@ -19,6 +19,8 @@ export type QuickDeployOpts = {
 	skipStop?: boolean; skipUnchanged?: boolean; quick?: boolean; changedFiles?: string[];
 	overrideProjectDir?: string; noStopPrompt?: boolean; autoGate?: boolean; skipCompile?: boolean; nonInteractive?: boolean;
 	uploadOnly?: boolean;
+	/** 여러 프로젝트를 차례로 올리는 묶음의 한 건 — 프로젝트별 성공 토스트를 생략하고 묶음이 끝난 뒤 한 번 요약한다. */
+	inBatch?: boolean;
 	/** 자동화 호출자가 사용자에게 Start 모션 확인을 이미 받았음. 배포 내부의 중복 확인 모달도 생략한다. */
 	startConfirmed?: boolean;
 	/**

@@ -90,6 +90,25 @@ export function deployRunSuccessSummary(args: {
 			: `배포 성공${remotePathInfo}`;
 }
 
+/** 여러 프로젝트 Upload Only 의 프로젝트별 결과 — 실패·취소가 나오면 그 뒤 프로젝트는 `notRun` 으로 남는다. */
+export type UploadBatchOutcome = 'uploaded' | 'failed' | 'cancelled' | 'notRun';
+
+/** 여러 프로젝트 Upload Only 를 마친 뒤 한 번 띄우는 요약 — 성공 여부와 프로젝트별 결과 한 줄. */
+export function uploadBatchSummary(entries: readonly { name: string; outcome: UploadBatchOutcome }[]): { success: boolean; message: string } {
+	const uploaded = entries.filter(e => e.outcome === 'uploaded').map(e => e.name);
+	const stopped = entries.find(e => e.outcome === 'failed' || e.outcome === 'cancelled');
+	const notRun = entries.filter(e => e.outcome === 'notRun').map(e => e.name);
+	if (!stopped) {
+		return { success: true, message: `Upload Only 완료 ${uploaded.length}/${entries.length}: ${uploaded.join(', ')} (Stop/Compile/Start 미실행)` };
+	}
+	const parts = [
+		`Upload Only 중단: ${stopped.name} ${stopped.outcome === 'failed' ? '실패' : '취소'}`,
+		`완료 ${uploaded.length}/${entries.length}${uploaded.length > 0 ? `: ${uploaded.join(', ')}` : ''}`,
+		notRun.length > 0 ? `미실행: ${notRun.join(', ')}` : undefined,
+	];
+	return { success: false, message: parts.filter(Boolean).join(' / ') };
+}
+
 /** 배포 완료 경고 토스트의 본문 조각 — 새 배포 에러가 먼저, 새 시스템 경고가 뒤. */
 export function newErrorLogNoticeParts(notice: { newDeployErr: readonly unknown[]; newSys: readonly unknown[] }): string[] {
 	const parts: string[] = [];

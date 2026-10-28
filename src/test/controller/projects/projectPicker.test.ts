@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import { test } from '../../harness';
-import { disambiguateDirLabels, orderProjectDirs, projectDirFromResource, filterDirsByProjectName } from '../../../controller/projects/projectPickerCore';
+import { disambiguateDirLabels, orderProjectDirs, projectDirFromResource, projectDirsFromResources, filterDirsByProjectName } from '../../../controller/projects/projectPickerCore';
 import { normalizeDirKey } from '../../../util/pathKey';
 
 const ROOT = path.resolve('/ws/projects');
@@ -92,6 +92,18 @@ test('projectPicker: 대소문자만 다른 동명 폴더도 같은 그룹으로
     const hints = disambiguateDirLabels([a, b]);
     assert.strictEqual(hints.get(normalizePathKeyOf(a)), 'alpha');
     assert.strictEqual(hints.get(normalizePathKeyOf(b)), 'beta');
+});
+
+test('projectPicker: 다중 선택 — 같은 프로젝트로 모이면 한 번만, 선택 순서 유지, 프로젝트 아닌 항목은 unresolved', () => {
+    const r = projectDirsFromResources([
+        { path: B, isDirectory: true },
+        { path: path.join(A, 'Main.gpl'), isDirectory: false },
+        { path: A.toLowerCase(), isDirectory: true },
+        { path: ROOT, isDirectory: true },
+        { path: path.join(C, 'Other.gpr'), isDirectory: false },
+    ], [A, B, C]);
+    assert.deepStrictEqual(r.dirs, [B, A, C]);
+    assert.deepStrictEqual(r.unresolved, [ROOT]);
 });
 
 /** 테스트 안에서 반환 Map 의 키를 만드는 helper — 구현과 같은 정규화를 쓴다. */

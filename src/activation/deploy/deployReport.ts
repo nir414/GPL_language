@@ -199,7 +199,7 @@ export async function reportDeploySuccess(ctx: DeployContext, p: DeployReportInp
 		deployOutcomeHistory.push({ mode: modeLabel, signature, timestamp: Date.now(), summary: '업로드 성공' });
 		const summary = `업로드 완료: ${result.projectName}${remotePathInfo} (Stop/Compile/Start 미실행)`;
 		host.log(`[Deploy] ✔ ${summary}`);
-		void vscode.window.showInformationMessage(summary);
+		if (!quickOpts.inBatch) { void vscode.window.showInformationMessage(summary); }
 		outputChannel.show(true);
 		host.lastDeploySnapshot = makeDeploySnapshot({
 			mode: modeLabel,

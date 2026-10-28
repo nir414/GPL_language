@@ -12,7 +12,23 @@ import {
 	isInteractiveDeploy,
 	newErrorLogNoticeParts,
 	remotePathSuffix,
+	uploadBatchSummary,
 } from '../../../activation/deploy/deployModes';
+
+test('deployModes: 여러 프로젝트 Upload Only 요약 — 전부 성공 / 중간 실패 뒤 미실행 / 첫 건 취소', () => {
+	const ok = uploadBatchSummary([{ name: 'A', outcome: 'uploaded' }, { name: 'B', outcome: 'uploaded' }]);
+	assert.strictEqual(ok.success, true);
+	assert.strictEqual(ok.message, 'Upload Only 완료 2/2: A, B (Stop/Compile/Start 미실행)');
+
+	const failed = uploadBatchSummary([
+		{ name: 'A', outcome: 'uploaded' }, { name: 'B', outcome: 'failed' }, { name: 'C', outcome: 'notRun' },
+	]);
+	assert.strictEqual(failed.success, false);
+	assert.strictEqual(failed.message, 'Upload Only 중단: B 실패 / 완료 1/3: A / 미실행: C');
+
+	const cancelled = uploadBatchSummary([{ name: 'A', outcome: 'cancelled' }, { name: 'B', outcome: 'notRun' }]);
+	assert.strictEqual(cancelled.message, 'Upload Only 중단: A 취소 / 완료 0/2 / 미실행: B');
+});
 
 test('deployModes: 스냅샷 라벨 — Upload Only > Build(Quick Compile 포함) > Upload & Start > Deploy & Run', () => {
 	assert.strictEqual(deployModeLabel(true, { uploadOnly: true }), 'Upload Only');

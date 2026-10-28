@@ -4,6 +4,7 @@
  * 규칙(순수 로직은 projectPickerCore.ts):
  * - 명시 리소스(우클릭한 폴더/.gpr/소스 파일)가 있으면 QuickPick 없이 그 프로젝트로 확정한다.
  * - 후보가 1개면 즉시, 2개 이상이면 QuickPick(최근 선택이 맨 위). 선택은 workspaceState에 기억한다.
+ * - 여러 프로젝트에 차례로 적용하는 명령(Upload Only)은 `pickProjectDirs` — 탐색기 다중 선택·다중 선택 QuickPick.
  * - 저장 트리거(autoOnSave)처럼 UI를 띄우면 안 되는 경로는 이 모듈을 쓰지 않는다
  *   (저장 파일 위치로 결정 — extension.ts resolveProjectDirForFile).
  * - **자동화(MCP·URI) 경로도 이 모듈의 QuickPick 을 쓰지 않는다** — 대상 결정 규칙은 `projectTarget.ts`,
@@ -17,11 +18,13 @@ import * as path from 'path';
 import { findProjectDirs } from '../deployment/deployService';
 import { parseGpr } from '../protocol/responseParser';
 import { gprPathInDir, resolveProjectLibraryDirs } from '../../project/sources/projectSources';
-import { disambiguateDirLabels, filterDirsByProjectName, orderProjectDirs, projectDirFromResource } from './projectPickerCore';
+import { disambiguateDirLabels, filterDirsByProjectName, orderProjectDirs, projectDirFromResource, projectDirsFromResources } from './projectPickerCore';
 import { normalizeDirKey } from '../../util/pathKey';
 import type { TargetCandidate } from './projectTarget';
 
 const LAST_PICK_KEY = 'gpl.projectPicker.lastDir';
+/** 다중 선택 QuickPick(Upload Only)의 직전 선택 — 다음에 미리 체크해 둔다. */
+const LAST_MULTI_PICK_KEY = 'gpl.projectPicker.lastDirs';
 /** when-clause: `explorerResourceIsFolder && resourcePath in gpl.projectDirs` */
 export const PROJECT_DIRS_CONTEXT_KEY = 'gpl.projectDirs';
 
@@ -132,6 +135,34 @@ export type PickProjectDirResult =
     | { kind: 'not-found' }   // 명시 리소스가 어느 프로젝트에도 속하지 않음
     | { kind: 'cancelled' };  // 사용자가 QuickPick을 취소
 
+/** QuickPick 항목 — 최근 선택이 맨 위, 동명 프로젝트는 위치 표기, 라이브러리·ProjectName 불일치 표시. */
+function buildPickItems(candidates: string[], last: string | undefined): (vscode.QuickPickItem & { dir: string })[] {
+    const lastKey = last ? normalizeDirKey(last) : '';
+    const libraryOwners = mapLibraryDirs(candidates);
+    // 동명 프로젝트(과제별 복제)는 라벨이 같아 보인다 → 구분에 필요한 최소 상위 폴더를 description 맨 앞에.
+    // 힌트는 **화면에 실제로 뜨는 목록**(중복 제거·정렬 뒤)에서 계산한다 — 같은 폴더가 다른 표기로
+    // 두 번 들어오면 그 둘은 영원히 구분되지 않아 힌트가 안 붙는다.
+    const ordered = orderProjectDirs(candidates, last);
+    const locationHints = disambiguateDirLabels(ordered);
+    return ordered.map(dir => {
+        const folderName = path.basename(dir);
+        const name = projectNameOf(dir);
+        const owner = libraryOwners.get(normalizeDirKey(dir));
+        const notes = [
+            locationHints.get(normalizeDirKey(dir)),
+            name.toLowerCase() !== folderName.toLowerCase() ? `ProjectName=${name}` : undefined,
+            owner ? `라이브러리 · ${owner}에서 참조` : undefined,
+            lastKey && normalizeDirKey(dir) === lastKey ? '최근 선택' : undefined,
+        ].filter(Boolean);
+        return {
+            label: `$(${owner ? 'library' : 'folder'}) ${folderName}`,
+            description: notes.join(' · '),
+            detail: dir,
+            dir,
+        };
+    });
+}
+
 /** 결과 종류까지 필요한 호출측(F5 구성 해석 등)용. */
 export async function pickProjectDirDetailed(opts: PickProjectDirOptions): Promise<PickProjectDirResult> {
     const dirs = opts.dirs ? [...opts.dirs] : await findProjectDirs();
@@ -165,31 +196,7 @@ export async function pickProjectDirDetailed(opts: PickProjectDirOptions): Promi
         return { kind: 'picked', dir: candidates[0], prompted: false };
     }
 
-    const last = workspaceState?.get<string>(LAST_PICK_KEY);
-    const lastKey = last ? normalizeDirKey(last) : '';
-    const libraryOwners = mapLibraryDirs(candidates);
-    // 동명 프로젝트(과제별 복제)는 라벨이 같아 보인다 → 구분에 필요한 최소 상위 폴더를 description 맨 앞에.
-    // 힌트는 **화면에 실제로 뜨는 목록**(중복 제거·정렬 뒤)에서 계산한다 — 같은 폴더가 다른 표기로
-    // 두 번 들어오면 그 둘은 영원히 구분되지 않아 힌트가 안 붙는다.
-    const ordered = orderProjectDirs(candidates, last);
-    const locationHints = disambiguateDirLabels(ordered);
-    const items = ordered.map(dir => {
-        const folderName = path.basename(dir);
-        const name = projectNameOf(dir);
-        const owner = libraryOwners.get(normalizeDirKey(dir));
-        const notes = [
-            locationHints.get(normalizeDirKey(dir)),
-            name.toLowerCase() !== folderName.toLowerCase() ? `ProjectName=${name}` : undefined,
-            owner ? `라이브러리 · ${owner}에서 참조` : undefined,
-            lastKey && normalizeDirKey(dir) === lastKey ? '최근 선택' : undefined,
-        ].filter(Boolean);
-        return {
-            label: `$(${owner ? 'library' : 'folder'}) ${folderName}`,
-            description: notes.join(' · '),
-            detail: dir,
-            dir,
-        };
-    });
+    const items = buildPickItems(candidates, workspaceState?.get<string>(LAST_PICK_KEY));
     const pick = await vscode.window.showQuickPick(items, {
         placeHolder: opts.placeHolder,
         matchOnDescription: true,
@@ -204,6 +211,62 @@ export async function pickProjectDirDetailed(opts: PickProjectDirOptions): Promi
 export async function pickProjectDir(opts: PickProjectDirOptions): Promise<string | undefined> {
     const r = await pickProjectDirDetailed(opts);
     return r.kind === 'picked' ? r.dir : undefined;
+}
+
+export interface PickProjectDirsOptions {
+    placeHolder: string;
+    /** 탐색기 다중 선택. 주면 QuickPick 없이 각 리소스가 속한 프로젝트들로 확정한다(규칙은 단일 선택과 같다). */
+    resources?: readonly vscode.Uri[];
+}
+
+export type PickProjectDirsResult =
+    | { kind: 'picked'; dirs: string[]; unresolved: string[] }
+    | { kind: 'none' }
+    | { kind: 'not-found' }
+    | { kind: 'cancelled' };
+
+/**
+ * 여러 프로젝트 폴더 선택 — 여러 프로젝트에 같은 작업을 차례로 하는 명령(Upload Only)용.
+ * 리소스가 있으면 그대로 해석하고, 없으면 후보 1개는 즉시·여러 개는 다중 선택 QuickPick(직전 다중 선택을 미리 체크).
+ */
+export async function pickProjectDirs(opts: PickProjectDirsOptions): Promise<PickProjectDirsResult> {
+    const dirs = await findProjectDirs();
+
+    if (opts.resources && opts.resources.length > 0) {
+        const resolved = projectDirsFromResources(opts.resources.map(uri => {
+            let isDirectory = false;
+            try { isDirectory = fs.statSync(uri.fsPath).isDirectory(); } catch { /* 없는 경로 → 파일 취급 */ }
+            return { path: uri.fsPath, isDirectory };
+        }), dirs);
+        if (resolved.dirs.length === 0) {
+            vscode.window.showWarningMessage('선택한 항목에서 GPL 프로젝트(.gpr) 폴더를 찾을 수 없습니다.');
+            return { kind: 'not-found' };
+        }
+        return { kind: 'picked', ...resolved };
+    }
+
+    if (dirs.length === 0) {
+        vscode.window.showWarningMessage('워크스페이스에서 .gpr 프로젝트 파일을 찾을 수 없습니다.');
+        return { kind: 'none' };
+    }
+    if (dirs.length === 1) {
+        return { kind: 'picked', dirs: [dirs[0]], unresolved: [] };
+    }
+
+    const last = workspaceState?.get<string>(LAST_PICK_KEY);
+    const checked = new Set((workspaceState?.get<string[]>(LAST_MULTI_PICK_KEY) ?? (last ? [last] : [])).map(normalizeDirKey));
+    const items = buildPickItems(dirs, last).map(item => ({ ...item, picked: checked.has(normalizeDirKey(item.dir)) }));
+    const picks = await vscode.window.showQuickPick(items, {
+        placeHolder: opts.placeHolder,
+        canPickMany: true,
+        matchOnDescription: true,
+        matchOnDetail: true,
+    });
+    if (!picks || picks.length === 0) { return { kind: 'cancelled' }; }
+    const pickedDirs = picks.map(p => p.dir);
+    await workspaceState?.update(LAST_MULTI_PICK_KEY, pickedDirs);
+    if (pickedDirs.length === 1) { await workspaceState?.update(LAST_PICK_KEY, pickedDirs[0]); }
+    return { kind: 'picked', dirs: pickedDirs, unresolved: [] };
 }
 
 /** 감지된 프로젝트 폴더 목록을 context key에 올린다(탐색기 우클릭 메뉴 표시 조건). */

@@ -1432,6 +1432,7 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 
 - `npm test` **1561/1561**(신규 1건 — 픽스처 7개 .gpr 모두 불일치·수정 줄, 일치·대소문자만 다름·들여쓰기 유지·ProjectName 없음·겹침 문구). 시작 시 `node_modules` 가 비어 있어(10-27 17:04 이후, 원인 미상 — 다른 세션 작업 추정) `npm ci` 로 lockfile 그대로 복구했다.
 - BinderR4 읽기 전용 드라이런: 패키지 45, 불일치 42, 고치면 겹치는 쌍 2(`Data`, `Cmd`).
+- VSIX: `dist/gpl-language-support-0.24.0.vsix` 1,650,938 bytes, SHA-256 `89D935FCC8FF9D0B081A7A09C315F2A0EFFD206115469BD4459A2BDEEEDDB54E`(경고는 bundle 권장 1건). `controller-mcp/node_modules` 도 비어 있어 `npm ci` 로 복구한 뒤 패키징했고, MCP 번들에는 미커밋 `controller-mcp/src/guidelines.js` 변경(다른 세션 작업)이 들어 있다.
 
 ### 남은 일
 

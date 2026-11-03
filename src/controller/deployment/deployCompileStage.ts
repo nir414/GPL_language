@@ -257,7 +257,8 @@ export async function runCompilePhase(ctx: DeployContext, project: DeployProject
 
     // 정지 뒤 Compile/Start 직전 — 심각 구간이면 사람에게 계속/취소를 묻는다(2026-10-27 사용자 요청). 측정은 어느 수준에서도
     // 전송을 막지 않고(2026-10-26), 선택은 사람 경로의 모달이 한다. AI·자동화·autoOnSave 는 hook 이 없어 경고만 남기고 계속한다.
-    // (Compile/Start 큐 슬롯의 검사는 그대로 다시 돈다 — 대표 측정값의 정본은 그쪽이고, Show Memory 는 읽기 전용이다.)
+    // (Compile/Start 큐 슬롯의 검사가 대표 측정이다. 이 측정 뒤 상태 변경이 없으면 큐 슬롯은 같은 값을 재사용하고
+    //  `Show Memory` 를 다시 보내지 않는다 — controller/diagnostics/memoryReadings, 2026-11-03.)
     if (options.confirmMemoryCritical) {
         const phase: 'compile' | 'start' = options.skipCompile ? 'start' : 'compile';
         const label = phase === 'start' ? 'Start' : 'Compile';

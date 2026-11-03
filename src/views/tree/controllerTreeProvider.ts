@@ -46,6 +46,9 @@ import {
 } from './treeSections';
 import { toInfoItem, toSectionItem, toThreadItem } from './treeItems';
 import { buildSystemInfoItems } from './systemInfoItems';
+import type { SystemInfoResponses } from './systemInfoItems';
+import { controllerMemoryReadings } from '../../controller/diagnostics/memoryReadings';
+import { PROBE_MEMORY_CMD } from '../../controller/diagnostics/resourceProbes';
 import { detectPauseTransition } from './threadPauseTransition';
 import {
 	buildDiagnosticSnapshotMarkdown as renderDiagnosticSnapshotMarkdown,
@@ -110,6 +113,14 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	/** FTP 캐시가 어느 제어기/경로의 것인지(`ip|/GPL|flash`). 바뀌면 억제 없이 재조회한다. */
 	private ftpCacheKey = '';
 	private sysInfo: SystemInfoItem[] = [];
+	/** 마지막 시스템 정보 응답(메모리 제외 — 메모리 행은 측정값 정본에서 그린다). 측정이 새로 오면 이것으로 행을 다시 만든다. */
+	private sysInfoResponses: Omit<SystemInfoResponses, 'memory'> | undefined;
+	/** 측정값 정본 구독 — 누가 쟀든 메모리 행이 상태 표시줄과 같은 값을 보이게(2026-11-03). */
+	private readonly _memoryReadingSubscription = controllerMemoryReadings.onDidRecord(reading => {
+		if (!this.sysInfoResponses || reading.ip !== getControllerConfig().ip) { return; }
+		this.sysInfo = buildSystemInfoItems({ ...this.sysInfoResponses, memory: reading });
+		this._onDidChangeTreeData.fire(undefined);
+	});
 	/** 마지막 시스템 정보 조회 성공 시각(epoch ms, 0=없음) */
 	private lastSystemInfoRefreshAt = 0;
 	/** 시스템 정보 캐시의 제어기 IP */
@@ -246,6 +257,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this.lastFtpRefreshAt = 0;
 		this.ftpCacheKey = '';
 		this.sysInfo = [];
+		this.sysInfoResponses = undefined;
 		this.lastSystemInfoRefreshAt = 0;
 		this.systemInfoCacheKey = '';
 	}
@@ -493,7 +505,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		this._refreshSystemInFlight = true;
 		try {
 		// TCP 직렬화
-		const memResp = await trySendCommand('Show Memory');
+		// 응답은 전송 경로가 측정값 정본에 기록한다 — 여기서는 해석하지 않는다(행은 정본의 최신 값으로 그린다).
+		const memResp = await trySendCommand(PROBE_MEMORY_CMD);
 		const flashResp = await trySendCommand('Show Flash Free');
 		const cpuResp = await trySendCommand('Show CPU Profile');
 		if (!this._connected) { return; }
@@ -507,7 +520,8 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			this.systemInfoCacheKey = getControllerConfig().ip;
 		}
 
-		this.sysInfo = buildSystemInfoItems({ memResp, flashResp, cpuResp, temperature });
+		this.sysInfoResponses = { flashResp, cpuResp, temperature };
+		this.sysInfo = buildSystemInfoItems({ ...this.sysInfoResponses, memory: controllerMemoryReadings.latest(getControllerConfig().ip) });
 		this._onDidChangeTreeData.fire(undefined);
 		} finally {
 			this._refreshSystemInFlight = false;
@@ -566,6 +580,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	}
 
 	dispose(): void {
+		this._memoryReadingSubscription.dispose();
 		this._debugModeSubscription?.dispose();
 		this._debugModeSubscription = undefined;
 		this.stopPolling();

@@ -9,7 +9,7 @@ import {
 	describeMemoryCheck,
 	formatTrafficTimestamp,
 	getControllerConfig,
-	getLastMemoryCheck,
+	getLatestMemoryAssessment,
 	getTrafficLogOptions,
 	setMemoryStatusObserver,
 	isPolicyError,
@@ -152,14 +152,15 @@ export function activateControllerCommands(host: ExtensionHost): void {
 			if (e.affectsConfiguration('gpl.controller.ip')) { applyMemoryBadge(memoryBadge.reconcile(getControllerConfig().ip)); }
 		}),
 		vscode.commands.registerCommand(SHOW_MEMORY_STATUS_COMMAND, async () => {
-			const last = getLastMemoryCheck();
+			// 누가 쟀든 마지막 측정 — 트리 시스템 정보·배지와 같은 값(controller/diagnostics/memoryReadings).
+			const last = getLatestMemoryAssessment();
 			if (!last) {
-				void vscode.window.showInformationMessage('아직 여유 메모리 검사 결과가 없습니다 — Compile·Start·배포 전에 자동으로 검사합니다.');
+				void vscode.window.showInformationMessage('아직 여유 메모리 측정값이 없습니다 — Compile·Start·배포 전과 시스템 정보 새로고침 때 잽니다.');
 				return;
 			}
 			const at = new Date(last.at).toLocaleTimeString('ko-KR', { hour12: false });
 			const pick = await vscode.window.showInformationMessage(
-				`${last.ip} 여유 메모리 ${last.check.freeMb ?? '?'} MB (${at} 검사)`,
+				`${last.ip} 여유 메모리 ${last.check.freeMb ?? '?'} MB (${at} ${last.command} 측정)`,
 				{ modal: true, detail: describeMemoryCheck(last.check) },
 				'Unload…',
 				'명령 콘솔 기록 보기',

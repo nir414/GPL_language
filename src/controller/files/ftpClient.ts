@@ -17,6 +17,16 @@ import {
 } from './syncManifest';
 import { UploadProgressTracker } from '../deployment/uploadProgress';
 import type { UploadProgressEvent } from '../deployment/uploadProgress';
+import { controllerMemoryReadings } from '../diagnostics/memoryReadings';
+
+/**
+ * FTP 쓰기(업로드·삭제)를 시작할 때와 끝낼 때 알린다 — 그 전·도중에 잰 여유 메모리를 다시 쓰지 않게(memoryReadings, 2026-11-03).
+ * `/GPL` 파일이 제어기 여유 메모리에 잡힐 수 있다고 보고(배포 안내가 /GPL 잔존 파일 정리를 권하는 근거와 같다, 문서 확인 전)
+ * 쓰기 뒤에는 새로 재게 한다.
+ */
+function noteRemoteWrite(host: string, what: string): void {
+	controllerMemoryReadings.noteChange(host, Date.now(), `FTP ${what}`);
+}
 
 const TIMEOUT_MS = 10_000;
 
@@ -192,11 +202,13 @@ export async function listRemoteDirs(host: string, remotePaths: string[]): Promi
  * 제어기 원격 디렉터리 재귀 삭제.
  */
 export async function removeRemoteDir(host: string, remotePath: string): Promise<void> {
+	noteRemoteWrite(host, `삭제 ${remotePath}`);
 	const client = await createClient(host);
 	try {
 		await client.removeDir(remotePath);
 	} finally {
 		client.close();
+		noteRemoteWrite(host, `삭제 ${remotePath}`);
 	}
 }
 
@@ -204,11 +216,13 @@ export async function removeRemoteDir(host: string, remotePath: string): Promise
  * 제어기 원격 파일 삭제.
  */
 export async function removeRemoteFile(host: string, remotePath: string): Promise<void> {
+	noteRemoteWrite(host, `삭제 ${remotePath}`);
 	const client = await createClient(host);
 	try {
 		await client.remove(remotePath);
 	} finally {
 		client.close();
+		noteRemoteWrite(host, `삭제 ${remotePath}`);
 	}
 }
 
@@ -238,6 +252,7 @@ export async function clearRemoteDir(
 	if (base === '/') {
 		throw new Error(`원격 폴더 비우기 대상이 안전하지 않습니다: "${remotePath}" (빈 경로·루트는 허용하지 않음)`);
 	}
+	noteRemoteWrite(host, `비우기 ${base}`);
 	const client = await createClient(host);
 	try {
 		const result: ClearRemoteDirResult = { deleted: [], failed: [] };
@@ -261,6 +276,7 @@ export async function clearRemoteDir(
 		return result;
 	} finally {
 		client.close();
+		noteRemoteWrite(host, `비우기 ${base}`);
 	}
 }
 
@@ -309,6 +325,7 @@ export async function uploadProject(
 	},
 ): Promise<{ uploaded: number; skipped: number; totalBytes: number; manifest: SyncManifestFiles }> {
 	throwIfCancelled(options?.isCancelled);
+	noteRemoteWrite(host, `업로드 ${remoteDir}`);
 	const client = await createClient(host);
 
 	try {
@@ -373,6 +390,7 @@ export async function uploadProject(
 	} finally {
 		client.trackProgress();
 		client.close();
+		noteRemoteWrite(host, `업로드 ${remoteDir}`);
 	}
 }
 
@@ -425,6 +443,7 @@ export async function mirrorProject(
 	manifest: SyncManifestFiles;
 }> {
 	throwIfCancelled(options?.isCancelled);
+	noteRemoteWrite(host, `업로드 ${remoteDir}`);
 	const client = await createClient(host);
 	try {
 		// 1) 원격 파일 목록(재귀). 원격 폴더가 없거나 조회 실패면 빈 목록으로 취급 → 전체 업로드.
@@ -504,6 +523,7 @@ export async function mirrorProject(
 	} finally {
 		client.trackProgress();
 		client.close();
+		noteRemoteWrite(host, `업로드 ${remoteDir}`);
 	}
 }
 
@@ -517,6 +537,7 @@ export async function removeRemoteFiles(
 	onDelete?: (file: string) => void,
 ): Promise<number> {
 	if (files.length === 0) { return 0; }
+	noteRemoteWrite(host, `삭제 ${files.length}개`);
 	const client = await createClient(host);
 	let deleted = 0;
 	try {
@@ -532,6 +553,7 @@ export async function removeRemoteFiles(
 		return deleted;
 	} finally {
 		client.close();
+		noteRemoteWrite(host, `삭제 ${files.length}개`);
 	}
 }
 

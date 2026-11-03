@@ -396,6 +396,13 @@ const SSOT_RULES: readonly SsotRule[] = [
         requires: ['assessUnloadRisk', 'judgeRebootEvidence', 'unloadRiskWarning', 'unloadRiskRefusalDetail', 'unloadTimeoutGuidance'],
         use: 'controller/commands/unloadRisk.assessUnloadRisk / judgeRebootEvidence (전송 가드는 unloadRiskGuard, 저장은 unloadRiskStore)',
     },
+    {
+        what: '여유 메모리 측정값 (`Show Memory` 응답은 전송 경로가 정본에 기록하고 트리·배지·검사가 같은 값을 읽는다 — 화면마다 따로 해석·보관하지 않게)',
+        pattern: /\(\s*['"`]Show Memory['"`]/,
+        ownedBy: ['controller/diagnostics/resourceProbes', 'controller/diagnostics/memoryReadings'],
+        requires: ['PROBE_MEMORY_CMD', 'parseShowMemory', 'controllerMemoryReadings', 'isReadingReusable'],
+        use: 'controller/diagnostics/resourceProbes.PROBE_MEMORY_CMD 로 보내고 controller/diagnostics/memoryReadings.controllerMemoryReadings 를 읽는다',
+    },
 ];
 
 /**

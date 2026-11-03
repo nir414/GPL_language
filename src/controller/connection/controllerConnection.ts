@@ -12,9 +12,12 @@ import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS, commandChannel
 import type { CommandPolicyOptions, CommandChannelTraits } from '../commands/commandPolicy';
 import { parseStatus, parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
 import { effectiveKeepAlive } from './connectionSession';
-import { checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryPrecheck } from '../diagnostics/memoryGuard';
+import { assessMemory, checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryGuardOptions, MemoryPrecheck } from '../diagnostics/memoryGuard';
 import { guardBeforeSend, observeAfterResponse, unloadFailureGuidance } from '../commands/unloadRiskGuard';
-import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast } from '../diagnostics/memoryNotice';
+import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast, memoryBadge } from '../diagnostics/memoryNotice';
+import { PROBE_MEMORY_CMD } from '../diagnostics/resourceProbes';
+import { controllerMemoryReadings, isMemoryProbeCommand } from '../diagnostics/memoryReadings';
+import type { MemoryReading } from '../diagnostics/memoryReadings';
 import { RecentCommandLog } from './recentCommands';
 import type { RecentCommandRecord } from './recentCommands';
 
@@ -407,18 +410,49 @@ export function sendCommandDetailed(
 // ── 메모리 경고 알림 (2026-10-23 Sample Prep 「경고 알림이 Compile·Start·배포마다 쌓임」) ──────────────
 // 판정(차단·AI 결과 필드)은 종전 그대로이고, 사람 화면의 알림만 controller/diagnostics/memoryNotice.ts 규칙으로 줄인다:
 // 나빠질 때만 알림 · 같은 경고 반복은 Output 한 줄 · 한 작업 안에서는 최대 1회 · 지속 상태는 상태 표시줄 항목.
+//
+// 측정값은 controller/diagnostics/memoryReadings 가 정본이다(2026-11-03). 누가 보냈든 `Show Memory` 응답은 내부 송신
+// (sendCommandDetailedInternal)이 기록하고, 상태 표시줄 배지·상세는 그 기록을 따른다 — 트리 시스템 정보·대시보드가 잰 값과
+// Compile/Start 검사가 잰 값이 서로 다른 화면에 따로 보이지 않게. 알림(토스트)만 작업 검사가 정한다.
 const memoryNotices = new MemoryNoticeTracker();
 let _memoryStatusObserver: ((ip: string, check: MemoryPrecheck, badge: { text: string; tooltip: string } | null | undefined) => void) | null = null;
-let _lastMemoryCheck: { ip: string; check: MemoryPrecheck; at: number } | undefined;
+/** 작업 검사(checkMemoryBeforeOperation)의 마지막 결과. `at` = 검사 시각, `measuredAt` = 그 값을 잰 시각(재사용이면 더 이르다). */
+let _lastMemoryCheck: { ip: string; check: MemoryPrecheck; at: number; measuredAt: number } | undefined;
+/** 누가 쟀든 마지막 측정의 판정(상태 표시줄 상세용). */
+let _latestMemoryAssessment: { ip: string; check: MemoryPrecheck; at: number; command: string } | undefined;
 
-/** 메모리 검사 결과 관찰자 — 상태 표시줄 경고 항목이 받는다(badge: null 숨김 / undefined 유지). */
+function readMemoryGuardOptions(): MemoryGuardOptions {
+	const settings = vscode.workspace.getConfiguration('gpl.controller');
+	// `criticalMb` 가 종전 `blockMb`(deprecated) 를 대체한다 — 사용자가 옛 키만 설정해 뒀으면 그 값을 심각 기준으로 쓴다.
+	const legacyBlock = settings.inspect<number>('memoryGuard.blockMb');
+	const legacyValue = legacyBlock?.workspaceFolderValue ?? legacyBlock?.workspaceValue ?? legacyBlock?.globalValue;
+	const criticalInspect = settings.inspect<number>('memoryGuard.criticalMb');
+	const criticalSet = criticalInspect?.workspaceFolderValue ?? criticalInspect?.workspaceValue ?? criticalInspect?.globalValue;
+	return {
+		warnMb: settings.get<number>('memoryGuard.warnMb', DEFAULT_MEMORY_GUARD.warnMb),
+		criticalMb: criticalSet ?? legacyValue ?? DEFAULT_MEMORY_GUARD.criticalMb,
+	};
+}
+
+controllerMemoryReadings.onDidRecord((reading: MemoryReading) => {
+	const check = assessMemory(reading.raw, readMemoryGuardOptions());
+	_latestMemoryAssessment = { ip: reading.ip, check, at: reading.at, command: reading.command };
+	try { _memoryStatusObserver?.(reading.ip, check, memoryBadge(check) ?? null); } catch { /* 관찰자 예외는 무시 */ }
+});
+
+/** 메모리 측정 관찰자 — 상태 표시줄 경고 항목이 받는다(badge: null 숨김 / undefined 유지). 모든 측정마다 불린다. */
 export function setMemoryStatusObserver(fn: ((ip: string, check: MemoryPrecheck, badge: { text: string; tooltip: string } | null | undefined) => void) | null): void {
 	_memoryStatusObserver = fn;
 }
 
-/** 마지막 메모리 검사(상태 표시줄 클릭 상세용). */
-export function getLastMemoryCheck(): { ip: string; check: MemoryPrecheck; at: number } | undefined {
+/** 마지막 작업 검사(배포가 「정지 뒤 Compile 직전 측정」을 고를 때 쓴다). */
+export function getLastMemoryCheck(): { ip: string; check: MemoryPrecheck; at: number; measuredAt: number } | undefined {
 	return _lastMemoryCheck;
+}
+
+/** 누가 쟀든 마지막 측정의 판정 — 상태 표시줄 상세·트리와 같은 값. */
+export function getLatestMemoryAssessment(): { ip: string; check: MemoryPrecheck; at: number; command: string } | undefined {
+	return _latestMemoryAssessment;
 }
 
 /** 상세 문구(임계값·안내) — 상태 표시줄 클릭·알림의 「자세히」가 쓴다. 문구 정본은 memoryNotice.formatMemoryDetail. */
@@ -440,29 +474,31 @@ export function beginMemoryNoticeScope(ip: string): () => void {
 	};
 }
 
-/** 배포는 업로드 전, Compile/Start는 해당 명령의 직렬 큐 슬롯에서 각각 현재 Free를 확인한다. */
+/**
+ * 배포는 업로드 전, Compile/Start는 해당 명령의 직렬 큐 슬롯에서 각각 현재 Free를 확인한다.
+ * 측정 뒤 상태 변경(상태 변경 명령·FTP 쓰기)이 없고 MEMORY_READING_REUSE_MS 안의 측정이 있으면 다시 재지 않는다
+ * (2026-11-03 — 「심각이면 묻기」 검사 직후의 큐 슬롯 검사가 같은 값을 한 번 더 재던 중복). Stop·Compile·업로드 뒤에는 값이
+ * 실제로 달라지므로 그때는 새로 잰다.
+ */
 export async function checkMemoryBeforeOperation(config?: Partial<ControllerConfig>, insideQueue = false): Promise<MemoryPrecheck> {
-	const settings = vscode.workspace.getConfiguration('gpl.controller');
-	// `criticalMb` 가 종전 `blockMb`(deprecated) 를 대체한다 — 사용자가 옛 키만 설정해 뒀으면 그 값을 심각 기준으로 쓴다.
-	const legacyBlock = settings.inspect<number>('memoryGuard.blockMb');
-	const legacyValue = legacyBlock?.workspaceFolderValue ?? legacyBlock?.workspaceValue ?? legacyBlock?.globalValue;
-	const criticalInspect = settings.inspect<number>('memoryGuard.criticalMb');
-	const criticalSet = criticalInspect?.workspaceFolderValue ?? criticalInspect?.workspaceValue ?? criticalInspect?.globalValue;
-	const options = {
-		warnMb: settings.get<number>('memoryGuard.warnMb', DEFAULT_MEMORY_GUARD.warnMb),
-		criticalMb: criticalSet ?? legacyValue ?? DEFAULT_MEMORY_GUARD.criticalMb,
-	};
+	const options = readMemoryGuardOptions();
 	const send = insideQueue ? sendCommandDetailedInternal : sendCommandDetailed;
 	const ip = { ...getControllerConfig(), ...config }.ip;
-	return checkMemory(async () => (await send('Show Memory', config, { waitForStatusClose: true })).raw, options, check => {
+	const reused = controllerMemoryReadings.reusable(ip, Date.now());
+	const probe = reused
+		? async () => reused.raw
+		: async () => (await send(PROBE_MEMORY_CMD, config, { waitForStatusClose: true })).raw;
+	return checkMemory(probe, options, check => {
+		const at = Date.now();
 		// Output 에는 매번 전문(긴 안내 포함)을 남긴다 — AI 결과 필드(memoryPrecheck.message)와 같은 문장.
-		logTraffic('---', `memory: ${check.level} — ${check.message}`);
-		_lastMemoryCheck = { ip, check, at: Date.now() };
+		const reuseNote = reused ? ` (재사용 — ${at - reused.at} ms 전 ${reused.command} 측정, 그 뒤 상태 변경 없음)` : '';
+		logTraffic('---', `memory: ${check.level} — ${check.message}${reuseNote}`);
+		_lastMemoryCheck = { ip, check, at, measuredAt: reused ? reused.at : at };
 		const decision = memoryNotices.evaluate(ip, check);
 		if ((check.level === 'warning' || check.level === 'critical') && !decision.toast) {
 			logTraffic('---', `memory: 알림 생략(${decision.reason}) — 상태 표시줄에 표시 중`);
 		}
-		try { _memoryStatusObserver?.(ip, check, decision.badge); } catch { /* 관찰자 예외는 무시 */ }
+		// 배지는 측정 기록(controllerMemoryReadings.onDidRecord)이 갱신한다 — 여기서 다시 부르지 않는다.
 		if (decision.toast) {
 			// 「Unload…」: 메모리 회수 수단을 알림에서 바로 — Unload 로 상당 부분 회복됨을 사용자가 확인(2026-10-27). 위험 판정은 그 명령이 한다.
 			void vscode.window.showWarningMessage(formatMemoryToast(check), 'Unload…', '자세히').then(pick => {
@@ -589,6 +625,12 @@ function sendCommandDetailedInternal(
 		? new ResponseBodyStreamer(line => logTraffic(' | ', line), { maxChars: trafficOpts.maxResponseChars })
 		: null;
 
+	// 메모리 측정값 정본(memoryReadings): 상태를 바꿀 수 있는 명령은 보내는 순간 그 전 측정을 재사용 불가로 만든다
+	// (응답 실패여도 제어기가 실행했을 수 있다). 분류가 unknown 인 명령도 읽기 전용이 아니므로 바꾼 것으로 친다.
+	if (!isReadOnlyConsoleCommand(command)) {
+		controllerMemoryReadings.noteChange(cfg.ip, Date.now(), command.trim());
+	}
+
 	return sendConsoleCommand(
 		command,
 		{ ip: cfg.ip, port: cfg.port, preferIPv4: cfg.preferIPv4 },
@@ -608,6 +650,10 @@ function sendCommandDetailedInternal(
 		// 정체 확인(controllerIdentity)이 같은 작업 안의 STATUS 를 재사용할 수 있게 마지막 수신을 기억한다.
 		if (response.meta.statusTagReceived) {
 			_lastConsoleStatus = { ip: cfg.ip, at: Date.now(), command, statusCode: parseStatus(response.raw).code };
+			// 누가 보냈든(작업 검사·트리 시스템 정보·대시보드·AI 상태 조회) `Show Memory` 응답은 여기서 한 번 기록한다.
+			if (isMemoryProbeCommand(command)) {
+				controllerMemoryReadings.record(cfg.ip, response.raw, Date.now(), command.trim().replace(/\s+/g, ' '));
+			}
 		}
 		return response;
 	});

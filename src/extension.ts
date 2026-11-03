@@ -15,6 +15,9 @@ import * as vscode from 'vscode';
 import { EXTENSION_VERSION, getTraceServerLevel, isTraceOn } from './config';
 import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection } from './controller/connection/controllerConnection';
 import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployment/deployRecord';
+import { getControllerConfig } from './controller/connection/controllerConnection';
+import { normalizeAbsoluteRemoteDir } from './controller/files/ftpClient';
+import { onRemoteFolderCleared } from './controller/files/remoteFolderClear';
 import { attachSyncManifestStore } from './controller/files/syncManifest';
 import { setRuntimeConsoleHealthProvider, RuntimeConsoleHealth } from './controller/debugging/debugBridge';
 import { activateProjectPicker } from './controller/projects/projectPicker';
@@ -96,9 +99,17 @@ export function activate(context: vscode.ExtensionContext) {
 	// F5 의 deployBeforeAttach(deployService.deploy() 직접 호출)나 MCP 경유 배포는 Compile 이 성공해도 배지가 남았다.
 	// recordCompiled 는 Compile 성공 확정 지점·업로드 스타트의 Start 성공 지점·`GPL: Start`(-compile) 성공 지점에서만 발화하므로
 	// 해제 조건과 일치한다. 상태는 제어기별이라 기록의 ip 로 해제한다(§1-GN).
-	context.subscriptions.push(onDidRecordCompiled(rec => h.clearCompileStale(rec.projectName, rec.ip)));
+	// 그 Compile 에 함께 포함된 ProjectLibrary(전이 포함)도 함께 해제한다 — 라이브러리를 Upload Only 한 뒤 쓰는 쪽이 Compile 에
+	// 성공해도 라이브러리 항목이 남던 문제(2026-11-03 inbox ①).
+	context.subscriptions.push(onDidRecordCompiled(rec => h.clearCompileStaleAfterCompile(rec.projectName, rec.ip, rec.projectDir)));
+	// /GPL 에서 프로젝트 폴더가 지워지면(트리 비우기·Unload -all 전 비우기·AI clear_remote_folder) 제어기에 그 소스가 없다 — 해제(inbox ④).
+	context.subscriptions.push(onRemoteFolderCleared(e => {
+		if (e.base.toLowerCase() !== normalizeAbsoluteRemoteDir(getControllerConfig().ftpBasePath).toLowerCase()) { return; }
+		h.releaseCompileStale(e.deleted, `${e.base} 에서 폴더를 지움(제어기에 소스 없음)`, e.host);
+	}));
 	// "컴파일 검증 필요" 상태도 같은 workspaceState 에 영속한다 — 창을 다시 열어도 "아직 검증 안 됨"은 사실 그대로다(§1-GN).
 	h.compileStaleProjects.attach(context.workspaceState);
+	h.backfillCompileStaleLibraryFlags();
 
 	// 업로드 동기화 지문(syncManifest) — 미러/업로드의 스킵 판정을 크기뿐 아니라 내용(SHA-1) 기준으로 만든다.
 	// 기록 대상이 "그 제어기 경로에 올려 둔 내용"이라 워크스페이스에 매이지 않는다 → globalState.

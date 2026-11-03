@@ -24,7 +24,8 @@ import { EditorBreakpointSync } from '../controller/debugging/breakpointSync';
 import { ControllerBreakpointMirror } from '../controller/debugging/breakpointMirror';
 import { checkProjectName, checkRemotePath, describeProjectNameProblem } from '../controller/projects/projectNameGuard';
 import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controller/deployment/deployLock';
-import { CompileStaleInfo, CompileStaleTracker } from '../controller/deployment/compileStale';
+import { CompileStaleInfo, CompileStaleTracker, describeCompiledRelease, describeRemaining } from '../controller/deployment/compileStale';
+import { isLibraryProjectDir, readCompiledLibraryValues } from '../controller/deployment/compiledLibraries';
 import { ControllerEventLog } from '../controller/diagnostics/recentEvents';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
 import { ControllerTreeProvider, RuntimeErrorContext } from '../views/tree/controllerTreeProvider';
@@ -200,9 +201,12 @@ export class ExtensionHost {
 
 	markCompileStale(projectName: string, reason: string, projectDir?: string): void {
 		const ip = this.compileStaleIp();
-		const info = this.compileStaleProjects.mark(ip, projectName, reason, projectDir);
+		const library = projectDir ? isLibraryProjectDir(projectDir) : undefined;
+		const info = this.compileStaleProjects.mark(ip, projectName, reason, projectDir, Date.now(), library);
 		if (!info) { return; }
-		this.log(`[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (Start 는 -compile 로 컴파일 — 소스 에러가 있으면 Start 실패, 먼저 Quick Compile 권장)`);
+		this.log(info.library
+			? `[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (ProjectStart 없는 라이브러리 — 이를 ProjectLibrary 로 쓰는 실행 프로젝트의 Compile/Start 성공이 함께 해제)`
+			: `[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (Start 는 -compile 로 컴파일 — 소스 에러가 있으면 Start 실패, 먼저 Quick Compile 권장)`);
 		this.syncCompileStaleViews(ip);
 	}
 
@@ -210,8 +214,38 @@ export class ExtensionHost {
 		const done = this.compileStaleProjects.clear(ip, projectName);
 		// 없던 항목이면 조용히 끝낸다 — 같은 Compile이 직접 호출과 onDidRecordCompiled로 두 번 들어와도 로그가 겹치지 않는다.
 		if (!done) { return; }
-		this.log(`[Deploy] 컴파일 검증 필요 상태 해제: ${projectName}${done.remaining.length > 0 ? ` (남은 미검증 ${done.remaining.length}개: ${done.remaining.map(i => i.projectName).join(', ')})` : ''}`);
+		this.log(`[Deploy] 컴파일 검증 필요 상태 해제: ${projectName}${describeRemaining(done.remaining)}`);
 		this.syncCompileStaleViews(ip);
+	}
+
+	/**
+	 * Compile 성공 기록(onDidRecordCompiled)의 해제 — 그 프로젝트와, `.gpr` 의 `ProjectLibrary`(전이 포함)로 함께 컴파일된
+	 * 라이브러리 항목을 한 줄 로그로 지운다(2026-11-03 inbox ①). 해제한 것이 없으면 조용하다.
+	 */
+	clearCompileStaleAfterCompile(projectName: string, ip: string, projectDir: string | undefined): void {
+		const libraries = projectDir ? readCompiledLibraryValues(projectDir) : [];
+		const done = this.compileStaleProjects.clearCompiled(ip, projectName, libraries);
+		const line = describeCompiledRelease(done);
+		if (!line) { return; }
+		this.log(`[Deploy] ${line}`);
+		this.syncCompileStaleViews(ip);
+	}
+
+	/** 이름 여럿 해제 — 제어기 /GPL 에서 폴더가 지워졌거나 사용자가 목록에서 지웠을 때. `why` 는 로그 꼬리. */
+	releaseCompileStale(projectNames: readonly string[], why: string, ip: string = this.compileStaleIp()): void {
+		const done = this.compileStaleProjects.clearMany(ip, projectNames);
+		if (done.cleared.length === 0) { return; }
+		this.log(`[Deploy] 컴파일 검증 필요 상태 해제: ${done.cleared.map(i => i.projectName).join(', ')} — ${why}${describeRemaining(done.remaining)}`);
+		this.syncCompileStaleViews(ip);
+	}
+
+	/** 라이브러리 여부를 모르는 저장 항목(필드 도입 전)을 `.gpr` 로 보충한다 — 활성화 때 한 번. */
+	backfillCompileStaleLibraryFlags(): void {
+		for (const info of this.compileStaleProjects.list()) {
+			if (info.library !== undefined || !info.projectDir) { continue; }
+			const library = isLibraryProjectDir(info.projectDir);
+			if (library !== undefined) { this.compileStaleProjects.setLibrary(info.ip, info.projectName, library); }
+		}
 	}
 
 	/**

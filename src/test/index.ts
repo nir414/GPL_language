@@ -106,6 +106,7 @@ import './controller/automation/agentSetupChecks.test';
 import './activation/ai/aiAgentSetup.test';
 import './controller/connection/idlePing.test';
 import './controller/connection/eventLoopStall.test';
+import './controller/connection/lossContext.test';
 import './controller/commands/commandPolicy.test';
 import './controller/automation/uriDispatch.test';
 import './controller/automation/agentBridge.test';

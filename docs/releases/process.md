@@ -16,11 +16,13 @@
 
 ## 버전 정책
 
-SemVer를 따른다.
+번호 형식은 SemVer(`MAJOR.MINOR.PATCH`)를 따르되, **어느 자리를 올릴지는 아래 저장소 방침이 정한다.**
+(2026-11-03 사용자 결정: 기능 추가마다 minor를 올려 `0.18.0`(10-26) → `0.27.1`(11-03)로 약 일주일 만에 minor가
+열 번 올라간 것을 바로잡는다.)
 
-- **MAJOR (`x.0.0`)**: 하위 호환이 깨지는 변경
-- **MINOR (`0.x.0`)**: 기능 추가, 동작 확장
-- **PATCH (`0.0.x`)**: 버그 수정, 안정화, 문서/내부 개선
+- **PATCH (`0.0.x`) — 기본값**: 기능 추가·동작 확장·버그 수정·안정화·문서/내부 개선을 모두 포함한다. 릴리즈 한 번에 patch +1.
+- **MINOR (`0.x.0`)**: 사용자가 요청할 때만 올린다. 여러 patch에 걸친 기능 묶음이 마무리됐다고 보이면 제안까지만 하고 직접 올리지 않는다.
+- **MAJOR (`x.0.0`)**: 하위 호환이 깨지는 변경. 범위와 전환 방법을 사용자에게 먼저 알린다.
 
 예:
 
@@ -82,7 +84,7 @@ SemVer를 따른다.
 
 ### 1) 공식 PATCH 릴리즈
 
-버그 수정/소규모 개선을 정식 릴리즈할 때.
+기본 경로. 기능 추가·버그 수정·개선을 정식 릴리즈할 때.
 
 권장 흐름:
 
@@ -102,7 +104,7 @@ SemVer를 따른다.
 
 ### 2) 공식 MINOR / MAJOR 릴리즈
 
-새 기능 추가나 큰 변경일 때.
+사용자가 minor를 요청했거나, 하위 호환을 깨는 major 변경일 때.
 
 1. `node scripts/bump-version.js minor` 또는 `major`
 2. `CHANGELOG.md` 내용 보강 + 빈 섹션 제거
@@ -162,16 +164,16 @@ git status --short
 
 ### 2. 버전 올리기
 
-예: minor 릴리즈
-
-```powershell
-node scripts/bump-version.js minor
-```
-
-예: patch 릴리즈
+예: patch 릴리즈(기본)
 
 ```powershell
 node scripts/bump-version.js patch
+```
+
+예: minor 릴리즈(사용자가 요청한 경우)
+
+```powershell
+node scripts/bump-version.js minor
 ```
 
 ### 3. 릴리즈 문서 정리

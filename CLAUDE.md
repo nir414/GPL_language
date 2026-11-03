@@ -49,9 +49,10 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 ## 작업을 마칠 때 반드시 남길 기록 (기록 규칙)
 
 - **사용자 대면 기능 변경을 마치면 별도 요청을 기다리지 말고 검증·버전 결정·VSIX 패키징까지 완료한다.** 사용자가
-  패키징하지 말라고 명시한 경우만 생략한다. 버전은 `docs/releases/process.md`의 SemVer 정본에 따라 호환되는 기능 추가는
-  minor, 버그 수정·안정화·문서/내부 개선은 patch로 올린다. 하위 호환을 깨는 major 변경은 범위와 전환 방법을 사용자에게
-  먼저 알린다. `npm run package`는 patch만 올리므로 minor/major에는 사용하지 않는다. 패키징 뒤 포함 파일을 고쳤다면
+  패키징하지 말라고 명시한 경우만 생략한다. 버전은 `docs/releases/process.md`의 버전 정책(정본)에 따라 **기능 추가를
+  포함해 기본적으로 patch(`0.0.x`)만 올린다**(사용자 방침 2026-11-03 — 기능마다 minor를 올려 버전이 너무 빨리 올랐다).
+  minor는 사용자가 요청할 때만 올리고(기능 묶음이 마무리됐다고 보이면 제안까지만), 하위 호환을 깨는 major 변경은 범위와
+  전환 방법을 사용자에게 먼저 알린다. `npm run package`는 patch만 올리므로 minor/major에는 사용하지 않는다. 패키징 뒤 포함 파일을 고쳤다면
   `npm run package:no-bump`로 같은 버전을 다시 만든다. package/package-lock, CHANGELOG, 버전을 표시하는 README와
   `docs/ai-handoff.md`를 함께 맞추고, 생성된 VSIX 경로·크기·SHA-256과 패키징 경고/실패 여부를 최종 보고한다.
   Git 커밋·태그·push·공식 릴리즈는 사용자가 명시적으로 요청한 경우에만 수행한다.

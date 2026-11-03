@@ -4,9 +4,9 @@ description: "Use when changing package version, README version text, building t
 
 # GPL Release and Validation Workflow
 
-- 코드 수정이 있으면 `docs/releases/process.md`의 SemVer 정책에 따라 버전을 결정한다. 호환되는 기능 추가·동작 확장은
-  minor, 버그 수정·안정화·문서/내부 개선은 patch, 하위 호환을 깨는 변경은 major다. major는 사용자에게 영향과
-  전환 방법을 먼저 알린다.
+- 코드 수정이 있으면 `docs/releases/process.md`의 버전 정책에 따라 버전을 결정한다. **기본은 patch**다 — 기능 추가·
+  동작 확장·버그 수정·안정화·문서/내부 개선 모두 patch(`0.0.x`)로 올린다(사용자 방침 2026-11-03). minor는 사용자가
+  요청할 때만 올리고, 하위 호환을 깨는 변경은 major로 사용자에게 영향과 전환 방법을 먼저 알린다.
 - `README.md`에 현재 버전 표기가 있다면 `package.json`과 반드시 일치해야 한다.
 - 코드 수정 작업은 **항상 VSIX 패키징까지 완료**한다.
 - 검증/패키징 순서는 기본적으로 다음을 따른다.

@@ -1470,7 +1470,7 @@ README 를 연 상태에서 "검토후 개선해줘".
 ### 검증
 
 - `npm test` **1584/1584**, `controller-mcp` `node --test` 165/165, `node --check index.js`. 새 판단 로직은 없고 기존 순수 함수(`classifyRemoteClearRoot`, 테스트 있음)를 배선만 했다.
-- VSIX: 아래 기록 커밋 참조.
+- VSIX: `dist/gpl-language-support-0.27.3.vsix` 1,661,415 bytes(358 files), SHA-256 `E8E82F3C94D006F0239F4FF15CF4C58ACA2461556D8191958B51BC9B5DE73299`. 다른 세션(gpl-language-e2)의 미커밋 변경이 작업 트리에 있어 3b92212 기준 worktree(`%TEMP%\gpl-wt0273`, 실제 `npm ci`)에서 빌드했다 — 작업 트리에서 먼저 만든 364 files 판은 폐기.
 - UI·실기 미확인 — §3 맨 위 항목.
 
 ### 남은 일

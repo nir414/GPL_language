@@ -32,7 +32,7 @@ GPL의 String은 내부적으로 기본 Class 인프라를 공유하며 다음�
 |------|------|------|---------|
 | `string.Length` | Property | 문자열의 문자 수 반환 | `Dim n As Integer: n = s.Length` |
 | `string.Substring(start, length)` | Method | 지정 시작 위치(0-based 추정)부터 length 길이의 부분 문자열 | (필요 시 `Mid()` 우선 권장) |
-| `string.Split(sep)` | Method | 구분자 문자 기준 분할 후 배열 반환 | `parts = s.Split(",")` |
+| `string.Split(sep)` | Method | 구분자 문자 기준 분할 후 배열 반환. **긴 문자열은 런타임 `-506`** — 16,811자에서 실패, 641자는 정상(경계 미측정). 큰 글은 `InStr`+`Mid`로 직접 자른다([common-mistakes 0-14](common-mistakes.md)) | `parts = s.Split(",")` |
 | `string.ToLower()` | Method | 소문자 문자열 복사본 반환 | `lower = s.ToLower()` |
 | `string.ToUpper()` | Method | 대문자 문자열 복사본 반환 | `upper = s.ToUpper()` |
 | `string.Trim()` | Method | 앞뒤 공백/지정 문자 제거 | `trimmed = s.Trim()` |
@@ -57,7 +57,7 @@ GPL의 String은 내부적으로 기본 Class 인프라를 공유하며 다음�
 | `Asc(string)` | 첫 문자 ASCII 코드 | Integer | 0 길이면 호출 피함 |
 | `Chr(code)` | 코드값을 문자로 | 1 문자 String |  |
 | `Format(expr, fmt)` | 숫자 → 문자열 포맷 | | 사용 시 fmt 사양 문서 참고 |
-| `CStr(expr)` | 표현식 문자열화 | |  |
+| `CStr(expr)` | 표현식 문자열화 | 큰 값은 소문자 지수 표기 | `CStr(1E+32)` → `"1e+32"`(2026-11-03 실기) |
 | `CInt(expr)` | 문자열/숫자 → Integer | 예외 시 Catch 필요 | `valInt = CInt(numText)` |
 | `CDbl(expr)` | 표현식 → Double |  |  |
 | `CSng(expr)` | 표현식 → Single |  |  |
@@ -102,6 +102,9 @@ Dim tail As String
 - `CInt`, `CDbl` 사용 시 변환 실패 가능성이 있는 외부 입력은 Try...Catch로 감싸 예외 처리.
 - 파일/네트워크로부터 읽은 값은 길이/포맷 검증 후 변환.
 - `Asc` 호출 전 길이 0 여부 확인.
+- `CStr`은 큰 값을 **소문자 `e` 지수 표기**로 쓴다(`CStr(1E+32)` = `"1e+32"`, 2026-11-03 Sample Prep 실기). 지수 표기를 받지 않는
+  파서로 다시 읽을 값이면 따로 처리한다. `Format(1E+32, "0.000")`은 `100000000000000005366162204393472.000`(33자리)이 되어
+  이것도 Sample Prep의 `CDbl` 기반 파서가 다시 읽지 못했다(원인 미확인).
 
 ## 9. 비트 문자열 함수(ToBitString / FromBitString)
 
@@ -135,6 +138,10 @@ Console.WriteLine(FromBitString(stg, Short, 1))
 | 경로 구분자 탐색 | For + Mid 루프 | InStrRev 미지원 |
 | 확장자 제거/추출 | 뒤에서 `/` 탐색 후 Mid | 경계 안전성 |
 | 길이 체크 후 슬라이스 | If Len(s) >= n Then Mid(...) | 인덱스 오류 방지 |
+| 수 KB 이상 글을 줄로 나누기 | `InStr` + `Mid` 루프 | `Split`은 긴 입력에서 `-506` |
+
+> 성능 참고(2026-11-03 Sample Prep APON 파서, 실기): 글자 단위 파서는 한 줄(약 50자)당 약 4.6 ms였다(303줄 parse 1,465 ms).
+> 노드 객체마다 자식 배열을 미리 `ReDim`하면 큰 트리 두 개를 함께 들 때 `-200` *No memory* 후보가 되므로 지연 할당한다.
 
 ## 11. 빠른 레퍼런스(치트시트)
 

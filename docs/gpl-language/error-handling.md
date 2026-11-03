@@ -159,6 +159,12 @@ End Try
 Core_ErrorHandler.throwError(-1001, "Configuration invalid")
 ```
 
+> **주의 — 넣은 메시지 글은 받는 쪽 `Message`로 오지 않는다.** `Exception.Message`는 저장된 글이 아니라
+> `ErrorCode`(와 RobotNum·Axis·Qualifier)로 만들어 내는 글이다([문서](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/exc_message.htm)).
+> 2026-11-03 Sample Prep 실기: `EXC.ThrowError(-1, "APON line 2 col 4: ...")`로 던진 예외를 `Catch`에서 읽자
+> `ex.Message` = `*Error Code (-1)*`였다. 받는 쪽에 설명을 넘겨야 하면 던지기 전에 객체 필드(예: `LastError`)에
+> 두고 받는 쪽이 그 필드를 읽는다. `throwError`에 넘긴 글은 던지는 쪽 로그용으로만 본다.
+
 ### throwError (로봇 에러 정보 포함)
 ```vb
 Core_ErrorHandler.throwError(-1038, "Motion error", 1, &HF)

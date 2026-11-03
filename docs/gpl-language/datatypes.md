@@ -24,6 +24,7 @@
 ## 자동/명시적 타입 변환
 - 모든 정수형은 부동소수점 연산 시 자동 변환
 - 명시적 변환 함수: CBool, CByte, CDbl, CInt, CShort, CSng, CStr, Hex
+- `CStr`은 큰 값을 소문자 지수 표기로 쓴다: `CStr(1E+32)` = `"1e+32"`(2026-11-03 실기, [strings §8](strings.md))
 
 ## 상수
 - GPL_CR: ASCII CR(13)

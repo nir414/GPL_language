@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.1** (README 검토·개선, 문서 변경만. 상세는 §1-GP.)
-- **직전 세션: §1-GP** — 사용자 요청 "검토 후 개선해줘"(README). 2026-08-18 README 정책(제어기 연동 → 디버깅 → AI → 언어 기능 순)과 어긋나 있던 배치를 바로잡고, 0.17.0 에서 바뀐 제어기 프로젝트 디버깅의 옛 문장(작업 영역·파일을 저장 폴더에 남기고 저장 구성으로 재연결)을 지웠다. 0.26~0.27 기능(컴파일 검증 필요·Unload Project·uploadLibraries)을 안내에 반영. 명령 이름·설정 키·로컬 링크는 manifest 와 대조해 전부 일치.
+- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.2** (연결 유실 정황 — 절전 복귀·직전 명령·다시 연결, 1584/1584. 상세는 §1-GQ.)
+- **직전 세션: §1-GQ** — 사용자 보고 "제어기가 실제로 죽지 않았는데도 연결이 끊김" → 사후 스냅샷 30건(10-28~11-02)·Windows 이벤트 로그 대조: 5건은 PC 최신 대기 종료와 초 단위 일치(제어기 무관), 깨어 있는 중 8건은 직결 링크 단절, 8건은 Stop -all·Start·Execute 뒤 2분 안(11-02 09:18 묶음은 재부팅 정황). 유실 처리에 절전 복귀 판정(이벤트 로그)·직전 상태 변경 명령 절·알림 「다시 연결」을 더했다(자동 재접속은 여전히 안 함).
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-11-03, §1-GQ) 0.27.2 유실 정황 — 실사용 확인.** ① 제어기에 연결한 채 PC 를 절전(덮개 닫기·`Win+X → 종료 → 절전`)했다가 깨우면 알림이 「PC 절전 복귀 HH:MM:SS (절전 N분) 직후에 끊겼습니다 … 제어기 문제로 보지 않습니다」이고 Output 에 `[Controller] 계기: PC 절전 복귀 …`, 사후 스냅샷 판정 절에 `계기:` 줄과 「PC 절전/복귀」 절 ② 「다시 연결」이 네트워크가 올라온 뒤 정상 연결되는지(아직 안 올라왔으면 종전처럼 연결 실패 알림) ③ `Stop -all` 뒤 끊기면 「직전 상태 변경 명령」 절과 Output 한 줄에 `Stop -all → STATUS 0 (N s 전)` ④ 알림이 종전보다 몇 초 늦게 뜨는지(이벤트 로그 조회 약 4 s — 도달성 판정과 병렬). 남은 원인 후보: 깨어 있는 중 링크 단절 8건(USB 랜카드 RTL8153 전원 절약·케이블·제어기 NIC) — 재발 시 사후 스냅샷과 `Get-WinEvent Microsoft-Windows-NetworkProfile/Operational` 10000 을 대조.
 - [ ] **(2026-10-28, §1-GO) 라이브러리 함께 업로드 — 실기 확인(FTP·Compile, 모션 무영향).** `projects/Main`(ProjectStart, `ProjectLibrary="Libraries"`) + `projects/Libraries` 를 만들어 ① Upload Only 출력에 「함께 업로드: Libraries → /GPL/Libraries」와 Library done 줄, 알림 끝에 「+ 라이브러리 Libraries」 ② **Compile Main 이 STATUS 0** 인지 — 제어기가 `/GPL/Libraries` 를 라이브러리로 찾는지(문서 표본은 중첩 배치 1건뿐; 실패하면 `-508`/미정의 심볼 류가 나올 것이고, 그때는 원격 경로 규칙을 고친다) ③ 라이브러리 파일을 고친 뒤 다시 올리면 그 파일만 sent ④ BinderR4 의 `Gantry\Data` 를 올리면 「내장형 패키지 — 컴파일 단위는 BinderR4」 줄만 나오고 추가 업로드 없음.
 - [ ] **(2026-10-28, §1-GN) 0.26.0 — "컴파일 검증 필요" 목록·Unload -all 전 비우기 — VSIX·실기 확인(Unload 는 정지 상태에서).** ① Upload Only 로 프로젝트 3개를 올리면 트리 「프로젝트 상태 ⚠ 컴파일 검증 필요 3개」에 세 줄, 상태바 `$(warning) 컴파일 검증 필요: <마지막> 외 2` ② 상태바 클릭 → 다중 선택 QuickPick(전부 체크) → 고른 순서대로 Quick Compile, 하나 실패 시 중단 ③ 한 프로젝트만 Compile 하면 그 줄만 사라지고 라벨이 「외 1」로 ④ `GPL: Start`(모달 「그대로 Start」) STATUS 0 뒤 배지 해제 + Output `[Start] ✔ 컴파일 스냅샷 기록` ⑤ 창 다시 열기(Reload Window) 뒤에도 미검증 목록이 남고, 다른 IP 로 설정을 바꾸면 사라졌다가 되돌리면 다시 뜨는지 ⑥ 「GPL: Unload Project」→「모두 내리기」: 위험 모달 → /GPL 비우기 모달(문구에 "비운 뒤 Unload -all") → 삭제 → `Unload -all` STATUS 0, 취소하면 Unload 미전송·Output 한 줄, /GPL 이 비어 있으면 모달 없이 바로 ⑦ MCP `unload_project {project:"-all"}` 가 /GPL 비어 있지 않을 때 `refused:"gpl-not-empty"` + 목록, 활성 쓰레드가 있으면 `threads-active` ⑧ 실행 뒤 앱 Unload 가 15 s 를 넘겨도(GPL Traffic 의 소요 시간) 타임아웃 없이 STATUS 가 오는지 — 그래도 inbox 의 `_Cmd_<project>` 유발 무응답(§1-GN 남은 일)은 별건.
 - [ ] **(2026-10-28, §1-GN inbox) 상태 샘플러의 `Execute` 가 Unload 를 막는다는 보고 — 결정 필요.** `controller/diagnostics/statusSampling.ts` 가 대시보드 폴링에 `Execute Controller.PowerEnabled`·`Robot.WhereAngles`·`Robot.Where` 를 쓰면 제어기가 `_Cmd_<project>` Idle 쓰레드를 만들고, 그 뒤 `Unload <project>` 가 응답하지 않았다(2026-10-27 inbox unload-slow-not-hang: 최소 프로브 재현 3회, `Stop _Cmd_…` 로도 실제 앱은 회피 실패). 선택지: (a) 프로젝트가 로드돼 있는 동안 Execute 샘플링 중지(DataID/`Show` 대체 가능 여부 조사) (b) 설정으로 끄기 (c) Unload 전에 `_Cmd_` 가 보이면 경고. 문서상 Idle 쓰레드는 Unload 를 막지 않아야 하므로 제어기 결함으로 보이나 실기 재현이 근거.
@@ -778,6 +779,9 @@ src/controller/commands/startCommand.ts            # Start 명령 조립(vscode 
 src/debug/execution/threadLock.ts                  # 스레드 단일 실행 잠금 판정(vscode 무의존) — resolveExecutionThread(대상 확정·staleLock)·shouldPreserveFocus·isAllThreadsResumeRequest. 어댑터의 StoppedEvent 는 전부 _stoppedEvent 경유(불변식) (§1-BS)
 src/controller/connection/idlePing.ts               # 1402 유휴 ping 판정/스케줄러(vscode 무의존) — GDE 방식 세션 유지(유휴 5 s → 읽기 명령 1개), 1403 안정성의 열쇠 (§1-BM)
 src/controller/connection/eventLoopStall.ts         # (§1-GI) 확장 호스트 이벤트 루프 정지 감지(500 ms 틱, 2 s 이상 기록) — 판정은 안 바꾸고 유실 로그·사후 스냅샷에 "지연 중 몇 초가 정지였나"
+src/controller/connection/pcPowerEvents.ts         # (§1-GQ) Windows 이벤트 로그 절전/복귀(Kernel-Power 42/107/506/507·Power-Troubleshooter 1) 읽기·파싱, 복귀 -5 s~+120 s 안의 의심을 절전 복귀로 매칭
+src/controller/connection/recentCommands.ts        # (§1-GQ) 최근 상태 변경 명령 30건 링(결과 STATUS/실패) — 유실 사후 스냅샷 「직전 상태 변경 명령」 절
+src/controller/connection/lossNotice.ts            # (§1-GQ) 유실 알림 문구(절전 복귀 / 복구 대기 만료 / 일반) + 「다시 연결」 버튼 이름
 src/views/statusbar/connectionHealthBadge.ts        # (§1-GI) suspect/recovering 상태바 문구(순수) — connectionStatusBar 가 1 s 마다 다시 그림
 src/controller/connection/reachability.ts           # ping TTL·TCP·arp 도달성 판정 + 응답 장치 정체(제어기 vs 게이트웨이) 힌트 (§1-BI, #22)
 src/controller/diagnostics/resourceProbes.ts         # Show Memory / Show Network -tcp / -mbuf 파서(실기기 원문 기준)·증가율·이력 (§1-BI, #22 자원 카드)
@@ -1110,7 +1114,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | 본문 ↓ |
-| §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | 본문 ↓ |
+| §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | 본문 ↓ |
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | 본문 ↓ |
@@ -1120,41 +1124,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | 본문 ↓ |
 | §1-GO | 10-28 | **라이브러리 함께 업로드·내장형 구분** — ProjectLibrary 그래프에서 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 `/GPL/<값>` 으로(`libraryUploadPlan.ts`), 내장형 패키지(BinderR4)는 루트 소속이라 생략. 재생 하니스 ALL IDENTICAL. 0.27.0 | 본문 ↓ |
 | §1-GP | 11-03 | **README 검토·개선** — 08-18 정책대로 제어기 연동 → 디버깅 → 상태 → AI → 언어 기능 순 재배치, 디버깅 3단 분리, 0.17.0 이전 원격 디버깅 문장(저장 폴더·저장 구성 재연결) 제거, 컴파일 검증 필요·메모리·Diagnose Stuck Thread·uploadLibraries 추가. 0.27.1 | 본문 ↓ |
+| §1-GQ | 11-03 | **연결 유실 정황: PC 절전 복귀·직전 상태 변경 명령·「다시 연결」** — 사후 스냅샷 30건 재분석(절전 복귀 5·깨어 있는 중 링크 단절 8·Stop/Start/Execute 뒤 8·Unload 6), Windows 이벤트 로그로 절전 복귀 매칭(`pcPowerEvents.ts`), `RecentCommandLog`, 알림 문구 `lossNotice.ts`, README 문제 해결 2행. 0.27.2 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GG ~ §1-GP (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GH ~ §1-GQ (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GG. 2026-10-27 세션 — Requires 헤더 자동 동기화 (0.20.0)
-
-### 증상(요청)
-
-Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손으로 맞추느라 비효율·실수가 생긴다 — Project.gpr 소스 목록 자동 동기화처럼 자동으로 맞춰 달라. 사용자 결정: **Used by 는 제외**(프로젝트마다 달라지는 정보 — 공용 Lib 파일에 저장하면 프로젝트를 오갈 때마다 바뀜), 나머지는 권장안대로.
-
-### 원인
-
-손 기록이라 같은 파일이 두 줄로 갈라지고(Machine.gpl 의 MotionSystem.gpl), 소속이 틀리고(Machine.gpl 은 `BRT.MM_DRIVE` 를 쓰는데 헤더는 MachineConfig BRC 아래에 적힘 — 드라이런으로 확인), 멤버 목록과 사람 설명이 한 괄호에 섞였다(`IsSet(Home 위치 …)`).
-
-### 조치(의도와 방법)
-
-- **계산 `language/analysis/moduleDependencies.ts`(순수)** — 줄마다 주석·문자열을 지운 코드(`GPLParser.stripToCode`)에서 `a(0).b.c` 체인을 뽑고(`scanChains`), 첫 세그먼트는 로컬 → 자기 파일 선언 → 다른 파일의 Class/모듈 직속 Public 멤버(여러 모듈에 같은 이름이면 제외) 순, 이후 세그먼트는 `receiverType.resolveReceiverHolder`+`ownedByHolder` 로 정의 이동과 같은 규칙으로 해석. 후보는 컴파일 단위 우선(없으면 전체), 다른 프로젝트에 복제된 같은 파일명·모듈은 한 항목으로 접는다. 수신자 조회 조립은 R7 정본 `receiverContext.buildReceiverContextFromText` 를 호출부가 주입(`ReceiverLookupFactory`) — language 계층이 providers 를 import 하지 않게.
-- **블록 `language/documentation/requiresHeader.ts`(순수)** — `'Requires:` 첫 블록을 파싱(같은 파일 여러 줄 병합, `Cls.Member`·`Cls(m1, m2)` 를 같은 뜻으로), 계산 결과로 다시 그림(`(Module …)` 열은 블록 안 최장 파일명에 맞춤, 의존 없으면 `' - (none)`). 멤버 이름 목록이 아닌 괄호·형식 밖 줄·들여쓴 이어쓰기는 `'Notes:` 로 옮긴다(기존 Notes 블록이 있으면 없는 줄만 덧붙임, 없으면 Requires 바로 뒤에 새로 — 맞닿은 두 편집이 겹침으로 거부되지 않게 한 편집으로 합침). 블록이 없는 파일은 대상 아님(옵트인), 명령으로만 첫 `Module` 위에 추가.
-- **순서 `project/sources/sourceOrder.ts`** — 파일에서 위로 올라가며 만나는 `.gpr` 중 의존 파일을 가장 많이 나열한 것의 ProjectSource 순서(같으면 바깥쪽). 리프 패키지 `.gpr` 은 자기 소스만 나열하고 실제 평탄 목록은 루트에 있기 때문.
-- **조립 `providers/diagnostics/requiresHeaderPlan.ts`(vscode 무의존)** — 위 셋을 묶고, 수신자 조회를 **프로시저마다 한 번**(모듈 수준 + 그 프로시저 로컬만) 조립한다. 줄마다 전체 심볼로 조립하면 LeadshineRS.gpl 이 1.7 s 였다.
-- **배선** — 진단: `diagnosticProvider.detectRequiresHeaderIssues`(source `GPL Requires`, code `requires-header-stale`, Information, 문구 `describeRequiresPlan`). 인덱싱 전에는 의존이 통째로 "제거"로 보이므로 `SymbolCache.hasIndexed`(신설)·`isRefreshing` 로 막는다. Quick Fix → `gpl.requiresHeader.update`(현재 파일 갱신/추가), `gpl.requiresHeader.updateProject`(같은 컴파일 단위의 헤더 있는 파일 전부, WorkspaceEdit `needsConfirmation` → Refactor Preview, 목록은 Output), `onWillSaveTextDocument`(mode `onSave` 일 때만). 설정 `gpl.requiresHeader.mode`: `check`(기본)·`onSave`·`off`.
-
-### 검증
-
-- `npm test` **1491/1491**(신규 10: moduleDependencies 5 — 체인 추출·한정자/인스턴스/Shared/타입·로컬 가림·컴파일 단위/사본 접기·순서, requiresHeader 4 — Machine.gpl 실수 재현·멱등·Notes 덧붙임/이어쓰기·(none)/추가 위치, sourceOrder 1). 구조 테스트 R1~R9 통과(처음 R7 이 `buildDocumentReceiverLookup` 직접 조립과 주석의 제외 사유 문자열을 잡아 주입 방식으로 바꿈).
-- **BinderR4 읽기 전용 드라이런**(scratchpad 스크립트, 파일 쓰기 없음): 85파일 중 헤더 83, 변경 80. Machine.gpl — MotionSystem 두 줄 병합, DriveLine/CantopsIO 추가, MM_DRIVE·DRIVE_MODULE_NUM 이 Status.gpl(BRT)로(소스 `BRT.MM_DRIVE` 로 확인), Deck 설명은 Notes. Main.gpl — LogHistory 추가, `Setup(모터 + …)` 설명은 Notes. 계산 시간: 컴파일 단위 캐시가 찬 뒤 85파일 2.5 s(파일당 평균 30 ms), 첫 계산은 기존 `CompileUnitIndex` 예열(리프 .gpr 마다 관련 .gpr 탐색)이 대부분.
-
-### 남은 일
-
-- §3 의 VSIX·UI 확인. 문자열로 부르는 프로시저와 수신자 타입 미상 멤버는 누락된다(확정할 수 없으면 뺀다). 사용자가 쓰던 와일드카드(`ERR_*`)는 Notes 로 옮겨지고 실제 이름이 나열된다 — 줄이 길어지면 줄바꿈 규칙을 추가할지 사용자 판단.
-
----
 
 ## 1-GH. 2026-10-27 세션 — §1-GF 후속: 성장 규칙 명문화·파서/참조 찾기 분해·인덱싱 진단 (0.20.1)
 
@@ -1449,3 +1425,41 @@ README 를 연 상태에서 "검토후 개선해줘".
 ### 남은 일
 
 - 사용자 확인: 08-18 정책에 따라 언어 기능을 뒤로 보냈다. 10-22 배치(코드 작성 먼저)를 원하면 섹션 순서만 되돌리면 된다.
+
+## 1-GQ. 2026-11-03 세션 — 연결 유실 정황: PC 절전 복귀 판정 · 직전 상태 변경 명령 · 「다시 연결」 (0.27.2)
+
+### 증상(요청)
+
+"최근 제어기가 실제로 죽지 않았는데도 연결이 끊기는 문제 등등이 발생했었음" → 분석 보고 뒤 "알아서 진행해줘".
+
+### 원인(관측 — 사후 스냅샷 30건 10-28~11-02 + Windows 이벤트 로그)
+
+| 유형 | 건수 | 근거 |
+| --- | --- | --- |
+| PC 최신 대기(Modern Standby) 복귀 | 5 | 유실 시각 = System Kernel-Power 507(대기 종료) 시각(초 단위), 스냅샷의 이벤트 루프 정지 = 대기 시간(37~297 s). 제어기 무관(확신 높음) |
+| 깨어 있는 중 유휴 유실 | 8 | 1402·1403 동시 RST → 3~10 s 안에 직결 NIC 재수립(NetworkProfile/Operational 10000, 대개 ~21 s 간격 2회). USB NIC(RTL8153) 재열거 없음. 11-02 09:55 은 재연결 뒤 앱 쓰레드 유지 → 재부팅 아님(추정) |
+| Stop -all·Start·Execute 뒤 2분 안 | 8 | 스냅샷 「직전 관측」은 응답 없는 교란 명령만 다뤄 전부 "없음". 11-02 09:18 묶음(여유 메모리 2.19 MB 심각에서 Stop -all)은 재연결 뒤 7.70 MB → 재부팅 정황 |
+| Unload 무응답 | 6 | 10-28 Unload 시험 — 0.26.0(대기 180 s)에서 대응 |
+
+- 정정: "MSI MAC·TTL 64 면 재부팅은 아니다"는 틀렸다. 이 PC 는 Wi-Fi `192.168.1.181/21`·이더넷 4 `192.168.2.10/21` 이 192.168.0.x 를 덮어, 직결 링크가 내려가면 원인과 무관하게 그쪽으로 라우팅된다 — MAC/TTL 은 "직결 링크 다운"까지만 말한다(메모리 갱신).
+- 확장 호스트 정지 길이만으로는 절전을 가를 수 없다(§1-GI: 절전 없이 22~71 s 정지 사례) → OS 기록을 직접 읽기로 했다.
+
+### 조치(의도와 방법)
+
+- 순수(753a3e6): `recentCommands.ts`(RecentCommandLog·commandsBefore 5분·한 줄 표기), `pcPowerEvents.ts`(파싱·`matchPcResume` 복귀 -5 s~+120 s·문구, 실행은 `readPcPowerEvents` 한 함수 — Windows PowerShell 5.1 `Get-WinEvent` 해시테이블 배열, 비 Windows·실패는 []), `lossNotice.ts`(알림 문구). 테스트 6건(`lossContext.test.ts`).
+- 배선(bebf699): `controllerConnection.sendCommandDetailed` 가 읽기 전용이 아닌 명령의 결과를 기록(`getRecentStateChangingCommands`). `handleConnectionLost` 가 의심 전 명령을 즉시 떠 두고 이벤트 로그 조회를 시작 → 사후 스냅샷의 도달성 판정과 병렬. 판정 절 `계기:` 줄·「직전 상태 변경 명령」·「PC 절전/복귀」 절, Output 두 줄, 알림 `composeLossNotice` + 「다시 연결」(`finishConnect` — 유실 당시 설정 그대로, 이미 연결돼 있으면 무시).
+- **자동 재접속은 하지 않는다**(2026-08-28 결정 유지) — 버튼은 사용자의 명시적 Connect. 판정 규칙(임계·타임아웃)도 그대로.
+- 기록 범위 한계: 디버그 어댑터의 자체 소켓 경로로 나가는 명령은 `RecentCommandLog` 에 들어가지 않는다.
+- 버전은 같은 날 다른 세션이 정한 새 정책(8ca97c1 — 기능 추가도 patch 기본)에 따라 0.27.2.
+
+### 검증
+
+- `npm test` **1584/1584**(+6).
+- 실측: 컴파일된 `readPcPowerEvents` 로 지난 3일 기록 46건(조회 3.8 s) — 11-02 10:56:24 유실 → "PC 절전 복귀 오전 10:56:24 (절전 3분 13초) / Kernel-Power 507", 깨어 있던 09:55·12:10 → 매칭 없음.
+- VSIX `dist/gpl-language-support-0.27.2.vsix` 1,676,808 bytes, SHA-256 `3A76128D4883BD6161DAF74C3FA19CB142176DA3BCB6E63A7C724D4098EA9581`(경고는 bundle 권장 1건), 새 모듈 3개 포함 확인.
+- 실제 알림·사후 스냅샷 출력은 실사용 유실로 보지 못했다 → §3.
+
+### 남은 일
+
+- §3 실사용 확인.
+- 깨어 있는 중 링크 단절 8건의 원인 특정(USB 랜카드 전원 절약·케이블·제어기 NIC). 재부팅 정황 자동 기록(/GPL 비었는지·여유 메모리 급증·쓰레드 소멸 — `unloadRisk.judgeRebootEvidence` 일반화)은 다음 후보로 제안만 했다.

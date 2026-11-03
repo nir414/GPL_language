@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-10-28** · 현재 package 버전 **0.27.0** (라이브러리 함께 업로드·내장형 구분, 1578/1578. 상세는 §1-GO.)
-- **직전 세션: §1-GO** — 사용자 요청 "projects/Main 을 올리면 .gpr 을 보고 projects/Libraries 도 함께" + "BinderR4 같은 내장형은 따로 구분" — 라이브러리 그래프(재귀)의 참조 중 컴파일 루트(`findCompileRootGpr`) 밖·같은 projects 폴더 안이고 값이 projects 기준 경로와 맞는 것을 `/GPL/<값>` 으로 프로젝트 업로드 뒤 이어 올린다(변경분만, 원격 삭제 없음, 설정 `gpl.deploy.uploadLibraries` 기본 켬). 내장형 패키지는 루트 안 라이브러리를 올리지 않고 트레이스로 알린다. 형제 배치에서 제어기가 라이브러리를 찾는지는 실기 미확인(§3).
+- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.1** (README 검토·개선, 문서 변경만. 상세는 §1-GP.)
+- **직전 세션: §1-GP** — 사용자 요청 "검토 후 개선해줘"(README). 2026-08-18 README 정책(제어기 연동 → 디버깅 → AI → 언어 기능 순)과 어긋나 있던 배치를 바로잡고, 0.17.0 에서 바뀐 제어기 프로젝트 디버깅의 옛 문장(작업 영역·파일을 저장 폴더에 남기고 저장 구성으로 재연결)을 지웠다. 0.26~0.27 기능(컴파일 검증 필요·Unload Project·uploadLibraries)을 안내에 반영. 명령 이름·설정 키·로컬 링크는 manifest 와 대조해 전부 일치.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -1108,7 +1108,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | 본문 ↓ |
+| §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | 본문 ↓ |
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | 본문 ↓ |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | [2026-10](archive/handoff/2026-10.md) |
@@ -1119,41 +1119,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | 본문 ↓ |
 | §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | 본문 ↓ |
 | §1-GO | 10-28 | **라이브러리 함께 업로드·내장형 구분** — ProjectLibrary 그래프에서 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 `/GPL/<값>` 으로(`libraryUploadPlan.ts`), 내장형 패키지(BinderR4)는 루트 소속이라 생략. 재생 하니스 ALL IDENTICAL. 0.27.0 | 본문 ↓ |
+| §1-GP | 11-03 | **README 검토·개선** — 08-18 정책대로 제어기 연동 → 디버깅 → 상태 → AI → 언어 기능 순 재배치, 디버깅 3단 분리, 0.17.0 이전 원격 디버깅 문장(저장 폴더·저장 구성 재연결) 제거, 컴파일 검증 필요·메모리·Diagnose Stuck Thread·uploadLibraries 추가. 0.27.1 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GF ~ §1-GO (2026-10-27~28).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GG ~ §1-GP (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GF. 2026-10-27 세션 — 거대 파일 4건 분해·저장소 루트 정리·조회 성능 (0.19.2)
-
-### 요청·판단
-
-- 사용자: 루트 폴더/파일이 너무 많다 → ①미추적 산출물 삭제 ②묶을 수 있는 것 묶기 ③나머지는 도구 규약이라 그대로(`controller-mcp/` 이동은 참조 33곳이라 보류) ④`.vscode/settings.json` 정리 ⑤"폴더로는 못 고치는 거대 파일"도 위험을 감수하고 분해 + 성능 최적화. 작업 중 "토큰 가성비를 생각하되 일처리는 제대로, 느려도 된다", 하위 에이전트는 Fable 대신 다른 모델로.
-- 진행 방식: 다른 세션(gpl-language-dd)의 0.19.1 미커밋분을 먼저 별도 커밋(57e8f7e)으로 올린 뒤 작업. 거대 파일 4건과 성능·검증은 격리 git worktree(+node_modules junction)에서 Sonnet 에이전트로 병렬 진행 후 순서대로 병합(충돌은 `test/index.ts` 등록 줄과 architecture.md 표뿐). 첫 Fable 에이전트 3개가 세션 한도(429)로 중단됐고 작업물은 Sonnet 이 이어받았다.
-
-### 조치
-
-- **루트 정리(6882714)**: `resources/`·`media/`·`syntaxes/`·`language-configuration.json` → `assets/{icons,webview,syntaxes}`(package.json contributes·extensionUri 경로·테스트·pre-release-check 갱신, `vsce ls` 로 6파일 포함 확인), `requirements-docs.txt`→`docs/requirements.txt`, `REQUESTS.md`→`docs/requests.md`(외부 세션 지침은 새 경로로), mkdocs `site_dir: dist/site`(`--strict` 통과). `.vscode/settings.json` 에 파일 중첩(package.json·README 아래)·`files.exclude`(out·node_modules·.history·.tmp·*.log). 미추적 `.codex-inbox-*.log`·`debug.log`·`.tmp/`·`site/`·`.history/` 삭제. CLAUDE.md/AGENTS.md 저장소 구조 절 갱신.
-- **gplDebugSession.ts 분해(05dba8a)**: TypeScript AST 스크립트로 멤버를 그룹별로 잘라 모듈로 옮기고 `this._x` 참조를 협력자 경유로 치환, vscode 호출은 `DebugSessionIo`/host 콜백으로 주입(`sessionSources`·`variableEvaluator` 는 vscode 없음). 세션은 DAP 요청 처리와 `_pollThreadStates` 정지 상태 머신만 남김. DAP 테스트 2개의 vm 로더는 `debug/` 지역 모듈을 재귀 로드하도록.
-- **deployService.ts(fef20da·12eed30)**: `deployLocked` → `DeployContext` + 단계 모듈 7개(precheck/target/upload∥stop/compile/start/errorCheck), 오케스트레이터 약 70줄. **activation/deploy/deploy.ts(2ecdd37·a5c5a05)**: 허브 70줄 + 모듈 16개(`deployContext`·`deployModes`·`runDeploy`·`deployReport`·`startProjectCommand`·`saveToFlashCommand`·`autoOnSave` 등), 순수 판정 테스트 17건. **controllerTreeProvider.ts(239c3f2)**: `treeSections`(순수 루트/섹션 빌더)·`snapshotMarkdown`·`treeItems`(vscode)·`treeNodes`·`threadRowPresentation`·`systemInfoItems`·`threadPauseTransition`(죽은 코드였던 것을 실제 연결, e9d8628).
-- **성능(df9381b·53519a9)**: 프로파일 결과 호버/정의 조회 시간의 대부분이 후보 심볼마다 `path.resolve/relative` 로 컴파일 단위를 판정하는 `isPathUnder`·`isSameCompileUnit` 이었다 → `normalizePathKey` 메모(상한 5만)·win32 접두 비교(옛 `path.relative` 로직과 대조하는 테스트). 파서 `endsWithLineContinuation` 은 `_` 없는 줄 조기 반환 + `trimEnd`.
-
-### 검증 (실기·UI 없음 — 전부 로컬 재생/테스트)
-
-- `npm test` **1481/1481** (1447 → 테스트 +34: activation/deploy 17, deployStages 2, snapshotMarkdown 3+6 고정, pathKey 3, sessionStepPoll 3).
-- **배포**: `node scripts/dev/deployReplay.js` — 옛 6882714 트리를 `git archive`+tsc 로 빌드해 가상 시계·스크립트 콘솔·가짜 FTP 위에서 old/new 를 자식 프로세스로 돌려 명령/FTP/출력/모달/잠금/타이머/DeployResult 를 순서대로 비교. **151 시나리오 전부 IDENTICAL**(성공·Upload Only·컴파일 에러/재시도/중단·쓰레드 정지 승인/취소·메모리·Stop -752/정지 불능·단계 경계별 취소·잠금/큐). 업로드∥정지 순서를 바꾸면 DIFFERS 가 나오는 것으로 민감도 확인.
-- **트리**: `node scripts/dev/compareTreeProvider.js` — 옛 provider 를 함께 컴파일해 41개 상태 × 트리 항목(label/description/tooltip/icon/contextValue/collapsible/command)·상황/진단 보고서 2,842개 비교, 차이 0(고의 변형 시 2,590건 검출).
-- **세션**: 옮긴 멤버 257개를 AST 로 정규화 diff → 의도한 수정(vscode→콜백, FrameCache 헬퍼, 시그니처 2건) 외 차이 없음. 지연 getter·캐시 무효화 순서·폴 호출 수·정적 상수 18개 대조. `sessionStepPoll.test` 가 attach→Step→Running→Paused 폴→StoppedEvent(step)→Locals 조회 명령 순서를 고정.
-- **성능**: `node scripts/dev/index-performance.js`(16프로젝트·64 .gpl) 정의 찾기 0.079→0.003 ms, 호버 2.77→0.33~0.47 ms, 파서 245~300→115~200 ms, 심볼 digest 동일. 사용자 보고 "인덱싱 9 s" 는 합성 워크스페이스에서 0.3 s 라 재현 안 됨(실제 PC 의 디스크/폴더 순회로 추정, §3).
-- 패키징: `npm run package` → `dist/gpl-language-support-0.19.2.vsix` **1,579,260 bytes**, SHA-256 **06F34E1C72CDBF6B5C82B2652BA4E03586C79EE589458D3D2491F0C7F2FA879E**(332 files, MCP 번들 1008 KB 포함). 경고는 기존 JavaScript 번들링 권고뿐.
-
-### 남은 일
-
-- §3 항목: 실기·UI 확인 4종, 실제 워크스페이스 벤치마크.
-- 남은 큰 파일: `gplDebugSession.ts` 3,056(`_pollThreadStates` 364줄 상태 머신 — 로드맵 Phase 3 명시적 상태 머신과 함께), `runtimeConsole.ts` 1,367(재연결 상태 머신, 미착수), `referenceProvider.ts` 1,187, `responseParser.ts` 1,132, `gplDictionaryData.ts` 3,027(데이터).
-- push·태그·릴리스는 사용자 요청 시(태그 push = Marketplace 자동 게시). 스냅샷 ref `refs/snapshots/pre-restructure-2026-10-27` 는 삭제해도 된다.
 
 ## 1-GG. 2026-10-27 세션 — Requires 헤더 자동 동기화 (0.20.0)
 
@@ -1445,3 +1417,35 @@ Sample Prep(BinderR4)의 모듈 머리 주석 `'Requires:`/`'Used by:` 를 손�
 
 - §3 실기 확인. 형제 배치가 제어기에서 안 되면 원격 경로 규칙(`remoteDir`)만 고치면 된다(분류는 그대로).
 - 선택: 라이브러리 업로드도 상태 표시줄 진행 바에 태우기(지금은 출력 창 줄만), 함께 올린 라이브러리를 「컴파일 검증 필요」 목록에 반영할지(§1-GN — 지금은 메인만 표시).
+
+## 1-GP. 2026-11-03 세션 — README 검토·개선 (0.27.1)
+
+### 증상(요청)
+
+README 를 연 상태에서 "검토후 개선해줘".
+
+### 원인(검토 결과)
+
+- **배치가 README 정책과 반대였다.** 2026-08-18 사용자 지시(언어 기능은 셀링 포인트가 아님 — 제어기 연동 → 디버깅 → AI → 언어 기능 순)와 달리, §1-FO(10-22) 개편 이후 주요 기능 표·시작하기·본문이 모두 코드 작성부터 시작했다. §1-FO·§1-FT 기록에 순서를 바꾸라는 사용자 지시는 없었다.
+- **낡은 서술 1건.** 디버깅 절의 "작업 영역과 파일은 확장의 저장 폴더에 남아 있어 다음에도 다시 열 수 있습니다… 저장된 디버그 구성으로 연결합니다" 는 0.16.0(Snapshot 작업공간) 동작이다. 0.17.0 부터는 필요한 파일만 TMP 캐시 후 정리하므로 바로 위 문장과 모순이었다(`activation/remote/controllerProjectDebug.ts` — 작업공간 저장·구성 저장 없음, 신뢰된 작업공간·기존 GPL 디버그 세션 없음이 전제).
+- **최근 기능 누락:** 「컴파일 검증 필요」 배지·`GPL: Quick Compile Unverified Projects`(0.26.0), `GPL: Unload Project`·여유 메모리(설정 표에만 `memoryGuard` 가 있고 본문 설명 없음), `gpl.deploy.uploadLibraries`(본문에만 있고 설정 표에 없음), 정지 안 되는 쓰레드 대처.
+- 디버깅 절이 시작 방법·FTP 탐색·원격 디버깅 세부·디버거 기능이 한 덩어리로 섞여 있었고 `Browse Controller Files` 가 디버깅 아래에 있었다.
+
+### 조치(의도와 방법)
+
+- 순서: 주요 기능 표·시작하기(5단계로 합침: 폴더 열기 → IP → 연결 → 패널 → 업로드/디버그) → 업로드·컴파일·실행(`.gpr` 소스 목록·의존 검사, 제어기 파일 탐색·내려받기를 하위 절로) → 디버깅(시작하기 / 디버거에서 할 수 있는 일 / 제어기에 있는 프로젝트 디버깅) → 상태·로그 → AI → 코드 작성과 탐색 → 설정 → 문제 해결.
+- 낡은 문장 삭제, 원격 디버깅 전제(작업공간 신뢰·기존 세션 분리) 추가. 컴파일 오류 Problems 표시는 `runDeploy` 공통 경로이므로 특정 명령에 한정하지 않게 썼다.
+- 문제 해결 표에 "프로그램이 멈추지 않거나 Unload·Compile 거부"(다른 이름 쓰레드 잔류 → Stop All Threads → Diagnose Stuck Thread) 행 추가, 수정 전 코드 실행 행에 「컴파일 검증 필요」 단서 추가.
+- 톤(취미 프로젝트·kaomoji 2개)·버전 미표기 정책은 유지. 표는 패딩 없는 형식으로 통일(한글 폭 때문에 패딩 정렬이 원래 맞지 않았다).
+- 문서 개선 patch **0.27.1**, CHANGELOG Changed/Fixed. README·CHANGELOG 의 CRLF·BOM 없음 유지.
+
+### 검증
+
+- README 의 `GPL: …` 명령 이름 전부가 package.json `contributes.commands` 와 일치(누락 0), 설정 키 8개 모두 존재, 로컬 링크 4개 대상 존재(scratchpad 대조 스크립트).
+- `pre-release-check` 의 README 버전 표기 검사 통과.
+- `npm run package` 성공: `dist/gpl-language-support-0.27.1.vsix` 1,668,535 bytes, SHA-256 `FA1F70D1549F838384BB10B0EF65456F3018817493E82B8849A668E6ADA2BC7C`(경고는 bundle 권장 1건). VSIX 안 README 에 새 문구가 있고 삭제한 문장이 없음을 확인. 실행 코드 변경 없음이라 `npm test` 는 돌리지 않았다.
+- Marketplace 화면 렌더링은 보지 않았다.
+
+### 남은 일
+
+- 사용자 확인: 08-18 정책에 따라 언어 기능을 뒤로 보냈다. 10-22 배치(코드 작성 먼저)를 원하면 섹션 순서만 되돌리면 된다.

@@ -29,6 +29,7 @@ import {
 	getConnectionRecoveryWindowMs,
 	getConnectionStats,
 	getControllerConfig,
+	getRecentStateChangingCommands,
 	getRecentTraffic,
 	noteCommandChannelLoss,
 	probeControllerCommand,
@@ -49,6 +50,11 @@ import { setProjectKindResolver, setUnloadRiskLogger, unloadFailureGuidance } fr
 import { probeReachability } from '../../controller/connection/reachability';
 import { EventLoopStallMonitor, describeStall, stallOverlapMs, stallsWithin } from '../../controller/connection/eventLoopStall';
 import type { EventLoopStall } from '../../controller/connection/eventLoopStall';
+import { commandsBefore, describeRecentCommand, PRECEDING_COMMAND_WINDOW_MS } from '../../controller/connection/recentCommands';
+import type { RecentCommandRecord } from '../../controller/connection/recentCommands';
+import { PC_POWER_LOOKBACK_MINUTES, describePcResume, matchPcResume, readPcPowerEvents } from '../../controller/connection/pcPowerEvents';
+import type { PcPowerEvent, PcResumeMatch } from '../../controller/connection/pcPowerEvents';
+import { RECONNECT_ACTION, composeLossNotice } from '../../controller/connection/lossNotice';
 import { SHOW_THREAD_LIST_CMD } from '../../controller/protocol/responseParser';
 import { setDashboardConnectionObserver } from '../../views/dashboard/controllerDashboardPanel';
 import type { ExtensionHost } from '../host';
@@ -94,7 +100,17 @@ const STALL_NOTE_MIN_MS = 5000;
 /** 사후 스냅샷에 남길 이벤트 루프 정지의 범위(유실 시각 기준 과거). */
 const POSTMORTEM_STALL_WINDOW_MS = 10 * 60_000;
 
-async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: ControllerConfig, lostAt: Date, loss: LossSummary | undefined, health?: HealthSnapshot, stalls: readonly EventLoopStall[] = []): Promise<string | undefined> {
+/** 유실 정황(2026-11-03) — 의심 전 상태 변경 명령과 PC 절전/복귀 기록. 절전 조회는 수 초 걸려 Promise 로 받는다. */
+interface LossContext {
+	preceding: readonly RecentCommandRecord[];
+	powerEvents: Promise<PcPowerEvent[]>;
+	resume: Promise<PcResumeMatch | undefined>;
+}
+
+const isoClock = (ms: number) => new Date(ms).toISOString();
+const localClock = (ms: number) => new Date(ms).toLocaleTimeString();
+
+async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: ControllerConfig, lostAt: Date, loss: LossSummary | undefined, health?: HealthSnapshot, stalls: readonly EventLoopStall[] = [], lossContext?: LossContext): Promise<string | undefined> {
 	try {
 		const recent = getRecentTraffic(400);
 		const stats = getConnectionStats();
@@ -102,10 +118,15 @@ async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: Controlle
 		const lock = getDeployLock(cfg.ip).current()?.record;
 		// 명령 콘솔이 거부되면 FTP 배너·런타임 콘솔도 본다(핸드셰이크만). 직전 교란 명령은 재부팅 후보 확신도의 근거다.
 		const prior = health?.disruptiveOperation;
-		const reach = await probeReachability(cfg.ip, cfg.port, undefined, {
-			runtimeConsolePort: cfg.consolePort,
-			...(prior ? { priorDisruptive: { command: prior.command, kind: prior.kind, at: prior.at } } : {}),
-		});
+		const [reach, powerEvents, resume] = await Promise.all([
+			probeReachability(cfg.ip, cfg.port, undefined, {
+				runtimeConsolePort: cfg.consolePort,
+				...(prior ? { priorDisruptive: { command: prior.command, kind: prior.kind, at: prior.at } } : {}),
+			}),
+			lossContext?.powerEvents ?? Promise.resolve([]),
+			lossContext?.resume ?? Promise.resolve(undefined),
+		]);
+		const suspectAt = loss?.suspectSince ?? lostAt.getTime();
 		const overlap = reach.assessment.observations.subnetOverlap;
 		if (overlap && !warnedSubnetOverlaps.has(overlap)) {
 			// 같은 경고를 유실마다 반복하지 않는다(세션 한 번) — 구성 문제라 한 번 알면 충분하다.
@@ -118,14 +139,26 @@ async function writeConnectionLostPostmortem(host: ExtensionHost, cfg: Controlle
 			'',
 			'## 판정: 명령 콘솔 채널 유실 (connectionHealth) — 제어기 런타임 상태는 이 파일만으로 확정되지 않는다',
 			loss ? describeLoss(loss) : '(요약 없음)',
+			...(resume ? [`계기: ${describePcResume(resume, isoClock)} 직후 — PC 가 자는 동안 직결 네트워크가 내려간 것으로, 제어기 문제로 보지 않는다(아래 PC 절전/복귀 절)`] : []),
 			loss ? JSON.stringify(loss, null, 1) : '',
 			'',
 			// 채널 교란 가능 명령이 앞섰는지(recovering 을 거쳤는지)는 원인 해석에 결정적이다 — 다만 인과는 미확정.
 			'## 직전 관측: 채널 교란 가능 명령 (있으면. precededBy 이지 causedBy 가 아니다)',
 			health?.disruptiveOperation
 				? `${health.disruptiveOperation.command} (${health.disruptiveOperation.kind}) @ ${new Date(health.disruptiveOperation.at).toISOString()} — 그 명령의 실제 결과는 미확정`
-				: '(없음 — 교란 가능 명령 직후가 아니었다)',
+				: '(없음 — 응답 없이 끝난 교란 가능 명령은 없었다. 정상 응답한 명령은 아래 절)',
 			health ? JSON.stringify(health, null, 1) : '',
+			'',
+			// 정상 응답한 명령도 시간 관계로는 원인 해석에 필요하다(2026-11-03 — Stop -all·Start·Execute 뒤 2분 안 유실 8건이 "없음"으로 찍혔다).
+			`## 직전 상태 변경 명령 (의심 전 ${PRECEDING_COMMAND_WINDOW_MS / 60_000}분 — 시간 관계일 뿐 인과는 미확정)`,
+			...(lossContext && lossContext.preceding.length > 0
+				? lossContext.preceding.map(r => `- ${isoClock(r.at)} ${describeRecentCommand(r, suspectAt)}`)
+				: ['(없음)']),
+			'',
+			// 절전 중 직결 NIC 가 내려가 깨어나는 순간 끊긴 사례가 5건(2026-11-03, Kernel-Power 507 과 초 단위 일치) — 제어기 무관.
+			`## PC 절전/복귀 (Windows 이벤트 로그, 최근 ${PC_POWER_LOOKBACK_MINUTES}분)`,
+			resume ? `유실과 맞물림: ${describePcResume(resume, isoClock)} (${resume.resumeSource})` : '(유실과 맞물린 절전 복귀 없음)',
+			...powerEvents.map(e => `- ${isoClock(e.at)} ${e.kind === 'sleep' ? '절전 진입' : '절전 복귀'} (${e.source})`),
 			'',
 			// 판정 지연이 규칙 때문인지, 확장 호스트가 멈춰 타이머·소켓 처리가 밀렸기 때문인지 가른다(2026-10-27 — 10건 중 3건이 후자).
 			'## 확장 호스트 이벤트 루프 정지 (최근 10분, 2 s 이상 — VS Code 확장 호스트는 모든 확장이 함께 쓴다)',
@@ -265,6 +298,10 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		const lostAt = new Date(summary.lostAt);
 		// setConnected(false) 가 모니터 상태를 초기화하기 전에 스냅샷을 떠 둔다(교란 명령 관측이 사후 파일에 남게).
 		const healthSnapshotAtLoss = host.healthMonitor?.snapshot();
+		// 유실 정황(2026-11-03): 의심 전 상태 변경 명령은 지금 떠 두고(이후 명령이 섞이지 않게), 절전 기록 조회(약 4 s)는 바로 시작한다.
+		const preceding = commandsBefore(getRecentStateChangingCommands(), summary.suspectSince);
+		const powerEvents = readPcPowerEvents().catch(() => [] as PcPowerEvent[]);
+		const resume = powerEvents.then(events => matchPcResume(events, summary.suspectSince));
 		// 위험 표시가 있으면 유실 시각을 남긴다 — 재연결 뒤 재부팅 판정의 전제다(unloadRisk.judgeRebootEvidence).
 		updateUnloadRiskState(cfg.ip, s => noteChannelLoss(s, summary.lostAt));
 		host.stopRuntimeConsoleAndSyncTree();
@@ -285,6 +322,9 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			? `판정이 늦어진 ${(stalledMs / 1000).toFixed(0)} s 는 VS Code 확장 호스트가 멈춰 있던 시간입니다(이 확장 밖의 원인일 수 있음 — 사후 스냅샷의 이벤트 루프 정지 절).`
 			: undefined;
 		if (stallNote) { host.log(`[Health] ${stallNote}`); }
+		if (preceding.length > 0) {
+			host.log(`[Controller] 의심 전 상태 변경 명령(시간 관계일 뿐 인과 미확정): ${preceding.map(r => describeRecentCommand(r, summary.suspectSince)).join(' · ')}`);
+		}
 		// 업로드 전 정체 확인·재부팅 정황 안내(/GPL 이 비었을 때)가 이 시각을 쓴다.
 		noteCommandChannelLoss(cfg.ip, summary.lostAt);
 		// 복구 대기 창(기본 180 s)이 지나도 거부로 끝났으면 실측 조치(PC 어댑터 재연결)를 안내한다(2026-10-22 두 번 실측).
@@ -292,17 +332,23 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		if (guidance) { host.log(`[Controller] ${guidance}`); }
 		// 사후 스냅샷(#22 제안 4): 알림은 스냅샷이 준비된 뒤 한 번만 — 파일 열기 버튼 제공.
 		const recentStalls = stallsWithin(stallMonitor.recent(), summary.lostAt - POSTMORTEM_STALL_WINDOW_MS, summary.lostAt);
-		void writeConnectionLostPostmortem(host, cfg, lostAt, summary, healthSnapshotAtLoss, recentStalls).then(file => {
-			const actions = file ? ['사후 스냅샷 열기', '출력 보기'] : ['출력 보기'];
+		void Promise.all([
+			writeConnectionLostPostmortem(host, cfg, lostAt, summary, healthSnapshotAtLoss, recentStalls, { preceding, powerEvents, resume }),
+			resume,
+		]).then(([file, resumeMatch]) => {
+			if (resumeMatch) {
+				host.log(`[Controller] 계기: ${describePcResume(resumeMatch, localClock)} 직후 — PC 가 자는 동안 직결 네트워크가 내려간 것으로, 제어기 문제로 보지 않습니다(${resumeMatch.resumeSource}).`);
+			}
+			const actions = file ? [RECONNECT_ACTION, '사후 스냅샷 열기', '출력 보기'] : [RECONNECT_ACTION, '출력 보기'];
 			void vscode.window.showWarningMessage(
-				`GPL Controller 명령 콘솔 연결을 놓았습니다 (${cfg.ip}) — ${summary.failures}회 연속 무응답으로 연결 상태를 해제했습니다. `
-				+ (guidance
-					? `${guidance} `
-					: '제어기가 다운됐다는 뜻은 아닙니다(런타임 상태 미확정) — 다시 Connect 해 보세요. ')
-				+ (stallNote ? `${stallNote} ` : '')
-				+ (file ? '마지막 트래픽·도달성 판정은 사후 스냅샷 파일에 있습니다.' : ''),
+				composeLossNotice({
+					ip: cfg.ip, failures: summary.failures, guidance, stallNote, resume: resumeMatch,
+					hasPostmortem: file !== undefined, clock: localClock,
+				}),
 				...actions,
 			).then(pick => {
+				// 자동 재접속은 하지 않는다(2026-08-28 결정) — 버튼은 사용자의 명시적 Connect 다. 유실 당시 설정 그대로 다시 붙는다.
+				if (pick === RECONNECT_ACTION && !host.isControllerConnected) { void finishConnect('interactive', false); }
 				if (pick === '사후 스냅샷 열기' && file) { void vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false }); }
 				if (pick === '출력 보기') { outputChannel.show(true); }
 			});

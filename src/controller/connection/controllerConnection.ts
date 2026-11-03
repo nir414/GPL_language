@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { appendLiveLog } from '../../log/liveLogTerminal';
-import { formatConsoleCommandClassification } from '../commands/consoleCommandClassifier';
+import { formatConsoleCommandClassification, isReadOnlyConsoleCommand } from '../commands/consoleCommandClassifier';
 import { ResponseBodyStreamer } from './trafficResponseBody';
 import { sendConsoleCommand, recordTrafficLine, TrafficDirection } from './consoleSocket';
 import type { CommandResponse } from './consoleSocket';
@@ -15,6 +15,8 @@ import { effectiveKeepAlive } from './connectionSession';
 import { checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryPrecheck } from '../diagnostics/memoryGuard';
 import { guardBeforeSend, observeAfterResponse, unloadFailureGuidance } from '../commands/unloadRiskGuard';
 import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast } from '../diagnostics/memoryNotice';
+import { RecentCommandLog } from './recentCommands';
+import type { RecentCommandRecord } from './recentCommands';
 
 export { isPolicyError, PolicyError } from '../commands/commandPolicy';
 export type { PolicyErrorCode } from '../commands/commandPolicy';
@@ -386,12 +388,14 @@ export function sendCommandDetailed(
 		try {
 			response = await sendCommandDetailedInternal(wire, config, options);
 		} catch (err) {
+			noteRecentCommand(wire, undefined, err);
 			// 채널 교란 가능 명령이 응답 없이 끝났으면 연결 건강 모니터에 알린다 → recovering (2026-08-31).
 			// 정책이 보류한 경우(PolicyError)는 여기 오지 않는다 — 제어기에 아무것도 보내지 않았으므로.
 			notifyDisruptiveFailure(wire, err);
 			attachUnloadRiskGuidance(wire, controllerId, err);
 			throw err;
 		}
+		noteRecentCommand(wire, response);
 		if (policyOn) {
 			commandPolicy.after(wire, response.raw, response.meta.statusTagReceived, Date.now());
 		}
@@ -492,6 +496,28 @@ export function noteCommandChannelLoss(ip: string, at: number = Date.now()): voi
 
 export function getLastCommandChannelLoss(ip: string): number | undefined {
 	return _lastChannelLoss && _lastChannelLoss.ip === ip ? _lastChannelLoss.at : undefined;
+}
+
+// ── 최근 상태 변경 명령 (controller/connection/recentCommands.ts, 2026-11-03) ──────────────────────
+// 유실 사후 스냅샷의 "직전 상태 변경 명령" 근거. 응답 없이 끝난 교란 명령(아래 관찰자)만으로는 `Stop -all` 처럼 정상 응답한
+// 뒤 채널이 끊긴 사례(2026-11-02 09:18 등 8건)가 "직전 명령 없음"으로 찍혔다. 읽기 전용 폴링은 넣지 않는다.
+const recentCommands = new RecentCommandLog();
+
+function noteRecentCommand(command: string, response: CommandResponse | undefined, err?: unknown): void {
+	if (isReadOnlyConsoleCommand(command)) { return; }
+	const at = Date.now();
+	if (!response) {
+		recentCommands.add({ command, at, outcome: 'failed', failure: classifyCommandFailure(err).kind });
+	} else if (response.meta.statusTagReceived) {
+		recentCommands.add({ command, at, outcome: 'status', statusCode: parseStatus(response.raw).code });
+	} else {
+		recentCommands.add({ command, at, outcome: 'no-status' });
+	}
+}
+
+/** 이 창에서 보낸 최근 상태 변경 명령(오래된 순, 최대 30건). */
+export function getRecentStateChangingCommands(): readonly RecentCommandRecord[] {
+	return recentCommands.list();
 }
 
 // ── 채널 교란 관찰자 (2026-08-31) ───────────────────────────────────────────

@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.4** (「컴파일 검증 필요」 라이브러리 해제, 1594/1594. 상세는 §1-GS.)
-- **직전 세션: §1-GS** — 수신함 Sample Prep 보고 "「컴파일 검증 필요」가 계속 떠 있다" → 원인은 해제가 컴파일한 프로젝트 이름 하나만 지운 것(PaL·Gantry 를 Upload Only 한 뒤 App 이 Compile 성공해도 남음). Compile 성공 기록이 `.gpr` 의 `ProjectLibrary`(전이 포함) 항목도 해제하고, 라이브러리 배지는 단독 Quick Compile 대신 선택 창(그룹 Compile 뒤 Unload 위험), STATUS 없는 Start 는 「결과 미확정」, /GPL 에서 폴더를 지우면 해제, 선택 창 항목 × 로 목록에서 지우기.
+- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.5** (여유 메모리 측정값 정본, 1599/1599. 상세는 §1-GT.)
+- **직전 세션: §1-GT** — "디버깅이 너무 느리다·SSOT 가 잘못된 것 같다·메모리 가져오는 게 2개" → 실행 중 창이 Marketplace 0.18.1 로 되돌아가 있었고(스텝 지연 수정 0.18.2 이전), 제어기 여유 메모리가 1시간 새 7.8 → 0.97 MB 로 줄며 `Show Thread` RTT p50 이 4 → 66 ms 로 늘었다. 구조 쪽은 `Show Memory` 응답을 트리·상태 표시줄·검사가 따로 해석·보관해 두 값이 달랐고, 사람 경로 Start/Compile 은 같은 값을 두 번 쟀다 → `controller/diagnostics/memoryReadings` 정본(전송 경로가 기록·상태 변경 시 무효화·15 s 재사용), R7 규칙.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-11-03, §1-GT) 0.27.5 메모리 측정값 정본 — 실사용 확인(읽기 경로·모션 무영향).** ① 확장 목록에서 이 확장이 0.27.5 인지 먼저 본다(이번에 Marketplace 0.18.1 로 되돌아가 있었다 — 재발하면 Auto Update 끄기 또는 Marketplace 게시로 막을지 사용자 결정). ② `GPL: Start` 한 번에 GPL Traffic 의 `Show Memory` 가 1번만 나가고 큐 슬롯 줄에 `(재사용 — N ms 전 Show Memory 측정, 그 뒤 상태 변경 없음)` 이 붙는지. ③ 업로드 스타트에서 업로드 전 측정 뒤 `Stop`·업로드를 거친 Compile 직전에는 **새로** 재는지(재사용 표시가 없어야 함). ④ 트리 시스템 정보 「메모리」 값·툴팁 측정 시각이 상태 표시줄 경고 항목 클릭 상세와 같은지, 대시보드를 열어 두면 둘 다 함께 바뀌는지. ⑤ Sample Prep 제어기 여유 메모리 0.97 MB(17:20) — Unload -all 또는 재부팅 뒤 Free 와 `Show Thread` 응답 시간이 돌아오는지(느려짐이 메모리 부족과 겹치는지 확인).
 - [ ] **(2026-11-03, §1-GS) 0.27.4 「컴파일 검증 필요」 — 실사용 확인.** ① 라이브러리(PaL)를 Upload Only → 그것을 쓰는 실행 프로젝트를 Upload & Start 하면 Output 에 `컴파일 검증 필요 상태 해제: 라이브러리 PaL — <App> Compile 에 포함` 한 줄과 배지 해제 ② 라이브러리 배지 클릭이 Quick Compile 이 아니라 선택 창(라이브러리는 체크 해제, 골라도 컴파일 안 함) ③ 선택 창 × 로 항목 해제 ④ /GPL 비우기 뒤 지운 프로젝트 해제. 남은 일: 형제 배치가 아닌 프로젝트(tools\Probe)의 라이브러리 동반 업로드 후보(같은 ip 로 마지막에 Upload Only 한 폴더 제안 — 수신함 ⑤, 보류), 라이브러리 배지에서 "이 라이브러리를 쓰는 실행 프로젝트" 후보 고르기(보류).
 - [ ] **(2026-11-03, §1-GR) 0.27.3 Unload 기본 -all — UI·실기 확인(쓰레드를 모두 정지한 상태에서).** ① 트리 /GPL 프로젝트 폴더 우클릭 「Unload -all (/GPL 비운 뒤 모두 내리기)」 → (위험 근거가 있으면 위험 모달) → /GPL 비우기 모달("비운 뒤 Unload -all") → `Unload -all` STATUS 0, 취소하면 Unload 미전송·Output 한 줄 ② /flash/projects 폴더 노드에서 같은 메뉴를 눌러도 비우기 모달에 **/GPL 목록만** 나오는지(플래시 미접촉) ③ 「GPL: Unload Project」 목록 맨 위가 「모두 내리기」라 Enter 로 바로 진행, 「이 프로젝트만」 아래 이름 Unload 가 종전대로 ④ MCP `unload_project()`(인자 없음)가 `targetSource:"default-all"` 로 -all 사전 조건(`threads-active`/`gpl-not-empty`)을 돌려주는지.
 - [ ] **(2026-11-03, §1-GQ) 0.27.2 유실 정황 — 실사용 확인.** ① 제어기에 연결한 채 PC 를 절전(덮개 닫기·`Win+X → 종료 → 절전`)했다가 깨우면 알림이 「PC 절전 복귀 HH:MM:SS (절전 N분) 직후에 끊겼습니다 … 제어기 문제로 보지 않습니다」이고 Output 에 `[Controller] 계기: PC 절전 복귀 …`, 사후 스냅샷 판정 절에 `계기:` 줄과 「PC 절전/복귀」 절 ② 「다시 연결」이 네트워크가 올라온 뒤 정상 연결되는지(아직 안 올라왔으면 종전처럼 연결 실패 알림) ③ `Stop -all` 뒤 끊기면 「직전 상태 변경 명령」 절과 Output 한 줄에 `Stop -all → STATUS 0 (N s 전)` ④ 알림이 종전보다 몇 초 늦게 뜨는지(이벤트 로그 조회 약 4 s — 도달성 판정과 병렬). 남은 원인 후보: 깨어 있는 중 링크 단절 8건(USB 랜카드 RTL8153 전원 절약·케이블·제어기 NIC) — 재발 시 사후 스냅샷과 `Get-WinEvent Microsoft-Windows-NetworkProfile/Operational` 10000 을 대조.
@@ -1120,7 +1121,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | 본문 ↓ |
+| §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |
 | §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | 본문 ↓ |
 | §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | 본문 ↓ |
@@ -1130,43 +1131,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GQ | 11-03 | **연결 유실 정황: PC 절전 복귀·직전 상태 변경 명령·「다시 연결」** — 사후 스냅샷 30건 재분석(절전 복귀 5·깨어 있는 중 링크 단절 8·Stop/Start/Execute 뒤 8·Unload 6), Windows 이벤트 로그로 절전 복귀 매칭(`pcPowerEvents.ts`), `RecentCommandLog`, 알림 문구 `lossNotice.ts`, README 문제 해결 2행. 0.27.2 | 본문 ↓ |
 | §1-GR | 11-03 | **Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실** — 트리 우클릭 Unload → `Unload -all`(/GPL 비운 뒤), 「Unload Project」 맨 위가 -all, MCP `unload_project` 생략 = -all(`default-all`); 비우기 대상이 /flash·루트면 거부(`classifyRemoteClearRoot`); 자동 복구 Unload 는 이름 유지. 버전 정책: 기능 추가도 patch. docs/gpl-language 4파일. 0.27.3 | 본문 ↓ |
 | §1-GS | 11-03 | **「컴파일 검증 필요」 라이브러리 해제·라이브러리 배지·결과 미확정 사유·목록에서 지우기** — 수신함 Sample Prep 보고 처리: Compile 성공이 `ProjectLibrary`(전이) 항목도 해제(`clearCompiled`·`compiledLibraries.ts`), 라이브러리 배지는 선택 창으로, STATUS 없는 Start 는 「결과 미확정」, /GPL 비우면 해제, 선택 창 ×. 0.27.4 | 본문 ↓ |
+| §1-GT | 11-03 | **여유 메모리 측정값 정본(SSOT)·디버깅 느림 진단** — 실행 창이 Marketplace 0.18.1 로 되돌아감(스텝 지연 수정 전), 제어기 Free 7.8 → 0.97 MB·RTT 증가 관측. `Show Memory` 는 전송 경로가 `memoryReadings` 에 기록하고 트리·배지·검사가 같은 값을 읽음, 상태 변경 없으면 15 s 재사용, FTP 쓰기·상태 변경 명령이 무효화, R7. 0.27.5 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GJ ~ §1-GS (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GK ~ §1-GT (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GJ. 2026-10-27 세션 — 제어기 대시보드 디지털 I/O 분류·강제 조작 단순화·UI 밀도/주기 개선 (0.22.0)
-
-### 요청
-
-- 사용자: 대시보드가 불편하다 — I/O 를 작게 모아 한눈에, 분류·정렬 필요. 강제 ON/OFF 버튼 대신 **더블클릭 토글**, **우클릭으로 강제 해제·전체 해제**. "2만번대 IO 는 왜 안 보이고 8천번대는 왜 많지? IO 정보는 어디서?" 웹 Operator 의 Local I/O(Digital · Soft Internal DIO · Analog · Robot Z · Sample custom)·Remote I/O(RIO 1~4 · Network Node 2~8) 메뉴 구성을 제시. 추가로 "강제할 때마다 경고 띄우지 마", "대시보드 UI 전체 점검, 갱신 주기 옵션이 너무 적다".
-
-### 원인 (문서 + 실측)
-
-- I/O 정보 출처는 명령 콘솔 `Show DIO`(인자 없음 = "all installed signals", 문서상 https://www2.brooksautomation.com/Controller_Software/Software_Reference/Console_Commands/show_dio.htm).
-- 8000번대·18000번대 = **dedicated I/O**. 문서상 번호 = base + 100·bank, general 출력 1/입력 10001(bank 0 로컬, 1~15 RIO·MODBUS/TCP), dedicated 출력 8001/입력 18001(bank 0 제어기, 1~15 축), Software I/O 20001~20064, 서보 네트워크 node n 은 +100000·n (https://www2.brooksautomation.com/Controller_Software/Introduction_To_The_Software/Communications/com_dio.htm , RIO 유닛 대응은 com_rdio.htm). 실기(G2400C 4.2K5) 응답 102개 중 82개가 8081~8096·81xx~86xx·18001~18032·181xx~186xx 였다.
-- 2만번대가 안 보인 이유(**실측**, 2026-10-27): 인자 없는 `Show DIO` 는 Software I/O 를 내주지 않는다. 번호를 지정하면 나온다(`Show DIO 20001,…` STATUS 0). 64개 한 줄(392자)은 `-506 *Input too long*`, 24개(152자)는 성공 → 160자 이하로 나눠 보낸다(64개 = 3줄). 20065·201001 은 조용히 무시(문서 "Invalid signal numbers are ignored"와 일치).
-
-### 조치
-
-- 순수 모듈 `src/controller/io/dioGroups.ts` + 테스트 6건: `classifyDioSignal`(그룹·IN/OUT), `groupDioSignals`(Local→Remote, 그룹 순서, 입력 먼저), `STANDARD_REMOTE_GROUPS`(RIO 1~4·Node 2~8 — 없으면 「미검출」), `buildShowDioCommands`(길이 분할), `toggleForceValue`, `forcedSignalsFor`.
-- 패널(`controllerDashboardPanel.ts`): `pollDio` 가 `Show DIO` + Soft 분할 조회를 합쳐 `groups`/`absent` 로 보냄, 마지막 관측(`lastDioSignals`)을 확장이 보관해 `toggleDio {signal}`(반대 값 강제)·`releaseDio {group?}`(강제된 것만 `Set DIO n 0`, 실패 시 중단·진행 수 표시)를 판단. **확인 모달 제거**(사용자 요청) — 팔레트 `gpl.controller.setDio` 도 동작 선택 뒤 바로 적용. 진단 간격 덮어쓰기 `setDiagnosticInterval`.
-- 웹뷰(`dashboard.html`): 카드 → 그룹별 소형 칩(IN/OUT 행, 모서리 = 강제, 값 변화 강조, 처리 중 깜박임), 구성이 같으면 칩만 제자리 갱신(더블클릭 사이 DOM 교체 방지), 상태/입출력 필터·검색·그룹 접기(`vscode.setState` 보존), 우클릭 메뉴(강제 ON/OFF/해제·그룹/전체 해제·번호 복사·모두 펼치기/접기, Shift+F10·Esc), 「강제 전체 해제 (n)」·탭 강제 수. 전체: 고정 헤더, 배지·카드·표 밀도, 상태 카드 접기(보존), 주기 0.5/1/1.5/2/3/5/10/15/30/60 s + 직접 입력, 진단 2~60 s, 단축키 R/P/1/2/`/`.
-- 테스트 하니스(`dashboardTemperature.test.ts`)의 document 모의에 `addEventListener` 추가(웹뷰가 문서 단위 리스너를 쓰게 됨). 웹뷰는 `getState`/`setState` 가 없으면 보존만 건너뛴다.
-- Analog I/O·Robot Z I/O·Sample custom DIO 는 넣지 않았다: Analog 는 DIO 가 아니고(콘솔 명령 미확인), Robot Z I/O 의 신호 번호는 문서에서 찾지 못했으며(축 dedicated I/O 일 가능성 — 미검증), Sample custom 은 웹 패널 예제다.
-
-### 검증
-
-- `npm test` 1556/1556(다른 세션 작업 포함 작업 트리). 실기 읽기 전용 `Show DIO`·Soft 조회로 분류 입력을 확보(`Set DIO` 는 보내지 않음).
-- Edge headless 로 실기 응답을 넣은 하니스를 렌더해 I/O 탭(그룹 10개·미검출 11개)·우클릭 메뉴·상태 탭 배치를 스크린샷으로 확인, 더블클릭 → `toggleDio`·그룹 머리 클릭 → 접힘·「강제 전체 해제」 → `releaseDio`·`dioAction busy` → 칩 busy 를 DOM 으로 확인.
-- `npm run package:no-bump` — 다른 세션의 미커밋 변경이 섞이지 않게 `ec655aa` 의 별도 worktree 에서 빌드: `dist/gpl-language-support-0.22.0.vsix`, **1,618,615 bytes**, SHA-256 **7CC1C0B8F9AEE7A1FD7CE37DEFDEE917289BA90F76D77EE7F2E21C2B128385E6**(worktree 1556/1556). 경고는 DEP0190·번들링 권고뿐. 참고: worktree 를 `…\Temp\claude\…` 아래에 두면 vsce 가 파일을 하나도 담지 않아(`vsce ls` 빈 목록, 'entrypoint missing') 경로를 옮겨 빌드했다 — `.vscodeignore` 의 `.claude` 패턴이 경로 조각에 걸리는 것으로 추정(미확인).
-- 실제 VS Code 웹뷰 표시·실기 `Set DIO` 동작은 미확인 → §3 체크리스트.
-
-### 남은 일
-
-- §3 「0.22.0 대시보드 I/O」 실기 확인. Robot Z I/O 번호 체계를 실기(그리퍼 장착 로봇)로 확인하면 그룹 추가 검토.
 
 ## 1-GK. 2026-10-27 세션 — 패키지(.gpr) 의존 검사: ProjectLibrary·ProjectSource 대조와 계층 규칙 (0.23.0)
 
@@ -1471,3 +1442,37 @@ README 를 연 상태에서 "검토후 개선해줘".
 
 - §3 실사용 확인, 보류 2건.
 - 알려진 한계: 내장형 패키지(BinderR4) 하위 `.gpr` 의 값은 루트 기준이라(위 §1-GO 계열 기록) 한 조각 값(`Lib`)이 `/GPL/Lib` 에 따로 올린 동명 항목과 우연히 같으면 함께 해제된다. 실사용에서 겹치면 값의 기준(루트/projects)을 그래프 노드로 구분한다.
+
+## 1-GT. 2026-11-03 세션 — 여유 메모리 측정값 정본(SSOT) · 디버깅 느림 진단 (0.27.5)
+
+### 증상(요청)
+
+"제어기 렉이 심해진 것 같은데, 디버깅이 너무 느려짐" → 이어서 "SSOT 구조도 뭔가 잘못된 것 같다, 메모리 가져오는 게 2개인 것 같다, 전체적으로 검토해서 개선해 봐".
+
+### 원인(관측)
+
+1. [높음, 느림] Sample Prep 창(pid 34448)이 확장 **0.18.1** 로 돌고 있었다. 기본 프로필 `extensions.json` 이 `0.18.1 source=gallery`(설치 15:57) — 15:47 에 VSIX 0.27.4 를 설치한 뒤 Marketplace 판으로 되돌아갔고 0.27.1~0.27.4 는 `.obsolete`. 0.18.1 에는 스텝 지연 수정(§1-GA, 0.18.2 commandLanes/pollSchedule)이 없다. 되돌아간 이유(자동 업데이트/설정 동기화)는 미확정.
+2. [높음, 렉] 같은 부팅에서 `Start App -compile` 을 반복하는 동안 여유 메모리 7.78(16:13) → 5.48(16:15) → 1.59(16:19) → **0.97 MB**(17:20). 사후 스냅샷의 `Show Thread` 응답 시간은 10-27~28 p50 3~5 ms 였는데 16:06~17:06 p50 66 · p90 456 · 최대 2,611 ms, `-web` p50 98 ms. 두 관측의 인과는 미확정(가설: 메모리 부족이 제어기 응답을 늦춘다).
+3. [중간, 구조] `Show Memory` 를 보내는 곳이 넷(작업 검사·트리 시스템 정보·대시보드·AI 상태 조회)이고 응답을 각자 들고 있었다. 트리는 자체 정규식(`systemInfoItems.formatMemory`)으로 5분 억제된 옛 값을, 상태 표시줄은 마지막 Compile/Start 검사 값을 보여 줘 **같은 제어기의 여유 메모리가 두 화면에서 달랐다** — 사용자가 본 「메모리 가져오는 게 2개」.
+4. [중간, 중복] 사람 경로의 Start·Compile & Run·배포는 「심각이면 묻기」 검사(`checkMemoryBeforeOperation()`) 바로 뒤 큐 슬롯 검사(`needsMemoryGuard`)가 같은 값을 다시 쟀다 — 그 사이에 바뀐 것이 없다(Traffic 로그: Start 1회당 `Show Memory` 2회).
+
+### 조치(의도와 방법)
+
+- `controller/diagnostics/memoryReadings.ts`(순수): 제어기별 최신 측정(`MemoryReading`: at·`parseShowMemory` 결과·원문·명령)과 마지막 상태 변경. `isReadingReusable` = 측정 뒤 상태 변경이 없고(같은 ms 는 변경 쪽으로) `MEMORY_READING_REUSE_MS`(15 s) 안. 공유 인스턴스 `controllerMemoryReadings`.
+- 기록은 **전송 경로 한 곳**: `controllerConnection.sendCommandDetailedInternal` 이 STATUS 받은 `Show Memory` 응답을 기록하고, 읽기 전용이 아닌 명령(unknown 포함)을 보내는 순간 무효화한다. FTP 업로드·삭제(`ftpClient` 쓰기 함수 6개)는 시작과 끝에 무효화(/GPL 파일이 여유 메모리에 잡힐 수 있다고 보고 — 문서 확인 전).
+- `checkMemoryBeforeOperation` 은 재사용 가능한 측정이 있으면 보내지 않고 Output 에 `(재사용 — N ms 전 … 측정, 그 뒤 상태 변경 없음)` 을 남긴다. 알림 규칙(memoryNotice)·배포의 「정지 뒤 Compile 직전 측정」 귀속(`at ≥ compileStartedAt`)은 그대로 — `_lastMemoryCheck` 에 `measuredAt` 을 더했다.
+- 상태 표시줄 배지는 **모든 측정**(`onDidRecord`)을 따른다 — 검사 경로가 따로 부르지 않는다. 클릭 상세는 `getLatestMemoryAssessment()`(누가 쟀든 마지막 값·명령·시각).
+- 트리 시스템 정보 메모리 행은 정본의 최신 값(`Free: X MB`, 툴팁에 명령·측정 시각·원문)이고, 새 측정이 오면 다시 그린다. 자체 정규식 삭제.
+- 구조 R7: `('Show Memory'` 처럼 문자열로 직접 보내지 않는다(`PROBE_MEMORY_CMD`) — 정본은 resourceProbes·memoryReadings.
+- 검토했으나 바꾸지 않은 것: 1402 유휴 ping(`Show Thread`, 결과 버림)이 트리 폴과 겹친다 — 0.18.1 Traffic 로그 2시간에 ping 204회 vs `Show Thread -web` 1,629회(약 12 %). 1403 유지를 위한 keep-alive 라 남겼고, ping 결과를 쓰레드 목록 정본으로 돌리는 안은 이득(신선도)이 작아 보류. 디버그 중 쓰레드 목록은 이미 어댑터 결과 하나(debugBridge)로 합쳐져 있다. ErrorLog/Show Break 10 s 폴은 에디터 BP 정본과 제어기 실제의 어긋남을 보는 관측이라 중복이 아니다.
+
+### 검증
+
+- `npm test` **1599/1599**(memoryReadings 4·systemInfoItems 1 추가, R7 통과). 분류기 확인: `Show Memory`·`Show Thread`·`ErrorLog`·`Show Break`·`Show Flash Free`·`Show CPU Profile`·`Show Temperature`·`date`·`pd` 는 읽기 전용(무효화 안 함), `Stop -all`·`Compile`·`Start` 는 상태 변경.
+- VSIX `dist/gpl-language-support-0.27.5.vsix` 1,689,523 bytes, SHA-256 `A2121701332CD841CC4808A05B15596EE56F23C2450E6B486CED409A91BFFA7A`(경고는 bundle 권장 1건), `memoryReadings.js` 포함 확인.
+- 실기 미확인 → §3. MCP 는 `GPL_HOST=192.168.0.1` 로 확장 창(192.168.0.102)과 주소가 달라 이번 세션에서 제어기를 직접 조회하지 못했다.
+
+### 남은 일
+
+- §3 실사용 확인. 확장이 다시 Marketplace 판으로 되돌아가지 않게 할 방법(Auto Update 끄기 / v0.27.x 태그 push 로 Marketplace 게시)은 사용자 결정.
+- 제어기 메모리 감소의 원인(반복 `Start -compile`·런타임 버퍼·/GPL 파일) — Unload/재부팅 뒤 회복량으로 가른다.

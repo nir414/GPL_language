@@ -2,6 +2,17 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.27.3] - 2026-11-03
+
+### Changed
+
+- **Unload의 기본값을 `Unload -all`로 바꿨습니다.** 트리의 프로젝트 폴더 우클릭 「Unload」는 이제 `/GPL`을 비운 뒤 `Unload -all`을 보냅니다. `GPL: Unload Project` 목록에서는 「모두 내리기」가 맨 위에 있어 Enter만 누르면 됩니다. 한 프로젝트만 내리려면 그 아래 목록에서 고릅니다. 배포·Compile 복구 중에 자동으로 나가는 Unload는 지금처럼 프로젝트 이름으로 보냅니다.
+- MCP `unload_project`는 `project`를 생략하면 `Unload -all`입니다(종전에는 세션 대상 프로젝트). `-all`의 사전 조건(활성 쓰레드 없음·`/GPL` 비어 있음)은 그대로입니다.
+
+### Fixed
+
+- `Unload -all` 전 비우기가 `/GPL`만 대상으로 하도록 막았습니다. `gpl.controller.ftpBasePath`가 `/flash` 쪽이나 루트를 가리키면 비우지도, Unload를 보내지도 않고 설정 확인을 안내합니다.
+
 ## [0.27.2] - 2026-11-03
 
 ### Added

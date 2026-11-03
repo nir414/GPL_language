@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.2** (연결 유실 정황 — 절전 복귀·직전 명령·다시 연결, 1584/1584. 상세는 §1-GQ.)
-- **직전 세션: §1-GQ** — 사용자 보고 "제어기가 실제로 죽지 않았는데도 연결이 끊김" → 사후 스냅샷 30건(10-28~11-02)·Windows 이벤트 로그 대조: 5건은 PC 최신 대기 종료와 초 단위 일치(제어기 무관), 깨어 있는 중 8건은 직결 링크 단절, 8건은 Stop -all·Start·Execute 뒤 2분 안(11-02 09:18 묶음은 재부팅 정황). 유실 처리에 절전 복귀 판정(이벤트 로그)·직전 상태 변경 명령 절·알림 「다시 연결」을 더했다(자동 재접속은 여전히 안 함).
+- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.3** (Unload 기본 -all, 1584/1584. 상세는 §1-GR.)
+- **직전 세션: §1-GR** — 사용자 요청 "Unload 는 기본 -all" → 트리 우클릭·「Unload Project」 기본 항목·MCP `unload_project` 생략이 모두 `Unload -all`(보내기 전 /GPL 비우기는 §1-GN 그대로, /flash/projects 는 절대 대상 아님 — 설정이 /flash 를 가리키면 거부). 배포·FTP Run 의 자동 Unload→Load→Compile 은 이름 지정 유지. 버전 정책은 기능 추가도 patch(사용자 방침). 다음 할 일은 §3 맨 위 UI·실기 확인.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-11-03, §1-GR) 0.27.3 Unload 기본 -all — UI·실기 확인(쓰레드를 모두 정지한 상태에서).** ① 트리 /GPL 프로젝트 폴더 우클릭 「Unload -all (/GPL 비운 뒤 모두 내리기)」 → (위험 근거가 있으면 위험 모달) → /GPL 비우기 모달("비운 뒤 Unload -all") → `Unload -all` STATUS 0, 취소하면 Unload 미전송·Output 한 줄 ② /flash/projects 폴더 노드에서 같은 메뉴를 눌러도 비우기 모달에 **/GPL 목록만** 나오는지(플래시 미접촉) ③ 「GPL: Unload Project」 목록 맨 위가 「모두 내리기」라 Enter 로 바로 진행, 「이 프로젝트만」 아래 이름 Unload 가 종전대로 ④ MCP `unload_project()`(인자 없음)가 `targetSource:"default-all"` 로 -all 사전 조건(`threads-active`/`gpl-not-empty`)을 돌려주는지.
 - [ ] **(2026-11-03, §1-GQ) 0.27.2 유실 정황 — 실사용 확인.** ① 제어기에 연결한 채 PC 를 절전(덮개 닫기·`Win+X → 종료 → 절전`)했다가 깨우면 알림이 「PC 절전 복귀 HH:MM:SS (절전 N분) 직후에 끊겼습니다 … 제어기 문제로 보지 않습니다」이고 Output 에 `[Controller] 계기: PC 절전 복귀 …`, 사후 스냅샷 판정 절에 `계기:` 줄과 「PC 절전/복귀」 절 ② 「다시 연결」이 네트워크가 올라온 뒤 정상 연결되는지(아직 안 올라왔으면 종전처럼 연결 실패 알림) ③ `Stop -all` 뒤 끊기면 「직전 상태 변경 명령」 절과 Output 한 줄에 `Stop -all → STATUS 0 (N s 전)` ④ 알림이 종전보다 몇 초 늦게 뜨는지(이벤트 로그 조회 약 4 s — 도달성 판정과 병렬). 남은 원인 후보: 깨어 있는 중 링크 단절 8건(USB 랜카드 RTL8153 전원 절약·케이블·제어기 NIC) — 재발 시 사후 스냅샷과 `Get-WinEvent Microsoft-Windows-NetworkProfile/Operational` 10000 을 대조.
 - [ ] **(2026-10-28, §1-GO) 라이브러리 함께 업로드 — 실기 확인(FTP·Compile, 모션 무영향).** `projects/Main`(ProjectStart, `ProjectLibrary="Libraries"`) + `projects/Libraries` 를 만들어 ① Upload Only 출력에 「함께 업로드: Libraries → /GPL/Libraries」와 Library done 줄, 알림 끝에 「+ 라이브러리 Libraries」 ② **Compile Main 이 STATUS 0** 인지 — 제어기가 `/GPL/Libraries` 를 라이브러리로 찾는지(문서 표본은 중첩 배치 1건뿐; 실패하면 `-508`/미정의 심볼 류가 나올 것이고, 그때는 원격 경로 규칙을 고친다) ③ 라이브러리 파일을 고친 뒤 다시 올리면 그 파일만 sent ④ BinderR4 의 `Gantry\Data` 를 올리면 「내장형 패키지 — 컴파일 단위는 BinderR4」 줄만 나오고 추가 업로드 없음.
 - [ ] **(2026-10-28, §1-GN) 0.26.0 — "컴파일 검증 필요" 목록·Unload -all 전 비우기 — VSIX·실기 확인(Unload 는 정지 상태에서).** ① Upload Only 로 프로젝트 3개를 올리면 트리 「프로젝트 상태 ⚠ 컴파일 검증 필요 3개」에 세 줄, 상태바 `$(warning) 컴파일 검증 필요: <마지막> 외 2` ② 상태바 클릭 → 다중 선택 QuickPick(전부 체크) → 고른 순서대로 Quick Compile, 하나 실패 시 중단 ③ 한 프로젝트만 Compile 하면 그 줄만 사라지고 라벨이 「외 1」로 ④ `GPL: Start`(모달 「그대로 Start」) STATUS 0 뒤 배지 해제 + Output `[Start] ✔ 컴파일 스냅샷 기록` ⑤ 창 다시 열기(Reload Window) 뒤에도 미검증 목록이 남고, 다른 IP 로 설정을 바꾸면 사라졌다가 되돌리면 다시 뜨는지 ⑥ 「GPL: Unload Project」→「모두 내리기」: 위험 모달 → /GPL 비우기 모달(문구에 "비운 뒤 Unload -all") → 삭제 → `Unload -all` STATUS 0, 취소하면 Unload 미전송·Output 한 줄, /GPL 이 비어 있으면 모달 없이 바로 ⑦ MCP `unload_project {project:"-all"}` 가 /GPL 비어 있지 않을 때 `refused:"gpl-not-empty"` + 목록, 활성 쓰레드가 있으면 `threads-active` ⑧ 실행 뒤 앱 Unload 가 15 s 를 넘겨도(GPL Traffic 의 소요 시간) 타임아웃 없이 STATUS 가 오는지 — 그래도 inbox 의 `_Cmd_<project>` 유발 무응답(§1-GN 남은 일)은 별건.
@@ -1113,7 +1114,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | 본문 ↓ |
+| §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | 본문 ↓ |
@@ -1125,40 +1126,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GO | 10-28 | **라이브러리 함께 업로드·내장형 구분** — ProjectLibrary 그래프에서 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 `/GPL/<값>` 으로(`libraryUploadPlan.ts`), 내장형 패키지(BinderR4)는 루트 소속이라 생략. 재생 하니스 ALL IDENTICAL. 0.27.0 | 본문 ↓ |
 | §1-GP | 11-03 | **README 검토·개선** — 08-18 정책대로 제어기 연동 → 디버깅 → 상태 → AI → 언어 기능 순 재배치, 디버깅 3단 분리, 0.17.0 이전 원격 디버깅 문장(저장 폴더·저장 구성 재연결) 제거, 컴파일 검증 필요·메모리·Diagnose Stuck Thread·uploadLibraries 추가. 0.27.1 | 본문 ↓ |
 | §1-GQ | 11-03 | **연결 유실 정황: PC 절전 복귀·직전 상태 변경 명령·「다시 연결」** — 사후 스냅샷 30건 재분석(절전 복귀 5·깨어 있는 중 링크 단절 8·Stop/Start/Execute 뒤 8·Unload 6), Windows 이벤트 로그로 절전 복귀 매칭(`pcPowerEvents.ts`), `RecentCommandLog`, 알림 문구 `lossNotice.ts`, README 문제 해결 2행. 0.27.2 | 본문 ↓ |
+| §1-GR | 11-03 | **Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실** — 트리 우클릭 Unload → `Unload -all`(/GPL 비운 뒤), 「Unload Project」 맨 위가 -all, MCP `unload_project` 생략 = -all(`default-all`); 비우기 대상이 /flash·루트면 거부(`classifyRemoteClearRoot`); 자동 복구 Unload 는 이름 유지. 버전 정책: 기능 추가도 patch. docs/gpl-language 4파일. 0.27.3 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GH ~ §1-GQ (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GI ~ §1-GR (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GH. 2026-10-27 세션 — §1-GF 후속: 성장 규칙 명문화·파서/참조 찾기 분해·인덱싱 진단 (0.20.1)
-
-### 요청·판단
-
-- 사용자: "앞으로 구조층 설계는 이런 방향으로 진행할 수 있도록 간단히 명시", "남은 권장 사항도 이어서", "내가 따로 할 일이 있으면 알려 달라". 토큰 가성비는 지키되 일처리는 제대로(느려도 됨), 하위 에이전트는 Sonnet.
-- 같은 저장소에 세션이 여럿(gpl-language-dd·gpl-language-32 + 샘플 프렙/바인더 세션들). 32 세션의 Requires 헤더 작업(§1-GG, 0.20.0)이 작업 트리에 미커밋으로 있어 마지막 병합을 그쪽 커밋(47d25b8)까지 기다렸다가 올렸다. **작업 트리에 남은 `controller-mcp/README.md`·`src/guidelines.js`·`test/guidelines.test.mjs` 미커밋 변경은 이 세션·dd·32 어느 쪽 것도 아니다**(사용자 말로는 다른 AI 와 함께 고친 것) — 이 세션은 건드리지 않았고 커밋에도 넣지 않았다. 다만 `npm run package` 의 MCP 번들에는 작업 트리 상태가 그대로 들어가므로 0.20.0·0.20.1 VSIX 둘 다 그 변경을 포함한다.
-
-### 조치
-
-- **성장 규칙 명문화(a4aa1c6)**: architecture.md §2.4 가 정본(두 단계 폴더·루트는 도구 규약만·1,000줄/150줄 = 분해 신호·순수 먼저·이동/분할은 동작 불변 증명·명시적 상태·문서와 테스트가 정본·의존 방향), CLAUDE.md/AGENTS.md 「구조 설계 방향」은 요약. 2026-09-18 사용자 설계 방침(책임 위치부터)을 상위에 둔다.
-- **`src/ai` → `controller/automation`(72f4b1e)**: `activation/ai` 와 이름 혼동 제거. 계층 union·허용 목록·area 표·§4 갱신.
-- **responseParser 분해(c47df4e, Sonnet)**: `statusParser`·`threadParser`·`stackParser`·`breakListParser`·`variableParser`·`errorLogParser`(파싱+에러 코드 분류)·`compileErrorParser`·`gprParser`·`projectSelection`·`sourceCandidates`·`runtimeConsoleLine`·`protocolText` + 배럴 `responseParser.ts`(동명 재export, importer 무수정). 테스트는 모듈별 5파일로 옮김(단언 그대로). R7 SSOT 표의 에러 분류 소유자는 `errorLogParser` 로.
-- **referenceProvider 분해(ae80030·4c76233·8f726ab, Sonnet)**: 순수 모듈 `language/analysis/referenceCandidates`(패턴·한정자 규칙)·`referenceTarget`(대상 선언 복원 캐스케이드)·`referenceScan`(검색 계획·스캔 세션·중복 제거)·`referenceTrace`(`[References]` 문구). provider 는 문서/Uri/Location 변환과 `findTextInWorkspace` 만. 분해 전 provider 를 vm 하니스로 돌려 6+3 질의의 위치 순서·로그 줄을 고정값으로 뽑고(`referenceScan.test`·`referenceFixture.ts`), 새 순수 함수가 그 값을 재현하는지 + old/new provider 를 project-fallback·workspace-search 두 경로에서 바이트 비교. 게이트 순서 하나(unqualifiedOnly 검사 위치)가 통일됐으나 부수효과 없는 순수 판정이라 결과 동일.
-- **인덱싱 진단(72f4b1e)**: `workspaceSourceLoader` 의 `[SymbolCache] … (탐색/findFiles N ms)`, `languageFeatures` 의 `Symbol cache initialized! (N ms)`. `scripts/dev/index-performance.js --workspace <폴더>`(읽기만, 삭제 안 함)로 실제 핵산 Oligo 워크스페이스 실측: MergeCode 63파일 read 77/parse 52/index 9 ms(총 0.14 s), 시뮬레이션 루트 114파일 총 0.33 s → **확장의 읽기·파싱·색인은 9 s 의 원인이 아니다.** 남은 후보는 VS Code `findFiles` 열거(SVN 트리 범위)·활성화 대기·다른 워크스페이스. 다음 보고 때 Output 의 두 줄로 가른다.
-- `npm run verify:split` = compile + `deployReplay.js` + `compareTreeProvider.js`.
-
-### 검증
-
-- `npm test` **1539/1539**(1481 → responseParser 테스트 재배치 0, referenceProvider 순수 테스트 +48, 32 세션의 Requires 헤더 테스트 포함). 병합 충돌은 `test/index.ts` 등록 줄과 architecture.md `analysis/` 행뿐(양쪽 보존).
-- 패키징: `npm run package` → `dist/gpl-language-support-0.20.1.vsix` **1,617,016 bytes**, SHA-256 **FE2F12BF9C9599132D786189FEB516D229A616DDA78DA72E2F1A1865EBD65E97**(353 files, MCP 번들 1010 KB — 작업 트리의 controller-mcp 미커밋 변경 포함). 경고는 기존 JavaScript 번들링 권고뿐.
-
-### 남은 일
-
-- §3: §1-GF 실기·UI 확인 4종 그대로 + 느린 워크스페이스에서 `Symbol cache initialized! (N ms)`·`[SymbolCache] … 탐색 N ms` 값 수집.
-- `controller-mcp/` 미커밋 변경 3파일의 주인 확인·정리(이 세션 범위 밖).
-- 분해 후보로 남은 것: `gplDebugSession._pollThreadStates`·`runtimeConsole`(명시적 상태 머신과 함께), `gplParser.ts` 977줄(상한 근접), `errorLogParser` 의 파싱/분류 분리, `gprParser`·`projectSelection`·`sourceCandidates` 를 `project/` 로 옮길지.
-- push·태그·릴리스는 사용자 요청 시.
 
 ## 1-GI. 2026-10-27 세션 — 제어기 유실 판정 지연 분석·개선 (0.21.0)
 
@@ -1463,3 +1437,43 @@ README 를 연 상태에서 "검토후 개선해줘".
 
 - §3 실사용 확인.
 - 깨어 있는 중 링크 단절 8건의 원인 특정(USB 랜카드 전원 절약·케이블·제어기 NIC). 재부팅 정황 자동 기록(/GPL 비었는지·여유 메모리 급증·쓰레드 소멸 — `unloadRisk.judgeRebootEvidence` 일반화)은 다음 후보로 제안만 했다.
+
+## 1-GR. 2026-11-03 세션 — Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실 (0.27.3)
+
+### 증상(요청)
+
+1. "최근 버전을 너무 빠르게 올린다 — 뒤의 0.0.1 자리부터 천천히 올려 달라."
+2. "Unload 동작 시에는 기본적으로 -all 로 처리하는 게 편하겠다." 범위를 묻자 「사람이 누르는 Unload 전부」(트리 우클릭·Unload Project 기본·MCP 생략 시)를 골랐다.
+3. "Unload -all 동작 시에는 우선 flash gpl 을 비우고 Unload." 비울 폴더를 묻자 「/GPL 만(지금처럼)」. 질문 선택지에 /flash/projects 를 올린 것 자체에
+   "왜 건드리려고 하느냐, 막 건드리지 마라"는 지적을 받았다 — **/flash/projects 는 비우기·삭제 대상으로 제안하지 않는다.**
+4. 다른 세션(Sample Prep) 수신함 보고 `2026-11-03_SamplePrep_gpl-language-facts-apon_v1.md`(GPL 언어 사실 5건).
+
+### 원인
+
+- 버전: 규칙이 "호환 기능 추가 = minor" 였다. 세션마다 기능이 붙어 0.18.0(10-26) → 0.27.1(11-03) 8일 새 minor 가 10번 올랐다.
+- Unload: 트리 우클릭은 `Unload <폴더명>`, 「Unload Project」 는 `-all` 이 목록 맨 끝이었다. -all 을 쓰려면 매번 끝까지 내려가야 했다.
+
+### 조치(의도와 방법)
+
+- **버전 정책(8ca97c1)** — `docs/releases/process.md` §버전 정책을 "기능 추가 포함 patch 기본, minor 는 사용자 요청 시만, major 는 먼저 알림"으로. CLAUDE.md·AGENTS.md·`.github/instructions/gpl-release.instructions.md` 요약도 같게.
+- **`activation/remote/ftpCommands.ts`** — `gpl.controller.ftpUnload`(트리 우클릭)는 노드 검사(현재 제어기·프로젝트 폴더)만 하고 `runUnloadAllInteractive(recheck)` 로.
+  「Unload Project」 QuickPick 은 「모두 내리기 (Unload -all)」 를 맨 위(Enter 기본), 그 아래 「이 프로젝트만」 구분선 + /GPL 폴더 + 이름 직접 입력.
+  `runUnloadAllInteractive` 는 비우기 전에 `classifyRemoteClearRoot(ftpBasePath)` 가 `flash`·`unsafe` 면 **비우지도 보내지도 않는다**(설정 오류로 플래시를 지우는 길 차단).
+  package.json 의 `ftpUnload` 제목은 "Unload -all (/GPL 비운 뒤 모두 내리기)".
+- **자동 Unload 는 그대로** — `deployCompileStage`·FTP Run 의 Unload→Load→Compile 복구는 이름 지정 유지. -all 이면 라이브러리·다른 프로젝트까지 내려가 Load 복구가 깨진다.
+- **MCP `unload_project`** — `project` 생략 = `-all`(`targetSource:"default-all"`), 세션 대상으로 풀지 않는다. `project_target` 설명에 예외 표기, controller-mcp README.
+- **README** — 여유 메모리 항목에 "기본은 /GPL 을 비운 뒤 전부 내리는 Unload -all".
+- **수신함(4433ddb)** — `docs/gpl-language` 4파일: common-mistakes 0-14(런타임 `String.Split` -506, 16,811자 실패·641자 정상)·0-15(수학 함수는 `Math.` 접두, `Abs` -729)·
+  예외 절 정정(문서상 `Exception.Message` 는 ErrorCode 등으로 만들어 내는 글이라 대입한 글이 전달되지 않음, 괄호 없는 `ex.Message` 읽기 가능),
+  error-handling throwError 주의, strings·datatypes 에 `CStr(1E+32)`=`"1e+32"`·성능 메모. 근거 GPL Dictionary `String/split.htm`·`Exception_Handling/exc_message.htm`·`Math/abs.htm`·`GPL_Error_Code/io_errors.htm`. 보고 파일은 처리 결과를 붙여 `done/`.
+
+### 검증
+
+- `npm test` **1584/1584**, `controller-mcp` `node --test` 165/165, `node --check index.js`. 새 판단 로직은 없고 기존 순수 함수(`classifyRemoteClearRoot`, 테스트 있음)를 배선만 했다.
+- VSIX: 아래 기록 커밋 참조.
+- UI·실기 미확인 — §3 맨 위 항목.
+
+### 남은 일
+
+- §3 UI·실기 확인.
+- 수신함 미처리: `2026-11-02_SamplePrep_runtime-console-buffer-stalled_v1.md`(이 세션 범위 밖). 같은 시각 다른 세션(gpl-language-e2)이 `compile-stale-library-never-cleared` 를 처리 중(0.27.4 예정).

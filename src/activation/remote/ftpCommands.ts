@@ -24,6 +24,7 @@ import {
 import { NO_STATUS_CODE, SHOW_THREAD_LIST_CMD, parseThreadList } from '../../controller/protocol/responseParser';
 import {
 	RemoteDeleteGate,
+	classifyRemoteClearRoot,
 	clearRemoteFolderEntries,
 	remoteDeleteGateAfterStop,
 	remoteDeleteGateForThreads,
@@ -659,14 +660,13 @@ export function activateFtpCommands(host: ExtensionHost): void {
 		})
 	);
 
-	// FTP 폴더 Unload (메모리 해제)
+	// FTP 폴더 Unload (메모리 해제) — 사람이 누르는 Unload 는 기본 `Unload -all`(2026-11-03 사용자 결정). 한 프로젝트만
+	// 내리는 길은 「Unload Project」 목록에 남긴다. 비우는 폴더는 /GPL 뿐이다 — 플래시 폴더 노드에서 눌러도 플래시는 건드리지 않는다.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('gpl.controller.ftpUnload', async (node: any) => {
-			// `/GPL/App/Utils` 의 Unload 가 `Unload Utils` 로 나가 무관한 프로젝트를 내리지 않게 — 프로젝트 폴더·현재 제어기의 노드만.
-			const target = checkNodeTarget(node, 'Unload', true);
-			if (!target) { return; }
-			const name = target.projectName!;
-			await runUnloadInteractive(name, () => !!checkNodeTarget(node, 'Unload', true));
+			// 이름은 쓰지 않지만, 다른 제어기·하위 폴더 노드에서 실행되지 않게 대상 검사는 그대로 둔다.
+			if (!checkNodeTarget(node, 'Unload', true)) { return; }
+			await runUnloadAllInteractive(() => !!checkNodeTarget(node, 'Unload', true));
 		}),
 
 		// ── Unload Project — 팔레트·트리 제목·메모리 알림의 「Unload…」(2026-10-27 사용자 요청: "Unload 할 수 있는 버튼 필요") ──
@@ -695,16 +695,17 @@ export function activateFtpCommands(host: ExtensionHost): void {
 				host.log(`[Unload] ${root} 목록 조회 실패: ${listError} — 이름 입력으로 대신합니다`);
 			}
 			type Item = vscode.QuickPickItem & { name?: string; all?: boolean; manual?: boolean };
+			// 기본값은 `Unload -all`(2026-11-03 사용자 결정) — 맨 위 항목이라 Enter 만 누르면 전체를 내린다.
 			const items: Item[] = [
+				{ label: '$(close-all) 모두 내리기 (Unload -all)', description: `기본 — ${root} 을 비운 뒤 전부 내립니다. 쓰레드가 실행 중이면 -750 으로 거부됩니다`, all: true },
+				{ label: '이 프로젝트만', kind: vscode.QuickPickItemKind.Separator } as Item,
 				...names.map<Item>(n => ({ label: `$(folder) ${n}`, description: `${root}/${n}`, name: n })),
-				...(names.length > 0 ? [{ label: '', kind: vscode.QuickPickItemKind.Separator } as Item] : []),
 				{ label: '$(edit) 이름 직접 입력…', description: '목록에 없는(또는 조회 실패한) 프로젝트', manual: true },
-				{ label: '$(close-all) 모두 내리기 (Unload -all)', description: '로드된 프로젝트 전부 — 쓰레드가 실행 중이면 -750 으로 거부됩니다', all: true },
 			];
 			const pick = await vscode.window.showQuickPick(items, {
 				placeHolder: listError
-					? `${root} 목록을 읽지 못했습니다 — 이름을 직접 입력하거나 전체 Unload`
-					: `Unload 할 프로젝트 (${root} 폴더 ${names.length}개) — 실행 중인 쓰레드가 있으면 거부됩니다`,
+					? `${root} 목록을 읽지 못했습니다 — 전체 Unload 또는 이름 직접 입력`
+					: `Enter = 모두 내리기(Unload -all) · 한 프로젝트만 내리려면 아래에서 선택 (${root} 폴더 ${names.length}개)`,
 				matchOnDescription: true,
 			});
 			if (!pick) { return; }
@@ -769,13 +770,24 @@ export function activateFtpCommands(host: ExtensionHost): void {
 	 * `Unload -all` 사람 경로 — 위험 모달·전송 가드는 이름 지정과 같고, 판정은 STATUS 로 한다.
 	 * **보내기 전에 /GPL 을 비운다**(2026-10-28 사용자 요청, §1-GN): 비우기 절차(배포 잠금·쓰레드 정지 게이트·정체 확인·목록 모달)를
 	 * 그대로 거치고, 취소·실패면 Unload 도 보내지 않는다. 이미 비어 있으면 바로 Unload 로 간다.
+	 * 트리 우클릭과 「Unload Project」의 기본 항목이 이 절차를 쓴다(2026-11-03).
+	 * @param recheck 모달 대기 뒤 대상이 여전히 유효한지(트리 노드의 제어기가 바뀌었을 수 있다).
 	 */
-	async function runUnloadAllInteractive(): Promise<void> {
+	async function runUnloadAllInteractive(recheck?: () => boolean): Promise<void> {
 		const command = 'Unload -all';
 		try {
 			const unloadCheck = await confirmUnloadRiskInteractive(command);
 			if (!unloadCheck.proceed) { return; }
-			const gplRoot = getControllerConfig().ftpBasePath;
+			if (recheck && !recheck()) { return; }
+			const cfg = getControllerConfig();
+			const gplRoot = cfg.ftpBasePath;
+			// 비우는 폴더는 로드 폴더(/GPL) 하나뿐이다. 설정이 /flash 쪽을 가리키면 플래시 저장본을 지우게 되므로 비우지도 보내지도 않는다.
+			const rootKind = classifyRemoteClearRoot(gplRoot, { gplBasePath: cfg.ftpBasePath, flashBasePath: cfg.ftpFlashProjectsPath });
+			if (rootKind === 'flash' || rootKind === 'unsafe') {
+				host.log(`[Unload] gpl.controller.ftpBasePath(${gplRoot}) 가 ${rootKind === 'flash' ? '플래시 경로' : '루트/빈 경로'}라 비우지 않았습니다 — ${command} 미전송`);
+				vscode.window.showErrorMessage(`${command} 중단: gpl.controller.ftpBasePath(${gplRoot}) 가 /GPL 이 아닙니다 — 플래시·루트는 비우지 않습니다. 설정을 확인하세요.`);
+				return;
+			}
 			host.log(`[Unload] ${command} 전에 ${normalizeAbsoluteRemoteDir(gplRoot)} 을 비웁니다`);
 			const cleared = await clearRemoteFolderInteractive({ rawPath: gplRoot, isFlash: false, purpose: command });
 			if (!cleared.ok) {

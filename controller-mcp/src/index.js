@@ -1550,7 +1550,7 @@ function describeInstancesForError() {
 
 tool('project_target',
   '이 세션의 대상 프로젝트를 조회/고정/해제한다. **작업 시작 시 한 번 고정할 것** — 이후 모든 도구(compile_project·' +
-  'start_project·unload_project·deploy_project·show_thread …)가 인자를 생략해도 같은 대상을 쓴다. ' +
+  'start_project·deploy_project·show_thread …)가 인자를 생략해도 같은 대상을 쓴다(unload_project 는 예외 — 생략하면 -all). ' +
   '인자 없이 부르면 현재 상태만 돌려준다: 세션 대상·출처(argument/session-target)·워크스페이스 후보 목록' +
   '(각 후보의 runnable = `.gpr` 에 ProjectStart 가 있는 실행 가능 프로젝트인지, 라이브러리면 참조하는 프로젝트명). ' +
   '**"왜 이 프로젝트가 올라갔지"를 추론하지 말고 이 도구로 확인할 것.** ' +
@@ -2225,7 +2225,8 @@ async function runnableCandidateNames() {
 }
 
 tool('unload_project',
-  '프로젝트를 메모리에서 제거한다(Unload). 보내기 전에 Show Thread -web 로 **그 프로젝트의 활성 쓰레드**를 확인하고, 있으면 ' +
+  '프로젝트를 메모리에서 제거한다(Unload). **`project` 를 생략하면 `Unload -all`** 이다(2026-11-03 사용자 결정 — 세션 대상 프로젝트가 아님). ' +
+  '한 프로젝트만 내릴 때만 이름을 준다. 보내기 전에 Show Thread -web 로 **그 프로젝트의 활성 쓰레드**를 확인하고, 있으면 ' +
   '-750 이 뻔하므로 보내지 않고 목록과 함께 거부한다(refused:"threads-active") — 먼저 stop_threads({ project }) 로 멈출 것. ' +
   '`Stop <project>` 는 동명 쓰레드 하나만 멈추므로 다른 이름의 쓰레드(LOG_SOCKET 등)가 남아 -750 이 반복되는 것이 전형이다(2026-10-14 실측). ' +
   '**응답이 없어 타임아웃하면 실패가 아니라 결과 미확정(outcome="unknown")으로 돌아온다** — 제어기가 실행했을 수도 있다. ' +
@@ -2240,7 +2241,7 @@ tool('unload_project',
   '이 조합은 6번 중 6번 명령 콘솔을 끊었고 재부팅이 필요했다. 사용자에게 위험을 알리고 **동의를 받은 뒤에만** `confirm:true` 로 다시 호출할 것. ' +
   '성공하면 `/GPL/<project>` 가 남았는지(`remoteFolder`) 함께 보고, 앱 Unload 로 폴더가 지워졌으면 `next:"redeploy"`(다시 Start 하면 -508).',
   {
-    project: z.string().optional().describe('프로젝트 이름, 또는 "-all"(로드된 프로젝트 전부 — /GPL 이 비어 있어야 보낸다)'),
+    project: z.string().optional().describe('생략하면 "-all"(로드된 프로젝트 전부 — /GPL 이 비어 있어야 보낸다). 한 프로젝트만 내릴 때 그 이름'),
     timeoutMs: z.number().int().min(1000).max(600000).optional()
       .describe('응답 대기(ms). 생략하면 max(GPL_TIMEOUT_MS, 180000) — 실행 뒤 Unload 는 수십 초 걸리고, 타임아웃으로 소켓을 닫으면 1402 가 거부 상태로 남는다'),
     skipThreadCheck: z.boolean().optional()
@@ -2251,8 +2252,10 @@ tool('unload_project',
       .describe('그룹 Compile 뒤 Unload 위험을 사용자가 알고 동의했음을 단언 — refused:"unload-after-group-compile" 를 받고 동의를 받았을 때만 true'),
   },
   async ({ project, timeoutMs, skipThreadCheck, skipGplCheck, confirm }) => {
-    const name = proj(project);
-    const targetSource = targetSourceOf(project, sessionTarget);
+    // 기본은 `-all`(2026-11-03 사용자 결정: 사람이 누르는 Unload 와 같은 기본값) — 생략을 세션 대상 프로젝트로 풀지 않는다.
+    const explicit = typeof project === 'string' && project.trim() !== '';
+    const name = explicit ? proj(project) : '-all';
+    const targetSource = explicit ? targetSourceOf(project, sessionTarget) : 'default-all';
     // 그룹 Compile 뒤 Unload — 확인 없이는 쓰레드 조회조차 하지 않고 돌려준다(보내지 않음).
     const risk = assessUnloadRisk(readUnloadRiskState(HOST), `Unload ${name}`);
     if (risk?.risky && confirm !== true) {

@@ -222,7 +222,8 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 - `start_project(project?, stopOnEntry?)` — `Start` (`-break -bex` 시 진입점 정지). 세션 대상이 ProjectStart 없는 그룹이면 보내지 않고
   `PROJECT_NOT_RUNNABLE`(+ 실행 가능한 후보)을 돌려준다. 제어기가 `-744 *Invalid start procedure*` 로 거부하면 `retryable:false` —
   같은 Start 를 되풀이하면 그룹 Compile 만 또 일어난다.
-- `unload_project(project?, timeoutMs?, skipThreadCheck?, confirm?)` — `Unload`. 보내기 전에 `Show Thread -web`로 그 프로젝트의
+- `unload_project(project?, timeoutMs?, skipThreadCheck?, skipGplCheck?, confirm?)` — `Unload`. **`project` 를 생략하면 `Unload -all`**
+  (2026-11-03 — 확장의 사람 경로와 같은 기본값, `targetSource:"default-all"`). 한 프로젝트만 내릴 때만 이름을 준다. 보내기 전에 `Show Thread -web`로 그 프로젝트의
   활성 스레드를 확인하고, 있으면 -750이 뻔하므로 보내지 않고 `refused:"threads-active"`와 목록을 돌려준다.
   성공하면 `remoteFolder:{path, exists}` 로 `/GPL/<project>` 가 남았는지 알려 주고, 지워졌으면 `next:"redeploy"`
   (4.2K5 실측: 앱 프로젝트 Unload 는 `/GPL/<앱>` 폴더까지 지웠다 — 그대로 Start 하면 -508).

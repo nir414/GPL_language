@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.3** (Unload 기본 -all, 1584/1584. 상세는 §1-GR.)
-- **직전 세션: §1-GR** — 사용자 요청 "Unload 는 기본 -all" → 트리 우클릭·「Unload Project」 기본 항목·MCP `unload_project` 생략이 모두 `Unload -all`(보내기 전 /GPL 비우기는 §1-GN 그대로, /flash/projects 는 절대 대상 아님 — 설정이 /flash 를 가리키면 거부). 배포·FTP Run 의 자동 Unload→Load→Compile 은 이름 지정 유지. 버전 정책은 기능 추가도 patch(사용자 방침). 다음 할 일은 §3 맨 위 UI·실기 확인.
+- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.4** (「컴파일 검증 필요」 라이브러리 해제, 1594/1594. 상세는 §1-GS.)
+- **직전 세션: §1-GS** — 수신함 Sample Prep 보고 "「컴파일 검증 필요」가 계속 떠 있다" → 원인은 해제가 컴파일한 프로젝트 이름 하나만 지운 것(PaL·Gantry 를 Upload Only 한 뒤 App 이 Compile 성공해도 남음). Compile 성공 기록이 `.gpr` 의 `ProjectLibrary`(전이 포함) 항목도 해제하고, 라이브러리 배지는 단독 Quick Compile 대신 선택 창(그룹 Compile 뒤 Unload 위험), STATUS 없는 Start 는 「결과 미확정」, /GPL 에서 폴더를 지우면 해제, 선택 창 항목 × 로 목록에서 지우기.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-11-03, §1-GS) 0.27.4 「컴파일 검증 필요」 — 실사용 확인.** ① 라이브러리(PaL)를 Upload Only → 그것을 쓰는 실행 프로젝트를 Upload & Start 하면 Output 에 `컴파일 검증 필요 상태 해제: 라이브러리 PaL — <App> Compile 에 포함` 한 줄과 배지 해제 ② 라이브러리 배지 클릭이 Quick Compile 이 아니라 선택 창(라이브러리는 체크 해제, 골라도 컴파일 안 함) ③ 선택 창 × 로 항목 해제 ④ /GPL 비우기 뒤 지운 프로젝트 해제. 남은 일: 형제 배치가 아닌 프로젝트(tools\Probe)의 라이브러리 동반 업로드 후보(같은 ip 로 마지막에 Upload Only 한 폴더 제안 — 수신함 ⑤, 보류), 라이브러리 배지에서 "이 라이브러리를 쓰는 실행 프로젝트" 후보 고르기(보류).
 - [ ] **(2026-11-03, §1-GR) 0.27.3 Unload 기본 -all — UI·실기 확인(쓰레드를 모두 정지한 상태에서).** ① 트리 /GPL 프로젝트 폴더 우클릭 「Unload -all (/GPL 비운 뒤 모두 내리기)」 → (위험 근거가 있으면 위험 모달) → /GPL 비우기 모달("비운 뒤 Unload -all") → `Unload -all` STATUS 0, 취소하면 Unload 미전송·Output 한 줄 ② /flash/projects 폴더 노드에서 같은 메뉴를 눌러도 비우기 모달에 **/GPL 목록만** 나오는지(플래시 미접촉) ③ 「GPL: Unload Project」 목록 맨 위가 「모두 내리기」라 Enter 로 바로 진행, 「이 프로젝트만」 아래 이름 Unload 가 종전대로 ④ MCP `unload_project()`(인자 없음)가 `targetSource:"default-all"` 로 -all 사전 조건(`threads-active`/`gpl-not-empty`)을 돌려주는지.
 - [ ] **(2026-11-03, §1-GQ) 0.27.2 유실 정황 — 실사용 확인.** ① 제어기에 연결한 채 PC 를 절전(덮개 닫기·`Win+X → 종료 → 절전`)했다가 깨우면 알림이 「PC 절전 복귀 HH:MM:SS (절전 N분) 직후에 끊겼습니다 … 제어기 문제로 보지 않습니다」이고 Output 에 `[Controller] 계기: PC 절전 복귀 …`, 사후 스냅샷 판정 절에 `계기:` 줄과 「PC 절전/복귀」 절 ② 「다시 연결」이 네트워크가 올라온 뒤 정상 연결되는지(아직 안 올라왔으면 종전처럼 연결 실패 알림) ③ `Stop -all` 뒤 끊기면 「직전 상태 변경 명령」 절과 Output 한 줄에 `Stop -all → STATUS 0 (N s 전)` ④ 알림이 종전보다 몇 초 늦게 뜨는지(이벤트 로그 조회 약 4 s — 도달성 판정과 병렬). 남은 원인 후보: 깨어 있는 중 링크 단절 8건(USB 랜카드 RTL8153 전원 절약·케이블·제어기 NIC) — 재발 시 사후 스냅샷과 `Get-WinEvent Microsoft-Windows-NetworkProfile/Operational` 10000 을 대조.
 - [ ] **(2026-10-28, §1-GO) 라이브러리 함께 업로드 — 실기 확인(FTP·Compile, 모션 무영향).** `projects/Main`(ProjectStart, `ProjectLibrary="Libraries"`) + `projects/Libraries` 를 만들어 ① Upload Only 출력에 「함께 업로드: Libraries → /GPL/Libraries」와 Library done 줄, 알림 끝에 「+ 라이브러리 Libraries」 ② **Compile Main 이 STATUS 0** 인지 — 제어기가 `/GPL/Libraries` 를 라이브러리로 찾는지(문서 표본은 중첩 배치 1건뿐; 실패하면 `-508`/미정의 심볼 류가 나올 것이고, 그때는 원격 경로 규칙을 고친다) ③ 라이브러리 파일을 고친 뒤 다시 올리면 그 파일만 sent ④ BinderR4 의 `Gantry\Data` 를 올리면 「내장형 패키지 — 컴파일 단위는 BinderR4」 줄만 나오고 추가 업로드 없음.
@@ -793,7 +794,8 @@ src/controller/runtime/runtimeConsoleGuards.ts   # 1403 접속 카운터(슬라�
 src/controller/runtime/runtimeConsoleBuffer.ts   # 1403 수신 줄 링버퍼(seq 커서 read·untilPattern/waitFor 대기·dropped 보고, 순수) — MCP runtime_console_read 의 뒷단 gpl.ai.debug.runtimeConsoleRead 가 읽는다; 파일 캡처(gpl.runtimeConsole.captureFile)는 runtimeConsole.ts 의 appendCapture (§1-EQ)
 src/controller/deployment/deployRecordCore.ts       # 컴파일 스냅샷(sha1) 기록/대조 순수 로직 + Memento 스토어 (§1-BI, #21)
 src/controller/deployment/deployRecord.ts           # deployRecordCore vscode 래퍼 — recordCompiled/getCompiledRecord/onDidRecordCompiled/attachDeployRecordStore (§1-BI)
-src/controller/deployment/compileStale.ts           # "컴파일 검증 필요" 상태(CompileStaleTracker, vscode 무의존) — 제어기(ip)별 키·Memento 영속·markedAt, 뷰는 list(ip) 전체를 받음(§1-GN); 해제는 onDidRecordCompiled 구독으로 경로 무관 (§1-CU)
+src/controller/deployment/compileStale.ts           # "컴파일 검증 필요" 상태(CompileStaleTracker, vscode 무의존) — 제어기(ip)별 키·Memento 영속·markedAt, 뷰는 list(ip) 전체를 받음(§1-GN); 해제는 onDidRecordCompiled 구독으로 경로 무관 (§1-CU), Compile 성공이 ProjectLibrary 항목도 해제(clearCompiled)·library 플래그·clearMany (§1-GS)
+src/controller/deployment/compiledLibraries.ts      # (§1-GS) 프로젝트 폴더 .gpr 의 ProjectLibrary 값 전이 수집(로컬 해석 실패 값도 원문)·isLibraryProjectDir
 src/activation/deploy/compileStaleCommands.ts       # gpl.compileStale.pick — 미검증 프로젝트 다중 선택 → 고른 순서대로 Quick Compile(실패 시 중단). 상태바 배지가 여럿일 때 연다 (§1-GN)
 src/controller/deployment/flashSafety.ts            # Save to Flash 안전 확인 상태기계(순수) — Sync 종결 STATUS 0 뒤 10초 안정화, 실패 시 unknown 유지 (§1-FD)
 src/debug/execution/stepGate.ts                    # Step/Continue 게이트 순수 판정 shouldGateStepRequest(pending-entry/pending-same-thread/min-interval) (§1-BI, #28)
@@ -1117,7 +1119,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | 본문 ↓ |
+| §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | 본문 ↓ |
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |
 | §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | 본문 ↓ |
@@ -1127,52 +1129,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GP | 11-03 | **README 검토·개선** — 08-18 정책대로 제어기 연동 → 디버깅 → 상태 → AI → 언어 기능 순 재배치, 디버깅 3단 분리, 0.17.0 이전 원격 디버깅 문장(저장 폴더·저장 구성 재연결) 제거, 컴파일 검증 필요·메모리·Diagnose Stuck Thread·uploadLibraries 추가. 0.27.1 | 본문 ↓ |
 | §1-GQ | 11-03 | **연결 유실 정황: PC 절전 복귀·직전 상태 변경 명령·「다시 연결」** — 사후 스냅샷 30건 재분석(절전 복귀 5·깨어 있는 중 링크 단절 8·Stop/Start/Execute 뒤 8·Unload 6), Windows 이벤트 로그로 절전 복귀 매칭(`pcPowerEvents.ts`), `RecentCommandLog`, 알림 문구 `lossNotice.ts`, README 문제 해결 2행. 0.27.2 | 본문 ↓ |
 | §1-GR | 11-03 | **Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실** — 트리 우클릭 Unload → `Unload -all`(/GPL 비운 뒤), 「Unload Project」 맨 위가 -all, MCP `unload_project` 생략 = -all(`default-all`); 비우기 대상이 /flash·루트면 거부(`classifyRemoteClearRoot`); 자동 복구 Unload 는 이름 유지. 버전 정책: 기능 추가도 patch. docs/gpl-language 4파일. 0.27.3 | 본문 ↓ |
+| §1-GS | 11-03 | **「컴파일 검증 필요」 라이브러리 해제·라이브러리 배지·결과 미확정 사유·목록에서 지우기** — 수신함 Sample Prep 보고 처리: Compile 성공이 `ProjectLibrary`(전이) 항목도 해제(`clearCompiled`·`compiledLibraries.ts`), 라이브러리 배지는 선택 창으로, STATUS 없는 Start 는 「결과 미확정」, /GPL 비우면 해제, 선택 창 ×. 0.27.4 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GI ~ §1-GR (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GJ ~ §1-GS (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GI. 2026-10-27 세션 — 제어기 유실 판정 지연 분석·개선 (0.21.0)
-
-### 요청·판단
-
-- 사용자: "제어기 죽은거 판정이 왜 이렇게 느려 개선좀 해줘. 연결 상태 확인을 어떻게 처리중인거지?"
-- 판정 규칙(프로브 타임아웃 8 s·연속 3회/거부·도달불가 2회·recovering 180 s)은 사용자 결정·실측 근거가 있어 **바꾸지 않았다.** 대신 실제 지연을 분해해 규칙 밖의 원인을 고쳤다.
-
-### 관측 (`%TEMP%\gpl-controller\postmortem-*.log` 10건 + VS Code `renderer.log`)
-
-| 유형 | 사례(의심→유실) | 지연의 정체 |
-| --- | --- | --- |
-| 링크 단절(ENETUNREACH/EHOSTUNREACH) | 0.6 s, 1.0 s | 확정적 실패 2회 — 이미 빠름 |
-| 재부팅 중 거부(ECONNREFUSED) | 4.8~6.1 s | Windows 의 거부 connect 가 회당 ~2 s |
-| 무응답(SYN·응답 없음) | 14.2 s, 19.6 s | 8 s 타임아웃 × 2~3 |
-| **확장 호스트 정지** | 23.5 s, 65.2 s, 90.8 s | 10-26 17:48:06~17:49:17 renderer.log `Extension host is unresponsive` **71 s** — 그동안 재프로브·1403 재연결·워치독 타이머가 모두 멈춤, 풀린 시각과 다음 프로브 송신이 1 ms 차이. 8~11 s 걸린 "거부"도 같은 정지 탓 |
-| 복구 대기 만료 | 185 s | Unload 무응답 → recovering 180 s(2026-08-31 실측 172 s 복귀 근거) → 거부 2회 |
-
-- 프로파일 기록(`took N% of M ms`)은 수 ms 샘플뿐이라 범인 확장 특정 불가 — JS 가 아니라 동기 네이티브 호출·프로세스 정지 형태로 막힌 것으로 보인다(추정). 이 확장 src 에는 execSync/spawnSync 가 없다.
-- 프로브 응답 실측: `Show Thread  -web` p50 45 ms·p99 209 ms(n=2566), `Show Thread` p99 97 ms — 8 s 타임아웃은 넉넉하다. 1403 핸드셰이크 p50 8 ms·최대 1.1 s(n=25).
-- Node v24.11.1(Windows) 실험: 정지가 **check 단계·microtask** 에서 일어나면 풀린 직후 timers 가 poll 보다 먼저 돌아, 이미 도착한 응답을 두고 타임아웃을 선언한다(timer/I/O 콜백 안의 정지는 반대 순서). `setImmediate` 로 판정을 미루면 4가지 경우 모두 응답이 먼저 읽힌다.
-- 상태바는 suspect/recovering 동안에도 유실 확정 순간까지 정상(`$(plug)`)이었다 — 체감 지연의 직접 원인.
-
-### 조치 (7b8e561 순수 계층 → 배선 커밋)
-
-- `consoleSocket`: `connectTimeoutMs`(새 연결만, `CONNECT_TIMEOUT`·`sent:false` — 명령은 아직 안 보냄) + 명령/핸드셰이크 타임아웃 판정을 `afterPendingIo`(setImmediate)로. 설정 `gpl.controller.connectTimeoutMs`(기본 3000, 0=끔, 하한 500). `classifyCommandFailure` 는 `CONNECT_TIMEOUT` → `timeout`(확정적 실패 아님).
-- `eventLoopStall.ts`(순수): 500 ms 틱이 2 s 이상 늦으면 정지 구간 기록. 연결 중이면 Output `[Health] 확장 호스트 이벤트 루프 정지 …`, 유실 시 `[의심 - 프로브 타임아웃, 유실]` 구간 겹침이 5 s 이상이면 로그·알림에 「판정이 늦어진 N s 는 확장 호스트 정지」, 사후 스냅샷에 최근 10분 정지 목록.
-- `connectionHealthBadge.ts`(순수) + `connectionStatusBar.setHealthSource/refreshHealth`: suspect → `$(sync~spin) GPL: <ip> 응답 확인 중 (실패 n/3)`, recovering → `$(watch) … 복구 대기 n/180 s`(경고색, 1 s 갱신, 클릭 = 지금 해제). "다운" 단정 문구 없음.
-
-### 검증
-
-- 새 테스트: 핸드셰이크 상한 2건(HangingSocket 주입), 정지 뒤 판정 1건(worker_threads 서버 + check 단계 400 ms 정지 — **수정 전 코드로 되돌리면 `Command timeout (100ms)` 로 실패** 확인), eventLoopStall 4건, 상태바 문구 4건, 분류 1건. 전체 **1550/1550**(다른 세션의 미커밋 `dioGroups.test` 는 `BANK_SIZE` 초기화 순서 오류로 러너 전체를 막아 제외하고 실행 — 그 세션 소관).
-- HEAD(fa5351f) 만 담은 임시 worktree 에서 `npm test` 1550/1550 → `npm run package:no-bump` → `dist/gpl-language-support-0.21.0.vsix` **1,607,629 bytes**, SHA-256 **A38B6F36F4FFD6091B1EEDD0E5F266BDEF625757AAE0BCC14011A341A9C5AB56**(349 files, 경고는 기존 번들링 권고뿐). 작업 트리의 다른 세션 미커밋 변경(dioGroups·controller-mcp guidelines 등)은 들어가지 않았다. 함정: worktree 를 세션 scratchpad(경로에 UUID)에 두면 npm 이 그 경로 조각을 `***` 로 가려 vsce 가 파일 0개로 실패한다 — UUID 없는 경로에 둘 것.
-- 실기·UI 는 미확인 → §3.
-
-### 남은 일
-
-- 확장 호스트 정지의 범인: 다음 정지 때 Output 정지 줄의 시각으로 renderer.log·exthost 프로파일을 대조. 반복되면 사용자가 확장 이분 탐색(Extension Bisect).
-- 원하면 결정할 것(사용자): ① 프로브 타임아웃 8 s → 5 s(2026-08-28 "5 s 는 짧다" 결정 재검토 — 실측 p99 0.2 s), ② recovering 창 180 s 를 줄이거나 recovering 중 거부가 N회 이어지면 조기 종료.
-- 디버그 어댑터의 자체 소켓 경로·controller-mcp `console.js` 에는 핸드셰이크 상한을 넣지 않았다.
 
 ## 1-GJ. 2026-10-27 세션 — 제어기 대시보드 디지털 I/O 분류·강제 조작 단순화·UI 밀도/주기 개선 (0.22.0)
 
@@ -1477,3 +1440,34 @@ README 를 연 상태에서 "검토후 개선해줘".
 
 - §3 UI·실기 확인.
 - 수신함 미처리: `2026-11-02_SamplePrep_runtime-console-buffer-stalled_v1.md`(이 세션 범위 밖). 같은 시각 다른 세션(gpl-language-e2)이 `compile-stale-library-never-cleared` 를 처리 중(0.27.4 예정).
+
+## 1-GS. 2026-11-03 세션 — 「컴파일 검증 필요」 라이브러리 해제 · 라이브러리 배지 · 결과 미확정 사유 · 목록에서 지우기 (0.27.4)
+
+### 증상(요청)
+
+수신함 `2026-11-03_SamplePrep_compile-stale-library-never-cleared_v1.md`(다른 세션 SendMessage 동반, 확장 0.27.1, 제어기 192.168.0.1): "제어기 상태·프로젝트 상태에 컴파일 검증 필요가 그냥 계속 떠 있다". workspaceState 에 `pal`·`gantry`(Upload Only)·`gdata_probe`(Start 실패) 세 항목이 남았고, 그 뒤 `apon_probe`·`app` 의 Compile 성공 기록이 있었다.
+
+### 원인
+
+1. [높음] `CompileStaleTracker.clear(ip, projectName)` 는 컴파일한 프로젝트 이름 하나만 지웠다 — 라이브러리를 Upload Only 한 뒤 그것을 쓰는 App 이 `Start -compile` 에 성공해도 PaL·Gantry 는 남았다.
+2. [중간] 라이브러리 줄의 배지 클릭이 `gpl.quickCompile` = 그룹 단독 Compile(requireRunnable 은 Start 경로에만) → 확장이 막고 있는 unload-after-group-compile 위험 상태를 배지가 만든다.
+3. [중간] 1402 ECONNRESET 으로 STATUS 없이(-9999) 끝난 Start 가 "Start 실패 — 컴파일 에러 위치는 응답에서 확인되지 않음"으로 기록 — 소스 에러로 읽힌다.
+4. [낮음] 해제 수단이 Compile 성공뿐 — 일회성 프로브 항목이 영속.
+
+### 조치(의도와 방법)
+
+- 순수(fe9ed26): `clearCompiled(ip, name, libraryValues)` — `ProjectLibrary` 값은 /GPL 기준 경로이고 프로젝트는 `/GPL/<ProjectName>` 에 올라가므로, 경로 조각 전체(소문자, `/` 로 이음)가 항목 이름과 같을 때만 같은 소스로 본다(`libraryReferenceKey` — `MyProject\\MyLibrary` 는 `/GPL/MyLibrary` 와 다른 폴더라 맞추지 않음). 제어기는 `/GPL/<값>` 의 현재 내용을 함께 컴파일했으므로 로컬 사본과 무관하게 이름 기준. `compiledLibraries.readCompiledLibraryValues` 는 `buildLibraryGraph` 로 전이 수집하고, 로컬에서 못 찾은 값(tools\\ 프로브)도 원문을 남긴다. `CompileStaleInfo.library`(ProjectStart 없음) → 배지·요약 명령은 선택 창, 툴팁·설명 문장은 "쓰는 실행 프로젝트의 Compile 로 함께 해제". `compileStaleReasonAfterFailure`: -9999 = 「결과 미확정」, STATUS 없는 실패 = 「Start 미전송(사유)」, Compile 단계 -9999 = 「Compile 결과 미확정」. `remoteFolderClear.onRemoteFolderCleared`(시그니처 불변 — 0.27.3 세션과 조율).
+- 배선(5f847b2): `onDidRecordCompiled` → `host.clearCompileStaleAfterCompile`(로그 한 줄: `해제: App (+ 라이브러리 PaL, Gantry — App Compile 에 포함)`). /GPL 루트에서 지운 폴더 이름 → `releaseCompileStale`(플래시 등 다른 루트는 무시). mark 때 라이브러리 여부 기록, 활성화 때 저장분 보충. 선택 창은 `createQuickPick` — 항목 × = 목록에서 지우기, 라이브러리는 체크 안 함·골라도 컴파일 안 함.
+- `Unload -all` 은 별도 해제하지 않는다 — Unload 는 /GPL 소스를 지우지 않고, 0.27.3 의 사람 경로는 보내기 전에 /GPL 을 비우므로 그 비우기 알림으로 해제된다.
+- 보류: ⑤ 형제 배치가 아닌 프로젝트의 라이브러리 동반 업로드 후보 제안(이름으로 워크스페이스 전체를 찾으면 `Gantry` 가 5곳 — 위험), 라이브러리 배지에서 쓰는 실행 프로젝트 고르기.
+
+### 검증
+
+- `npm test` **1594/1594**(compileStale 6·compiledLibraries 3·badge 1·deployModes 단언 추가).
+- VSIX `dist/gpl-language-support-0.27.4.vsix` 1,684,690 bytes, SHA-256 `05A47187B44DB28802FA7B1A4DD5598035EFCC277250915BFF344A51E38BD74C`(경고는 bundle 권장 1건), 새 모듈 포함·내부 version 0.27.4 확인.
+- 실기·UI 미확인 → §3.
+
+### 남은 일
+
+- §3 실사용 확인, 보류 2건.
+- 알려진 한계: 내장형 패키지(BinderR4) 하위 `.gpr` 의 값은 루트 기준이라(위 §1-GO 계열 기록) 한 조각 값(`Lib`)이 `/GPL/Lib` 에 따로 올린 동명 항목과 우연히 같으면 함께 해제된다. 실사용에서 겹치면 값의 기준(루트/projects)을 그래프 노드로 구분한다.

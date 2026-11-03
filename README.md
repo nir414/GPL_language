@@ -51,7 +51,7 @@ GPL 컴파일은 제어기에서 수행하며, 상태 조회 항목은 제어기
 | `GPL: Stop All Threads` | 모든 스레드의 정지를 요청하고, 진행 중이거나 대기 중인 업로드·배포도 취소합니다. |
 
 - **참조 라이브러리 함께 올리기:** `.gpr`의 `ProjectLibrary`가 같은 projects 폴더의 다른 폴더(예: `projects/Main` → `projects/Libraries`)를 가리키면 그 라이브러리도 함께 올립니다(`gpl.deploy.uploadLibraries`). `ProjectStart`가 있는 상위 프로젝트 안의 하위 패키지(내장형)는 상위 프로젝트가 컴파일 단위이므로 그 라이브러리를 따로 올리지 않습니다.
-- **컴파일 검증 필요:** `Upload Only`로 올렸거나 컴파일에 실패한 프로젝트는 상태 표시줄과 제어기 패널에 「컴파일 검증 필요」로 표시됩니다. 배지를 누르거나 `GPL: Quick Compile Unverified Projects`를 실행하면 프로젝트를 골라 차례로 컴파일할 수 있습니다.
+- **컴파일 검증 필요:** `Upload Only`로 올렸거나 컴파일에 실패한 프로젝트는 상태 표시줄과 제어기 패널에 「컴파일 검증 필요」로 표시됩니다. 배지를 누르거나 `GPL: Quick Compile Unverified Projects`를 실행하면 프로젝트를 골라 차례로 컴파일할 수 있고, 항목의 ×로 컴파일 없이 목록에서 지울 수도 있습니다. `ProjectStart`가 없는 라이브러리는 단독으로 컴파일하지 않습니다. 그 라이브러리를 `ProjectLibrary`로 쓰는 실행 프로젝트가 컴파일에 성공하면 함께 해제되고, `/GPL`에서 폴더를 지워도 해제됩니다.
 - **컴파일 오류:** 제어기가 알려 준 컴파일 오류는 **Problems** 패널에 표시되고, 오류가 난 위치로 바로 이동할 수 있습니다.
 - **저장 시 자동 업로드:** 제어기에 연결한 상태에서 파일을 저장할 때 자동으로 업로드·컴파일할지는 `gpl.quickCompile.autoOnSave`에서 설정합니다. `auto` 모드에서는 저장한 소스를 업로드하되, 모든 스레드가 정지한 상태일 때만 컴파일합니다.
 - **여유 메모리:** Compile·Start 전에 제어기의 여유 메모리가 부족하면 경고합니다. 자세한 내용은 `GPL: Show Controller Memory Status`로 보고, 쓰지 않는 프로젝트는 `GPL: Unload Project`로 메모리에서 내릴 수 있습니다. 기본은 `/GPL`을 비운 뒤 전부 내리는 `Unload -all`이고, 한 프로젝트만 내리려면 목록에서 고릅니다.

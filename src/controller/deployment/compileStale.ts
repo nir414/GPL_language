@@ -7,7 +7,8 @@
  *
  * set: 업로드 후 Compile 보류(autoOnSave/THREAD_CHECK) · Compile 실패 · Upload Only.
  * clear: Compile 성공 확정(deployRecord.onDidRecordCompiled — 경로 무관: Deploy·F5·MCP·`GPL: Start` 의 `-compile` 성공) ·
- *        FTP Run 의 Compile 성공.
+ *        FTP Run 의 Compile 성공. Compile 성공은 그 프로젝트가 `ProjectLibrary` 로 끌어온 라이브러리 항목도 함께 해제한다
+ *        (`clearCompiled`, 2026-11-03). 제어기 /GPL 에서 폴더가 지워지면(비우기) 그 이름도 해제한다(`clearMany`).
  *
  * 상태는 **제어기(ip)별**이고 Memento 에 영속된다(2026-10-28, §1-GN): 같은 이름의 프로젝트라도 다른 제어기에서는 검증됐을 수
  * 있고, 창을 다시 열어도 "아직 검증 안 됨"은 사실 그대로다. 키·저장 형식은 `deployRecordCore.DeployRecordStore` 와 같은 꼴이다.
@@ -28,12 +29,66 @@ export interface CompileStaleInfo {
     /** 가장 최근 set 시각(ms) — 며칠 전부터 미검증인 프로젝트를 오늘 다시 올렸을 때 "지금 올린 것"을 보이기 위함. */
     markedAt: number;
     reason: string;
+    /**
+     * ProjectStart 없는 라이브러리(그룹) 프로젝트인가. 단독으로는 Start 할 수 없고, 단독 Compile 은 같은 부팅의 Unload 에서
+     * 명령 콘솔이 끊기는 상태를 만든다(`unloadRisk` — unload-after-group-compile). 그래서 배지가 Quick Compile 로 이끌지 않는다.
+     * 이 라이브러리를 `ProjectLibrary` 로 쓰는 실행 프로젝트의 Compile 성공(`clearCompiled`)이 함께 해제한다(2026-11-03 inbox).
+     */
+    library?: boolean;
 }
 
 /** clear 결과 — 지운 항목과, 같은 제어기에 남은 항목(오래된 → 최근 표시 순). */
 export interface CompileStaleCleared {
     cleared: CompileStaleInfo;
     remaining: CompileStaleInfo[];
+}
+
+/** clearCompiled 결과 — 컴파일한 프로젝트 자신(있었으면)과 그 Compile 에 함께 포함된 라이브러리 항목. */
+export interface CompileStaleCompiledRelease {
+    projectName: string;
+    /** 컴파일한 프로젝트 자신의 항목(없었으면 undefined). */
+    main?: CompileStaleInfo;
+    /** 같은 Compile 에 포함돼 해제된 라이브러리 항목. */
+    libraries: CompileStaleInfo[];
+    remaining: CompileStaleInfo[];
+}
+
+/** clearMany(제어기 쪽 소스가 사라짐·사용자 해제) 결과. */
+export interface CompileStaleBulkRelease {
+    cleared: CompileStaleInfo[];
+    remaining: CompileStaleInfo[];
+}
+
+/**
+ * `ProjectLibrary` 값 → 그 라이브러리가 제어기에 놓이는 이름 키. 값은 projects 폴더(=/GPL) 기준 상대 경로이고
+ * (`libraryUploadPlan` — 문서상 + 실측 표본), 프로젝트는 `/GPL/<ProjectName>` 에 올라가므로(deployTargetStage) 경로 조각을
+ * `/` 로 이은 소문자가 항목의 이름 키와 같을 때만 같은 소스다. `MyProject\MyLibrary` 처럼 깊은 값은 `/GPL/MyLibrary` 에 올린
+ * 항목과 다른 폴더라 맞추지 않는다. `..`·빈 값은 undefined.
+ */
+export function libraryReferenceKey(raw: string): string | undefined {
+    const parts = raw.trim().split(/[\\/]+/).filter(p => p.length > 0 && p !== '.');
+    if (parts.length === 0 || parts.includes('..')) { return undefined; }
+    return parts.join('/').toLowerCase();
+}
+
+/**
+ * 해제 로그 한 줄. 예: `컴파일 검증 필요 상태 해제: App (+ 라이브러리 PaL, Gantry — App Compile 에 포함) (남은 미검증 1개: X)`.
+ * 해제한 것이 없으면 undefined(호출부는 로그·UI 를 건너뛴다).
+ */
+export function describeCompiledRelease(r: CompileStaleCompiledRelease): string | undefined {
+    if (!r.main && r.libraries.length === 0) { return undefined; }
+    const libs = r.libraries.map(i => i.projectName).join(', ');
+    const head = !r.main
+        ? `라이브러리 ${libs} — ${r.projectName} Compile 에 포함`
+        : r.libraries.length > 0
+            ? `${r.main.projectName} (+ 라이브러리 ${libs} — ${r.projectName} Compile 에 포함)`
+            : r.main.projectName;
+    return `컴파일 검증 필요 상태 해제: ${head}${describeRemaining(r.remaining)}`;
+}
+
+/** 남은 항목 꼬리말(` (남은 미검증 n개: A, B)`), 없으면 빈 문자열. */
+export function describeRemaining(remaining: readonly CompileStaleInfo[]): string {
+    return remaining.length > 0 ? ` (남은 미검증 ${remaining.length}개: ${remaining.map(i => i.projectName).join(', ')})` : '';
 }
 
 /** 영속 저장소 — `vscode.Memento` 의 부분 집합(테스트는 메모리 객체로 대신한다). */
@@ -51,8 +106,10 @@ export const COMPILE_STALE_MEMENTO_KEY = 'gpl.compileStale';
  * 사본을 잡는다). 앞뒤 맥락(클릭 안내·선택지·재호출 방법)은 호출부가 붙인다. `formatTime` 은 테스트용 주입.
  */
 export function describeCompileStale(info: CompileStaleInfo, formatTime: (ms: number) => string = defaultFormatTime): string {
-    return `'${info.projectName}' 의 /GPL 소스가 ${formatTime(info.since)} 이후 아직 Compile 로 검증되지 않았습니다(사유: ${info.reason}). `
-        + 'Start 는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 실행되지 않고, 에러 위치는 Problems 에 표시됩니다. 먼저 Quick Compile 로 확인할 수 있습니다.';
+    const head = `'${info.projectName}' 의 /GPL 소스가 ${formatTime(info.since)} 이후 아직 Compile 로 검증되지 않았습니다(사유: ${info.reason}). `;
+    return info.library
+        ? head + 'ProjectStart 없는 라이브러리라 단독으로는 검증하지 않습니다 — 이 라이브러리를 ProjectLibrary 로 쓰는 실행 프로젝트를 Compile 하거나 Start 하면 함께 해제됩니다.'
+        : head + 'Start 는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 실행되지 않고, 에러 위치는 Problems 에 표시됩니다. 먼저 Quick Compile 로 확인할 수 있습니다.';
 }
 
 function defaultFormatTime(ms: number): string {
@@ -81,7 +138,8 @@ function isCompileStaleInfo(v: unknown): v is CompileStaleInfo {
         && typeof o.ip === 'string'
         && typeof o.since === 'number' && typeof o.markedAt === 'number'
         && typeof o.reason === 'string'
-        && (o.projectDir === undefined || typeof o.projectDir === 'string');
+        && (o.projectDir === undefined || typeof o.projectDir === 'string')
+        && (o.library === undefined || typeof o.library === 'boolean');
 }
 
 export class CompileStaleTracker {
@@ -125,11 +183,13 @@ export class CompileStaleTracker {
     /**
      * "컴파일 검증 필요"로 표시. 이미 있으면 사유·`markedAt` 만 갱신하고 `since`·`projectDir`는 보존한다.
      * 프로젝트명이 비어 있으면 추적하지 않고 undefined를 돌려준다(호출부는 로그·UI를 건너뛴다).
+     * `library` 를 모르면(undefined) 이전 값을 잇는다.
      */
-    mark(ip: string, projectName: string, reason: string, projectDir?: string, now: number = Date.now()): CompileStaleInfo | undefined {
+    mark(ip: string, projectName: string, reason: string, projectDir?: string, now: number = Date.now(), library?: boolean): CompileStaleInfo | undefined {
         if (!nameKey(projectName)) { return undefined; }
         const key = compileStaleKey(ip, projectName);
         const prev = this._items.get(key);
+        const isLibrary = library ?? prev?.library;
         const info: CompileStaleInfo = {
             ip: (ip ?? '').trim(),
             projectName,
@@ -137,6 +197,7 @@ export class CompileStaleTracker {
             since: prev?.since ?? now,
             markedAt: now,
             reason,
+            ...(isLibrary !== undefined ? { library: isLibrary } : {}),
         };
         // 다시 표시되면 Map 에서 뺐다 넣어 "가장 최근" 자리로 올린다 — 배지 대표·목록 순서가 마지막으로 손댄 쪽을 가리키게(§1-DY).
         this._items.delete(key);
@@ -152,6 +213,55 @@ export class CompileStaleTracker {
         if (!cleared) { return undefined; }
         this._items.delete(key);
         this.persist();
+        return { cleared, remaining: this.list(ip) };
+    }
+
+    /**
+     * Compile 성공 해제 — 컴파일한 프로젝트와, 그 Compile 에 함께 포함된 라이브러리(`ProjectLibrary` 값, 전이 포함)의 항목을 지운다.
+     * 제어기는 `/GPL/<값>` 의 **현재 내용**을 함께 컴파일했으므로 어느 로컬 사본에서 올렸는지와 무관하게 이름 기준 해제가 맞다
+     * (2026-11-03 inbox — PaL·Gantry 를 Upload Only 한 뒤 App 이 Compile 에 성공해도 두 항목이 남았다). 값 대조는 `libraryReferenceKey`.
+     */
+    clearCompiled(ip: string, projectName: string, libraryValues: readonly string[] = []): CompileStaleCompiledRelease {
+        const mainKey = compileStaleKey(ip, projectName);
+        const main = this._items.get(mainKey);
+        if (main) { this._items.delete(mainKey); }
+        const wanted = new Set(libraryValues.map(libraryReferenceKey).filter((k): k is string => k !== undefined));
+        const libraries: CompileStaleInfo[] = [];
+        const ipWanted = ipKey(ip);
+        for (const [key, info] of this._items) {
+            if (ipKey(info.ip) === ipWanted && wanted.has(nameKey(info.projectName))) {
+                libraries.push(info);
+                this._items.delete(key);
+            }
+        }
+        if (main || libraries.length > 0) { this.persist(); }
+        return { projectName, main, libraries, remaining: this.list(ip) };
+    }
+
+    /**
+     * 라이브러리 여부를 나중에 채운다(필드가 생기기 전에 저장된 항목 — 활성화 때 `.gpr` 을 읽어 보충). 순서·시각은 그대로다.
+     * 바뀐 것이 없으면 false.
+     */
+    setLibrary(ip: string, projectName: string, library: boolean): boolean {
+        const key = compileStaleKey(ip, projectName);
+        const info = this._items.get(key);
+        if (!info || info.library === library) { return false; }
+        this._items.set(key, { ...info, library });
+        this.persist();
+        return true;
+    }
+
+    /** 이름 여럿을 한 번에 해제(제어기 /GPL 에서 폴더가 지워짐·사용자가 목록에서 지움). 없던 이름은 건너뛴다. */
+    clearMany(ip: string, projectNames: readonly string[]): CompileStaleBulkRelease {
+        const cleared: CompileStaleInfo[] = [];
+        for (const name of projectNames) {
+            const key = compileStaleKey(ip, name);
+            const info = this._items.get(key);
+            if (!info) { continue; }
+            cleared.push(info);
+            this._items.delete(key);
+        }
+        if (cleared.length > 0) { this.persist(); }
         return { cleared, remaining: this.list(ip) };
     }
 

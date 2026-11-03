@@ -5,6 +5,7 @@
  */
 
 import type { SituationDeploySnapshot } from '../../controller/deployment/deployOutcome';
+import { NO_STATUS_CODE } from '../../controller/protocol/statusParser';
 import type { QuickDeployOpts } from './deployContext';
 
 /** 상황 스냅샷(`SituationDeploySnapshot.mode`)에 남기는 모드 라벨 — Quick Compile 은 Build 로 분류된다. */
@@ -62,16 +63,27 @@ export function libraryUploadNote(libraryUploads: readonly { raw: string }[] | u
 /**
  * 업로드는 됐고 Compile(또는 업로드 스타트의 Start -compile)이 실패했을 때 "컴파일 검증 필요" 상태에 남기는 사유.
  * 컴파일본은 이전 상태이므로 Start 전 확인 대상이다.
+ *
+ * 사유는 확인된 사실만 말한다(2026-11-03 inbox ③ — 1402 ECONNRESET 으로 STATUS 없이 끝난 Start 가 "컴파일 에러 위치는 응답에서
+ * 확인되지 않음"으로 남아 소스 에러처럼 읽혔다). STATUS 가 없으면 결과 미확정(제어기가 실행했을 수 있다), STATUS 가 없는
+ * 실패(정지 게이트·사용자 취소)는 Start 를 보내지 않은 것이다.
  */
 export function compileStaleReasonAfterFailure(
 	mode: string,
 	quickOpts: QuickDeployOpts | undefined,
-	result: { failedPhase?: string; compileErrors: readonly unknown[] },
+	result: { failedPhase?: string; compileErrors: readonly unknown[]; failedStatusCode?: number; failedStatusMessage?: string },
 ): string {
-	return quickOpts?.skipCompile && result.failedPhase === 'START'
-		? result.compileErrors.length > 0
-			? `업로드 스타트: Start -compile 컴파일 에러 ${result.compileErrors.length}건`
-			: '업로드 스타트: Start 실패 — 컴파일 에러 위치는 응답에서 확인되지 않음'
+	const unknownOutcome = result.failedStatusCode === NO_STATUS_CODE;
+	if (quickOpts?.skipCompile && result.failedPhase === 'START') {
+		if (result.compileErrors.length > 0) { return `업로드 스타트: Start -compile 컴파일 에러 ${result.compileErrors.length}건`; }
+		if (unknownOutcome) { return '업로드 스타트: Start 결과 미확정(STATUS 없음 — 연결이 끊겼을 수 있고, 제어기가 실행했을 수 있음)'; }
+		if (result.failedStatusCode === undefined) {
+			return `업로드 스타트: Start 미전송${result.failedStatusMessage ? `(${result.failedStatusMessage})` : ''}`;
+		}
+		return `업로드 스타트: Start 실패(STATUS ${result.failedStatusCode}) — 컴파일 에러 위치는 응답에서 확인되지 않음`;
+	}
+	return unknownOutcome && result.failedPhase === 'COMPILE'
+		? `${mode} 업로드 후 Compile 결과 미확정(STATUS 없음)`
 		: `${mode} 업로드 후 Compile 실패(${result.failedPhase ?? 'FAIL'})`;
 }
 

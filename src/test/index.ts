@@ -131,6 +131,7 @@ import './controller/debugging/breakpointReconcile.test';
 import './controller/debugging/breakpointCommand.test';
 import './project/remote/breakpointTarget.test';
 import './controller/deployment/compileStale.test';
+import './controller/deployment/compiledLibraries.test';
 import './views/statusbar/compileStaleBadge.test';
 import './views/statusbar/connectionHealthBadge.test';
 import './language/syntax/gplStatements.test';

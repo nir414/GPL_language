@@ -81,7 +81,33 @@ export async function clearRemoteFolderEntries(
 	for (const name of result.deleted) {
 		forgetSyncManifest(host, `${base}/${name}`);
 	}
+	if (result.deleted.length > 0) {
+		const event: RemoteFolderCleared = { host, base, deleted: [...result.deleted] };
+		for (const listener of [...clearedListeners]) {
+			try { listener(event); } catch { /* 구독자 실패가 비우기 결과를 바꾸지 않는다 */ }
+		}
+	}
 	return result;
+}
+
+/** 원격 폴더에서 항목을 지운 뒤의 알림 — 사람·AI 어느 경로로 비웠든 한 번. */
+export interface RemoteFolderCleared {
+	host: string;
+	/** 정규화한 절대 경로(`/GPL`). */
+	base: string;
+	/** 실제로 지운 최상위 항목 이름. */
+	deleted: string[];
+}
+
+const clearedListeners = new Set<(e: RemoteFolderCleared) => void>();
+
+/**
+ * 비우기 결과 구독 — "컴파일 검증 필요" 목록이 /GPL 에서 사라진 프로젝트를 해제하는 데 쓴다(2026-11-03 inbox ④:
+ * 제어기에 소스가 없으면 "미검증 소스"도 없다). 호출 경로(트리·Unload -all 전 비우기·AI)마다 꿰지 않으려고 절차 쪽에서 알린다.
+ */
+export function onRemoteFolderCleared(listener: (e: RemoteFolderCleared) => void): { dispose(): void } {
+	clearedListeners.add(listener);
+	return { dispose: () => { clearedListeners.delete(listener); } };
 }
 
 // ── 삭제 전 정지 게이트 판정 (2026-10-23 inbox unload-guard-request ③) ─────────────────────

@@ -92,8 +92,21 @@ test('deployModes: 실패 뒤 "컴파일 검증 필요" 사유 — 업로드 스
 		'업로드 스타트: Start -compile 컴파일 에러 2건',
 	);
 	assert.strictEqual(
-		compileStaleReasonAfterFailure('업로드 스타트', { skipCompile: true }, { failedPhase: 'START', compileErrors: [] }),
-		'업로드 스타트: Start 실패 — 컴파일 에러 위치는 응답에서 확인되지 않음',
+		compileStaleReasonAfterFailure('업로드 스타트', { skipCompile: true }, { failedPhase: 'START', compileErrors: [], failedStatusCode: -750 }),
+		'업로드 스타트: Start 실패(STATUS -750) — 컴파일 에러 위치는 응답에서 확인되지 않음',
+	);
+	// 2026-11-03 inbox ③: 1402 ECONNRESET 으로 STATUS 없이 끝난 Start 는 컴파일 에러가 아니라 결과 미확정이다.
+	assert.strictEqual(
+		compileStaleReasonAfterFailure('업로드 스타트', { skipCompile: true }, { failedPhase: 'START', compileErrors: [], failedStatusCode: -9999, failedStatusMessage: 'No STATUS found' }),
+		'업로드 스타트: Start 결과 미확정(STATUS 없음 — 연결이 끊겼을 수 있고, 제어기가 실행했을 수 있음)',
+	);
+	assert.strictEqual(
+		compileStaleReasonAfterFailure('업로드 스타트', { skipCompile: true }, { failedPhase: 'START', compileErrors: [], failedStatusMessage: '사용자가 Start 실행을 취소했습니다' }),
+		'업로드 스타트: Start 미전송(사용자가 Start 실행을 취소했습니다)',
+	);
+	assert.strictEqual(
+		compileStaleReasonAfterFailure('Build', undefined, { failedPhase: 'COMPILE', compileErrors: [], failedStatusCode: -9999 }),
+		'Build 업로드 후 Compile 결과 미확정(STATUS 없음)',
 	);
 	assert.strictEqual(
 		compileStaleReasonAfterFailure('업로드 스타트', { skipCompile: true }, { failedPhase: 'COMPILE', compileErrors: [] }),

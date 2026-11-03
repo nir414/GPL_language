@@ -81,3 +81,15 @@ test('compileStaleSummary: 여럿이면 대표는 가장 최근 표시, 라벨�
     assert.strictEqual(cmd?.command, COMPILE_STALE_PICK_COMMAND);
     assert.strictEqual(cmd?.arguments, undefined);
 });
+
+test('compileStaleBadge: ProjectStart 없는 라이브러리는 Quick Compile 로 이끌지 않고 선택 창을 연다(그룹 Compile 뒤 Unload 위험, 2026-11-03 inbox)', () => {
+    const lib: CompileStaleInfo = { ...older, library: true };
+    const cmd = compileStaleBadgeCommand(lib, toResource);
+    assert.strictEqual(cmd.command, COMPILE_STALE_PICK_COMMAND);
+    assert.strictEqual(cmd.arguments, undefined);
+    assert.deepStrictEqual(compileStaleSummaryCommand([lib], toResource), cmd, '1건이어도 같다');
+    const tip = compileStaleBadgeTooltip(lib, fixedTime);
+    assert.ok(/ProjectLibrary 로 쓰는 실행 프로젝트/.test(tip) && /목록 창/.test(tip), tip);
+    assert.ok(!/Quick Compile 로 먼저/.test(tip), tip);
+    assert.ok(compileStaleSummaryTooltip([lib, newest], fixedTime).includes('- Lib (라이브러리) —'));
+});

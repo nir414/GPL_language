@@ -37,14 +37,21 @@ export function compileStaleBadgeLabel(info: CompileStaleInfo): string {
  */
 export function compileStaleBadgeTooltip(info: CompileStaleInfo, formatTime: (ms: number) => string = defaultFormatTime): string {
 	const recent = info.markedAt > info.since ? `\n최근 표시: ${formatTime(info.markedAt)}` : '';
-	return `${describeCompileStale(info, formatTime)}${recent}\n\n클릭: ${info.projectName} 을(를) Quick Compile 로 먼저 확인합니다.`;
+	const click = info.library
+		? '클릭: 목록 창을 엽니다(라이브러리는 단독 Compile 하지 않습니다 — 필요 없으면 목록에서 지울 수 있습니다).'
+		: `클릭: ${info.projectName} 을(를) Quick Compile 로 먼저 확인합니다. Compile 없이 목록에서만 지우려면 명령 「GPL: Quick Compile Unverified Projects」 에서 × 를 누릅니다.`;
+	return `${describeCompileStale(info, formatTime)}${recent}\n\n${click}`;
 }
 
 /**
  * 클릭 명령. 프로젝트 폴더를 알면 리소스 인자로 넘겨 **선택 창 없이** 그 프로젝트로 확정한다
  * (`gpl.quickCompile` 은 Uri 인자를 그 프로젝트로 본다). 모르면 인자 없이 — 단일 프로젝트면 즉시, 여럿이면 QuickPick(종전 경로).
+ *
+ * ProjectStart 없는 라이브러리는 Quick Compile 로 이끌지 않고 선택 창을 연다 — 그룹 단독 Compile 은 같은 부팅의 Unload 에서
+ * 명령 콘솔이 끊기는 상태를 만든다(`unloadRisk` unload-after-group-compile, 2026-11-03 inbox ②).
  */
 export function compileStaleBadgeCommand<T>(info: CompileStaleInfo, toResource: (dir: string) => T): BadgeCommand<T> {
+	if (info.library) { return { command: COMPILE_STALE_PICK_COMMAND, title: '컴파일 검증 필요 목록' }; }
 	const base: BadgeCommand<T> = { command: COMPILE_STALE_BADGE_COMMAND, title: 'Quick Compile' };
 	return info.projectDir ? { ...base, arguments: [toResource(info.projectDir)] } : base;
 }
@@ -69,9 +76,10 @@ export function compileStaleSummaryTooltip(items: readonly CompileStaleInfo[], f
 	const latest = compileStaleLatestFirst(items);
 	if (latest.length === 0) { return ''; }
 	if (latest.length === 1) { return compileStaleBadgeTooltip(latest[0], formatTime); }
-	const lines = latest.map(i => `- ${i.projectName} — ${i.reason} (${formatTime(i.since)} 이후)`);
+	const lines = latest.map(i => `- ${i.projectName}${i.library ? ' (라이브러리)' : ''} — ${i.reason} (${formatTime(i.since)} 이후)`);
 	return `컴파일 검증 필요 ${latest.length}개 (최근 표시 순)\n${lines.join('\n')}\n\n`
-		+ 'Start 는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 실행되지 않습니다. 클릭: Quick Compile 할 프로젝트를 고릅니다.';
+		+ 'Start 는 `-compile` 로 컴파일까지 하므로 소스에 에러가 있으면 실행되지 않습니다. 라이브러리는 그것을 쓰는 실행 프로젝트의 Compile 로 함께 해제됩니다. '
+		+ '클릭: Quick Compile 할 프로젝트를 고릅니다(× 는 Compile 없이 목록에서 지우기).';
 }
 
 /** 상태바 클릭 명령 — 1건이면 그 프로젝트로 바로 Quick Compile, 여럿이면 선택 창. */

@@ -1,6 +1,13 @@
 import * as assert from 'assert';
 import { test } from '../../harness';
-import { COMPILE_STALE_MEMENTO_KEY, CompileStaleTracker, CompileStaleMemento } from '../../../controller/deployment/compileStale';
+import {
+    COMPILE_STALE_MEMENTO_KEY,
+    CompileStaleMemento,
+    CompileStaleTracker,
+    describeCompileStale,
+    describeCompiledRelease,
+    libraryReferenceKey,
+} from '../../../controller/deployment/compileStale';
 
 const IP = '192.168.0.1';
 
@@ -137,4 +144,84 @@ test('compileStale: 저장 실패는 콜백으로만 알리고 mark 는 성공�
     assert.ok(t.mark(IP, 'App', 'r'));
     assert.strictEqual(errors.length, 1);
     assert.strictEqual(t.find(IP, 'App')?.reason, 'r');
+});
+
+// ─── 2026-11-03 inbox: 라이브러리 항목 해제·라이브러리 표시·일괄 해제 ───
+
+test('compileStale: clearCompiled — 컴파일한 프로젝트와 ProjectLibrary 값(전이 포함)이 가리키는 같은 제어기 항목을 함께 지운다', () => {
+    const t = new CompileStaleTracker();
+    t.mark(IP, 'PaL', 'Upload Only 완료 — Compile 미수행', 'C:/p/PaL', 1000, true);
+    t.mark(IP, 'Gantry', 'Upload Only 완료 — Compile 미수행', 'C:/p/Gantry', 2000, true);
+    t.mark(IP, 'Other', '무관', undefined, 3000);
+    t.mark('192.168.0.2', 'PaL', '다른 제어기', undefined, 4000);
+    const r = t.clearCompiled(IP, 'App', ['PaL', ' gantry\\ ', 'Deep\\PaL']);
+    assert.strictEqual(r.main, undefined, 'App 은 원래 목록에 없었다');
+    assert.deepStrictEqual(r.libraries.map(i => i.projectName), ['PaL', 'Gantry']);
+    assert.deepStrictEqual(t.list(IP).map(i => i.projectName), ['Other']);
+    assert.ok(t.find('192.168.0.2', 'PaL'), '다른 제어기 항목은 그대로');
+    assert.strictEqual(
+        describeCompiledRelease(r),
+        '컴파일 검증 필요 상태 해제: 라이브러리 PaL, Gantry — App Compile 에 포함 (남은 미검증 1개: Other)',
+    );
+});
+
+test('compileStale: clearCompiled — 깊은 값(MyProject\\MyLibrary)은 /GPL/MyLibrary 항목과 다른 폴더라 맞추지 않는다', () => {
+    const t = new CompileStaleTracker();
+    t.mark(IP, 'MyLibrary', 'Upload Only');
+    t.mark(IP, 'App', 'Compile 실패');
+    const r = t.clearCompiled(IP, 'app', ['MyProject\\MyLibrary', '..\\MyLibrary']);
+    assert.strictEqual(r.main?.projectName, 'App');
+    assert.deepStrictEqual(r.libraries, []);
+    assert.strictEqual(describeCompiledRelease(r), '컴파일 검증 필요 상태 해제: App (남은 미검증 1개: MyLibrary)');
+    assert.strictEqual(libraryReferenceKey('MyProject\\MyLibrary'), 'myproject/mylibrary');
+    assert.strictEqual(libraryReferenceKey(' /PaL/ '), 'pal');
+    assert.strictEqual(libraryReferenceKey('..\\X'), undefined);
+});
+
+test('compileStale: describeCompiledRelease — 자신과 라이브러리를 한 줄로, 아무것도 없으면 undefined', () => {
+    const t = new CompileStaleTracker();
+    t.mark(IP, 'App', 'Compile 실패');
+    t.mark(IP, 'PaL', 'Upload Only', undefined, Date.now(), true);
+    assert.strictEqual(
+        describeCompiledRelease(t.clearCompiled(IP, 'App', ['PaL'])),
+        '컴파일 검증 필요 상태 해제: App (+ 라이브러리 PaL — App Compile 에 포함)',
+    );
+    assert.strictEqual(describeCompiledRelease(t.clearCompiled(IP, 'App', ['PaL'])), undefined, '두 번째는 조용하다');
+});
+
+test('compileStale: library 플래그 — mark 가 잇고, setLibrary 로 보충하며, 영속 형식 검사를 통과한다', () => {
+    const t = new CompileStaleTracker();
+    t.mark(IP, 'PaL', 'a', 'C:/p/PaL', 1000, true);
+    assert.strictEqual(t.mark(IP, 'PaL', 'b', undefined, 2000)?.library, true, '모르면 이전 값을 잇는다');
+    t.mark(IP, 'Old', 'c', 'C:/p/Old', 3000);
+    assert.strictEqual(t.find(IP, 'Old')?.library, undefined);
+    assert.strictEqual(t.setLibrary(IP, 'Old', false), true);
+    assert.strictEqual(t.setLibrary(IP, 'Old', false), false, '같은 값이면 바꾸지 않는다');
+    assert.deepStrictEqual(t.list(IP).map(i => `${i.projectName}:${i.library}`), ['PaL:true', 'Old:false'], '순서는 그대로');
+
+    const store: Record<string, unknown> = {};
+    const memento: CompileStaleMemento = { get: <T>(k: string, d: T) => (store[k] as T) ?? d, update: (k, v) => { store[k] = v; } };
+    t.attach(memento);
+    t.mark(IP, 'X', 'x');
+    const reloaded = new CompileStaleTracker();
+    reloaded.attach(memento);
+    assert.strictEqual(reloaded.find(IP, 'PaL')?.library, true);
+});
+
+test('compileStale: clearMany — 있는 이름만 지우고 남은 목록을 돌려준다', () => {
+    const t = new CompileStaleTracker();
+    t.mark(IP, 'A', 'a');
+    t.mark(IP, 'B', 'b');
+    const r = t.clearMany(IP, ['a', 'Nope']);
+    assert.deepStrictEqual(r.cleared.map(i => i.projectName), ['A']);
+    assert.deepStrictEqual(r.remaining.map(i => i.projectName), ['B']);
+    assert.deepStrictEqual(t.clearMany(IP, ['Nope']).cleared, []);
+});
+
+test('compileStale: describeCompileStale — 라이브러리는 Quick Compile 대신 쓰는 쪽 Compile 로 해제된다고 안내', () => {
+    const base = { ip: IP, projectName: 'PaL', since: 0, markedAt: 0, reason: 'Upload Only' };
+    const lib = describeCompileStale({ ...base, library: true }, () => 'T');
+    assert.ok(lib.includes('ProjectLibrary 로 쓰는 실행 프로젝트'));
+    assert.ok(!lib.includes('Quick Compile'));
+    assert.ok(describeCompileStale(base, () => 'T').includes('Quick Compile'));
 });

@@ -21,6 +21,7 @@ import { requestDeployCancellation } from '../../controller/deployment/deployCan
 import { activeOperations } from '../../controller/automation/operationStore';
 import { stopAllAndSettle } from '../../controller/threads/threadStop';
 import { parseThreadList, parseThreadDetail, SHOW_THREAD_LIST_CMD, parseBreakList, isSuccess, parseStatus, NO_STATUS_CODE, StackFrameInfo } from '../../controller/protocol/responseParser';
+import type { ThreadInfo } from '../../controller/protocol/responseParser';
 import { ciEq } from '../../language/syntax/identifiers';
 import { isReadOnlyConsoleCommand } from '../../controller/commands/consoleCommandClassifier';
 import { fireDebugThreadsUpdated, fireDebugProbeResult, onDebugPollTrigger } from '../../controller/debugging/debugBridge';
@@ -1036,6 +1037,26 @@ export class GPLDebugSession extends LoggingDebugSession {
             frames = this._frames.cachedFrames.get(threadName) ?? [];
             this._log(`stackTraceRequest: pendingAction=${this._pendingAction}, 캐시 프레임 반환 (${frames.length}개)`);
         } else {
+            // 맨 위 프레임만 묻는 요청(levels=1, 정지 직후 VS Code 의 첫 요청)은 Show Stack 응답을 기다리지 않는다 —
+            // 폴 줄로 만든 잠정 맨 위 프레임으로 현재 줄을 먼저 보여 주고, 나머지 프레임 요청이 진행 중 조회에 합류한다.
+            const topOnly = (args.startFrame ?? 0) === 0 && args.levels === 1
+                ? this._frames.topFrameWithoutWaiting(threadName)
+                : undefined;
+            if (topOnly) {
+                const f = topOnly.frame;
+                let source: Source | undefined;
+                if (f.file) {
+                    if (this._sources.remoteSourceSession) {
+                        try { await this._sources.ensureRemoteSourcePath(f.file); }
+                        catch (err) { this._log(`스택 소스 준비 실패: ${err instanceof Error ? err.message : String(err)}`); }
+                    }
+                    source = this._sources.dapSource(f.file);
+                }
+                const frameId = this._frames.allocFrameId(threadName, 0);
+                response.body = { stackFrames: [new StackFrame(frameId, f.process || '(unknown)', source, f.fileLine)] };
+                this.sendResponse(response);
+                return;
+            }
             frames = await this._frames.getThreadFrames(threadName);
         }
 
@@ -2595,9 +2616,12 @@ export class GPLDebugSession extends LoggingDebugSession {
     // 값 자체는 백킹 필드에 있고, 객체 덤프에는 Private 포함 전체 필드가 프레임과 무관하게 실려 온다. 그래서
     // Property 이름 → 백킹 필드(파서가 기록한 Get 반환식 또는 관례 m_이름) → 필요 시 부모 덤프 추출 순으로 값을 찾는다.
 
-    private async _resolveStopReasonForThread(threadName: string, fallback: string): Promise<string> {
-        const frames = await this._frames.getThreadFrames(threadName);
-        const top = frames[0];
+    private async _resolveStopReasonForThread(threadName: string, fallback: string, polled?: ThreadInfo): Promise<string> {
+        // 폴 줄(`Show Thread -web`)에 위치가 있으면 그것으로 판정한다 — Show Stack 응답을 기다리지 않고 StoppedEvent 를
+        // 보내기 위해서다(2026-11-04, BP 판정은 맨 위 프레임의 파일·줄만 본다). 위치가 없는 형식일 때만 스택을 읽는다.
+        const top = polled?.file && polled.fileLine && polled.fileLine > 0
+            ? { file: polled.file, fileLine: polled.fileLine }
+            : (await this._frames.getThreadFrames(threadName))[0];
         if (!top?.file || top.fileLine <= 0) {
             return fallback;
         }
@@ -2875,7 +2899,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                                 this._log(`쓰레드 ${t.name} 정지 (breakpoint)`);
                             }
                             // ⑧ 곧 도착할 stackTraceRequest를 위해 프레임 선조회(캐시 워밍)
-                            this._frames.prefetchFramesAfterStop(t.name);
+                            this._frames.prefetchFramesAfterStop(t.name, t);
 
                             this._previousThreadStates.set(t.name, t.state);
                             if (t.state !== prevState) { threadStateChanged = true; }
@@ -2887,7 +2911,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                 // Step 명령은 폴링 사이에 Running 상태를 놓칠 수 있으므로,
                 // pending step 상태에서 다시 paused/break가 보이면 step 완료로 처리한다.
                 if (this._pendingAction === 'step' && this._pendingThreadId === id && isPausedState) {
-                    const reason = await this._resolveStopReasonForThread(t.name, 'step');
+                    this._frames.prefetchFramesAfterStop(t.name, t);
+                    const reason = await this._resolveStopReasonForThread(t.name, 'step', t);
                     this._pendingAction = null;
                     this._pendingThreadId = undefined;
                     this._pendingContinueSawRunning = false;
@@ -2943,7 +2968,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                             : `쓰레드 ${t.name} 외부 정지 확정 (${where} 에서 ${this._spontaneousPause.confirmPolls}회 연속·`
                                 + `${this._spontaneousPause.confirmMs}ms 이상 Paused — GDE/REPL 등 외부 Break 로 판단)`);
                     }
-                    this._frames.prefetchFramesAfterStop(t.name);
+                    this._frames.prefetchFramesAfterStop(t.name, t);
 
                     this._previousThreadStates.set(t.name, t.state);
                     if (t.state !== prevState) { threadStateChanged = true; }
@@ -2959,7 +2984,8 @@ export class GPLDebugSession extends LoggingDebugSession {
                     // Determine stop reason based on pending action
                     let reason = 'breakpoint';
                     if (this._pendingAction === 'step' && this._pendingThreadId === id) {
-                        reason = await this._resolveStopReasonForThread(t.name, 'step');
+                        this._frames.prefetchFramesAfterStop(t.name, t);
+                        reason = await this._resolveStopReasonForThread(t.name, 'step', t);
                     } else if (this._pendingAction === 'pause' && this._pendingThreadId === id) {
                         reason = 'pause';
                     } else if (this._pendingAction === 'entry') {
@@ -2989,7 +3015,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                         this._log(`쓰레드 ${t.name} 정지 (${reason})`);
                     }
                     // ⑧ 곧 도착할 stackTraceRequest를 위해 프레임 선조회(캐시 워밍)
-                    this._frames.prefetchFramesAfterStop(t.name);
+                    this._frames.prefetchFramesAfterStop(t.name, t);
                 }
 
                 // Detect transition to Error state → break on errors가 활성일 때만

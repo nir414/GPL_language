@@ -37,7 +37,8 @@ function stepFixture() {
     const respond = (cmd: string): string => {
         hook.onCommand?.(cmd);
         if (cmd === THREAD_CMD) {
-            return `<DATA>Probe|${thread.state}|0|0|Probe|Main.Run|10|Main.gpl|${thread.line}</DATA>${SUCCESS}`;
+            // 실제 응답처럼 줄 끝 \r\n 뒤에 </DATA> (gde_1402.pcapng) — 없으면 파서가 뒤의 STATUS 숫자까지 줄 번호로 읽는다.
+            return `<DATA>Probe|${thread.state}|0|0|Probe|Main.Run|10|Main.gpl|${thread.line}\r\n</DATA>${SUCCESS}`;
         }
         if (cmd === 'Show Stack Probe') { return `<DATA>Frame 0: Main.Run, Line ${thread.line}, Main.gpl</DATA>${SUCCESS}`; }
         const variable = /^Show Variable -eval Probe 0 (\w+)$/.exec(cmd);
@@ -188,6 +189,15 @@ test('세션 분해 회귀: Step → Running → Paused 가 명령 순서·Stopp
     assert.strictEqual(s.session._pendingThreadId, undefined);
     assert.strictEqual(s.session._pollInFlight, false);
     assert.strictEqual(frames.frameCacheGen, genAtStop); // 정지 확인은 세대를 올리지 않는다
+    // 이유 판정은 폴 줄의 위치로 한다 — StoppedEvent 는 Show Stack 응답을 기다리지 않고, Show Stack 은 선조회로 1회 나간다.
+    // 맨 위 프레임만 묻는 stackTrace(levels=1)는 잠정 프레임으로 바로 답한다(명령 추가 없음).
+    const top: any = {};
+    await s.session.stackTraceRequest(top, { threadId: 1, startFrame: 0, levels: 1 });
+    assert.strictEqual(top.body.stackFrames.length, 1);
+    assert.strictEqual(top.body.stackFrames[0].line, 14);
+    assert.deepStrictEqual(s.commands.slice(stopMark), [THREAD_CMD, 'Show Stack Probe']);
+    await frames.getThreadFrames('Probe'); // 진행 중인 선조회에 합류
+    assert.deepStrictEqual(s.commands.slice(stopMark), [THREAD_CMD, 'Show Stack Probe']);
     assert.strictEqual(frames.cachedFrames.get('Probe')?.[0].fileLine, 14);
     assert.ok(s.events.some(e => e.event === 'invalidated'));
     assert.ok(s.events.some(e => e.event === 'output' && /쓰레드 Probe 정지 \(step\)/.test(e.body.output)));

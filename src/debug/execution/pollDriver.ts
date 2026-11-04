@@ -230,7 +230,8 @@ export class PollDriver {
     // ⑥ step/continue 후 fast poll 스케줄(ms): 첫 폴 30ms 시작, 점감 백오프.
     //    (기존 500ms x 2는 1403 트리거 유실 시 첫 관측까지 최소 500ms 체감 지연 유발)
     // 2026-11-04: 30/120/250/500/1000 → 촘촘하게. 폴은 앞 폴이 끝난 뒤 예약되므로 RTT 가 길면 그만큼 자연히 벌어진다(쌓이지 않음).
-    static readonly FAST_POLL_DELAYS_MS = [20, 60, 120, 200, 300, 450, 650];
+    // 첫 폴은 거의 바로 — GDE 는 Step 응답 1 ms 뒤 Show Thread -web 을 보내 이미 다음 줄에 정지한 상태를 본다(gde_1402.pcapng).
+    static readonly FAST_POLL_DELAYS_MS = [5, 50, 120, 200, 300, 450, 650];
 
     static readonly POLL_MIN_GAP_MS = 250;
 

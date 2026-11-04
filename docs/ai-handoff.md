@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.8** (Step 뒤 현재 줄 잠정 표시, 1608/1608. 상세는 §1-GW.)
-- **직전 세션: §1-GW** — "예전 디버깅 속도 개선(§1-D·§1-L·§1-X·§1-GA)을 확인했나, 이번도 같은 문제인가, 더 개선할 수 있나" → 같은 문제: §1-GA(0.18.2)의 개선은 사용자 창에서 한 번도 돈 적이 없다(10-26 0.13.2, 11-03~04 Marketplace 0.18.1). 추가 개선: GDE 캡처대로 폴 줄로 정지 이유를 판정하고 stackTrace(levels=1)를 잠정 맨 위 프레임으로 바로 답해 Step 뒤 현재 줄이 Show Stack 1왕복 먼저 보이게, 첫 fast poll 5 ms. Locals 일괄 조회는 문서상 형식이 없다(Show Variable 은 변수 하나).
+- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.9** (제어기 패널 섹션 재배치·앰프 온도 묶음, 1608/1608. 상세는 §1-GX.)
+- **직전 세션: §1-GX** — "패널 목록 기본 펼침 상태를 스크린숏처럼 바꾸고 순서를 쓰기 편하게, 앰프 온도는 따로 접어 달라" → `buildConnectedRoot` 순서를 자주 보는 것 → 가끔 여는 것으로 재배치, 섹션 기본 접힘을 사용자 배치로 바꾸고 `SECTION_LAYOUT_EPOCH` 2→3, 시스템 정보의 앰프 온도 행을 접힌 「앰프 온도 (N)」 하위 노드로 묶음(CPU 온도는 그대로). 남은 것: §3 새 VSIX 로 패널 확인.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -201,6 +201,7 @@
   ② 제어기 LAN 을 뽑은 상태에서 같은 명령 → `[1403] --- ERROR …` 뒤 error 토스트에 사유, 재연결 백오프 중 다시 실행하면 즉시 CONNECT 가 나가는지
   ③ 명령 콘솔 유실 알림 뒤 「GPL: Connect」만으로 런타임 콘솔이 함께 켜지는지(`finishConnect` → `ensureRuntimeConsole`)
   ④ Sample Prep 보고 v3(새 창 Traffic `[1403]` 줄)가 오면 §1-ET 의 후보 ①②③ 중 하나로 확정하고 필요하면 `runtimeConsole.ts` 정책을 손본다.
+- [ ] **(2026-11-04, §1-GX) 제어기 패널 재배치 — 새 VSIX UI 확인(조회만, 모션 무관).** ① 설치 뒤 첫 표시에서 순서가 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 → 브레이크포인트 → FTP 파일 → 시스템 정보 → I/O → 환경 경고 → Flash Projects 이고, 펼친 것이 프로젝트 상태·쓰레드·FTP 파일·시스템 정보뿐인지(EPOCH 3 으로 저장된 접기 상태가 한 번 초기화) ② 시스템 정보 새로고침 뒤 CPU 온도는 바로 보이고 「앰프 온도 (N) · 최고 xx.x°C」가 접혀 있는지, 펼치거나 접은 상태가 다음 새로고침에도 유지되는지 ③ 사용자가 순서를 더 바꾸고 싶다고 하면 `treeSections.buildConnectedRoot` + `treeSectionsLayout.test.ts` 만 고치면 된다.
 - [ ] **(2026-11-04, §1-GV) AI MCP 사용자 범위 등록·주소 자동 추종 — 새 VSIX 실사용 확인(설정 파일·조회만, 모션 무관).**
   ① 개발 소스로 직접 등록해 둔 이 PC(`~/.claude.json`·`~/.codex/config.toml` 모두 `controller-mcp/src/index.js`)에서는 활성화 때 아무 제안도 없고 등록이 그대로인지(foreign 유지).
      다른 PC(또는 user scope 의 gpl-controller 를 지운 상태)에서는 「사용자 설정에 한 번 등록할까요?」 → 등록 → `claude mcp get gpl-controller` 가 globalStorage `gpl-controller-mcp.cjs`·`GPL_BRIDGE=only` 만 보이는지.
@@ -913,7 +914,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GN ~ §1-GW)만 둔다.
+본문에는 **최근 10개 세션**(§1-GO ~ §1-GX)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -922,8 +923,8 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GM (2026-10-02 ~ 10-28, §1-FR 2건) | 61 |
-| (본문 아래) | §1-GN ~ §1-GW (2026-10-28 ~ 11-04) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GN (2026-10-02 ~ 10-28, §1-FR 2건) | 62 |
+| (본문 아래) | §1-GO ~ §1-GX (2026-10-28 ~ 11-04) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -1124,7 +1125,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | 본문 ↓ |
+| §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GO | 10-28 | **라이브러리 함께 업로드·내장형 구분** — ProjectLibrary 그래프에서 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 `/GPL/<값>` 으로(`libraryUploadPlan.ts`), 내장형 패키지(BinderR4)는 루트 소속이라 생략. 재생 하니스 ALL IDENTICAL. 0.27.0 | 본문 ↓ |
 | §1-GP | 11-03 | **README 검토·개선** — 08-18 정책대로 제어기 연동 → 디버깅 → 상태 → AI → 언어 기능 순 재배치, 디버깅 3단 분리, 0.17.0 이전 원격 디버깅 문장(저장 폴더·저장 구성 재연결) 제거, 컴파일 검증 필요·메모리·Diagnose Stuck Thread·uploadLibraries 추가. 0.27.1 | 본문 ↓ |
 | §1-GQ | 11-03 | **연결 유실 정황: PC 절전 복귀·직전 상태 변경 명령·「다시 연결」** — 사후 스냅샷 30건 재분석(절전 복귀 5·깨어 있는 중 링크 단절 8·Stop/Start/Execute 뒤 8·Unload 6), Windows 이벤트 로그로 절전 복귀 매칭(`pcPowerEvents.ts`), `RecentCommandLog`, 알림 문구 `lossNotice.ts`, README 문제 해결 2행. 0.27.2 | 본문 ↓ |
@@ -1134,55 +1135,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GU | 11-04 | **체감 속도·규칙 감사** — 트리 쓰레드 상태 즉시 갱신(1403 상태 이벤트·Start/Stop 등 응답 뒤 150/600/1500/3000 ms, `threadRefreshScheduler`·`affectsThreadState`), 디버그 fast poll 20~650 ms·step pending 400 ms·프레임/목록 캐시 정지 중 재사용·변수 조회 중 인터벌 폴 쉼, 구조 테스트 R10(크기 상한)·§7 부채 표·문서 낡음 정리. 0.27.6 | 본문 ↓ |
 | §1-GV | 11-04 | **AI MCP: 워크스페이스 파일 폐기·사용자 범위 한 번 등록·제어기 주소 자동 추종** — MCP 가 확장 창 presence 에서 주소를 따름(`resolveControllerAddress`·`pickAddressInstance`, GPL_HOST 는 창 없을 때 값), 확장은 `claude mcp add-json --scope user`·Codex `config.toml` 에 등록(`gpl.ai.mcpRegistration`), 직접 등록(foreign)은 유지, `.mcp.json`·CLAUDE.md 생성 폐기·주소 불일치 경고 제거, 예전 파일 정리 명령. 1604/1604 · MCP 168/168. 0.27.7 | 본문 ↓ |
 | §1-GW | 11-04 | **디버그 체감 속도 — 과거 개선 대조·GDE 방식 잠정 프레임** — §1-D·L·X·GA 대조(GA 0.18.2 는 사용자 창에서 미실행: 0.13.2 → Marketplace 0.18.1), GDE 캡처 분석(Step → 1 ms 뒤 Show Thread -web, Show Stack 없음), 폴 줄로 정지 이유 판정·stackTrace levels=1 잠정 맨 위 프레임·첫 fast poll 5 ms, Show Variable 일괄 형식 없음(문서). 0.27.8 | 본문 ↓ |
+| §1-GX | 11-04 | **제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음** — 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 → 브레이크포인트 → FTP /GPL → 시스템 정보 → I/O → 환경 경고 → Flash Projects, 펼침은 프로젝트 상태·쓰레드·FTP /GPL·시스템 정보만, `SECTION_LAYOUT_EPOCH` 3, 앰프 온도는 시스템 정보 아래 접힌 「앰프 온도 (N)」(헤더에 최고 온도) | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GN ~ §1-GW (2026-10-28~11-04).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GO ~ §1-GX (2026-10-28~11-04).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GN. 2026-10-28 세션 — "컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기 (0.26.0)
-
-### 증상(요청)
-
-1. "컴파일 검증 필요 알람 갱신 시스템이 좀 아쉽다 — Upload Only 라든지 다중 프로젝트에서 잘 동작 못한다."
-2. "최근 업데이트 버전 통합도 해 달라" — 작업 트리에 남아 있던 다른 세션의 `controller-mcp` 지침 변경(미커밋)과 수신함(inbox) 보고 4건을 이번 버전에 함께 담는 것으로 해석했다.
-3. "`Unload -all` 동작 전에는 FTP /GPL 비우는 동작을 넣어 달라."
-
-### 원인
-
-- 뷰 인터페이스가 **대표 1건**이었다: `setCompileStale(info?: CompileStaleInfo)` 에 host 가 mark 땐 방금 항목, clear 땐 `current()`(가장 최근 표시)를 꽂았다. Upload Only 로 A·B·C 를 올리면 셋 다 추적되지만 배지는 C 하나, C 를 컴파일하면 B 로 "바뀌어" 보여 해제가 아니라 다른 프로젝트가 새로 걸린 것처럼 읽혔다. 트리도 한 줄만 unshift.
-- `GPL: Start`(`startProjectCommand.ts`) 는 STATUS 0 에서 알림과 트리 새로고침만 하고 `recordCompiled`/`clearCompileStale` 을 부르지 않았다 — Start 는 `-compile` 이라 성공 = 컴파일 성공인데 배지가 남는 거짓 경고(Upload Only → 모달 「그대로 Start」 흐름에서 매번).
-- 트래커가 메모리 전용·프로젝트명 키였다: 창을 다시 열면 미검증 상태가 사라지고, IP 를 바꿔도 배지가 따라왔다(`deployRecord` 는 ip+이름 키로 Memento 영속인 것과 대조).
-
-### 조치(의도와 방법)
-
-- **`controller/deployment/compileStale.ts`** — `CompileStaleInfo` 에 `ip`·`markedAt` 추가, 키 `compileStaleKey(ip, name)`, `attach(memento)`/`persist()`(Memento 키 `gpl.compileStale`, `deployRecordCore.DeployRecordStore` 와 같은 꼴, 로드 시 `markedAt` 오름차순으로 표시 순서 복원·메모리 쪽과 겹치면 더 최근 표시), `clear` 는 `remaining`(같은 ip 의 남은 목록), `list(ip?)`. 설명 문장 `describeCompileStale` 은 그대로(R7).
-- **`views/statusbar/compileStaleBadge.ts`** — 단일 항목 규칙(트리 한 줄)은 유지하고 툴팁에 `markedAt`(최초와 다를 때만) 추가. 목록 요약 `compileStaleSummaryLabel/Tooltip/Command`(대표 = 가장 최근 표시, 「외 n」, 여럿이면 `gpl.compileStale.pick`). `compileStaleLatestFirst` 가 트리·상태바 공통 순서.
-- **트리/상태바/스냅샷** — `setCompileStale(items?: readonly CompileStaleInfo[])`, `ProjectContextInput.compileStale: readonly[]`, 섹션 설명 「컴파일 검증 필요 n개」, 프로젝트마다 `InfoNode` 한 줄(최근 표시가 위). 단일 항목 출력은 종전과 바이트 단위로 같다(pinned 스냅샷 테스트 통과, 픽스처만 배열로).
-- **`activation/host.ts`** — mark/clear/find 는 설정의 현재 ip 에 묶고 `clearCompileStale(name, ip?)` 는 `onDidRecordCompiled` 의 `rec.ip` 로. `syncCompileStaleViews(ip?)` 가 현재 ip 목록을 뷰에 반영(활성화 직후·`setControllerConnected`·mark/clear). `listCompileStale()` 은 선택 창·상황 스냅샷(`gpl.ai.debug.situation` 의 `compileStale`)이 쓴다. `extension.ts` 가 `attach(context.workspaceState)`.
-- **`activation/deploy/compileStaleCommands.ts`(신규)** — `gpl.compileStale.pick`: 다중 선택 QuickPick(전부 미리 체크) → 고른 순서대로 `gpl.quickCompile`(폴더 Uri 인자) 를 await 로 하나씩, `result.success` 가 아니면 중단(§1-GM 묶음 규칙과 동일). package.json `contributes.commands` 등재.
-- **`startProjectCommand.ts`** — Start -compile STATUS 0(또는 비차단) 이면 `host.deployDiagnostics.clear()` + `recordCompiled({ip, projectName, projectDir, files: snapshotProjectFiles})` → 구독이 배지 해제 + GitHub #21 소스 변경 판정 스냅샷도 함께. `commandRunsCompiler(startCmd)` 일 때만.
-- **Unload -all 전 /GPL 비우기(`activation/remote/ftpCommands.ts`)** — 트리 「폴더 비우기」 핸들러 본문을 `clearRemoteFolderInteractive({ rawPath, isFlash, purpose? })` 로 추출(결과형 `ClearFolderOutcome` 명시, `cancelled` 는 항상 boolean). `runUnloadAllInteractive` 는 위험 모달 뒤 이 절차를 `purpose:'Unload -all'` 로 호출 — 모달 문구가 "비운 뒤 Unload -all 을 보냅니다 — 취소하면 Unload -all 도 보내지 않습니다". `ok:false` 면(취소·잠금·정체 미확인·부분 실패) Unload 미전송 + Output 한 줄(취소는 알림 없음), `already-empty` 면 바로 전송.
-- **Unload 대기 하한** — `projectCommands.UNLOAD_TIMEOUT_MIN_MS = 180_000`·`unloadTimeoutMs(cfg)`; 이름 Unload·`-all` 모두 `{ timeoutMs, waitForStatusClose: true }`. 근거는 inbox(아래). 배포 경로의 Unload(`deployCompileStage`, 클래식 Load 동기화)는 손대지 않았다.
-- **MCP `unload_project`(`controller-mcp/src/index.js`)** — `-all` 이면 ① 활성 쓰레드가 하나라도 있으면 `refused:"threads-active"`(종전엔 `sameName(project, '-all')` 이라 검사가 비어 있었다) ② `listRemoteProjectFolders()`(`gpl.ai.debug.listRemoteProjects`)로 /GPL 에 프로젝트가 남아 있으면 `refused:"gpl-not-empty"` + 목록·힌트(사용자 동의 → `clear_remote_folder` → 재호출), 목록을 못 읽으면 `gpl-state-unknown`; `skipGplCheck:true` 로 우회. 기본 `timeoutMs = max(GPL_TIMEOUT_MS, 180 s)`. AI 경로는 삭제에 동의가 필요하므로 확장 UI 처럼 자동으로 비우지 않는다(`feedback_ai_access_not_restricted` 와 충돌하지 않게 "막는" 게 아니라 "순서를 요구"하는 구조).
-- **잠금 rename EPERM 재시도(`deployLock.ts`)** — `writeAtomic` 이 `EPERM/EBUSY/EACCES` 에 한해 15·30·45 ms 간격 4회 재시도(`Atomics.wait` 동기 대기), `DeployLockEnv.renameFile` 주입으로 테스트(inbox ① 반영).
-- **다른 세션 작업 통합** — 2026-10-27 다른 GPL_language 세션이 남긴 `controller-mcp` 지침 변경(`GPL_REFERENCE_GUIDE`: Brooks 공식 문서 확인 규칙, README §5, 테스트 상한 4900)을 별도 커밋(e3068fd)으로 그대로 통합. 165/165.
-- **inbox 4건 처리**(`Downloads\GPL_language_inbox\done\`): ① rename EPERM → 반영(위) ② README 가 `staleRemote` 로 표시 → 보류(provenance 분류는 별건, 판정 근거 `compiledSnapshotFiles` 가 소스만 세는 것과 업로드 집합 차이 — §3 에 두지 않고 done 에 사유 기록) ③ 앱 Unload 무응답(그룹 Compile 기록 없음) → ④ 와 같은 원인으로 정리 ④ Unload 느림·`_Cmd_<project>`·`Execute` 샘플러 → 타임아웃 하한 180 s 반영, `Execute` 샘플링 중지/경고는 §3 결정 항목으로.
-
-### 검증
-
-- `npm test` **1571/1571**(신규 8건 — 트래커 ip 분리·Memento 영속/복원/깨진 저장분·저장 실패 콜백, 배지 요약 라벨/툴팁/명령, 잠금 rename 재시도 2건). `controller-mcp` `node --test` 165/165, `node --check index.js`.
-- pinned 스냅샷(단일 항목) 바이트 동일. `scripts/dev/compareTreeProvider.js` 는 새 provider 에 배열을 넘기도록 `apply(p, fx, staleAsList)` 로 갱신(옛 BASE 와 비교 시 `COMPARE_TREE_OLD_STALE_IS_LIST` 환경 변수).
-- VSIX: `dist/gpl-language-support-0.26.0.vsix` 1,662,915 bytes(360 files), SHA-256 `2AF92E3774CBBF4B5221D6E43D07CD7A5EEB8BD7359BC18FC39597058FA0FC2D`(경고는 bundle 권장 1건, 종전과 같음). MCP 번들에 §1-GM 이 적어 둔 다른 세션의 `guidelines.js` 변경은 이번에 커밋(e3068fd)됐다.
-- UI·실기 미확인 — §3 항목.
-
-### 남은 일
-
-- §3 의 UI·실기 확인(특히 ⑥ Unload -all 흐름과 ⑧ Unload 소요 시간).
-- §3 결정: 상태 샘플러 `Execute` 와 `_Cmd_<project>` Unload 무응답(inbox ④) — 회피 설계는 실기 재현 뒤.
-- 보류(inbox ②): 업로드 provenance 에서 컴파일 제외 문서(README)를 `staleRemote` 가 아닌 별도 분류로.
-- 선택 창의 "전부 Quick Compile" 은 하나씩 await 라 프로젝트마다 정체 확인·FTP 비교가 반복된다 — 체감 지연이 크면 §1-GM 과 같이 묶음 1회로.
 
 ## 1-GO. 2026-10-28 세션 — 라이브러리 함께 업로드 · 내장형(BinderR4) 구분 (0.27.0)
 
@@ -1522,3 +1481,36 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 
 - §3 (§1-GW) — 특히 ④ `⏱` 줄 실측.
 - GDE 웹 RPC 캡처(디버그 중 GDE 의 HTTP 트래픽)로 변수·스택 일괄 조회 가능성 확인.
+
+## 1-GX. 2026-11-04 세션 — 제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음 (0.27.9)
+
+### 요청(사용자)
+
+- 패널 스크린숏을 보이며 "기본 펼침 상태를 이렇게 바꾸고, 순서를 사용자가 편하게 재배치해 달라". 스크린숏의 펼침: 프로젝트 상태·쓰레드·FTP 파일(/GPL)·시스템 정보.
+  접힘: 연결·브레이크포인트·Flash Projects·I/O·코드 오류·환경 경고.
+- 작업 중 추가: "AMP 온도는 따로 분리해서 접어 달라 — CPU 온도면 모를까 모터(앰프)는 굳이". 시스템 정보에 Robot 1~5 · Amp 1 온도 행이 CPU 온도와 같이 늘어서 있었다.
+
+### 조치
+
+1. **순서**(`views/tree/treeSections.ts` `buildConnectedRoot` — 순서의 정본): (런타임 오류 컨텍스트) → 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 →
+   브레이크포인트 → FTP 파일 → 시스템 정보 → I/O → 환경 경고 → Flash Projects. 묶음 기준: 어느 제어기·프로젝트 / 실행·디버그 / 배포 파일 / 장비 /
+   드물게 여는 진단·보관. 연결은 헤더 한 줄이 "어느 제어기에 붙어 있나"라 맨 위(접힘), 코드 오류는 실행·디버그 묶음으로 올리고 환경 경고와
+   Flash Projects(/flash/projects 는 손대지 않는 영역)는 맨 아래로. 이 순서는 사용자 스크린숏이 아니라 AI 판단이다 — 사용자가 바꾸고 싶어 하면 그대로 따른다.
+2. **기본 접힘** — 프로젝트 상태 펼침(종전: 불일치·검증 필요일 때만 펼침 → 항상 펼침이라 조건 분기 삭제), 쓰레드 펼침, Flash Projects 접힘
+   (`buildFtpSection` 이 `input.flash` 로 결정 — FTP 탐색 전용 모드에서도 같음), 시스템 정보 펼침, 코드 오류·환경 경고 접힘. Error 쓰레드는 펼친 쓰레드 섹션
+   맨 위에 정렬돼 보이므로 코드 오류를 접어도 놓치지 않는다. **`SECTION_LAYOUT_EPOCH` 2 → 3** — 저장된 접기 상태가 한 번 초기화돼 새 기본값이 보인다(§1-DF 방식).
+3. **앰프 온도 묶음** — `SystemInfoItem` 에 `group?: 'ampTemperature'`·`celsius?` 를 더하고 `buildSystemInfoItems` 가 `kind === 'amplifier'` 행에 붙인다.
+   `buildSystemInfoSection` 이 묶음 행을 하위 `SectionNode('ampTemps')`(「앰프 온도 (N)」, 아이콘 `flame`, 접힘)로 모으고, 헤더 설명에 판정 가능한 값의 최고 온도
+   (`최고 41.0°C`, 값이 없으면 `센서 값 미확인`)를 보인다. 섹션 노드라 `section-ampTemps@<epoch>` id 로 사용자의 펼침이 기억된다. 상황 보고서(snapshotMarkdown)는 평면 행 그대로.
+- 동시 작업: 다른 세션이 0.27.8(§1-GW)을 릴리스 중이라 그 커밋(414e879)이 끝난 뒤 이어서 기록했다. 그 세션은 이 세션 파일을 커밋·VSIX 에 넣지 않았다.
+
+### 검증
+
+- `npm test` **1608/1608** — 새 `src/test/views/tree/treeSectionsLayout.test.ts` 4건: 루트 순서·기본 접힘 고정, 검증 필요가 있어도 프로젝트 상태 펼침,
+  CPU 온도는 섹션 바로 아래·앰프는 접힌 묶음(헤더 최고 온도·자식 순서), 앰프 행이 없으면 묶음 없음.
+- VSIX: VSIX_LINE
+- 실제 패널 표시는 미확인 → §3.
+
+### 남은 일
+
+- §3 §1-GX 패널 UI 확인. 순서는 사용자 피드백에 따라 조정.

@@ -11,6 +11,18 @@
 
 ## 확인 대기 항목
 
+- [ ] **(2026-11-04, §1-GZ) 0.27.10 리뷰 후속 — 실사용·실기 확인(①은 Stop·Unload 를 보낸다 — 장비 정지 상태에서, 나머지는 읽기·FTP).**
+  ① **메모리 자동 회수**: 여유 메모리가 4 MB 미만인 상태(실행 중 앱 포함)에서 AI `deploy_project build` 또는 Quick Compile → Output 에
+  `♻ 여유 메모리 … 정지 뒤 다시 재고` → (모자라면) `CMD Unload <다른 앱>` … `CMD Unload <대상>` → `♻ 메모리 회수: X MB → Y MB` 가 찍히고 업로드·Compile 이
+  이어지는지, 결과의 `memoryRecovery`(unloaded·skipped)가 맞는지. 그룹(Lib) 폴더는 `Unload 안 함` 으로 남는지. 같은 부팅에 그룹 Compile 을 한 뒤라면
+  「메모리 자동 회수 건너뜀」 경고만 나오고 Unload 를 보내지 않는지. Unload 1건당 걸린 시간도 적어 둔다.
+  ② **basic-ftp 6**: Upload Only·배포·FTP 트리 새로고침·원격 파일 열기가 종전처럼 되는지. GPL Traffic/Output 에 FTP 오류가 없으면
+  `ftpClient.createClient` 의 `allowSeparateTransferHost: true` 를 지워 6.x 기본값(다른 호스트 거부)으로 다시 확인한다(§3).
+  ③ **URI 토큰**: 브라우저 주소창에 `vscode://nir414.gpl-language-support/gpl.controller.sendCommand?command=Show%20Thread` → 실행되지 않고
+  「token 이 필요합니다」 경고. 같은 URI 에 `&token=<%TEMP%\gpl-controller\uri-token 값>` 을 붙이면 실행. MCP 확장 깨우기(`getConnectionState`)는 그대로.
+  ④ **1402 인코딩**: 한글이 든 프로젝트·파일 이름(있으면)의 `Set Break`·`Show Thread` 응답이 GPL Traffic 과 트리에서 깨지지 않는지.
+  ⑤ **디버거**: 마지막 줄에서 Step 해 쓰레드가 끝나면 디버그 툴바가 실행 중에 묶이지 않는지, Thread.Sleep 중인 쓰레드에 Pause 를 누르면
+  곧바로 정지(pause)로 표시되는지(Step 은 모션 주의 — 시뮬레이션 프로젝트).
 - [ ] **(2026-11-04, §1-GW) 0.27.8 Step 체감 — 실사용 확인(Step 은 모션 주의).** ① 확장 첫 줄이 `v0.27.8` 인지. ② Step over 뒤 편집기 노란 줄이 GPL Traffic 의 `Show Stack` 응답보다 먼저 옮겨 가는지(같은 정지에 `Show Stack` 은 1번). ③ 호출 스택 패널이 맨 위 프레임 하나로 먼저 보였다가 곧 전체로 채워지는지(깜박임·중복 Locals 조회 없음 — `Show Variable -eval` 이 변수당 1번). ④ Debug Console `⏱ Step over 총 …ms` 의 감지 출처·폴 횟수 — §1-GA 이후 처음 나오는 실측이라 숫자를 그대로 남긴다(§1-GA 남은 일). ⑤ BP 줄로 Step 했을 때 이유가 `breakpoint` 로 표시되는지(폴 줄 판정).
 - [ ] **(2026-11-04, §1-GU) 0.27.6 체감 속도 — 실사용 확인(읽기 경로; ③은 Step 이라 모션 주의).** ① 창을 Reload 한 뒤 Output 첫 줄이 `v0.27.6` 인지(어제까지 창이 0.18.1 로 떠 있었다). ② 디버그 밖에서 `GPL: Start`·트리 Stop 뒤 쓰레드 행이 1~2 s 안에 바뀌는지, GPL Traffic 에 명령 뒤 `Show Thread  -web` 가 150/600/1500/3000 ms 무렵 몇 번 나가고 그 뒤 5 s 정규 폴로 돌아가는지. ③ 디버그 Step over 때 Debug Console `⏱ Step over 총 …ms` 줄 — 감지 출처·폴 횟수가 종전보다 줄었는지, Move 줄은 백업 폴 400 ms 간격인지. ④ 정지한 채 1.5 s 넘게 있다가 변수를 펼치거나 호버해도 `Show Stack` 이 다시 나가지 않는지. ⑤ 1403 상태 이벤트가 쉬지 않고 오는 프로그램에서 트리 조회가 250 ms 하한으로 묶이는지(1402 폭주 없음).
 - [ ] **(2026-11-03, §1-GT) 0.27.5 메모리 측정값 정본 — 실사용 확인(읽기 경로·모션 무영향).** ① 확장 목록에서 이 확장이 0.27.5 인지 먼저 본다(이번에 Marketplace 0.18.1 로 되돌아가 있었다 — 재발하면 Auto Update 끄기 또는 Marketplace 게시로 막을지 사용자 결정). ② `GPL: Start` 한 번에 GPL Traffic 의 `Show Memory` 가 1번만 나가고 큐 슬롯 줄에 `(재사용 — N ms 전 Show Memory 측정, 그 뒤 상태 변경 없음)` 이 붙는지. ③ 업로드 스타트에서 업로드 전 측정 뒤 `Stop`·업로드를 거친 Compile 직전에는 **새로** 재는지(재사용 표시가 없어야 함). ④ 트리 시스템 정보 「메모리」 값·툴팁 측정 시각이 상태 표시줄 경고 항목 클릭 상세와 같은지, 대시보드를 열어 두면 둘 다 함께 바뀌는지. ⑤ Sample Prep 제어기 여유 메모리 0.97 MB(17:20) — Unload -all 또는 재부팅 뒤 Free 와 `Show Thread` 응답 시간이 돌아오는지(느려짐이 메모리 부족과 겹치는지 확인).

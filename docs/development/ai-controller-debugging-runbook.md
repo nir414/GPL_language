@@ -192,6 +192,9 @@ Network Node n) 그룹의 작은 칩으로 보여 준다(분류 정본: `control
   `/disconnect`, `/getState`(결과는 Output `[AI Debug]`), `/dashboard`. 터미널: `code --open-url "vscode://nir414.gpl-language-support/gpl.ai.debug.getState"`.
   결과는 URI로 돌려받을 수 없으므로 Output(`[URI] <id> => …`)과 `gpl.ai.debug.*`의 `[AI Debug]` 로그로 확인한다. `gpl.*` 밖의 명령은 실행하지
   않는다(임의 VS Code 명령 프록시 방지 — 범위 한정이지 기능 제한이 아님). 해석 규칙: `src/controller/automation/uriDispatch.ts`.
+  **토큰(2026-11-04 §1-GZ)**: 조회 전용(`gpl.ai.debug.getConnectionState`·`gpl.ai.debug.getState`·`gpl.controller.showDashboard`)과 별칭 밖의
+  명령은 `token=` 이 `%TEMP%\gpl-controller\uri-token` 의 값과 같아야 실행한다(웹 링크 클릭만으로 제어기 명령이 나가지 않게 — 같은 PC 의
+  터미널·에이전트는 파일을 읽어 그대로 쓴다). PowerShell: `$t = Get-Content "$env:TEMP\gpl-controller\uri-token"; code --open-url "vscode://nir414.gpl-language-support/gpl.controller.threadBreak?threadName=MainThread&token=$t"`.
 - **명령 정책(`src/controller/commands/commandPolicy.ts`, 2026-08-28)** — 모든 1402 명령은 `sendCommandDetailed`의 직렬 큐 한 곳을 지나며, 여기서 확장이
   안전 조건을 **대신 기다려서** 충족시킨다(승인 모달·거부 목록 없음 — AI 접근을 막지 않는다는 사용자 결정. 예외는 되돌릴 수 없는 명령의 차단 목록 `controller/automation/aiCommandPolicy.ts` 뿐 — 현재 `gpl.saveToFlash` 1건). R1 같은 쓰레드 Step/Continue는 직전
   명령의 정지 확인 뒤·최소 간격(`gpl.debug.minStepIntervalMs`) 뒤에만 전송(#28), R2 Start/Compile/Load/Unload 전에 `Stopping` 쓰레드 정착 대기(§0.6),
@@ -216,7 +219,7 @@ Network Node n) 그룹의 작은 칩으로 보여 준다(분류 정본: `control
 
 - 쓰레드: `gpl.controller.threadStart`/`threadStop`/`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`(Step Over)/`threadStepInto`/`threadStepOut`/`threadShowLocation`/`threadShowStack`
   — 인자는 트리 노드 `{ thread: { name, project? } }` 외에 `{ threadName: "MainThread", project?: "MergeCode" }`·`{ name }`·문자열 `"MainThread"`도 받는다(2026-08-28).
-  예: `code --open-url "vscode://nir414.gpl-language-support/gpl.controller.threadBreak?threadName=MainThread"`
+  예: `code --open-url "vscode://nir414.gpl-language-support/gpl.controller.threadBreak?threadName=MainThread&token=<uri-token>"`(토큰은 위 URI 항목)
 - FTP: `gpl.controller.ftpRun`/`ftpStop`/`ftpDownload`/`ftpDelete`/`ftpUnload` — 인자 `{ projectName: "MergeCode", remotePath: "/flash/projects/MergeCode" }`(`ftpDelete`는 `contextValue: "ftpFolder"|"ftpFile"` 추가).
 - `gpl.controller.consoleToggle`/`clearErrors`/`copyError` — 트리 노드 인자.
 

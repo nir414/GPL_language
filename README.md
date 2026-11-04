@@ -54,7 +54,7 @@ GPL 컴파일은 제어기에서 수행하며, 상태 조회 항목은 제어기
 - **컴파일 검증 필요:** `Upload Only`로 올렸거나 컴파일에 실패한 프로젝트는 상태 표시줄과 제어기 패널에 「컴파일 검증 필요」로 표시됩니다. 배지를 누르거나 `GPL: Quick Compile Unverified Projects`를 실행하면 프로젝트를 골라 차례로 컴파일할 수 있고, 항목의 ×로 컴파일 없이 목록에서 지울 수도 있습니다. `ProjectStart`가 없는 라이브러리는 단독으로 컴파일하지 않습니다. 그 라이브러리를 `ProjectLibrary`로 쓰는 실행 프로젝트가 컴파일에 성공하면 함께 해제되고, `/GPL`에서 폴더를 지워도 해제됩니다.
 - **컴파일 오류:** 제어기가 알려 준 컴파일 오류는 **Problems** 패널에 표시되고, 오류가 난 위치로 바로 이동할 수 있습니다.
 - **저장 시 자동 업로드:** 제어기에 연결한 상태에서 파일을 저장할 때 자동으로 업로드·컴파일할지는 `gpl.quickCompile.autoOnSave`에서 설정합니다. `auto` 모드에서는 저장한 소스를 업로드하되, 모든 스레드가 정지한 상태일 때만 컴파일합니다.
-- **여유 메모리:** Compile·Start 전에 제어기의 여유 메모리가 부족하면 경고합니다. 자세한 내용은 `GPL: Show Controller Memory Status`로 보고, 쓰지 않는 프로젝트는 `GPL: Unload Project`로 메모리에서 내릴 수 있습니다. 기본은 `/GPL`을 비운 뒤 전부 내리는 `Unload -all`이고, 한 프로젝트만 내리려면 목록에서 고릅니다.
+- **여유 메모리:** Compile·Start 전에 제어기의 여유 메모리가 부족하면 경고하고, 배포·Quick Compile 은 쓰레드를 정지한 뒤 로드된 실행 프로젝트를 Unload 해 메모리를 회수하고 진행합니다(`gpl.controller.memoryGuard.autoUnload`, 기본 켬). 자세한 내용은 `GPL: Show Controller Memory Status`로 보고, 쓰지 않는 프로젝트는 `GPL: Unload Project`로 메모리에서 내릴 수 있습니다. 기본은 `/GPL`을 비운 뒤 전부 내리는 `Unload -all`이고, 한 프로젝트만 내리려면 목록에서 고릅니다.
 
 제어기 파일 트리의 `Compile & Run`은 **제어기에 있는 소스**를 컴파일하고 실행합니다. PC에서 수정한 내용을 실행하려면 먼저 업로드해 주세요.
 
@@ -165,6 +165,7 @@ VS Code 설정에서 `@ext:nir414.gpl-language-support`를 검색하면 확장 �
 | `gpl.quickCompile.autoOnSave` | 파일 저장 시 업로드·컴파일 방식 |
 | `gpl.deploy.uploadLibraries` | 업로드할 때 형제 폴더의 참조 라이브러리도 함께 올릴지 여부 |
 | `gpl.project.autoSyncSources` | 소스 파일 변경 시 `.gpr` 목록 반영 방식 |
+| `gpl.controller.memoryGuard.autoUnload` | 여유 메모리가 경고 기준 미만이면 배포 전에 정지 → Unload 로 회수하고 진행(기본 켬) |
 | `gpl.controller.memoryGuard.confirmOnCritical` | 여유 메모리 심각 구간에서 Compile/Start 전 계속·취소 확인 |
 
 이 밖의 설정과 기본값도 같은 화면에서 확인할 수 있습니다.

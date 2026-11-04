@@ -30,7 +30,7 @@ export function needsMemoryGuard(command: string): boolean {
     return /^\s*(?:Compile|Start)\b/i.test(command);
 }
 
-const GUIDANCE = ' /GPL 잔존 파일과 로드된 프로젝트를 확인하세요. 삭제·Unload는 별도 판단이 필요하며, Unload 뒤에는 수 분간 명령 채널이 응답하지 않을 수 있습니다.';
+const GUIDANCE = ' /GPL 잔존 파일과 로드된 프로젝트를 확인하세요. 배포는 memoryGuard.autoUnload(기본 켬)가 정지 뒤 Unload 로 회수합니다. Unload 뒤에는 수 분간 명령 채널이 응답하지 않을 수 있습니다.';
 
 export function assessMemory(raw: string, options: MemoryGuardOptions = DEFAULT_MEMORY_GUARD): MemoryPrecheck {
     const criticalMb = Number.isFinite(options.criticalMb) && options.criticalMb >= 0 ? options.criticalMb : DEFAULT_MEMORY_GUARD.criticalMb;

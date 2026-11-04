@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.9** (제어기 패널 섹션 재배치·앰프 온도 묶음, 1608/1608. 상세는 §1-GX.)
-- **직전 세션: §1-GY** — "프로젝트 지침 개선, 요청 이력 확인해 보며 권장 방식으로" → `AGENTS.md` 를 AI 지침 정본으로(`CLAUDE.md` 는 `@AGENTS.md` import + Claude 전용, Copilot 지침은 허브로), 요청 이력에만 있던 방침 명문화, 기록 세칙 `docs/development/record-keeping.md`, 이 문서의 §3 실사용 확인 항목을 `docs/ai-handoff-verification.md` 로·아카이브 인덱스를 `docs/archive/handoff/index.md` 로 분리(290KB → 약 120KB), 하드 규칙 번호를 §0 으로 통일(모션 규칙 6 → §0.9). 남은 것: §3 확인 대기 117건 일괄 정리 결정.
+- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.10** (리뷰 후속 — 명령 안전·정지 판정·메모리 자동 회수·의존성, 1630/1630 · MCP 174/174. 상세는 §1-GZ.)
+- **직전 세션: §1-GZ** — "프로젝트 문제점 검토 리뷰" → 리뷰(안전·디버거·통신·도구·프로세스) 뒤 사용자 결정 "AI 도 Unload 가능, 램이 모자라면 자동 Unload 후 진행, 나머지는 권장안대로" → 1402 명령 한 줄 검증·전달 뒤 재전송 금지·UTF-8·닫힌 STATUS, 브리지 정지 우선·URI 토큰·MCP 사전 확인 강화, 디버거 정지 판정 경합 수정, 배포 전 메모리 자동 회수(그룹 Compile 표시면 건너뜀), basic-ftp 6.2.5 등. 실기 확인은 verification §1-GZ.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -82,6 +82,10 @@
 > **실사용·실기·UI 확인 항목은 `docs/ai-handoff-verification.md`로 옮겼다(2026-11-04).** 이 절에는 코드 작업과 결정 대기만
 > 둔다. 새 VSIX의 확인 항목은 그 파일에 추가한다(규칙: `docs/development/record-keeping.md`).
 
+- [ ] **(2026-11-04, §1-GZ) 리뷰 후속 — 남은 코드 작업.** ① `@vscode/vsce` 2.x → 최신 메이저(개발 의존 취약점 5건 — `npm audit`; 패키징 경로라 `npm run package:no-bump` 로 검증)
+  ② 디버그 폴 중 `_handleBreakpointStop`/`_resolveStopReasonForThread` 예외 시 pending 만 비워지고 StoppedEvent 가 유실되는 경로(리뷰 D6, 낮음) — 쓰레드별 처리를 try/catch 로
+  ③ `setBreakPointsRequest` 파일별 직렬화(§1-GZ)의 회귀 테스트 — 겹친 요청 R1(lines=[10])·R2(lines=[]) 뒤 제어기에 BP 가 남지 않는지
+  ④ basic-ftp 6 의 `allowSeparateTransferHost:true` — 실기에서 PASV 주소가 접속 IP 와 같으면 지운다(`ftpClient.createClient`).
 - [ ] **(2026-11-04, §1-GY) 실사용 확인 대기 117건 정리 — 사용자 결정.** `docs/ai-handoff-verification.md` 의 08~09월 항목은 이미 실사용으로 확인됐거나
   이후 변경으로 무의미해졌을 수 있다. 사용자와 한 번 훑어 확인된 것·무의미한 것을 지우고, 문제로 남은 것만 이 절에 코드 작업으로 올린다.
 
@@ -242,7 +246,7 @@ src/controller/automation/automationRecovery.ts     # **복구 지시 표**(vsco
 src/controller/automation/uriDispatch.ts            # 외부 진입점 URI 해석(vscode 무의존) — /<gpl.command.id>?args=JSON | ?key=value | /command?id=…, 별칭 4개, gpl.* 범위 한정 (§1-BN)
 src/controller/connection/connectionSession.ts      # 제어기 연결 세션 상태 정본(vscode 무의존) — 쓰기는 host.setControllerConnected 만(R7), 구독 onControllerSessionChange(대시보드), effectiveKeepAlive(해제 상태 명령은 단발 연결) (§1-EM)
 src/controller/connection/connectionHealth.ts       # 연결 건강 판정(vscode 무의존) — ConnectionHealthMonitor(connected→suspect→lost, 프로브 임계 3/거부 2·힌트는 suspect만)·ConnectionHealthProber(1 s 재프로브)·classifyCommandFailure·probeOutcomeFromResponse (§1-BK)
-src/controller/connection/consoleSocket.ts          # 1402 소켓 계층(vscode 무의존) — keep-alive 소켓 1개, terminator-first 재사용 판정, stale 1회 재시도, 트래픽 링버퍼 600줄 (§1-BI, #22), reject code 부착·보관 소켓 관찰자(§1-BK)
+src/controller/connection/consoleSocket.ts          # 1402 소켓 계층(vscode 무의존) — keep-alive 소켓 1개, terminator-first 재사용 판정, stale 1회 재시도(write 실패·조회 명령만, §1-GZ), 한 줄 명령 검증·UTF-8, 트래픽 링버퍼 600줄 (§1-BI, #22), reject code 부착·보관 소켓 관찰자(§1-BK)
 src/debug/execution/sourceTargets.ts               # BP 유효 줄·프로시저 범위(End Sub 기준)·호출 후보 파싱(vscode 무의존) — BP 줄 보정(문서 규칙)·Jump to Cursor 검증·Step Into Target 후보 (§1-BU)
 src/controller/threads/threadActivity.ts          # "동작 중" 판정(vscode 무의존) — 쓰레드 존재 = 활성, project 컬럼·기본 이름·`_Cmd_<project>`(Execute 쓰레드) 인정 (§1-BU). 상태 판정 단일 출처: isSettledState(Idle/Stopped/Error) · isPausedState/PAUSED_THREAD_STATES(Paused/Break/Error, §1-DD)
 src/controller/debugging/executionMarks.ts          # 실행 위치 강조(정지 줄·에러 줄)의 유효성 판정(vscode 무의존, §1-EP) — isErrorMarkStale/isStoppedMarkStale: 주인 쓰레드가 목록에 없거나 Error/정지 상태를 벗어나면 낡음, 주인 모르면 같은 종류 상태가 어디에도 없을 때. 소비자는 activation/debug/debugDecorations.reconcile, 공급자는 views/tree/controllerTreeProvider.onDidChangeRuntimeState
@@ -397,15 +401,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| (본문 아래) | §1-GP ~ §1-GY (2026-11-03 ~ 11-04) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP (2026-11-03) | 1 |
+| (본문 아래) | §1-GQ ~ §1-GZ (2026-11-03 ~ 11-04) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GO 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GP 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GP | 11-03 | **README 검토·개선** — 08-18 정책대로 제어기 연동 → 디버깅 → 상태 → AI → 언어 기능 순 재배치, 디버깅 3단 분리, 0.17.0 이전 원격 디버깅 문장(저장 폴더·저장 구성 재연결) 제거, 컴파일 검증 필요·메모리·Diagnose Stuck Thread·uploadLibraries 추가. 0.27.1 | 본문 ↓ |
 | §1-GQ | 11-03 | **연결 유실 정황: PC 절전 복귀·직전 상태 변경 명령·「다시 연결」** — 사후 스냅샷 30건 재분석(절전 복귀 5·깨어 있는 중 링크 단절 8·Stop/Start/Execute 뒤 8·Unload 6), Windows 이벤트 로그로 절전 복귀 매칭(`pcPowerEvents.ts`), `RecentCommandLog`, 알림 문구 `lossNotice.ts`, README 문제 해결 2행. 0.27.2 | 본문 ↓ |
 | §1-GR | 11-03 | **Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실** — 트리 우클릭 Unload → `Unload -all`(/GPL 비운 뒤), 「Unload Project」 맨 위가 -all, MCP `unload_project` 생략 = -all(`default-all`); 비우기 대상이 /flash·루트면 거부(`classifyRemoteClearRoot`); 자동 복구 Unload 는 이름 유지. 버전 정책: 기능 추가도 patch. docs/gpl-language 4파일. 0.27.3 | 본문 ↓ |
 | §1-GS | 11-03 | **「컴파일 검증 필요」 라이브러리 해제·라이브러리 배지·결과 미확정 사유·목록에서 지우기** — 수신함 Sample Prep 보고 처리: Compile 성공이 `ProjectLibrary`(전이) 항목도 해제(`clearCompiled`·`compiledLibraries.ts`), 라이브러리 배지는 선택 창으로, STATUS 없는 Start 는 「결과 미확정」, /GPL 비우면 해제, 선택 창 ×. 0.27.4 | 본문 ↓ |
@@ -416,43 +420,12 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GX | 11-04 | **제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음** — 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 → 브레이크포인트 → FTP /GPL → 시스템 정보 → I/O → 환경 경고 → Flash Projects, 펼침은 프로젝트 상태·쓰레드·FTP /GPL·시스템 정보만, `SECTION_LAYOUT_EPOCH` 3, 앰프 온도는 시스템 정보 아래 접힌 「앰프 온도 (N)」(헤더에 최고 온도) | 본문 ↓ |
 | §1-GY | 11-04 | **AI 지침 정리** — `AGENTS.md` 정본화(`CLAUDE.md` 는 `@AGENTS.md` import), 요청 이력의 방침(커밋 자유·합쇼체 문구·포커스 강제 금지·/flash/projects) 명문화, `record-keeping.md`, §3 실사용 확인 117건 → `ai-handoff-verification.md`, 아카이브 인덱스 196행 → `archive/handoff/index.md`, 하드 규칙 번호 §0 로 통일(모션 6→9). 문서 전용 | 본문 ↓ |
 
+| §1-GZ | 11-04 | **프로젝트 문제점 리뷰 후속 — 명령 안전·정지 판정 경합·메모리 자동 회수·의존성** — 1402 한 줄 검증(CR/LF 거부)·전달 뒤 재전송은 조회만·UTF-8·닫힌 STATUS·줄 번호 140 수정, 브리지 정지 명령 우선·URI 토큰·상태 모르면 Step/Continue 거부, 디버거 액션 세대·잔류 pending·BP 요청 직렬화, 메모리 부족 시 정지 → Unload 자동 회수(`memoryGuard.autoUnload`), basic-ftp 6.2.5·@types/vscode ~1.74·CI Node 22·.gitattributes. 0.27.10 | 본문 ↓ |
 ---
 
 **최근 세션 본문 — §1-GP ~ §1-GY (2026-11-03~11-04).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GP. 2026-11-03 세션 — README 검토·개선 (0.27.1)
-
-### 증상(요청)
-
-README 를 연 상태에서 "검토후 개선해줘".
-
-### 원인(검토 결과)
-
-- **배치가 README 정책과 반대였다.** 2026-08-18 사용자 지시(언어 기능은 셀링 포인트가 아님 — 제어기 연동 → 디버깅 → AI → 언어 기능 순)와 달리, §1-FO(10-22) 개편 이후 주요 기능 표·시작하기·본문이 모두 코드 작성부터 시작했다. §1-FO·§1-FT 기록에 순서를 바꾸라는 사용자 지시는 없었다.
-- **낡은 서술 1건.** 디버깅 절의 "작업 영역과 파일은 확장의 저장 폴더에 남아 있어 다음에도 다시 열 수 있습니다… 저장된 디버그 구성으로 연결합니다" 는 0.16.0(Snapshot 작업공간) 동작이다. 0.17.0 부터는 필요한 파일만 TMP 캐시 후 정리하므로 바로 위 문장과 모순이었다(`activation/remote/controllerProjectDebug.ts` — 작업공간 저장·구성 저장 없음, 신뢰된 작업공간·기존 GPL 디버그 세션 없음이 전제).
-- **최근 기능 누락:** 「컴파일 검증 필요」 배지·`GPL: Quick Compile Unverified Projects`(0.26.0), `GPL: Unload Project`·여유 메모리(설정 표에만 `memoryGuard` 가 있고 본문 설명 없음), `gpl.deploy.uploadLibraries`(본문에만 있고 설정 표에 없음), 정지 안 되는 쓰레드 대처.
-- 디버깅 절이 시작 방법·FTP 탐색·원격 디버깅 세부·디버거 기능이 한 덩어리로 섞여 있었고 `Browse Controller Files` 가 디버깅 아래에 있었다.
-
-### 조치(의도와 방법)
-
-- 순서: 주요 기능 표·시작하기(5단계로 합침: 폴더 열기 → IP → 연결 → 패널 → 업로드/디버그) → 업로드·컴파일·실행(`.gpr` 소스 목록·의존 검사, 제어기 파일 탐색·내려받기를 하위 절로) → 디버깅(시작하기 / 디버거에서 할 수 있는 일 / 제어기에 있는 프로젝트 디버깅) → 상태·로그 → AI → 코드 작성과 탐색 → 설정 → 문제 해결.
-- 낡은 문장 삭제, 원격 디버깅 전제(작업공간 신뢰·기존 세션 분리) 추가. 컴파일 오류 Problems 표시는 `runDeploy` 공통 경로이므로 특정 명령에 한정하지 않게 썼다.
-- 문제 해결 표에 "프로그램이 멈추지 않거나 Unload·Compile 거부"(다른 이름 쓰레드 잔류 → Stop All Threads → Diagnose Stuck Thread) 행 추가, 수정 전 코드 실행 행에 「컴파일 검증 필요」 단서 추가.
-- 톤(취미 프로젝트·kaomoji 2개)·버전 미표기 정책은 유지. 표는 패딩 없는 형식으로 통일(한글 폭 때문에 패딩 정렬이 원래 맞지 않았다).
-- 문서 개선 patch **0.27.1**, CHANGELOG Changed/Fixed. README·CHANGELOG 의 CRLF·BOM 없음 유지.
-
-### 검증
-
-- README 의 `GPL: …` 명령 이름 전부가 package.json `contributes.commands` 와 일치(누락 0), 설정 키 8개 모두 존재, 로컬 링크 4개 대상 존재(scratchpad 대조 스크립트).
-- `pre-release-check` 의 README 버전 표기 검사 통과.
-- `npm run package` 성공: `dist/gpl-language-support-0.27.1.vsix` 1,668,535 bytes, SHA-256 `FA1F70D1549F838384BB10B0EF65456F3018817493E82B8849A668E6ADA2BC7C`(경고는 bundle 권장 1건). VSIX 안 README 에 새 문구가 있고 삭제한 문장이 없음을 확인. 실행 코드 변경 없음이라 `npm test` 는 돌리지 않았다.
-- Marketplace 화면 렌더링은 보지 않았다.
-
-### 남은 일
-
-- 사용자 확인: 08-18 정책에 따라 언어 기능을 뒤로 보냈다. 10-22 배치(코드 작성 먼저)를 원하면 섹션 순서만 되돌리면 된다.
 
 ## 1-GQ. 2026-11-03 세션 — 연결 유실 정황: PC 절전 복귀 판정 · 직전 상태 변경 명령 · 「다시 연결」 (0.27.2)
 
@@ -815,3 +788,73 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 - Copilot 이 `chat.useAgentsMdFile` 로 AGENTS.md 를 실제로 읽는지는 문서상 동작이다 — Copilot Chat 에서 확인 안 함.
 - 작업 중 실수: git-bash `sed -i` 가 CRLF 파일의 CR 을 지운다(인덱스는 LF 라 git 내용 변화는 없음). 작업 트리 EOL 이 바뀌었을 수 있는
   파일: ci.yml·bundle-mcp.js·deployStartStage.ts·remoteSourceMapping.ts·architecture.test.ts·architecture.md·docs/README.md.
+
+## 1-GZ. 2026-11-04 세션 — 프로젝트 문제점 리뷰 후속: 명령 안전 · 정지 판정 경합 · 메모리 자동 회수 · 의존성 (0.27.10)
+
+### 증상(요청)
+
+1. "프로젝트 문제점 검토 리뷰" — 테스트·CI·의존성·문서를 직접 보고, 디버그 세션·제어기 통신·MCP 안전 장치는 검토 에이전트 3개로 나눠
+   찾은 뒤 핵심 항목을 코드로 다시 확인해 보고했다(안전 S1~S7, 디버거 D1~D8, 통신, 도구, 프로세스).
+2. 사용자 결정: "AI 가 Unload 는 가능해야 한다 — 반복 컴파일에서 매번 허가받으면 불편하니 램이 부족하면 자동으로 Unload 하고
+   진행하도록. 나머지는 권장 개선 방향으로 수정." 자동 Unload 범위는 「대상 외 로드된 것도 전부」, 그룹 Compile 표시가 있으면
+   「자동 Unload 건너뛰기」(질문으로 확인).
+
+### 원인(리뷰에서 확인한 것)
+
+- **명령 한 줄 검증 없음(S1)**: `controller_command` 문자열이나 `thread`·`expression`·`file` 인자에 CR/LF 가 있으면 제어기는 두 명령으로
+  실행하는데, Unload 위험·배포 잠금·명령 정책·재전송 안전 판정은 첫 단어만 봤다(`Show Thread\r\nUnload -all` 이 조회로 분류).
+- **전달 뒤 재전송(S2)**: keep-alive stale 재시도가 "write 성공 뒤 0바이트 close/error" 에도 같은 명령을 새 연결로 다시 보냈다(확장
+  `consoleSocket`·MCP `console.js` 둘 다) — 제어기가 실행 뒤 끊은 경우(Unload 사례)와 구별할 수 없어 Start/Unload/Step 이중 실행 위험.
+- **브리지 대기열 막힘(S3)**: 확장 브리지는 요청을 하나씩 처리하고 실행 상한이 없어, 확인 창 등으로 끝나지 않는 명령 하나가 뒤의
+  `softestop`·`stop_threads` 를 막았다.
+- **URI 무인증(S7)**: 웹 링크로 `vscode://…/gpl.controller.sendCommand?command=…` 를 열면(허용 창 "다시 묻지 않음" 뒤) 명령이 나갔다.
+- MCP `step_thread`·`continue_thread`·`run_to_line` 은 사전 상태 조회가 실패하면 그냥 진행했고(S5), `run_to_line` 은 예외 시 임시 BP 가
+  남았다(S6). `untilPattern` 정규식은 확장 호스트에서 그대로 실행됐다.
+- **줄 번호 140**: `stripXmlTags` 가 태그만 지워 `|14</DATA><STATUS>0` → 줄 140. 직접 재현(배포 재생 하니스 기준 커밋도 이 버그로 10 을 냈다).
+  `parseStatus`·연결 프로브는 여는 `<STATUS>` 만 봐서 잘린 응답의 숫자를 코드로 읽을 수 있었다. 1402 는 `ascii` 로 송수신해 한글이 깨졌다.
+- **디버거**: 액션 전에 나간 폴 응답이 pending step 에 적용돼 옛 줄로 스텝 완료(D1/D2), 쓰레드 종료 시 continue 외 pending 미해제,
+  이미 Paused 쓰레드의 Pause·Error 로 남은 Step 이 끝나지 않음, `_userActionInFlight` 불리언, disconnect 뒤 이벤트, 같은 파일
+  `setBreakPointsRequest` 겹침.
+- **도구**: basic-ftp 5.3.0 보안 권고 2건, CI Node 20(EOL), `@types/vscode` 1.116 설치(engines 1.74), 작업 트리 EOL 혼재.
+
+### 조치(의도와 방법)
+
+- **1402 명령(7933122)** — `consoleSocket.invalidCommandReason`·MCP `console.invalidCommandReason`·`batch.normalizeCommandInput` 이 CR/LF·C0
+  제어 문자를 거부(`INVALID_COMMAND`, sent:false, 연결도 열지 않음). stale 재시도는 write 실패면 항상, 전달 뒤면 조회 명령만
+  (`retryAfterDeliveryIsSafe` ← `isReadOnlyConsoleCommand`, MCP 는 `isRetrySafeCommand`), 그 외는 sent:true 로 reject. 송신 UTF-8, 수신 latin1 누적
+  → `latin1ToUtf8`(본문 실시간 표시는 StringDecoder). idle 조기 완료도 `afterPendingIo` 뒤 + 마지막 chunk 시각 재확인. `stripXmlTags` 닫는
+  태그 → 줄바꿈, `parseStatus`·`probeOutcomeFromResponse` 는 닫힌 `</STATUS>` 만. 1403: payload 수신 시 백오프 리셋, `connect` 동기 예외 복구,
+  종료 시 수신 플래그 리셋.
+- **AI 안전(daa26d8)** — 브리지 `runsOutsideBridgeQueue`(Stop·SoftEStop·Break sendCommand·runtimeConsoleRead 는 대기열 밖), 직렬 요청은
+  `bridgeQueueStallLimitMs`(TTL+15 s) 넘으면 다음으로. URI 는 `uriCommandNeedsToken` — 조회 3종·별칭 밖은 `token=` 이
+  `%TEMP%\gpl-controller\uri-token`(`uriToken.ensureUriToken`, PC 사용자 단위 1개)과 같아야 실행(런북 갱신). MCP `threadStateUnknownRefusal`,
+  `run_to_line` try/finally, 정규식 200자·중첩 수량자 거부.
+- **디버거(02aac31)** — `_actionSeq`(액션 시작마다 증가, 폴 시작 값과 다르면 응답 폐기·재폴), 종료 쓰레드의 모든 pending 해제,
+  `pauseOnAlreadyPaused`, Error 로 남은 step/pause 완료(exception), `_userActionsInFlight` 카운터, 폴 반복의 await 뒤 연결 확인,
+  disconnect 에서 `_previousThreadStates`·`_pendingThreadId` 초기화, Continue 연속 Paused 확정에 500 ms 하한, `setBreakPointsRequest` 파일별 직렬화
+  (본문 `_setBreakPointsNow`, SIZE_DEBT 이름 갱신).
+- **메모리 자동 회수(df563f4, 신규 `controller/deployment/deployMemoryRecovery.ts`)** — 업로드 전 측정이 경고(warnMb) 미만이면 정지 게이트 →
+  재측정 → 여전히 모자라면 `/GPL` 폴더 중 실행 프로젝트를 하나씩 `Unload`(대상은 맨 끝, 180 s·`</STATUS>` 대기) → 재측정 → 업로드.
+  업로드 전에 하는 이유: `Unload <앱>` 은 `/GPL/<앱>` 을 지운다(10월 실측). 대상을 내렸으면 변경 파일만이 아니라 전체 업로드, 업로드 지문
+  폐기. 그룹 Compile 표시가 있으면 통째로 건너뜀(문구는 `unloadRiskWarning` — R7), 그룹·워크스페이스 밖 프로젝트는 Unload 안 함,
+  Upload Only·skipStop·autoOnSave 제외, 결과 미확정이면 업로드 전에 멈춤(MEMORY_CHECK). 설정 `gpl.controller.memoryGuard.autoUnload`(기본 켬),
+  `result.memoryRecovery`·작업 요약·MCP 지침 한 줄. 메모리 안내 문구의 "Unload 는 자동으로 하지 않는다" 는 고쳤다.
+- **의존성·CI(5621847)** — basic-ftp 6.2.5(6.0 의 PASV 다른 호스트 거부는 실기 확인 전까지 `allowSeparateTransferHost:true`), 최소 FTP 서버
+  회귀 테스트(`basicFtpCompat.test.ts`), `@types/vscode ~1.74.0`(오류 0), `npm audit fix`(개발 13 → 5), CI Node 22, `.gitattributes`(`* text=auto eol=lf`,
+  인덱스 변경 0).
+- **결정으로 바꾸지 않은 것** — S4(AI 가 `clearUnloadRisk{confirm:true}` 로 위험 표시를 지울 수 있음): 사용자 결정 "AI 도 Unload 할 수
+  있어야" 에 따라 그대로 둔다. 명시적 위험 Unload 는 여전히 confirm:true 가 필요하다.
+
+### 검증
+
+- `npm test` **1630/1630**(신규 22건), `controller-mcp` `node --test` **174/174**(신규 6건).
+- `scripts/dev/deployReplay.js`: 이 세션 전 커밋(19f96e6)을 따로 빌드해 같은 하니스로 돌린 결과 6건 차이(앞선 의도된 변경)였고, 지금은
+  10건 — 늘어난 4건은 모두 줄 번호 10 → 1(fixture `|1</DATA><STATUS>0`) 버그 수정이다. 메모리 충분 경로의 명령·이벤트 순서는 같다.
+- 실기·UI 는 돌리지 않았다 — `docs/ai-handoff-verification.md` §1-GZ 항목.
+- VSIX: `dist/gpl-language-support-0.27.10.vsix` — 1,722,568 bytes, SHA-256 `58AEE1A29D389F48BCF8956BB3E76C46D6F4178B36BC1772FD312DB14C88FC47`. 경고는 기존과 같은 번들링 권고(371 파일)뿐, 실패 없음. 번들 basic-ftp 6.2.5 확인.
+
+### 남은 일
+
+- 실기 확인(verification §1-GZ): 메모리 자동 회수 실제 회수량·Unload 소요, basic-ftp 6 실제 제어기 FTP(PASV 주소가 접속 IP 와 같으면
+  `allowSeparateTransferHost` 줄 삭제), URI 토큰, 한글 프로젝트명 1402 송수신.
+- §3: `@vscode/vsce` 메이저 업그레이드(개발 의존 취약점 5건), D6(폴 중 예외 시 정지 알림 유실 — 낮음), `setBreakPointsRequest` 직렬화 테스트.

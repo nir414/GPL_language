@@ -69,7 +69,7 @@ export function formatMemoryToast(check: MemoryPrecheck): string {
     return `여유 메모리 ${fmtMb(check.freeMb)} MB`;
 }
 
-/** 상세(상태 표시줄 클릭·Output) — 임계값과 판단 안내. 삭제·Unload 는 자동으로 하지 않는다는 점과 Unload 위험을 여기에 둔다. */
+/** 상세(상태 표시줄 클릭·Output) — 임계값과 판단 안내. 파일 삭제는 자동으로 하지 않고 배포의 Unload 자동 회수(§1-GZ)가 있다는 점과 Unload 위험을 여기에 둔다. */
 export function formatMemoryDetail(check: MemoryPrecheck): string {
     const lines = [
         `여유 메모리: ${fmtMb(check.freeMb)} MB (수준: ${check.level})`,
@@ -78,7 +78,7 @@ export function formatMemoryDetail(check: MemoryPrecheck): string {
     if (check.level !== 'ok') {
         lines.push(
             '/GPL 잔존 파일과 로드된 프로젝트를 확인하세요(제어기 트리의 /GPL 목록).',
-            '삭제·Unload 는 자동으로 하지 않습니다 — 별도 판단이 필요합니다. Unload 뒤에는 수 분간 명령 콘솔이 응답하지 않을 수 있습니다.',
+            '파일 삭제는 자동으로 하지 않습니다. 배포는 설정 gpl.controller.memoryGuard.autoUnload(기본 켬)가 정지 뒤 Unload 로 회수하고 진행합니다. Unload 뒤에는 수 분간 명령 콘솔이 응답하지 않을 수 있습니다.',
             '공간이 필요하면 /GPL 비우기 → 앱 Unload 순서를 권합니다(그룹 라이브러리는 Compile 직후 Unload 하지 않음).',
         );
     }

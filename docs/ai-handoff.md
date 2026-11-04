@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-03** · 현재 package 버전 **0.27.5** (여유 메모리 측정값 정본, 1599/1599. 상세는 §1-GT.)
-- **직전 세션: §1-GT** — "디버깅이 너무 느리다·SSOT 가 잘못된 것 같다·메모리 가져오는 게 2개" → 실행 중 창이 Marketplace 0.18.1 로 되돌아가 있었고(스텝 지연 수정 0.18.2 이전), 제어기 여유 메모리가 1시간 새 7.8 → 0.97 MB 로 줄며 `Show Thread` RTT p50 이 4 → 66 ms 로 늘었다. 구조 쪽은 `Show Memory` 응답을 트리·상태 표시줄·검사가 따로 해석·보관해 두 값이 달랐고, 사람 경로 Start/Compile 은 같은 값을 두 번 쟀다 → `controller/diagnostics/memoryReadings` 정본(전송 경로가 기록·상태 변경 시 무효화·15 s 재사용), R7 규칙.
+- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.6** (쓰레드 상태 즉시 갱신·디버그 스텝 왕복 단축·크기 상한 R10, 1608/1608. 상세는 §1-GU.)
+- **직전 세션: §1-GU** — "전체 검토·코딩 규칙 반영 여부·제어기 조작 체감 속도(디버깅 느림, 쓰레드 상태 갱신 늦음)" → 트리는 정규 폴(5~15 s)로만 바뀌던 쓰레드 상태를 1403 상태 이벤트·쓰레드를 움직이는 명령 응답 뒤 짧은 간격으로 다시 조회(`threadRefreshScheduler`), 디버그는 fast poll 촘촘히·step pending 400 ms·정지 중 프레임/목록 캐시 재사용·변수 조회 중 인터벌 폴 쉼. 규칙 감사: 150줄 넘는 함수 32개 중 §7 에 1개 → 구조 테스트 R10 으로 강제, 문서 낡음 정리.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-11-04, §1-GU) 0.27.6 체감 속도 — 실사용 확인(읽기 경로; ③은 Step 이라 모션 주의).** ① 창을 Reload 한 뒤 Output 첫 줄이 `v0.27.6` 인지(어제까지 창이 0.18.1 로 떠 있었다). ② 디버그 밖에서 `GPL: Start`·트리 Stop 뒤 쓰레드 행이 1~2 s 안에 바뀌는지, GPL Traffic 에 명령 뒤 `Show Thread  -web` 가 150/600/1500/3000 ms 무렵 몇 번 나가고 그 뒤 5 s 정규 폴로 돌아가는지. ③ 디버그 Step over 때 Debug Console `⏱ Step over 총 …ms` 줄 — 감지 출처·폴 횟수가 종전보다 줄었는지, Move 줄은 백업 폴 400 ms 간격인지. ④ 정지한 채 1.5 s 넘게 있다가 변수를 펼치거나 호버해도 `Show Stack` 이 다시 나가지 않는지. ⑤ 1403 상태 이벤트가 쉬지 않고 오는 프로그램에서 트리 조회가 250 ms 하한으로 묶이는지(1402 폭주 없음).
 - [ ] **(2026-11-03, §1-GT) 0.27.5 메모리 측정값 정본 — 실사용 확인(읽기 경로·모션 무영향).** ① 확장 목록에서 이 확장이 0.27.5 인지 먼저 본다(이번에 Marketplace 0.18.1 로 되돌아가 있었다 — 재발하면 Auto Update 끄기 또는 Marketplace 게시로 막을지 사용자 결정). ② `GPL: Start` 한 번에 GPL Traffic 의 `Show Memory` 가 1번만 나가고 큐 슬롯 줄에 `(재사용 — N ms 전 Show Memory 측정, 그 뒤 상태 변경 없음)` 이 붙는지. ③ 업로드 스타트에서 업로드 전 측정 뒤 `Stop`·업로드를 거친 Compile 직전에는 **새로** 재는지(재사용 표시가 없어야 함). ④ 트리 시스템 정보 「메모리」 값·툴팁 측정 시각이 상태 표시줄 경고 항목 클릭 상세와 같은지, 대시보드를 열어 두면 둘 다 함께 바뀌는지. ⑤ Sample Prep 제어기 여유 메모리 0.97 MB(17:20) — Unload -all 또는 재부팅 뒤 Free 와 `Show Thread` 응답 시간이 돌아오는지(느려짐이 메모리 부족과 겹치는지 확인).
 - [ ] **(2026-11-03, §1-GS) 0.27.4 「컴파일 검증 필요」 — 실사용 확인.** ① 라이브러리(PaL)를 Upload Only → 그것을 쓰는 실행 프로젝트를 Upload & Start 하면 Output 에 `컴파일 검증 필요 상태 해제: 라이브러리 PaL — <App> Compile 에 포함` 한 줄과 배지 해제 ② 라이브러리 배지 클릭이 Quick Compile 이 아니라 선택 창(라이브러리는 체크 해제, 골라도 컴파일 안 함) ③ 선택 창 × 로 항목 해제 ④ /GPL 비우기 뒤 지운 프로젝트 해제. 남은 일: 형제 배치가 아닌 프로젝트(tools\Probe)의 라이브러리 동반 업로드 후보(같은 ip 로 마지막에 Upload Only 한 폴더 제안 — 수신함 ⑤, 보류), 라이브러리 배지에서 "이 라이브러리를 쓰는 실행 프로젝트" 후보 고르기(보류).
 - [ ] **(2026-11-03, §1-GR) 0.27.3 Unload 기본 -all — UI·실기 확인(쓰레드를 모두 정지한 상태에서).** ① 트리 /GPL 프로젝트 폴더 우클릭 「Unload -all (/GPL 비운 뒤 모두 내리기)」 → (위험 근거가 있으면 위험 모달) → /GPL 비우기 모달("비운 뒤 Unload -all") → `Unload -all` STATUS 0, 취소하면 Unload 미전송·Output 한 줄 ② /flash/projects 폴더 노드에서 같은 메뉴를 눌러도 비우기 모달에 **/GPL 목록만** 나오는지(플래시 미접촉) ③ 「GPL: Unload Project」 목록 맨 위가 「모두 내리기」라 Enter 로 바로 진행, 「이 프로젝트만」 아래 이름 Unload 가 종전대로 ④ MCP `unload_project()`(인자 없음)가 `targetSource:"default-all"` 로 -all 사전 조건(`threads-active`/`gpl-not-empty`)을 돌려주는지.
@@ -914,7 +915,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GK ~ §1-GT)만 둔다.
+본문에는 **최근 10개 세션**(§1-GL ~ §1-GU)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -923,8 +924,8 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GJ (2026-10-02 ~ 10-27, §1-FR 2건) | 58 |
-| (본문 아래) | §1-GK ~ §1-GT (2026-10-27 ~ 11-03) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GK (2026-10-02 ~ 10-27, §1-FR 2건) | 59 |
+| (본문 아래) | §1-GL ~ §1-GU (2026-10-28 ~ 11-04) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -1122,7 +1123,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |
+| §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | 본문 ↓ |
 | §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | 본문 ↓ |
 | §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | 본문 ↓ |
@@ -1132,43 +1133,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GR | 11-03 | **Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실** — 트리 우클릭 Unload → `Unload -all`(/GPL 비운 뒤), 「Unload Project」 맨 위가 -all, MCP `unload_project` 생략 = -all(`default-all`); 비우기 대상이 /flash·루트면 거부(`classifyRemoteClearRoot`); 자동 복구 Unload 는 이름 유지. 버전 정책: 기능 추가도 patch. docs/gpl-language 4파일. 0.27.3 | 본문 ↓ |
 | §1-GS | 11-03 | **「컴파일 검증 필요」 라이브러리 해제·라이브러리 배지·결과 미확정 사유·목록에서 지우기** — 수신함 Sample Prep 보고 처리: Compile 성공이 `ProjectLibrary`(전이) 항목도 해제(`clearCompiled`·`compiledLibraries.ts`), 라이브러리 배지는 선택 창으로, STATUS 없는 Start 는 「결과 미확정」, /GPL 비우면 해제, 선택 창 ×. 0.27.4 | 본문 ↓ |
 | §1-GT | 11-03 | **여유 메모리 측정값 정본(SSOT)·디버깅 느림 진단** — 실행 창이 Marketplace 0.18.1 로 되돌아감(스텝 지연 수정 전), 제어기 Free 7.8 → 0.97 MB·RTT 증가 관측. `Show Memory` 는 전송 경로가 `memoryReadings` 에 기록하고 트리·배지·검사가 같은 값을 읽음, 상태 변경 없으면 15 s 재사용, FTP 쓰기·상태 변경 명령이 무효화, R7. 0.27.5 | 본문 ↓ |
+| §1-GU | 11-04 | **체감 속도·규칙 감사** — 트리 쓰레드 상태 즉시 갱신(1403 상태 이벤트·Start/Stop 등 응답 뒤 150/600/1500/3000 ms, `threadRefreshScheduler`·`affectsThreadState`), 디버그 fast poll 20~650 ms·step pending 400 ms·프레임/목록 캐시 정지 중 재사용·변수 조회 중 인터벌 폴 쉼, 구조 테스트 R10(크기 상한)·§7 부채 표·문서 낡음 정리. 0.27.6 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GK ~ §1-GT (2026-10-27~11-03).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GL ~ §1-GU (2026-10-28~11-04).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GK. 2026-10-27 세션 — 패키지(.gpr) 의존 검사: ProjectLibrary·ProjectSource 대조와 계층 규칙 (0.23.0)
-
-### 증상(요청)
-
-"다른 언어들은 라이브러리 참조를 어떻게 처리하지? 지금 구조가 맞는 방향인지 모르겠다" → 비교 결과를 바탕으로 BinderR4 `Project.gpr` 를 참고해 권장 방향을 개선하고 구현·테스트해 달라. **ProjectLibrary 처리도 되어야 한다.**
-
-### 원인(검토 결론)
-
-- 다른 언어는 의존을 소스의 import 로 **선언**하고 도구가 실제 사용과 대조한다(Organize Imports·IWYU = 파일 단위, `go mod tidy`·depcheck·Bazel strict deps = 패키지 단위, ArchUnit·dependency-cruiser = 계층 규칙). 역방향(누가 쓰나)은 저장하지 않고 필요할 때 계산한다.
-- GPL 에는 import 문이 없고(`gplStatements.ts`) 의존 선언은 `.gpr` 뿐이다. §1-GG 의 Requires 헤더는 IWYU 와 같은 **기록**이고, 강제력 있는 선언(리프 `.gpr` 의 ProjectLibrary)을 검사하는 것이 빠져 있었다.
-- BinderR4 구조: 루트 `Project.gpr`(ProjectStart, 하위 패키지 소스를 평탄하게 나열, 주석에 `' Dependencies: App -> Config/Gantry/Lib; Config -> Gantry/Lib; Gantry -> Lib.`) + 리프 패키지 `.gpr`(자기 소스 + **루트 기준 경로** ProjectLibrary) + 그룹 `.gpr`(ProjectLibrary 만).
-
-### 조치(의도와 방법)
-
-- **`project/gpr/dependencyCheck.ts`(순수)** — 패키지(.gpr) 마다 소스의 의존 파일을 소유 패키지(그 파일을 ProjectSource 로 나열한 가장 깊은 .gpr)로 묶어 대조: `library-missing`(Warning — 자기 소스에도 ProjectLibrary 를 따라간 어디에도 없음), `source-missing`(Warning — 소유 패키지가 없거나 자기를 품은 루트 쪽 파일, 또는 평탄한 루트의 목록 누락; 쓰는 소스 앞에 넣는 수정), `library-indirect`(Information — 다른 라이브러리를 거쳐서만 들어옴, strict deps), `library-unused`(Information), `library-unresolved`(Warning). 그룹 참조는 그 아래 패키지를 직접 제공한 것으로 본다. 새 ProjectLibrary 값은 같은 .gpr 의 기존 참조가 쓰는 기준 폴더를 따른다(BinderR4 리프 → 루트 기준 `Lib\Core\Text`). 계층 규칙은 루트 주석 `' Dependencies:` 를 파싱(`parseLayerRules`) — 그룹 = 루트 바로 아래 폴더, 규칙에 나오는 그룹은 자기 + 오른쪽만, 왼쪽에 없는 그룹(Lib)은 다른 그룹 참조 불가, 규칙에 없는 폴더는 검사 안 함.
-- **`project/gpr/dependencyModel.ts`** — 컴파일 루트(위쪽 .gpr 중 ProjectStart 가 있는 가장 가까운 것 → 그 파일을 나열한 가장 바깥 것 → 가장 가까운 것), 루트 아래 .gpr + 그 ProjectLibrary 가 가리키는 루트 밖 패키지를 `buildLibraryGraph` 로 해석(해석 규칙 정본 그대로).
-- **`activation/language/dependencyCheckCommands.ts`** — 명령 `gpl.project.checkDependencies`(.gpr 우클릭), 설정 `gpl.project.dependencyCheck`(`auto` 기본: .gpr 를 열면 그 루트를 1회, 검사한 루트 안 .gpl/.gpr 저장 시 1.5 s 디바운스 재검사 — 파일 의존은 본문이 같으면 캐시), 진단 컬렉션 `gpl-dependencies`(source `GPL Dependencies`), .gpr 빠른 수정(줄 추가/삭제, 「모두 고치기」). 후보 심볼은 **루트의 컴파일 범위**로 좁힌다 — 다른 과제에 복제된 Lib 사본을 의존으로 세지 않게.
-- **`moduleDependencies`** — 의존마다 첫 사용 위치(`firstUse`, 계층 위반 진단 자리), 선언 머리 줄의 매개변수 이름을 참조에서 제외(`parameterNameColumns`). 원인: Delegate 는 본문이 없어 매개변수가 로컬로 잡히지 않아 `Delegate Sub X(ByVal code As Integer)` 의 `code` 가 `HFM.Code` 로 풀렸다 — 드라이런의 library-missing 2건·계층 위반 2건이 모두 이 오탐이었다.
-
-### 검증
-
-- `npm test` **1560/1560**(신규 dependencyCheck 4건 — BinderR4 축소 구조 임시 폴더: 루트 찾기·루트 기준 경로 해석, 누락/간접/미사용/미해석/목록 누락과 수정 줄 위치, 계층 위반 위치와 Delegate 매개변수 오탐 방지, 규칙 줄 파싱). 구조 테스트 R1~R9 통과.
-- **BinderR4 읽기 전용 드라이런**(scratchpad, 쓰기 없음): 패키지 45 · 파일 85 · 규칙 `app->config/gantry/lib; config->gantry/lib; gantry->lib`. 수정 후 결과 — library-unused 5(Gantry\Station 의 Foundation·Text, Gantry\StationCmd 의 Robot\Cmd, PressureSensorCmd 의 Text·Log; 소스에서 해당 모듈 한정자 사용 없음 확인), library-indirect 5(CantopsIO→Concurrency, CantopsIOCmd→Text·Log·Foundation, Motion\Cmd→LeadshineRS), 누락·계층 위반 0. 37 Oligo MergeCode(단일 패키지 63파일) 0건.
-- 다른 세션과 동시 작업: 0.21.0(연결 판정)·0.22.0(대시보드) 뒤에 0.23.0. 커밋은 hunk 단위로 내 변경만.
-- VSIX: `dist/gpl-language-support-0.23.0.vsix` 1,649,627 bytes, SHA-256 `570EE2D15541EF914214BD470CE81F28B4C72C1E9B5252670373808BD51107D1`(359 파일, 경고는 bundle 권장 1건). 작업 트리에서 만들어 MCP 번들에 미커밋 `controller-mcp/src/guidelines.js` 변경(다른 세션 작업)이 들어 있다.
-
-### 남은 일
-
-- §3 의 VSIX·UI 확인. 미사용 판정은 "이 패키지가 직접 쓰지 않음"이라, 라이브러리가 자기 의존 선언을 빠뜨리고 이 패키지에 기대는 경우도 미사용으로 보인다(지우기 전 확인 — 그 라이브러리 쪽에 library-missing 이 같이 뜨면 그쪽을 고친다).
-- 선택: Requires 헤더 상세 수준 설정(`symbols`/`modules`)으로 diff 소음 줄이기, Used by 를 CodeLens 로 계산 표시.
 
 ## 1-GL. 2026-10-28 세션 — ProjectName = 폴더 이름 규칙 (0.24.0)
 
@@ -1476,3 +1447,35 @@ README 를 연 상태에서 "검토후 개선해줘".
 
 - §3 실사용 확인. 확장이 다시 Marketplace 판으로 되돌아가지 않게 할 방법(Auto Update 끄기 / v0.27.x 태그 push 로 Marketplace 게시)은 사용자 결정.
 - 제어기 메모리 감소의 원인(반복 `Start -compile`·런타임 버퍼·/GPL 파일) — Unload/재부팅 뒤 회복량으로 가른다.
+
+## 1-GU. 2026-11-04 세션 — 쓰레드 상태 즉시 갱신 · 디버그 스텝 왕복 단축 · 크기 상한 R10 (0.27.6)
+
+### 증상(요청)
+
+"프로젝트 전체 검토, 이전에 세워 둔 코딩 규칙이 제대로 반영됐는지 검토, 제어기 조작 체감 속도 개선 — 디버깅 너무 느리고 제어기 상태 표시(쓰레드 상태 등)가 바로바로 갱신되지 않는다."
+
+### 원인
+
+1. [높음] 실행 중인 창은 여전히 0.18.1 이었다(presence `extensionVersion`, Output 첫 줄). 0.27.5 는 09:36 에 VSIX(`pinned: true`)로 설치됐으나 창을 다시 불러오기 전.
+2. [높음, 쓰레드 표시] 디버그 밖 트리의 쓰레드 상태는 정규 폴(기본 5 s, 쓰레드 없으면 15 s)로만 바뀌었다. 명령 뒤 한 번 부르는 `refresh()` 는 제어기가 상태를 바꾸기 전 응답을 받기 쉬웠고(Start 직후 아직 Idle), 1403 상태 이벤트(`<E>1,N</E>` — 콘솔 출력 줄과 별개)는 디버그 세션에만 전달됐다.
+3. [중간, 디버그] 위임 분석(현재 코드 기준): 정지 감지는 fast poll 30/120/250/500/1000 ms 뒤 1 s 백업 폴 — Move 한 줄을 Step 하면 끝난 뒤 최대 1 s 를 더 기다린다. 정지 뒤 1.5 s(프레임 캐시 TTL)가 지나 호버·Watch·Locals 를 열면 `Show Stack` 을 다시 보냈고, 감지~threadsRequest 사이가 300 ms 를 넘으면 `Show Thread -web` 가 한 번 더 나갔다. 정지 중 1 s 인터벌 폴이 변수 조회 사이에 끼었다. 옛 로그의 정지당 `Show Stack` 2회는 0.18.1 의 TTL 400 ms 때문이고 현재 정상 경로는 1회.
+4. [중간, 규칙] 위임 감사: CLAUDE.md 규칙 2(150줄 함수)는 테스트가 없어 무너져 있었다 — 150줄 넘는 이름 있는 함수 32개 중 §7 에 있던 것은 `_pollThreadStates` 하나. `gplDictionaryData.ts`(3,028줄) 미등재. architecture.md 의 허용 목록 개수(views 3→4·debug 2→3)·extension.ts 줄 수·테스트 건수·§7 날짜, ai-handoff §1 안내(GA~GJ)·아카이브 표가 낡았다. 상태 머신 두 곳(`_pollThreadStates`·runtimeConsole 재연결)은 여전히 플래그 조합. SSOT 후보: 포트 리터럴·`<STATUS>` 제거 정규식 5벌·`Show Thread <name>` 조립 6곳·`getConfiguration` 74곳.
+
+### 조치(의도와 방법)
+
+- 117ecdd 트리: `views/tree/threadRefreshScheduler.ts`(순수) — 요청 합치기·burst(150/600/1500/3000 ms)·조회 중 요청은 끝난 뒤 1회·시작 간격 250 ms. `consoleCommandClassifier.affectsThreadState`(Start·Stop·Execute·Continue·Step·Break·SoftEStop·Unload — `Set Break`·Compile·Load 제외). `controllerConnection` 이 그런 명령의 응답(실패 포함 — 실행됐을 수 있다)을 관찰자로 알려 보낸 경로(트리·팔레트·배포·AI 브리지)와 무관하게 트리가 burst 한다. 디버그 밖 1403 상태 이벤트 → 트리 즉시 1회. 예약 갱신은 진행 중 폴을 기다렸다 돌고 정규 폴 간격을 다시 잡는다. 해제·디버그 진입 시 취소.
+- d41b198 디버그: fast poll 20/60/120/200/300/450/650 ms(앞 폴이 끝난 뒤 예약이라 RTT 가 길면 자연히 벌어짐). step/pause/entry pending 백업 폴은 처음 10 s 400 ms(설정이 더 짧으면 설정), 그 뒤 종전. 정지 중 인터벌 폴은 data 차선에 조회가 남아 있으면 한 주기 쉼(Running 이 있으면 그대로). threadsRequest 목록 캐시는 pending 없으면 1.5 s. 프레임 캐시는 TTL 이 지나도 마지막 폴이 같은 파일·줄 정지를 보고하면 재사용(`isFrameCacheReusable`, 순수). 정지 확인 게이트(stepGate·commandPolicy.gateResume)는 그대로.
+- 908b9e8 규칙: 구조 테스트 **R10** — TypeScript AST 로 재서 1,000줄 파일·150줄 이름 있는 함수가 `SIZE_DEBT` 와 architecture.md §7 에 없으면 실패, 상한 아래로 내려가면 지우라고 실패. §7.1 크기 부채 표(분해 방향 포함), §7.2 상태 머신 플래그·SSOT 후보·루트 예외, 허용 목록 개수, 메모리 측정값 정본 문단, ai-handoff §1 안내·아카이브 표·인덱스 순서, CLAUDE.md(scripts/dev, R10).
+- 하지 않은 것: `INTER_COMMAND_GAP_MS`(15 ms) 축소 — ECONNRESET/idle EOF 완화용이라 실기 A/B 없이 바꾸지 않음. StoppedEvent 를 Show Stack 앞으로 당기기 — VS Code 가 곧바로 stackTrace 를 기다리므로 이득이 작음. 대형 함수 분해·상태 머신 분리 — 기능 변경과 섞지 않는다(규칙 2·4), §7.1 이 순서표. `AGENTS.md` 가 `CLAUDE.md` 와 달라짐(끝에 Cowork 임포트 블록, "편집 주의") — 사용자 판단.
+
+### 검증
+
+- `npm test` **1608/1608**(threadRefreshScheduler 4·affectsThreadState 1·frameCache 3·pollSchedule 갱신·R10).
+- VSIX `dist/gpl-language-support-0.27.6.vsix` 1,695,044 bytes, SHA-256 `892EBF7896628AAE6EFB72010A5F3AE6B42FF707ED6F15D451C76468F2BBC654`(경고는 bundle 권장 1건).
+- 실기 미확인 → §3. MCP 는 여전히 `GPL_HOST=192.168.0.1`(확장 창은 192.168.0.102).
+
+### 남은 일
+
+- §3 실사용 확인.
+- §7.1 순서대로 분해: 상태 머신(`_pollThreadStates` → 상태 타입 + 순수 전이, runtimeConsole `decideReconnect`)이 체감 속도와도 맞닿아 가장 먼저.
+- SSOT 후보 4건을 R7 규칙으로 하나씩.

@@ -1508,7 +1508,7 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 
 - `npm test` **1608/1608** — 새 `src/test/views/tree/treeSectionsLayout.test.ts` 4건: 루트 순서·기본 접힘 고정, 검증 필요가 있어도 프로젝트 상태 펼침,
   CPU 온도는 섹션 바로 아래·앰프는 접힌 묶음(헤더 최고 온도·자식 순서), 앰프 행이 없으면 묶음 없음.
-- VSIX: VSIX_LINE
+- VSIX `dist/gpl-language-support-0.27.9.vsix` 1,682,267 bytes(361 files), SHA-256 `B5B45173C113CBA7783E6106D70908F7707869EF027FFFD4CE7CF0CCEB871621` — HEAD(8540f51)의 깨끗한 worktree(`%TEMP%\gpl-wt-0279`, 루트·controller-mcp 모두 `npm ci`)에서 만들었다(worktree `npm test` 1608/1608). 작업 트리에는 다른 세션(gpl-language-57, 지침 정리)의 미커밋 변경이 있었다. 번들의 `treeSections.js` 에 `ampTemps`·`SECTION_LAYOUT_EPOCH = 3` 확인.
 - 실제 패널 표시는 미확인 → §3.
 
 ### 남은 일

@@ -1471,7 +1471,7 @@ README 를 연 상태에서 "검토후 개선해줘".
 ### 검증
 
 - `npm test` **1608/1608**(threadRefreshScheduler 4·affectsThreadState 1·frameCache 3·pollSchedule 갱신·R10).
-- VSIX `dist/gpl-language-support-0.27.6.vsix` 1,695,044 bytes, SHA-256 `892EBF7896628AAE6EFB72010A5F3AE6B42FF707ED6F15D451C76468F2BBC654`(경고는 bundle 권장 1건).
+- VSIX `dist/gpl-language-support-0.27.6.vsix` 1,678,357 bytes, SHA-256 `2A22BA82BFE106027EF6C72AA9905296B98827ABA82FFE1303B43649C29A18FB`(경고는 bundle 권장 1건). **HEAD 의 깨끗한 worktree(`%TEMP%\gpl-wt-0276`, npm ci)에서 다시 만든 것** — 작업 트리에서 처음 만든 VSIX 에는 같은 시각 다른 세션이 고치던 `controller-mcp/src/*`(미커밋, `retarget`)가 MCP 번들에 섞여 들어가 버렸다. 그 세 파일은 커밋에서도 빼 두었다(작업 트리에 그대로 있음).
 - 실기 미확인 → §3. MCP 는 여전히 `GPL_HOST=192.168.0.1`(확장 창은 192.168.0.102).
 
 ### 남은 일

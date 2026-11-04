@@ -8,7 +8,9 @@
  * 동안**만은 짧은 백업 폴을 유지한다. 1403 트리거는 그대로 주 신호이고 이 일정은 그 유실을 메우는 보험이다.
  *
  * 규칙:
- *  - step / pause / entry: 끝이 정해진 액션 — 정지가 확인될 때까지 `backupPollMs` 간격으로 계속 본다.
+ *  - step / pause / entry: 끝이 정해진 액션 — 정지가 확인될 때까지 계속 본다. 처음 `STEP_SHORT_POLL_WINDOW_MS` 동안은
+ *    `STEP_SHORT_POLL_MS`(백업 간격이 더 짧으면 그것)로, 그 뒤는 `backupPollMs` 로(2026-11-04 — Move 한 줄을 Step 하면 끝난 뒤
+ *    최대 1 s 를 더 기다렸다. 사람이 화면을 보며 기다리는 구간이라 짧게, 오래 걸리는 줄은 종전 간격으로 돌아가 트래픽을 묶는다).
  *  - continue: 자유 실행은 몇 분이고 이어질 수 있어 1Hz 폴을 무한정 두지 않는다. 전송 후 `continueFastWindowMs`
  *    동안만 `backupPollMs` 로 보고, 그 뒤는 null(일반 인터벌 정책 — 1403 부재 시 백업 폴, 정상 시 사용자 간격)로 넘긴다.
  *  - pending 이 없으면 null.
@@ -30,6 +32,9 @@ export interface PendingPollInput {
 }
 
 export const DEFAULT_CONTINUE_FAST_WINDOW_MS = 20_000;
+/** step/pause/entry 의 짧은 백업 폴 간격과 그 창(ms). */
+export const STEP_SHORT_POLL_MS = 400;
+export const STEP_SHORT_POLL_WINDOW_MS = 10_000;
 
 /**
  * fast poll 체인이 끝난 뒤 다음 폴까지의 지연(ms). null 이면 pending 전용 폴을 끝내고 일반 인터벌 정책으로 돌아간다.
@@ -39,8 +44,10 @@ export function pendingPollDelayMs(input: PendingPollInput): number | null {
     switch (input.pendingAction) {
         case 'step':
         case 'pause':
-        case 'entry':
-            return backup;
+        case 'entry': {
+            const elapsed = input.nowMs - input.pendingSinceMs;
+            return elapsed < STEP_SHORT_POLL_WINDOW_MS ? Math.min(backup, STEP_SHORT_POLL_MS) : backup;
+        }
         case 'continue': {
             const elapsed = input.nowMs - input.pendingSinceMs;
             return elapsed < input.continueFastWindowMs ? backup : null;

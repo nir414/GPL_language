@@ -20,6 +20,8 @@ export interface PollHost {
     readonly lastPollCompletedAt: number;
     /** 마지막 Show Thread 목록(Running 쓰레드 유무 → 백업 폴 간격). */
     readonly lastThreadList: ReturnType<typeof parseThreadList> | null;
+    /** 변수·Watch 조회가 차선에 남아 있는가 — 정지 중 인터벌 폴은 그동안 한 주기 쉰다(조회 사이에 끼지 않게). */
+    readonly dataQueryPending?: boolean;
     readonly pendingAction: PendingPollAction;
     log(message: string): void;
     pollThreadStates(force: boolean, source: StopPollSource): Promise<void>;
@@ -105,7 +107,11 @@ export class PollDriver {
             void (async () => {
                 if (gen !== this.pollTimerGen || !this.host.isConnected) { return; }
                 try {
-                    if (!this.host.pollInFlight) {
+                    // 모두 정지 중이고 변수 조회가 남아 있으면 이번 주기는 건너뛴다 — 사람이 기다리는 조회가 먼저다.
+                    // (Running 쓰레드가 있으면 정지 감지가 우선이라 그대로 폴한다.)
+                    const busyWhileStopped = this.host.dataQueryPending === true
+                        && !(this.host.lastThreadList ?? []).some(t => t.state === 'Running');
+                    if (!this.host.pollInFlight && !busyWhileStopped) {
                         await this.host.pollThreadStates(false, 'interval');
                     }
                 } catch (err) {
@@ -223,7 +229,8 @@ export class PollDriver {
 
     // ⑥ step/continue 후 fast poll 스케줄(ms): 첫 폴 30ms 시작, 점감 백오프.
     //    (기존 500ms x 2는 1403 트리거 유실 시 첫 관측까지 최소 500ms 체감 지연 유발)
-    static readonly FAST_POLL_DELAYS_MS = [30, 120, 250, 500, 1000];
+    // 2026-11-04: 30/120/250/500/1000 → 촘촘하게. 폴은 앞 폴이 끝난 뒤 예약되므로 RTT 가 길면 그만큼 자연히 벌어진다(쌓이지 않음).
+    static readonly FAST_POLL_DELAYS_MS = [20, 60, 120, 200, 300, 450, 650];
 
     static readonly POLL_MIN_GAP_MS = 250;
 

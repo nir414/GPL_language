@@ -9,6 +9,32 @@
 
 import { parseThreadDetail, parseStack, StackFrameInfo } from '../../controller/protocol/responseParser';
 import type { DebugSessionIo } from './sessionIo';
+import type { ThreadInfo } from '../../controller/protocol/responseParser';
+
+const STOPPED_STATES: ReadonlySet<string> = new Set(['Paused', 'Break', 'Error']);
+const baseName = (f: string) => f.replace(/\\/g, '/').split('/').pop()!.toLowerCase();
+
+/**
+ * 캐시한 스택을 다시 조회하지 않고 써도 되는가(순수). TTL 안이면 그대로 쓰고, TTL 이 지났어도 pending(step/continue)이
+ * 없고 마지막 정지 감지 폴(`Show Thread -web`)이 같은 쓰레드를 같은 파일·줄에 정지로 보고 있으면 쓴다(2026-11-04 —
+ * 정지 뒤 1.5 s 가 지나 호버·Watch·Locals 를 열 때마다 Show Stack 을 다시 보냈다). 폴 목록에 위치가 없으면 TTL 만 본다.
+ */
+export function isFrameCacheReusable(input: {
+    frames: readonly StackFrameInfo[];
+    cachedAt: number;
+    now: number;
+    ttlMs: number;
+    polled: ThreadInfo | undefined;
+    pending: boolean;
+}): boolean {
+    if (input.frames.length === 0) { return false; }
+    if (input.now - input.cachedAt < input.ttlMs) { return true; }
+    if (input.pending) { return false; }
+    const top = input.frames[0];
+    const polled = input.polled;
+    if (!polled || !STOPPED_STATES.has(polled.state) || !polled.fileLine || !polled.file || !top.file) { return false; }
+    return polled.fileLine === top.fileLine && baseName(polled.file) === baseName(top.file);
+}
 
 export class FrameCache {
     constructor(private readonly io: DebugSessionIo) {}
@@ -75,9 +101,15 @@ export class FrameCache {
         // ③ Show Stack 캐시: 같은 정지 동안 stackTrace/scopes/variables가 연달아
         //    요청해도 짧은 TTL 내에는 1회 조회 결과를 재사용한다(_fastPoll에서 무효화).
         const cachedFresh = this.cachedFrames.get(threadName);
-        const cachedAt = this.frameCacheAt.get(threadName) ?? 0;
-        if (cachedFresh && cachedFresh.length > 0
-            && Date.now() - cachedAt < FrameCache.FRAME_CACHE_TTL_MS) {
+        const cachedAt = this.frameCacheAt.get(threadName);
+        if (cachedFresh && cachedFresh.length > 0 && cachedAt !== undefined && isFrameCacheReusable({
+            frames: cachedFresh,
+            cachedAt,
+            now: Date.now(),
+            ttlMs: FrameCache.FRAME_CACHE_TTL_MS,
+            polled: this.io.lastThreadList?.find(t => t.name === threadName),
+            pending: this.io.pendingAction !== null,
+        })) {
             return cachedFresh;
         }
 

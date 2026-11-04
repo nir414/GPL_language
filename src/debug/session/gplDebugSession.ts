@@ -90,6 +90,9 @@ export class GPLDebugSession extends LoggingDebugSession {
     private _lastThreadList: ReturnType<typeof parseThreadList> | null = null;
     private _lastThreadListAt = 0;
     private static readonly THREAD_LIST_CACHE_TTL_MS = 300;
+    // 정지 확인 뒤(pending 없음)에는 목록이 정지 중 인터벌 폴로 계속 갱신되므로 더 길게 재사용한다(2026-11-04 — 정지 감지 뒤
+    // Show Stack 왕복이 300 ms 를 넘으면 threadsRequest 가 Show Thread 를 한 번 더 보냈다).
+    private static readonly THREAD_LIST_CACHE_STOPPED_TTL_MS = 1500;
 
     // Controller console is effectively single-request-at-a-time.
     // 세션 안의 모든 명령은 차선 큐(commandLanes.ts)로 직렬화한다 — control(Step/Continue/폴/스택)이 data(변수·Watch·전역
@@ -234,6 +237,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             get pollInFlight() { return self._pollInFlight; },
             get lastPollCompletedAt() { return self._lastPollCompletedAt; },
             get lastThreadList() { return self._lastThreadList; },
+            get dataQueryPending() { return self._lanes.stats().dataPending > 0; },
             sendCmd: (command, lane) => self._sendCmd(command, lane),
             log: message => self._log(message),
             sendEvent: event => self.sendEvent(event),
@@ -976,8 +980,11 @@ export class GPLDebugSession extends LoggingDebugSession {
         // ⑤ 정지 감지 폴이 방금 가져온 목록이 신선하면 재사용 — StoppedEvent 직후
         //    VS Code가 부르는 threadsRequest의 TCP 왕복 1회를 제거한다.
         let threads: ReturnType<typeof parseThreadList>;
+        const threadListTtl = this._pendingAction
+            ? GPLDebugSession.THREAD_LIST_CACHE_TTL_MS
+            : GPLDebugSession.THREAD_LIST_CACHE_STOPPED_TTL_MS;
         if (this._lastThreadList
-            && Date.now() - this._lastThreadListAt < GPLDebugSession.THREAD_LIST_CACHE_TTL_MS) {
+            && Date.now() - this._lastThreadListAt < threadListTtl) {
             threads = this._lastThreadList;
         } else {
             const resp = await this._sendCmd(SHOW_THREAD_LIST_CMD);

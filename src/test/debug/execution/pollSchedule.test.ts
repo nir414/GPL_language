@@ -1,13 +1,15 @@
 import * as assert from 'assert';
 import { test } from '../../harness';
-import { pendingPollDelayMs, formatResumeTiming, DEFAULT_CONTINUE_FAST_WINDOW_MS } from '../../../debug/execution/pollSchedule';
+import { pendingPollDelayMs, formatResumeTiming, DEFAULT_CONTINUE_FAST_WINDOW_MS, STEP_SHORT_POLL_MS, STEP_SHORT_POLL_WINDOW_MS } from '../../../debug/execution/pollSchedule';
 
 const base = { pendingSinceMs: 10_000, backupPollMs: 1000, continueFastWindowMs: DEFAULT_CONTINUE_FAST_WINDOW_MS };
 
-test('pollSchedule: step/pause/entry 는 정지 확인까지 백업 폴 간격을 유지한다', () => {
+test('pollSchedule: step/pause/entry 는 처음 창 동안 짧은 간격, 그 뒤 정지 확인까지 백업 폴 간격', () => {
     for (const pendingAction of ['step', 'pause', 'entry'] as const) {
-        assert.strictEqual(pendingPollDelayMs({ ...base, pendingAction, nowMs: 12_000 }), 1000, pendingAction);
+        assert.strictEqual(pendingPollDelayMs({ ...base, pendingAction, nowMs: 12_000 }), STEP_SHORT_POLL_MS, pendingAction);
+        assert.strictEqual(pendingPollDelayMs({ ...base, pendingAction, nowMs: 10_000 + STEP_SHORT_POLL_WINDOW_MS }), 1000, `${pendingAction} (창 끝)`);
         assert.strictEqual(pendingPollDelayMs({ ...base, pendingAction, nowMs: 10_000 + 10 * 60_000 }), 1000, `${pendingAction} (오래 걸려도)`);
+        assert.strictEqual(pendingPollDelayMs({ ...base, pendingAction, nowMs: 12_000, backupPollMs: 250 }), 250, '설정이 더 짧으면 설정');
     }
 });
 

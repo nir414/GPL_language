@@ -9,6 +9,7 @@
 import type { DebugProtocol } from '@vscode/debugprotocol';
 import type { ControllerConfig } from '../../controller/connection/controllerConnection';
 import type { CommandLane } from './commandLanes';
+import type { ThreadInfo } from '../../controller/protocol/responseParser';
 
 export interface DebugSessionIo {
     /** attach 에서 확정한 제어기 접속 정보(없으면 아직 attach 전). */
@@ -21,6 +22,8 @@ export interface DebugSessionIo {
     readonly lastControllerCommand: string;
     /** 사용자 재개 액션(step/continue/pause/entry)의 정지 확인 대기 중이면 그 종류, 아니면 null. */
     readonly pendingAction: 'step' | 'pause' | 'entry' | 'continue' | null;
+    /** 마지막 정지 감지 폴의 쓰레드 목록(위치 포함). 프레임 캐시가 "같은 곳에 정지 중"인지 볼 때 쓴다. */
+    readonly lastThreadList?: readonly ThreadInfo[] | null;
     /** 제어기 명령 1회(차선 큐 경유). 미연결이면 null. */
     sendCmd(command: string, lane?: CommandLane): Promise<string | null>;
     /** Debug Console 한 줄. */

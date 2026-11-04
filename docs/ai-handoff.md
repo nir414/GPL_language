@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.11** (대시보드 축 위치 리밋 막대·추이 통합·DataID 전환·I/O 클릭 토글, 1646/1646. 상세는 §1-HA.)
-- **직전 세션: §1-HA** — "축 상태를 바로 한눈에 + 그래프 통합 + I/O 클릭 토글" → 실측으로 대시보드의 Execute 프로브(전원·축·좌표)가 값을 못 받던 것을 확인하고 읽기 전용 DataID(3504·3506·230·116·2002·16077/16078)로 전환, 로봇 전체 축을 소프트 리밋 막대로, 추이 5개를 한 카드의 같은 차트로, I/O 칩은 클릭 = 강제 토글·더블클릭 = 강제 해제. 실기 확인은 verification §1-HA.
+- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.12** (대시보드 I/O 칩 8열 격자·Soft DIO 64 상한 실측, 1646/1646. 상세는 §1-HB.)
+- **직전 세션: §1-HB** — "Soft 64개 정렬을 직사각형으로 + soft IO 더 쓸 수 있지 않나" → I/O 칩을 8열 격자(8×8·12×8)로, 그룹은 같은 폭의 단에 쌓음. 실측으로 Soft DIO 는 20001~20064 가 상한(20065 = -1517, PDB 505 의 "~21000" 은 이 펌웨어와 다름). 실기 확인은 verification §1-HB.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -391,7 +391,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GR ~ §1-HA)만 둔다.
+본문에는 **최근 10개 세션**(§1-GS ~ §1-HB)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있고, 그 세션들의 인덱스는 [archive/handoff/index.md](archive/handoff/index.md)에 있다.
 아래 §1-0 에는 본문에 있는 세션의 행만 둔다.
 
@@ -402,16 +402,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GQ (2026-11-03) | 2 |
-| (본문 아래) | §1-GR ~ §1-HA (2026-11-03 ~ 11-04) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GR (2026-11-03) | 3 |
+| (본문 아래) | §1-GS ~ §1-HB (2026-11-03 ~ 11-04) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GQ 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GR 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GR | 11-03 | **Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실** — 트리 우클릭 Unload → `Unload -all`(/GPL 비운 뒤), 「Unload Project」 맨 위가 -all, MCP `unload_project` 생략 = -all(`default-all`); 비우기 대상이 /flash·루트면 거부(`classifyRemoteClearRoot`); 자동 복구 Unload 는 이름 유지. 버전 정책: 기능 추가도 patch. docs/gpl-language 4파일. 0.27.3 | 본문 ↓ |
 | §1-GS | 11-03 | **「컴파일 검증 필요」 라이브러리 해제·라이브러리 배지·결과 미확정 사유·목록에서 지우기** — 수신함 Sample Prep 보고 처리: Compile 성공이 `ProjectLibrary`(전이) 항목도 해제(`clearCompiled`·`compiledLibraries.ts`), 라이브러리 배지는 선택 창으로, STATUS 없는 Start 는 「결과 미확정」, /GPL 비우면 해제, 선택 창 ×. 0.27.4 | 본문 ↓ |
 | §1-GT | 11-03 | **여유 메모리 측정값 정본(SSOT)·디버깅 느림 진단** — 실행 창이 Marketplace 0.18.1 로 되돌아감(스텝 지연 수정 전), 제어기 Free 7.8 → 0.97 MB·RTT 증가 관측. `Show Memory` 는 전송 경로가 `memoryReadings` 에 기록하고 트리·배지·검사가 같은 값을 읽음, 상태 변경 없으면 15 s 재사용, FTP 쓰기·상태 변경 명령이 무효화, R7. 0.27.5 | 본문 ↓ |
 | §1-GU | 11-04 | **체감 속도·규칙 감사** — 트리 쓰레드 상태 즉시 갱신(1403 상태 이벤트·Start/Stop 등 응답 뒤 150/600/1500/3000 ms, `threadRefreshScheduler`·`affectsThreadState`), 디버그 fast poll 20~650 ms·step pending 400 ms·프레임/목록 캐시 정지 중 재사용·변수 조회 중 인터벌 폴 쉼, 구조 테스트 R10(크기 상한)·§7 부채 표·문서 낡음 정리. 0.27.6 | 본문 ↓ |
@@ -421,51 +420,12 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GY | 11-04 | **AI 지침 정리** — `AGENTS.md` 정본화(`CLAUDE.md` 는 `@AGENTS.md` import), 요청 이력의 방침(커밋 자유·합쇼체 문구·포커스 강제 금지·/flash/projects) 명문화, `record-keeping.md`, §3 실사용 확인 117건 → `ai-handoff-verification.md`, 아카이브 인덱스 196행 → `archive/handoff/index.md`, 하드 규칙 번호 §0 로 통일(모션 6→9). 문서 전용 | 본문 ↓ |
 | §1-GZ | 11-04 | **프로젝트 문제점 리뷰 후속 — 명령 안전·정지 판정 경합·메모리 자동 회수·의존성** — 1402 한 줄 검증(CR/LF 거부)·전달 뒤 재전송은 조회만·UTF-8·닫힌 STATUS·줄 번호 140 수정, 브리지 정지 명령 우선·URI 토큰·상태 모르면 Step/Continue 거부, 디버거 액션 세대·잔류 pending·BP 요청 직렬화, 메모리 부족 시 정지 → Unload 자동 회수(`memoryGuard.autoUnload`), basic-ftp 6.2.5·@types/vscode ~1.74·CI Node 22·.gitattributes. 0.27.10 | 본문 ↓ |
 | §1-HA | 11-04 | **대시보드 축 위치 리밋 막대·추이 그래프 통합·전원/축/좌표 DataID 전환·I/O 클릭 토글** — 4.2K5 실측: `Execute Robot.WhereAngles`/`Where` 는 값 없음, `Execute Controller.PowerEnabled` -712, Execute 명령 상한 136자 → `pd 3504/3506/230/116/2002/16077/16078`(순수 `robotAxes.ts`), 로봇 전체 막대(양끝 소프트 리밋·5% 근접·이동), 「추이」 한 카드 5차트(같은 차트 함수·눈금·호버), 칩 클릭 토글·더블클릭 해제. 1646/1646. 0.27.11 | 본문 ↓ |
+| §1-HB | 11-04 | **대시보드 I/O 칩 8열 격자 · Soft DIO 64 상한 실측** — 칩 flex-wrap → 8열 격자(64 = 8×8, bank 96 = 12×8, 좁으면 4열), 그룹은 multi-column 단에 쌓기. 4.2K5 실측 `Signal.DIO(20065)` = -1517(PDB 505 의 "~21000" 과 다름, com_dio 표 20001~20064 가 맞음). 1646/1646. 0.27.12 | 본문 ↓ |
 ---
 
-**최근 세션 본문 — §1-GP ~ §1-GY (2026-11-03~11-04).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GS ~ §1-HB (2026-11-03~11-04).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GR. 2026-11-03 세션 — Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실 (0.27.3)
-
-### 증상(요청)
-
-1. "최근 버전을 너무 빠르게 올린다 — 뒤의 0.0.1 자리부터 천천히 올려 달라."
-2. "Unload 동작 시에는 기본적으로 -all 로 처리하는 게 편하겠다." 범위를 묻자 「사람이 누르는 Unload 전부」(트리 우클릭·Unload Project 기본·MCP 생략 시)를 골랐다.
-3. "Unload -all 동작 시에는 우선 flash gpl 을 비우고 Unload." 비울 폴더를 묻자 「/GPL 만(지금처럼)」. 질문 선택지에 /flash/projects 를 올린 것 자체에
-   "왜 건드리려고 하느냐, 막 건드리지 마라"는 지적을 받았다 — **/flash/projects 는 비우기·삭제 대상으로 제안하지 않는다.**
-4. 다른 세션(Sample Prep) 수신함 보고 `2026-11-03_SamplePrep_gpl-language-facts-apon_v1.md`(GPL 언어 사실 5건).
-
-### 원인
-
-- 버전: 규칙이 "호환 기능 추가 = minor" 였다. 세션마다 기능이 붙어 0.18.0(10-26) → 0.27.1(11-03) 8일 새 minor 가 10번 올랐다.
-- Unload: 트리 우클릭은 `Unload <폴더명>`, 「Unload Project」 는 `-all` 이 목록 맨 끝이었다. -all 을 쓰려면 매번 끝까지 내려가야 했다.
-
-### 조치(의도와 방법)
-
-- **버전 정책(8ca97c1)** — `docs/releases/process.md` §버전 정책을 "기능 추가 포함 patch 기본, minor 는 사용자 요청 시만, major 는 먼저 알림"으로. CLAUDE.md·AGENTS.md·`.github/instructions/gpl-release.instructions.md` 요약도 같게.
-- **`activation/remote/ftpCommands.ts`** — `gpl.controller.ftpUnload`(트리 우클릭)는 노드 검사(현재 제어기·프로젝트 폴더)만 하고 `runUnloadAllInteractive(recheck)` 로.
-  「Unload Project」 QuickPick 은 「모두 내리기 (Unload -all)」 를 맨 위(Enter 기본), 그 아래 「이 프로젝트만」 구분선 + /GPL 폴더 + 이름 직접 입력.
-  `runUnloadAllInteractive` 는 비우기 전에 `classifyRemoteClearRoot(ftpBasePath)` 가 `flash`·`unsafe` 면 **비우지도 보내지도 않는다**(설정 오류로 플래시를 지우는 길 차단).
-  package.json 의 `ftpUnload` 제목은 "Unload -all (/GPL 비운 뒤 모두 내리기)".
-- **자동 Unload 는 그대로** — `deployCompileStage`·FTP Run 의 Unload→Load→Compile 복구는 이름 지정 유지. -all 이면 라이브러리·다른 프로젝트까지 내려가 Load 복구가 깨진다.
-- **MCP `unload_project`** — `project` 생략 = `-all`(`targetSource:"default-all"`), 세션 대상으로 풀지 않는다. `project_target` 설명에 예외 표기, controller-mcp README.
-- **README** — 여유 메모리 항목에 "기본은 /GPL 을 비운 뒤 전부 내리는 Unload -all".
-- **수신함(4433ddb)** — `docs/gpl-language` 4파일: common-mistakes 0-14(런타임 `String.Split` -506, 16,811자 실패·641자 정상)·0-15(수학 함수는 `Math.` 접두, `Abs` -729)·
-  예외 절 정정(문서상 `Exception.Message` 는 ErrorCode 등으로 만들어 내는 글이라 대입한 글이 전달되지 않음, 괄호 없는 `ex.Message` 읽기 가능),
-  error-handling throwError 주의, strings·datatypes 에 `CStr(1E+32)`=`"1e+32"`·성능 메모. 근거 GPL Dictionary `String/split.htm`·`Exception_Handling/exc_message.htm`·`Math/abs.htm`·`GPL_Error_Code/io_errors.htm`. 보고 파일은 처리 결과를 붙여 `done/`.
-
-### 검증
-
-- `npm test` **1584/1584**, `controller-mcp` `node --test` 165/165, `node --check index.js`. 새 판단 로직은 없고 기존 순수 함수(`classifyRemoteClearRoot`, 테스트 있음)를 배선만 했다.
-- VSIX: `dist/gpl-language-support-0.27.3.vsix` 1,661,415 bytes(358 files), SHA-256 `E8E82F3C94D006F0239F4FF15CF4C58ACA2461556D8191958B51BC9B5DE73299`. 다른 세션(gpl-language-e2)의 미커밋 변경이 작업 트리에 있어 3b92212 기준 worktree(`%TEMP%\gpl-wt0273`, 실제 `npm ci`)에서 빌드했다 — 작업 트리에서 먼저 만든 364 files 판은 폐기.
-- UI·실기 미확인 — §3 맨 위 항목.
-
-### 남은 일
-
-- §3 UI·실기 확인.
-- 수신함 미처리: `2026-11-02_SamplePrep_runtime-console-buffer-stalled_v1.md`(이 세션 범위 밖). 같은 시각 다른 세션(gpl-language-e2)이 `compile-stale-library-never-cleared` 를 처리 중(0.27.4 예정).
 
 ## 1-GS. 2026-11-03 세션 — 「컴파일 검증 필요」 라이브러리 해제 · 라이브러리 배지 · 결과 미확정 사유 · 목록에서 지우기 (0.27.4)
 
@@ -865,3 +825,37 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 
 - §3: MCP `controller_status` 의 `powerEnabled` 도 `Execute Controller.PowerEnabled`(4.2K5 에서 -712)라 항상 실패할 것 — `pd 230` 으로 바꿀 것.
 - `CStr` 이 아닌 DataID 라 정밀도 문제는 없다. 다중 로봇의 직교 좌표는 kinematics 가 있는 첫 로봇만 보인다(필요하면 선택 UI).
+
+## 1-HB. 2026-11-04 세션 — 대시보드 I/O 칩 8열 격자 · Soft DIO 64 상한 실측 (0.27.12)
+
+### 증상(요청)
+
+"2만번대는 64개 — 어디서 많이 본 숫자 아니야? 정렬 깔끔하게. 크기 맞춰 자동 줄바꿈이 아쉽다, 직사각형으로 줄바꿈되게.
+그리고 soft IO 더 많이 쓸 수도 있지 않아?"
+
+### 원인·관측(실기 192.168.0.1, G2400C 4.2K5)
+
+- 칩이 `flex-wrap` 이라 그룹 폭에 따라 한 줄 개수가 제각각이었다(64개가 9·7·… 로 끊김).
+- Soft 범위: 문서 둘이 다르다 — com_dio.htm 표는 `20001 - 20064`, PDB io.htm DataID 505 는 "20001 ~ 21000".
+  실측: `Signal.DIO(20064)` 값 반환, `Signal.DIO(20065)`·`(21000)`·`(21001)` 은 **-1517 *Invalid signal number***,
+  `Show DIO 20065` 빈 응답. `pd 505, 1..16` 은 64개씩 전부 `2`(configured)를 돌려주고 `pd 505, 17` 은 -1509 —
+  unit 2~16 의 "configured" 는 실제로 접근 가능한 신호가 아니다. **이 펌웨어의 Soft DIO 는 64개가 상한**이고 늘리는 설정은
+  문서에서 찾지 못했다.
+
+### 조치
+
+- **5c153d0** — 칩을 8열 격자(`--dio-cols: 8`, 460px 이하 4열)로. 64 = 8×8, bank 96 = 12×8 이라 모든 그룹이 같은 폭의
+  직사각형이 된다. 그룹은 multi-column 단(`columns: 33em`)에 위에서부터 쌓아 키가 다른 그룹 사이 빈칸을 없앴다(`wide` 제거).
+  `dioGroups.ts` 머리 주석에 Soft 상한 실측과 문서 불일치를 기록.
+
+### 검증
+
+- `npm test` 1646/1646. 모의 데이터 미리보기(Edge headless) 다크 1100·700·520px, 라이트 1300px — 8×8 정렬·5자리 번호 잘림 없음.
+  (headless 창 최소 폭 때문에 460px 이하 4열은 화면으로 확인하지 못했다.)
+- 실기 대시보드 화면은 미확인 — verification §1-HB.
+- VSIX: `dist/gpl-language-support-0.27.12.vsix` — 1,733,002 bytes, SHA-256 `2ED0313C05C408C05FF08A356319979325D8C45413DA2ABF8D66E595F5F5D233`.
+  경고는 기존 번들링 권고뿐.
+
+### 남은 일
+
+- 세마포어가 64개보다 많이 필요하면 Soft DIO 가 아니라 GPL 전역 변수/`Thread` 이벤트 쪽이다(문서 확인 후 안내).

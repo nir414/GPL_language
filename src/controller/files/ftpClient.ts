@@ -76,7 +76,9 @@ export function getLastFtpBanner(host: string): { banner: string; at: number } |
  * 접속 응답(220 배너)은 호스트별로 기억한다 — 업로드 전 정체 확인이 새 접속 없이 쓴다.
  */
 async function createClient(host: string): Promise<FtpClient> {
-	const client = new FtpClient(TIMEOUT_MS);
+	// basic-ftp 6.x 는 PASV 응답의 데이터 주소가 제어 연결 호스트와 다르면 기본으로 거부한다(FTP bounce 방어). 5.x 까지의 동작을
+	// 유지한다 — 제어기 FTP(RTEMS)의 PASV 주소가 접속 IP 와 늘 같은지는 실기로 확인하지 않았다(§1-GZ, 확인되면 이 줄을 지운다).
+	const client = new FtpClient(TIMEOUT_MS, { allowSeparateTransferHost: true });
 	const welcome = await client.access({ host, user: 'anonymous', password: 'anonymous' });
 	if (welcome && typeof welcome.message === 'string') {
 		lastBannerByHost.set(host, { banner: welcome.message, at: Date.now() });

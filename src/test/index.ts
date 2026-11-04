@@ -63,6 +63,7 @@ import './controller/connection/trafficResponseBody.test';
 import './controller/deployment/deployRecord.test';
 import './views/tree/ftpRefreshThrottle.test';
 import './controller/files/ftpClient.test';
+import './controller/files/basicFtpCompat.test';
 import './controller/deployment/uploadProgress.test';
 import './controller/deployment/libraryUploadPlan.test';
 import './views/statusbar/uploadProgressBar.test';

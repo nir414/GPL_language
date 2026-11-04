@@ -76,6 +76,7 @@ import './controller/connection/reachability.test';
 import './controller/diagnostics/resourceProbes.test';
 import './controller/diagnostics/temperature.test';
 import './controller/diagnostics/statusSampling.test';
+import './controller/diagnostics/robotAxes.test';
 import './views/dashboard/dashboardTemperature.test';
 import './debug/execution/stepGate.test';
 import './debug/evaluation/evalMessages.test';

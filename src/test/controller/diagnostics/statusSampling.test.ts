@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from '../../harness';
-import { ControllerStatusSampler, StatusSamplerIO, PROBE_POWER_CMD, PROBE_ANGLES_CMD, PROBE_CART_CMD, PROBE_ERRORLOG_CMD, PROBE_MEMORY_CMD, PROBE_NET_TCP_CMD, PROBE_NET_MBUF_CMD } from '../../../controller/diagnostics/statusSampling';
+import { ControllerStatusSampler, StatusSamplerIO, PROBE_POWER_CMD, PROBE_ROBOT_TYPES_CMD, probeJointAnglesCmd, probeCartesianCmd, PROBE_ERRORLOG_CMD, PROBE_MEMORY_CMD, PROBE_NET_TCP_CMD, PROBE_NET_MBUF_CMD } from '../../../controller/diagnostics/statusSampling';
 import { PROBE_TEMPERATURE_CMD } from '../../../controller/diagnostics/temperature';
 import { SHOW_THREAD_LIST_CMD } from '../../../controller/protocol/responseParser';
 
@@ -12,8 +12,13 @@ function setup() {
 	let active = true;
 	const sent: string[] = [];
 	const responses = new Map<string, string | null>([
-		[SHOW_THREAD_LIST_CMD, ok('')], [PROBE_POWER_CMD, ok('True')],
-		[PROBE_ANGLES_CMD, ok('1,2,3,4')], [PROBE_CART_CMD, ok('1,2,3,4,5,6')],
+		[SHOW_THREAD_LIST_CMD, ok('')], [PROBE_POWER_CMD, ok('230, 1, 1, 0, "Power state" = 12')],
+		[PROBE_ROBOT_TYPES_CMD, ok('116, 1, 1, 0, "Robot types" = 2, 0, 0')],
+		['pd 2002, 1', ok('2002, 1, 1, 0, "Robot name" = "Arm"')],
+		['pd 16077, 1', ok('16077, 1, 1, 0, "Joint max soft stop limit" = 100, 200, 300, 1e+32')],
+		['pd 16078, 1', ok('16078, 1, 1, 0, "Joint min soft stop limit" = -100, 0, -300, -1e+32')],
+		[probeJointAnglesCmd(1), ok('3504, 1, 1, 0, "Actual joint angles in deg or mm" = 1, 2, 3, 4')],
+		[probeCartesianCmd(1), ok('3506, 1, 1, 0, "Actual Cartesian position in mm and deg" = 1, 2, 3, 4, 5, 6')],
 		[PROBE_ERRORLOG_CMD, ok('')], [PROBE_TEMPERATURE_CMD, ok('CPU 1: 57.1 C')],
 		[PROBE_MEMORY_CMD, ok('Free 5.0 Mb, Used 8.0 Mb, Segments 7')],
 		[PROBE_NET_TCP_CMD, ok('connections accepted 100, established 20, closed 80')],
@@ -23,16 +28,16 @@ function setup() {
 	return { sampler: new ControllerStatusSampler(), io, sent, responses, setNow: (value: number) => { now = value; }, cancel: () => { active = false; } };
 }
 
-test('status sampling: 첫 조회 9명령, 빠른 재조회는 4명령, 진단은 10초 후 재조회', async () => {
+test('status sampling: 첫 조회 13명령(구성 4 포함), 빠른 재조회는 4명령, 진단은 10초 후 재조회', async () => {
 	const s = setup();
 	const first = await s.sampler.sample(target, s.io, options);
-	assert.strictEqual(s.sent.length, 9);
+	assert.strictEqual(s.sent.length, 13);
 	assert.strictEqual(first.temperature?.readings[0].celsius, 57.1);
 	assert.strictEqual(first.resources?.memory?.freeMb, 5);
 	s.sent.length = 0;
 	s.setNow(1600);
 	const next = await s.sampler.sample(target, s.io, options);
-	assert.deepStrictEqual(s.sent, [SHOW_THREAD_LIST_CMD, PROBE_POWER_CMD, PROBE_ANGLES_CMD, PROBE_CART_CMD]);
+	assert.deepStrictEqual(s.sent, [SHOW_THREAD_LIST_CMD, PROBE_POWER_CMD, probeJointAnglesCmd(1), probeCartesianCmd(1)]);
 	assert.strictEqual(next.temperature?.sampledAt, 100);
 	assert.strictEqual(next.timestamp, 1600);
 	s.sent.length = 0;
@@ -46,7 +51,7 @@ test('status sampling: 수동 갱신과 설정 간격, 자원 비활성 시 온�
 	await s.sampler.sample(target, s.io, options);
 	s.sent.length = 0;
 	await s.sampler.sample(target, s.io, { ...options, forceDiagnostics: true });
-	assert.strictEqual(s.sent.length, 9);
+	assert.strictEqual(s.sent.length, 13);
 	s.sent.length = 0;
 	s.setNow(2100);
 	const next = await s.sampler.sample(target, s.io, { includeTemperature: true, diagnosticIntervalMs: 2000 });
@@ -64,12 +69,12 @@ test('status sampling: 제어기 전환·연결 세션 초기화 후 이전 진�
 	s.sampler.clear();
 	s.sent.length = 0;
 	await s.sampler.sample(target, s.io, options);
-	assert.strictEqual(s.sent.length, 9);
+	assert.strictEqual(s.sent.length, 13);
 });
 
 test('status sampling: 불완전·오류 응답을 정상 상태나 유효 센서값으로 사용하지 않는다', async () => {
 	const s = setup();
-	s.responses.set(PROBE_POWER_CMD, '<DATA>True</DATA><STATUS>0,"Success"');
+	s.responses.set(PROBE_POWER_CMD, '<DATA>230, 1, 1, 0, "Power state" = 12</DATA><STATUS>0,"Success"');
 	s.responses.set(PROBE_ERRORLOG_CMD, '<STATUS>-714,"Unknown"</STATUS>');
 	s.responses.set(PROBE_MEMORY_CMD, '<DATA>Free 5.0 Mb</DATA><STATUS>0,"Success"');
 	s.responses.set(PROBE_TEMPERATURE_CMD, '<DATA>CPU 1: 57 C</DATA><STATUS>0,"Success"');
@@ -116,11 +121,11 @@ test('status sampling: 명령을 한꺼번에 큐에 넣지 않고 직전 응답
 	const original = s.io.send;
 	let release!: () => void;
 	const gate = new Promise<void>(resolve => { release = resolve; });
-	s.io.send = async command => { if (command === PROBE_POWER_CMD) { await gate; } return original(command); };
+	s.io.send = async command => { if (command === PROBE_ROBOT_TYPES_CMD) { await gate; } return original(command); };
 	const pending = s.sampler.sample(target, s.io, options);
 	await new Promise(resolve => setImmediate(resolve));
 	assert.deepStrictEqual(s.sent, [SHOW_THREAD_LIST_CMD]);
 	release();
 	await pending;
-	assert.strictEqual(s.sent.length, 9);
+	assert.strictEqual(s.sent.length, 13);
 });

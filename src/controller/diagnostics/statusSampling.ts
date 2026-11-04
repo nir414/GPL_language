@@ -11,12 +11,22 @@ import {
 import { countThreadStates } from '../threads/threadReport';
 import {
 	buildResourceSnapshot,
-	extractDataPayload,
 	ResourceSnapshot,
 	PROBE_MEMORY_CMD,
 	PROBE_NET_TCP_CMD,
 	PROBE_NET_MBUF_CMD,
 } from './resourceProbes';
+import {
+	PROBE_POWER_STATE_CMD,
+	RobotAxesConfig,
+	RobotAxesReading,
+	cartesianRobotOf,
+	parseDataIdNumbers,
+	probeCartesianCmd,
+	probeJointAnglesCmd,
+	readPowerState,
+	readRobotAxesConfig,
+} from './robotAxes';
 
 // 자원 프로브 명령/타입은 resourceProbes.ts 가 단일 출처. 기존 호출자 편의로 여기서도 재노출한다.
 export { PROBE_MEMORY_CMD, PROBE_NET_TCP_CMD, PROBE_NET_MBUF_CMD } from './resourceProbes';
@@ -24,13 +34,9 @@ export type { ResourceSnapshot } from './resourceProbes';
 
 // ── 상태 조회 명령 ───────────────────────────────────────────────
 //
-// Controller.PowerEnabled: 고전원(모터 전원) 상태. read 시 ON/OFF 반환.
-//   공식 문서: GPL Dictionary > Controller.PowerEnabled Property
-// Robot.WhereAngles: 각 모터 인코더 순간값 → 축 각도(Angles Location).
-// Robot.Where: 베이스/툴 보정 반영한 현재 직교 좌표 위치.
-export const PROBE_POWER_CMD = 'Execute Controller.PowerEnabled';
-export const PROBE_ANGLES_CMD = 'Execute Robot.WhereAngles';
-export const PROBE_CART_CMD = 'Execute Robot.Where';
+// 전원·축 위치·직교 좌표는 읽기 전용 DataID(`pd`)로 읽는다 — 근거와 실측은 robotAxes.ts 머리말.
+// (예전 `Execute Controller.PowerEnabled`·`Robot.WhereAngles`·`Robot.Where` 는 4.2K5 실측에서 값을 돌려주지 않았다.)
+export { PROBE_POWER_STATE_CMD as PROBE_POWER_CMD, PROBE_ROBOT_TYPES_CMD, probeJointAnglesCmd, probeCartesianCmd } from './robotAxes';
 export const PROBE_ERRORLOG_CMD = 'ErrorLog -web ,10';
 
 
@@ -52,10 +58,18 @@ export interface ControllerStatusSnapshot {
 	target: { ip: string; port: number };
 	/** 고전원(서보) 상태. null = 확인 불가. */
 	powerEnabled: boolean | null;
-	/** 축 각도(deg/mm). 빈 배열 = 확인 불가. */
+	/** 230 Power state 원값과 사람이 읽을 설명(전원 배지 부제). */
+	powerState?: { state: number | null; text: string };
+	/** 첫 로봇의 축 각도(deg/mm). 빈 배열 = 확인 불가. 로봇 전체는 `robots`. */
 	jointAngles: number[];
+	/** 로봇별 축 위치·소프트 리밋(3504·16077·16078). */
+	robots?: RobotAxesReading[];
+	/** 로봇 구성 조회 메모(실패 시). */
+	robotsNote?: string;
 	/** 직교 좌표 위치. */
 	cartesian: CartesianPose;
+	/** 직교 좌표를 읽은 로봇 번호. null = kinematics 있는 로봇 없음(조인트 전용 구성). */
+	cartesianRobot?: number | null;
 	/** 스레드 목록. */
 	threads: ThreadInfo[];
 	threadsAvailable?: boolean;
@@ -84,35 +98,6 @@ export interface FetchStatusOptions {
 	/** 과거 에러·자원·온도의 조회 간격. 수동 갱신은 간격을 무시한다. */
 	diagnosticIntervalMs?: number;
 	forceDiagnostics?: boolean;
-}
-
-/** 부호 있는 십진수(소수/지수 포함)를 모두 추출. */
-function extractNumbers(text: string): number[] {
-	const matches = text.match(/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g);
-	if (!matches) {
-		return [];
-	}
-	return matches.map(s => parseFloat(s)).filter(n => Number.isFinite(n));
-}
-
-/** 전원 응답을 boolean으로 해석. 해석 불가면 null. */
-function parsePowerEnabled(raw: string | null): boolean | null {
-	if (!raw) {
-		return null;
-	}
-	const payload = extractDataPayload(raw).trim();
-	if (/\b(true|on|enabled)\b/i.test(payload)) {
-		return true;
-	}
-	if (/\b(false|off|disabled)\b/i.test(payload)) {
-		return false;
-	}
-	// GPL Boolean은 -1(True) / 0(False)로 표현되는 경우가 있다.
-	const nums = extractNumbers(payload);
-	if (nums.length > 0) {
-		return nums[0] !== 0;
-	}
-	return null;
 }
 
 const EMPTY_CART: CartesianPose = {
@@ -155,12 +140,15 @@ export class ControllerStatusSampler {
 	private resources?: ResourceSnapshot;
 	private temperature?: TemperatureSnapshot;
 	private errorCache?: { values: string[]; sampledAt: number; note?: string };
+	/** 로봇 구성(이름·종류·소프트 리밋). 리밋은 NP(전원 Off 에서만 바뀜)라 수동 갱신·재연결·실패 때만 다시 읽는다. */
+	private axesConfig?: RobotAxesConfig;
 
 	clear(): void {
 		this.targetKey = '';
 		this.resources = undefined;
 		this.temperature = undefined;
 		this.errorCache = undefined;
+		this.axesConfig = undefined;
 	}
 
 	async sample(
@@ -193,6 +181,8 @@ export class ControllerStatusSampler {
 
 		if (!snapshot.connected) {
 			snapshot.note = '제어기 응답 없음';
+			// 재연결 뒤에는 구성을 다시 읽는다(그 사이 재부팅·구성 변경이 있었을 수 있다).
+			this.axesConfig = undefined;
 			return snapshot;
 		}
 
@@ -209,34 +199,43 @@ export class ControllerStatusSampler {
 			total: t.length,
 		};
 
+		// 로봇 구성(저빈도). 실패한 구성은 진단 주기마다 다시 시도한다.
+		if (!this.axesConfig || options.forceDiagnostics === true || (this.axesConfig.note !== undefined && due(this.axesConfig.sampledAt))) {
+			this.axesConfig = await readRobotAxesConfig({ send, succeeded }, io.now());
+		}
+		const config = this.axesConfig;
+
 		// 명령마다 기다려 다른 UI·디버그 명령이 큐에 들어올 여지를 둔다.
-		const powerResp = await send(PROBE_POWER_CMD);
-		const anglesResp = await send(PROBE_ANGLES_CMD);
-		const cartResp = await send(PROBE_CART_CMD);
+		const powerRaw = await send(PROBE_POWER_STATE_CMD);
+		const power = readPowerState(succeeded(powerRaw) ? powerRaw : null);
+		snapshot.powerEnabled = power.enabled;
+		snapshot.powerState = { state: power.state, text: power.text };
 
-		// 전원
-		if (succeeded(powerResp)) {
-			snapshot.powerEnabled = parsePowerEnabled(powerResp);
+		// 로봇별 실측 조인트 위치(3504)
+		const robots: RobotAxesReading[] = [];
+		for (const r of config.robots) {
+			const raw = await send(probeJointAnglesCmd(r.robot));
+			const nums = succeeded(raw) ? parseDataIdNumbers(raw) : null;
+			robots.push({
+				robot: r.robot, name: r.name, type: r.type, limits: r.limits,
+				angles: nums ? nums.filter((n): n is number => n !== null) : [],
+				...(!nums ? { note: raw ? `조회 실패 STATUS ${parseStatus(raw).code}` : '응답 없음' } : {}),
+			});
 		}
+		snapshot.robots = robots;
+		snapshot.jointAngles = robots[0]?.angles.slice() ?? [];
+		if (config.note) { snapshot.robotsNote = config.note; }
 
-		// 축 각도
-		if (succeeded(anglesResp)) {
-			const nums = extractNumbers(extractDataPayload(anglesResp));
-			// 직교 표현이 섞여 나올 수 있으므로 과도하게 많으면 앞쪽만 사용.
-			snapshot.jointAngles = nums.slice(0, 12);
-		}
-
-		// 직교 좌표 (X, Y, Z, Yaw, Pitch, Roll 순서 가정)
-		if (succeeded(cartResp)) {
-			const nums = extractNumbers(extractDataPayload(cartResp));
-			if (nums.length >= 1) {
+		// 직교 좌표(3506: X, Y, Z, Yaw, Pitch, Roll) — kinematics 가 있는 첫 로봇
+		const cartRobot = cartesianRobotOf(config);
+		snapshot.cartesianRobot = cartRobot;
+		if (cartRobot !== null) {
+			const cartResp = await send(probeCartesianCmd(cartRobot));
+			const nums = succeeded(cartResp) ? parseDataIdNumbers(cartResp) : null;
+			if (nums && nums.length >= 1) {
 				snapshot.cartesian = {
-					x: nums[0] ?? null,
-					y: nums[1] ?? null,
-					z: nums[2] ?? null,
-					yaw: nums[3] ?? null,
-					pitch: nums[4] ?? null,
-					roll: nums[5] ?? null,
+					x: nums[0] ?? null, y: nums[1] ?? null, z: nums[2] ?? null,
+					yaw: nums[3] ?? null, pitch: nums[4] ?? null, roll: nums[5] ?? null,
 				};
 			}
 		}

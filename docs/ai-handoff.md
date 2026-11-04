@@ -1515,7 +1515,7 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 ### 검증
 
 - `npm test` **1608/1608**. 같은 시각 다른 세션이 `src/views/tree/*`·`src/test/index.ts` 를 고치는 중이라 이 세션 파일 4개만 커밋했다.
-- VSIX: 아래.
+- VSIX `dist/gpl-language-support-0.27.8.vsix` 1681184 bytes, SHA-256 `9B5D90801FA7E7BE583C904C94CDCB2AAEACCEEB29489EC3838400ABF5D6E052` — HEAD(d2a7f17)의 깨끗한 worktree 에서 만들었다(worktree `npm test` 1604/1604; 작업 트리의 1608 은 다른 세션의 미커밋 트리 테스트 4건 포함). 경고는 bundle 권장 1건.
 - 실기 미확인 → §3.
 
 ### 남은 일

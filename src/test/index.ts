@@ -156,6 +156,7 @@ import './controller/diagnostics/memoryGuard.test';
 import './controller/commands/unloadRisk.test';
 import './controller/diagnostics/memoryNotice.test';
 import './controller/diagnostics/memoryReadings.test';
+import './views/tree/threadRefreshScheduler.test';
 import './controller/connection/controllerIdentity.test';
 import './controller/deployment/compileAbort.test';
 import './controller/connection/reachabilityRoute.test';

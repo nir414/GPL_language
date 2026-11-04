@@ -48,6 +48,7 @@ import { toInfoItem, toSectionItem, toThreadItem } from './treeItems';
 import { buildSystemInfoItems } from './systemInfoItems';
 import type { SystemInfoResponses } from './systemInfoItems';
 import { controllerMemoryReadings } from '../../controller/diagnostics/memoryReadings';
+import { ThreadRefreshScheduler } from './threadRefreshScheduler';
 import { PROBE_MEMORY_CMD } from '../../controller/diagnostics/resourceProbes';
 import { detectPauseTransition } from './threadPauseTransition';
 import {
@@ -120,6 +121,13 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		if (!this.sysInfoResponses || reading.ip !== getControllerConfig().ip) { return; }
 		this.sysInfo = buildSystemInfoItems({ ...this.sysInfoResponses, memory: reading });
 		this._onDidChangeTreeData.fire(undefined);
+	});
+	/** 정규 폴 사이의 즉시 갱신 예약(1403 상태 이벤트·쓰레드를 움직이는 명령 뒤). */
+	private readonly threadRefresh = new ThreadRefreshScheduler({
+		now: () => Date.now(),
+		setTimer: (fn, ms) => setTimeout(fn, ms),
+		clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+		run: () => this.runScheduledRefresh(),
 	});
 	/** 마지막 시스템 정보 조회 성공 시각(epoch ms, 0=없음) */
 	private lastSystemInfoRefreshAt = 0;
@@ -231,6 +239,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 			}
 		} else {
 			const reason = options?.reason ?? 'disconnect';
+			this.threadRefresh.cancel();
 			this.stopPolling();
 			this.clearCachedControllerState({ keepOnDemandCaches: reason === 'lost' });
 			this._onDidChangeTreeData.fire(undefined);
@@ -310,6 +319,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	 * (이 동안 연결 유실 프로브도 어댑터 폴이 대신 공급한다 — debugBridge.onDebugProbeResult.)
 	 */
 	enterDebugMode(): void {
+		this.threadRefresh.cancel();
 		this.stopPolling();
 		this._debugModeSubscription?.dispose();
 		this._debugModeSubscription = onDebugThreadsUpdated(threads => {
@@ -347,6 +357,29 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 		} finally {
 			this._refreshAllInFlight = false;
 		}
+	}
+
+	/**
+	 * 쓰레드 상태가 곧 바뀐다는 신호(1403 상태 이벤트, 쓰레드를 움직이는 명령의 응답) — 정규 폴(5~15 s)을 기다리지 않고
+	 * 다시 조회한다(2026-11-04). `burst` 는 명령 뒤 전이가 끝날 때까지 짧은 간격으로 몇 번(threadRefreshScheduler).
+	 * 디버그 중에는 어댑터 폴 결과가 들어오므로(enterDebugMode) 무시한다.
+	 */
+	requestThreadRefresh(reason: string, mode: 'once' | 'burst' = 'once'): void {
+		if (!this._connected || this._debugModeSubscription) { return; }
+		if (mode === 'burst') { this.threadRefresh.burst(reason); } else { this.threadRefresh.request(reason); }
+	}
+
+	/** 예약 갱신 1회 — 진행 중인 폴이 있으면 끝나길 기다렸다가 돌고, 정규 폴 간격은 이 조회 뒤로 다시 잡는다. */
+	private async runScheduledRefresh(): Promise<void> {
+		const active = () => this._connected && !this._debugModeSubscription;
+		if (!active()) { return; }
+		if (this._refreshInFlight && this._refreshPromise) {
+			try { await this._refreshPromise; } catch { /* noop */ }
+		}
+		if (!active() || this._refreshInFlight) { return; }
+		this._refreshPromise = this.doRefresh(false);
+		await this._refreshPromise;
+		if (active()) { this.startPolling(); }
 	}
 
 	/**
@@ -580,6 +613,7 @@ export class ControllerTreeProvider implements vscode.TreeDataProvider<Controlle
 	}
 
 	dispose(): void {
+		this.threadRefresh.cancel();
 		this._memoryReadingSubscription.dispose();
 		this._debugModeSubscription?.dispose();
 		this._debugModeSubscription = undefined;

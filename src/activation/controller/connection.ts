@@ -38,6 +38,7 @@ import {
 	setIdlePingActive,
 	setIdlePingObserver,
 	setSessionControllerOverride,
+	setThreadStateCommandObserver,
 	testConnection,
 } from '../../controller/connection/controllerConnection';
 import { onDebugProbeResult } from '../../controller/debugging/debugBridge';
@@ -436,6 +437,9 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		host.healthMonitor?.noteDisruptiveTimeout({ command: failure.command, kind: failure.kind, detail: failure.detail, at: failure.at });
 	});
 	context.subscriptions.push({ dispose: () => setDisruptiveCommandObserver(null) });
+	// 쓰레드를 움직이는 명령(Start·Stop·Execute 등)의 응답 → 트리가 전이가 끝날 때까지 짧은 간격으로 다시 조회(2026-11-04).
+	setThreadStateCommandObserver(command => { host.controllerTree?.requestThreadRefresh(`${command} 뒤`, 'burst'); });
+	context.subscriptions.push({ dispose: () => setThreadStateCommandObserver(null) });
 	// 힌트 공급자: keep-alive 보관 소켓 오류 / 대시보드 프로브 실패 (1403 은 ensureRuntimeConsole 의 상태 구독에서)
 	setHeldSocketObserver(event => {
 		// FIN(by-peer)은 제어기의 정상 유휴 종료일 수 있어 힌트로 쓰지 않는다 — error(ECONNRESET·keepalive ETIMEDOUT)만.

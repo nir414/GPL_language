@@ -68,6 +68,16 @@ const SHOW_DETAIL_BY_ARG = new Map<string, string>([
     ['variable', 'thread variable'],
 ]);
 
+// 쓰레드 상태(목록·Running/Paused/Stopped)를 바꾸는 명령. 트리가 응답 직후 짧은 간격으로 다시 조회하는 근거다
+// (views/tree/threadRefreshScheduler). `Set Break`·`Compile`·`Load` 처럼 쓰레드를 움직이지 않는 상태 변경은 넣지 않는다.
+const THREAD_STATE_COMMANDS: ReadonlySet<string> = new Set(['start', 'stop', 'execute', 'continue', 'step', 'break', 'softestop', 'unload']);
+
+/** 이 명령이 쓰레드 상태를 바꿀 수 있는가(보낸 뒤 쓰레드 목록을 곧 다시 볼 이유가 있는가). */
+export function affectsThreadState(command: string): boolean {
+    const name = command.trim().match(/^([A-Za-z]+)/)?.[1]?.toLowerCase();
+    return name !== undefined && THREAD_STATE_COMMANDS.has(name);
+}
+
 export function classifyConsoleCommand(command: string): ConsoleCommandClassification {
     const normalized = command.trim().replace(/\s+/g, ' ');
     const match = normalized.match(/^([A-Za-z]+)(?:\b|\()/);

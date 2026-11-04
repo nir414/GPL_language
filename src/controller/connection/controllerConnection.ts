@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { appendLiveLog } from '../../log/liveLogTerminal';
-import { formatConsoleCommandClassification, isReadOnlyConsoleCommand } from '../commands/consoleCommandClassifier';
+import { affectsThreadState, formatConsoleCommandClassification, isReadOnlyConsoleCommand } from '../commands/consoleCommandClassifier';
 import { ResponseBodyStreamer } from './trafficResponseBody';
 import { sendConsoleCommand, recordTrafficLine, TrafficDirection } from './consoleSocket';
 import type { CommandResponse } from './consoleSocket';
@@ -391,6 +391,7 @@ export function sendCommandDetailed(
 		try {
 			response = await sendCommandDetailedInternal(wire, config, options);
 		} catch (err) {
+			noteThreadStateCommand(wire);
 			noteRecentCommand(wire, undefined, err);
 			// 채널 교란 가능 명령이 응답 없이 끝났으면 연결 건강 모니터에 알린다 → recovering (2026-08-31).
 			// 정책이 보류한 경우(PolicyError)는 여기 오지 않는다 — 제어기에 아무것도 보내지 않았으므로.
@@ -398,6 +399,7 @@ export function sendCommandDetailed(
 			attachUnloadRiskGuidance(wire, controllerId, err);
 			throw err;
 		}
+		noteThreadStateCommand(wire);
 		noteRecentCommand(wire, response);
 		if (policyOn) {
 			commandPolicy.after(wire, response.raw, response.meta.statusTagReceived, Date.now());
@@ -549,6 +551,21 @@ function noteRecentCommand(command: string, response: CommandResponse | undefine
 	} else {
 		recentCommands.add({ command, at, outcome: 'no-status' });
 	}
+}
+
+// ── 쓰레드를 움직이는 명령의 응답 관찰자 (2026-11-04) ──────────────────────
+// Start·Stop·Execute·Continue 등은 응답 뒤 수백 ms~수 초에 걸쳐 쓰레드 상태가 바뀐다. 보낸 경로(트리·명령 팔레트·배포·
+// AI 브리지)가 저마다 갱신을 부르지 않아도, 응답(실패 포함 — 실행됐을 수 있다)을 여기서 한 번 알려 트리가 짧은 간격으로
+// 다시 조회하게 한다. 판정 정본은 consoleCommandClassifier.affectsThreadState.
+let _threadStateCommandObserver: ((command: string) => void) | null = null;
+
+export function setThreadStateCommandObserver(fn: ((command: string) => void) | null): void {
+	_threadStateCommandObserver = fn;
+}
+
+function noteThreadStateCommand(command: string): void {
+	if (!affectsThreadState(command)) { return; }
+	try { _threadStateCommandObserver?.(command.trim().replace(/\s+/g, ' ')); } catch { /* 관찰자 예외는 무시 */ }
 }
 
 /** 이 창에서 보낸 최근 상태 변경 명령(오래된 순, 최대 30건). */

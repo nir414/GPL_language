@@ -308,9 +308,13 @@ export class ExtensionHost {
 					this.healthMonitor?.reportHint('runtime-console', `${status.state}${status.lastErrorCode ? ` ${status.lastErrorCode}` : ''} — ${status.reason}`);
 				}
 			});
+			// 1403 상태 이벤트(`<E>1,N</E>` 등 — 콘솔 출력 줄은 오지 않는다): 디버그 중이면 어댑터 즉시 폴,
+			// 아니면 트리가 정규 폴을 기다리지 않고 쓰레드 목록을 다시 본다(2026-11-04).
 			runtimeConsole.onDidReceiveData(() => {
 				if (this.isDebugSessionActive) {
 					fireDebugPollTrigger();
+				} else {
+					this.controllerTree?.requestThreadRefresh('런타임 콘솔 상태 이벤트');
 				}
 			});
 			this.runtimeConsoleHooksBound = true;

@@ -19,6 +19,7 @@ import { test } from './harness';
  *  R6 설정 키 — 코드가 읽는 `gpl.*` 설정 키는 package.json 에 선언돼 있어야 한다(오타 방지).
  *  R7 판정 정본(SSOT) 우회 금지 — "이 판단은 여기서만 한다"고 정한 규칙을 다른 모듈이 손으로 다시 구현하지 않는다.
  *  R9 기능 분류(area) — 계층 폴더의 파일은 책임에 맞는 하위 폴더에 두고 계층 루트에 다시 쌓지 않는다. test/ 는 src 폴더를 거울처럼 따른다.
+ *  R10 크기 상한 — 1,000줄 넘는 파일·150줄 넘는 이름 있는 함수는 SIZE_DEBT 목록과 architecture.md §7 에 올라 있어야 한다(내려가면 지운다).
  */
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -437,4 +438,101 @@ test('구조 R7: 판정 정본(SSOT)을 우회해 같은 판단을 다시 구현
         }
     }
     assert.deepStrictEqual(violations, [], `판정 정본 우회:\n  ${violations.join('\n  ')}`);
+});
+
+// ─── R10: 크기 상한은 분해 신호 — 넘는 것은 부채 표에 올라 있어야 한다 (2026-11-04) ──────────────────
+// CLAUDE.md 구조 규칙 2(파일 1,000줄·함수 150줄)는 문서에만 있어서 조용히 무너졌다 — 감사 결과 150줄을 넘는 함수
+// 32개 중 부채 표(architecture.md §7)에 오른 것은 하나뿐이었다. 그래서 측정을 테스트로 옮기고, 넘는 것은 아래 목록과
+// §7 양쪽에 있어야 통과하게 한다. 분해해서 상한 아래로 내려가면 목록에서 지우라고 실패한다(낡은 부채 기록 방지).
+// 함수는 이름이 있는 것(선언·메서드·접근자·생성자·이름 있는 변수/속성에 대입한 화살표 함수)만 잰다.
+
+const FILE_LINE_LIMIT = 1000;
+const FUNCTION_LINE_LIMIT = 150;
+
+/** 상한을 넘는 파일(`모듈`)·함수(`모듈#이름`) — 정본은 architecture.md §7. 줄 수는 적지 않는다(바뀔 때마다 고치지 않게). */
+const SIZE_DEBT: ReadonlySet<string> = new Set([
+    // 파일
+    'controller/runtime/runtimeConsole',
+    'debug/session/gplDebugSession',
+    'language/dictionary/gplDictionaryData', // 내장 사전 데이터 표 — 로직이 아니라 분해 대상이 아니다(§7)
+    // activation 의 배선 함수 — 클로저 하나에 명령 등록이 몰려 있다(deploy.ts 분할 방식으로 형제 모듈로)
+    'activation/ai/aiDebugCommands#activateAiDebugCommands',
+    'activation/controller/connection#activateConnection',
+    'activation/controller/consoleCommands#activateConsoleCommands',
+    'activation/controller/controllerCommands#activateControllerCommands',
+    'activation/controller/treeCommands#activateTreeCommands',
+    'activation/debug/breakpointCommands#activateBreakpointCommands',
+    'activation/debug/debugIntegration#activateDebugIntegration',
+    'activation/deploy/deployReport#reportDeploySuccess',
+    'activation/deploy/projectContext#activateProjectContext',
+    'activation/deploy/runDeploy#runDeploy',
+    'activation/deploy/saveToFlashCommand#registerSaveToFlashCommand',
+    'activation/language/dependencyCheckCommands#registerDependencyCheck',
+    'activation/language/languageFeatures#activateLanguageFeatures',
+    'activation/remote/ftpCommands#activateFtpCommands',
+    // 제어기·디버그
+    'controller/connection/consoleSocket#attempt',
+    'controller/deployment/deployCompileStage#runCompilePhase',
+    'controller/deployment/deployTargetStage#resolveDeployTarget',
+    'controller/deployment/deployUploadStage#runUploadAndStopPhase',
+    'controller/runtime/runtimeConsole#connectInternal',
+    'debug/evaluation/variableEvaluator#queryVariableStructuredSmart',
+    'debug/session/gplDebugSession#_pollThreadStates',
+    'debug/session/gplDebugSession#attachRequest',
+    'debug/session/gplDebugSession#evaluateRequest',
+    'debug/session/gplDebugSession#setBreakPointsRequest',
+    'debug/session/gplDebugSession#variablesRequest',
+    // 언어·provider·뷰
+    'language/syntax/gplParser#parseDocumentUncached',
+    'project/gpr/sourcePromotion#planSourcePromotion',
+    'providers/intellisense/hoverProvider#provideHover',
+    'providers/navigation/definitionProvider#provideDefinition',
+    'providers/navigation/referenceProvider#provideReferences',
+    'providers/structure/foldingRangeProvider#provideFoldingRanges',
+    'views/tree/snapshotMarkdown#buildDiagnosticSnapshotMarkdown',
+]);
+
+function measureOversized(): Map<string, number> {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ts: typeof import('typescript') = require('typescript');
+    const over = new Map<string, number>();
+    for (const [mod, text] of sources) {
+        if (layerOf(mod) === 'test') { continue; }
+        const lines = text.split('\n').length;
+        if (lines > FILE_LINE_LIMIT) { over.set(mod, lines); }
+        const sf = ts.createSourceFile(`${mod}.ts`, text, ts.ScriptTarget.Latest, true);
+        const visit = (n: import('typescript').Node): void => {
+            let name: string | undefined;
+            if ((ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n) || ts.isGetAccessor(n) || ts.isSetAccessor(n)) && n.name && n.body) {
+                name = n.name.getText(sf);
+            } else if (ts.isConstructorDeclaration(n) && n.body) {
+                name = 'constructor';
+            } else if ((ts.isArrowFunction(n) || ts.isFunctionExpression(n))
+                && (ts.isVariableDeclaration(n.parent) || ts.isPropertyDeclaration(n.parent) || ts.isPropertyAssignment(n.parent))) {
+                name = n.parent.name.getText(sf);
+            }
+            if (name) {
+                const start = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line;
+                const end = sf.getLineAndCharacterOfPosition(n.getEnd()).line;
+                if (end - start + 1 > FUNCTION_LINE_LIMIT) { over.set(`${mod}#${name}`, end - start + 1); }
+            }
+            ts.forEachChild(n, visit);
+        };
+        visit(sf);
+    }
+    return over;
+}
+
+test('구조 R10: 1,000줄 넘는 파일·150줄 넘는 함수는 부채 목록과 architecture.md §7 에 올라 있다', () => {
+    const over = measureOversized();
+    const unlisted = [...over].filter(([k]) => !SIZE_DEBT.has(k)).map(([k, n]) => `${k} (${n}줄)`);
+    assert.deepStrictEqual(unlisted, [],
+        `크기 상한 초과가 부채 목록에 없다 — 분해하거나(협력자 모듈 + 좁은 io), SIZE_DEBT 와 architecture.md §7 에 이유와 함께 올릴 것:\n  ${unlisted.join('\n  ')}`);
+    const stale = [...SIZE_DEBT].filter(k => !over.has(k));
+    assert.deepStrictEqual(stale, [], `상한 아래로 내려간 항목이 부채 목록에 남아 있다 — SIZE_DEBT 와 §7 에서 지울 것:\n  ${stale.join('\n  ')}`);
+
+    const doc = fs.readFileSync(path.join(ROOT, 'docs/development/architecture.md'), 'utf8');
+    const section7 = doc.slice(doc.indexOf('## 7.'), doc.indexOf('## 8.'));
+    const undocumented = [...SIZE_DEBT].filter(k => !section7.includes(k.includes('#') ? k.split('#')[1] : k));
+    assert.deepStrictEqual(undocumented, [], `architecture.md §7 에 없는 부채 항목:\n  ${undocumented.join('\n  ')}`);
 });

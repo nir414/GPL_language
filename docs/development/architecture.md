@@ -64,11 +64,11 @@ flowchart BT
 | `config.ts` | 설정 값 정규화 단일 출처, `EXTENSION_VERSION` | `language` | 허용 |
 | `controller/` | 제어기 축 — 소켓·명령 정책·응답 파서·배포 파이프라인(업로드 진행 집계 `uploadProgress` 포함)·잠금·중단점·상태 판정·AI 정책 | `project`, `util`, `log` | 허용 목록 9개만 (아래 §3) |
 | `language/vscode/` | `SymbolCache` 조립·워크스페이스 소스 로딩·VS Code 완성/문서 표현 | `language`, `project`, `util`, `config` | 허용(접착 계층) |
-| `debug/` | DAP 어댑터(`gplDebugSession`)·구성 provider·정지/스텝 판정·launch.json 편집 | `controller`, `project`, `language`, `util` | 허용 목록 2개만 |
-| `views/` | 트리·상태바·대시보드와 그 표시 규칙 | `controller`, `util`, `config` | 허용 목록 3개만 |
+| `debug/` | DAP 어댑터(`gplDebugSession`)·구성 provider·정지/스텝 판정·launch.json 편집 | `controller`, `project`, `language`, `util` | 허용 목록 3개만 |
+| `views/` | 트리·상태바·대시보드와 그 표시 규칙 | `controller`, `util`, `config` | 허용 목록 4개만 |
 | `providers/` | VS Code 언어 provider 구현 13종 + 공용 대응표(`symbolKinds`: 개요 분류 → `SymbolKind`, R7 정본) | `language`, `project`, `util`, `config`, `language/vscode` | 전부 허용(접착 계층) |
 | `activation/` | 명령 그룹별 `activateXxx(host)` + `ExtensionHost` + 공용 제어기 조작(`controllerOps`) | 위 전부 | 전부 허용(접착 계층) |
-| `extension.ts` | `activate()`/`deactivate()` — 배선만(195줄) | 전부 | 허용 |
+| `extension.ts` | `activate()`/`deactivate()` — 배선만 | 전부 | 허용 |
 | `test/` | Node 단독 러너(`harness.ts`) + 순수 모듈 테스트 + 구조 테스트 | 전부 | **금지** (러너가 vscode 없이 돈다) |
 
 같은 계층 안의 import 는 항상 허용된다. `import type` 도 방향 규칙을 따른다(설계상의 의존이므로) —
@@ -254,7 +254,7 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 | `controller/projects/projectPicker` · `gprSyncCommand` | QuickPick·WorkspaceEdit·FileSystemWatcher 를 쓰는 명령 래퍼 — 규칙은 `projectPickerCore`·`project/gpr/gprSync`·`project/gpr/gprFolderSync`(순수) |
 | `debug/session/gplDebugSession` · `activateDebug` · `attachPreflight` | DAP 세션 자체(`vscode.debug`)·구성 provider·Attach 전 배포/정지 절차(모달·출력 채널) |
 | `project/sources/projectFileScope` · `promoteSourceCommand` | `workspace.findFiles`·명령 등록 |
-| `views/*` 3개 | TreeDataProvider·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`compileStaleBadge`·`uploadProgressBar`(순수) |
+| `views/*` 4개 (`connectionStatusBar`·`controllerDashboardPanel`·`controllerTreeProvider`·`treeItems`) | TreeDataProvider·TreeItem·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`threadRefreshScheduler`·`compileStaleBadge`·`uploadProgressBar`(순수) |
 | `controller/automation/exportAgentSetup` · `log/liveLogTerminal` | 파일 대화상자·터미널 |
 | `config` · `extension` | 루트 모듈 |
 
@@ -414,31 +414,50 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 - **러너**: `src/test/harness.ts`(의존성 0) + `src/test/index.ts`(수동 등록). `npm test` = `tsc` + `node out/test/index.js`.
   테스트 파일은 `src/test/<계층>/<area>/` 에 검사 대상과 같은 폴더로 둔다(§2.1 `test/`).
   새 테스트 파일은 `index.ts` 에 한 줄 import — 잊으면 구조 테스트 R4 가 실패한다.
-- **대상**: 순수 모듈 전부(2026-09-07 기준 820건). vscode 를 import 하는 모듈은 이 러너로 못 돈다 — 그래서
+- **대상**: 순수 모듈 전부(건수는 `npm test` 마지막 줄과 ai-handoff 헤더가 정본). vscode 를 import 하는 모듈은 이 러너로 못 돈다 — 그래서
   판단 로직을 순수 모듈로 빼는 것이 곧 테스트 가능성이다.
-- **구조 테스트** `architecture.test.ts` (9건): R1 vscode 허용 목록 · R2 계층 방향 · R3 런타임 순환 · R4 테스트 등록 ·
-  R5 package.json↔명령 · R6 package.json↔설정 키 · **R7 판정 정본(SSOT) 우회 금지**(§3.2.1) · R8 채널 이름 · R9 controller 기능 분류.
+- **구조 테스트** `architecture.test.ts`: R1 vscode 허용 목록 · R2 계층 방향 · R3 런타임 순환 · R4 테스트 등록 ·
+  R5 package.json↔명령 · R6 package.json↔설정 키 · **R7 판정 정본(SSOT) 우회 금지**(§3.2.1) · R8 채널 이름 · R9 기능 분류(area) ·
+  **R10 크기 상한**(§7 — 1,000줄 파일·150줄 함수는 `SIZE_DEBT` 와 §7 에 있어야 통과, 내려가면 지우라고 실패).
   실패 메시지가 위반 목록을 그대로 보여 준다.
 - **컴파일러 게이트**(tsconfig): `strict` + `noUnusedLocals` · `noUnusedParameters` · `noImplicitReturns` ·
   `noImplicitOverride` · `noFallthroughCasesInSwitch`. 쓰지 않는 매개변수는 `_` 접두.
 - **하드웨어 검증이 필요한 것**은 코드로 강제하지 않고 `docs/ai-handoff.md` §3 체크리스트로 남긴다(하드 규칙 6).
 
-## 7. 알고 있는 부채 (2026-10-22 소스 기준)
+## 7. 알고 있는 부채 (2026-11-04 소스 기준)
+
+### 7.1 크기 상한 초과 (R10 이 강제 — 목록 정본은 `architecture.test.ts` 의 `SIZE_DEBT`)
+
+CLAUDE.md 구조 규칙 2(파일 1,000줄·함수 150줄)를 넘는 것. 2026-11-04 감사에서 150줄 넘는 함수 32개 중 이 표에 있던 것이
+하나뿐이라 측정을 테스트로 옮겼다. 분해는 기능 추가와 섞지 않고 별도 커밋으로, 동작 불변은 재생 하니스·출력 고정 테스트로 보인다(규칙 4).
+
+| 묶음 | 항목 | 분해 방향 |
+| --- | --- | --- |
+| 파일 | `controller/runtime/runtimeConsole`(약 1,370줄) · `debug/session/gplDebugSession`(약 3,060줄) | 아래 표의 상태 머신 분리 |
+| 파일(예외) | `language/dictionary/gplDictionaryData`(약 3,030줄) | GPL Dictionary 데이터 표 — 로직이 아니라 나누지 않는다 |
+| activation 배선 | `activateFtpCommands`(약 770) · `activateAiDebugCommands`(약 750) · `activateControllerCommands`(약 670) · `activateConnection`(약 540) · `activateLanguageFeatures`(약 470) · `activateDebugIntegration`(약 420) · `activateProjectContext`(약 380) · `activateTreeCommands`(약 380) · `activateBreakpointCommands` · `activateConsoleCommands` · `registerSaveToFlashCommand` · `registerDependencyCheck` · `reportDeploySuccess` · `runDeploy` | `deploy.ts` 분할 방식 — 명령 묶음별 형제 모듈 + 공유 상태는 컨텍스트 객체 |
+| 디버그 | `_pollThreadStates`(약 360) · `attachRequest` · `variablesRequest` · `setBreakPointsRequest` · `evaluateRequest` · `queryVariableStructuredSmart` | 정지 판정을 상태 타입 + 순수 전이(`debug/execution/`)로, DAP 요청은 협력자 모듈로 |
+| 제어기 | `attempt`(consoleSocket, 약 280) · `connectInternal`(runtimeConsole, 약 250) · `runCompilePhase`(약 330) · `runUploadAndStopPhase` · `resolveDeployTarget` | 소켓 이벤트 처리기 분리 · 단계 안의 하위 단계 |
+| 언어·provider·뷰 | `parseDocumentUncached`(약 460) · `provideReferences`(약 330) · `provideDefinition` · `provideHover` · `provideFoldingRanges` · `planSourcePromotion` · `buildDiagnosticSnapshotMarkdown` | 문 종류별 순수 단계 · 판정은 `language/analysis` 로 |
+
+### 7.2 그 밖의 부채
 
 | 항목 | 크기 | 상태 |
 | --- | --- | --- |
-| `debug/session/gplDebugSession.ts` | 5,753줄 → 3,056줄 + 협력자 10모듈 | **분해 1차 완료(2026-10-27)** — 남은 것은 DAP 요청 처리와 `_pollThreadStates` 정지 상태 머신(364줄). 실기기 검증 전(ai-handoff §3) |
+| `debug/session/gplDebugSession.ts` | 5,753줄 → 약 3,060줄 + 협력자 10모듈 | **분해 1차 완료(2026-10-27)** — 남은 것은 DAP 요청 처리와 `_pollThreadStates` 정지 상태 머신(플래그 `_pollInFlight`·`_userActionInFlight`·`_pollRetryRequested`·`_pendingAction`·`_pendingContinue*` 조합, §7.1). 실기기 검증 전(ai-handoff §3) |
 | `controller/deployment/deployService.ts` `deployLocked` | 단계 모듈로 분리됨(2026-10-27) | 오케스트레이터 약 70줄 — 단계 본문은 `deploy*Stage.ts`, 동작 불변 |
-| `controller/runtime/runtimeConsole.ts` | 약 1,368줄 | 재연결 상태 머신 → 명시적 상태 머신(로드맵 Phase 3) |
+| `controller/runtime/runtimeConsole.ts` | 약 1,370줄 | 재연결 상태 머신 → 명시적 상태 머신(로드맵 Phase 3). `_state` 는 유니온이지만 전이 함수가 없고 `_isConnected`·`_explicitStop`·`_reconnectStopped`·`disposed` 대입이 13곳에 흩어져 있다 — `runtimeConsoleGuards.decideWatchdogAction` 처럼 순수 `decideReconnect` 로 |
 | `activation/deploy/deploy.ts` | 1,488줄 한 함수 → 허브 70줄 + 형제 모듈 15개 | **분할 완료(2026-10-27)** — 클로저 공유 상태는 `deployContext`, 순수 판정은 `deployModes`·`automationResult`·`deployTargetRules`·`autoOnSaveRules`(테스트 있음). 가장 큰 잔여는 `deployReport.ts`(약 400줄, 결과 보고 세 갈래) |
 | `views/tree/controllerTreeProvider.ts` | 약 680줄 | 2026-10-27 분리 완료(섹션·보고서·노드·표시 모듈) |
 | 1403 상태 문구 두 표현 | `controller/runtime/runtimeConsolePresentation`(알림, 영문) vs `views/tree/runtimeConsoleTreePresentation`(트리, 한국어) | 폴링 판정 정규식이 다르다 — 실기기 문구 대조 후 통일 결정 |
 | provider 별 수신자 해석 사본 | definition·hover·완성·디버그 hover | **정리됨(2026-09-10)** — 해석은 `language/analysis/receiverType`, 조립은 `providers/intellisense/receiverContext` 하나로. R7 이 재발을 막는다 |
-| `providers/navigation/referenceProvider.ts` | 1,187줄 → 432줄 | **분해 완료(2026-10-27)** — 대상 복원·검색 계획·출현 스캔·중복 제거·트레이스 문구는 `language/analysis/reference{Target,Scan,Candidates,Trace}`(vscode 없음, 테스트 있음)로 옮겼고 본문은 그대로다. 동작 동일성은 원본 provider 를 vm 하니스로 돌려 얻은 표본(`referenceScan.test`)과 워크스페이스 검색 경로 대조로 확인 |
+| `providers/navigation/referenceProvider.ts` | 1,187줄 → 432줄 | **파일 분해 완료(2026-10-27)** — 단 `provideReferences` 본문(약 330줄)은 남았다(§7.1) — 대상 복원·검색 계획·출현 스캔·중복 제거·트레이스 문구는 `language/analysis/reference{Target,Scan,Candidates,Trace}`(vscode 없음, 테스트 있음)로 옮겼고 본문은 그대로다. 동작 동일성은 원본 provider 를 vm 하니스로 돌려 얻은 표본(`referenceScan.test`)과 워크스페이스 검색 경로 대조로 확인 |
 | `config.ts` 안의 언어 헬퍼 | `getQualifiedWordAtPosition`·`isInCommentOrString`·`GPL_CONTROL_KEYWORDS` | `language/` 로 옮길 후보(`ciEq` 는 옮겼다) |
 | `controller/protocol/` 의 `gprParser`·`projectSelection`·`sourceCandidates` | `responseParser.ts` 분해(2026-10-27)로 분리됐으나 영역은 그대로 | 제어기 응답이 아니라 프로젝트 판정이므로 `project/` 로 옮길 후보 — 영역 이동은 별도 작업(배럴 경유 importer 갱신 필요) |
 | `SymbolCache` 책임 혼합 | 인덱스·프로젝트 범위·호스트·소스 로더·표현을 독립 모듈로 구성 | **분리 완료(2026-10-22)** — 공개 메서드 28개 유지, 별도 루트 호환 래퍼 없이 내부 import 이동 |
-| `controller-mcp/src/index.js` | 약 2,351줄 | MCP 서버 도구 정의 한 파일 — 별도 하위 프로젝트, 테스트 137건 |
+| `controller-mcp/src/index.js` | 약 2,830줄 | MCP 서버 도구 정의 한 파일 — 별도 하위 프로젝트(R10 측정 밖) |
+| SSOT 후보(2026-11-04 감사) | 기본 포트 1402/1403 리터럴(`controllerConnection`·`reachability` — 정본 `channelNames`) · `<STATUS>` 제거 정규식 5벌(`resourceProbes`·`io/dio`·`errorLogParser`·`threadParser`·`showVariableParser`) · `Show Thread <name>` 조립 6곳 · `getConfiguration` 직접 호출 74곳(`config.ts` 우회) | 하나씩 정본을 세우고 R7 에 한 줄씩 |
+| 루트 예외 | `controller-mcp/`(하위 프로젝트)·`samples/`(F5 개발 호스트 예제) | CLAUDE.md 저장소 구조에 명시된 예외(§2.4) |
 
 ## 8. 관련 문서
 
@@ -449,7 +468,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 
 ### 메모리 사전 검사
 
-`controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석해 수준(ok·warning·critical·unknown)을 판정하는 순수 모듈입니다. **경고 전용입니다** — 어느 수준도 Compile/Start/배포를 막지 않습니다(2026-10-26 사용자 결정; 종전 `blockMb` 차단은 실행 중 앱의 런타임 메모리 ~3 MB 때문에 정지 전 값으로 "잘 돌아가는 배포"를 항상 막았습니다). `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사해 Output·상태 표시줄·`getLastMemoryCheck()`에 남기고, `deployService`는 업로드 전에도 검사하되 그 값은 "실행 중 메모리 포함" 주석을 달아 `precheckWarnings`에만 넣고, 정지 뒤 Compile 직전 슬롯 측정이 있으면 그것으로 `result.memoryPrecheck`를 덮어씁니다. `memoryGuard.warnMb`(기본 4 MB)·`criticalMb`(기본 2.5 MB, 옛 `blockMb`는 deprecated 대체 읽기)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 측정 실패(unknown)는 경고로 알리고 계속합니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
+`controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석해 수준(ok·warning·critical·unknown)을 판정하는 순수 모듈입니다. **경고 전용입니다** — 어느 수준도 Compile/Start/배포를 막지 않습니다(2026-10-26 사용자 결정; 종전 `blockMb` 차단은 실행 중 앱의 런타임 메모리 ~3 MB 때문에 정지 전 값으로 "잘 돌아가는 배포"를 항상 막았습니다). 측정값의 정본은 `controller/diagnostics/memoryReadings.ts`(2026-11-03)다 — 누가 보냈든 `Show Memory` 응답은 내부 송신이 기록하고, 상태 변경 명령·FTP 쓰기가 그 전 측정을 무효화하며, 트리 시스템 정보·상태 표시줄 배지·검사가 같은 값을 읽는다(R7: 문자열로 직접 보내지 않는다). `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사하되 측정 뒤 상태 변경이 없고 15 s 안이면 다시 재지 않고, 결과를 Output·`getLastMemoryCheck()`에 남기고, `deployService`는 업로드 전에도 검사하되 그 값은 "실행 중 메모리 포함" 주석을 달아 `precheckWarnings`에만 넣고, 정지 뒤 Compile 직전 슬롯 측정이 있으면 그것으로 `result.memoryPrecheck`를 덮어씁니다. `memoryGuard.warnMb`(기본 4 MB)·`criticalMb`(기본 2.5 MB, 옛 `blockMb`는 deprecated 대체 읽기)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 측정 실패(unknown)는 경고로 알리고 계속합니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
 
 사람 화면의 경고 알림은 `controller/diagnostics/memoryNotice.ts`(순수)가 정합니다 — 제어기 IP별 마지막 수준을 기억해 나빠질 때(ok→warning, warning→critical)나 직전 알림 대비 0.5 MB 이상 줄었을 때만 알리고, 한 배포(작업 범위) 안에서는 최대 1회, 지속 상태는 상태 표시줄 항목(`$(warning) Free 2.96 MB`, 클릭 `gpl.controller.showMemoryStatus`)이 맡습니다. AI 결과 필드(`memoryPrecheck`·`precheckWarnings`)는 이 규칙과 무관하게 매번 남습니다.
 

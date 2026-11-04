@@ -94,7 +94,8 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
 1. **두 단계 폴더** — `src/<계층>/<area>/<파일>`. 새 파일은 반드시 기존 area 안에 두고, 새 area 가 필요하면
    `architecture.test.ts` 의 `LAYER_AREAS` 와 architecture.md §2.1 표를 같은 커밋에서 고친다. 저장소 루트에는 도구
    규약(npm·tsc·git·vsce·MkDocs·AI 도구)이 요구하는 파일만 둔다 — 새 폴더는 `assets/`·`docs/`·`scripts/` 안에.
-2. **크기 상한은 분해 신호** — 파일 1,000줄 또는 함수/메서드 150줄을 넘기면 architecture.md §7 부채 표에 올리고,
+2. **크기 상한은 분해 신호** — 파일 1,000줄 또는 함수/메서드 150줄을 넘기면 architecture.md §7 부채 표에 올리고
+   (구조 테스트 R10 이 측정해 `SIZE_DEBT`·§7 에 없으면 실패한다),
    다음 작업에서 "협력자 모듈 + 좁은 io 인터페이스" 패턴(`debug/session/sessionIo.ts` 사례)이나 "단계 모듈 + 컨텍스트
    객체"(`controller/deployment/deployContext.ts` 사례)로 나눈다. 분해는 기능 추가와 섞지 않는다(별도 커밋).
 3. **순수 먼저, 접착은 얇게** — 판단·변환·포맷은 vscode·소켓 없는 순수 모듈 + 단위 테스트로 만들고, vscode 는
@@ -114,7 +115,8 @@ Programming Language) 언어 지원(IntelliSense, 정의 이동, 개요, 진단)
   `docs/ai-handoff.md` §4 참조. 테스트는 `src/test/` 에 src 와 같은 폴더 구조로 둔다.
 - `assets/` — VSIX 에 실리는 정적 자원: `icons/`(확장·뷰 아이콘), `webview/`(대시보드 HTML), `syntaxes/`(TextMate 문법),
   `language-configuration.json`. package.json 의 `contributes`·소스의 `extensionUri` 경로가 가리키므로 옮기면 함께 고친다.
-- `scripts/` — 빌드/패키징 스크립트 (`package.js`: preflight + bump + vsce 실행).
+- `scripts/` — 빌드/패키징 스크립트 (`package.js`: preflight + bump + vsce 실행). `scripts/dev/` 는 옮기고 나누는 변경의
+  동작 불변을 보이는 재생 하니스(`deployReplay.js`·`compareTreeProvider.js`, 구조 규칙 4).
 - `controller-mcp/` — 제어기 구동용 MCP 서버(별도 하위 프로젝트, VSIX에 미포함).
 - `docs/` — 인계 문서(`ai-handoff.md`), 개발 문서(`development/`), 릴리스 절차(`releases/`), 외부 프로젝트 요청 수신함
   (`requests.md`), MkDocs 빌드 의존성(`requirements.txt`). 사이트 빌드 결과는 `dist/site/`.

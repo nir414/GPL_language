@@ -914,7 +914,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GA ~ §1-GJ)만 둔다.
+본문에는 **최근 10개 세션**(§1-GK ~ §1-GT)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -923,8 +923,8 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-FZ (2026-10-02 ~ 10-26, §1-FR 2건) | 48 |
-| (본문 아래) | §1-GA ~ §1-GJ (2026-10-26~27) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GJ (2026-10-02 ~ 10-27, §1-FR 2건) | 58 |
+| (본문 아래) | §1-GK ~ §1-GT (2026-10-27 ~ 11-03) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -1116,10 +1116,10 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GB | 10-26 | **수신함 2건** — 메모리 사전 검사 경고 전용(`criticalMb`, Stop 뒤 재측정) · 원격 사본 정의 찾기에 로컬 프로젝트 매핑(`remoteSourceMapping.ts`)·「로컬 열기」. 0.18.3 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GC | 10-27 | **사용자 메모 4건** — `GPL: Unload Project`·그룹 대상 Unload 위험 · 메모리 심각 시 계속/취소 모달(`MEMORY_CHECK`) · Project.gpr 외부 변경 워처+배포 전 대조(`gprFolderSync.ts`) · AI 조회 요청은 Output 안 엶. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GD | 10-27 | **src/ 전 계층 area 재배치** — language·project·debug·providers·views·activation 하위 폴더화, test/ 거울 구조, R9 일반화(`LAYER_AREAS`). 232개 이동, 동작 변경 없음. 0.19.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GE | 10-27 | **시작 시 Output 강제 열기 제거 · trace 기본 verbose** — 활성화·인덱싱 완료 뒤 `show(true)` 2곳 삭제, `DEFAULT_TRACE_SERVER_LEVEL`. 0.19.1 | [2026-10](archive/handoff/2026-10.md) |
+| §1-GF | 10-27 | **거대 파일 분해·루트 정리·조회 성능** — 세션/배포/트리/배포 명령 4건을 모듈로, old/new 재생 하니스로 동일성 확인, `assets/`·탐색기 중첩, 경로 판정 캐시. 0.19.2 | [2026-10](archive/handoff/2026-10.md) |
+| §1-GG | 10-27 | **Requires 헤더 자동 동기화** — 모듈 머리 주석 `'Requires:` 를 정의 이동과 같은 이름 해석으로 계산(`moduleDependencies`)·블록 읽기/쓰기·Notes 이동(`requiresHeader`)·Project.gpr 순서(`sourceOrder`), 진단+Quick Fix·저장 훅·프로젝트 일괄 명령. Used by 제외. 0.20.0 | [2026-10](archive/handoff/2026-10.md) |
+| §1-GH | 10-27 | **§1-GF 후속** — 성장 규칙 §2.4 명문화, responseParser·referenceProvider 분해, ai/→controller/automation, 인덱싱 단계 시간 로그·실측(9 s 미재현), verify:split. 0.20.1 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | 본문 ↓ |

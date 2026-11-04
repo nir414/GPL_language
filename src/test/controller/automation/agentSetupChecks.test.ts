@@ -1,151 +1,126 @@
 import * as assert from 'assert';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import { test } from '../../harness';
 import {
-	GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, GUIDE_SETUP_MARK, GUIDE_TOPIC,
-	GuideSetup, inspectWorkspaceSetup, isControllerHost, findMcpHostMismatch, readMcpControllerAddress,
-	SHARED_CONTROLLER_BRIDGE_MODE,
+	GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, LEGACY_GUIDE_FILE_HEADER, MCP_SERVER_NAME,
+	classifyEntry, classifyClaudeUserConfig, classifyCodexConfig, desiredMcpEntry, readCodexEntry,
+	upsertCodexServer, stripMcpJsonEntry, stripGuideBlock,
 } from '../../../controller/automation/agentSetupChecks';
 
-const VERSION = '0.9.11';
+const STABLE = 'C:\\Users\\me\\AppData\\Roaming\\Code\\User\\globalStorage\\nir414.gpl-language-support\\mcp\\gpl-controller-mcp.cjs';
+const DEV = 'C:\\Users\\me\\Documents\\GitHub\\GPL_language\\controller-mcp\\src\\index.js';
 
-function guide(setup: GuideSetup, version = VERSION): string {
-	return [GUIDE_BEGIN, `${GUIDE_VERSION_MARK} ${version} -->`, `${GUIDE_SETUP_MARK}${JSON.stringify(setup)} -->`, GUIDE_TOPIC, GUIDE_END].join('\n');
-}
+test('MCP 등록 항목: 주소·프로젝트를 적지 않고 브리지 전용으로만 만든다', () => {
+	const entry = desiredMcpEntry(STABLE);
+	assert.deepStrictEqual(entry, { type: 'stdio', command: 'node', args: [STABLE], env: { GPL_BRIDGE: 'only' } });
+	assert.strictEqual(classifyEntry(entry, STABLE).state, 'current');
+});
 
-function fixture(fn: (root: string, script: string, setup: GuideSetup) => void): void {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gpl-ai-setup-test-'));
-	const script = path.join(root, 'server.cjs');
-	const setup = { ip: '192.168.0.1', port: 1402 };
-	fs.writeFileSync(script, '');
-	writeEntry(root, { type: 'stdio', command: 'node', args: [script], env: {
-		GPL_BRIDGE: SHARED_CONTROLLER_BRIDGE_MODE,
-		GPL_HOST: setup.ip, GPL_PORT: String(setup.port),
-	} });
-	fs.writeFileSync(path.join(root, 'CLAUDE.md'), guide(setup));
-	try { fn(root, script, setup); }
-	finally {
-		assert.strictEqual(path.dirname(root), path.resolve(os.tmpdir()));
-		assert.ok(path.basename(root).startsWith('gpl-ai-setup-test-'));
-		fs.rmSync(root, { recursive: true, force: true });
-	}
-}
+test('MCP 등록 판정: 없음·옛 형식(우리 것)·다른 파일(직접 등록)을 가른다', () => {
+	assert.strictEqual(classifyEntry(undefined, STABLE).state, 'absent');
+	// 경로 대소문자·구분자 차이는 같은 파일이다.
+	assert.strictEqual(classifyEntry({ command: 'node.exe', args: [STABLE.toLowerCase().replace(/\\/g, '/')], env: { GPL_BRIDGE: 'only' } }, STABLE).state, 'current');
+	const legacy = classifyEntry({ type: 'stdio', command: 'node', args: [STABLE], env: { GPL_BRIDGE: 'only', GPL_HOST: '192.168.0.1', GPL_PORT: '1402' } }, STABLE);
+	assert.strictEqual(legacy.state, 'outdated');
+	assert.match(legacy.detail ?? '', /GPL_HOST\/GPL_PORT/);
+	assert.strictEqual(classifyEntry({ command: 'node', args: [STABLE], env: { GPL_BRIDGE: 'auto' } }, STABLE).state, 'outdated');
+	const foreign = classifyEntry({ command: 'node', args: [DEV], env: { GPL_HOST: '192.168.0.1' } }, STABLE);
+	assert.deepStrictEqual([foreign.state, foreign.script], ['foreign', DEV]);
+});
 
-function writeEntry(root: string, entry: unknown): void {
-	fs.writeFileSync(path.join(root, '.mcp.json'), JSON.stringify({ mcpServers: { 'gpl-controller': entry } }));
-}
+test('Claude 사용자 설정: user scope 의 mcpServers 만 보고, 깨진 JSON 은 unreadable', () => {
+	assert.strictEqual(classifyClaudeUserConfig(undefined, STABLE).state, 'absent');
+	assert.strictEqual(classifyClaudeUserConfig('{ broken', STABLE).state, 'unreadable');
+	// 프로젝트별(projects[...].mcpServers) 항목은 사용자 범위 등록이 아니다.
+	const projectOnly = JSON.stringify({ projects: { 'C:/x': { mcpServers: { [MCP_SERVER_NAME]: desiredMcpEntry(STABLE) } } } });
+	assert.strictEqual(classifyClaudeUserConfig(projectOnly, STABLE).state, 'absent');
+	const user = JSON.stringify({ numStartups: 3, mcpServers: { [MCP_SERVER_NAME]: desiredMcpEntry(STABLE) } });
+	assert.strictEqual(classifyClaudeUserConfig(user, STABLE).state, 'current');
+});
 
-function mutateEntry(root: string, fn: (entry: { command: string; args: string[]; env: Record<string, string> }) => void): void {
-	const file = path.join(root, '.mcp.json');
-	const config = JSON.parse(fs.readFileSync(file, 'utf8'));
-	fn(config.mcpServers['gpl-controller']);
-	fs.writeFileSync(file, JSON.stringify(config));
-}
+const CODEX_SAMPLE = [
+	'[features]',
+	'x = true',
+	'',
+	'[mcp_servers.node_repl]',
+	"command = 'C:\\tools\\node_repl.exe'",
+	'',
+	'[mcp_servers.gpl-controller]',
+	'enabled = true',
+	'command = "node"',
+	`args = ['${DEV}']`,
+	'',
+	'[mcp_servers.gpl-controller.env]',
+	'GPL_PORT = "1402"',
+	'GPL_HOST = "192.168.0.1"',
+	'',
+	'[memories]',
+	'use_memories = true',
+	'',
+].join('\r\n');
 
-test('AI Setup: 정상 설정은 브리지·주소·안내를 함께 확인한다', () => fixture((root, script) => {
-	const report = inspectWorkspaceSetup(root, script, VERSION);
-	assert.deepStrictEqual(report.problems, []);
-	assert.deepStrictEqual(report.warnings, []);
-	assert.strictEqual(report.mcpJson.pointsToStableCopy, true);
-	assert.strictEqual(report.mcpJson.bridgeMode, SHARED_CONTROLLER_BRIDGE_MODE);
-}));
+test('Codex config.toml: 우리 테이블의 command·args·env 를 읽는다(literal/basic 문자열, 하위 env 테이블·인라인 테이블)', () => {
+	const entry = readCodexEntry(CODEX_SAMPLE)!;
+	assert.deepStrictEqual(entry.args, [DEV]);
+	assert.strictEqual(entry.command, 'node');
+	assert.deepStrictEqual(entry.env, { GPL_PORT: '1402', GPL_HOST: '192.168.0.1' });
+	assert.strictEqual(classifyCodexConfig(CODEX_SAMPLE, STABLE).state, 'foreign');
+	const inline = `[mcp_servers."gpl-controller"]\ncommand = "node"\nargs = [\n  "${STABLE.replace(/\\/g, '\\\\')}",\n]\nenv = { GPL_BRIDGE = "only" }\n`;
+	assert.strictEqual(classifyCodexConfig(inline, STABLE).state, 'current');
+	assert.strictEqual(classifyCodexConfig('[features]\nx = 1\n', STABLE).state, 'absent');
+	assert.strictEqual(readCodexEntry('[features]\n'), undefined);
+});
 
-test('AI Setup: 브리지 전용이 아니면 VS Code와 AI의 단일 세션 공유 설정으로 보지 않는다', () => fixture((root, script) => {
-	for (const mode of [undefined, 'auto', 'off']) {
-		mutateEntry(root, entry => {
-			if (mode === undefined) { delete entry.env.GPL_BRIDGE; }
-			else { entry.env.GPL_BRIDGE = mode; }
-		});
-		const report = inspectWorkspaceSetup(root, script, VERSION);
-		assert.ok(report.problems.some(p => p.includes('GPL_BRIDGE') && p.includes('Export 재실행')));
-	}
-	mutateEntry(root, entry => { entry.env.GPL_BRIDGE = ' ONLY '; });
-	assert.strictEqual(inspectWorkspaceSetup(root, script, VERSION).problems.length, 0);
-}));
+test('Codex config.toml 쓰기: 우리 테이블만 그 자리에서 교체하고 다른 줄·CRLF 는 그대로 둔다', () => {
+	const next = upsertCodexServer(CODEX_SAMPLE, desiredMcpEntry(STABLE));
+	assert.strictEqual(classifyCodexConfig(next, STABLE).state, 'current');
+	assert.strictEqual(/(^|[^\r])\n/.test(next), false, 'CRLF 유지');
+	const lines = next.split('\r\n');
+	assert.deepStrictEqual(lines.slice(0, 6), CODEX_SAMPLE.split('\r\n').slice(0, 6), '앞쪽 테이블 보존');
+	assert.deepStrictEqual(lines.slice(6, 12), [
+		'[mcp_servers.gpl-controller]',
+		'command = "node"',
+		`args = ['${STABLE}']`,
+		'',
+		'[mcp_servers.gpl-controller.env]',
+		'GPL_BRIDGE = "only"',
+	]);
+	assert.deepStrictEqual(lines.slice(12), ['', '[memories]', 'use_memories = true', ''], '뒤쪽 테이블 보존, 빈 줄 하나로 구분');
+	assert.ok(!next.includes('GPL_HOST'));
+	// 다시 써도 같다(멱등).
+	assert.strictEqual(upsertCodexServer(next, desiredMcpEntry(STABLE)), next);
+});
 
-test('AI Setup: 구버전 영구 프로젝트 환경변수는 제거 대상으로 알린다', () => fixture((root, script) => {
-	mutateEntry(root, entry => {
-		entry.env.GPL_PROJECT = 'Lib_NetServer';
-		entry.env.GPL_PROJECT_DIR = 'Binder/GenAdp/Lib_Net/Server';
-	});
-	const report = inspectWorkspaceSetup(root, script, VERSION);
-	assert.ok(report.problems.some(p => p.includes('GPL_PROJECT/GPL_PROJECT_DIR') && p.includes('Export 재실행')));
-}));
+test('Codex config.toml 쓰기: 테이블이 없으면 끝에 덧붙이고, 빈 파일이면 새로 만든다', () => {
+	const appended = upsertCodexServer('[features]\nx = true\n\n', desiredMcpEntry(STABLE));
+	assert.ok(appended.startsWith('[features]\nx = true\n\n[mcp_servers.gpl-controller]\n'));
+	assert.ok(appended.endsWith('GPL_BRIDGE = "only"\n'));
+	const fresh = upsertCodexServer('', desiredMcpEntry(STABLE));
+	assert.ok(fresh.startsWith('[mcp_servers.gpl-controller]\n'));
+	assert.strictEqual(classifyCodexConfig(fresh, STABLE).state, 'current');
+	// 작은따옴표가 든 경로는 basic 문자열로 이스케이프한다.
+	const quoted = "C:\\Users\\o'neil\\mcp.cjs";
+	assert.deepStrictEqual(readCodexEntry(upsertCodexServer('', desiredMcpEntry(quoted)))!.args, [quoted]);
+});
 
-test('AI Setup: args 누락과 잘못된 실행 파일은 설정 오류다', () => fixture((root, script) => {
-	mutateEntry(root, entry => { entry.args = []; entry.command = 'not-a-node-launcher'; });
-	const report = inspectWorkspaceSetup(root, script, VERSION);
-	assert.ok(report.problems.some(p => p.includes('args[0]')));
-	assert.ok(report.problems.some(p => p.includes('command')));
-}));
+test('워크스페이스 .mcp.json 정리: gpl-controller 만 지우고 다른 서버는 보존, 남는 것이 없으면 파일 삭제', () => {
+	const only = JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { command: 'node' } } });
+	assert.deepStrictEqual(stripMcpJsonEntry(only), { changed: true, text: null });
+	const mixed = JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: {}, other: { command: 'x' } } }, null, 2).replace(/\n/g, '\r\n');
+	const stripped = stripMcpJsonEntry(mixed);
+	assert.strictEqual(stripped.changed, true);
+	assert.deepStrictEqual(JSON.parse(stripped.text!), { mcpServers: { other: { command: 'x' } } });
+	assert.strictEqual(/(^|[^\r])\n/.test(stripped.text!), false, 'CRLF 유지');
+	assert.deepStrictEqual(stripMcpJsonEntry('{"mcpServers":{"other":{}}}'), { changed: false, text: '{"mcpServers":{"other":{}}}' });
+	const broken = stripMcpJsonEntry('{ broken');
+	assert.strictEqual(broken.changed, false);
+	assert.ok(broken.error);
+});
 
-test('AI Setup: IP·호스트 이름과 포트 형식을 검증한다', () => fixture((root, script) => {
-	mutateEntry(root, entry => { entry.env.GPL_HOST = '999.1.2.3'; entry.env.GPL_PORT = '1402extra'; });
-	const report = inspectWorkspaceSetup(root, script, VERSION);
-	assert.ok(report.problems.some(p => p.includes('GPL_HOST')));
-	assert.ok(report.problems.some(p => p.includes('GPL_PORT')));
-	for (const host of ['localhost', 'robot.local', '192.168.0.1', '::1']) { assert.ok(isControllerHost(host)); }
-	for (const host of ['', '999.1.2.3', '-robot', 'robot:1402', 'robot host']) { assert.strictEqual(isControllerHost(host), false); }
-}));
-
-test('AI Setup: .mcp.json 의 제어기 주소가 현재 연결과 다르면 설정 문제로 알린다(§1-ES)', () => fixture((root, script, setup) => {
-	const same = inspectWorkspaceSetup(root, script, VERSION, { currentController: { ip: setup.ip, port: setup.port } });
-	assert.strictEqual(same.problems.length, 0);
-	assert.strictEqual(findMcpHostMismatch(root, { ip: setup.ip, port: setup.port }), undefined);
-	const current = { ip: '192.168.0.102', port: 1402 };
-	const report = inspectWorkspaceSetup(root, script, VERSION, { currentController: current });
-	assert.ok(report.problems.some(p => p.includes('GPL_HOST(192.168.0.1:1402)') && p.includes('192.168.0.102:1402')));
-	const mismatch = findMcpHostMismatch(root, current);
-	assert.deepStrictEqual(mismatch?.configured, { host: '192.168.0.1', port: 1402 });
-	assert.strictEqual(mismatch?.path, path.join(root, '.mcp.json'));
-	assert.strictEqual(inspectWorkspaceSetup(root, script, VERSION).problems.length, 0);
-	mutateEntry(root, entry => { entry.env.GPL_HOST = '999.1.2.3'; });
-	assert.strictEqual(findMcpHostMismatch(root, current), undefined);
-	fs.unlinkSync(path.join(root, '.mcp.json'));
-	assert.strictEqual(readMcpControllerAddress(root), undefined);
-	assert.strictEqual(findMcpHostMismatch(root, current), undefined);
-}));
-
-test('AI Setup: CLAUDE 안내가 없거나 블록이 잘렸으면 정상으로 통과하지 않는다', () => fixture((root, script) => {
-	fs.unlinkSync(path.join(root, 'CLAUDE.md'));
-	assert.ok(inspectWorkspaceSetup(root, script, VERSION).problems.some(p => p.includes('안내 없음')));
-	fs.writeFileSync(path.join(root, 'CLAUDE.md'), GUIDE_BEGIN);
-	assert.ok(inspectWorkspaceSetup(root, script, VERSION).problems.some(p => p.includes('시작/끝')));
-}));
-
-test('AI Setup: 같은 버전의 안내도 제어기 주소가 다르면 알린다', () => fixture((root, script, setup) => {
-	fs.writeFileSync(path.join(root, 'CLAUDE.md'), guide({ ...setup, ip: '192.168.0.2' }));
-	const report = inspectWorkspaceSetup(root, script, VERSION);
-	assert.strictEqual(report.warnings.length, 1);
-	assert.ok(report.warnings[0].includes('제어기 주소'));
-}));
-
-test('AI Setup: AGENTS의 구버전 자동 안내를 검출하되 과거 기본 프로젝트는 비교하지 않는다', () => fixture((root, script) => {
-	fs.writeFileSync(path.join(root, 'AGENTS.md'), `${GUIDE_BEGIN}\n${GUIDE_VERSION_MARK} 0.9.8 -->\n${GUIDE_TOPIC}\n기본 프로젝트는 \`Lib_NetServer\`.\n${GUIDE_END}`);
-	const report = inspectWorkspaceSetup(root, script, VERSION);
-	assert.strictEqual(report.warnings.length, 1);
-	assert.ok(report.warnings[0].includes('AGENTS.md') && report.warnings[0].includes('구버전'));
-}));
-
-test('AI Setup: 수동 안내는 검사 결과로 알리고 보존한다', () => fixture((root, script) => {
-	const text = `## 7. ${GUIDE_TOPIC}\n직접 작성한 규칙`;
-	fs.writeFileSync(path.join(root, 'CLAUDE.md'), text);
-	const report = inspectWorkspaceSetup(root, script, VERSION);
-	assert.deepStrictEqual(report.problems, []);
-	assert.ok(report.warnings.some(p => p.includes('수동 안내')));
-	assert.strictEqual(fs.readFileSync(path.join(root, 'CLAUDE.md'), 'utf8'), text);
-}));
-
-test('AI Setup: 서버 상대 경로는 워크스페이스 root 기준으로 검사한다', () => fixture((root, script) => {
-	mutateEntry(root, entry => { entry.args = ['./server.cjs']; });
-	assert.strictEqual(inspectWorkspaceSetup(root, script, VERSION).mcpJson.pointsToStableCopy, true);
-}));
-
-test('AI Setup: root가 없으면 현재 프로세스 폴더의 설정을 읽지 않는다', () => {
-	const report = inspectWorkspaceSetup(undefined, 'missing.cjs', VERSION);
-	assert.strictEqual(report.mcpJson.exists, false);
-	assert.strictEqual(report.claudeMd.exists, false);
-	assert.ok(report.problems.length > 0);
+test('워크스페이스 안내 블록 정리: 자동 블록만 지우고 사용자 본문 보존, 확장이 만든 머리말만 남으면 파일 삭제', () => {
+	const block = [GUIDE_BEGIN, `${GUIDE_VERSION_MARK} 0.27.0 -->`, '## 제어기 통신', '본문', GUIDE_END].join('\r\n');
+	assert.deepStrictEqual(stripGuideBlock(`${LEGACY_GUIDE_FILE_HEADER}\r\n\r\n${block}\r\n`), { changed: true, text: null });
+	const user = stripGuideBlock(`# 사용자 규칙\r\n\r\n기존 본문\r\n\r\n${block}\r\n\r\n나머지\r\n`);
+	assert.deepStrictEqual(user, { changed: true, text: '# 사용자 규칙\r\n\r\n기존 본문\r\n\r\n나머지\r\n' });
+	assert.deepStrictEqual(stripGuideBlock(`# 내 규칙\n\n${block.replace(/\r\n/g, '\n')}\n`), { changed: true, text: '# 내 규칙\n' });
+	assert.deepStrictEqual(stripGuideBlock('# 블록 없음\n'), { changed: false, text: '# 블록 없음\n' });
 });

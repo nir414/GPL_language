@@ -73,6 +73,7 @@
         "onCommand:gpl.controller.refreshBreakpoints",
         "onCommand:gpl.ai.exportAgentSetup",
         "onCommand:gpl.ai.checkAgentSetup",
+        "onCommand:gpl.ai.cleanWorkspaceAgentSetup",
         "onCommand:gpl.ai.debugAssist",
         "onCommand:gpl.ai.debug.getState",
         "onCommand:gpl.ai.debug.setBreakpoint",
@@ -527,7 +528,7 @@
             },
             {
                 "command": "gpl.ai.exportAgentSetup",
-                "title": "Export AI Agent Setup (AI 설정 내보내기·점검)",
+                "title": "Register AI Agent MCP (Claude Code·Codex 사용자 설정에 등록)",
                 "category": "GPL",
                 "icon": "$(hubot)"
             },
@@ -536,6 +537,12 @@
                 "title": "Check AI Agent Setup (AI 설정 점검)",
                 "category": "GPL",
                 "icon": "$(checklist)"
+            },
+            {
+                "command": "gpl.ai.cleanWorkspaceAgentSetup",
+                "title": "Remove AI Agent Files from Workspace (예전 .mcp.json·CLAUDE.md 안내 정리)",
+                "category": "GPL",
+                "icon": "$(trash)"
             },
             {
                 "command": "gpl.ai.debugAssist",
@@ -1732,7 +1739,7 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 명령 콘솔 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. Export 설정은 브리지 전용(`GPL_BRIDGE=only`)이므로 이 옵션을 끄면 MCP가 직접 접속으로 우회하지 않고 브리지 사용 불가를 보고합니다. 직접 접속은 `.mcp.json`에서 `GPL_BRIDGE=auto` 또는 `off`를 명시한 개발 환경만 사용합니다."
+                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 명령 콘솔 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. 확장이 등록하는 MCP는 브리지 전용(`GPL_BRIDGE=only`)이고 제어기 주소도 이 창의 상태 파일에서 따르므로, 이 옵션을 끄면 MCP가 직접 접속으로 우회하지 않고 브리지 사용 불가를 보고합니다. 직접 접속은 MCP 등록에 `GPL_BRIDGE=auto` 또는 `off`를 명시한 개발 환경만 사용합니다."
                 },
                 "gpl.agentBridge.revealOutput": {
                     "scope": "window",
@@ -2000,7 +2007,23 @@
                     "scope": "application",
                     "type": "boolean",
                     "default": true,
-                    "description": "확장 활성화 시 globalStorage의 gpl-controller MCP 서버 사본이 동봉 번들과 다르면(sha256) 자동으로 갱신합니다. GPL: Export AI Agent Setup을 실행한 적이 없는 PC에는 영향이 없습니다. 갱신 뒤에는 Claude Code에서 /mcp 재연결이 필요합니다."
+                    "description": "확장 활성화 시 globalStorage의 gpl-controller MCP 서버 사본이 동봉 번들과 다르면(sha256) 자동으로 갱신합니다. 등록한 적이 없는 PC에는 영향이 없습니다. 갱신 뒤에는 Claude Code에서 /mcp 재연결이 필요합니다."
+                },
+                "gpl.ai.mcpRegistration": {
+                    "scope": "application",
+                    "type": "string",
+                    "enum": [
+                        "prompt",
+                        "auto",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "Claude Code/Codex가 설치돼 있는데 gpl-controller가 등록돼 있지 않으면 한 번 묻습니다.",
+                        "묻지 않고 사용자 설정에 등록합니다.",
+                        "자동 등록·제안을 하지 않습니다(GPL: Register AI Agent MCP 명령으로만)."
+                    ],
+                    "default": "prompt",
+                    "description": "gpl-controller MCP 서버를 Claude Code(사용자 범위)·Codex(~/.codex/config.toml) 사용자 설정에 등록하는 방식. 프로젝트 폴더에는 파일을 만들지 않고, 제어기 주소는 MCP 서버가 이 확장 창의 현재 연결을 따르므로 IP가 바뀌어도 다시 등록할 필요가 없습니다. 확장 번들이 아닌 파일을 가리키는 기존 등록(직접 등록한 개발 소스 등)은 건드리지 않습니다."
                 },
                 "gpl.quickCompile.autoOnSave": {
                     "scope": "window",

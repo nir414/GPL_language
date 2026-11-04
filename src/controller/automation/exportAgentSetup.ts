@@ -1,136 +1,28 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as crypto from 'crypto';
+import { execFile } from 'child_process';
 import {
-	MCP_SERVER_NAME, GUIDE_VERSION_MARK, GUIDE_BEGIN, GUIDE_END, GUIDE_TOPIC, GUIDE_SETUP_MARK,
-	GuideSetup, WorkspaceSetupReport, ControllerAddress, inspectWorkspaceSetup, sameSetupPath,
-	SHARED_CONTROLLER_BRIDGE_MODE,
+	MCP_SERVER_NAME, RegistrationReport, desiredMcpEntry, classifyClaudeUserConfig, classifyCodexConfig,
+	upsertCodexServer, stripMcpJsonEntry, stripGuideBlock, StripResult,
 } from './agentSetupChecks';
 
 /**
- * `GPL: Export AI Agent Setup` (gpl.ai.exportAgentSetup)
+ * AI 에이전트(Claude Code·Codex)에 gpl-controller MCP 서버를 **사용자 범위로 한 번** 등록하고, 종전 Export 가
+ * 워크스페이스에 남긴 파일을 정리한다(2026-11-04, ai-handoff §1-GV). 판정 규칙은 `agentSetupChecks`(순수).
  *
- * 현재 워크스페이스를 "외부 AI(Claude Code) 디버깅 가능" 상태로 만든다.
- * VSIX에 동봉된 MCP 서버 번들(out/mcp/gpl-controller-mcp.cjs)을 확장
- * globalStorage(버전 무관 안정 경로)로 복사하고, 그 경로를 가리키는
- * `.mcp.json`과 제어기 안전 규칙을 담은 CLAUDE.md 섹션을 생성한다.
- *
- * 배경: ai-handoff.md §1-AH — MCP 미등록 워크스페이스에서 AI가 원시 TCP로
- * 1402를 우회 접속하려던 사고의 재발 방지책. VSIX 동봉만으로는 Claude Code에
- * 자동 등록되지 않으므로(등록 주체는 `.mcp.json`), 이 명령이 그 간극을 메운다.
- *
- * 주의: 확장 설치 경로(out/mcp/...)를 .mcp.json에 직접 쓰면 확장 업데이트 시
- * 버전 폴더가 바뀌어 조용히 깨진다. 그래서 globalStorage 복사본을 가리킨다.
- * 명령을 다시 실행하면 복사본이 최신 번들로 갱신되고, 확장 활성화 시에도 사본이 동봉 번들과
- * 다르면(sha256) 자동으로 갱신한다(GitHub #23 — 업데이트 뒤 구버전 서버가 계속 돌던 문제).
- * 번들 옆 사이드카 `gpl-controller-mcp.build.json`(버전·빌드 시각·git sha)이 "어느 번들인가"의 근거다.
+ * - 서버 파일: VSIX 동봉 번들(out/mcp/gpl-controller-mcp.cjs)을 globalStorage(버전 무관 안정 경로)로 복사한 사본.
+ *   확장 업데이트 뒤 활성화 때 sha256 이 다르면 자동 갱신한다(GitHub #23). 등록은 이 경로를 가리키므로 다시 쓸 일이 없다.
+ * - Claude Code: `claude mcp add-json … -s user` CLI 로 등록한다. `~/.claude.json` 은 Claude Code 가 수시로 통째로 다시
+ *   쓰는 파일이라 직접 고치면 경합으로 변경이 사라질 수 있다 — 읽기(판정)만 직접 한다.
+ * - Codex: `~/.codex/config.toml`(또는 `$CODEX_HOME`)의 우리 테이블만 교체한다. Codex 가 설치돼 있을 때만.
+ * - 제어기 주소는 적지 않는다 — MCP 서버가 확장 창의 presence 에서 따른다(controller-mcp `resolveControllerAddress`).
  */
 
 const BUNDLE_RELATIVE_PATH = path.join('out', 'mcp', 'gpl-controller-mcp.cjs');
 const BUILD_INFO_RELATIVE_PATH = path.join('out', 'mcp', 'gpl-controller-mcp.build.json');
-const CLAUDE_SECTION_HEADING = `## ${GUIDE_TOPIC} (직접 TCP 금지)`;
-
-export interface ExportAiAgentSetupOptions extends GuideSetup {
-	workspaceRoot?: string;
-}
-
-export interface ExportAiAgentSetupResult {
-	ok: boolean;
-	error?: string;
-	detail?: string;
-	/** 생성/갱신된 파일 경로 목록 */
-	written?: string[];
-	/** 건너뛴 항목과 이유 (예: CLAUDE.md에 수동 작성 섹션이 이미 있음) */
-	skipped?: string[];
-}
-
-function buildClaudeSection(opts: ExportAiAgentSetupOptions, extensionVersion: string): string {
-	const setup: GuideSetup = { ip: opts.ip, port: opts.port };
-	return [
-		GUIDE_BEGIN,
-		`${GUIDE_VERSION_MARK} ${extensionVersion} -->`,
-		`${GUIDE_SETUP_MARK}${JSON.stringify(setup)} -->`,
-		'',
-		CLAUDE_SECTION_HEADING,
-		'',
-		`제어기 명령 콘솔(${opts.ip}:${opts.port})과의 모든 통신은 **\`${MCP_SERVER_NAME}\` MCP 도구로만** 한다.`,
-		'PowerShell/Node/Python 등으로 **원시 TCP 소켓을 직접 여는 것을 금지**한다. 원시 소켓에는 명령 직렬화',
-		'큐도, Stop/모션 안전 게이트도 없어서 추측으로 보내는 명령이 로봇 모션을 유발할 수 있다.',
-		'',
-		`**도구가 안 보일 때**: 서버는 이 워크스페이스의 \`.mcp.json\`에 등록되어 있고 Claude Code가 세션 시작 시`,
-		'자동으로 띄운다(수동 실행·설치 불필요). `/mcp`로 연결 상태를 확인하고, 처음이면 승인 프롬프트만 수락한다.',
-		'그래도 없으면 사용자에게 알리고 멈춘다 — 직접 소켓으로 우회하지 않는다.',
-		'',
-		'**사람과 AI의 동시 사용**: 이 설정은 `GPL_BRIDGE=only`라 AI가 제어기에 두 번째 TCP 연결을 열지 않는다.',
-		'VS Code 확장이 명령 콘솔 연결을 하나만 소유하고, 사람의 명령과 AI 요청을 같은 직렬 큐에서 순서대로 처리한다.',
-		'`extension_status`의 `transport.using`이 `extension-bridge`인지 확인한다. 브리지가 없거나 응답하지 않으면',
-		'직접 접속으로 폴백하지 말고 확장 설치·활성화와 `/mcp` 재연결 상태를 확인한다.',
-		'',
-		'**판정 규칙**: 명령의 성공/실패는 해당 응답의 `<STATUS>`를 `</STATUS>` 종결자까지 읽고 판정한다.',
-		'간접 신호(로그 파일, 침묵, 부분 응답)로 성공을 추정하지 않는다.',
-		'',
-		'**작업 대상 확정**: 기본 프로젝트를 설정이나 파일에 저장하지 않는다. 세션 시작 시 먼저',
-		'`project_target({projectDir: "작업할 프로젝트 폴더"})`를 호출하고 성공 응답의 이름·폴더를 확인한다.',
-		'동명 프로젝트는 이름만으로 구분할 수 없다. 대상 미확정이면 배포·컴파일·실행을 진행하지 않는다.',
-		'',
-		'**전형적 디버그 흐름**: `set_breakpoint(file, line)` → `start_project(stopOnEntry: true)` →',
-		'`show_threads`로 정지 스레드 확인 → `show_stack` /',
-		'**Compile과 Start는 한 번에 하나만**: 확장이 보내는 Start 에는 `-compile` 이 붙어 컴파일까지 함께 수행된다.',
-		'(제어기의 Start 는 스위치 없이는 컴파일하지 않고 옛 바이너리를 실행한다 — 2026-09-10 실기 관측.)',
-		'따라서 `compile_project` 직후 `start_project`를 연속으로 보내지 않는다(컴파일 중복). 에러만 확인할 때는',
-		'`compile_project`, 실행할 때는 `start_project`만 호출한다.',
-		'`eval_expression(thread, frame, expr)`로 상태 분석 → `step_thread` / `continue_thread` 반복.',
-		'`step_thread`/`continue_thread`/`pause_thread`/`run_to_line`은 정지 확인(Show Thread 폴링)이 내장되어 위치를 함께 돌려준다 —',
-		'앞뒤에 `show_thread`를 따로 끼우지 않는다(접수≠완료 규칙은 서버가 처리). 변수는 `debug_snapshot(thread, evals:[…])` 1회로 배치 관측한다.',
-		'같은 스레드에 Step을 반복 호출하지 않는다 — 이전 Step의 정지 위치를 읽고 판단한 뒤 다음 명령을 보낸다(연속 Step 폭주는 제어기 다운 사고 원인, GitHub #28).',
-		'',
-		'**중단점 워크플로**: VS Code 설정 `gpl.controller.syncEditorBreakpoints`가 켜져 있으면 사용자가',
-		'에디터에서 찍은 중단점이 제어기에 자동 반영된다(에디터가 단일 원본) — 이때는 `set_breakpoint` 대신',
-		'사용자에게 에디터에서 중단점을 관리해 달라고 요청하는 것이 UI와 일치한다. `set_breakpoint`를 직접',
-		'쓸 때는 어디에 걸었는지(file:line)를 사용자에게 보고한다 — 에디터 빨간 점에는 나타나지 않는다.',
-		'',
-		'**안전 규칙**: `start_project`·`continue_thread`·`step_thread`·`set_variable`은 실행(=모션)을',
-		'시작·재개할 수 있는 명령이다. 시뮬레이션 모드(모터 미연결)에서만 자율 실행하고, 실기 연결 상태로',
-		'보이면 실행 전에 사용자 확인을 받는다. 급정지는 `softestop`. Compile/Start 전에는 `show_threads`로',
-		'같은 프로젝트의 스레드가 정지(Idle/Stopped/Error)했는지 확인한다 — 정지 미완료 상태의 Compile/Start는 제어기 이상을 유발한다.',
-		'정지는 `stop_threads`(project 범위·전체·스레드별, 정지 확인과 1회 재시도 내장)로 한다. 제어기의 `Stop <이름>`은 **스레드 이름 단위**라',
-		'`controller_command("Stop <project>")`는 동명 스레드 하나만 멈추고, 프로젝트가 다른 이름으로 띄운 스레드(`LOG_SOCKET` 등)가 남아',
-		'Unload/Compile이 -750으로 거부된다(2026-10-14 실측). `unload_project`는 활성 스레드가 있으면 보내기 전에 목록과 함께 거부한다.',
-		'',
-		'**배포 잠금**: VS Code 확장이 FTP 업로드/배포 중이면 잠금 파일(`%TEMP%/gpl-controller/<ip>.lock.json`)을 잡는다.',
-		'그동안 `compile_project`·`start_project`·`unload_project`와 `controller_command`의 Compile/Start/Load/Unload는',
-		'서버가 최대 20초 기다렸다 자동 진행하고, 계속 잡혀 있으면 보유자·단계·경과와 함께 거부한다(업로드 도중',
-		'Compile/Start는 제어기 이상 유발). 거부되면 우회(원시 소켓, 다른 도구)하지 말고 잠시 후 재시도하거나 사용자에게 알린다.',
-		'`controller_status`의 `deployLock` 필드로 현재 보유자를 볼 수 있다.',
-		'',
-		'**왕복 줄이기(배치)**: DataID 여러 개는 `read_dataids(ids: [2703, 2704, …])` 1회로, 임의 콘솔 명령 여러 개는',
-		'`controller_command(commands: ["Show Memory", "pd 2703", …], stopOnError?)` 1회로 읽는다 — 서버가 명령 콘솔 단일 채널에서',
-		'순차 실행해 결과 배열을 한 번에 돌려주므로 단건 호출을 반복하지 않는다(호출당 고정 오버헤드 ≈1.5 s). 배치 안의',
-		'Compile/Start/Load/Unload에도 배포 잠금 가드가 항목별로 적용된다. `pd`는 파라미터 DB 읽기 전용이다(`pc` 쓰기는 도구로 제공하지 않음).',
-		'자원 관찰은 `controller_status(detail: true)`의 `resources`(Show Memory / Show Network -tcp / -mbuf 구조화,',
-		'`tcp.acceptedPerSec` = 직전 호출 대비 TCP accept 증가율)로 — 제어기 사망 조사(GitHub #22)용 시계열이 자동으로 남는다.',
-		'',
-		'**받은 결과를 재확인하지 않는다(폴링 금지)**: `deploy_project`는 완료 결과를 동기로 돌려주고 성공 응답에 `next:"none"`이 붙는다 —',
-		'그 뒤 `operation_status` 재조회·`Show Memory` 같은 재확인 없이 다음 단계로 간다(이미 전달한 완료 결과의 재조회는 `redundant:true`',
-		'요약만 온다). 기다릴 일은 반복 조회가 아니라 **한 번**으로 끝낸다: 작업 완료는 `wait_operation(operationId?)`(서버가 대신 대기),',
-		'프로그램 출력은 `runtime_console_read(cursor?, untilPattern?, waitMs?)`(런타임 콘솔 줄을 커서로 읽고 패턴이 올 때까지 확장이 대기).',
-		'"Unload 했는데 메모리가 안 풀린다 / Start -200"이면 `list_remote_projects`로 `/GPL`에 다른 프로젝트가 남았는지 먼저 본다.',
-		'',
-		'**외부 클라이언트 주의**: VS Code와 AI는 위 Agent Bridge로 한 연결을 공유할 수 있다. 반면 GDE나 다른 프로그램이',
-		'제어기에 직접 연결하면 확장과 경합하므로 동시에 사용하지 않는다. 상태 변경 명령의 응답이 미확정이면 재전송하지 않는다.',
-		'',
-		'**실시간 로그(런타임 콘솔)**: `runtime_console_read(cursor?, untilPattern?, waitMs?)`로 확장이 수신한 줄을 읽는다.',
-		'반복 폴링하지 말고 필요한 패턴과 대기 시간을 한 번 지정한다.',
-		'**지난 실행 이력**(에이징 등, 링버퍼 밖)은 `runtime_console_search(pattern?, since?, until?, project?)`로 확장의 캡처 파일에서 찾는다 —',
-		'제어기에 기록이 없는 프로그램도 확장이 듣고 있던 동안의 출력은 남아 있다. `--- … not listening … ---` 마커가 확장이 듣지 않은 구간이다.',
-		'',
-		`_이 블록은 확장 v${extensionVersion} 기준으로 생성됨. 확장 업데이트 뒤 MCP 서버 사본은 자동 갱신되지만(Claude Code에서 \`/mcp\` 재연결 필요)`,
-		'이 안내 블록은 `GPL: Export AI Agent Setup`을 다시 실행해야 갱신된다. 상태 점검은 `GPL: Check AI Agent Setup`._',
-		'',
-		GUIDE_END,
-	].join('\n');
-}
 
 /** 번들 사이드카(scripts/bundle-mcp.js가 기록)의 내용. */
 export interface BundleBuildInfo {
@@ -156,6 +48,11 @@ function stablePaths(context: vscode.ExtensionContext): { dir: string; bundle: s
 	};
 }
 
+/** 확장이 등록하는 서버 파일(안정 사본) 경로. */
+export function stableServerScript(context: vscode.ExtensionContext): string {
+	return stablePaths(context).bundle;
+}
+
 function sha256Of(file: string): string | undefined {
 	try {
 		return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -168,6 +65,14 @@ function readBuildInfo(file: string): BundleBuildInfo | undefined {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as BundleBuildInfo;
 		return parsed && typeof parsed === 'object' ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function readTextIfExists(file: string): string | undefined {
+	try {
+		return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') as string : undefined;
 	} catch {
 		return undefined;
 	}
@@ -200,6 +105,15 @@ function copyBundleToStablePath(context: vscode.ExtensionContext): string {
 	return dst.bundle;
 }
 
+/** 안정 사본이 없거나 동봉 번들과 다르면 복사한다. */
+function ensureStableBundle(context: vscode.ExtensionContext): string {
+	const dst = stablePaths(context);
+	const src = bundledPaths(context);
+	const a = sha256Of(src.bundle);
+	if (a && a === sha256Of(dst.bundle)) { return dst.bundle; }
+	return copyBundleToStablePath(context);
+}
+
 export type StableBundleSyncResult =
 	| { action: 'absent' }
 	| { action: 'bundle-missing'; detail: string }
@@ -209,7 +123,7 @@ export type StableBundleSyncResult =
 
 /**
  * 활성화 시 호출: globalStorage 사본이 **있고** 동봉 번들과 내용(sha256)이 다르면 조용히 덮어쓴다(GitHub #23).
- * 사본이 없으면(Export를 실행한 적 없는 PC) 아무것도 하지 않는다. 실행 중인 MCP 프로세스는 파일을 이미 읽었으므로
+ * 사본이 없으면(등록한 적 없는 PC) 아무것도 하지 않는다. 실행 중인 MCP 프로세스는 파일을 이미 읽었으므로
  * 호출측이 "Claude Code에서 /mcp 재연결" 안내를 띄워야 한다.
  */
 export function syncStableBundleIfStale(context: vscode.ExtensionContext): StableBundleSyncResult {
@@ -235,23 +149,73 @@ export function syncStableBundleIfStale(context: vscode.ExtensionContext): Stabl
 	}
 }
 
-export interface AiAgentSetupReport extends WorkspaceSetupReport {
+// ── 사용자 범위 설정 파일 위치 ───────────────────────────────────────────────
+
+/** Claude Code 전역 설정 — `CLAUDE_CONFIG_DIR` 가 있으면 그 안, 없으면 홈의 `.claude.json`. */
+export function claudeUserConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+	return env.CLAUDE_CONFIG_DIR ? path.join(env.CLAUDE_CONFIG_DIR, '.claude.json') : path.join(os.homedir(), '.claude.json');
+}
+
+/** Codex 전역 설정 — `CODEX_HOME`(기본 `~/.codex`)의 `config.toml`. */
+export function codexConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+	return path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml');
+}
+
+// ── 점검 ────────────────────────────────────────────────────────────────────
+
+export interface ClientRegistration extends RegistrationReport {
+	configPath: string;
+	/** 그 AI 도구를 이 PC 에서 쓰는 흔적(설정 파일·폴더)이 있는가 — 없으면 자동 등록을 제안하지 않는다. */
+	installed: boolean;
+}
+
+export interface LegacyWorkspaceFile {
+	file: string;
+	kind: 'mcp-json' | 'guide-block';
+	/** 정리하면 파일째 지워지는가 */
+	deletes: boolean;
+	error?: string;
+}
+
+export interface AiAgentSetupReport {
 	extensionVersion: string;
 	bundled: { path: string; exists: boolean; sha256?: string; build?: BundleBuildInfo };
 	stableCopy: { path: string; exists: boolean; sha256?: string; build?: BundleBuildInfo; upToDate: boolean | null };
-	settingsOk: boolean;
-	ready: boolean;
-	/** 설정·대상·안내에 문제가 없을 때만 true. 제어기 연결 상태를 뜻하지 않는다. */
+	claude: ClientRegistration;
+	codex: ClientRegistration;
+	/** 종전 Export 가 워크스페이스에 남긴 파일(정리 대상) */
+	legacyWorkspaceFiles: LegacyWorkspaceFile[];
+	problems: string[];
+	warnings: string[];
+	/** 어느 AI 도구에든 gpl-controller 를 쓸 수 있게 등록돼 있고 설정 문제가 없다. 제어기 연결 상태를 뜻하지 않는다. */
 	ok: boolean;
 }
 
-export interface InspectAiAgentSetupOptions {
-	workspaceRoot?: string;
-	/** 확장이 지금 쓰는 제어기 주소 — 주면 `.mcp.json` 의 GPL_HOST/GPL_PORT 불일치를 설정 문제로 알린다(§1-ES). */
-	currentController?: ControllerAddress;
+/** 워크스페이스 폴더들에서 종전 Export 가 남긴 파일을 찾는다(읽기만). */
+export function findLegacyWorkspaceFiles(roots: string[]): LegacyWorkspaceFile[] {
+	const found: LegacyWorkspaceFile[] = [];
+	for (const root of roots) {
+		const checks: Array<{ file: string; kind: LegacyWorkspaceFile['kind']; strip: (t: string) => StripResult }> = [
+			{ file: path.join(root, '.mcp.json'), kind: 'mcp-json', strip: stripMcpJsonEntry },
+			{ file: path.join(root, 'CLAUDE.md'), kind: 'guide-block', strip: stripGuideBlock },
+			{ file: path.join(root, 'AGENTS.md'), kind: 'guide-block', strip: stripGuideBlock },
+		];
+		for (const check of checks) {
+			const text = readTextIfExists(check.file);
+			if (text === undefined) { continue; }
+			const result = check.strip(text);
+			if (result.error) { found.push({ file: check.file, kind: check.kind, deletes: false, error: result.error }); }
+			else if (result.changed) { found.push({ file: check.file, kind: check.kind, deletes: result.text === null }); }
+		}
+	}
+	return found;
 }
 
-export function inspectAiAgentSetup(context: vscode.ExtensionContext, opts: InspectAiAgentSetupOptions = {}): AiAgentSetupReport {
+function workspaceRoots(): string[] {
+	return (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
+}
+
+export function inspectAiAgentSetup(context: vscode.ExtensionContext, opts: { roots?: string[] } = {}): AiAgentSetupReport {
 	const extensionVersion = extensionVersionOf(context);
 	const src = bundledPaths(context);
 	const dst = stablePaths(context);
@@ -263,155 +227,174 @@ export function inspectAiAgentSetup(context: vscode.ExtensionContext, opts: Insp
 		build: stableExists ? readBuildInfo(dst.buildInfo) : undefined,
 		upToDate: stableExists && bundled.sha256 && stableSha ? bundled.sha256 === stableSha : null,
 	};
-	const folders = vscode.workspace.workspaceFolders ?? [];
-	const root = opts.workspaceRoot ?? (folders.length === 1 ? folders[0].uri.fsPath : undefined);
-	const workspace = inspectWorkspaceSetup(root, dst.bundle, extensionVersion, { currentController: opts.currentController });
-	const problems = [...workspace.problems];
-	if (!bundled.exists || !bundled.sha256) { problems.push('동봉 MCP 번들이 없거나 읽을 수 없음 — 확장 재설치 또는 npm run bundle:mcp'); }
-	if (!stableExists || !stableSha) { problems.push('globalStorage MCP 사본이 없거나 읽을 수 없음 — Export 실행'); }
-	else if (stableCopy.upToDate === false) { problems.push('globalStorage MCP 사본이 동봉 번들과 다름 — Export 재실행'); }
-	const settingsOk = problems.length === 0;
-	const ready = settingsOk && workspace.warnings.length === 0;
-	return { ...workspace, extensionVersion, bundled, stableCopy, problems, settingsOk, ready, ok: ready };
-}
-
-/** 워크스페이스 루트의 .mcp.json에 gpl-controller 항목을 병합해 쓴다(다른 서버 항목 보존). */
-function writeMcpJson(workspaceRoot: string, serverScriptPath: string, opts: ExportAiAgentSetupOptions): string {
-	const mcpJsonPath = path.join(workspaceRoot, '.mcp.json');
-	let config: { mcpServers?: Record<string, unknown>; [key: string]: unknown } = {};
-	let eol = '\n';
-	if (fs.existsSync(mcpJsonPath)) {
-		const rawText = fs.readFileSync(mcpJsonPath, 'utf8');
-		if (rawText.includes('\r\n')) { eol = '\r\n'; }
-		try {
-			config = JSON.parse(rawText);
-		} catch (err) {
-			throw new Error(`.mcp.json 파싱 실패 — 손상 방지를 위해 덮어쓰지 않습니다: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-	const servers = (config.mcpServers && typeof config.mcpServers === 'object') ? config.mcpServers as Record<string, unknown> : {};
-	const existing = servers[MCP_SERVER_NAME] as { env?: Record<string, unknown> } | undefined;
-	const env = existing?.env && typeof existing.env === 'object' && !Array.isArray(existing.env)
-		? { ...existing.env } : {};
-	// 구버전 Export가 저장한 영구 대상은 제거한다. 프로젝트는 매 MCP 세션에서 project_target으로만 고정한다.
-	delete env.GPL_PROJECT;
-	delete env.GPL_PROJECT_DIR;
-	servers[MCP_SERVER_NAME] = {
-		type: 'stdio',
-		command: 'node',
-		args: [serverScriptPath],
-		env: {
-			...env,
-			// 제어기는 명령 콘솔 연결 하나만 허용한다. AI가 별도 TCP로 폴백하지 않고
-			// VS Code 확장의 단일 소켓·직렬 큐를 반드시 공유하게 한다.
-			GPL_BRIDGE: SHARED_CONTROLLER_BRIDGE_MODE,
-			GPL_HOST: opts.ip,
-			GPL_PORT: String(opts.port),
-		},
+	const claudePath = claudeUserConfigPath();
+	const claudeText = readTextIfExists(claudePath);
+	const claude: ClientRegistration = { ...classifyClaudeUserConfig(claudeText, dst.bundle), configPath: claudePath, installed: claudeText !== undefined };
+	const codexPath = codexConfigPath();
+	const codex: ClientRegistration = {
+		...classifyCodexConfig(readTextIfExists(codexPath), dst.bundle),
+		configPath: codexPath, installed: fs.existsSync(path.dirname(codexPath)),
 	};
-	config.mcpServers = servers;
-	fs.writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2).replace(/\n/g, eol) + eol);
-	return mcpJsonPath;
+	const legacyWorkspaceFiles = findLegacyWorkspaceFiles(opts.roots ?? workspaceRoots());
+
+	const problems: string[] = [];
+	const warnings: string[] = [];
+	if (!bundled.exists || !bundled.sha256) { problems.push('동봉 MCP 번들이 없거나 읽을 수 없음 — 확장 재설치 또는 npm run bundle:mcp'); }
+	const clients = [{ name: 'Claude Code', reg: claude }, ...(codex.installed ? [{ name: 'Codex', reg: codex }] : [])];
+	for (const { name, reg } of clients) {
+		if (reg.state === 'unreadable') { problems.push(`${name} 설정을 읽을 수 없음(${reg.configPath}): ${reg.detail}`); }
+		if (reg.state === 'outdated') { warnings.push(`${name} 등록이 옛 형식(${reg.detail}) — 등록 명령이 고쳐 씀`); }
+		if (reg.state === 'foreign') { warnings.push(`${name} 등록이 확장 번들이 아닌 파일을 가리킴(${reg.script ?? '?'}) — 직접 등록한 것으로 보고 그대로 둠`); }
+	}
+	const usable = clients.some(({ reg }) => reg.state === 'current' || reg.state === 'outdated' || reg.state === 'foreign');
+	if (!usable) { problems.push('어느 AI 도구에도 gpl-controller MCP 가 등록돼 있지 않음 — 「GPL: Register AI Agent MCP」 실행'); }
+	if ((claude.state === 'current' || codex.state === 'current') && stableCopy.upToDate === false) {
+		problems.push('globalStorage MCP 사본이 동봉 번들과 다름 — 등록 명령 재실행');
+	}
+	for (const legacy of legacyWorkspaceFiles) {
+		warnings.push(legacy.error
+			? `${legacy.file}: ${legacy.error}`
+			: `${legacy.file} — 예전 Export 가 만든 ${legacy.kind === 'mcp-json' ? 'MCP 항목' : '안내 블록'}(이제 필요 없음, 「GPL: Remove AI Agent Files from Workspace」로 정리)`);
+	}
+	return { extensionVersion, bundled, stableCopy, claude, codex, legacyWorkspaceFiles, problems, warnings, ok: problems.length === 0 };
 }
 
-/**
- * CLAUDE.md에 가드 섹션을 추가/갱신한다.
- * - 마커 블록이 있으면 그 블록만 교체(재실행 안전).
- * - 마커 없이 같은 제목의 수동 작성 섹션이 있으면 건드리지 않고 건너뛴다.
- * - 파일이 없으면 새로 만든다.
- */
-function upsertClaudeMdSection(
-	workspaceRoot: string,
-	opts: ExportAiAgentSetupOptions,
-	extensionVersion: string,
-): { path: string; action: 'created' | 'updated' | 'appended' | 'skipped' } {
-	const claudeMdPath = path.join(workspaceRoot, 'CLAUDE.md');
-	const section = buildClaudeSection(opts, extensionVersion);
+// ── 등록 ────────────────────────────────────────────────────────────────────
 
-	if (!fs.existsSync(claudeMdPath)) {
-		fs.writeFileSync(claudeMdPath, `# 이 프로젝트에서 AI가 지킬 규칙\n\n${section}\n`);
-		return { path: claudeMdPath, action: 'created' };
-	}
+export interface CliResult { ok: boolean; missing?: boolean; code?: number | string; stdout: string; stderr: string }
+export type CliRunner = (args: string[]) => Promise<CliResult>;
 
-	const existing = fs.readFileSync(claudeMdPath, 'utf8');
-	const eol = existing.includes('\r\n') ? '\r\n' : '\n';
-	const formattedSection = section.replace(/\n/g, eol);
-	const beginIndex = existing.indexOf(GUIDE_BEGIN);
-	const endIndex = existing.indexOf(GUIDE_END);
+/** `claude` CLI 실행. 설치돼 있지 않으면 `missing:true`. */
+export const runClaudeCli: CliRunner = args => new Promise(resolve => {
+	execFile('claude', args, { timeout: 60_000, windowsHide: true }, (err, stdout, stderr) => {
+		const code = (err as NodeJS.ErrnoException | null)?.code;
+		resolve({
+			ok: !err,
+			missing: code === 'ENOENT',
+			code: code ?? (err ? 'error' : 0),
+			stdout: String(stdout ?? ''),
+			stderr: String(stderr ?? err?.message ?? ''),
+		});
+	});
+});
 
-	if (beginIndex !== -1 && endIndex !== -1 && endIndex > beginIndex) {
-		const before = existing.slice(0, beginIndex);
-		const after = existing.slice(endIndex + GUIDE_END.length);
-		fs.writeFileSync(claudeMdPath, before + formattedSection + after);
-		return { path: claudeMdPath, action: 'updated' };
-	}
+export type ClientRegisterAction = 'registered' | 'updated' | 'unchanged' | 'kept-foreign' | 'skipped-not-installed' | 'cli-missing' | 'failed';
 
-	if (existing.includes(GUIDE_TOPIC)) {
-		// 수동으로 작성된 동일 주제 섹션이 이미 있음(번호 접두 등 변형 포함) — 중복 생성하지 않는다.
-		return { path: claudeMdPath, action: 'skipped' };
-	}
-
-	const separator = existing.endsWith('\n') ? eol : eol + eol;
-	fs.writeFileSync(claudeMdPath, existing + separator + formattedSection + eol);
-	return { path: claudeMdPath, action: 'appended' };
+export interface ClientRegisterResult {
+	action: ClientRegisterAction;
+	before: RegistrationReport['state'];
+	detail?: string;
+	/** CLI 가 없을 때 사용자가 직접 실행할 명령 */
+	manualCommand?: string;
 }
 
-/** AGENTS.md는 새로 만들거나 섹션을 추가하지 않고, 과거 Export가 만든 자동 블록만 최신 내용으로 교체한다. */
-function updateExistingAgentsMdSection(
-	workspaceRoot: string,
-	opts: ExportAiAgentSetupOptions,
-	extensionVersion: string,
-): string | undefined {
-	const agentsMdPath = path.join(workspaceRoot, 'AGENTS.md');
-	if (!fs.existsSync(agentsMdPath)) { return undefined; }
-	const existing = fs.readFileSync(agentsMdPath, 'utf8');
-	const beginIndex = existing.indexOf(GUIDE_BEGIN);
-	const endIndex = existing.indexOf(GUIDE_END);
-	if (beginIndex === -1 || endIndex <= beginIndex) { return undefined; }
-	const eol = existing.includes('\r\n') ? '\r\n' : '\n';
-	const section = buildClaudeSection(opts, extensionVersion).replace(/\n/g, eol);
-	const after = existing.slice(endIndex + GUIDE_END.length);
-	fs.writeFileSync(agentsMdPath, existing.slice(0, beginIndex) + section + after);
-	return agentsMdPath;
+export interface RegisterOptions {
+	/** 사용자가 직접 등록한(foreign) 항목도 확장 번들로 바꾼다 — 사용자에게 물은 뒤에만 true. */
+	replaceForeign?: boolean;
+	/** 설치 흔적이 없어도 등록한다(명령으로 명시 실행한 경우). */
+	includeNotInstalled?: boolean;
+	cli?: CliRunner;
 }
 
-export async function exportAiAgentSetup(
-	context: vscode.ExtensionContext,
-	opts: ExportAiAgentSetupOptions
-): Promise<ExportAiAgentSetupResult> {
-	const folders = vscode.workspace.workspaceFolders ?? [];
-	const folder = opts.workspaceRoot
-		? folders.find(f => sameSetupPath(f.uri.fsPath, opts.workspaceRoot!))
-		: folders.length === 1 ? folders[0] : undefined;
-	if (!folder) {
-		return { ok: false, error: 'no-workspace', detail: 'Export할 워크스페이스 폴더를 지정해야 합니다.' };
-	}
-	const workspaceRoot = folder.uri.fsPath;
+export interface RegisterResult {
+	ok: boolean;
+	serverScript?: string;
+	claude?: ClientRegisterResult;
+	codex?: ClientRegisterResult;
+	error?: string;
+	detail?: string;
+}
 
+function needsWrite(state: RegistrationReport['state'], replaceForeign: boolean): boolean {
+	return state === 'absent' || state === 'outdated' || (state === 'foreign' && replaceForeign);
+}
+
+function manualClaudeCommand(json: string): string {
+	return `claude mcp add-json ${MCP_SERVER_NAME} '${json.replace(/'/g, "''")}' --scope user`;
+}
+
+async function registerClaude(serverScript: string, opts: RegisterOptions): Promise<ClientRegisterResult> {
+	const configPath = claudeUserConfigPath();
+	const before = classifyClaudeUserConfig(readTextIfExists(configPath), serverScript);
+	if (before.state === 'unreadable') { return { action: 'failed', before: before.state, detail: `${configPath} 를 해석할 수 없어 건드리지 않음: ${before.detail}` }; }
+	if (before.state === 'current') { return { action: 'unchanged', before: before.state }; }
+	if (before.state === 'foreign' && !opts.replaceForeign) { return { action: 'kept-foreign', before: before.state, detail: before.detail }; }
+	if (!needsWrite(before.state, !!opts.replaceForeign)) { return { action: 'unchanged', before: before.state }; }
+	const json = JSON.stringify(desiredMcpEntry(serverScript));
+	const cli = opts.cli ?? runClaudeCli;
+	if (before.state !== 'absent') {
+		const removed = await cli(['mcp', 'remove', MCP_SERVER_NAME, '--scope', 'user']);
+		if (removed.missing) { return { action: 'cli-missing', before: before.state, manualCommand: manualClaudeCommand(json) }; }
+	}
+	const added = await cli(['mcp', 'add-json', MCP_SERVER_NAME, json, '--scope', 'user']);
+	if (added.missing) { return { action: 'cli-missing', before: before.state, manualCommand: manualClaudeCommand(json) }; }
+	// 결과는 CLI 종료 코드가 아니라 설정 파일을 다시 읽어 판정한다.
+	const after = classifyClaudeUserConfig(readTextIfExists(configPath), serverScript);
+	if (after.state !== 'current') {
+		return { action: 'failed', before: before.state, detail: `등록 뒤 상태 ${after.state}${after.detail ? ` (${after.detail})` : ''} — ${(added.stderr || added.stdout).trim().slice(0, 300)}` };
+	}
+	return { action: before.state === 'absent' ? 'registered' : 'updated', before: before.state };
+}
+
+function registerCodex(serverScript: string, opts: RegisterOptions): ClientRegisterResult {
+	const configPath = codexConfigPath();
+	if (!opts.includeNotInstalled && !fs.existsSync(path.dirname(configPath))) {
+		return { action: 'skipped-not-installed', before: 'absent' };
+	}
+	const text = readTextIfExists(configPath);
+	const before = classifyCodexConfig(text, serverScript);
+	if (before.state === 'current') { return { action: 'unchanged', before: before.state }; }
+	if (before.state === 'foreign' && !opts.replaceForeign) { return { action: 'kept-foreign', before: before.state, detail: before.detail }; }
+	if (!needsWrite(before.state, !!opts.replaceForeign)) { return { action: 'unchanged', before: before.state }; }
 	try {
-		const stablePath = copyBundleToStablePath(context);
-		const mcpJsonPath = writeMcpJson(workspaceRoot, stablePath, opts);
-		const claudeMd = upsertClaudeMdSection(workspaceRoot, opts, extensionVersionOf(context));
-		const agentsMd = updateExistingAgentsMdSection(workspaceRoot, opts, extensionVersionOf(context));
-
-		const written = [stablePath, mcpJsonPath];
-		const skipped: string[] = [];
-		if (claudeMd.action === 'skipped') {
-			skipped.push(`${claudeMd.path} (같은 제목의 수동 작성 섹션이 이미 있어 건너뜀)`);
-		} else {
-			written.push(`${claudeMd.path} (${claudeMd.action})`);
-		}
-		if (agentsMd) { written.push(`${agentsMd} (updated)`); }
-
-		void vscode.window.showInformationMessage(
-			`GPL AI Agent Setup 완료 — .mcp.json${claudeMd.action === 'skipped' ? '' : ' + CLAUDE.md'}${agentsMd ? ' + AGENTS.md' : ''} 생성/갱신. ` +
-			'AI는 VS Code의 명령 콘솔 세션을 공유합니다. Claude Code에서 /mcp로 재연결한 뒤 project_target으로 작업 대상을 정하세요.'
-		);
-
-		return { ok: true, written, ...(skipped.length > 0 ? { skipped } : {}) };
+		fs.mkdirSync(path.dirname(configPath), { recursive: true });
+		fs.writeFileSync(configPath, upsertCodexServer(text ?? '', desiredMcpEntry(serverScript)));
 	} catch (err) {
-		const detail = err instanceof Error ? err.message : String(err);
-		void vscode.window.showErrorMessage(`GPL AI Agent Setup 실패: ${detail}`);
-		return { ok: false, error: 'export-failed', detail };
+		return { action: 'failed', before: before.state, detail: err instanceof Error ? err.message : String(err) };
 	}
+	const after = classifyCodexConfig(readTextIfExists(configPath), serverScript);
+	if (after.state !== 'current') { return { action: 'failed', before: before.state, detail: `기록 뒤 상태 ${after.state}${after.detail ? ` (${after.detail})` : ''}` }; }
+	return { action: before.state === 'absent' ? 'registered' : 'updated', before: before.state };
+}
+
+/** 안정 사본을 맞춘 뒤 Claude Code(사용자 범위)와 Codex 에 등록한다. 이미 맞으면 아무것도 쓰지 않는다. */
+export async function registerUserScopeMcp(context: vscode.ExtensionContext, opts: RegisterOptions = {}): Promise<RegisterResult> {
+	let serverScript: string;
+	try {
+		serverScript = ensureStableBundle(context);
+	} catch (err) {
+		return { ok: false, error: 'bundle-failed', detail: err instanceof Error ? err.message : String(err) };
+	}
+	const claude = await registerClaude(serverScript, opts);
+	const codex = registerCodex(serverScript, opts);
+	const failed = [claude, codex].some(r => r.action === 'failed');
+	return { ok: !failed, serverScript, claude, codex };
+}
+
+// ── 워크스페이스 정리 ───────────────────────────────────────────────────────
+
+export interface CleanResult { file: string; action: 'edited' | 'deleted' | 'failed'; detail?: string }
+
+/** 종전 Export 가 남긴 항목만 지운다(사용자 본문·다른 MCP 서버는 보존). 호출측이 먼저 사용자 확인을 받는다. */
+export function cleanLegacyWorkspaceFiles(files: LegacyWorkspaceFile[]): CleanResult[] {
+	const results: CleanResult[] = [];
+	for (const legacy of files) {
+		if (legacy.error) { results.push({ file: legacy.file, action: 'failed', detail: legacy.error }); continue; }
+		try {
+			const text = fs.readFileSync(legacy.file, 'utf8') as string;
+			const result = legacy.kind === 'mcp-json' ? stripMcpJsonEntry(text) : stripGuideBlock(text);
+			if (result.error) { results.push({ file: legacy.file, action: 'failed', detail: result.error }); continue; }
+			if (!result.changed) { continue; }
+			if (result.text === null) {
+				fs.unlinkSync(legacy.file);
+				results.push({ file: legacy.file, action: 'deleted' });
+			} else {
+				fs.writeFileSync(legacy.file, result.text);
+				results.push({ file: legacy.file, action: 'edited' });
+			}
+		} catch (err) {
+			results.push({ file: legacy.file, action: 'failed', detail: err instanceof Error ? err.message : String(err) });
+		}
+	}
+	return results;
 }

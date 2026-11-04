@@ -81,6 +81,8 @@ export function buildSystemInfoItems(input: SystemInfoResponses): SystemInfoItem
 			value: reading.celsius === null ? `${reading.reportedCelsius.toFixed(1)}°C 반환 · 센서 지원 미확인` : `${reading.celsius.toFixed(1)}°C`,
 			tooltip: `${PROBE_TEMPERATURE_CMD} · ${new Date(temperature.sampledAt).toLocaleTimeString()}\n${reading.note ?? '과열 여부는 모델별 허용 온도와 함께 확인하세요.'}\n${temperature.raw}`,
 			iconId: 'dashboard',
+			...(reading.kind === 'amplifier' ? { group: 'ampTemperature' as const } : {}),
+			...(reading.celsius === null ? {} : { celsius: reading.celsius }),
 		});
 	}
 	if (!temperature.readings.length) {

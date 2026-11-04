@@ -1,8 +1,8 @@
 /**
  * 제어기 트리의 섹션별 노드 구성 — 평문 데이터(treeSnapshot)를 받아 SectionNode 트리를 돌려준다. vscode 무의존.
  * controllerTreeProvider.ts 의 buildRoot/buildFtpSection/ftpNodes/buildOnDemandCacheTooltip 을 섹션 단위 함수로
- * 옮겼다(2026-10-27, 라벨·설명·툴팁·아이콘·contextValue·순서·기본 접힘 상태 동일). 섹션의 **순서**는 provider 의
- * buildRoot 가 정한다. 컴파일 검증 배지의 리소스 인자(`vscode.Uri`)만 호출부가 `toResource` 로 넣는다.
+ * 옮겼다(2026-10-27, 라벨·설명·툴팁·아이콘·contextValue·순서·기본 접힘 상태 동일). 섹션의 **순서**는 아래
+ * buildConnectedRoot 가 정한다(2026-11-04 재배치 — 순서·기본 접힘은 test/views/tree/treeSectionsLayout.test.ts 가 고정). 컴파일 검증 배지의 리소스 인자(`vscode.Uri`)만 호출부가 `toResource` 로 넣는다.
  */
 import type { ConnectionStats } from '../../controller/connection/consoleSocket';
 import type { TrafficLogOptions } from '../../controller/connection/controllerConnection';
@@ -42,7 +42,7 @@ import type { ControllerStatusSnapshot, ControllerTreeConfig, RuntimeErrorContex
  * 초기화되고(이후 사용자가 접은 것은 평소대로 기억된다), 새 기본값이 적용된다.
  * **기본 접힘 상태를 바꿀 때마다 1 씩 올릴 것.**
  */
-export const SECTION_LAYOUT_EPOCH = 2;
+export const SECTION_LAYOUT_EPOCH = 3;
 
 /**
  * 온디맨드 캐시 섹션(FTP 목록/시스템 정보) 공용 툴팁 — 연결 플랩 시 자동 재조회하지 않음을 알린다(#22).
@@ -114,7 +114,8 @@ export function buildFtpSection(input: FtpSectionInput): SectionNode {
 	const sec = new SectionNode(input.id, input.title, input.icon, description,
 		buildOnDemandCacheTooltip(input.lastFtpRefreshAt, FTP_AUTO_REFRESH_MIN_INTERVAL_MS));
 	sec.remotePath = input.basePath;
-	sec.collapsed = false;
+	// /GPL 은 배포 대상이라 펼쳐 두고, Flash Projects 는 영구 저장 영역이라 손댈 일이 드물어 접어 둔다.
+	sec.collapsed = input.flash;
 	if (error) {
 		sec.children = [new InfoNode(error, 'error')];
 	} else if (entries.length === 0) {
@@ -201,7 +202,7 @@ export function buildProjectContextSection(input: ProjectContextInput): SectionN
 		mismatch ? 'warning' : 'pass',
 		contextDescription,
 	);
-	ctxSec.collapsed = true;
+	ctxSec.collapsed = false;
 	const runSummary = runningProjects.length > 0 ? runningProjects.join(', ') : '(없음)';
 	ctxSec.children = [
 		new InfoNode(`기대: ${expected || '(미설정)'} / 실행: ${runSummary}`, 'target',
@@ -218,7 +219,6 @@ export function buildProjectContextSection(input: ProjectContextInput): SectionN
 	if (stale.length > 0) {
 		// /GPL 소스만 올라가고 Compile로 검증되지 않은 상태(이슈 #17 재구성의 부수 상태). Start는 `-compile` 로 컴파일하므로(§0.7)
 		// 옛 프로그램이 도는 건 아니지만, 소스 에러가 있으면 Start가 실패해 실행되지 않는다(에러 위치는 §1-EW에서 Problems 연동).
-		ctxSec.collapsed = false;
 		// 프로젝트마다 한 줄 — Upload Only 로 여러 개를 올리면 전부 보여야 "하나 컴파일하니 다른 프로젝트로 바뀐다"로 읽히지 않는다(§1-GN).
 		// 문구·클릭 대상은 상태바 배지와 같은 규칙(views/statusbar/compileStaleBadge) — 폴더를 알면 Uri 인자로 선택 창 없이 그 프로젝트.
 		ctxSec.children.unshift(...stale.map(info => new InfoNode(
@@ -310,7 +310,7 @@ export function buildThreadsSection(threads: readonly ThreadInfo[]): SectionNode
 
 	const threadSec = new SectionNode('threads',
 		`쓰레드 (${threads.length})`, 'symbol-event', threadDesc);
-	threadSec.collapsed = true;
+	threadSec.collapsed = false;
 	// 정지/에러 쓰레드를 맨 위로 끌어올려 한눈에 띄게 한다(원본 배열은 보존).
 	const sortedThreads = [...threads].sort(
 		(a, b) => threadStateRank(a.state) - threadStateRank(b.state),
@@ -370,7 +370,7 @@ export function buildSystemInfoSection(sysInfo: readonly SystemInfoItem[], lastS
 			? (lastSystemInfoRefreshAt > 0 ? `마지막 조회 ${formatLastRefreshTime(lastSystemInfoRefreshAt)}` : undefined)
 			: '조회 안됨',
 		buildOnDemandCacheTooltip(lastSystemInfoRefreshAt, SYSTEM_INFO_AUTO_REFRESH_MIN_INTERVAL_MS));
-	sysSec.collapsed = true;
+	sysSec.collapsed = false;
 	if (sysInfo.length === 0) {
 		sysSec.children = [
 			new InfoNode('새로고침으로 조회하세요', 'info', undefined, {
@@ -379,10 +379,27 @@ export function buildSystemInfoSection(sysInfo: readonly SystemInfoItem[], lastS
 			}),
 		];
 	} else {
-		sysSec.children = sysInfo.map(s =>
-			new InfoNode(s.label, s.iconId || 'info', s.value, undefined, undefined, s.tooltip));
+		const toRow = (s: SystemInfoItem) => new InfoNode(s.label, s.iconId || 'info', s.value, undefined, undefined, s.tooltip);
+		sysSec.children = sysInfo.filter(s => !s.group).map(toRow);
+		const amps = sysInfo.filter(s => s.group === 'ampTemperature');
+		if (amps.length > 0) {
+			sysSec.children.push(buildAmpTemperatureGroup(amps, toRow));
+		}
 	}
 	return sysSec;
+}
+
+/**
+ * 앰프 온도 묶음 — 로봇·앰프 수만큼 늘어나는 행을 접힌 하위 노드 하나로 모은다(2026-11-04 사용자 요청: CPU 온도는
+ * 그대로 보이고 모터 앰프는 접어 둔다). 접어도 헤더 설명에 최고 온도가 보여 이상 징후는 놓치지 않는다.
+ */
+function buildAmpTemperatureGroup(amps: readonly SystemInfoItem[], toRow: (s: SystemInfoItem) => InfoNode): SectionNode {
+	const known = amps.map(a => a.celsius).filter((c): c is number => typeof c === 'number');
+	const description = known.length > 0 ? `최고 ${Math.max(...known).toFixed(1)}°C` : '센서 값 미확인';
+	const group = new SectionNode('ampTemps', `앰프 온도 (${amps.length})`, 'flame', description);
+	group.collapsed = true;
+	group.children = amps.map(toRow);
+	return group;
 }
 
 /** I/O · 전역변수 섹션 (상호작용 진입점). */
@@ -475,7 +492,8 @@ export function buildErrorSections(errors: readonly string[], threads: readonly 
 		codeChildren.push(new InfoNode('활성 코드 오류 없음', 'pass'));
 	}
 	codeSec.children = codeChildren;
-	codeSec.collapsed = false;
+	// 개수·상태가 헤더에 보이고 Error 쓰레드는 펼쳐 둔 쓰레드 섹션 맨 위에 뜨므로 접어 둔다.
+	codeSec.collapsed = true;
 
 	const envSec = new SectionNode(
 		'errorsEnv',
@@ -507,7 +525,7 @@ export function buildErrorSections(errors: readonly string[], threads: readonly 
 		envChildren.push(new InfoNode('활성 환경 경고 없음', 'pass'));
 	}
 	envSec.children = envChildren;
-	envSec.collapsed = false;
+	envSec.collapsed = true;
 
 	return [codeSec, envSec];
 }
@@ -557,8 +575,12 @@ export function buildDisconnectedRoot(snapshot: FtpSnapshot & { config: Controll
 }
 
 /**
- * 연결 상태의 루트 — 섹션 **순서의 정본**:
- * (런타임 오류 컨텍스트) → 프로젝트 상태 → 연결 → 쓰레드 → 브레이크포인트 → FTP 파일 → Flash Projects → 시스템 정보 → I/O → 코드 오류 → 환경 경고.
+ * 연결 상태의 루트 — 섹션 **순서의 정본**(2026-11-04 재배치: 자주 보는 것 → 가끔 여는 것):
+ * (런타임 오류 컨텍스트) → 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 → 브레이크포인트 → FTP 파일 → 시스템 정보 → I/O
+ * → 환경 경고 → Flash Projects.
+ * 묶음: 어느 제어기·어느 프로젝트(연결·프로젝트 상태) / 실행·디버그(쓰레드·코드 오류·브레이크포인트) /
+ * 배포 파일(FTP /GPL) / 장비(시스템 정보·I/O) / 드물게 여는 진단·보관(환경 경고·Flash Projects).
+ * 기본 접힘 상태는 각 섹션 빌더가 정하고, 바꾸면 SECTION_LAYOUT_EPOCH 를 올린다.
  */
 export function buildConnectedRoot(input: TreeRootInput): SectionNode[] {
 	const cfg = input.config;
@@ -568,10 +590,7 @@ export function buildConnectedRoot(input: TreeRootInput): SectionNode[] {
 		sections.push(buildRuntimeErrorSection(input.runtimeErrorContext));
 	}
 
-	// ── 프로젝트 컨텍스트 (불일치 가시화)
-	sections.push(buildProjectContextSection(input));
-
-	// ── 연결 정보 (간소화)
+	// ── 연결 정보 (간소화) — 헤더 한 줄이 "어느 제어기에 붙어 있나"를 보여 준다.
 	sections.push(buildConnectionSection({
 		ip: cfg.ip,
 		port: cfg.port,
@@ -581,17 +600,25 @@ export function buildConnectedRoot(input: TreeRootInput): SectionNode[] {
 		runtimeConsoleStatus: input.runtimeConsoleStatus,
 	}));
 
+	// ── 프로젝트 컨텍스트 (불일치 가시화)
+	sections.push(buildProjectContextSection(input));
+
 	// ── 쓰레드
 	sections.push(buildThreadsSection(input.threads));
+
+	// ── 에러 로그: 코드 오류는 실행·디버그 묶음에, 환경 경고는 아래쪽 진단 묶음에 둔다.
+	const [codeErrors, envWarnings] = buildErrorSections(input.errors, input.threads);
+	sections.push(codeErrors);
 
 	// ── 브레이크포인트 (제어기 기준 — 0개여도 상시 표시해 상태를 보이게 한다, §1-AR)
 	sections.push(buildBreakpointsSection(input.breakpoints, input.editorBreakpointTargets));
 
-	// ── FTP 파일 (/GPL) · Flash Projects (/flash/projects)
-	sections.push(...ftpSections(input, cfg, input.ftpCacheMatches, {
+	// ── FTP 파일 (/GPL) · Flash Projects (/flash/projects) — Flash 는 맨 아래로 보낸다.
+	const [ftpGpl, ftpFlash] = ftpSections(input, cfg, input.ftpCacheMatches, {
 		gpl: { title: `FTP 파일 (${cfg.ftpBasePath})`, icon: 'folder-library' },
 		flash: { title: `Flash Projects (${cfg.ftpFlashProjectsPath})`, icon: 'archive' },
-	}));
+	});
+	sections.push(ftpGpl);
 
 	// ── 시스템 정보
 	sections.push(buildSystemInfoSection(input.sysInfo, input.lastSystemInfoRefreshAt));
@@ -599,8 +626,7 @@ export function buildConnectedRoot(input: TreeRootInput): SectionNode[] {
 	// ── I/O · 전역변수 (상호작용 진입점)
 	sections.push(buildIoSection());
 
-	// ── 에러 로그: 코드 오류 / 환경 경고 분리 뷰
-	sections.push(...buildErrorSections(input.errors, input.threads));
+	sections.push(envWarnings, ftpFlash);
 
 	return sections;
 }

@@ -25,6 +25,13 @@ export interface SystemInfoItem {
 	value: string;
 	tooltip?: string;
 	iconId?: string;
+	/**
+	 * 접힌 하위 묶음으로 보낼 행의 묶음 이름. 지금은 앰프 온도(`'ampTemperature'`)만 — 로봇·앰프 수만큼 늘어나
+	 * 자주 보지 않으므로 시스템 정보 아래 접힌 "앰프 온도" 노드로 모은다(2026-11-04 사용자 요청). 없으면 섹션 바로 아래.
+	 */
+	group?: 'ampTemperature';
+	/** 온도 행의 판정 가능한 섭씨 값(묶음 헤더의 최고 온도 요약용). 센서 지원 미확인이면 없음. */
+	celsius?: number;
 }
 
 /** 트리가 쓰는 제어기 설정값(`controllerConnection.getControllerConfig` 의 부분집합). */

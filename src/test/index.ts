@@ -140,6 +140,7 @@ import './controller/commands/stepCommand.test';
 import './controller/runtime/runtimeConsolePresentation.test';
 import './views/tree/runtimeConsoleTreePresentation.test';
 import './views/tree/treeFormat.test';
+import './views/tree/treeSectionsLayout.test';
 import './controller/deployment/deployOutcome.test';
 import './controller/diagnostics/recentEvents.test';
 import './controller/commands/startProcedureCheck.test';

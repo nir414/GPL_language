@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.10** (리뷰 후속 — 명령 안전·정지 판정·메모리 자동 회수·의존성, 1630/1630 · MCP 174/174. 상세는 §1-GZ.)
-- **직전 세션: §1-GZ** — "프로젝트 문제점 검토 리뷰" → 리뷰(안전·디버거·통신·도구·프로세스) 뒤 사용자 결정 "AI 도 Unload 가능, 램이 모자라면 자동 Unload 후 진행, 나머지는 권장안대로" → 1402 명령 한 줄 검증·전달 뒤 재전송 금지·UTF-8·닫힌 STATUS, 브리지 정지 우선·URI 토큰·MCP 사전 확인 강화, 디버거 정지 판정 경합 수정, 배포 전 메모리 자동 회수(그룹 Compile 표시면 건너뜀), basic-ftp 6.2.5 등. 실기 확인은 verification §1-GZ.
+- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.11** (대시보드 축 위치 리밋 막대·추이 통합·DataID 전환·I/O 클릭 토글, 1646/1646. 상세는 §1-HA.)
+- **직전 세션: §1-HA** — "축 상태를 바로 한눈에 + 그래프 통합 + I/O 클릭 토글" → 실측으로 대시보드의 Execute 프로브(전원·축·좌표)가 값을 못 받던 것을 확인하고 읽기 전용 DataID(3504·3506·230·116·2002·16077/16078)로 전환, 로봇 전체 축을 소프트 리밋 막대로, 추이 5개를 한 카드의 같은 차트로, I/O 칩은 클릭 = 강제 토글·더블클릭 = 강제 해제. 실기 확인은 verification §1-HA.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -89,7 +89,7 @@
 - [ ] **(2026-11-04, §1-GY) 실사용 확인 대기 117건 정리 — 사용자 결정.** `docs/ai-handoff-verification.md` 의 08~09월 항목은 이미 실사용으로 확인됐거나
   이후 변경으로 무의미해졌을 수 있다. 사용자와 한 번 훑어 확인된 것·무의미한 것을 지우고, 문제로 남은 것만 이 절에 코드 작업으로 올린다.
 
-- [ ] **(2026-10-28, §1-GN inbox) 상태 샘플러의 `Execute` 가 Unload 를 막는다는 보고 — 결정 필요.** `controller/diagnostics/statusSampling.ts` 가 대시보드 폴링에 `Execute Controller.PowerEnabled`·`Robot.WhereAngles`·`Robot.Where` 를 쓰면 제어기가 `_Cmd_<project>` Idle 쓰레드를 만들고, 그 뒤 `Unload <project>` 가 응답하지 않았다(2026-10-27 inbox unload-slow-not-hang: 최소 프로브 재현 3회, `Stop _Cmd_…` 로도 실제 앱은 회피 실패). 선택지: (a) 프로젝트가 로드돼 있는 동안 Execute 샘플링 중지(DataID/`Show` 대체 가능 여부 조사) (b) 설정으로 끄기 (c) Unload 전에 `_Cmd_` 가 보이면 경고. 문서상 Idle 쓰레드는 Unload 를 막지 않아야 하므로 제어기 결함으로 보이나 실기 재현이 근거.
+- [ ] **(2026-11-04, §1-HA) MCP `controller_status` 의 전원 조회를 `pd 230` 으로.** `controller-mcp/src/index.js` `probePowerEnabled` 가 `Execute Controller.PowerEnabled` 를 쓰는데 4.2K5 실측은 `-712 *Invalid syntax*` — `powerEnabled` 가 늘 실패할 것이다. 대시보드는 `robotAxes.readPowerState`(230: 8~12 켜짐) 로 바꿨으니 같은 판정으로 맞추고 Execute(`_Cmd_` 쓰레드)를 없앤다. (대시보드 샘플러의 Execute → Unload 지연 보고(§1-GN inbox)는 §1-HA 에서 Execute 를 없애 해소.)
 - [ ] **(2026-10-28, §1-GL) ProjectName = 폴더 이름 — 결정·실기 확인.** ① BinderR4 리프·그룹 42개를 Quick Fix 로 고칠지(일괄은 .gpr 마다 「모두 고치기」) 사용자 결정 ② 고치면 `Data`(Gantry\Data·Lib\Data)·`Cmd`(Lib\Motion\Cmd·Lib\Robot\Cmd) 가 겹친다 — 폴더를 `GantryData`/`MotionCmd` 처럼 바꿀지(그러면 이 폴더를 가리키는 ProjectLibrary 경로·루트 ProjectSource 도 함께) 결정 ③ 라이브러리 ProjectName 이 폴더와 다를 때/겹칠 때 제어기 Compile·Start 가 실제로 어떻게 되는지는 미확인 — 바꾼 뒤 `Compile BinderR4` STATUS 로 확인.
 
 - [ ] **(2026-10-22, §1-FK) 구조 개편 후속.** 0.14.3의 F5 활성화·정의/참조·완성·호버·워처 갱신을 확인한다. 다음 코드 작업은 GPLDebugSession의 중단점·변수·실행 제어·폴링 객체 합성이며, 전체 순서는 `docs/development/architecture.md` §2.3을 따른다. 연결·배포·디버그 실행 순서 변경은 별도 안전 시험에서 검증한다.
@@ -265,6 +265,7 @@ src/views/statusbar/connectionHealthBadge.ts        # (§1-GI) suspect/recoverin
 src/controller/connection/reachability.ts           # ping TTL·TCP·arp 도달성 판정 + 응답 장치 정체(제어기 vs 게이트웨이) 힌트 (§1-BI, #22)
 src/controller/diagnostics/resourceProbes.ts         # Show Memory / Show Network -tcp / -mbuf 파서(실기기 원문 기준)·증가율·이력 (§1-BI, #22 자원 카드)
 src/controller/diagnostics/statusSampling.ts         # 상태 수집·대시보드별 저빈도 진단 캐시·실제 표본 시각(순수 IO 주입, §1-FM)
+src/controller/diagnostics/robotAxes.ts              # (§1-HA) 전원·축·좌표 DataID 정본 — pd 파서, 116 로봇 목록, 3504/3506/230, 16077/16078 리밋 정규화, 구성 읽기(Execute 안 씀)
 src/controller/diagnostics/controllerStatus.ts       # 확장 명령 큐와 상태 수집기의 어댑터·기존 공개 API 재노출
 src/controller/diagnostics/temperature.ts            # Show Temperature 파서·센서 유효성·360점 온도 이력(§1-FM)
 src/controller/runtime/runtimeConsoleGuards.ts   # 1403 접속 카운터(슬라이딩 윈도우)·워치독 판정(순수) (§1-BI)
@@ -390,7 +391,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GP ~ §1-GY)만 둔다.
+본문에는 **최근 10개 세션**(§1-GR ~ §1-HA)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있고, 그 세션들의 인덱스는 [archive/handoff/index.md](archive/handoff/index.md)에 있다.
 아래 §1-0 에는 본문에 있는 세션의 행만 둔다.
 
@@ -401,16 +402,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| [2026-11](archive/handoff/2026-11.md) | §1-GP (2026-11-03) | 1 |
-| (본문 아래) | §1-GQ ~ §1-GZ (2026-11-03 ~ 11-04) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GQ (2026-11-03) | 2 |
+| (본문 아래) | §1-GR ~ §1-HA (2026-11-03 ~ 11-04) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GP 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GQ 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GQ | 11-03 | **연결 유실 정황: PC 절전 복귀·직전 상태 변경 명령·「다시 연결」** — 사후 스냅샷 30건 재분석(절전 복귀 5·깨어 있는 중 링크 단절 8·Stop/Start/Execute 뒤 8·Unload 6), Windows 이벤트 로그로 절전 복귀 매칭(`pcPowerEvents.ts`), `RecentCommandLog`, 알림 문구 `lossNotice.ts`, README 문제 해결 2행. 0.27.2 | 본문 ↓ |
 | §1-GR | 11-03 | **Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실** — 트리 우클릭 Unload → `Unload -all`(/GPL 비운 뒤), 「Unload Project」 맨 위가 -all, MCP `unload_project` 생략 = -all(`default-all`); 비우기 대상이 /flash·루트면 거부(`classifyRemoteClearRoot`); 자동 복구 Unload 는 이름 유지. 버전 정책: 기능 추가도 patch. docs/gpl-language 4파일. 0.27.3 | 본문 ↓ |
 | §1-GS | 11-03 | **「컴파일 검증 필요」 라이브러리 해제·라이브러리 배지·결과 미확정 사유·목록에서 지우기** — 수신함 Sample Prep 보고 처리: Compile 성공이 `ProjectLibrary`(전이) 항목도 해제(`clearCompiled`·`compiledLibraries.ts`), 라이브러리 배지는 선택 창으로, STATUS 없는 Start 는 「결과 미확정」, /GPL 비우면 해제, 선택 창 ×. 0.27.4 | 본문 ↓ |
 | §1-GT | 11-03 | **여유 메모리 측정값 정본(SSOT)·디버깅 느림 진단** — 실행 창이 Marketplace 0.18.1 로 되돌아감(스텝 지연 수정 전), 제어기 Free 7.8 → 0.97 MB·RTT 증가 관측. `Show Memory` 는 전송 경로가 `memoryReadings` 에 기록하고 트리·배지·검사가 같은 값을 읽음, 상태 변경 없으면 15 s 재사용, FTP 쓰기·상태 변경 명령이 무효화, R7. 0.27.5 | 본문 ↓ |
@@ -419,51 +419,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GW | 11-04 | **디버그 체감 속도 — 과거 개선 대조·GDE 방식 잠정 프레임** — §1-D·L·X·GA 대조(GA 0.18.2 는 사용자 창에서 미실행: 0.13.2 → Marketplace 0.18.1), GDE 캡처 분석(Step → 1 ms 뒤 Show Thread -web, Show Stack 없음), 폴 줄로 정지 이유 판정·stackTrace levels=1 잠정 맨 위 프레임·첫 fast poll 5 ms, Show Variable 일괄 형식 없음(문서). 0.27.8 | 본문 ↓ |
 | §1-GX | 11-04 | **제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음** — 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 → 브레이크포인트 → FTP /GPL → 시스템 정보 → I/O → 환경 경고 → Flash Projects, 펼침은 프로젝트 상태·쓰레드·FTP /GPL·시스템 정보만, `SECTION_LAYOUT_EPOCH` 3, 앰프 온도는 시스템 정보 아래 접힌 「앰프 온도 (N)」(헤더에 최고 온도) | 본문 ↓ |
 | §1-GY | 11-04 | **AI 지침 정리** — `AGENTS.md` 정본화(`CLAUDE.md` 는 `@AGENTS.md` import), 요청 이력의 방침(커밋 자유·합쇼체 문구·포커스 강제 금지·/flash/projects) 명문화, `record-keeping.md`, §3 실사용 확인 117건 → `ai-handoff-verification.md`, 아카이브 인덱스 196행 → `archive/handoff/index.md`, 하드 규칙 번호 §0 로 통일(모션 6→9). 문서 전용 | 본문 ↓ |
-
 | §1-GZ | 11-04 | **프로젝트 문제점 리뷰 후속 — 명령 안전·정지 판정 경합·메모리 자동 회수·의존성** — 1402 한 줄 검증(CR/LF 거부)·전달 뒤 재전송은 조회만·UTF-8·닫힌 STATUS·줄 번호 140 수정, 브리지 정지 명령 우선·URI 토큰·상태 모르면 Step/Continue 거부, 디버거 액션 세대·잔류 pending·BP 요청 직렬화, 메모리 부족 시 정지 → Unload 자동 회수(`memoryGuard.autoUnload`), basic-ftp 6.2.5·@types/vscode ~1.74·CI Node 22·.gitattributes. 0.27.10 | 본문 ↓ |
+| §1-HA | 11-04 | **대시보드 축 위치 리밋 막대·추이 그래프 통합·전원/축/좌표 DataID 전환·I/O 클릭 토글** — 4.2K5 실측: `Execute Robot.WhereAngles`/`Where` 는 값 없음, `Execute Controller.PowerEnabled` -712, Execute 명령 상한 136자 → `pd 3504/3506/230/116/2002/16077/16078`(순수 `robotAxes.ts`), 로봇 전체 막대(양끝 소프트 리밋·5% 근접·이동), 「추이」 한 카드 5차트(같은 차트 함수·눈금·호버), 칩 클릭 토글·더블클릭 해제. 1646/1646. 0.27.11 | 본문 ↓ |
 ---
 
 **최근 세션 본문 — §1-GP ~ §1-GY (2026-11-03~11-04).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GQ. 2026-11-03 세션 — 연결 유실 정황: PC 절전 복귀 판정 · 직전 상태 변경 명령 · 「다시 연결」 (0.27.2)
-
-### 증상(요청)
-
-"최근 제어기가 실제로 죽지 않았는데도 연결이 끊기는 문제 등등이 발생했었음" → 분석 보고 뒤 "알아서 진행해줘".
-
-### 원인(관측 — 사후 스냅샷 30건 10-28~11-02 + Windows 이벤트 로그)
-
-| 유형 | 건수 | 근거 |
-| --- | --- | --- |
-| PC 최신 대기(Modern Standby) 복귀 | 5 | 유실 시각 = System Kernel-Power 507(대기 종료) 시각(초 단위), 스냅샷의 이벤트 루프 정지 = 대기 시간(37~297 s). 제어기 무관(확신 높음) |
-| 깨어 있는 중 유휴 유실 | 8 | 1402·1403 동시 RST → 3~10 s 안에 직결 NIC 재수립(NetworkProfile/Operational 10000, 대개 ~21 s 간격 2회). USB NIC(RTL8153) 재열거 없음. 11-02 09:55 은 재연결 뒤 앱 쓰레드 유지 → 재부팅 아님(추정) |
-| Stop -all·Start·Execute 뒤 2분 안 | 8 | 스냅샷 「직전 관측」은 응답 없는 교란 명령만 다뤄 전부 "없음". 11-02 09:18 묶음(여유 메모리 2.19 MB 심각에서 Stop -all)은 재연결 뒤 7.70 MB → 재부팅 정황 |
-| Unload 무응답 | 6 | 10-28 Unload 시험 — 0.26.0(대기 180 s)에서 대응 |
-
-- 정정: "MSI MAC·TTL 64 면 재부팅은 아니다"는 틀렸다. 이 PC 는 Wi-Fi `192.168.1.181/21`·이더넷 4 `192.168.2.10/21` 이 192.168.0.x 를 덮어, 직결 링크가 내려가면 원인과 무관하게 그쪽으로 라우팅된다 — MAC/TTL 은 "직결 링크 다운"까지만 말한다(메모리 갱신).
-- 확장 호스트 정지 길이만으로는 절전을 가를 수 없다(§1-GI: 절전 없이 22~71 s 정지 사례) → OS 기록을 직접 읽기로 했다.
-
-### 조치(의도와 방법)
-
-- 순수(753a3e6): `recentCommands.ts`(RecentCommandLog·commandsBefore 5분·한 줄 표기), `pcPowerEvents.ts`(파싱·`matchPcResume` 복귀 -5 s~+120 s·문구, 실행은 `readPcPowerEvents` 한 함수 — Windows PowerShell 5.1 `Get-WinEvent` 해시테이블 배열, 비 Windows·실패는 []), `lossNotice.ts`(알림 문구). 테스트 6건(`lossContext.test.ts`).
-- 배선(bebf699): `controllerConnection.sendCommandDetailed` 가 읽기 전용이 아닌 명령의 결과를 기록(`getRecentStateChangingCommands`). `handleConnectionLost` 가 의심 전 명령을 즉시 떠 두고 이벤트 로그 조회를 시작 → 사후 스냅샷의 도달성 판정과 병렬. 판정 절 `계기:` 줄·「직전 상태 변경 명령」·「PC 절전/복귀」 절, Output 두 줄, 알림 `composeLossNotice` + 「다시 연결」(`finishConnect` — 유실 당시 설정 그대로, 이미 연결돼 있으면 무시).
-- **자동 재접속은 하지 않는다**(2026-08-28 결정 유지) — 버튼은 사용자의 명시적 Connect. 판정 규칙(임계·타임아웃)도 그대로.
-- 기록 범위 한계: 디버그 어댑터의 자체 소켓 경로로 나가는 명령은 `RecentCommandLog` 에 들어가지 않는다.
-- 버전은 같은 날 다른 세션이 정한 새 정책(8ca97c1 — 기능 추가도 patch 기본)에 따라 0.27.2.
-
-### 검증
-
-- `npm test` **1584/1584**(+6).
-- 실측: 컴파일된 `readPcPowerEvents` 로 지난 3일 기록 46건(조회 3.8 s) — 11-02 10:56:24 유실 → "PC 절전 복귀 오전 10:56:24 (절전 3분 13초) / Kernel-Power 507", 깨어 있던 09:55·12:10 → 매칭 없음.
-- VSIX `dist/gpl-language-support-0.27.2.vsix` 1,676,808 bytes, SHA-256 `3A76128D4883BD6161DAF74C3FA19CB142176DA3BCB6E63A7C724D4098EA9581`(경고는 bundle 권장 1건), 새 모듈 3개 포함 확인.
-- 실제 알림·사후 스냅샷 출력은 실사용 유실로 보지 못했다 → §3.
-
-### 남은 일
-
-- §3 실사용 확인.
-- 깨어 있는 중 링크 단절 8건의 원인 특정(USB 랜카드 전원 절약·케이블·제어기 NIC). 재부팅 정황 자동 기록(/GPL 비었는지·여유 메모리 급증·쓰레드 소멸 — `unloadRisk.judgeRebootEvidence` 일반화)은 다음 후보로 제안만 했다.
 
 ## 1-GR. 2026-11-03 세션 — Unload 기본 -all · 버전 정책 patch 기본 · 수신함 APON 언어 사실 (0.27.3)
 
@@ -858,3 +820,48 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 - 실기 확인(verification §1-GZ): 메모리 자동 회수 실제 회수량·Unload 소요, basic-ftp 6 실제 제어기 FTP(PASV 주소가 접속 IP 와 같으면
   `allowSeparateTransferHost` 줄 삭제), URI 토큰, 한글 프로젝트명 1402 송수신.
 - §3: `@vscode/vsce` 메이저 업그레이드(개발 의존 취약점 5건), D6(폴 중 예외 시 정지 알림 유실 — 낮음), `setBreakPointsRequest` 직렬화 테스트.
+
+## 1-HA. 2026-11-04 세션 — 대시보드 축 위치 리밋 막대 · 추이 그래프 통합 · 전원/축/좌표 DataID 전환 · I/O 클릭 토글 (0.27.11)
+
+### 증상(요청)
+
+"축 상태를 바 형태로 어디 위치로 움직인 상태인지 한눈에 전부" + "그래프 모양이 별로고 보기 어렵다, 몇 개 안 되니 통합" +
+(작업 중) "I/O 는 더블클릭해야 전환된다 — 클릭으로 전환, 더블클릭으로 해제".
+
+### 원인(관측 — 실기 192.168.0.1, G2400C 4.2K5, 단일 축 로봇 5대 구성)
+
+- 기존 축 게이지는 축 한계를 몰라 "세션 중 본 |max|" 로 스케일했다. 게다가 데이터 자체가 없었다:
+  `Execute Robot.WhereAngles`·`Execute Robot.Where` 는 STATUS 0 에 DATA 없음, `Execute Controller.PowerEnabled` 는 **-712**.
+  Execute 는 식의 값을 돌려주지 않는다(문서상 "assignment statement or a function reference" — execute_cmd.htm).
+  `Execute Console.WriteLine(CStr(...))` 는 값을 1402 DATA 로 돌려주지만(1403 에는 안 나옴) 명령 길이 상한이 **136자**(137자부터 `-506 *Input too long*`)라
+  한 줄에 축 2~3개뿐이고, Execute 는 `_Cmd_<project>` 쓰레드를 만든다(§3 의 Unload 지연 보고).
+- 읽기 전용 DataID 로 전부 된다(실측 STATUS 0): `pd 3504, r`(Actual joint angles, RO), `pd 3506, r`(Actual Cartesian, RO),
+  `pd 230`(Power state = 12), `pd 116`(Robot types `1,1,1,1,1,0…`), `pd 2002, r`(이름 "Track"·"H1 evZ"), `pd 16077/16078, r`(소프트 리밋, NP).
+  없는 로봇은 `-1001 *Undefined robot*`, 없는 unit 리밋은 `-1509`.
+- 그래프: 스파크라인 4개가 온도·자원 카드에 흩어져 있었고 `preserveAspectRatio="none"` 이라 점·선이 늘어났으며 눈금이 없었다.
+
+### 조치(의도와 방법)
+
+- **2b73521 — 순수 모듈 `controller/diagnostics/robotAxes.ts`**: pd 파서(따옴표 밖 `=`·콤마, wrap), 116 연속 목록(0 이 끝),
+  type 1·7 은 Cartesian 없음, 리밋 정규화(max>min·|v|<1e6), 230 상태 문구. 샘플러는 구성(116·2002·16077·16078)을 캐시하고
+  수동 갱신·재연결·실패 후 진단 주기에만 다시 읽으며, 폴링은 쓰레드 + 230 + 로봇별 3504 + (kinematics 로봇) 3506. **Execute 를 쓰지 않는다.**
+  근거: PDB `Robot_Calibration/stop_limits.htm`·`Joint_Cartesian_Control/datalogging.htm`·`Controller_Settings/operationmodes.htm`·
+  `Controller_Settings/system identification.htm`.
+- **bdbaf9f — 웹뷰**: 축 카드(전체 폭) 로봇·축마다 막대 하나(양끝 = 소프트 리밋, 채움·표식 = 현재, 5% 근접 주의·밖 오류·이동 중
+  방향/변화량·%, 리밋 없으면 관측 범위 점선), 요약 줄. 「추이」 카드 하나에 CPU·앰프 온도·여유 메모리·accepted/s·clusters free 를
+  같은 차트 함수로(실제 픽셀 폭·y 눈금·영역·임계선 라벨·현재값·호버, null 끊김, ResizeObserver). 직교 좌표 카드는 로봇 번호 /
+  조인트 전용이면 그 사실. 전원 배지는 230 문구. I/O 칩 클릭 = 강제 토글(250 ms 미룸), 더블클릭 = 강제 해제(강제된 것만, 토글 취소).
+  카드 접힘은 `data-card` 이름으로 저장. 테스트 하니스 공용화(`dashboardHarness.ts`).
+
+### 검증
+
+- `npm test` **1646/1646**(신규 16건: robotAxes 7·dashboardCharts 6·dashboardDio 3). 실측 원문을 fixture 로 고정.
+- 브라우저(Edge headless) 미리보기로 다크·라이트·좁은 폭(560px) 배치 확인 — 모의 데이터.
+- 실기: 위 DataID·Execute 응답은 MCP 로 직접 확인. **새 확장 코드로 대시보드를 실기에 띄우지는 않았다**(사용자 창은 0.27.5) — verification §1-HA.
+- VSIX: `dist/gpl-language-support-0.27.11.vsix` — 1,732,533 bytes, SHA-256 `A3836FEB1220F664CF369181279E406D40DD7224CE08D2DE042C26EF8970CA31`.
+  경고는 기존 번들링 권고(372 파일)뿐. `pre-release-check` 는 「main 브랜치 아님(codex/domain-modules)」만 실패(작업 트리는 커밋 후 깨끗).
+
+### 남은 일
+
+- §3: MCP `controller_status` 의 `powerEnabled` 도 `Execute Controller.PowerEnabled`(4.2K5 에서 -712)라 항상 실패할 것 — `pd 230` 으로 바꿀 것.
+- `CStr` 이 아닌 DataID 라 정밀도 문제는 없다. 다중 로봇의 직교 좌표는 kinematics 가 있는 첫 로봇만 보인다(필요하면 선택 UI).

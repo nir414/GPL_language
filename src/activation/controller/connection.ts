@@ -727,7 +727,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			let debugSessionEnded = false;
 			if (debugSession) {
 				// 구성에 따라 세션 종료가 제어기 프로그램까지 멈춘다(Stop -all) — 모션 영향이므로 사람에게는 먼저 확인받는다
-				// (하드 규칙 6). silent(AI/URI)는 묻지 않고 진행하되 결과에 무엇이 일어났는지 담아 돌려준다.
+				// (하드 규칙 9). silent(AI/URI)는 묻지 않고 진행하되 결과에 무엇이 일어났는지 담아 돌려준다.
 				const stopsProgram = debugSession.configuration?.stopAllOnDisconnect === true;
 				if (!silent && stopsProgram) {
 					const proceed = '세션 종료 후 해제';

@@ -1700,7 +1700,7 @@ export class GPLDebugSession extends LoggingDebugSession {
      * 잠금이 걸려 있으면 VS Code 포커스가 어느 스레드에 있든 잠근 스레드로 되돌린다 — 다른
      * 스레드가 브레이크포인트에 걸려 포커스를 가져간 상태에서 F5/F10 을 눌러 **의도하지 않은
      * 스레드를 움직이는 사고**를 막는 것이 목적이다. 잠근 스레드가 종료돼 목록에 없으면 잠금을
-     * 해제하고 요청을 그대로 통과시킨다. 추가 스레드를 재개하는 일은 없다(하드 규칙 6).
+     * 해제하고 요청을 그대로 통과시킨다. 추가 스레드를 재개하는 일은 없다(하드 규칙 9).
      */
     private _resolveExecutionTarget(action: string, requestedThreadId: number, singleThread?: boolean): number {
         if (isAllThreadsResumeRequest(singleThread)) {
@@ -2004,7 +2004,7 @@ export class GPLDebugSession extends LoggingDebugSession {
      * Jump to Cursor 실행 — `Set Thread <thread> -line <n>`.
      *
      * 위험: 지정 줄까지의 문장이 실행되지 않으므로 초기화·안전 조건을 건너뛴 상태로 진행할 수 있다
-     * (모션 영향 가능 — §0 하드 규칙 6). 그래서 기본값(`gpl.debug.jumpToCursor: "warn"`)에서는
+     * (모션 영향 가능 — §0 하드 규칙 9). 그래서 기본값(`gpl.debug.jumpToCursor: "warn"`)에서는
      * 실행 전에 모달로 확인을 받는다. 기능 자체를 막지는 않는다(사용자 결정 2026-08-28).
      */
     protected override async gotoRequest(

@@ -69,7 +69,7 @@ export function activateDebugIntegration(host: ExtensionHost): void {
 			const session = vscode.debug.activeDebugSession;
 			type Pick = vscode.QuickPickItem & { action: 'restart' | 'compile' | 'dismiss' | 'open'; file?: string };
 			// 재시작(Run)까지 가지 않고 "컴파일까지만" — BP 를 실제 코드 줄에 맞추는 데 필요한 것은 재컴파일뿐이고,
-			// 프로그램을 처음부터 다시 돌리는 것은 별개의 결정이라 둘을 나눠 놓는다(모션 영향, 하드 규칙 6).
+			// 프로그램을 처음부터 다시 돌리는 것은 별개의 결정이라 둘을 나눠 놓는다(모션 영향, 하드 규칙 9).
 			// 덜 침습적인 쪽을 먼저 놓아 기본 선택이 재시작이 되지 않게 한다.
 			const compileItem: Pick = {
 				action: 'compile',

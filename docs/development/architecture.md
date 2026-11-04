@@ -422,7 +422,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
   실패 메시지가 위반 목록을 그대로 보여 준다.
 - **컴파일러 게이트**(tsconfig): `strict` + `noUnusedLocals` · `noUnusedParameters` · `noImplicitReturns` ·
   `noImplicitOverride` · `noFallthroughCasesInSwitch`. 쓰지 않는 매개변수는 `_` 접두.
-- **하드웨어 검증이 필요한 것**은 코드로 강제하지 않고 `docs/ai-handoff.md` §3 체크리스트로 남긴다(하드 규칙 6).
+- **하드웨어 검증이 필요한 것**은 코드로 강제하지 않고 `docs/ai-handoff-verification.md`(실사용 확인 대기 목록)에 남긴다(하드 규칙 9).
 
 ## 7. 알고 있는 부채 (2026-11-04 소스 기준)
 

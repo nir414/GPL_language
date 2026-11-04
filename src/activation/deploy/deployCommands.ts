@@ -31,7 +31,7 @@ interface DeployVariant {
 	placeHolder: string;
 	skipStart: boolean;
 	opts: Omit<QuickDeployOpts, 'overrideProjectDir' | 'nonInteractive'>;
-	/** Start 를 보내는 변형 — 자동화 경로에 모션 확인 게이트를 건다(하드 규칙 6). */
+	/** Start 를 보내는 변형 — 자동화 경로에 모션 확인 게이트를 건다(하드 규칙 9). */
 	motionGate?: boolean;
 	/**
 	 * 여러 프로젝트를 차례로 처리할 수 있는 변형(Upload Only) — 탐색기 다중 선택과 다중 선택 QuickPick 을 받는다.
@@ -134,7 +134,7 @@ export function registerUploadOnlyCommand(ctx: DeployContext): void {
 // Start 확인 모달·배포 잠금·프로젝트명 가드는 모두 기존 배포 경로와 동일하게 적용된다.
 // 업로드는 정지 게이트와 **병행**한다(UPLOAD ∥ STOP) — 속도가 목적이고, 2026-09-10 실기기
 // 재현 시도에서 "Stop 처리 중 FTP 덮어쓰기"가 제어기 이상을 유발하지 않음이 확인됐다(§1-DL).
-// 자동화 경로는 Start 를 보내므로 모션 확인 없이 자동으로 실행하지 않는다(하드 규칙 6).
+// 자동화 경로는 Start 를 보내므로 모션 확인 없이 자동으로 실행하지 않는다(하드 규칙 9).
 export function registerUploadStartCommand(ctx: DeployContext): void {
 	ctx.host.context.subscriptions.push(
 		vscode.commands.registerCommand(UPLOAD_START_COMMAND, deployVariantHandler(ctx, {

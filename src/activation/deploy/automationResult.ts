@@ -15,7 +15,7 @@ import { normalizeDirKey } from '../../util/pathKey';
 export interface AutomationTargetArgs extends ProjectTargetRequest {
 	/** true면 대상 폴더의 미저장 편집분을 저장하고 계속한다. 기본은 UNSAVED_FILES 오류(사람 편집분을 몰래 저장하지 않는다). */
 	saveDirty?: boolean;
-	/** Start 계열 — 모션 확인을 사용자에게 이미 받았음을 호출자가 단언한다(확인 모달을 대신한다, 하드 규칙 6). */
+	/** Start 계열 — 모션 확인을 사용자에게 이미 받았음을 호출자가 단언한다(확인 모달을 대신한다, 하드 규칙 9). */
 	confirmStart?: boolean;
 	/** Start 계열 — "컴파일 검증 필요" 상태여도 그대로 Start 한다. */
 	ignoreCompileStale?: boolean;

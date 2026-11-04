@@ -15,7 +15,7 @@
  * 인자가 오는 클라이언트에서는 `singleThread` 를 그대로 존중한다.
  *
  * 안전 원칙: 이 판정은 **실행 대상을 좁히기만** 한다. 잠금 때문에 추가로 재개되는 스레드는 없다
- * (docs/ai-handoff.md §0 하드 규칙 6 — 모션 영향 확대 금지).
+ * (docs/ai-handoff.md §0 하드 규칙 9 — 모션 영향 확대 금지).
  *
  * 단위 테스트: src/test/debug/execution/threadLock.test.ts
  */
@@ -79,7 +79,7 @@ export function shouldPreserveFocus(lockedName: string | undefined, stoppedThrea
 /**
  * DAP `singleThread` 인자를 해석한다. 어댑터의 실행 명령은 항상 스레드 단위이므로
  * true/undefined 는 그대로 단일 스레드 실행이고, 명시적 false(=모든 스레드 재개 요청)만
- * 구분해 호출측이 로그로 알린다 — 추가 스레드를 자동 재개하지는 않는다(하드 규칙 6).
+ * 구분해 호출측이 로그로 알린다 — 추가 스레드를 자동 재개하지는 않는다(하드 규칙 9).
  */
 export function isAllThreadsResumeRequest(singleThread: boolean | undefined): boolean {
     return singleThread === false;

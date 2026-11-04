@@ -24,7 +24,7 @@ if (!fs.existsSync(depsDir)) {
     console.error(
         'ERROR: controller-mcp/node_modules 가 없어 번들할 수 없습니다.\n' +
         '  해결: Windows에서 `cd controller-mcp && npm install` 후 다시 실행.\n' +
-        '  (리눅스/WSL에서 install 금지 — 유닉스 심링크가 vsce package를 깨뜨림. CLAUDE.md 하드 규칙 5)'
+        '  (리눅스/WSL에서 install 금지 — 유닉스 심링크가 vsce package를 깨뜨림. AGENTS.md 하드 규칙 5)'
     );
     process.exit(1);
 }

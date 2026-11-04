@@ -2,7 +2,7 @@
  * 배포 단계 5 — Phase START(skipStart 가 아닐 때만): Start 직전 정지 재확인(§0.6, 읽기 전용 `Show Thread`), 런타임 콘솔 준비 훅,
  * 모션 확인 모달(B2 §3-B — 사람 경로), `Start <project> -compile …`(startCommand 가 조립, §1-DN) 전송과 `-compile` 응답의
  * 컴파일 에러 보고, skipCompile 경로의 컴파일 스냅샷 기록. 2026-10-27 `deployService.ts` 의 `deployLocked` 에서 분리.
- * Deploy 는 Compile 에서 끝나고 실행은 별도 명령이 담당한다(CLAUDE.md 하드 규칙 7) — 이 단계는 호출측이 명시적으로
+ * Deploy 는 Compile 에서 끝나고 실행은 별도 명령이 담당한다(AGENTS.md 하드 규칙 7) — 이 단계는 호출측이 명시적으로
  * Start 를 요청한 경로(Deploy & Run·Upload & Start·F5)에서만 돈다.
  */
 

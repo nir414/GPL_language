@@ -7,16 +7,18 @@ description: "Use when changing package version, README version text, building t
 - 코드 수정이 있으면 `docs/releases/process.md`의 버전 정책에 따라 버전을 결정한다. **기본은 patch**다 — 기능 추가·
   동작 확장·버그 수정·안정화·문서/내부 개선 모두 patch(`0.0.x`)로 올린다(사용자 방침 2026-11-03). minor는 사용자가
   요청할 때만 올리고, 하위 호환을 깨는 변경은 major로 사용자에게 영향과 전환 방법을 먼저 알린다.
-- `README.md`에 현재 버전 표기가 있다면 `package.json`과 반드시 일치해야 한다.
-- 코드 수정 작업은 **항상 VSIX 패키징까지 완료**한다.
+- `README.md`에는 버전 표기를 두지 않는다(`pre-release-check`가 검사한다 — 버전은 CHANGELOG·Releases에서만 관리).
+- 사용자 대면 기능 변경은 요청이 없어도 **VSIX 패키징까지 완료**한다. 사용자가 패키징하지 말라고 한 경우만 생략한다.
 - 검증/패키징 순서는 기본적으로 다음을 따른다.
   1. `npm run compile`
   2. `npm run pre-release-check`
   3. 패키징 — **patch 계열만** `npm run package`를 쓴다. minor/major는 버전을 먼저 맞춘 뒤
      `npm run package:no-bump`를 쓴다 (정본: `docs/releases/process.md`). 패키징 뒤 포함 파일을 수정했다면
      버전을 다시 올리지 않고 `npm run package:no-bump`로 재생성한다.
-- package/package-lock, CHANGELOG, 버전을 표시하는 README, `docs/ai-handoff.md`를 같은 버전으로 맞춘다.
-- Git 커밋·태그·push·공식 릴리즈는 사용자 요청 없이 수행하지 않는다.
+- package/package-lock, CHANGELOG, `docs/ai-handoff.md`를 같은 버전으로 맞춘다.
+- 커밋은 논리 단위로 해도 된다. 태그·push·GitHub Release는 사용자가 요청할 때만 한다(태그 push = Marketplace 자동 게시).
+- 다른 AI 세션이 같은 저장소에서 동시에 작업할 수 있다. 다른 세션의 미커밋 변경이 작업 트리에 있으면 VSIX를 깨끗한
+  worktree에서 만들어 그 변경이 번들에 섞이지 않게 한다.
 - VSIX 생성 후에는 파일 경로·크기·SHA-256과 경고/실패 여부를 안내한다.
 
 ## 창 열기·설치 명령은 사용자 요청이 있을 때만

@@ -14,6 +14,7 @@ site_dir: dist/site
 exclude_docs: |
   .*
   /ai-handoff.md
+  /ai-handoff-verification.md
   /archive/handoff/
   /requests.md
   /requirements.txt
@@ -97,6 +98,7 @@ nav:
       - 설계 원칙: development/design-principles.md
       - 아키텍처(계층 규칙): development/architecture.md
       - Broker/Workbench 아키텍처: development/broker-workbench-architecture.md
+      - 작업 기록 규칙: development/record-keeping.md
   - 레퍼런스:
       - GPL Dictionary: reference/dictionary.md
       - 콘솔 명령: reference/console-commands.md

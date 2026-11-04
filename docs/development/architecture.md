@@ -222,7 +222,7 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 
 ### 2.4 성장 규칙 — 저장소가 커져도 구조가 풀리지 않게 (2026-10-27)
 
-이 절이 구조 설계 방향의 정본이다. CLAUDE.md 의 「구조 설계 방향」은 이 절의 요약이며, 둘이 어긋나면 이 절을 고치고 요약을 따라 맞춘다.
+이 절이 구조 설계 방향의 정본이다. AGENTS.md 의 「구조 설계 방향」은 이 절의 요약이며, 둘이 어긋나면 이 절을 고치고 요약을 따라 맞춘다.
 
 | 규칙 | 내용 | 강제 수단 |
 | --- | --- | --- |
@@ -233,7 +233,7 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 | 이동·분할은 동작 불변 증명 | 분할 전 커밋을 함께 빌드해 같은 입력으로 old/new 를 재생·비교하는 하네스(`scripts/dev/deployReplay.js` 151 시나리오, `compareTreeProvider.js` 41 상태)나 출력 고정 테스트로 차이 0 을 확인한 뒤 커밋. 하네스는 `scripts/dev/` 에 남겨 다음 분해 때 재사용 | §6 테스트 전략 |
 | 상태는 명시적으로 | 플래그 조합으로 상태를 추론하지 않는다 — 상태 타입 + 순수 전이 함수(`execution/stepGate.ts`·`spontaneousPause.ts` 가 본보기). 남은 암묵 상태 머신: `gplDebugSession._pollThreadStates`, `runtimeConsole` 재연결 | §7 표 |
 | 의존 방향은 아래로만 | 계층 방향(§2 표)·런타임 순환 금지. area 사이 방향은 아직 강제하지 않지만, 한 area 가 같은 계층의 다른 area 를 "알아야" 한다면 공통 하위 area 로 뽑는다 | 구조 테스트 R2·R3 |
-| 문서·테스트가 정본 | 규칙 변경 = architecture.md + architecture.test + CLAUDE.md 요약을 같은 커밋에서 | 리뷰 |
+| 문서·테스트가 정본 | 규칙 변경 = architecture.md + architecture.test + AGENTS.md 요약을 같은 커밋에서 | 리뷰 |
 
 기능 추가 순서는 사용자 방침(2026-09-18)을 따른다: 요구사항 → 책임 위치 결정 → 기존 구조로 해결 가능한지 → 공통 API 정의 →
 구현 → UI/MCP 연결. "기능을 먼저 만들지 말고 책임의 위치부터 정한다."
@@ -428,7 +428,7 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 
 ### 7.1 크기 상한 초과 (R10 이 강제 — 목록 정본은 `architecture.test.ts` 의 `SIZE_DEBT`)
 
-CLAUDE.md 구조 규칙 2(파일 1,000줄·함수 150줄)를 넘는 것. 2026-11-04 감사에서 150줄 넘는 함수 32개 중 이 표에 있던 것이
+AGENTS.md 구조 규칙 2(파일 1,000줄·함수 150줄)를 넘는 것. 2026-11-04 감사에서 150줄 넘는 함수 32개 중 이 표에 있던 것이
 하나뿐이라 측정을 테스트로 옮겼다. 분해는 기능 추가와 섞지 않고 별도 커밋으로, 동작 불변은 재생 하니스·출력 고정 테스트로 보인다(규칙 4).
 
 | 묶음 | 항목 | 분해 방향 |
@@ -457,7 +457,7 @@ CLAUDE.md 구조 규칙 2(파일 1,000줄·함수 150줄)를 넘는 것. 2026-11
 | `SymbolCache` 책임 혼합 | 인덱스·프로젝트 범위·호스트·소스 로더·표현을 독립 모듈로 구성 | **분리 완료(2026-10-22)** — 공개 메서드 28개 유지, 별도 루트 호환 래퍼 없이 내부 import 이동 |
 | `controller-mcp/src/index.js` | 약 2,830줄 | MCP 서버 도구 정의 한 파일 — 별도 하위 프로젝트(R10 측정 밖) |
 | SSOT 후보(2026-11-04 감사) | 기본 포트 1402/1403 리터럴(`controllerConnection`·`reachability` — 정본 `channelNames`) · `<STATUS>` 제거 정규식 5벌(`resourceProbes`·`io/dio`·`errorLogParser`·`threadParser`·`showVariableParser`) · `Show Thread <name>` 조립 6곳 · `getConfiguration` 직접 호출 74곳(`config.ts` 우회) | 하나씩 정본을 세우고 R7 에 한 줄씩 |
-| 루트 예외 | `controller-mcp/`(하위 프로젝트)·`samples/`(F5 개발 호스트 예제) | CLAUDE.md 저장소 구조에 명시된 예외(§2.4) |
+| 루트 예외 | `controller-mcp/`(하위 프로젝트)·`samples/`(F5 개발 호스트 예제) | AGENTS.md 저장소 구조에 명시된 예외(§2.4) |
 
 ## 8. 관련 문서
 

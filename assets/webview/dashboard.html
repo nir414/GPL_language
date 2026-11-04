@@ -156,17 +156,45 @@
 		.na { color: var(--idle); }
 		.empty { color: var(--idle); font-style: italic; }
 
-		/* ── 축 게이지 ── */
-		.axes { display: grid; grid-template-columns: auto 1fr auto auto; gap: 6px 10px; align-items: center; }
-		.axes .name { font-weight: 600; }
-		.axes .val { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; min-width: 6.5em; }
-		.axes .delta { font-size: 0.78em; color: var(--idle); min-width: 4.5em; text-align: right; font-variant-numeric: tabular-nums; }
-		.axes .delta.moving { color: var(--warn); font-weight: 600; }
-		.gauge { position: relative; height: 12px; border-radius: 6px; background: rgba(127,127,127,0.16); overflow: hidden; }
-		.gauge .zero { position: absolute; left: 50%; top: 0; width: 1px; height: 100%; background: rgba(127,127,127,0.55); }
-		.gauge .bar { position: absolute; top: 2px; height: 8px; border-radius: 4px; background: var(--accent); transition: left 0.25s, width 0.25s; }
-		.gauge .bar.moving { background: var(--warn); }
-		.axes .range { grid-column: 1 / -1; font-size: 0.72em; color: var(--idle); }
+		/* ── 축 위치: 소프트 리밋(min~max) 안에서 지금 어디인지 ── */
+		.axes-sum { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 8px; font-size: 0.82em; color: var(--idle); font-variant-numeric: tabular-nums; }
+		.axes-sum b { color: var(--vscode-foreground); }
+		.axes-sum b.warn { color: var(--warn); }
+		.axes-sum b.err { color: var(--err); }
+		.axes { display: grid; grid-template-columns: minmax(4.5em, max-content) 2em minmax(120px, 1fr) minmax(6.5em, max-content) 4.6em; gap: 2px 10px; align-items: center; }
+		.axes > .na { grid-column: 1 / -1; }
+		.ax-robot { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		.ax-robot .rn { display: block; font-size: 0.78em; font-weight: 400; color: var(--idle); overflow: hidden; text-overflow: ellipsis; }
+		.ax-robot.cont { visibility: hidden; }
+		.ax-joint { font-size: 0.8em; font-weight: 600; color: var(--idle); }
+		.ax-sep { grid-column: 1 / -1; height: 1px; margin: 3px 0; background: var(--card-border); opacity: 0.6; }
+		.ax-val { font-weight: 700; font-size: 1.05em; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+		.ax-val.warn { color: var(--warn); }
+		.ax-val.err { color: var(--err); }
+		.ax-side { text-align: right; font-size: 0.78em; font-variant-numeric: tabular-nums; color: var(--idle); white-space: nowrap; line-height: 1.25; }
+		.ax-side .mv { display: block; color: var(--warn); font-weight: 600; }
+		.ax-note { grid-column: 3 / -1; font-size: 0.78em; color: var(--warn); }
+		.rail { position: relative; padding: 4px 0 13px; }
+		.rail .track { position: relative; height: 10px; border-radius: 5px; background: rgba(127,127,127,0.20); overflow: hidden; }
+		.rail.observed .track { background: transparent; border: 1px dashed rgba(127,127,127,0.45); }
+		.rail .edge { position: absolute; top: 0; bottom: 0; width: 5%; background: rgba(210,153,34,0.20); }
+		.rail .edge.lo { left: 0; } .rail .edge.hi { right: 0; }
+		.rail .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); opacity: 0.55; transition: width 0.3s ease-out; }
+		.rail .zero { position: absolute; top: -2px; bottom: -2px; width: 1px; background: rgba(127,127,127,0.7); }
+		.rail .mark {
+			position: absolute; top: 1px; width: 4px; height: 18px; margin-left: -2px; border-radius: 2px;
+			background: var(--accent); box-shadow: 0 0 0 2px var(--vscode-editor-background); transition: left 0.3s ease-out;
+		}
+		.rail .mark.moving { background: var(--warn); animation: markPulse 1s ease-in-out infinite alternate; }
+		.rail .mark.near { background: var(--warn); }
+		.rail .mark.out { background: var(--err); }
+		@keyframes markPulse { from { box-shadow: 0 0 0 2px var(--vscode-editor-background), 0 0 0 3px rgba(210,153,34,0.0); } to { box-shadow: 0 0 0 2px var(--vscode-editor-background), 0 0 0 5px rgba(210,153,34,0.45); } }
+		.rail .lim { position: absolute; bottom: 0; font-size: 0.7em; line-height: 1; color: var(--idle); font-variant-numeric: tabular-nums; white-space: nowrap; }
+		.rail .lim.lo { left: 0; } .rail .lim.hi { right: 0; }
+		.axes-legend { margin-top: 8px; font-size: 0.75em; color: var(--idle); }
+		.axes-legend i { display: inline-block; width: 4px; height: 10px; border-radius: 2px; vertical-align: -1px; margin: 0 4px 0 10px; background: var(--accent); }
+		.axes-legend i.near { background: var(--warn); } .axes-legend i.out { background: var(--err); }
+		.axes-legend i.edge { width: 12px; background: rgba(210,153,34,0.35); }
 
 		/* ── 직교 좌표 ── */
 		.cart { display: grid; grid-template-columns: minmax(150px, 1fr) auto; gap: var(--gap); align-items: start; }
@@ -203,15 +231,38 @@
 		.temperature-card h2 { flex-wrap: wrap; }
 		.temperature-readings .res-row { flex-direction: column; align-items: flex-start; gap: 4px; padding: 6px 0; }
 		.temperature-readings .v { text-align: left; }
-		.sparks { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--gap); margin-top: 10px; }
-		.spark-box .cap { display: flex; justify-content: space-between; gap: 8px; font-size: 0.75em; color: var(--idle); margin-bottom: 2px; font-variant-numeric: tabular-nums; }
-		.spark { width: 100%; height: 44px; display: block; border-radius: 6px; background: rgba(127,127,127,0.10); }
-		.spark .line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-		.spark .line.warn { stroke: var(--warn); }
-		.spark .line.err { stroke: var(--err); }
-		.spark .thr { stroke: rgba(210,153,34,0.6); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
-		.spark .thr.alert { stroke: rgba(248,81,73,0.6); }
-		.spark .last { fill: var(--accent); }
+		/* ── 추이 그래프(한 카드에 모음, 모두 같은 모양) ── */
+		.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 10px; }
+		.chart { padding: 7px 9px 6px; border-radius: 7px; border: 1px solid var(--card-border); background: rgba(127,127,127,0.05); min-width: 0; }
+		.ch-head { display: flex; align-items: baseline; gap: 8px; }
+		.ch-title { font-size: 0.78em; font-weight: 600; color: var(--idle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		.ch-title code { font-weight: 400; opacity: 0.75; font-family: var(--vscode-editor-font-family, monospace); }
+		.ch-val { margin-left: auto; font-size: 1.25em; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+		.ch-val small { margin-left: 2px; font-size: 0.6em; font-weight: 600; color: var(--idle); }
+		.ch-val.warn { color: var(--warn); } .ch-val.err { color: var(--err); } .ch-val.na { color: var(--idle); font-size: 1em; font-weight: 600; }
+		.ch-svg { display: block; width: 100%; height: 70px; margin-top: 3px; overflow: visible; }
+		.ch-svg .grid { stroke: rgba(127,127,127,0.22); stroke-width: 1; }
+		.ch-svg .ylab { fill: var(--idle); font-size: 9px; font-variant-numeric: tabular-nums; }
+		.ch-svg .area { fill: var(--accent); fill-opacity: 0.14; stroke: none; }
+		.ch-svg .line { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+		.ch-svg.warn .line { stroke: var(--warn); } .ch-svg.warn .area { fill: var(--warn); }
+		.ch-svg.err .line { stroke: var(--err); } .ch-svg.err .area { fill: var(--err); }
+		.ch-svg .thr { stroke: var(--warn); stroke-opacity: 0.7; stroke-width: 1; stroke-dasharray: 3 3; }
+		.ch-svg .thr.err { stroke: var(--err); }
+		.ch-svg .thr-lab { fill: var(--warn); font-size: 9px; } .ch-svg .thr-lab.err { fill: var(--err); }
+		.ch-svg .last { fill: var(--accent); stroke: var(--vscode-editor-background); stroke-width: 1.5; }
+		.ch-svg.warn .last { fill: var(--warn); } .ch-svg.err .last { fill: var(--err); }
+		.ch-svg .cross { stroke: var(--vscode-foreground); stroke-opacity: 0.35; stroke-width: 1; }
+		.ch-svg .hover { fill: var(--vscode-foreground); }
+		.ch-svg .empty-msg { fill: var(--idle); font-size: 11px; }
+		.ch-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 2px; font-size: 0.72em; color: var(--idle); font-variant-numeric: tabular-nums; }
+		.chart-tip {
+			position: fixed; z-index: 15; pointer-events: none; padding: 3px 7px; border-radius: 4px; font-size: 0.8em; font-variant-numeric: tabular-nums;
+			color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+			background: var(--vscode-editorHoverWidget-background, var(--card-bg)); border: 1px solid var(--vscode-editorHoverWidget-border, var(--card-border));
+			box-shadow: 0 2px 8px rgba(0,0,0,0.25); white-space: nowrap;
+		}
+		.chart-tip[hidden] { display: none; }
 		.res-raw { margin-top: 10px; }
 		.res-raw summary { cursor: pointer; color: var(--idle); font-size: 0.85em; }
 		.res-raw pre { margin: 6px 0 0; max-height: 220px; overflow: auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 0.8em; line-height: 1.4; padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,0.10); white-space: pre-wrap; word-break: break-all; }
@@ -331,14 +382,14 @@
 	<section id="statusPage" class="page active">
 	<div class="strip">
 		<div id="bConn" class="badge na"><span class="k">연결</span><span class="v">—</span><span class="s"></span></div>
-		<div id="bPower" class="badge na"><span class="k">고전원 (서보)</span><span class="v">—</span><span class="s">Controller.PowerEnabled</span></div>
+		<div id="bPower" class="badge na"><span class="k">고전원 (서보)</span><span class="v">—</span><span class="s">Power state 230</span></div>
 		<div id="bThreads" class="badge na"><span class="k">스레드</span><span class="v">—</span><span class="s"></span></div>
 		<div id="bError" class="badge na"><span class="k">에러</span><span class="v">—</span><span class="s"></span></div>
 		<div id="bTemp" class="badge na"><span class="k">CPU 온도</span><span class="v">—</span><span class="s">Show Temperature</span></div>
 	</div>
 
 	<div class="grid">
-		<div class="card full">
+		<div class="card full" data-card="threads">
 			<h2>스레드 <span class="sub" id="threadSub"></span></h2>
 			<div class="chips" id="chips">
 				<div class="chip run"><span class="n" id="cRun">0</span><span class="l">Run</span></div>
@@ -352,13 +403,15 @@
 			</table>
 		</div>
 
-		<div class="card">
-			<h2>축 위치 <span class="sub">조인트 (deg/mm) · 게이지는 관측 범위 자동 조정</span></h2>
+		<div class="card full" data-card="axes">
+			<h2>축 위치 <span class="sub" id="axesSub">실측 조인트 3504 · 소프트 리밋 16078~16077</span></h2>
+			<div class="axes-sum" id="axesSum"></div>
 			<div class="axes" id="axes"><span class="na">데이터 없음</span></div>
+			<div class="axes-legend">막대 = 소프트 리밋 min~max · 왼쪽부터 채운 길이가 현재 위치<i></i>현재<i class="near"></i>리밋 5% 이내 · 이동 중<i class="out"></i>리밋 밖<i class="edge"></i>리밋 근접 구간 · 점선 막대 = 리밋 없음(관측 범위)</div>
 		</div>
 
-		<div class="card">
-			<h2>직교 좌표 <span class="sub">World · Robot.Where</span></h2>
+		<div class="card" data-card="cart">
+			<h2>직교 좌표 <span class="sub" id="cartSub">World · 3506</span></h2>
 			<div class="cart">
 				<table>
 					<tbody>
@@ -377,25 +430,20 @@
 			</div>
 		</div>
 
-		<div class="card full temperature-card">
+		<div class="card temperature-card" data-card="temp">
 			<h2>온도 <span class="sub" id="tempSub">Show Temperature · 조회 대기</span></h2>
 			<div class="res temperature-readings" id="tempReadings"><span class="empty">온도 조회 대기</span></div>
 			<p id="tempSummary" class="updated"></p>
-			<div class="sparks">
-				<div class="spark-box">
-					<div class="cap"><span>CPU 최고 온도 추이 (°C)</span><span id="sparkCpuCap"></span></div>
-					<svg id="sparkCpu" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="CPU 최고 온도 추이"></svg>
-				</div>
-				<div class="spark-box">
-					<div class="cap"><span>앰프 최고 온도 추이 (°C)</span><span id="sparkAmpCap"></span></div>
-					<svg id="sparkAmp" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="앰프 최고 온도 추이"></svg>
-				</div>
-			</div>
 			<p class="hint">CPU 내부 센서값은 케이스·주변 온도와 다릅니다. 과열 여부는 모델별 허용 온도와 함께 확인하세요. 앰프 0°C는 센서 미지원일 수 있습니다.</p>
 			<details class="res-raw"><summary>온도 응답 원문</summary><pre id="tempRaw">—</pre></details>
 		</div>
 
-		<div class="card full">
+		<div class="card full" data-card="trends">
+			<h2>추이 <span class="sub" id="chartsSub">이 탭을 연 뒤 관측한 값 · 점에 마우스를 올리면 시각·값</span></h2>
+			<div class="charts" id="charts"></div>
+		</div>
+
+		<div class="card full" data-card="res">
 			<h2>제어기 자원 <span class="sub" id="resSub">Show Memory · Show Network -tcp / -mbuf</span></h2>
 			<div class="res">
 				<div>
@@ -422,23 +470,13 @@
 					<div class="res-row"><span class="l">drops · waits · drains</span><span class="v na" id="rDwd">—</span></div>
 				</div>
 			</div>
-			<div class="sparks">
-				<div class="spark-box">
-					<div class="cap"><span>accepted/s</span><span id="sparkAccCap"></span></div>
-					<svg id="sparkAcc" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="accepted/s 추이"></svg>
-				</div>
-				<div class="spark-box">
-					<div class="cap"><span>clusters free</span><span id="sparkClCap"></span></div>
-					<svg id="sparkCl" class="spark" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="clusters free 추이"></svg>
-				</div>
-			</div>
 			<details class="res-raw" id="resRaw">
 				<summary>원문 보기 — 응답 형식 미확정: 파싱이 실패한 항목은 여기 원문으로 확인</summary>
 				<pre id="resRawPre">—</pre>
 			</details>
 		</div>
 
-		<div class="card full">
+		<div class="card full" data-card="log">
 			<h2>에러 로그 <span class="sub" id="logSub">ErrorLog 최신 20건 · 새 항목은 붉게</span></h2>
 			<div class="log" id="log"><div class="empty">로그 없음</div></div>
 		</div>
@@ -467,12 +505,14 @@
 		<div id="dioNotice" class="io-note">Show DIO 상태를 불러오는 중…</div>
 		<div id="dioView"><div class="io-empty">데이터 없음</div></div>
 		<p class="io-help">
-			<kbd>더블클릭</kbd> 강제 토글(ON → 강제 OFF, OFF → 강제 ON) · <kbd>우클릭</kbd> 강제 ON/OFF·해제, 그룹/전체 해제, 번호 복사 ·
+			<kbd>클릭</kbd> 강제 토글(ON → 강제 OFF, OFF → 강제 ON) · <kbd>더블클릭</kbd> 강제 해제 · <kbd>우클릭</kbd> 강제 ON/OFF·해제, 그룹/전체 해제, 번호 복사 ·
 			모서리 표시 = 강제됨 · 강제는 해제하거나 제어기를 재부팅할 때까지 유지되며 GPL 프로그램·외부 신호가 바꾸지 못합니다.
 			분류는 Brooks 문서의 신호 번호 체계(Digital Inputs and Outputs) 기준이고, Soft Internal DIO(20001~20064)는 <code>Show DIO</code> 전체 목록에 나오지 않아 따로 조회합니다.
 		</p>
 		<div id="dioMenu" class="ctx" role="menu" hidden></div>
 	</section>
+
+	<div id="chartTip" class="chart-tip" hidden></div>
 
 	<script nonce="${nonce}">
 		const vscode = acquireVsCodeApi();
@@ -485,8 +525,10 @@
 		const state = {
 			paused: false,
 			badges: {},                 // id → 마지막 class (변화 시 flash)
-			prevJoints: [],             // 이전 폴링 조인트 값
-			jointRange: [],             // 축별 관측 |max| (게이지 스케일)
+			prevAxes: new Map(),        // 'r:i' → 직전 폴링 조인트 값(이동 표시)
+			observedAxes: new Map(),    // 'r:i' → {lo, hi} 리밋이 없을 때 쓰는 관측 범위
+			charts: {},                 // 차트 id → {pts, geom} (리사이즈·호버 재사용)
+			chartCtx: { warningC: 0 },
 			prevThreads: new Map(),     // name → state
 			seenErrors: new Set(),      // 이미 본 에러 줄
 			firstErrors: true,
@@ -506,12 +548,14 @@
 			dioCollapsed: new Set(),    // 접힌 DIO 그룹 id
 			dioLayoutKey: '',
 			dioNoticeTimer: null,
-			collapsedCards: new Set(),  // 접힌 상태 카드 번호
+			dioClickTimer: null,        // 미뤄 둔 칩 클릭(더블클릭이면 취소)
+			collapsedCards: new Set(),  // 접힌 상태 카드(data-card 이름)
 		};
 		// 접힘·필터는 webview state 로 보존한다(탭을 숨겼다 다시 열거나 다시 로드해도 유지).
 		const saved = (typeof vscode.getState === 'function' && vscode.getState()) || {};
 		if (Array.isArray(saved.dioCollapsed)) saved.dioCollapsed.forEach((id) => state.dioCollapsed.add(String(id)));
-		if (Array.isArray(saved.collapsedCards)) saved.collapsedCards.forEach((i) => state.collapsedCards.add(Number(i)));
+		// 예전 버전은 카드 순번(숫자)을 저장했다 — 카드 배치가 바뀌어 순번은 버리고 이름만 쓴다.
+		if (Array.isArray(saved.collapsedCards)) saved.collapsedCards.filter((k) => typeof k === 'string').forEach((k) => state.collapsedCards.add(k));
 		if (['all', 'on', 'off', 'forced'].includes(saved.dioFilter)) state.dioFilter = saved.dioFilter;
 		if (['all', 'input', 'output'].includes(saved.dioDir)) state.dioDir = saved.dioDir;
 		function saveUiState() {
@@ -564,7 +608,7 @@
 		}
 		function chipTitle(s) {
 			return s.signal + ' · ' + (s.direction === 'input' ? '입력' : '출력') + ' · ' + (s.on ? 'ON' : 'OFF') + (s.forced ? ' · 강제됨' : '') +
-				'\n더블클릭: 강제 ' + (s.on ? 'OFF' : 'ON') + ' · 우클릭: 메뉴';
+				'\n클릭: 강제 ' + (s.on ? 'OFF' : 'ON') + (s.forced ? ' · 더블클릭: 강제 해제' : '') + ' · 우클릭: 메뉴';
 		}
 
 		function renderDio(snapshot) {
@@ -597,7 +641,7 @@
 			const groups = state.dio.groups
 				.map((g) => Object.assign({}, g, { shown: g.signals.filter(dioMatches) }))
 				.filter((g) => !filtering() || g.shown.length > 0);
-			// 구성(그룹·보이는 신호·접힘)이 같으면 칩의 상태만 바꾼다 — 더블클릭 사이에 DOM 이 바뀌지 않게.
+			// 구성(그룹·보이는 신호·접힘)이 같으면 칩의 상태만 바꾼다 — 클릭·더블클릭 사이에 DOM 이 바뀌지 않게.
 			const key = groups.map((g) => g.id + (state.dioCollapsed.has(g.id) ? '-' : '+') + ':' + g.shown.map((s) => s.signal).join(',')).join('|') +
 				'#' + state.dio.absent.map((g) => g.id).join(',') + '#' + filtering();
 			if (key === state.dioLayoutKey) {
@@ -739,10 +783,13 @@
 			else setBadge('bConn', 'err', 'OFFLINE', s.note || '제어기 응답 없음');
 
 			// 고전원
-			if (!s.connected) setBadge('bPower', 'na', '—', 'Controller.PowerEnabled');
-			else if (s.powerEnabled === true) setBadge('bPower', 'ok', 'ON', '모터 전원 켜짐 — 모션 가능');
-			else if (s.powerEnabled === false) setBadge('bPower', 'warn', 'OFF', '모터 전원 꺼짐');
-			else setBadge('bPower', 'na', '?', '조회 실패');
+			// 230 Power state: 8~12 켜짐 계열(8~10 은 켜는 중), 0~7 꺼짐 계열
+			const ps = s.powerState || {};
+			const psText = ps.text ? ps.text + (isNum(ps.state) ? ' (230=' + ps.state + ')' : '') : '';
+			if (!s.connected) setBadge('bPower', 'na', '—', 'Power state 230');
+			else if (s.powerEnabled === true) setBadge('bPower', isNum(ps.state) && ps.state < 11 ? 'warn' : 'ok', 'ON', psText || '모터 전원 켜짐 — 모션 가능');
+			else if (s.powerEnabled === false) setBadge('bPower', 'warn', 'OFF', psText || '모터 전원 꺼짐');
+			else setBadge('bPower', 'na', '?', psText || '조회 실패');
 
 			// 스레드
 			const sum = s.threadSummary || { running: 0, paused: 0, idle: 0, error: 0, total: 0 };
@@ -797,38 +844,100 @@
 			state.prevThreads = next;
 		}
 
-		function renderJoints(s) {
+		// ── 축 위치 ──
+		// 막대 하나 = 소프트 리밋 min~max(16078~16077). 리밋이 없거나 무제한이면 이 탭에서 관측한 범위(점선)로 그린다.
+		const NEAR_FRAC = 0.05;   // 리밋 양끝 5% 이내면 근접으로 표시
+		function axisRobots(s) {
+			if (Array.isArray(s.robots) && s.robots.length) return s.robots;
+			const a = Array.isArray(s.jointAngles) ? s.jointAngles.filter(isNum) : [];
+			return a.length ? [{ robot: 1, name: null, angles: a, limits: [] }] : [];
+		}
+		function axisScale(key, v, lim) {
+			if (lim && isNum(lim.min) && isNum(lim.max) && lim.max > lim.min) return { lo: lim.min, hi: lim.max, limited: true };
+			const o = state.observedAxes.get(key) || { lo: v, hi: v };
+			o.lo = Math.min(o.lo, v); o.hi = Math.max(o.hi, v);
+			state.observedAxes.set(key, o);
+			const pad = Math.max((o.hi - o.lo) * 0.1, 1);
+			return { lo: o.lo - pad, hi: o.hi + pad, limited: false };
+		}
+		const fmtAxis = (v) => v.toFixed(Math.abs(v) >= 1000 ? 1 : Math.abs(v) >= 100 ? 2 : 3);
+		const fmtLim = (v) => v.toFixed(Math.abs(v) >= 1000 ? 0 : 1);
+
+		function axisRowHtml(r, i, v, first) {
+			const key = r.robot + ':' + i;
+			const prev = state.prevAxes.get(key);
+			const delta = isNum(prev) ? v - prev : 0;
+			const moving = Math.abs(delta) > MOVE_EPS;
+			const sc = axisScale(key, v, Array.isArray(r.limits) ? r.limits[i] : null);
+			const span = sc.hi - sc.lo;
+			const frac = (v - sc.lo) / span;
+			const pct = (Math.max(0, Math.min(1, frac)) * 100).toFixed(2);
+			const out = sc.limited && (v < sc.lo || v > sc.hi);
+			const near = sc.limited && !out && (frac < NEAR_FRAC || frac > 1 - NEAR_FRAC);
+			const label = 'R' + r.robot + (r.name ? ' ' + r.name : '') + ' J' + (i + 1);
+			const tip = label + ' = ' + fmtAxis(v) + (sc.limited
+				? '\n소프트 리밋 ' + fmtAxis(sc.lo) + ' ~ ' + fmtAxis(sc.hi) + ' · ' + (frac * 100).toFixed(1) + '%\n리밋까지 −' + fmtAxis(v - sc.lo) + ' / +' + fmtAxis(sc.hi - v)
+				: '\n소프트 리밋 없음(또는 무제한) — 이 탭에서 관측한 범위로 표시');
+			const zero = sc.lo < 0 && sc.hi > 0 ? '<div class="zero" style="left:' + ((-sc.lo / span) * 100).toFixed(2) + '%"></div>' : '';
+			const html =
+				'<div class="ax-robot' + (first ? '' : ' cont') + '" title="' + esc('로봇 ' + r.robot + (r.name ? ' · ' + r.name : '')) + '">R' + r.robot + (r.name ? '<span class="rn">' + esc(r.name) + '</span>' : '') + '</div>' +
+				'<span class="ax-joint">J' + (i + 1) + '</span>' +
+				'<div class="rail' + (sc.limited ? '' : ' observed') + '" title="' + esc(tip) + '"><div class="track">' +
+					(sc.limited ? '<div class="edge lo"></div><div class="edge hi"></div>' : '') +
+					'<div class="fill" style="width:' + pct + '%"></div>' + zero + '</div>' +
+					'<div class="mark' + (out ? ' out' : near ? ' near' : moving ? ' moving' : '') + '" style="left:' + pct + '%"></div>' +
+					'<span class="lim lo">' + (sc.limited ? '' : '관측 ') + fmtLim(sc.lo) + '</span><span class="lim hi">' + fmtLim(sc.hi) + '</span>' +
+				'</div>' +
+				'<span class="ax-val' + (out ? ' err' : near ? ' warn' : '') + '">' + fmtAxis(v) + '</span>' +
+				'<span class="ax-side">' + (sc.limited ? (frac * 100).toFixed(0) + '%' : '') +
+					(moving ? '<span class="mv">' + (delta > 0 ? '▲ ' : '▼ ') + fmtAxis(Math.abs(delta)) + '</span>' : '') + '</span>';
+			return { html, key, moving, near, out, limited: sc.limited };
+		}
+
+		function renderAxes(s) {
 			const box = $('axes');
-			const angles = Array.isArray(s.jointAngles) ? s.jointAngles.filter(isNum) : [];
-			if (angles.length === 0) {
-				box.innerHTML = '<span class="na">데이터 없음</span>';
+			const robots = s.connected === false ? [] : axisRobots(s);
+			$('axesSub').textContent = s.robotsNote || '실측 조인트 3504 · 소프트 리밋 16078~16077';
+			if (robots.length === 0) {
+				box.innerHTML = '<span class="na">' + esc(s.connected === false ? '데이터 없음' : (s.robotsNote || '축 위치 조회 실패')) + '</span>';
+				$('axesSum').innerHTML = '';
+				state.prevAxes.clear();
 				return;
 			}
+			const next = new Map();
+			const c = { axes: 0, moving: 0, near: 0, out: 0, free: 0 };
 			let html = '';
-			let anyMoving = false;
-			angles.forEach((v, i) => {
-				const prev = state.prevJoints[i];
-				const delta = isNum(prev) ? v - prev : 0;
-				const moving = Math.abs(delta) > MOVE_EPS;
-				anyMoving = anyMoving || moving;
-				// 축별 관측 |max|로 스케일 — 축 한계값을 모르므로 세션 중 본 범위에 맞춘다(최소 1)
-				state.jointRange[i] = Math.max(state.jointRange[i] || 1, Math.abs(v) * 1.05);
-				const range = state.jointRange[i];
-				const frac = Math.max(-1, Math.min(1, v / range));
-				const left = frac >= 0 ? 50 : 50 + frac * 50;
-				const width = Math.abs(frac) * 50;
-				html += '<span class="name">J' + (i + 1) + '</span>' +
-					'<div class="gauge"><div class="zero"></div><div class="bar' + (moving ? ' moving' : '') + '" style="left:' + left + '%;width:' + Math.max(width, 0.5) + '%"></div></div>' +
-					'<span class="val">' + v.toFixed(3) + '</span>' +
-					'<span class="delta' + (moving ? ' moving' : '') + '">' + (isNum(prev) ? (moving ? (delta > 0 ? '▲ ' : '▼ ') + Math.abs(delta).toFixed(3) : '·') : '') + '</span>';
+			robots.forEach((r, ri) => {
+				if (ri > 0) html += '<div class="ax-sep"></div>';
+				const angles = Array.isArray(r.angles) ? r.angles.filter(isNum) : [];
+				if (angles.length === 0) {
+					html += '<div class="ax-robot">R' + r.robot + (r.name ? '<span class="rn">' + esc(r.name) + '</span>' : '') + '</div><span class="ax-joint">—</span>' +
+						'<div class="ax-note">' + esc(r.note || '위치 조회 실패') + '</div>';
+					return;
+				}
+				angles.forEach((v, i) => {
+					const row = axisRowHtml(r, i, v, i === 0);
+					html += row.html;
+					next.set(row.key, v);
+					c.axes++;
+					if (row.moving) c.moving++;
+					if (row.out) c.out++; else if (row.near) c.near++;
+					if (!row.limited) c.free++;
+				});
 			});
-			html += '<span class="range">게이지 범위 ±' + state.jointRange.slice(0, angles.length).map((r) => r.toFixed(0)).join(' / ') + (anyMoving ? ' · 이동 중' : '') + '</span>';
 			box.innerHTML = html;
-			state.prevJoints = angles.slice();
+			$('axesSum').innerHTML = '로봇 <b>' + robots.length + '</b> · 축 <b>' + c.axes + '</b>' +
+				' · 이동 중 <b' + (c.moving ? ' class="warn"' : '') + '>' + c.moving + '</b>' +
+				' · 리밋 근접 <b' + (c.near ? ' class="warn"' : '') + '>' + c.near + '</b>' +
+				(c.out ? ' · 리밋 밖 <b class="err">' + c.out + '</b>' : '') +
+				(c.free ? ' · 리밋 없음 <b>' + c.free + '</b>' : '');
+			state.prevAxes = next;
 		}
 
 		function renderCartesian(s) {
 			const c = s.cartesian || {};
+			$('cartSub').textContent = s.cartesianRobot === null ? '조인트 전용 구성 — 직교 좌표 없음(116 type 1)'
+				: 'World · 3506' + (isNum(s.cartesianRobot) ? ' · 로봇 ' + s.cartesianRobot : '');
 			const map = { cx: c.x, cy: c.y, cz: c.z, cyaw: c.yaw, cpitch: c.pitch, croll: c.roll };
 			for (const id in map) {
 				const v = fmt(map[id]);
@@ -907,8 +1016,8 @@
 			$('tempSummary').textContent = (peak === null ? '' : '관측 CPU 최고 ' + peak.toFixed(1) + '°C · ') + limitText;
 			setBadge('bTemp', cpu === null ? 'na' : stale || (warningC > 0 && cpu >= warningC) ? 'warn' : '', cpu === null ? '—' : cpu.toFixed(1) + ' °C', cpu === null ? (temp ? temp.note || 'CPU 온도 없음' : '조회 대기') : (stale ? '오래된 값 · ' : '') + limitText);
 			$('tempRaw').textContent = temp ? temp.raw || temp.note || '응답 없음' : '—';
-			renderSpark('sparkCpu', 'sparkCpuCap', pts, 'cpuMaxC', { digits: 1, unit: '°C' });
-			renderSpark('sparkAmp', 'sparkAmpCap', pts, 'amplifierMaxC', { digits: 1, unit: '°C' });
+			state.chartCtx.warningC = warningC > 0 ? warningC : 0;
+			renderChartsFor('temp', pts, s.connected ? '온도 조회 대기' : '연결 끊김');
 		}
 
 		function setRes(id, text, cls, title) {
@@ -1005,9 +1114,8 @@
 					bad ? '0 이 아닙니다 — 버퍼 부족 발생(drops=확보 실패, waits=대기, drains=프로토콜 drain)' : '모두 0');
 			} else setResNa('rDwd', raw.mbuf, st.mbuf);
 
-			// 스파크라인 2개 + 원문
-			renderSpark('sparkAcc', 'sparkAccCap', pts, 'acceptedPerSec', { thresholds: [ACCEPT_WARN_PER_SEC, ACCEPT_ALERT_PER_SEC], digits: 2, unit: '/s' });
-			renderSpark('sparkCl', 'sparkClCap', pts, 'clustersFree', { digits: 0 });
+			// 추이(추이 카드) + 원문
+			renderChartsFor('res', pts, '자원 조회 대기');
 			$('resRawPre').innerHTML = [['Show Memory', raw.memory, st.memory], ['Show Network -tcp', raw.tcp, st.tcp], ['Show Network -mbuf', raw.mbuf, st.mbuf]]
 				.map(([cmd, txt, code]) => '<b>&gt; ' + esc(cmd) + (code !== undefined ? '   (STATUS ' + esc(code) + ')' : '   (응답 없음)') + '</b>\n' + (txt ? esc(txt) : '(없음)'))
 				.join('\n\n');
@@ -1017,46 +1125,176 @@
 			['rFree', 'rUsed', 'rSeg', 'rFd', 'rAccRate', 'rAcc', 'rEst', 'rClosed', 'rClFree', 'rMbuf', 'rDwd'].forEach(id => setRes(id, '—', 'na'));
 			$('rFdRow').style.display = 'none';
 			$('resRawPre').textContent = '—';
-			['sparkAcc', 'sparkCl'].forEach(id => { $(id).innerHTML = ''; });
-			['sparkAccCap', 'sparkClCap'].forEach(id => { $(id).textContent = ''; });
+			renderChartsFor('res', [], '연결 끊김 · 자원 상태 미확인');
 			state.prevClustersFree = null;
 		}
 
-		// 작은 SVG 스파크라인: null 구간은 끊어 그리고, 임계선(옵션)과 마지막 점을 표시한다.
-		function renderSpark(svgId, capId, pts, key, opt) {
-			const svg = $(svgId), cap = $(capId);
-			const W = 200, H = 44, PAD = 3;
-			const vals = pts.map((p) => p[key]);
-			const nums = vals.filter(isNum);
-			if (nums.length === 0) { svg.innerHTML = ''; cap.textContent = '데이터 없음'; return; }
-			const observedLo = Math.min(...nums), observedHi = Math.max(...nums);
-			let lo = observedLo, hi = observedHi;
-			if (opt.thresholds) { lo = Math.min(lo, 0); hi = Math.max(hi, opt.thresholds[0] * 1.1); }
-			if (hi - lo < 1e-9) hi = lo + 1;
-			const spanMs = pts.length > 1 ? pts[pts.length - 1].t - pts[0].t : 0;
-			const x = (i) => spanMs > 0 ? PAD + ((pts[i].t - pts[0].t) / spanMs) * (W - 2 * PAD) : W / 2;
-			const y = (v) => H - PAD - ((v - lo) / (hi - lo)) * (H - 2 * PAD);
-			let d = '', pen = false;
-			vals.forEach((v, i) => {
-				if (!isNum(v)) { pen = false; return; }
-				d += (pen ? ' L' : ' M') + x(i).toFixed(1) + ',' + y(v).toFixed(1);
-				pen = true;
+		// ── 추이 그래프 — 한 카드, 한 모양 ──
+		// 모든 추이를 같은 차트 함수가 그린다: 실제 픽셀 폭으로 그려 글자·점이 늘어나지 않고, y축 눈금·영역 채움·
+		// 임계선(라벨)·마지막 점·호버(시각/값)를 공통으로 가진다. null 구간은 끊어 그린다(조회 실패가 빈칸으로 보이게).
+		const CHARTS = [
+			{ id: 'chCpu', src: 'temp', key: 'cpuMaxC', title: 'CPU 최고 온도', cmd: 'Show Temperature', unit: '°C', digits: 1,
+				thresholds: (ctx) => (ctx.warningC > 0 ? [{ v: ctx.warningC, cls: 'warn', label: '주의 ' + ctx.warningC + '°C' }] : []) },
+			{ id: 'chAmp', src: 'temp', key: 'amplifierMaxC', title: '앰프 최고 온도', cmd: 'Show Temperature', unit: '°C', digits: 1 },
+			{ id: 'chFree', src: 'res', key: 'freeMb', title: '여유 메모리', cmd: 'Show Memory', unit: 'MB', digits: 3 },
+			{ id: 'chAcc', src: 'res', key: 'acceptedPerSec', title: 'TCP accepted/s', cmd: 'Show Network -tcp', unit: '/s', digits: 2, zeroBased: true,
+				thresholds: () => [{ v: ACCEPT_WARN_PER_SEC, cls: 'warn', label: '주의' }, { v: ACCEPT_ALERT_PER_SEC, cls: 'err', label: '경고' }],
+				level: (v) => rateCls(v) },
+			{ id: 'chCl', src: 'res', key: 'clustersFree', title: 'mbuf clusters free', cmd: 'Show Network -mbuf', unit: '', digits: 0 },
+		];
+		const CH_H = 70, CH_PAD_L = 34, CH_PAD_R = 6, CH_PAD_T = 6, CH_PAD_B = 6;
+
+		function buildCharts() {
+			$('charts').innerHTML = CHARTS.map((d) =>
+				'<div class="chart" data-chart="' + d.id + '">' +
+					'<div class="ch-head"><span class="ch-title" title="' + esc(d.cmd) + '">' + esc(d.title) + ' <code>' + esc(d.cmd) + '</code></span>' +
+					'<span class="ch-val na" id="' + d.id + '-val">—</span></div>' +
+					'<svg class="ch-svg" id="' + d.id + '-svg" aria-label="' + esc(d.title) + ' 추이"></svg>' +
+					'<div class="ch-foot"><span id="' + d.id + '-range"></span><span id="' + d.id + '-span"></span></div>' +
+				'</div>').join('');
+			CHARTS.forEach((d) => {
+				const svg = $(d.id + '-svg');
+				svg.addEventListener('mousemove', (e) => chartHover(d, e));
+				svg.addEventListener('mouseleave', () => chartHover(d, null));
 			});
+			if (typeof ResizeObserver === 'function') {
+				let pending = 0;
+				new ResizeObserver(() => {
+					cancelAnimationFrame(pending);
+					pending = requestAnimationFrame(() => CHARTS.forEach((d) => { const c = state.charts[d.id]; if (c) drawChart(d, c.pts, c.note); }));
+				}).observe($('charts'));
+			}
+		}
+
+		// 눈금 간격을 1·2·5×10^n 으로 맞춘다(눈금 2~3칸).
+		function niceStep(span) {
+			const raw = span / 2;
+			const p = Math.pow(10, Math.floor(Math.log10(raw)));
+			const m = raw / p;
+			return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
+		}
+		function chartDomain(d, nums) {
+			let lo = Math.min(...nums), hi = Math.max(...nums);
+			const ths = d.thresholds ? d.thresholds(state.chartCtx).map((t) => t.v) : [];
+			if (d.zeroBased) lo = Math.min(lo, 0);
+			// 임계선은 값이 가까이 갈 때만 끌어들인다(멀리 있는 선 때문에 추이가 납작해지지 않게).
+			ths.forEach((t) => { if (t >= lo && t <= hi * 2 + 1) hi = Math.max(hi, t * 1.08); });
+			if (hi - lo < 1e-9) { const pad = Math.max(Math.abs(hi) * 0.02, Math.pow(10, -d.digits)); lo -= pad; hi += pad; }
+			const step = niceStep(hi - lo);
+			return { lo: Math.floor(lo / step) * step, hi: Math.ceil(hi / step) * step, step };
+		}
+		const fmtTick = (v, step) => v.toFixed(Math.min(4, Math.max(0, -Math.floor(Math.log10(step) + 1e-9))));
+
+		function drawChart(d, pts, note) {
+			const svg = $(d.id + '-svg');
+			const W = Math.max(120, Math.round(svg.clientWidth || 260));
+			svg.setAttribute('viewBox', '0 0 ' + W + ' ' + CH_H);
+			state.charts[d.id] = { pts, note, geom: null };
+			const vals = pts.map((p) => p[d.key]);
+			const nums = vals.filter(isNum);
+			if (nums.length === 0) {
+				svg.setAttribute('class', 'ch-svg');
+				svg.innerHTML = '<text class="empty-msg" x="' + (W / 2) + '" y="' + (CH_H / 2 + 4) + '" text-anchor="middle">' + esc(note || '데이터 없음') + '</text>';
+				return;
+			}
+			const dom = chartDomain(d, nums);
+			const x0 = CH_PAD_L, x1 = W - CH_PAD_R, y0 = CH_PAD_T, y1 = CH_H - CH_PAD_B;
+			const t0 = pts[0].t, spanMs = pts[pts.length - 1].t - t0;
+			const xOf = (i) => (spanMs > 0 ? x0 + ((pts[i].t - t0) / spanMs) * (x1 - x0) : (x0 + x1) / 2);
+			const yOf = (v) => y1 - ((v - dom.lo) / (dom.hi - dom.lo)) * (y1 - y0);
 			let html = '';
-			if (opt.thresholds) {
-				opt.thresholds.forEach((th, i) => {
-					if (th >= lo && th <= hi) html += '<line class="thr' + (i > 0 ? ' alert' : '') + '" x1="0" x2="' + W + '" y1="' + y(th).toFixed(1) + '" y2="' + y(th).toFixed(1) + '"></line>';
-				});
+			for (let v = dom.lo, k = 0; v <= dom.hi + dom.step / 2 && k < 8; v += dom.step, k++) {
+				const y = yOf(v);
+				html += '<line class="grid" x1="' + x0 + '" x2="' + x1 + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"></line>' +
+					'<text class="ylab" x="' + (x0 - 4) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end">' + fmtTick(v, dom.step) + '</text>';
+			}
+			(d.thresholds ? d.thresholds(state.chartCtx) : []).forEach((t) => {
+				if (t.v < dom.lo || t.v > dom.hi) return;
+				const y = yOf(t.v);
+				html += '<line class="thr ' + t.cls + '" x1="' + x0 + '" x2="' + x1 + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"></line>' +
+					'<text class="thr-lab ' + t.cls + '" x="' + (x1 - 2) + '" y="' + (y - 3).toFixed(1) + '" text-anchor="end">' + esc(t.label) + '</text>';
+			});
+			// 연속 구간마다 선 + 영역
+			let line = '', area = '', seg = [];
+			const xy = ([x, y]) => x.toFixed(1) + ',' + y.toFixed(1);
+			const flush = () => {
+				if (seg.length === 0) return;
+				line += 'M' + seg.map(xy).join(' L');
+				area += 'M' + seg[0][0].toFixed(1) + ',' + y1 + ' L' + seg.map(xy).join(' L') + ' L' + seg[seg.length - 1][0].toFixed(1) + ',' + y1 + ' Z';
+				seg = [];
+			};
+			const geom = [];
+			vals.forEach((v, i) => {
+				if (!isNum(v)) { flush(); return; }
+				const p = [xOf(i), yOf(v)];
+				seg.push(p);
+				geom.push({ x: p[0], y: p[1], v, t: pts[i].t });
+			});
+			flush();
+			html += '<path class="area" d="' + area + '"></path><path class="line" d="' + line + '"></path>';
+			const last = geom[geom.length - 1];
+			html += '<circle class="last" cx="' + last.x.toFixed(1) + '" cy="' + last.y.toFixed(1) + '" r="3"></circle>' +
+				'<line class="cross" id="' + d.id + '-cross" x1="-10" x2="-10" y1="' + y0 + '" y2="' + y1 + '" visibility="hidden"></line>' +
+				'<circle class="hover" id="' + d.id + '-hover" cx="-10" cy="-10" r="2.5" visibility="hidden"></circle>';
+			const level = chartLevel(d, last.v);
+			svg.setAttribute('class', 'ch-svg' + (level === 'ok' ? '' : ' ' + level));
+			svg.innerHTML = html;
+			state.charts[d.id].geom = geom;
+		}
+
+		function chartLevel(d, v) {
+			if (d.level) return d.level(v);
+			const ths = d.thresholds ? d.thresholds(state.chartCtx) : [];
+			if (ths.some((t) => t.cls === 'err' && v >= t.v)) return 'err';
+			return ths.some((t) => t.cls === 'warn' && v >= t.v) ? 'warn' : 'ok';
+		}
+
+		function renderChart(d, pts, note) {
+			const list = Array.isArray(pts) ? pts : [];
+			drawChart(d, list, note);
+			const nums = list.map((p) => p[d.key]).filter(isNum);
+			const val = $(d.id + '-val');
+			if (nums.length === 0) {
+				val.className = 'ch-val na'; val.textContent = '—';
+				$(d.id + '-range').textContent = ''; $(d.id + '-span').textContent = '';
+				return;
 			}
 			const last = nums[nums.length - 1];
-			const cls = opt.thresholds ? rateCls(last) : 'ok';
-			html += '<path class="line' + (cls === 'ok' ? '' : ' ' + cls) + '" d="' + d.trim() + '"></path>';
-			let li = vals.length - 1;
-			while (li >= 0 && !isNum(vals[li])) li--;
-			if (li >= 0) html += '<circle class="last" cx="' + x(li).toFixed(1) + '" cy="' + y(vals[li]).toFixed(1) + '" r="2"></circle>';
-			svg.innerHTML = html;
-			const spanMin = pts.length > 1 ? (pts[pts.length - 1].t - pts[0].t) / 60000 : 0;
-			cap.textContent = '최근 ' + last.toFixed(opt.digits) + (opt.unit || '') + ' · 범위 ' + observedLo.toFixed(opt.digits) + '~' + observedHi.toFixed(opt.digits) + ' · ' + pts.length + '점 / ' + spanMin.toFixed(1) + '분';
+			const level = chartLevel(d, last);
+			val.className = 'ch-val' + (level === 'ok' ? '' : ' ' + level);
+			val.innerHTML = esc(last.toFixed(d.digits)) + (d.unit ? '<small>' + esc(d.unit) + '</small>' : '');
+			$(d.id + '-range').textContent = '최소 ' + Math.min(...nums).toFixed(d.digits) + ' · 최대 ' + Math.max(...nums).toFixed(d.digits);
+			const spanSec = list.length > 1 ? (list[list.length - 1].t - list[0].t) / 1000 : 0;
+			$(d.id + '-span').textContent = (spanSec >= 60 ? (spanSec / 60).toFixed(1) + '분' : Math.round(spanSec) + '초') + ' · ' + nums.length + '점';
+		}
+
+		function renderChartsFor(src, pts, note) {
+			CHARTS.filter((d) => d.src === src).forEach((d) => renderChart(d, pts, note));
+		}
+
+		function chartHover(d, e) {
+			const tip = $('chartTip');
+			const c = state.charts[d.id];
+			const cross = $(d.id + '-cross'), dot = $(d.id + '-hover');
+			if (!e || !c || !c.geom || c.geom.length === 0 || !cross || !dot) {
+				tip.hidden = true;
+				if (cross) cross.setAttribute('visibility', 'hidden');
+				if (dot) dot.setAttribute('visibility', 'hidden');
+				return;
+			}
+			const svg = $(d.id + '-svg');
+			const rect = svg.getBoundingClientRect();
+			const vbW = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width ? svg.viewBox.baseVal.width : rect.width;
+			const x = (e.clientX - rect.left) * (vbW / Math.max(1, rect.width));
+			let best = c.geom[0];
+			c.geom.forEach((g) => { if (Math.abs(g.x - x) < Math.abs(best.x - x)) best = g; });
+			cross.setAttribute('x1', best.x.toFixed(1)); cross.setAttribute('x2', best.x.toFixed(1)); cross.setAttribute('visibility', 'visible');
+			dot.setAttribute('cx', best.x.toFixed(1)); dot.setAttribute('cy', best.y.toFixed(1)); dot.setAttribute('visibility', 'visible');
+			tip.textContent = new Date(best.t).toLocaleTimeString() + ' · ' + best.v.toFixed(d.digits) + (d.unit ? ' ' + d.unit : '');
+			tip.hidden = false;
+			const tr = tip.getBoundingClientRect();
+			tip.style.left = Math.max(4, Math.min(e.clientX + 12, window.innerWidth - tr.width - 4)) + 'px';
+			tip.style.top = Math.max(4, e.clientY - tr.height - 10) + 'px';
 		}
 
 		// 확장 측 1402 연결 통계(GitHub #22): connects(누적 TCP 연결) / reuses(keep-alive 재사용) / retries(stale 재시도).
@@ -1076,7 +1314,7 @@
 			renderHeader(s);
 			renderBadges(s);
 			renderThreads(s);
-			renderJoints(s);
+			renderAxes(s);
 			renderCartesian(s);
 			renderResources(s, resourceHistory, resourceProbes);
 			renderLog(s);
@@ -1173,7 +1411,24 @@
 		$('dioReleaseAll').addEventListener('click', () => vscode.postMessage({ type: 'releaseDio' }));
 
 		const dioView = $('dioView');
+		// 칩: 클릭 = 강제 토글, 더블클릭 = 강제 해제.
+		// 더블클릭은 클릭 두 번을 먼저 보내므로 클릭은 잠깐 미뤘다가 보낸다 — 더블클릭이면 토글을 취소해 실제 출력이
+		// 한 번 뒤집혔다 돌아오는 일이 없게 한다.
+		const DIO_CLICK_DELAY_MS = 250;
+		function cancelDioClick() { clearTimeout(state.dioClickTimer); state.dioClickTimer = null; }
 		dioView.addEventListener('click', (event) => {
+			const chip = event.target.closest('.dio-chip');
+			if (chip) {
+				cancelDioClick();
+				if (event.detail > 1) return;   // 더블클릭의 두 번째 클릭
+				const signal = Number(chip.dataset.signal);
+				state.dioClickTimer = setTimeout(() => {
+					state.dioClickTimer = null;
+					if (state.dioBusy) { setDioNotice('이전 Set DIO 를 처리하는 중입니다.', ''); return; }
+					vscode.postMessage({ type: 'toggleDio', signal });
+				}, DIO_CLICK_DELAY_MS);
+				return;
+			}
 			const head = event.target.closest('.dio-ghead');
 			if (!head) return;
 			const id = head.dataset.group;
@@ -1184,9 +1439,12 @@
 		dioView.addEventListener('dblclick', (event) => {
 			const chip = event.target.closest('.dio-chip');
 			if (!chip) return;
+			cancelDioClick();
 			window.getSelection()?.removeAllRanges();
+			const s = findDio(Number(chip.dataset.signal));
+			if (!s || !s.forced) { setDioNotice('DIO ' + chip.dataset.signal + ' 는 강제된 신호가 아닙니다 — 해제할 것이 없습니다.', ''); return; }
 			if (state.dioBusy) { setDioNotice('이전 Set DIO 를 처리하는 중입니다.', ''); return; }
-			vscode.postMessage({ type: 'toggleDio', signal: Number(chip.dataset.signal) });
+			vscode.postMessage({ type: 'setDio', signal: s.signal, value: 0 });
 		});
 		$('ioPage').addEventListener('contextmenu', (event) => {
 			if (event.target.closest('input')) return;
@@ -1222,15 +1480,17 @@
 		document.addEventListener('scroll', closeDioMenu, true);
 
 		// 상태 카드 접기: 제목(h2)을 누르면 접히고, 펼침 상태는 보존된다.
-		document.querySelectorAll('#statusPage .card').forEach((card, index) => {
-			card.classList.toggle('collapsed', state.collapsedCards.has(index));
+		document.querySelectorAll('#statusPage .card').forEach((card) => {
+			const key = card.dataset.card;
+			card.classList.toggle('collapsed', state.collapsedCards.has(key));
 			card.querySelector('h2').addEventListener('click', (event) => {
 				if (event.target.closest('.sub')) return;
 				card.classList.toggle('collapsed');
-				if (card.classList.contains('collapsed')) state.collapsedCards.add(index); else state.collapsedCards.delete(index);
+				if (card.classList.contains('collapsed')) state.collapsedCards.add(key); else state.collapsedCards.delete(key);
 				saveUiState();
 			});
 		});
+		buildCharts();
 
 		// 단축키(입력 칸 밖): R 새로고침 · P 일시정지 · 1/2 탭 · / I/O 검색 · Esc 메뉴 닫기
 		document.addEventListener('keydown', (event) => {

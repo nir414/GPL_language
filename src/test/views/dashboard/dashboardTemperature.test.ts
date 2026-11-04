@@ -1,31 +1,11 @@
 import * as assert from 'assert';
-import * as fs from 'fs';
-import * as path from 'path';
 import * as vm from 'vm';
 import { test } from '../../harness';
 import { parseTemperatureResponse } from '../../../controller/diagnostics/temperature';
+import { loadDashboard } from './dashboardHarness';
 
-/** 실제 웹뷰 스크립트를 실행하고 DOM 경계만 대체한다. 브라우저 배치 검증은 별도다. */
 function setup() {
-	const html = fs.readFileSync(path.resolve(__dirname, '../../../../assets/webview/dashboard.html'), 'utf8');
-	const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(html)![1];
-	const elements = new Map<string, any>();
-	function element(id: string): any {
-		if (!elements.has(id)) {
-			elements.set(id, {
-				textContent: '', innerHTML: '', className: '', title: '', options: [], style: {},
-				classList: { add() {}, remove() {}, toggle() {} },
-				querySelector: (selector: string) => element(id + selector),
-				addEventListener() {}, removeAttribute() {}, appendChild() {}, setAttribute() {},
-			});
-		}
-		return elements.get(id);
-	}
-	const context = vm.createContext({
-		document: { getElementById: element, querySelectorAll: () => [], createElement: () => element('new'), addEventListener() {} },
-		window: { addEventListener() {} }, acquireVsCodeApi: () => ({ postMessage() {} }),
-	});
-	vm.runInContext(script, context, { filename: 'dashboard.html' });
+	const { element, context, html } = loadDashboard();
 	const snapshot = { connected: true, timestamp: 1000, temperature: parseTemperatureResponse('<DATA>CPU 1: 57.1 C\nRobot 1\nAmp 1: 0.0 C</DATA><STATUS>0,"Success"</STATUS>', 1000) };
 	const render = (s = snapshot, warningC = 0) => {
 		Object.assign(context, { snapshot: s, warningC });
@@ -42,7 +22,9 @@ test('dashboard temperature: 실제 웹뷰가 CPU 실측과 앰프 센서 제한
 	assert.ok(s.element('tempSummary').textContent.includes('과열 여부 미판정'));
 	assert.ok(!s.element('bTemp').className.includes('ok'));
 	assert.ok(s.element('tempRaw').textContent.includes('57.1 C'));
-	assert.ok(s.element('sparkCpuCap').textContent.includes('범위 57.1~57.1'));
+	assert.ok(s.element('chCpu-range').textContent.includes('최소 57.1 · 최대 57.1'));
+	assert.ok(s.element('chCpu-val').innerHTML.startsWith('57.1'));
+	assert.ok(s.element('chAmp-svg').innerHTML.includes('데이터 없음') || s.element('chAmp-svg').innerHTML.includes('대기'));
 	assert.ok(s.html.includes('id="bTemp"'));
 });
 
@@ -92,10 +74,11 @@ test('dashboard log: 실패한 오류 조회를 로그 없음으로 표시하지
 test('dashboard resources: 연결 해제 시 이전 센서값·그래프·원문을 지운다', () => {
 	const s = setup();
 	s.element('rFree').textContent = '5.0 MB';
-	s.element('sparkAcc').innerHTML = '<path></path>';
+	s.element('chAcc-svg').innerHTML = '<path></path>';
 	s.element('resRawPre').textContent = 'old-controller-data';
 	vm.runInContext('renderResources({connected:false}, [], false)', s.context);
 	assert.strictEqual(s.element('rFree').textContent, '—');
-	assert.strictEqual(s.element('sparkAcc').innerHTML, '');
+	assert.ok(!s.element('chAcc-svg').innerHTML.includes('<path'));
+	assert.ok(s.element('chAcc-svg').innerHTML.includes('연결 끊김'));
 	assert.strictEqual(s.element('resRawPre').textContent, '—');
 });

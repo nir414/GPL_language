@@ -27,6 +27,9 @@ import {
   hostMismatchFix,
   bridgeHealthSummary,
   describeBridgeFailure,
+  pickAddressInstance,
+  resolveControllerAddress,
+  DEFAULT_CONTROLLER_HOST,
 } from '../src/extensionBridge.js';
 
 function tmpDir() {
@@ -457,4 +460,49 @@ test('인스턴스 선택: 이 IP 의 창이 없고 다른 IP 의 창만 있으�
   // 아무 창도 없으면 종전대로 EXTENSION_NOT_FOUND.
   const none = resolveExtensionInstance('192.168.0.1', { dir: tmpDir(), projectDir });
   assert.equal(none.error, 'EXTENSION_NOT_FOUND');
+});
+
+
+// ── 제어기 주소는 확장 창을 따른다(2026-11-04, §1-GV) ─────────────────────
+
+test('주소: 창이 하나면 GPL_HOST 와 달라도 그 창의 IP·포트를 쓴다(설정 파일 재작성 불필요)', () => {
+  const dir = tmpDir();
+  writeInstancePresence(dir, '192.168.0.102', 'only', { port: 1402 });
+  const a = resolveControllerAddress({ configuredHost: '192.168.0.1', configuredPort: 1402, mode: 'only', dir });
+  assert.deepEqual([a.host, a.port, a.source, a.via, a.instanceId], ['192.168.0.102', 1402, 'extension', 'sole-instance', 'only']);
+  // 창이 IP 를 바꾸면(확장 설정 변경 → presence 갱신) 다음 해석이 그대로 따라간다.
+  writeInstancePresence(dir, '10.0.0.7', 'only', { port: 2402 });
+  const b = resolveControllerAddress({ configuredHost: '192.168.0.1', mode: 'only', dir });
+  assert.deepEqual([b.host, b.port], ['10.0.0.7', 2402]);
+});
+
+test('주소: 창이 없거나 GPL_BRIDGE=off 면 설정값, 설정도 없으면 기본값', () => {
+  const empty = resolveControllerAddress({ configuredHost: '10.1.1.1', configuredPort: 1500, dir: tmpDir() });
+  assert.deepEqual([empty.host, empty.port, empty.source], ['10.1.1.1', 1500, 'configured']);
+  const none = resolveControllerAddress({ dir: tmpDir() });
+  assert.deepEqual([none.host, none.source], [DEFAULT_CONTROLLER_HOST, 'default']);
+  const dir = tmpDir();
+  writeInstancePresence(dir, '192.168.0.102', 'w');
+  const off = resolveControllerAddress({ configuredHost: '10.1.1.1', mode: 'off', dir });
+  assert.deepEqual([off.host, off.source], ['10.1.1.1', 'configured']);
+});
+
+test('주소 창 고르기: 작업 폴더의 창 → 연결된 창 → 설정 주소와 같은 창 → 리더 순', () => {
+  const ws = (name, ip, extra = {}) => ({ extensionInstanceId: name, ip, since: extra.since ?? 0, connected: false, workspaceFolders: [], ...extra });
+  const antibody = ws('antibody', '192.168.0.102', { workspaceFolders: ['C:\\SVN\\pa\\Antibody'], since: 2 });
+  const binder = ws('binder', '192.168.0.1', { workspaceFolders: ['C:\\SVN\\pa\\Binder'], connected: true, since: 1 });
+  // 작업 폴더가 정해지면 연결 여부보다 그 폴더의 창이 우선이다.
+  assert.equal(pickAddressInstance([antibody, binder], { projectDir: 'C:\\SVN\\pa\\Antibody\\MergeCode' }).instance.extensionInstanceId, 'antibody');
+  // 작업 폴더를 품은 창이 없으면 연결된 창.
+  const picked = pickAddressInstance([antibody, binder], { projectDir: 'D:\\elsewhere' });
+  assert.deepEqual([picked.instance.extensionInstanceId, picked.via], ['binder', 'connected']);
+  // 아무도 연결되지 않았으면 설정 주소와 같은 창, 그것도 없으면 리더 → 가장 먼저 뜬 창.
+  const idleA = ws('a', '10.0.0.1', { since: 5 });
+  const idleB = ws('b', '10.0.0.2', { since: 9 });
+  assert.equal(pickAddressInstance([idleA, idleB], { configuredHost: '10.0.0.2' }).via, 'configured-host');
+  assert.equal(pickAddressInstance([idleA, { ...idleB, leader: true }], {}).instance.extensionInstanceId, 'b');
+  assert.equal(pickAddressInstance([idleB, idleA], {}).instance.extensionInstanceId, 'a');
+  // 명시 instanceId 가 최우선, IP 없는 레코드는 후보가 아니다.
+  assert.equal(pickAddressInstance([antibody, binder], { instanceId: 'antibody', projectDir: 'C:\\SVN\\pa\\Binder' }).via, 'explicit-instance');
+  assert.equal(pickAddressInstance([ws('x', '')], {}), null);
 });

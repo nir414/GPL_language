@@ -58,6 +58,20 @@ export class ControllerConsole {
     }
   }
 
+  /**
+   * 대상 주소를 바꾼다(확장 창이 다른 제어기로 연결을 옮긴 경우). 진행 중인 명령이 끝난 뒤 적용되도록 직렬 큐에 넣고,
+   * 옛 주소로 열려 있던 소켓은 버린다. 같은 주소면 아무것도 하지 않는다.
+   */
+  retarget(host, port = this.port) {
+    if (!host || (host === this.host && port === this.port)) return;
+    this._chain = this._chain.then(() => {
+      if (host === this.host && port === this.port) return;
+      this._dropSocket();
+      this.host = host;
+      this.port = port;
+    });
+  }
+
   /** 유휴 소켓을 idleCloseMs 뒤에 닫는다(1402 채널을 오래 점유하지 않기 위해). */
   _armIdleClose() {
     clearTimeout(this._idleTimer);

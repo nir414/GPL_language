@@ -4,8 +4,10 @@
 // Claude(Desktop/Cowork/Code)가 compile / run / debug 도구를 호출할 수 있게 노출.
 //
 // 설정(환경변수):
-//   GPL_HOST       제어기 IP            (기본 192.168.0.1)
-//   GPL_PORT       콘솔 포트            (기본 1402)
+//   GPL_HOST       제어기 IP            (기본 192.168.0.1) — 브리지 모드(auto/only)에서는 확장 창이 살아 있으면
+//                  **그 창의 현재 연결 주소를 따른다**(resolveControllerAddress, §1-GU). 이 값은 창이 없을 때의
+//                  직접 접속 주소이자, 창이 여럿일 때의 동률 깨기 힌트다. 설정 파일에 적지 않아도 된다.
+//   GPL_PORT       콘솔 포트            (기본 1402, 위와 같은 규칙)
 //   GPL_TIMEOUT_MS 명령 타임아웃(ms)    (기본 15000)
 //   GPL_LOCK_WAIT_MS 배포 잠금 대기 상한(ms) (기본 20000) — VS Code 확장이 FTP 업로드/배포 중이면
 //                  Compile/Start/Load/Unload를 이 시간까지 기다렸다 진행, 초과 시 거부 (src/deployLock.js)
@@ -59,6 +61,9 @@ import {
   BRIDGE_COMMAND_ID_PATTERN,
   bridgeHealthSummary,
   describeBridgeFailure,
+  resolveControllerAddress,
+  DEFAULT_CONTROLLER_HOST,
+  DEFAULT_CONTROLLER_PORT,
 } from './extensionBridge.js';
 import { partitionStopTargets } from './stopTargets.js';
 import { compilerCommandOptions, controllerResponseOutcome } from './commandOptions.js';
@@ -111,8 +116,9 @@ import {
 } from './outcome.js';
 import { extensionCommandLogLines } from './operations.js';
 
-const HOST = process.env.GPL_HOST || '192.168.0.1';
-const PORT = parseInt(process.env.GPL_PORT || '1402', 10);
+// 제어기 주소는 고정값이 아니다 — 확장 창이 살아 있으면 그 창의 연결 주소를 따른다(controllerAddress, §1-GU).
+const CONFIGURED_HOST = String(process.env.GPL_HOST || '').trim() || null;
+const CONFIGURED_PORT = /^\d+$/.test(String(process.env.GPL_PORT || '').trim()) ? parseInt(process.env.GPL_PORT, 10) : null;
 const TIMEOUT = parseInt(process.env.GPL_TIMEOUT_MS || '15000', 10);
 /** Unload 응답 대기 하한(ms) — 확장 `controller/commands/projectCommands.UNLOAD_TIMEOUT_MIN_MS` 와 같은 값(2026-10-27 inbox 실측 근거). */
 const UNLOAD_TIMEOUT_MIN_MS = 180_000;
@@ -173,8 +179,8 @@ function logLine(text) {
 const clip = (s, n = 300) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 const consoleClient = new ControllerConsole({
-  host: HOST,
-  port: PORT,
+  host: CONFIGURED_HOST ?? DEFAULT_CONTROLLER_HOST,
+  port: CONFIGURED_PORT ?? DEFAULT_CONTROLLER_PORT,
   commandTimeoutMs: TIMEOUT,
   idleCloseMs: IDLE_CLOSE,
   onCommand: ({ command, ms, raw, error }) => {
@@ -217,10 +223,10 @@ server.resource(
 // 대기를 서버가 내장하므로 AI가 폴링 왕복을 반복할 필요가 없다(§1-AS와 같은 취지).
 async function guardDeployLock(command) {
   if (!DEPLOY_GUARDED_COMMAND_RE.test(command)) return;
-  const first = readDeployLock(HOST);
+  const first = readDeployLock(currentHost());
   if (!first) return;
   logLine(`  lock  배포 잠금 대기: ${describeDeployLock(first)} (최대 ${LOCK_WAIT_MS}ms) ← ${command}`);
-  const wait = await waitForDeployLockRelease(HOST, { maxMs: LOCK_WAIT_MS });
+  const wait = await waitForDeployLockRelease(currentHost(), { maxMs: LOCK_WAIT_MS });
   if (wait.released) {
     logLine(`  lock  해제 확인 (${wait.waitedMs}ms 대기) → ${command}`);
     return;
@@ -246,10 +252,39 @@ async function currentBridge({ force = false, wake = false } = {}) {
   const now = Date.now();
   if (!force && now - bridgeState.checkedAt < BRIDGE_RECHECK_MS) return bridgeState;
   // projectDir 는 host-mismatch 판정에서 "같은 작업의 창" 을 가려내는 근거(§1-ES)다.
-  const r = await resolveBridge(HOST, { mode: BRIDGE_MODE, wake, projectDir: sessionTarget?.dir ?? undefined });
+  const r = await resolveBridge(currentHost(), { mode: BRIDGE_MODE, wake, projectDir: sessionTarget?.dir ?? undefined });
   bridgeState = { ...r, checkedAt: now };
   return bridgeState;
 }
+
+// ── 제어기 주소 (2026-11-04, §1-GU) ───────────────────────────────────────
+// 브리지 모드에서 MCP 는 제어기에 직접 붙지 않으므로 주소의 정본은 확장 창의 현재 연결이다. 사용자가 확장에서
+// 제어기 IP 를 바꾸면 presence 가 바뀌고, 다음 호출부터 이 값이 따라간다 — 설정 파일 재작성·/mcp 재연결이 필요 없다.
+const ADDRESS_RECHECK_MS = 1000;
+let addressState = { at: 0, value: null };
+
+function controllerAddress({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && addressState.value && now - addressState.at < ADDRESS_RECHECK_MS) return addressState.value;
+  const value = resolveControllerAddress({
+    configuredHost: CONFIGURED_HOST,
+    configuredPort: CONFIGURED_PORT,
+    mode: BRIDGE_MODE,
+    // 창이 여럿이면 이 작업의 창을 고른다 — 세션 대상이 아직 없으면 Claude Code 가 띄운 작업 폴더(cwd).
+    projectDir: sessionTarget?.dir ?? process.cwd(),
+  });
+  const prev = addressState.value;
+  if (prev && (prev.host !== value.host || prev.port !== value.port)) {
+    logLine(`  addr  제어기 주소 ${prev.host}:${prev.port} → ${value.host}:${value.port} (${value.source}${value.via ? `/${value.via}` : ''})`);
+    bridgeState.checkedAt = 0;   // 다른 제어기의 창 — 브리지 경로도 다시 고른다
+  }
+  consoleClient.retarget(value.host, value.port);
+  addressState = { at: now, value };
+  return value;
+}
+
+function currentHost() { return controllerAddress().host; }
+function currentPort() { return controllerAddress().port; }
 
 /** 브리지를 못 쓸 때의 안내 — 주소 불일치면 IP 를 박은 조치 문구, 아니면 사유별 일반 문구. */
 function bridgeHint(b) {
@@ -272,7 +307,7 @@ async function callExtension(command, args, { timeoutMs, instanceId } = {}) {
     throw err;
   }
   const target = instanceId ?? b.presence?.extensionInstanceId ?? undefined;
-  return callExtensionCommand(HOST, command, args, { timeoutMs: timeoutMs ?? 30_000, instanceId: target });
+  return callExtensionCommand(currentHost(), command, args, { timeoutMs: timeoutMs ?? 30_000, instanceId: target });
 }
 
 /**
@@ -283,7 +318,7 @@ async function callExtension(command, args, { timeoutMs, instanceId } = {}) {
 async function sendGuarded(command, opts) {
   // 그룹 Compile 뒤 Unload 는 확인(confirm) 없이는 보내지 않는다 — 확장과 같은 파일·같은 판정(src/unloadRisk.js).
   // 잠금 대기보다 먼저 본다(어차피 보내지 않을 명령을 기다릴 이유가 없다).
-  const unloadRisk = parseUnloadCommand(command) ? assessUnloadRisk(readUnloadRiskState(HOST), command) : null;
+  const unloadRisk = parseUnloadCommand(command) ? assessUnloadRisk(readUnloadRiskState(currentHost()), command) : null;
   if (unloadRisk?.risky && opts?.confirmUnloadRisk !== true) {
     logLine(`  1402> ${command} | 전송 안 함 | ${UNLOAD_RISK_REFUSAL} (그룹 Compile: ${unloadRisk.groupProjects.join(', ')})`);
     throw taggedError(unloadRiskRefusalResult(unloadRisk).detail, SEND_OUTCOME_NOT_SENT,
@@ -293,7 +328,7 @@ async function sendGuarded(command, opts) {
   const b = await currentBridge();
   if (b.available) {
     const cmdTimeout = opts?.timeoutMs ?? TIMEOUT;
-    const res = await callExtensionCommand(HOST, 'gpl.controller.sendCommand', {
+    const res = await callExtensionCommand(currentHost(), 'gpl.controller.sendCommand', {
       command,
       timeoutMs: cmdTimeout,
       waitForStatusClose: opts?.waitForStatusClose === true,
@@ -329,7 +364,7 @@ async function sendGuarded(command, opts) {
         via: 'extension-bridge',
         ...(res.result.error === UNLOAD_RISK_REFUSAL ? {
           refused: UNLOAD_RISK_REFUSAL,
-          unloadRisk: assessUnloadRisk(readUnloadRiskState(HOST), command)
+          unloadRisk: assessUnloadRisk(readUnloadRiskState(currentHost()), command)
             ?? { risky: true, command, scope: 'project', groupProjects: res.result.groupProjects ?? [] },
         } : { runnableCandidates: res.result.runnableCandidates ?? [] }),
       });
@@ -412,7 +447,7 @@ function noteDirectGroupCompile(command, raw) {
     const project = compiledProjectFromResponse(command, raw);
     if (!project || !sessionTarget?.dir || !sameName(project, sessionTarget.project)) return;
     const info = readGprInfo(sessionTarget.dir);
-    if (info && info.runnable === false && markGroupCompile(HOST, project, 'mcp-direct')) {
+    if (info && info.runnable === false && markGroupCompile(currentHost(), project, 'mcp-direct')) {
       logLine(`  unload-risk 그룹 프로젝트 ${project} Compile 확인(직접 접속) — 이 부팅의 Unload 는 confirm 이 필요하다`);
     }
   } catch { /* 관측 실패는 전송 결과에 영향 없음 */ }
@@ -421,7 +456,7 @@ function noteDirectGroupCompile(command, raw) {
 /** 위험 상태 Unload 가 결과 미확정(타임아웃 등)으로 끝났으면 "이 조합은 재부팅이 필요했다" 를 바로 싣는다. */
 function withUnloadRiskGuidance(command, result) {
   if (result?.outcome !== SEND_OUTCOME_UNKNOWN || !parseUnloadCommand(command)) return result;
-  const risk = assessUnloadRisk(readUnloadRiskState(HOST), command);
+  const risk = assessUnloadRisk(readUnloadRiskState(currentHost()), command);
   if (!risk?.risky) return result;
   const guidance = unloadTimeoutGuidance(risk);
   return { ...result, unloadRiskGuidance: guidance, recommendedAction: `reboot-likely — ${guidance}` };
@@ -430,8 +465,11 @@ function withUnloadRiskGuidance(command, result) {
 /** 현재 전송 경로 요약 — 응답에 실어 AI가 "누가 1402를 쓰는지" 추측하지 않게 한다. */
 function transportInfo() {
   const p = bridgeState.presence;
+  const address = controllerAddress();
   return {
     mode: BRIDGE_MODE,
+    // 제어기 주소와 그 출처 — source:'extension' 이면 확장 창의 현재 연결을 따른 값이다(§1-GU).
+    controller: { host: address.host, port: address.port, source: address.source, via: address.via },
     using: bridgeState.available ? 'extension-bridge' : 'direct-tcp',
     reason: bridgeState.available ? null : bridgeState.reason,
     extension: p ? {
@@ -555,11 +593,11 @@ async function runCommand(command, opts) {
 
 /** 사용자 진입점의 전체 정지만 현재 호스트 배포에 취소로 전파한다. 내부 안전 Stop은 runCommand를 그대로 쓴다. */
 function requestActiveDeployCancellation(reason) {
-  const holder = readDeployLock(HOST);
-  const operationIds = new Set(activeOperations({ controllerId: HOST }).map((operation) => operation.operationId));
+  const holder = readDeployLock(currentHost());
+  const operationIds = new Set(activeOperations({ controllerId: currentHost() }).map((operation) => operation.operationId));
   if (holder?.operationId) operationIds.add(holder.operationId);
   const requests = [...operationIds].map((operationId) => requestDeployCancellation({
-    operationId, controllerId: HOST, reason,
+    operationId, controllerId: currentHost(), reason,
   }));
   if (requests.length) logLine(`  cancel ${requests.map((request) => request.operationId).join(', ')} ← ${reason}`);
   return requests;
@@ -821,7 +859,7 @@ async function probeReachability(err) {
   const msg = String(err?.message ?? '');
   const code = err?.code
     ?? (/\bECONNREFUSED\b/.test(msg) ? 'ECONNREFUSED' : /timed out/i.test(msg) ? 'ETIMEDOUT' : undefined);
-  const [icmp, localRows, routeProbe] = await Promise.all([pingOnce(HOST), localSocketOwners(HOST, PORT), routeLookup(HOST)]);
+  const [icmp, localRows, routeProbe] = await Promise.all([pingOnce(currentHost()), localSocketOwners(currentHost(), currentPort()), routeLookup(currentHost())]);
   // 이 PC 의 어느 프로세스가 같은 포트를 잡고 있는지(§1-EU) — 확장 인스턴스 pid 는 presence 에서, 나머지는 foreign.
   const localConnections = summarizeLocalConnections(localRows, {
     selfPid: process.pid,
@@ -831,8 +869,8 @@ async function probeReachability(err) {
   let services = null;
   if (code === 'ECONNREFUSED') {
     const [ftp, runtimeConsole] = await Promise.all([
-      tcpBannerProbe(HOST, FTP_PORT, 3000),
-      tcpBannerProbe(HOST, RUNTIME_CONSOLE_PORT, 2000).then((r) => r.state),
+      tcpBannerProbe(currentHost(), FTP_PORT, 3000),
+      tcpBannerProbe(currentHost(), RUNTIME_CONSOLE_PORT, 2000).then((r) => r.state),
     ]);
     services = { ftp, runtimeConsole };
   }
@@ -841,7 +879,7 @@ async function probeReachability(err) {
     error: code ?? String(err?.message ?? err),
     icmp,
     ...classifyReachability({
-      host: HOST, code, icmpAlive: icmp.alive, localConnections, routeProbe, services,
+      host: currentHost(), code, icmpAlive: icmp.alive, localConnections, routeProbe, services,
       priorDisruptive: lastDisruptiveFailure,
     }),
   };
@@ -1090,7 +1128,7 @@ async function probeResources() {
 
 /** 배포 잠금(VS Code 확장이 업로드/배포 중이면 존재) — 있으면 Compile/Start는 대기·거부된다. */
 function deployLockInfo() {
-  const lock = readDeployLock(HOST);
+  const lock = readDeployLock(currentHost());
   return lock
     ? { holder: lock.owner, stage: lock.stage, since: new Date(lock.since).toISOString(), describe: describeDeployLock(lock) }
     : null;
@@ -1111,7 +1149,7 @@ tool('controller_status',
   { detail: z.boolean().optional().describe('true면 스레드 전체 목록(compact)·최근 ErrorLog 10줄·resources(메모리/TCP/mbuf 자원 프로브) 포함') },
   async ({ detail }) => {
     await currentBridge({ force: true });
-    const base = { host: HOST, port: PORT, server: BUILD, deployLock: deployLockInfo(), transport: transportInfo() };
+    const base = { host: currentHost(), port: currentPort(), server: BUILD, deployLock: deployLockInfo(), transport: transportInfo() };
     let raw;
     try {
       raw = await sendGuarded('Show Thread -web');
@@ -1123,7 +1161,7 @@ tool('controller_status',
         ok: false,
         // connected=false 는 "이 조회가 1402 채널을 쓸 수 없었다"는 뜻이다. 제어기 상태는 controllerHealth 를 볼 것.
         connected: false,
-        channel: { port: PORT, state: reachable.assessment.state, lastError: { kind: reachable.error, message: String(err?.message ?? err) } },
+        channel: { port: currentPort(), state: reachable.assessment.state, lastError: { kind: reachable.error, message: String(err?.message ?? err) } },
         observations: reachable.observations,
         assessment: reachable.assessment,
         controllerHealth: reachable.controllerHealth,
@@ -1135,7 +1173,7 @@ tool('controller_status',
           ? `확장이 배포/업로드 중(${base.deployLock.describe}) — 그동안 1402 가 거부되거나 큐가 막힐 수 있다. operation_status 로 끝나길 기다린 뒤 다시 조회할 것.`
           // 확장이 다른 IP 에 붙어 있으면 이 직접 접속의 실패는 "그 IP 에 제어기가 없거나 다른 장치" 일 가능성이 1순위다(§1-ES).
           : base.transport.hostMismatch
-            ? `${hostMismatchFix(base.transport.hostMismatch)} 이 조회는 GPL_HOST(${HOST})로 직접 접속한 결과라 제어기 상태의 근거가 아니다.`
+            ? `${hostMismatchFix(base.transport.hostMismatch)} 이 조회는 GPL_HOST(${currentHost()})로 직접 접속한 결과라 제어기 상태의 근거가 아니다.`
             : null,
         hostMismatch: base.transport.hostMismatch ?? null,
         // 실패가 확장 창 쪽(브리지 미수거·확장 세션 전송 실패)인지 제어기 1402 쪽인지 가른다(§1-EO) —
@@ -1167,7 +1205,7 @@ tool('controller_status',
     const result = {
       ...base, ok: isSuccess(status), connected: true, status, powerEnabled, simulation: null,
       threads: summarizeThreads(threads),
-      channel: { port: PORT, state: 'command-channel-open' },
+      channel: { port: currentPort(), state: 'command-channel-open' },
       observations: { tcp1402: 'open', statusResponse: true },
       // <STATUS> 응답을 받았다 = 런타임이 명령을 처리했다. 이것이 'healthy' 를 말할 수 있는 유일한 증거다.
       controllerHealth: { state: 'healthy', reason: 'Show Thread -web 에 <STATUS> 응답 — 런타임이 명령을 처리했다.' },
@@ -1192,10 +1230,10 @@ tool('extension_status',
   { wake: z.boolean().optional().describe('확장이 감지되지 않을 때 VS Code URI로 깨우기 시도(기본 false)') },
   async ({ wake }) => {
     const b = await currentBridge({ force: true, wake: wake === true });
-    const raw = readExtensionPresence(HOST);
+    const raw = readExtensionPresence(currentHost());
     const instances = b.instances ?? [];
     return textResult({
-      host: HOST,
+      host: currentHost(),
       transport: transportInfo(),
       bridgeMode: BRIDGE_MODE,
       presenceFile: b.presence?.file ?? raw.presence?.file ?? null,
@@ -1237,13 +1275,13 @@ tool('extension_list',
   '대상 창을 정하려면 extension_resolve 를 쓴다.',
   { allControllers: z.boolean().optional().describe('true면 다른 제어기를 보는 창까지 모두(기본 false — 이 제어기만)') },
   async ({ allControllers }) => {
-    const instances = listExtensionInstances(allControllers === true ? undefined : HOST, {});
+    const instances = listExtensionInstances(allControllers === true ? undefined : currentHost(), {});
     const hostMismatch = allControllers === true || instances.length > 0
       ? null
-      : describeHostMismatch(HOST, { projectDir: sessionTarget?.dir ?? undefined });
+      : describeHostMismatch(currentHost(), { projectDir: sessionTarget?.dir ?? undefined });
     return textResult({
       ok: true,
-      host: HOST,
+      host: currentHost(),
       count: instances.length,
       // 이 제어기를 보는 창은 없지만 다른 IP 에 살아 있는 창(§1-ES) — allControllers:true 면 목록 자체에 들어 있다.
       hostMismatch,
@@ -1280,7 +1318,7 @@ tool('extension_resolve',
     extensionInstanceId: z.string().optional().describe('창을 직접 지정'),
   },
   async ({ projectDir, extensionInstanceId }) => {
-    const r = resolveExtensionInstance(HOST, { instanceId: extensionInstanceId, projectDir: projectDir ?? sessionTarget?.dir ?? undefined });
+    const r = resolveExtensionInstance(currentHost(), { instanceId: extensionInstanceId, projectDir: projectDir ?? sessionTarget?.dir ?? undefined });
     if (!r.ok) {
       return textResult({
         ...r,
@@ -1395,8 +1433,8 @@ tool('runtime_console_search',
     includeMarkers: z.boolean().optional().describe('듣기 상태 마커 포함(기본 true)'),
   },
   async ({ pattern, since, until, project, maxLines, includeMarkers }) => {
-    const result = searchCapture({ files: captureFilesFor(HOST), pattern, since, until, project, maxLines: maxLines ?? 200, includeMarkers: includeMarkers ?? true });
-    return textResult({ host: HOST, ...result });
+    const result = searchCapture({ files: captureFilesFor(currentHost()), pattern, since, until, project, maxLines: maxLines ?? 200, includeMarkers: includeMarkers ?? true });
+    return textResult({ host: currentHost(), ...result });
   });
 
 // ── 제어기 시계 (2026-10-24 SamplePrep 요청) ─────────────────────────────────
@@ -1538,7 +1576,7 @@ function compactTargetResponse(extension) {
 
 /** 브리지 실패 응답에 싣는 창 목록 — "어느 창이 요청을 집어 가야 했는지" 를 추측하지 않게. */
 function describeInstancesForError() {
-  return listExtensionInstances(HOST, {}).map((p) => ({
+  return listExtensionInstances(currentHost(), {}).map((p) => ({
     extensionInstanceId: p.extensionInstanceId ?? null,
     pid: p.pid,
     version: p.extensionVersion ?? null,
@@ -1569,7 +1607,7 @@ tool('project_target',
     const b = await currentBridge();
     if (b.available) {
       try {
-        const routing = resolveExtensionInstance(HOST, { projectDir: projectDir ?? (projectFile ? path.dirname(projectFile) : undefined) ?? sessionTarget?.dir ?? undefined });
+        const routing = resolveExtensionInstance(currentHost(), { projectDir: projectDir ?? (projectFile ? path.dirname(projectFile) : undefined) ?? sessionTarget?.dir ?? undefined });
         if (!routing.ok) { throw new Error(`대상 VS Code 창을 확정할 수 없음: ${routing.error}`); }
         const res = await callExtension('gpl.automation.target', { project, projectDir, projectFile, clear }, { instanceId: routing.instance.extensionInstanceId });
         if (!res?.ok) {
@@ -1833,10 +1871,10 @@ tool('deploy_project',
     }
     // 어느 창이 이 배포를 수행할지 먼저 정한다(§6). 창이 여럿인데 특정할 수 없으면 보내지 않는다 —
     // 종전에는 요청을 공용 큐에 던져 **먼저 집은 창**이 실행했고, 다른 워크스페이스의 창이 남의 배포를 할 수 있었다.
-    const instances = listExtensionInstances(HOST, {});
+    const instances = listExtensionInstances(currentHost(), {});
     let instanceId;
     if (instances.length > 0) {
-      const pick = resolveExtensionInstance(HOST, { projectDir: args.projectDir ?? sessionTarget?.dir ?? undefined });
+      const pick = resolveExtensionInstance(currentHost(), { projectDir: args.projectDir ?? sessionTarget?.dir ?? undefined });
       if (!pick.ok && instances.length > 1) {
         return textResult({
           ok: false, mode: m, command,
@@ -1875,7 +1913,7 @@ tool('deploy_project',
       // 응답 파일이 오지 않아도 작업 기록은 남는다 — 이 요청 뒤에 만들어진 같은 대상의 기록이 이미 끝났으면 **그 결과를
       // 여기서 바로 돌려준다**(개선 요청 §6: 완료된 배포가 300초 타임아웃으로 보고돼 operation_status 를 두 번 더 불렀다).
       const sameTarget = (r) => !args.projectDir || r.projectDir === args.projectDir;
-      const sinceRequest = listOperations({ controllerId: HOST })
+      const sinceRequest = listOperations({ controllerId: currentHost() })
         .filter((r) => sameTarget(r) && r.createdAt >= requestedAt - 2000);
       const finished = sinceRequest.find((r) => isTerminalOperationState(r.state));
       if (finished) {
@@ -1898,7 +1936,7 @@ tool('deploy_project',
         }));
       }
       const running = sinceRequest.find((r) => r.state === 'RUNNING' || r.state === 'QUEUED')
-        ?? listOperations({ controllerId: HOST }).find((r) => (r.state === 'RUNNING' || r.state === 'QUEUED') && sameTarget(r));
+        ?? listOperations({ controllerId: currentHost() }).find((r) => (r.state === 'RUNNING' || r.state === 'QUEUED') && sameTarget(r));
       return textResult({
         ok: false,
         mode: m,
@@ -1987,17 +2025,17 @@ tool('diagnostic_snapshot',
   '"왜 엉뚱한 프로젝트가 올라갔지", "왜 LOCKED 지"를 추측하지 말고 이것으로 확인할 것.',
   {},
   async () => {
-    const instances = listExtensionInstances(HOST, {});
-    const ops = listOperations({ controllerId: HOST });
-    const lock = readDeployLock(HOST);
+    const instances = listExtensionInstances(currentHost(), {});
+    const ops = listOperations({ controllerId: currentHost() });
+    const lock = readDeployLock(currentHost());
     const active = ops.filter((r) => r.state === 'RUNNING' || r.state === 'QUEUED');
     return textResult({
       ok: true,
-      controller: { id: HOST, port: PORT },
+      controller: { id: currentHost(), port: currentPort() },
       sessionTarget,
       // 이 제어기를 보는 창이 없을 때 다른 IP 의 창(§1-ES) — extensions 가 비었는데 이것이 있으면 주소 불일치다.
       hostMismatch: instances.length === 0
-        ? describeHostMismatch(HOST, { projectDir: sessionTarget?.dir ?? undefined })
+        ? describeHostMismatch(currentHost(), { projectDir: sessionTarget?.dir ?? undefined })
         : null,
       extensions: instances.map((p) => ({
         extensionInstanceId: p.extensionInstanceId,
@@ -2061,12 +2099,12 @@ tool('operation_status',
       }
       return textResult(operationDetailResult(rec, { verbose: verbose === true }));
     }
-    const all = listOperations({ controllerId: HOST }).filter((r) => activeOnly !== true || r.state === 'RUNNING' || r.state === 'QUEUED');
+    const all = listOperations({ controllerId: currentHost() }).filter((r) => activeOnly !== true || r.state === 'RUNNING' || r.state === 'QUEUED');
     const shown = all.slice(0, limit ?? 10);
     const running = shown.filter((r) => r.state === 'RUNNING' || r.state === 'QUEUED');
     return textResult({
       ok: true,
-      controllerId: HOST,
+      controllerId: currentHost(),
       count: all.length,
       // 목록 항목에 결과 요약 한 줄(uploaded/compileErrors/inSync)이 있어 상세 재조회가 필요 없다(개선 요청 §7).
       operations: shown.map((r) => (verbose === true
@@ -2093,9 +2131,9 @@ tool('wait_operation',
   async ({ operationId, timeoutMs, pollMs, verbose }) => {
     let id = operationId;
     if (!id) {
-      const active = listOperations({ controllerId: HOST }).find((r) => r.state === 'RUNNING' || r.state === 'QUEUED');
+      const active = listOperations({ controllerId: currentHost() }).find((r) => r.state === 'RUNNING' || r.state === 'QUEUED');
       if (!active) {
-        const latest = listOperations({ controllerId: HOST })[0];
+        const latest = listOperations({ controllerId: currentHost() })[0];
         return textResult(latest
           ? operationDetailResult(latest, { verbose: verbose === true, extra: { note: '진행 중인 작업이 없어 최신 완료 작업을 돌려준다.' } })
           : { ok: false, error: 'NO_OPERATION', detail: '이 제어기의 작업 기록이 없다.', next: 'none' });
@@ -2257,7 +2295,7 @@ tool('unload_project',
     const name = explicit ? proj(project) : '-all';
     const targetSource = explicit ? targetSourceOf(project, sessionTarget) : 'default-all';
     // 그룹 Compile 뒤 Unload — 확인 없이는 쓰레드 조회조차 하지 않고 돌려준다(보내지 않음).
-    const risk = assessUnloadRisk(readUnloadRiskState(HOST), `Unload ${name}`);
+    const risk = assessUnloadRisk(readUnloadRiskState(currentHost()), `Unload ${name}`);
     if (risk?.risky && confirm !== true) {
       return textResult(unloadRiskRefusalResult(risk, { project: name, targetSource }));
     }
@@ -2812,7 +2850,7 @@ tool('set_variable',
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`[gpl-controller-mcp] ready — ${BUILD_LABEL} — target ${HOST}:${PORT}, project target is session-scoped`);
+  console.error(`[gpl-controller-mcp] ready — ${BUILD_LABEL} — target ${currentHost()}:${currentPort()}, project target is session-scoped`);
   // 시작 시 확장 브리지 상태를 한 줄 알린다(깨우지는 않는다 — 사용자가 VS Code를 열지 않았을 수 있으므로).
   void currentBridge({ force: true }).then((b) => {
     console.error(b.available
@@ -2823,7 +2861,7 @@ async function main() {
     console.error(`[gpl-controller-mcp] session log: ${LOG_FILE}`);
     console.error(`[gpl-controller-mcp] 실시간 관찰: Get-Content "${LOG_FILE}" -Wait`);
   }
-  logLine(`session start — ${BUILD_LABEL} — target ${HOST}:${PORT}, project target session-scoped, idleClose ${IDLE_CLOSE}ms`);
+  logLine(`session start — ${BUILD_LABEL} — target ${currentHost()}:${currentPort()}, project target session-scoped, idleClose ${IDLE_CLOSE}ms`);
 }
 
 main().catch((err) => {

@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.7** (AI MCP 사용자 범위 등록·주소 자동 추종, 1604/1604 · MCP 168/168. 상세는 §1-GV.)
-- **직전 세션: §1-GV** — "MCP 가 워크스페이스에 `.mcp.json`·CLAUDE.md·AGENTS.md 를 만들고 IP 가 바뀌면 갱신이 안 된다, 파일 없이 자동 동기화" → MCP 서버가 제어기 주소를 확장 창 presence 에서 따르고(`resolveControllerAddress`, GPL_HOST 는 창이 없을 때의 값), 확장은 Claude Code 사용자 범위(`claude mcp add-json --scope user`)·Codex `config.toml` 에 한 번 등록(`gpl.ai.mcpRegistration` prompt 기본), 워크스페이스 파일 생성 폐기 + 예전 파일 정리 명령. 남은 것: §3 실사용 확인(등록 제안·IP 변경 추종·정리).
+- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.8** (Step 뒤 현재 줄 잠정 표시, 1608/1608. 상세는 §1-GW.)
+- **직전 세션: §1-GW** — "예전 디버깅 속도 개선(§1-D·§1-L·§1-X·§1-GA)을 확인했나, 이번도 같은 문제인가, 더 개선할 수 있나" → 같은 문제: §1-GA(0.18.2)의 개선은 사용자 창에서 한 번도 돈 적이 없다(10-26 0.13.2, 11-03~04 Marketplace 0.18.1). 추가 개선: GDE 캡처대로 폴 줄로 정지 이유를 판정하고 stackTrace(levels=1)를 잠정 맨 위 프레임으로 바로 답해 Step 뒤 현재 줄이 Show Stack 1왕복 먼저 보이게, 첫 fast poll 5 ms. Locals 일괄 조회는 문서상 형식이 없다(Show Variable 은 변수 하나).
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -76,6 +76,7 @@
 
 ## 3. 다음에 할 일 (체크리스트)
 
+- [ ] **(2026-11-04, §1-GW) 0.27.8 Step 체감 — 실사용 확인(Step 은 모션 주의).** ① 확장 첫 줄이 `v0.27.8` 인지. ② Step over 뒤 편집기 노란 줄이 GPL Traffic 의 `Show Stack` 응답보다 먼저 옮겨 가는지(같은 정지에 `Show Stack` 은 1번). ③ 호출 스택 패널이 맨 위 프레임 하나로 먼저 보였다가 곧 전체로 채워지는지(깜박임·중복 Locals 조회 없음 — `Show Variable -eval` 이 변수당 1번). ④ Debug Console `⏱ Step over 총 …ms` 의 감지 출처·폴 횟수 — §1-GA 이후 처음 나오는 실측이라 숫자를 그대로 남긴다(§1-GA 남은 일). ⑤ BP 줄로 Step 했을 때 이유가 `breakpoint` 로 표시되는지(폴 줄 판정).
 - [ ] **(2026-11-04, §1-GU) 0.27.6 체감 속도 — 실사용 확인(읽기 경로; ③은 Step 이라 모션 주의).** ① 창을 Reload 한 뒤 Output 첫 줄이 `v0.27.6` 인지(어제까지 창이 0.18.1 로 떠 있었다). ② 디버그 밖에서 `GPL: Start`·트리 Stop 뒤 쓰레드 행이 1~2 s 안에 바뀌는지, GPL Traffic 에 명령 뒤 `Show Thread  -web` 가 150/600/1500/3000 ms 무렵 몇 번 나가고 그 뒤 5 s 정규 폴로 돌아가는지. ③ 디버그 Step over 때 Debug Console `⏱ Step over 총 …ms` 줄 — 감지 출처·폴 횟수가 종전보다 줄었는지, Move 줄은 백업 폴 400 ms 간격인지. ④ 정지한 채 1.5 s 넘게 있다가 변수를 펼치거나 호버해도 `Show Stack` 이 다시 나가지 않는지. ⑤ 1403 상태 이벤트가 쉬지 않고 오는 프로그램에서 트리 조회가 250 ms 하한으로 묶이는지(1402 폭주 없음).
 - [ ] **(2026-11-03, §1-GT) 0.27.5 메모리 측정값 정본 — 실사용 확인(읽기 경로·모션 무영향).** ① 확장 목록에서 이 확장이 0.27.5 인지 먼저 본다(이번에 Marketplace 0.18.1 로 되돌아가 있었다 — 재발하면 Auto Update 끄기 또는 Marketplace 게시로 막을지 사용자 결정). ② `GPL: Start` 한 번에 GPL Traffic 의 `Show Memory` 가 1번만 나가고 큐 슬롯 줄에 `(재사용 — N ms 전 Show Memory 측정, 그 뒤 상태 변경 없음)` 이 붙는지. ③ 업로드 스타트에서 업로드 전 측정 뒤 `Stop`·업로드를 거친 Compile 직전에는 **새로** 재는지(재사용 표시가 없어야 함). ④ 트리 시스템 정보 「메모리」 값·툴팁 측정 시각이 상태 표시줄 경고 항목 클릭 상세와 같은지, 대시보드를 열어 두면 둘 다 함께 바뀌는지. ⑤ Sample Prep 제어기 여유 메모리 0.97 MB(17:20) — Unload -all 또는 재부팅 뒤 Free 와 `Show Thread` 응답 시간이 돌아오는지(느려짐이 메모리 부족과 겹치는지 확인).
 - [ ] **(2026-11-03, §1-GS) 0.27.4 「컴파일 검증 필요」 — 실사용 확인.** ① 라이브러리(PaL)를 Upload Only → 그것을 쓰는 실행 프로젝트를 Upload & Start 하면 Output 에 `컴파일 검증 필요 상태 해제: 라이브러리 PaL — <App> Compile 에 포함` 한 줄과 배지 해제 ② 라이브러리 배지 클릭이 Quick Compile 이 아니라 선택 창(라이브러리는 체크 해제, 골라도 컴파일 안 함) ③ 선택 창 × 로 항목 해제 ④ /GPL 비우기 뒤 지운 프로젝트 해제. 남은 일: 형제 배치가 아닌 프로젝트(tools\Probe)의 라이브러리 동반 업로드 후보(같은 ip 로 마지막에 Upload Only 한 폴더 제안 — 수신함 ⑤, 보류), 라이브러리 배지에서 "이 라이브러리를 쓰는 실행 프로젝트" 후보 고르기(보류).
@@ -912,7 +913,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GL ~ §1-GU)만 둔다.
+본문에는 **최근 10개 세션**(§1-GN ~ §1-GW)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있다 — 아래 인덱스의 링크를 따라간다.
 
 | 아카이브 | 범위 | 세션 수 |
@@ -921,8 +922,8 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-07](archive/handoff/2026-07.md) | §1-C ~ §1-AL (2026-07-03 ~ 2026-07-31) | 35 |
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
-| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GK (2026-10-02 ~ 10-27, §1-FR 2건) | 59 |
-| (본문 아래) | §1-GL ~ §1-GU (2026-10-28 ~ 11-04) | 10 |
+| [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GM (2026-10-02 ~ 10-28, §1-FR 2건) | 61 |
+| (본문 아래) | §1-GN ~ §1-GW (2026-10-28 ~ 11-04) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
@@ -1122,7 +1123,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | 본문 ↓ |
+| §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | 본문 ↓ |
 | §1-GO | 10-28 | **라이브러리 함께 업로드·내장형 구분** — ProjectLibrary 그래프에서 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 `/GPL/<값>` 으로(`libraryUploadPlan.ts`), 내장형 패키지(BinderR4)는 루트 소속이라 생략. 재생 하니스 ALL IDENTICAL. 0.27.0 | 본문 ↓ |
 | §1-GP | 11-03 | **README 검토·개선** — 08-18 정책대로 제어기 연동 → 디버깅 → 상태 → AI → 언어 기능 순 재배치, 디버깅 3단 분리, 0.17.0 이전 원격 디버깅 문장(저장 폴더·저장 구성 재연결) 제거, 컴파일 검증 필요·메모리·Diagnose Stuck Thread·uploadLibraries 추가. 0.27.1 | 본문 ↓ |
@@ -1132,42 +1133,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GT | 11-03 | **여유 메모리 측정값 정본(SSOT)·디버깅 느림 진단** — 실행 창이 Marketplace 0.18.1 로 되돌아감(스텝 지연 수정 전), 제어기 Free 7.8 → 0.97 MB·RTT 증가 관측. `Show Memory` 는 전송 경로가 `memoryReadings` 에 기록하고 트리·배지·검사가 같은 값을 읽음, 상태 변경 없으면 15 s 재사용, FTP 쓰기·상태 변경 명령이 무효화, R7. 0.27.5 | 본문 ↓ |
 | §1-GU | 11-04 | **체감 속도·규칙 감사** — 트리 쓰레드 상태 즉시 갱신(1403 상태 이벤트·Start/Stop 등 응답 뒤 150/600/1500/3000 ms, `threadRefreshScheduler`·`affectsThreadState`), 디버그 fast poll 20~650 ms·step pending 400 ms·프레임/목록 캐시 정지 중 재사용·변수 조회 중 인터벌 폴 쉼, 구조 테스트 R10(크기 상한)·§7 부채 표·문서 낡음 정리. 0.27.6 | 본문 ↓ |
 | §1-GV | 11-04 | **AI MCP: 워크스페이스 파일 폐기·사용자 범위 한 번 등록·제어기 주소 자동 추종** — MCP 가 확장 창 presence 에서 주소를 따름(`resolveControllerAddress`·`pickAddressInstance`, GPL_HOST 는 창 없을 때 값), 확장은 `claude mcp add-json --scope user`·Codex `config.toml` 에 등록(`gpl.ai.mcpRegistration`), 직접 등록(foreign)은 유지, `.mcp.json`·CLAUDE.md 생성 폐기·주소 불일치 경고 제거, 예전 파일 정리 명령. 1604/1604 · MCP 168/168. 0.27.7 | 본문 ↓ |
+| §1-GW | 11-04 | **디버그 체감 속도 — 과거 개선 대조·GDE 방식 잠정 프레임** — §1-D·L·X·GA 대조(GA 0.18.2 는 사용자 창에서 미실행: 0.13.2 → Marketplace 0.18.1), GDE 캡처 분석(Step → 1 ms 뒤 Show Thread -web, Show Stack 없음), 폴 줄로 정지 이유 판정·stackTrace levels=1 잠정 맨 위 프레임·첫 fast poll 5 ms, Show Variable 일괄 형식 없음(문서). 0.27.8 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GM ~ §1-GV (2026-10-28~11-04).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GN ~ §1-GW (2026-10-28~11-04).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GM. 2026-10-28 세션 — Upload Only 여러 프로젝트 (0.25.0)
-
-### 증상(요청)
-
-"폴더 2개 이상 여러 개 선택해서 업로드 only 기능 가능해? 개선 좀" — 탐색기에서 프로젝트 폴더를 여러 개 골라도 우클릭한 하나만 올라갔다.
-
-### 원인
-
-- `deployCommands.deployVariantHandler` 가 명령 첫 인자(우클릭한 Uri)만 보고, VS Code 가 탐색기 메뉴에 넘기는 둘째 인자(선택된 Uri[])를 버렸다. 팔레트·제어기 패널 경로도 단일 선택 QuickPick 이었다.
-
-### 조치(의도와 방법)
-
-- 순수: `controller/projects/projectPickerCore.projectDirsFromResources` — 리소스마다 `projectDirFromResource` 규칙 그대로, 같은 프로젝트는 한 번(선택 순서 유지), 못 찾은 항목은 `unresolved`. `activation/deploy/deployModes.uploadBatchSummary` — 요약 문구(전부 성공 / 중단 프로젝트·완료 n/N·미실행 목록).
-- `projectPicker.pickProjectDirs` — 리소스가 있으면 위 규칙, 없으면 후보 1개 즉시·여러 개는 `canPickMany` QuickPick(직전 다중 선택 `gpl.projectPicker.lastDirs` 를 미리 체크). QuickPick 항목 생성은 `buildPickItems` 로 단일 선택과 공유.
-- `deployCommands` — 변형에 `multiProject` 를 두고 Upload Only 만 켰다(Stop/Compile 변형은 프로젝트마다 제어기 상태를 바꾸므로 단일 유지). 탐색기에서 2개 이상이면, 팔레트·트리면 `runMultiProject`: 하나로 정해지면 종전 단일 경로(세션 대상 기억 포함), 여럿이면 고른 순서대로 `runDeploy` 를 **await 로 하나씩**(같은 제어기 작업은 어차피 deploy 큐로 직렬) 돌리고 실패·취소(결과 없음 포함)에서 멈춘 뒤 요약을 1회 띄운다. 묶음의 각 건은 `QuickDeployOpts.inBatch` 로 성공 토스트만 생략(로그·스냅샷·FTP 새로고침은 그대로). 여러 프로젝트를 고른 경우 세션 대상은 바꾸지 않는다.
-- 프로젝트가 아닌 항목이 섞이면 「n개만 업로드」 확인 모달. 하나도 없으면 경고 후 중단(명시 리소스 → 다른 대상으로 넘어가지 않는 종전 원칙).
-- 자동화(MCP·`{project…}` 인자) 경로는 바꾸지 않았다 — 여전히 한 호출에 한 프로젝트.
-
-### 검증
-
-- `npm test` **1563/1563**(신규 2건 — 다중 리소스 해석: 중복·순서·.gpr·소스 파일·상위 폴더 unresolved / 요약 문구 3종). 처음에 요약 문구 `업로드 완료 ${…}` 가 구조 R7(업로드 진행 바 문구 SSOT)에 걸려 `Upload Only 완료` 로 바꿨다.
-- VSIX: `dist/gpl-language-support-0.25.0.vsix` 1,653,597 bytes, SHA-256 `A013D2AF83A3038DEABD2112055D70EB433F913A7019B53F75156DFF6F921724`(경고는 bundle 권장 1건). MCP 번들에는 여전히 미커밋 `controller-mcp/src/guidelines.js` 변경(다른 세션 작업)이 들어 있다.
-- UI·실기 미확인 — §3 항목.
-
-### 남은 일
-
-- §3 의 UI·실기 확인. 정체 확인이 프로젝트마다 반복되는 비용이 크면 묶음 1회로 합칠지.
-
----
 
 ## 1-GN. 2026-10-28 세션 — "컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기 (0.26.0)
 
@@ -1504,3 +1476,49 @@ README 를 연 상태에서 "검토후 개선해줘".
 
 - §3 §1-GV 실사용 확인(등록 제안, IP 변경 추종, 예전 파일 정리, CLI 없는 PC).
 - 이 PC 의 개발 소스 등록은 GPL_HOST=.1 이 남아 있어도 서버가 창을 따르므로 `/mcp` 재연결만 하면 된다(원하면 env 에서 지워도 됨).
+
+## 1-GW. 2026-11-04 세션 — 디버그 체감 속도: 과거 개선 대조 · GDE 방식 잠정 맨 위 프레임 (0.27.8)
+
+### 증상(요청)
+
+"이전에도 디버깅 체감 속도 개선 작업을 한 적이 있는데 확인해 봤나? 이번에도 같은 문제로 해결되는 건지, 더 개선할 수 있는지 검토."
+
+### 과거 작업 대조
+
+| 세션 | 한 일 | 현재 코드 |
+| --- | --- | --- |
+| §1-D (07-03) | fast poll 500 ms×2 → 30/120/250/500/1000, 1403 트리거 force, 쓰레드 목록 캐시 300 ms, 프레임 TTL 400 → 1500 | 유지(§1-GU 에서 간격·캐시 조정) |
+| §1-L (07-13) | 1403 숫자 상태 이벤트 트리거, 비-pending 코얼레싱 폴, 적응형 인터벌, 프레임 선조회·in-flight 합류 | 유지 |
+| §1-X (07-22) | Globals 조회 방식 메모·열거 캐시 | 유지 |
+| §1-GA (10-26, 0.18.2) | control/data 차선 큐, pending 백업 폴, `⏱` 타이밍 줄 | 유지 — **그러나 사용자 창에서 돈 적이 없다**: 10-26 설치본 0.13.2, 11-03~04 는 Marketplace 0.18.1(0.18.2 직전). 그래서 `⏱` 실측도 한 건도 없다 |
+
+판단: 이번 체감도 **같은 문제**(수정이 설치본에 없음)가 첫째이고, 11-03 에는 제어기 RTT 증가(여유 메모리 0.97 MB 무렵 `Show Thread` p50 66 ms, §1-GT)가 겹쳤다. 0.27.x 는 VSIX `pinned: true` 로 설치돼 다시 되돌아갈 가능성은 줄었다.
+
+### 더 줄일 수 있는 것 — GDE 캡처 대조(`captures/gde_1402.pcapng`)
+
+GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerror` → **응답 1 ms 뒤 `Show Thread  -web`** 한 번 → 그 줄(`Test_robot| Paused| 0| ""| Test_robot| MAIN| 4| Entry_Main.gpl| 24`)로 바로 다음 줄을 표시. 같은 프로시저 안 Step 에는 `Show Stack`·`Show Variable` 을 보내지 않고, 다른 프로시저로 들어갔을 때만 `Show Thread <이름>` 을 한 번 더 보냈다(변수·스택은 `PD 464` "Web RPC: debug, timeout, stack" 으로 보아 웹 RPC 경로로 추정 — 1402 캡처 밖).
+
+우리 경로는 폴 → (정지 이유 판정을 위해) `Show Stack` 응답 대기 → StoppedEvent → stackTrace 였다. 현재 줄 표시가 Show Stack 1왕복(RTT+15 ms; 느린 날 80~115 ms) 뒤였다.
+
+### 조치(7550145)
+
+- 정지 이유(step/breakpoint) 판정을 폴 줄의 파일·줄로 — StoppedEvent 가 Show Stack 을 기다리지 않는다(BP 판정은 맨 위 프레임 위치만 본다). 위치 없는 형식일 때만 종전대로 스택을 읽는다.
+- `FrameCache.noteProvisionalTop`·`topFrameWithoutWaiting`: 정지를 감지하면 폴 줄로 잠정 맨 위 프레임(프로시저·procLine·파일·줄)을 기억하고 Show Stack 선조회를 띄운다. VS Code 의 첫 stackTrace(levels=1 — `supportsDelayedStackTraceLoading`)는 그것으로 바로 답하고, 나머지 프레임 요청은 진행 중 조회에 합류한다. Show Stack 은 정지당 1회 그대로, 위치가 바뀌는 순간(invalidate·clearAll·dropThread) 잠정값을 지운다.
+- 첫 fast poll 20 → 5 ms.
+- 회귀 하니스(`sessionStepPoll.test`): levels=1 이 명령 없이 줄 14 로 답하고 Show Stack 1회. 하니스의 폴 줄 끝에 `\r\n` 을 넣었다 — 없으면 `parseThreadList` 가 뒤의 `<STATUS>0` 숫자까지 줄 번호로 읽어 14 → 140(실제 응답은 항상 `\r\n</DATA>`).
+
+### 더 줄이지 않은 것(근거)
+
+- **Locals 한 번에 읽기**: 문서상 `Show Variable [-eval] thread frame variable` 은 변수 하나씩이다(https://www2.brooksautomation.com/Controller_Software/Software_Reference/Console_Commands/show_variable.htm). `Show Stack thread [frame]` 은 프레임 줄만 준다(show_stack.htm). 변수 N개 = N왕복은 1402 로는 줄일 수 없다 — GDE 의 웹 RPC(`PD 464`) 경로를 캡처해 보는 것이 다음 단계.
+- 명령 간 15 ms 간격·정지 확인 게이트: 실기 검증 없이 바꾸지 않는다(§1-GA·§1-GU 와 같은 판단).
+
+### 검증
+
+- `npm test` **1608/1608**. 같은 시각 다른 세션이 `src/views/tree/*`·`src/test/index.ts` 를 고치는 중이라 이 세션 파일 4개만 커밋했다.
+- VSIX: 아래.
+- 실기 미확인 → §3.
+
+### 남은 일
+
+- §3 (§1-GW) — 특히 ④ `⏱` 줄 실측.
+- GDE 웹 RPC 캡처(디버그 중 GDE 의 HTTP 트래픽)로 변수·스택 일괄 조회 가능성 확인.

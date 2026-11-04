@@ -283,9 +283,10 @@
 		.io-note.err { color: var(--err); }
 		.dio-sec { margin: 10px 0 5px; font-size: 0.75em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--idle); }
 		.dio-sec:first-child { margin-top: 0; }
-		.dio-groups { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
-		.dio-group { flex: 1 1 230px; min-width: 0; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); }
-		.dio-group.wide { flex-basis: 460px; }
+		/* 그룹 안 칩은 8열 격자 — 64(Soft) = 8×8, 96(bank) = 12×8 이라 모든 그룹이 같은 폭의 직사각형이 된다.
+		   그룹은 같은 폭의 단(column)에 위에서부터 쌓는다 — 키가 다른 그룹 사이에 빈칸이 생기지 않게. */
+		.dio-groups { columns: 33em auto; column-gap: 6px; }
+		.dio-group { break-inside: avoid; margin: 0 0 6px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); }
 		.dio-group.has-forced { border-color: rgba(210,153,34,0.65); }
 		.dio-ghead { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; user-select: none; font-size: 0.85em; }
 		.dio-ghead::before { content: '▾'; color: var(--idle); transition: transform 0.15s; }
@@ -295,17 +296,18 @@
 		.dio-ghead .c { margin-left: auto; color: var(--idle); font-variant-numeric: tabular-nums; }
 		.dio-ghead .f { padding: 0 6px; border-radius: 9px; color: var(--warn); background: rgba(210,153,34,0.16); font-size: 0.9em; }
 		.dio-body { padding: 0 8px 6px; display: grid; gap: 4px; }
-		.dio-row { display: grid; grid-template-columns: 2.6em 1fr; gap: 4px; align-items: start; }
+		.dio-row { display: grid; grid-template-columns: 2.4em 1fr; gap: 4px; align-items: start; }
 		.dio-dir { font-size: 0.7em; font-weight: 700; color: var(--idle); padding-top: 4px; }
-		.dio-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+		.dio-chips { --dio-cols: 8; display: grid; grid-template-columns: repeat(var(--dio-cols), minmax(0, 1fr)); gap: 3px; font-size: 0.78em; }
+		@media (max-width: 460px) { .dio-chips { --dio-cols: 4; } }
 		.dio-chip {
-			position: relative; min-width: 3.9em; padding: 2px 5px 2px 14px; border-radius: 4px;
-			font-size: 0.78em; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right;
+			position: relative; min-width: 0; padding: 2px 3px 2px 11px; border-radius: 4px; overflow: hidden; white-space: nowrap;
+			font-size: 1em; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right;
 			color: var(--vscode-foreground); background: rgba(127,127,127,0.12); border: 1px solid transparent;
 			user-select: none;
 		}
 		.dio-chip:hover { background: rgba(127,127,127,0.24); }
-		.dio-chip::before { content: ''; position: absolute; left: 5px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: var(--idle); opacity: 0.55; }
+		.dio-chip::before { content: ''; position: absolute; left: 4px; top: 50%; width: 5px; height: 5px; margin-top: -2.5px; border-radius: 50%; background: var(--idle); opacity: 0.55; }
 		.dio-chip.on { background: rgba(63,185,80,0.20); }
 		.dio-chip.on:hover { background: rgba(63,185,80,0.32); }
 		.dio-chip.on::before { background: var(--ok); opacity: 1; box-shadow: 0 0 5px rgba(63,185,80,0.8); }
@@ -507,7 +509,8 @@
 		<p class="io-help">
 			<kbd>클릭</kbd> 강제 토글(ON → 강제 OFF, OFF → 강제 ON) · <kbd>더블클릭</kbd> 강제 해제 · <kbd>우클릭</kbd> 강제 ON/OFF·해제, 그룹/전체 해제, 번호 복사 ·
 			모서리 표시 = 강제됨 · 강제는 해제하거나 제어기를 재부팅할 때까지 유지되며 GPL 프로그램·외부 신호가 바꾸지 못합니다.
-			분류는 Brooks 문서의 신호 번호 체계(Digital Inputs and Outputs) 기준이고, Soft Internal DIO(20001~20064)는 <code>Show DIO</code> 전체 목록에 나오지 않아 따로 조회합니다.
+			분류는 Brooks 문서의 신호 번호 체계(Digital Inputs and Outputs) 기준이고, Soft Internal DIO(20001~20064, 8×8)는 <code>Show DIO</code> 전체 목록에 나오지 않아 따로 조회합니다.
+			칩은 8개씩 한 줄로 정렬합니다.
 		</p>
 		<div id="dioMenu" class="ctx" role="menu" hidden></div>
 	</section>
@@ -677,7 +680,7 @@
 						return '<button class="' + chipClass(s) + (changed ? ' chg' : '') + '" data-signal="' + s.signal + '" data-group="' + esc(g.id) + '" title="' + esc(chipTitle(s)) + '">' + s.signal + '</button>';
 					}).join('') + '</div></div>';
 			}).join('');
-			return '<section class="dio-group' + (g.signals.length > 24 ? ' wide' : '') + (g.forced ? ' has-forced' : '') + (state.dioCollapsed.has(g.id) ? ' collapsed' : '') + '" data-group="' + esc(g.id) + '">' +
+			return '<section class="dio-group' + (g.forced ? ' has-forced' : '') + (state.dioCollapsed.has(g.id) ? ' collapsed' : '') + '" data-group="' + esc(g.id) + '">' +
 				'<header class="dio-ghead" data-group="' + esc(g.id) + '" title="' + esc(g.detail) + '"><span class="t">' + esc(g.title) + '</span>' +
 				'<span class="f"></span><span class="c"></span></header>' +
 				'<div class="dio-body">' + rows + '</div></section>';

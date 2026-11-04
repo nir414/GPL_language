@@ -13,6 +13,12 @@
  *
  * 실측(2026-10-27, G2400C GPL 4.2K5): 인자 없는 `Show DIO` 는 Software I/O(20001~)를 내주지 않는다 —
  * 그래서 대시보드는 Soft 신호를 번호를 지정해 따로 조회한다(`buildShowDioCommands`).
+ *
+ * Soft 범위는 64개가 실제 상한이다(2026-11-04 실측, 같은 장비): `Signal.DIO(20064)` 는 값을 돌려주고
+ * `Signal.DIO(20065)`·`(21000)` 은 `-1517 *Invalid signal number*`, `Show DIO 20065` 는 빈 응답.
+ * PDB DataID 505(https://www2.brooksautomation.com/Controller_Software/Software_Reference/PDB/Controller_Settings/io.htm)
+ * 는 "20001 ~ 21000" 이라 쓰고 `pd 505, 2..16` 도 64개씩 "configured"(&H02) 를 돌려주지만(17 부터 -1509),
+ * 그 번호로는 신호에 접근할 수 없다 — 문서의 표(com_dio.htm, 20001~20064)와 실측을 따른다.
  */
 
 import { DioSignalState } from './dio';
@@ -181,7 +187,7 @@ export function buildShowDioCommands(signals: readonly number[], maxLength = SHO
 	return commands;
 }
 
-/** 더블클릭 토글: 지금 값의 반대로 강제한다(ON → 강제 OFF, OFF → 강제 ON). */
+/** 칩 클릭 토글: 지금 값의 반대로 강제한다(ON → 강제 OFF, OFF → 강제 ON). */
 export function toggleForceValue(state: Pick<DioSignalState, 'on'>): 1 | -1 {
 	return state.on ? -1 : 1;
 }

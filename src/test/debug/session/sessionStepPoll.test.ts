@@ -16,7 +16,8 @@ import { test } from '../../harness';
 const SUCCESS = '<STATUS>0,"Success"</STATUS>';
 const THREAD_CMD = 'Show Thread  -web';
 
-interface Scripted { state: 'Paused' | 'Running'; line: number }
+/** 'Gone' = 쓰레드가 끝나 Show Thread 목록에서 사라짐. */
+interface Scripted { state: 'Paused' | 'Running' | 'Gone'; line: number }
 
 function stepFixture() {
     const commands: string[] = [];
@@ -36,6 +37,7 @@ function stepFixture() {
     };
     const respond = (cmd: string): string => {
         hook.onCommand?.(cmd);
+        if (cmd === THREAD_CMD && thread.state === 'Gone') { return `<DATA>\r\n</DATA>${SUCCESS}`; }
         if (cmd === THREAD_CMD) {
             // 실제 응답처럼 줄 끝 \r\n 뒤에 </DATA> (gde_1402.pcapng) — 없으면 파서가 뒤의 STATUS 숫자까지 줄 번호로 읽는다.
             return `<DATA>Probe|${thread.state}|0|0|Probe|Main.Run|10|Main.gpl|${thread.line}\r\n</DATA>${SUCCESS}`;
@@ -240,4 +242,74 @@ test('세션 분해 회귀: Locals 조회 중 실행이 재개되면 남은 변�
     await s.session.variablesRequest(pendingVars, { variablesReference: ref });
     assert.strictEqual(pendingVars.body.variables.length, 0);
     assert.strictEqual(s.commands.length, idle);
+});
+
+// ── 정지 판정 경합·잔류 pending (2026-11-04 §1-GZ) ─────────────────────────────
+
+test('§1-GZ: 액션 전에 나간 Show Thread 응답은 pending step 에 쓰지 않는다(옛 줄로 스텝 완료 방지)', async () => {
+    const s = stepFixture();
+    await attachAndStop(s);
+    s.session._previousThreadStates.set('Probe', 'Paused');
+    // 폴의 Show Thread 가 나간 순간 사용자가 Next 를 눌렀다 — 응답은 Step 전 상태(Paused, 12번 줄)다.
+    let fired = false;
+    s.hook.onCommand = (cmd) => {
+        if (cmd === THREAD_CMD && !fired) {
+            fired = true;
+            s.session._beginUserAction();
+            s.session._pendingAction = 'step';
+            s.session._pendingThreadId = 1;
+        }
+    };
+    await s.session._pollThreadStates(true, 'manual');
+    assert.strictEqual(stoppedEvents(s.events).length, 0, '옛 응답으로 StoppedEvent 를 내지 않는다');
+    assert.strictEqual(s.session._pendingAction, 'step', 'pending 유지');
+    s.hook.onCommand = undefined;
+    s.session._endUserAction();
+    // Step 이 실제로 끝난 뒤의 폴 — 새 줄에서 스텝 완료
+    s.thread.line = 14;
+    await s.session._pollThreadStates(true, 'manual');
+    const stopped = stoppedEvents(s.events);
+    assert.strictEqual(stopped.length, 1);
+    assert.strictEqual(stopped[0].body.reason, 'step');
+    assert.strictEqual(s.session._pendingAction, null);
+});
+
+test('§1-GZ: Step 대기 중 쓰레드가 끝나면 pending 을 푼다(스택·평가가 실행 중에 묶이지 않게)', async () => {
+    const s = stepFixture();
+    await attachAndStop(s);
+    s.session._previousThreadStates.set('Probe', 'Paused');
+    await s.session.nextRequest({}, { threadId: 1 });
+    assert.strictEqual(s.session._pendingAction, 'step');
+    s.thread.state = 'Gone';
+    await s.session._pollThreadStates(true, 'manual');
+    assert.strictEqual(s.session._pendingAction, null);
+    assert.strictEqual(s.session._pendingThreadId, undefined);
+    assert.ok(s.events.some(e => e.event === 'thread' && e.body.reason === 'exited'));
+});
+
+test('§1-GZ: 이미 Paused 인 쓰레드(Thread.Sleep 등)에 Pause → StoppedEvent(pause)로 끝난다', async () => {
+    const s = stepFixture();
+    await attachAndStop(s);
+    s.session._previousThreadStates.set('Probe', 'Paused');
+    const mark = s.commands.length;
+    await s.session.pauseRequest({}, { threadId: 1 });
+    assert.deepStrictEqual(s.commands.slice(mark), ['Break Probe']);
+    assert.strictEqual(s.session._pendingAction, 'pause');
+    await s.session._pollThreadStates(true, 'manual');
+    const stopped = stoppedEvents(s.events);
+    assert.strictEqual(stopped.length, 1);
+    assert.strictEqual(stopped[0].body.reason, 'pause');
+    assert.strictEqual(s.session._pendingAction, null);
+});
+
+test('§1-GZ: 사용자 액션 진행 표시는 개수로 센다 — 먼저 끝난 액션이 다른 액션의 표시를 풀지 않는다', () => {
+    const s = stepFixture();
+    s.session._beginUserAction();
+    s.session._beginUserAction();
+    s.session._endUserAction();
+    assert.strictEqual(s.session._userActionInFlight, true);
+    s.session._endUserAction();
+    assert.strictEqual(s.session._userActionInFlight, false);
+    s.session._endUserAction();
+    assert.strictEqual(s.session._userActionsInFlight, 0, '음수로 내려가지 않는다');
 });

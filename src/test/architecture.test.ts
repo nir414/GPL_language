@@ -480,7 +480,7 @@ const SIZE_DEBT: ReadonlySet<string> = new Set([
     'debug/session/gplDebugSession#_pollThreadStates',
     'debug/session/gplDebugSession#attachRequest',
     'debug/session/gplDebugSession#evaluateRequest',
-    'debug/session/gplDebugSession#setBreakPointsRequest',
+    'debug/session/gplDebugSession#_setBreakPointsNow',
     'debug/session/gplDebugSession#variablesRequest',
     // 언어·provider·뷰
     'language/syntax/gplParser#parseDocumentUncached',

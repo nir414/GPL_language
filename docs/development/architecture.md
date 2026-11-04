@@ -436,7 +436,7 @@ AGENTS.md 구조 규칙 2(파일 1,000줄·함수 150줄)를 넘는 것. 2026-11
 | 파일 | `controller/runtime/runtimeConsole`(약 1,370줄) · `debug/session/gplDebugSession`(약 3,060줄) | 아래 표의 상태 머신 분리 |
 | 파일(예외) | `language/dictionary/gplDictionaryData`(약 3,030줄) | GPL Dictionary 데이터 표 — 로직이 아니라 나누지 않는다 |
 | activation 배선 | `activateFtpCommands`(약 770) · `activateAiDebugCommands`(약 750) · `activateControllerCommands`(약 670) · `activateConnection`(약 540) · `activateLanguageFeatures`(약 470) · `activateDebugIntegration`(약 420) · `activateProjectContext`(약 380) · `activateTreeCommands`(약 380) · `activateBreakpointCommands` · `activateConsoleCommands` · `registerSaveToFlashCommand` · `registerDependencyCheck` · `reportDeploySuccess` · `runDeploy` | `deploy.ts` 분할 방식 — 명령 묶음별 형제 모듈 + 공유 상태는 컨텍스트 객체 |
-| 디버그 | `_pollThreadStates`(약 360) · `attachRequest` · `variablesRequest` · `setBreakPointsRequest` · `evaluateRequest` · `queryVariableStructuredSmart` | 정지 판정을 상태 타입 + 순수 전이(`debug/execution/`)로, DAP 요청은 협력자 모듈로 |
+| 디버그 | `_pollThreadStates`(약 360) · `attachRequest` · `variablesRequest` · `_setBreakPointsNow`(setBreakPointsRequest 본문 — 파일별 직렬화 래퍼 뒤) · `evaluateRequest` · `queryVariableStructuredSmart` | 정지 판정을 상태 타입 + 순수 전이(`debug/execution/`)로, DAP 요청은 협력자 모듈로 |
 | 제어기 | `attempt`(consoleSocket, 약 280) · `connectInternal`(runtimeConsole, 약 250) · `runCompilePhase`(약 330) · `runUploadAndStopPhase` · `resolveDeployTarget` | 소켓 이벤트 처리기 분리 · 단계 안의 하위 단계 |
 | 언어·provider·뷰 | `parseDocumentUncached`(약 460) · `provideReferences`(약 330) · `provideDefinition` · `provideHover` · `provideFoldingRanges` · `planSourcePromotion` · `buildDiagnosticSnapshotMarkdown` | 문 종류별 순수 단계 · 판정은 `language/analysis` 로 |
 

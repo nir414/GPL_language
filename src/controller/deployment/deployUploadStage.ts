@@ -27,6 +27,7 @@ import type { DeployTarget } from './deployTargetStage';
 import type { LibraryUpload } from './libraryUploadPlan';
 import { stopGateLabelFor, uploadLockStageFor } from './deployModes';
 import { runStopGate } from './deployStopStage';
+import { recoverMemoryBeforeUpload } from './deployMemoryRecovery';
 
 /** 업로드 작업의 결과 — 예외를 던지지 않고 돌려준다(Promise.all에서 다른 쪽을 끝까지 기다리기 위해). */
 export type UploadOutcome = { ok: true; pendingDeletes: RemoteFileRef[] } | { ok: false; message: string };
@@ -84,7 +85,11 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
 		}
     }
 
-    const changedFiles = (options.changedFiles ?? []).filter(Boolean);
+    // 여유 메모리가 모자라면 정지 → Unload 로 회수(§1-GZ, deployMemoryRecovery.ts). 업로드 전에 해야 한다 — `Unload <앱>` 은
+    // `/GPL/<앱>` 을 지운다. 대상을 Unload 했으면 변경 파일만이 아니라 전체를 다시 올린다.
+    const recovery = await recoverMemoryBeforeUpload(ctx, target);
+    if (!recovery.proceed) { return false; }
+    const changedFiles = recovery.targetUnloaded ? [] : (options.changedFiles ?? []).filter(Boolean);
     const useChangedOnly = changedFiles.length > 0;
     if (useChangedOnly) {
         pushTrace(`│ 변경 파일만 업로드(${changedFiles.length}개): ${changedFiles.map(f => path.basename(f)).join(', ')}`);
@@ -218,7 +223,11 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
 
     // 두 작업을 동시에 시작하고 둘 다 끝날 때까지 기다린다. 한쪽이 먼저 실패해도 다른 쪽을 끝까지 기다려야 한다 —
     // 특히 업로드가 진행 중인데 돌아가 배포 잠금을 풀면 "업로드 도중 Compile/Start" 창이 열린다.
-    const [upload, gate] = await Promise.all([runUpload(), runStopGate(ctx)]);
+    const [upload, gate] = await Promise.all([
+        runUpload(),
+        // 메모리 회수가 정지 게이트를 이미 돌렸으면 그 결과를 쓴다(Stop 을 두 번 보내지 않는다).
+        recovery.gate !== undefined ? Promise.resolve(recovery.gate) : runStopGate(ctx),
+    ]);
 
     // 일반 업로드/정지 실패보다 명시적 취소가 우선이다. 병행 작업 둘을 정리한 뒤 잠금을 유지한 채 여기서 끊는다.
     if (isCancelled()) { cancelResult('UPLOAD/STOP 완료 대기'); return false; }

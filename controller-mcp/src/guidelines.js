@@ -87,7 +87,7 @@ const SERVER_OVERVIEW = `Brooks/Precise Automation PA 제어기(GPL)를 **명령
   필요하면 사용자에게 요청한다. 배포/테스트는 \`/GPL\` 직접 업로드(\`deploy_project\`)로 한다.
 - **같은 부팅에서 그룹(ProjectStart 없는 .gpr) Compile 뒤의 \`Unload\`는 명령 콘솔을 끊어 재부팅이 필요했다(6/6).**
   \`refused:"unload-after-group-compile"\`가 오면 사용자 동의를 받은 뒤에만 \`confirm:true\`로 보낸다.
-  실행 불가 그룹은 Start 하지 않는다(\`PROJECT_NOT_RUNNABLE\`).
+  실행 불가 그룹은 Start 하지 않는다(\`PROJECT_NOT_RUNNABLE\`). 메모리 부족은 배포가 Unload 로 자동 회수한다(\`memoryRecovery\`) — 묻지 말 것.
 - **존재하지 않는 명령(\`-714\`)은 표기를 바꿔 재시도하지 않는다.** 같은 명령은 서버가 캐시로 막고(\`sent:false\`),
   같은 계열에서 이미 없다고 확인된 표기는 \`relatedUnknownCommands\`로 알려 준다 — 레퍼런스를 확인하거나 구조화 도구를 쓸 것.
 - **\`Stop <이름>\`은 쓰레드 이름 단위다.** \`Stop <project>\`는 동명 쓰레드 하나만 멈추고 다른 이름으로 띄운 쓰레드(\`LOG_SOCKET\` 등)는

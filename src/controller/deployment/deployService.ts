@@ -264,6 +264,7 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         projectName: result.projectName,
         compileErrorCount: result.compileErrors.length,
         ...(result.memoryPrecheck ? { memoryPrecheck: result.memoryPrecheck } : {}),
+        ...(result.memoryRecovery ? { memoryRecovery: result.memoryRecovery } : {}),
         ...(result.uploadStats ? { uploadStats: result.uploadStats } : {}),
         ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
         ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),

@@ -88,6 +88,11 @@ export interface DeployOptions {
      * 묻지 않고 경고만 남기고 계속한다 — 모달은 브리지를 막는다. 업로드 전 측정(실행 중 앱 메모리 포함)으로는 묻지 않는다.
      */
     confirmMemoryCritical?: (check: MemoryPrecheck, phase: 'compile' | 'start') => Promise<boolean> | boolean;
+    /**
+     * 여유 메모리가 경고 기준 미만이면 업로드 전에 정지 → Unload 로 회수하고 진행한다(2026-11-04 §1-GZ, deployMemoryRecovery.ts).
+     * 사람·AI 경로 모두 확인 없이 한다. 호출측이 설정 `gpl.controller.memoryGuard.autoUnload`(기본 true)를 읽어 넘긴다.
+     */
+    autoUnloadOnLowMemory?: boolean;
     /** 정체 확인을 할지(기본 true). 호출측이 설정 `gpl.controller.verifyControllerIdentity` 를 읽어 넘긴다. */
     verifyControllerIdentity?: boolean;
     /**
@@ -174,6 +179,16 @@ export interface DeployResult {
     /** Project.gpr 소스 목록이 폴더와 달랐다(2026-10-27) — 업로드한 목록 기준. 없으면 일치. */
     gprSyncMismatch?: { toAdd: string[]; toRemove: string[] };
     memoryPrecheck?: MemoryPrecheck;
+    /** 메모리 자동 회수(autoUnloadOnLowMemory)를 시도했으면 그 기록 — MB 값은 측정 실패면 null. */
+    memoryRecovery?: {
+        beforeMb: number | null;
+        afterStopMb?: number | null;
+        afterMb?: number | null;
+        unloaded: string[];
+        skipped: { name: string; reason: string }[];
+        /** 통째로 건너뛴 사유(그룹 Compile 표시 등). */
+        skippedAll?: string;
+    };
     errorLog: string[];
     selectedRemoteBasePath?: string;
     selectedRemoteProjectPath?: string;

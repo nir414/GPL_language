@@ -44,6 +44,11 @@ export async function confirmUnloadRiskInteractive(command: string): Promise<{ p
 	return pick === go ? { proceed: true, confirmUnloadRisk: true } : { proceed: false, confirmUnloadRisk: false };
 }
 
+/** 설정 `gpl.controller.memoryGuard.autoUnload`(기본 켬) — 메모리가 모자라면 배포 전에 Unload 로 회수(§1-GZ, deployMemoryRecovery.ts). */
+export function isMemoryAutoUnload(): boolean {
+	return vscode.workspace.getConfiguration('gpl.controller').get<boolean>('memoryGuard.autoUnload', true) !== false;
+}
+
 /** 설정 `gpl.controller.memoryGuard.confirmOnCritical`(기본 켬) — 사람 경로에서 심각 구간이면 계속/취소를 묻는다. */
 export function isMemoryConfirmOnCritical(): boolean {
 	return vscode.workspace.getConfiguration('gpl.controller').get<boolean>('memoryGuard.confirmOnCritical', true) !== false;

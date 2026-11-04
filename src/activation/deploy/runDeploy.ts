@@ -9,7 +9,7 @@ import { getControllerConfig } from '../../controller/connection/controllerConne
 import { DeployResult, deploy } from '../../controller/deployment/deployService';
 import { reconcileProjectGprBeforeDeploy } from '../../controller/projects/gprSyncCommand';
 import { RuntimeConsole } from '../../controller/runtime/runtimeConsole';
-import { confirmMemoryCriticalInteractive, isMemoryConfirmOnCritical } from '../controller/controllerOps';
+import { confirmMemoryCriticalInteractive, isMemoryAutoUnload, isMemoryConfirmOnCritical } from '../controller/controllerOps';
 import type { DeployContext, QuickDeployOpts } from './deployContext';
 import { deployLockOwner, deployModeLabel, deployModeName, gprReconcileAction } from './deployModes';
 import { reportDeployFailure, reportDeployInterruption, reportDeploySuccess } from './deployReport';
@@ -130,6 +130,8 @@ export async function runDeploy(ctx: DeployContext, skipStart: boolean, quickOpt
 			// FTP 쓰기 전 제어기 정체 확인(controller/connection/controllerIdentity.ts). 사람이 누른 경로만 「그래도 진행」을 묻는다 —
 			// AI·자동화(nonInteractive)와 autoOnSave(changedFiles)는 모달 없이 CONTROLLER_UNVERIFIED 로 멈춘다.
 			verifyControllerIdentity: vscode.workspace.getConfiguration('gpl').get<boolean>('controller.verifyControllerIdentity', true) !== false,
+			// 여유 메모리가 경고 미만이면 업로드 전에 정지 → Unload 로 회수하고 진행(2026-11-04 §1-GZ, 사람·AI 공통 — 확인 없이).
+			autoUnloadOnLowMemory: isMemoryAutoUnload(),
 			// 정지 뒤 Compile/Start 직전 여유 메모리 심각 → 사람에게 계속/취소(2026-10-27). AI·자동화·autoOnSave 는 경고만.
 			confirmMemoryCritical: !quickOpts?.nonInteractive && !quickOpts?.changedFiles?.length && !quickOpts?.uploadOnly
 				&& isMemoryConfirmOnCritical()

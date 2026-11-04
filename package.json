@@ -2092,7 +2092,12 @@
                     "type": "number",
                     "default": 2.5,
                     "minimum": 0,
-                    "description": "Compile/Start 및 배포 전 여유 메모리 '심각' 경고 기준(MB). 이 값 미만이면 심각 경고를 남기지만 전송은 막지 않습니다(실제로 모자라면 제어기 Compile이 실패를 알립니다). 배포에서는 정지 뒤 Compile 직전 값으로 다시 판단합니다. 삭제·Unload는 자동 수행하지 않습니다."
+                    "description": "Compile/Start 및 배포 전 여유 메모리 '심각' 경고 기준(MB). 이 값 미만이면 심각 경고를 남기지만 전송은 막지 않습니다(실제로 모자라면 제어기 Compile이 실패를 알립니다). 배포에서는 정지 뒤 Compile 직전 값으로 다시 판단합니다. 파일 삭제는 자동으로 하지 않습니다(Unload 자동 회수는 memoryGuard.autoUnload)."
+                },
+                "gpl.controller.memoryGuard.autoUnload": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "배포·Quick Compile·Upload & Start 에서 여유 메모리가 경고 기준(warnMb) 미만이면 업로드 전에 쓰레드를 정지하고 다시 잰 뒤, 그래도 모자라면 /GPL 에 로드된 실행 프로젝트(배포 대상 포함)를 하나씩 Unload 하고 진행합니다(사람·AI 경로 모두 확인 없이). 그룹(라이브러리)·워크스페이스에 없는 프로젝트는 Unload 하지 않고, 같은 부팅에서 그룹 Compile 표시가 있으면 회수를 건너뜁니다(그 상태의 Unload 는 명령 콘솔을 끊었습니다). Upload Only·정지 없는 빠른 컴파일·autoOnSave 에서는 하지 않습니다. Unload 한 프로젝트는 /GPL 폴더가 지워질 수 있어 다시 배포해야 실행됩니다."
                 },
                 "gpl.controller.memoryGuard.confirmOnCritical": {
                     "type": "boolean",

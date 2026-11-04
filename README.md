@@ -128,8 +128,9 @@ GPL 컴파일은 제어기에서 수행하며, 상태 조회 항목은 제어기
 ## AI 에이전트 연동
 
 MCP를 지원하는 AI 도구에서도 프로젝트 배포·디버깅·상태 조회 기능을 사용할 수 있습니다.
-`GPL: Export AI Agent Setup`으로 연결 설정을 내보낸 뒤, 사용하는 AI 도구에서 MCP 연결을 설정해 주세요.
-설정이 잘 되었는지는 `GPL: Check AI Agent Setup`으로 점검할 수 있습니다.
+Claude Code나 Codex가 설치돼 있으면 확장이 MCP 서버를 사용자 설정에 한 번 등록할지 묻습니다(`GPL: Register AI Agent MCP`로 직접 등록할 수도 있습니다).
+프로젝트 폴더에는 설정 파일을 만들지 않고, 제어기 주소는 확장의 현재 연결을 따르므로 IP가 바뀌어도 다시 설정할 필요가 없습니다.
+설정이 잘 되었는지는 `GPL: Check AI Agent Setup`으로 점검하고, 예전 버전이 프로젝트에 만든 `.mcp.json`·CLAUDE.md 안내는 `GPL: Remove AI Agent Files from Workspace`로 정리할 수 있습니다.
 
 AI 도구는 VS Code 확장과 같은 제어기 연결을 사용합니다. 주고받은 내용은 **GPL Language Support** 출력 채널에서 확인할 수 있습니다.
 

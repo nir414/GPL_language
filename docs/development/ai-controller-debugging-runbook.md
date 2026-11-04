@@ -138,7 +138,8 @@ Network Node n) 그룹의 작은 칩으로 보여 준다(분류 정본: `control
 
 | 목적 | 제목 | Command ID |
 | --- | --- | --- |
-| AI Agent Setup 내보내기 | GPL: Export AI Agent Setup | `gpl.ai.exportAgentSetup` |
+| AI 에이전트 MCP 등록(사용자 범위) | GPL: Register AI Agent MCP | `gpl.ai.exportAgentSetup` |
+| 예전 워크스페이스 AI 파일 정리 | GPL: Remove AI Agent Files from Workspace | `gpl.ai.cleanWorkspaceAgentSetup` |
 | AI 디버그 어시스트 | GPL: AI Debug Assist | `gpl.ai.debugAssist` |
 | 상태 조회 | GPL: AI Debug Get State | `gpl.ai.debug.getState` |
 | 중단점 설정/해제 | GPL: AI Debug Set/Clear Breakpoint | `gpl.ai.debug.setBreakpoint` / `gpl.ai.debug.clearBreakpoint` (성공하면 에디터 중단점에도 반영 — `mirror: false`로 제외) |
@@ -203,11 +204,11 @@ Network Node n) 그룹의 작은 칩으로 보여 준다(분류 정본: `control
   확장을 통한 테스트로 넘어가지 못했다. 이제 확장이 실행 중이면 MCP의 1402 명령이 **확장의 `gpl.controller.sendCommand`**로 라우팅되어
   같은 직렬 큐·keep-alive 세션·명령 정책을 그대로 탄다(따라서 MCP 경로에도 R1/R2/R3이 적용된다). 전송은 `%TEMP%\gpl-controller\`의
   요청/응답 파일(배포 잠금과 같은 계약, 새 포트 없음), 확장 상태는 `<ip>.extension.json`(heartbeat 5 s / stale 15 s).
-  MCP 도구 `extension_status`(경로·확장 상태 확인, `wake:true`로 확장 깨우기, `hostMismatch`가 있으면 확장은 떠 있고 `.mcp.json`의 `GPL_HOST`가 연결 주소와 다른 것 — §1-ES)와 `extension_command`(확장의 `gpl.*` 명령 실행 —
+  MCP 도구 `extension_status`(경로·확장 상태 확인, `wake:true`로 확장 깨우기, `hostMismatch`는 `GPL_BRIDGE=off` 직접 접속 설정에서만 — 브리지 모드의 서버는 제어기 주소를 확장 창의 현재 연결에서 따른다, §1-GV)와 `extension_command`(확장의 `gpl.*` 명령 실행 —
   Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)가 추가됐다. 설정: 확장 `gpl.agentBridge.enabled`, MCP `GPL_BRIDGE=auto|only|off`.
-  **확장의 `GPL: Export AI Agent Setup`은 `GPL_BRIDGE=only`를 명시한다.** 사람이 VS Code에서 연결한 동안 AI도 그 한 소켓과 직렬 큐를
-  공유하고, presence/브리지 문제 때 두 번째 직접 연결로 폴백하지 않는다. `GPL: Check AI Agent Setup`은 누락·`auto`·`off`를 설정 문제로
-  보고한다. `auto`/`off`는 VS Code 없이 헤드리스 MCP 직접 접속이 필요한 개발자가 수동으로 선택하는 모드이며 동시 사용을 보장하지 않는다.
+  **확장이 등록하는 MCP(`GPL: Register AI Agent MCP`, Claude Code 사용자 범위·Codex `config.toml`)는 `GPL_BRIDGE=only`만 적고
+  제어기 주소는 적지 않는다.** 사람이 VS Code에서 연결한 동안 AI도 그 한 소켓과 직렬 큐를 공유하고, presence/브리지 문제 때 두 번째
+  직접 연결로 폴백하지 않는다. `GPL: Check AI Agent Setup`은 등록 상태(없음·옛 형식·직접 등록)와 예전 워크스페이스 파일을 보고한다. `auto`/`off`는 VS Code 없이 헤드리스 MCP 직접 접속이 필요한 개발자가 수동으로 선택하는 모드이며 동시 사용을 보장하지 않는다.
 - **VS Code 디버그 세션 종료 시 제어기 브레이크포인트는 전부 해제된다**(`disconnectRequest`가 이 세션이 설정한 BP를 `Set Nobreak`로 정리 — 다음 세션 중복 등록 방지, 의도된 동작). MCP 등 외부 클라이언트와 병행할 때는 세션 종료 후 재설정하거나 세션 없이 `gpl.controller.syncEditorBreakpoints`(에디터 BP → 제어기 실시간 동기화)를 사용한다.
 - **AI(MCP·URI·명령 콘솔)가 건 BP는 에디터 중단점에도 반영된다**(§1-CO, `gpl.controller.mirrorAiBreakpoints`, 기본 켜짐). 빨간 점으로 보이므로 사용자가 F9로 지울 수 있고, 위의 세션 종료 정리·`reconcileAll`·DAP의 파일 단위 재설정이 "에디터에 없는 BP"라며 지워 버리는 일이 없어진다. 반영은 **외부 진입점**(`gpl.controller.sendCommand` 인자 경로, `gpl.ai.debug.setBreakpoint/clearBreakpoint`)에서만 일어난다 — DAP와 에디터 동기화는 in-process 호출이라 대상이 아니다.
 

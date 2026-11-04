@@ -118,7 +118,7 @@ flowchart BT
 | `projects/` | 제어기 대상 프로젝트·이름·원격 경로·선택·GPR 동기화 명령 |
 | `threads/` | 쓰레드 인자·상태·보고서·정지 절차·진단·기동 후 관찰 |
 | `debugging/` | 제어기 중단점 명령·에디터 동기화·디버그 이벤트·실행 표시 |
-| `automation/` | Agent Bridge·AI 정책·복구 안내·작업 기록·URI 전달·AI 에이전트 설정 내보내기/점검(`exportAgentSetup`·`agentSetupChecks`) |
+| `automation/` | Agent Bridge·AI 정책·복구 안내·작업 기록·URI 전달·AI 에이전트 MCP 사용자 범위 등록·점검·예전 워크스페이스 파일 정리(`exportAgentSetup`·`agentSetupChecks`) |
 | `diagnostics/` | 제어기 상태·메모리 검사·자원 프로브·에러 보고·최근 사건 |
 | `io/` | 디지털 I/O 파싱·명령·신호 번호 분류(`dioGroups` — Local/Remote 그룹, Soft 조회 분할) |
 
@@ -255,7 +255,7 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 | `debug/session/gplDebugSession` · `activateDebug` · `attachPreflight` | DAP 세션 자체(`vscode.debug`)·구성 provider·Attach 전 배포/정지 절차(모달·출력 채널) |
 | `project/sources/projectFileScope` · `promoteSourceCommand` | `workspace.findFiles`·명령 등록 |
 | `views/*` 4개 (`connectionStatusBar`·`controllerDashboardPanel`·`controllerTreeProvider`·`treeItems`) | TreeDataProvider·TreeItem·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`threadRefreshScheduler`·`compileStaleBadge`·`uploadProgressBar`(순수) |
-| `controller/automation/exportAgentSetup` · `log/liveLogTerminal` | 파일 대화상자·터미널 |
+| `controller/automation/exportAgentSetup` · `log/liveLogTerminal` | ExtensionContext(globalStorage 안정 사본)·워크스페이스 폴더·터미널 |
 | `config` · `extension` | 루트 모듈 |
 
 원칙: **판단은 순수 모듈에, vscode 호출은 얇은 래퍼에.** 새 기능을 넣을 때 "이 판단을 Node 단독 테스트로

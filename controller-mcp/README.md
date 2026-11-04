@@ -8,8 +8,9 @@ Claude(Desktop / Cowork / Code)가 **compile · run · debug** 도구를 직접 
 
 > **권장 배포 경로 (v0.8.9+)**: 이 폴더를 직접 쓰는 대신, 확장 VSIX에 esbuild 단일 파일로
 > 동봉된 번들(`out/mcp/gpl-controller-mcp.cjs`)을 쓰는 것이 기본이다. VS Code 명령
-> **`GPL: Export AI Agent Setup`** 을 실행하면 번들이 globalStorage(버전 무관 경로)로 복사되고
-> 워크스페이스에 `.mcp.json`이 자동 생성된다 — 저장소 클론·`npm install` 없이 AI-ready.
+> **`GPL: Register AI Agent MCP`**(또는 활성화 때의 등록 제안)를 수락하면 번들이 globalStorage(버전 무관 경로)로
+> 복사되고 Claude Code 사용자 범위(`claude mcp add-json … --scope user`)·Codex `~/.codex/config.toml` 에 한 번 등록된다 —
+> 워크스페이스에는 파일을 만들지 않고, 저장소 클론·`npm install` 도 필요 없다. 제어기 주소는 적지 않는다(아래 `GPL_HOST`).
 > 이 폴더는 그 번들의 **소스**이며, 아래 수동 절차는 개발/디버깅용이다.
 
 ---
@@ -28,7 +29,7 @@ npm install
 
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
-| `GPL_HOST` | `192.168.0.1` | 제어기 IP |
+| `GPL_HOST` | `192.168.0.1` | 제어기 IP. **브리지 모드(auto/only)에서 확장 창이 살아 있으면 그 창의 현재 연결 주소를 따르고**(창이 여럿이면 작업 폴더의 창 → 연결된 창 → 이 값과 같은 창 순), 이 값은 창이 없을 때의 직접 접속 주소다. 적지 않아도 된다. `GPL_PORT` 도 같다. |
 | `GPL_PORT` | `1402` | ASCII 콘솔 포트 |
 | `GPL_LOCK_WAIT_MS` | `20000` | **배포 잠금 대기 상한(ms)**. VS Code 확장이 FTP 업로드/배포 중이면 `%TEMP%\gpl-controller\<ip>.lock.json`을 잡는다. 이때 `compile_project`/`start_project`/`unload_project`와 `controller_command`의 Compile/Start/Load/Unload는 잠금이 풀릴 때까지 이 시간만 기다렸다 진행하고, 초과 시 보유자 정보와 함께 거부한다(업로드 도중 Compile/Start는 제어기 이상 유발 — GitHub #17) |
 | `GPL_LOCK_DIR` | `%TEMP%\gpl-controller` | 배포 잠금 파일 디렉터리 재지정(테스트/특수 환경용. 확장과 같은 경로여야 한다) |
@@ -40,7 +41,7 @@ npm install
 
 | 변수 | 기본 | 설명 |
 | --- | --- | --- |
-| `GPL_BRIDGE` | `auto` | VS Code 확장 브리지 사용. `auto`=확장이 있으면 확장 세션으로, 없으면 직접 접속 / `only`=브리지 필수(세션 단일화 보장) / `off`=항상 직접 접속. 확장의 `GPL: Export AI Agent Setup`은 사람과 AI의 동시 사용을 위해 `only`를 명시한다. |
+| `GPL_BRIDGE` | `auto` | VS Code 확장 브리지 사용. `auto`=확장이 있으면 확장 세션으로, 없으면 직접 접속 / `only`=브리지 필수(세션 단일화 보장) / `off`=항상 직접 접속. 확장이 등록하는 항목은 사람과 AI의 동시 사용을 위해 `only`를 명시한다. |
 | `GPL_VSCODE_CLI` | `code` | 확장이 비활성일 때 깨우는 데 쓸 VS Code CLI 경로 |
 | `GPL_LOCK_DIR` | `%TEMP%\gpl-controller` | 배포 잠금·브리지 파일 디렉터리(확장과 같은 값이어야 한다) |
 
@@ -134,8 +135,8 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   (`extension-bridge` / `direct-tcp`). *"1402를 VS Code가 점유 중"이라고 추측하지 말고 이 도구로 확인할 것.*
   `wake:true`면 확장이 비활성일 때 `code --open-url`로 활성화를 시도한다.
   `available:false` 에 `reason:"host-mismatch"` 와 `hostMismatch{ mcp, extensions[{ip, workspace, workspaceMatch}] }` 가 오면
-  **확장은 떠 있고 이 서버의 `GPL_HOST` 와 다른 제어기 IP 에 연결된 것**이다(Export 뒤 연결 주소를 바꾼 경우) — 확장 재시작·wake 가
-  아니라 `.mcp.json` 의 `GPL_HOST` 를 고치고 `/mcp` 재연결(또는 VS Code 에서 `GPL: Export AI Agent Setup` 재실행)이 조치다.
+  **확장은 떠 있고 이 서버가 보는 제어기와 다른 IP 에 연결된 것**이다. 브리지 모드(auto/only)의 서버는 주소를 확장 창에서
+  따오므로(§1-GV) 이 사유는 `GPL_BRIDGE=off` 로 직접 접속을 고정한 개발 설정에서만 나온다 — 그때는 `GPL_HOST` 를 고치고 `/mcp` 재연결.
   같은 사실은 `controller_status.hostMismatch`·`project_target`·`extension_resolve(EXTENSION_HOST_MISMATCH)`·`diagnostic_snapshot` 에도 실린다.
 - `extension_command(command, args?, timeoutMs?)` — 확장 명령(`gpl.*`) 실행. 제어기 콘솔 명령이 아니라 **확장 기능**을 쓴다:
   `gpl.deploy`(/GPL 업로드+Compile) · `gpl.quickCompile` · `gpl.uploadStart`(업로드+Start) · `gpl.start` · `gpl.controller.pushBreakpoints`/`pullBreakpoints` ·

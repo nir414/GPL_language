@@ -2,6 +2,18 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.27.7] - 2026-11-04
+
+### Changed
+
+- **AI 에이전트(MCP) 설정 파일을 더 이상 프로젝트 폴더에 만들지 않습니다.** gpl-controller MCP 서버는 Claude Code 사용자 설정(user scope)과, 설치돼 있으면 Codex `~/.codex/config.toml`에 **한 번만** 등록합니다. Claude Code/Codex가 설치돼 있는데 등록이 없으면 처음 한 번 묻습니다(`gpl.ai.mcpRegistration`: `prompt` 기본 / `auto` / `off`). 직접 등록해 둔 항목(개발 소스 등)은 건드리지 않습니다.
+- **제어기 IP가 바뀌어도 AI 설정을 다시 할 필요가 없습니다.** MCP 서버가 제어기 주소를 설정 파일이 아니라 VS Code 확장 창의 현재 연결에서 따라갑니다. 창이 여럿이면 작업 폴더를 연 창, 제어기에 연결된 창 순으로 고릅니다. 예전에 만든 `.mcp.json`(GPL_HOST 고정)도 서버가 새 버전이면 그대로 따라갑니다.
+- `GPL: Export AI Agent Setup` → **`GPL: Register AI Agent MCP`**(사용자 설정 등록). 연결할 때 띄우던 「AI(MCP) 설정의 제어기 주소가 다릅니다」 경고는 원인이 사라져 없앴습니다.
+
+### Added
+
+- **`GPL: Remove AI Agent Files from Workspace`** — 예전 버전이 만든 `.mcp.json`의 gpl-controller 항목과 CLAUDE.md·AGENTS.md 자동 안내 블록만 지웁니다(직접 쓴 내용·다른 MCP 서버는 보존, 확인 창에서 목록을 보여 줌). 그런 파일이 있는 작업 공간을 열면 한 번 정리를 제안합니다. 프로젝트의 `.codex` 폴더는 Codex가 만든 것이라 대상이 아닙니다.
+
 ## [0.27.6] - 2026-11-04
 
 ### Changed

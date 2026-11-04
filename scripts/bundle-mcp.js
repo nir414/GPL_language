@@ -3,8 +3,8 @@
 // 통째로 싣지 않으므로 과거의 유닉스 심링크 EACCES/용량 문제가 발생하지 않는다.
 //
 // 산출물: out/mcp/gpl-controller-mcp.cjs  (VSIX에 포함 — .vscodeignore가 out/를 허용)
-// 소비자: src/controller/automation/exportAgentSetup.ts 의 `GPL: Export AI Agent Setup` 명령이
-//         이 파일을 globalStorage(버전 무관 안정 경로)로 복사해 .mcp.json이 가리키게 한다.
+// 소비자: src/controller/automation/exportAgentSetup.ts 가 이 파일을 globalStorage(버전 무관 안정 경로)로 복사하고,
+//         Claude Code 사용자 범위·Codex config.toml 의 gpl-controller 등록이 그 경로를 가리킨다(§1-GV).
 
 const fs = require('fs');
 const path = require('path');

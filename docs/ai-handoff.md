@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.6** (쓰레드 상태 즉시 갱신·디버그 스텝 왕복 단축·크기 상한 R10, 1608/1608. 상세는 §1-GU.)
-- **직전 세션: §1-GU** — "전체 검토·코딩 규칙 반영 여부·제어기 조작 체감 속도(디버깅 느림, 쓰레드 상태 갱신 늦음)" → 트리는 정규 폴(5~15 s)로만 바뀌던 쓰레드 상태를 1403 상태 이벤트·쓰레드를 움직이는 명령 응답 뒤 짧은 간격으로 다시 조회(`threadRefreshScheduler`), 디버그는 fast poll 촘촘히·step pending 400 ms·정지 중 프레임/목록 캐시 재사용·변수 조회 중 인터벌 폴 쉼. 규칙 감사: 150줄 넘는 함수 32개 중 §7 에 1개 → 구조 테스트 R10 으로 강제, 문서 낡음 정리.
+- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.7** (AI MCP 사용자 범위 등록·주소 자동 추종, 1604/1604 · MCP 168/168. 상세는 §1-GV.)
+- **직전 세션: §1-GV** — "MCP 가 워크스페이스에 `.mcp.json`·CLAUDE.md·AGENTS.md 를 만들고 IP 가 바뀌면 갱신이 안 된다, 파일 없이 자동 동기화" → MCP 서버가 제어기 주소를 확장 창 presence 에서 따르고(`resolveControllerAddress`, GPL_HOST 는 창이 없을 때의 값), 확장은 Claude Code 사용자 범위(`claude mcp add-json --scope user`)·Codex `config.toml` 에 한 번 등록(`gpl.ai.mcpRegistration` prompt 기본), 워크스페이스 파일 생성 폐기 + 예전 파일 정리 명령. 남은 것: §3 실사용 확인(등록 제안·IP 변경 추종·정리).
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -166,14 +166,12 @@
 
 - [ ] **(2026-10-14, §1-EM) 연결 해제 시 1402 소켓 반납 — 창 2개 실기 재확인(조회만, 모션 무관).** 새 VSIX 로 ① 창 B 에서 연결 → 대시보드 열기 → 연결 해제 → 대시보드 배지가 `OFFLINE · 연결 해제됨` 으로 멈추고, GPL Traffic 에 그 뒤 `>>>` 가 없으며 `Get-NetTCPConnection -RemoteAddress 192.168.0.1` 에 창 B pid 의 1402 Established 가 **남지 않는지** ② 그 상태에서 창 A 가 연결되는지 ③ 창 B 에서 다시 연결 → 대시보드가 즉시 갱신을 재개하는지 ④ 미접속 창으로 MCP `controller_status` → 응답은 오고 소켓은 단발로 닫히는지(Traffic 에 `1402 CLOSE (single-shot)`). 연결 유실(`lost`) 경로도 대시보드가 `연결 유실` 로 멈추는지.
 - [ ] **(2026-10-20, §1-EY) VS Code+AI 명령 콘솔 단일 세션 공유 — 새 VSIX/Export/MCP 재연결 뒤 확인(조회만, 모션 무관).**
-      ① Sample Prep에 0.9.18 설치 → `GPL: Export AI Agent Setup` 재실행 → `.mcp.json` `GPL_BRIDGE:"only"` 확인 → AI `/mcp` 재연결
+      ① 새 VSIX 설치 → `GPL: Check AI Agent Setup` 에서 등록 상태 확인(§1-GV — 사용자 범위 등록, `GPL_BRIDGE:"only"`) → AI `/mcp` 재연결
       ② 사람이 VS Code에서 연결한 상태로 `extension_status` → `bridgeMode:"only"`, `transport.using:"extension-bridge"`, Sample Prep 인스턴스 `connected:true`
       ③ AI 읽기 명령 1건 → Output/Traffic에 `(agent)`로 같은 명령·응답이 남고 `Get-NetTCPConnection`에 별도 MCP direct-tcp 소유자가 생기지 않는지
       ④ 확장 브리지를 잠시 끈 상태에서는 AI가 direct로 우회하지 않고 `GPL_BRIDGE=only — 확장 브리지를 쓸 수 없다`로 `not-sent`를 돌려주는지.
 - [ ] **(2026-10-20, §1-EZ) AI 영구 기본 프로젝트 제거 — 새 VSIX/Export/MCP 재연결 뒤 확인(설정 파일·조회만, 모션 무관).**
-      ① 구버전 `.mcp.json`에 `GPL_PROJECT`/`GPL_PROJECT_DIR`, `AGENTS.md` 자동 블록에 옛 `Lib_NetServer`가 있는 워크스페이스에서
-      `GPL: Export AI Agent Setup` → 두 env 키 삭제, AGENTS 블록 버전 갱신·기본 프로젝트 문구 삭제, 사용자 본문 보존
-      ② `GPL: Check AI Agent Setup` → 「설정 정상」이며 「작업 대상 미확정」·프로젝트 불일치 안내가 더는 나오지 않는지
+      (①② 의 `.mcp.json`·AGENTS 블록 갱신 확인은 §1-GV 에서 워크스페이스 파일 자체를 폐기해 무효 — 정리 확인은 §1-GV 항목.)
       ③ `/mcp` 재연결 직후 대상 없는 `compile_project`/`deploy_project` → `PROJECT_TARGET_REQUIRED`(전송 없음),
       `project_target({projectDir})` 성공 뒤에는 인자 생략 호출이 그 세션 대상으로 가는지, `clear:true` 뒤 다시 거부되는지.
 - [ ] **(2026-10-14, §1-EL) `stop_threads`·`unload_project` 사전 확인 — 실기 검증(정지 명령만, 모션 무관).** MCP 재연결(`/mcp`) 뒤
@@ -202,12 +200,12 @@
   ② 제어기 LAN 을 뽑은 상태에서 같은 명령 → `[1403] --- ERROR …` 뒤 error 토스트에 사유, 재연결 백오프 중 다시 실행하면 즉시 CONNECT 가 나가는지
   ③ 명령 콘솔 유실 알림 뒤 「GPL: Connect」만으로 런타임 콘솔이 함께 켜지는지(`finishConnect` → `ensureRuntimeConsole`)
   ④ Sample Prep 보고 v3(새 창 Traffic `[1403]` 줄)가 오면 §1-ET 의 후보 ①②③ 중 하나로 확정하고 필요하면 `runtimeConsole.ts` 정책을 손본다.
-- [ ] **(2026-10-19, §1-ES) MCP 주소 불일치 보고 — VSIX 재패키징 후 재현 확인(조회만, 모션 무관).** `npm run package` → 설치 → Sample Prep 창에서 .102 로 연결(`.mcp.json` 은 .1 그대로) →
-  ① 연결 직후 경고 「AI(MCP) 설정의 제어기 주소(192.168.0.1:1402)가 현재 연결(192.168.0.102:1402)과 다릅니다」 + 「Export 재실행」 버튼, Output 에 `[AI Setup] .mcp.json 제어기 주소 불일치` 한 줄
-  ② 그 상태에서 MCP `extension_status(wake:true)` → `reason:"host-mismatch"`, `hostMismatch.extensions[0].ip === "192.168.0.102"`, `workspaceMatch:true`, `woken:false`(wake 생략), nextStep 에 두 주소
-  ③ `project_target(projectDir)` → `PROJECT_TARGET_UNVERIFIED` 의 detail 에 "확장 미실행이 아니라 주소 불일치" 문구; `controller_status` → `likelyCause` 에 같은 문구, `hostMismatch` 비-null
-  ④ 「Export 재실행」 → `.mcp.json` GPL_HOST 가 .102 로, `/mcp` 재연결 뒤 `extension_status` → `available:true`, `deploy_project(mode:"build")` 가 정상 수행
-  ⑤ `GPL: Check AI Agent Setup` 이 불일치를 "설정 문제 1건 — GPL_HOST(…)가 현재 제어기 주소(…)와 다름" 으로 표시하는지.
+- [ ] **(2026-11-04, §1-GV) AI MCP 사용자 범위 등록·주소 자동 추종 — 새 VSIX 실사용 확인(설정 파일·조회만, 모션 무관).**
+  ① 개발 소스로 직접 등록해 둔 이 PC(`~/.claude.json`·`~/.codex/config.toml` 모두 `controller-mcp/src/index.js`)에서는 활성화 때 아무 제안도 없고 등록이 그대로인지(foreign 유지).
+     다른 PC(또는 user scope 의 gpl-controller 를 지운 상태)에서는 「사용자 설정에 한 번 등록할까요?」 → 등록 → `claude mcp get gpl-controller` 가 globalStorage `gpl-controller-mcp.cjs`·`GPL_BRIDGE=only` 만 보이는지.
+  ② 확장에서 제어기 IP 를 바꾼 뒤(.1 ↔ .102) MCP 를 재연결하지 않고 `extension_status` → `host` 와 `transport.controller{source:"extension"}` 이 새 IP 로 따라가는지, Sample Prep 창에서 `deploy_project(mode:"build")` 가 정상인지.
+  ③ Sample Prep 등 예전 Export 흔적이 있는 작업 공간을 열면 「예전 … 파일이 N개」 제안이 한 번만 뜨고, 「정리…」 모달 목록대로 `.mcp.json` gpl-controller 항목·CLAUDE.md/AGENTS.md 자동 블록만 사라지는지(사용자 본문·다른 서버 보존). `.codex` 폴더는 확장 것이 아니라 대상이 아니다.
+  ④ claude CLI 가 PATH 에 없는 PC 에서 등록 → 「명령 복사」 안내가 뜨고 설정 파일은 바뀌지 않는지.
 - [ ] **(2026-10-19, §1-ER) Debug Console 여러 줄 실행 — F5/제어기 UI 확인(조회만 우선, 상태 변경은 저속/시뮬레이션).**
   ① `Show Thread -web`·`ErrorLog` 두 줄 붙여넣기 → 빈 줄을 건너뛰고 입력별 결과 블록이 순서대로 한 응답에 보이는지
   ② `Break <thread>`를 `>` 없이 입력 → Traffic에 원문 `Break`가 나가지 않고 "명령으로 인식했지만 보내지 않음" 안내가 뜨는지
@@ -368,7 +366,7 @@
   `provenance.inSync=true`, 반대로 고친 뒤 업로드를 건너뛴 상황을 만들면 `changedSinceUpload` 에 그 파일이 뜨는지.
   ⑧ 창을 하나 닫고 15초 뒤 `extension_list` → 그 인스턴스가 목록에서 빠지고, 남은 창이 레거시 큐 담당(leader)을
   물려받는지(확장 Output `[Bridge] 레거시 큐 담당 획득`).
-- [ ] **(2026-09-10, §1-DK) 구버전 MCP 사본 호환 확인.** `GPL: Export AI Agent Setup` 으로 globalStorage 에
+- [ ] **(2026-09-10, §1-DK) 구버전 MCP 사본 호환 확인.** 예전 등록으로 globalStorage 에
   복사된 예전 `gpl-controller-mcp.cjs` 가 남아 있는 환경에서, 새 확장과 함께 **레거시 IP 큐**로 계속 동작하는지
   (`extension_status` 가 `legacyPresenceOnly:true` 로 오고 명령이 나가는지). 창이 2개일 때 구버전 경로는
   리더 창으로만 나가므로 경쟁은 없지만 **대상 창을 고를 수 없다** — 그 경우 사용자에게 MCP 사본 갱신을 권할 것.
@@ -586,8 +584,7 @@
   ⑥ 대상 폴더의 파일을 편집만 하고 저장하지 않은 상태로 `deploy_project` → `UNSAVED_FILES` + 파일 목록이
   오는지, `saveDirty:true` 면 저장 후 진행되는지.
   ⑦ 라이브러리만 있는 폴더를 `projectDir` 로 직접 지정하면 대상이 되는지(라이브러리도 직접 지정은 허용).
-  ⑧ 구버전 `.mcp.json`에 `GPL_PROJECT`/`GPL_PROJECT_DIR`이 남은 상태에서 Check → Export 재실행 안내, Export 뒤 두 키가
-  제거되고 `AGENTS.md` 자동 블록의 옛 기본 프로젝트 문구도 사라지는지.
+  ⑧ (무효 — §1-GV 에서 워크스페이스 `.mcp.json`·AGENTS 블록을 폐기, 정리는 `GPL: Remove AI Agent Files from Workspace`.)
   ⑨ 존재하지 않는 명령(`controller_command({command:"Show Project"})`)을 **두 번** 보내면 두 번째가
   `sent:false, cached:true` 로 즉시 오는지, `Show Project -all` 은 전송되면서 `relatedUnknownCommands` 에
   `Show Project` 가 실리는지.
@@ -827,8 +824,8 @@ src/controller/debugging/breakpointMirror.ts       # 제어기→에디터 중�
 src/controller/protocol/responseParser.ts         # parseStatus, parseCompileErrors
 src/debug/evaluation/showVariableParser.ts          # Show Variable 파싱 — 2열 Location 멤버(isTypeToken)·summarizeLocation·annotateLocationMember(§1-BF)
 src/language/analysis/receiverType.ts             # 멤버 접근 수신자 타입 정적 해석(resolveReceiverHolder·membersNamed·buildDocumentReceiverLookup) + 소속 판정 ownedByHolder·nestedTypesIn(정의찾기 전역 폴백 차단용, §1-CA) — 디버그 hover 게이트·정적 hover 공용(§1-BJ, #32, vscode 무의존)
-src/controller/automation/exportAgentSetup.ts            # Export/Check AI Agent Setup — 번들 동기화·파일 생성·설정/대상 준비 상태(§1-EF)
-src/controller/automation/agentSetupChecks.ts            # 실행 설정·폴더 대상·CLAUDE/AGENTS 안내 검사(vscode 무의존)
+src/controller/automation/exportAgentSetup.ts            # AI MCP 사용자 범위 등록(claude CLI·Codex toml)·점검·예전 워크스페이스 파일 정리·번들 동기화(§1-GV)
+src/controller/automation/agentSetupChecks.ts            # 등록 판정·Codex toml 테이블 교체·예전 파일 strip 규칙(순수, vscode 무의존)
 src/controller/io/dio.ts                    # Show DIO `signal: 0|1 [*]` 순수 파서 + Set DIO 명령/동작 설명 정본(§1-FB)
 src/controller/io/dioGroups.ts              # (§1-GJ) 신호 번호 → Local/Remote I/O 그룹 분류(문서 신호 번호 체계), Soft 20001~20064 분할 조회, 토글 값·일괄 해제 대상
 src/views/dashboard/controllerDashboardPanel.ts    # 제어기 대시보드 웹뷰 — 상태/I/O 탭, setInterval/setDiagnosticInterval/pause/config, 모달 없는 Set DIO·toggleDio·releaseDio(§1-BF·§1-FB·§1-GJ); HTML은 assets/webview/dashboard.html
@@ -1124,7 +1121,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GI | 10-27 | **제어기 유실 판정 지연 분석·개선** — 사후 스냅샷 10건 분해(확장 호스트 정지 22~71 s가 3건), 상태바 확인 중/복구 대기 표시, 핸드셰이크 상한 3 s, 정지 뒤 가짜 타임아웃 방지, 이벤트 루프 정지 기록. 0.21.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GJ | 10-27 | **제어기 대시보드 I/O·UI 개선** — DIO 를 문서 신호 번호 체계로 Local/Remote 그룹 칩으로(`dioGroups.ts`), Soft DIO 별도 조회, 확인 모달 제거·더블클릭 토글·우클릭 해제, 고정 헤더·카드 접기·주기 선택지 확대·진단 주기. 0.22.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GK | 10-27 | **패키지(.gpr) 의존 검사** — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용(누락·간접·미사용·미해석), 루트 `' Dependencies:` 계층 규칙, `.gpr` 빠른 수정, 매개변수 이름 오탐 수정. BinderR4 드라이런. 0.23.0 | [2026-10](archive/handoff/2026-10.md) |
-| §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | 본문 ↓ |
+| §1-GL | 10-28 | **ProjectName = 폴더 이름 규칙** — 패키지 의존 검사에 `project-name-mismatch`(Warning, 대소문자까지, 모든 .gpr) + ProjectName 바꾸기 빠른 수정, 고치면 겹치는 폴더 이름 경고. BinderR4 45개 중 42개 불일치. 0.24.0 | [2026-10](archive/handoff/2026-10.md) |
 | §1-GM | 10-28 | **Upload Only 여러 프로젝트** — 탐색기 다중 선택(`(uri, uris[])`)·다중 선택 QuickPick(직전 선택 미리 체크)으로 고른 순서대로 차례 업로드, 실패·취소 시 남은 것 중단, 끝에 요약 1회. 0.25.0 | 본문 ↓ |
 | §1-GN | 10-28 | **"컴파일 검증 필요" 목록화·제어기별 영속·Start 성공 해제 + Unload -all 전 /GPL 비우기** — `CompileStaleTracker`(ip 키·Memento), 트리 프로젝트별 줄·상태바 「외 n」·선택 창, `gpl.start` 성공 → `recordCompiled`; `clearRemoteFolderInteractive` 추출·`Unload -all` 전 호출, Unload 대기 하한 180 s(UI·MCP), MCP `-all` 은 `gpl-not-empty`/활성 쓰레드 거부; 잠금 rename EPERM 재시도; inbox 4건. 0.26.0 | 본문 ↓ |
 | §1-GO | 10-28 | **라이브러리 함께 업로드·내장형 구분** — ProjectLibrary 그래프에서 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 `/GPL/<값>` 으로(`libraryUploadPlan.ts`), 내장형 패키지(BinderR4)는 루트 소속이라 생략. 재생 하니스 ALL IDENTICAL. 0.27.0 | 본문 ↓ |
@@ -1134,39 +1131,13 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GS | 11-03 | **「컴파일 검증 필요」 라이브러리 해제·라이브러리 배지·결과 미확정 사유·목록에서 지우기** — 수신함 Sample Prep 보고 처리: Compile 성공이 `ProjectLibrary`(전이) 항목도 해제(`clearCompiled`·`compiledLibraries.ts`), 라이브러리 배지는 선택 창으로, STATUS 없는 Start 는 「결과 미확정」, /GPL 비우면 해제, 선택 창 ×. 0.27.4 | 본문 ↓ |
 | §1-GT | 11-03 | **여유 메모리 측정값 정본(SSOT)·디버깅 느림 진단** — 실행 창이 Marketplace 0.18.1 로 되돌아감(스텝 지연 수정 전), 제어기 Free 7.8 → 0.97 MB·RTT 증가 관측. `Show Memory` 는 전송 경로가 `memoryReadings` 에 기록하고 트리·배지·검사가 같은 값을 읽음, 상태 변경 없으면 15 s 재사용, FTP 쓰기·상태 변경 명령이 무효화, R7. 0.27.5 | 본문 ↓ |
 | §1-GU | 11-04 | **체감 속도·규칙 감사** — 트리 쓰레드 상태 즉시 갱신(1403 상태 이벤트·Start/Stop 등 응답 뒤 150/600/1500/3000 ms, `threadRefreshScheduler`·`affectsThreadState`), 디버그 fast poll 20~650 ms·step pending 400 ms·프레임/목록 캐시 정지 중 재사용·변수 조회 중 인터벌 폴 쉼, 구조 테스트 R10(크기 상한)·§7 부채 표·문서 낡음 정리. 0.27.6 | 본문 ↓ |
+| §1-GV | 11-04 | **AI MCP: 워크스페이스 파일 폐기·사용자 범위 한 번 등록·제어기 주소 자동 추종** — MCP 가 확장 창 presence 에서 주소를 따름(`resolveControllerAddress`·`pickAddressInstance`, GPL_HOST 는 창 없을 때 값), 확장은 `claude mcp add-json --scope user`·Codex `config.toml` 에 등록(`gpl.ai.mcpRegistration`), 직접 등록(foreign)은 유지, `.mcp.json`·CLAUDE.md 생성 폐기·주소 불일치 경고 제거, 예전 파일 정리 명령. 1604/1604 · MCP 168/168. 0.27.7 | 본문 ↓ |
 
 ---
 
-**최근 세션 본문 — §1-GL ~ §1-GU (2026-10-28~11-04).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GM ~ §1-GV (2026-10-28~11-04).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GL. 2026-10-28 세션 — ProjectName = 폴더 이름 규칙 (0.24.0)
-
-### 증상(요청)
-
-"Project.gpr ProjectName 폴더명하고 똑같아야 해" — §1-GK 패키지 의존 검사에 이어 받은 규칙.
-
-### 원인
-
-- 문서상 "폴더 이름과 프로젝트 이름은 동의어"이고 플래시 이름은 대소문자를 가린다(`docs/reference/project-file-gpr.md` §1·§5). 확장의 배포 경로도 `/GPL/<ProjectName>`.
-- BinderR4 는 루트·그룹 3개(BinderR4·Gantry·Lib)만 같고, 리프·하위 그룹 42개가 `Lib_Text`·`GantryStation`·`Lib_MotionSystem` 처럼 폴더(`Text`·`Station`·`System`)와 다른 이름을 쓴다. 이를 잡는 검사가 없었다.
-
-### 조치(의도와 방법)
-
-- `project/gpr/dependencyCheck.ts` — `projectNameMismatch`(export, 순수): ProjectName 줄 값과 `.gpr` 폴더 이름을 **정확히**(대소문자·공백까지) 비교. 다르면 Warning `project-name-mismatch` + 빠른 수정 `replace`(그 줄을 `ProjectName="<폴더>"` 로, 들여쓰기 유지), ProjectName 줄이 없으면 ProjectBegin 뒤에 넣는 `insert`. 대소문자만 다르면 문구가 그렇게 말한다. 루트·그룹·리프 모든 `.gpr` 에 적용(그룹도 검사 루프 맨 앞).
-- **고치면 겹치는 이름**: 같은 컴파일 루트 아래 폴더 이름이 같은 `.gpr` 들을 모아, 해당 진단 문구에 "고치면 ProjectName 이 겹친다 — 폴더 이름을 구분되게 바꾸는 것도 검토" 를 덧붙인다. 폴더 이름을 바꾸는 수정은 제안하지 않는다(다른 `.gpr` 의 ProjectLibrary·루트 ProjectSource 경로가 그 폴더를 가리킨다).
-- `GprFix` 에 `replace` 종류를 더하고 `dependencyCheckCommands.toEdit` 가 줄 내용을 바꾼다. 설정 `gpl.project.dependencyCheck` 설명과 `project-file-gpr.md` §1 에 규칙을 적었다.
-
-### 검증
-
-- `npm test` **1561/1561**(신규 1건 — 픽스처 7개 .gpr 모두 불일치·수정 줄, 일치·대소문자만 다름·들여쓰기 유지·ProjectName 없음·겹침 문구). 시작 시 `node_modules` 가 비어 있어(10-27 17:04 이후, 원인 미상 — 다른 세션 작업 추정) `npm ci` 로 lockfile 그대로 복구했다.
-- BinderR4 읽기 전용 드라이런: 패키지 45, 불일치 42, 고치면 겹치는 쌍 2(`Data`, `Cmd`).
-- VSIX: `dist/gpl-language-support-0.24.0.vsix` 1,650,938 bytes, SHA-256 `89D935FCC8FF9D0B081A7A09C315F2A0EFFD206115469BD4459A2BDEEEDDB54E`(경고는 bundle 권장 1건). `controller-mcp/node_modules` 도 비어 있어 `npm ci` 로 복구한 뒤 패키징했고, MCP 번들에는 미커밋 `controller-mcp/src/guidelines.js` 변경(다른 세션 작업)이 들어 있다.
-
-### 남은 일
-
-- §3 의 결정·실기 확인(일괄 수정 여부, 겹치는 폴더 처리, 제어기 Compile 결과).
 
 ## 1-GM. 2026-10-28 세션 — Upload Only 여러 프로젝트 (0.25.0)
 
@@ -1479,3 +1450,57 @@ README 를 연 상태에서 "검토후 개선해줘".
 - §3 실사용 확인.
 - §7.1 순서대로 분해: 상태 머신(`_pollThreadStates` → 상태 타입 + 순수 전이, runtimeConsole `decideReconnect`)이 체감 속도와도 맞닿아 가장 먼저.
 - SSOT 후보 4건을 R7 규칙으로 하나씩.
+
+## 1-GV. 2026-11-04 세션 — AI MCP: 워크스페이스 파일 폐기 · 사용자 범위 한 번 등록 · 제어기 주소 자동 추종 (0.27.7)
+
+### 증상(사용자 보고)
+
+- "MCP 서버가 프로젝트 폴더에 `CLAUDE.md`·`AGENTS.md`·`.mcp.json`·`.codex` 를 만든다. 제어기가 바뀌어 IP 가 바뀌어도 갱신이
+  잘 안 된다. 파일을 꼭 만들어야 하나? 자동 동기화가 좋겠다." (Sample Prep `102. Antibody 96Ch` 폴더 예시)
+
+### 원인
+
+1. **IP 가 설정 파일에 박혔다.** Export 가 `.mcp.json` 에 `GPL_HOST`(Export 시점 값)를 썼고, MCP 서버는 그 값으로만 확장 창
+   presence 를 걸렀다(`listExtensionInstances(ip)`). 브리지 모드에서 MCP 는 제어기에 직접 붙지도 않는데 IP 가 "어느 창인가"의 필터로만
+   쓰여, 확장이 다른 IP 로 연결하면 `host-mismatch` → Export 재실행·/mcp 재연결이 필요했다(§1-ES 는 이를 경고로 알리기만 했다).
+2. **등록 위치가 워크스페이스였다.** `.mcp.json` 에 개인 globalStorage 절대 경로가 들어가 SVN 작업본에 섞였고, 과제 폴더마다 반복됐다.
+3. **CLAUDE.md 안내 블록은 중복이었다.** 같은 안전 규칙이 MCP `instructions`(initialize 응답)로 매 세션 전달된다.
+- `.codex` 는 확장이 만든 것이 아니다(소스 전체 0건) — Codex 자체 산출물. `AGENTS.md` 는 현 버전이 새로 만들지 않고 기존 블록만 갱신했다.
+
+### 조치
+
+1. **MCP 주소 = 확장 창의 현재 연결** (`controller-mcp/src/extensionBridge.js`) — `pickAddressInstance`(순수): 명시 instanceId → projectDir 를
+   품은 워크스페이스의 창(여럿이면 연결된 창) → 연결된 창(여럿이면 GPL_HOST 와 같은 창) → GPL_HOST 와 같은 창 → 리더 → 가장 먼저 뜬 창.
+   `resolveControllerAddress` 가 살아 있는 창이 없거나 `GPL_BRIDGE=off` 면 GPL_HOST/기본값. `index.js` 의 `HOST`/`PORT` 상수 54곳을
+   `currentHost()`/`currentPort()`(1 s 캐시, projectDir = 세션 대상 또는 cwd)로 바꾸고, 주소가 바뀌면 로그 한 줄 + 브리지 경로 재선택 +
+   `ControllerConsole.retarget`(직렬 큐 뒤에 적용). `transportInfo.controller{host,port,source,via}` 로 출처를 드러낸다.
+   → 기존 `.mcp.json`·개발 소스 등록도 서버만 새것이면 IP 변경을 따른다.
+2. **등록은 사용자 범위에 한 번** (`src/controller/automation/exportAgentSetup.ts`, 판정은 `agentSetupChecks.ts` 순수):
+   - Claude Code: `claude mcp add-json gpl-controller <json> --scope user`(옛 항목이면 먼저 `remove`). `~/.claude.json` 은 Claude Code 가
+     통째로 다시 쓰는 파일이라 **읽기(판정)만** 직접 한다. CLI 가 없으면 「명령 복사」 안내(설정 파일 불변).
+   - Codex: `$CODEX_HOME`(기본 `~/.codex`)이 있을 때만 `config.toml` 의 `[mcp_servers.gpl-controller]`(+하위 테이블)만 교체, 다른 줄·CRLF 보존.
+   - 항목: `node <globalStorage>/mcp/gpl-controller-mcp.cjs`, env 는 `GPL_BRIDGE=only` 만.
+   - 판정 5종: absent / current / outdated(우리 사본인데 옛 env — 묻지 않고 고침) / foreign(다른 파일 = 직접 등록, **묻기 전엔 유지**) / unreadable(안 씀).
+3. **명령·설정** — `gpl.ai.exportAgentSetup` 제목을 「Register AI Agent MCP」로(명령 id 유지), 새 `gpl.ai.cleanWorkspaceAgentSetup`
+   (「Remove AI Agent Files from Workspace」: 모달 확인 뒤 `.mcp.json` 의 gpl-controller 항목·CLAUDE.md/AGENTS.md 자동 블록만 제거,
+   남는 것이 없거나 확장이 만든 머리말뿐이면 파일 삭제), 설정 `gpl.ai.mcpRegistration`(prompt 기본 / auto / off).
+   활성화 때(개발 호스트 제외): outdated 는 조용히 고침, absent + 설치 흔적이면 prompt/auto, 사용자 범위 등록이 있고 예전 파일이 있으면
+   작업 공간마다 한 번 정리 제안. §1-ES 의 연결 시 `.mcp.json` 주소 불일치 경고는 원인이 사라져 제거.
+
+### 검증
+
+- `npm test` **1604/1604**(agentSetupChecks 9 · aiAgentSetup 8 새로 작성 — vm 하네스에 가상 fs·가짜 claude CLI, 홈 설정 불변). R10 에 걸린
+  `activateAiAgentSetup`(175줄)는 모듈 수준 함수로 나눠 해소.
+- `controller-mcp` `node --test` **168/168**(주소 3건 추가). 스모크: `GPL_HOST=10.99.99.99 GPL_BRIDGE=only` 로 띄운 서버의 `extension_status` →
+  `host 192.168.0.102`, `transport.controller{source:"extension", via:"workspace-match"}`.
+- 실제 설정 판정(읽기만): 이 PC 의 `~/.claude.json`·`~/.codex/config.toml` 은 둘 다 `controller-mcp/src/index.js`(개발 소스, GPL_HOST=.1)를 가리켜
+  **foreign → 건드리지 않음**. config.toml 교체 드라이런에서 다른 테이블 전부 보존·결과 current.
+- `claude mcp add-json … --scope local` → `get` → `remove` 왕복(임시 이름 `gpl-quoting-probe`, scratchpad cwd)으로 execFile 인자 전달(공백 포함 경로) 확인.
+- VSIX `dist/gpl-language-support-0.27.7.vsix` 1,696,255 bytes, SHA-256 `1E918E7E5916D2CAB5CF1F20C7F8322466A6AFAEB33E8699495F731CB3F81624`(경고는 bundle 권장 1건).
+  작업 트리에는 이 세션 변경만 있었다(다른 세션 0.27.6 은 먼저 커밋됨). MCP 번들 스탬프 `v0.27.7 08bfe9e`, 번들에 `resolveControllerAddress` 포함 확인.
+- 실기·실사용 미확인 → §3.
+
+### 남은 일
+
+- §3 §1-GV 실사용 확인(등록 제안, IP 변경 추종, 예전 파일 정리, CLI 없는 PC).
+- 이 PC 의 개발 소스 등록은 GPL_HOST=.1 이 남아 있어도 서버가 창을 따르므로 `/mcp` 재연결만 하면 된다(원하면 env 에서 지워도 됨).

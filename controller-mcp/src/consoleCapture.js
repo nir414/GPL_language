@@ -43,7 +43,12 @@ function toEpoch(value, name) {
 export function searchCapture({ files, pattern, since, until, project, maxLines = 200, includeMarkers = true }) {
   let re;
   if (pattern) {
-    try { re = new RegExp(pattern, 'i'); } catch (err) { return { ok: false, error: 'bad-pattern', detail: String(err?.message ?? err) }; }
+    // 큰 캡처 파일을 줄마다 훑으므로 파국적 백트래킹 꼴·긴 식은 거부한다(확장 runtimeConsoleBuffer.compileUntilPattern 과 같은 규칙, §1-GZ).
+    const src = String(pattern);
+    if (src.length > 200 || /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,\d*\})/.test(src)) {
+      return { ok: false, error: 'bad-pattern', detail: '200자 이하, 중첩 수량자((a+)+ 같은 꼴) 없는 정규식만 받는다.' };
+    }
+    try { re = new RegExp(src, 'i'); } catch (err) { return { ok: false, error: 'bad-pattern', detail: String(err?.message ?? err) }; }
   }
   let from; let to;
   try { from = toEpoch(since, 'since'); to = toEpoch(until, 'until'); } catch (err) { return { ok: false, error: 'bad-time', detail: err.message }; }

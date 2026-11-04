@@ -197,11 +197,24 @@ export class RuntimeConsoleBuffer {
 	}
 }
 
+/** `untilPattern` 길이 상한 — 확장 호스트에서 매 줄 실행되므로 짧은 식만 받는다. */
+export const UNTIL_PATTERN_MAX_LENGTH = 200;
+
 /**
- * 사용자 입력 정규식을 안전하게 만든다 — 잘못된 패턴은 null(호출자가 bad-pattern 으로 돌려준다). 항상 대소문자 무시.
+ * 파국적 백트래킹이 나는 대표 꼴(`(a+)+`, `(\w*)*`, `(x+){2,}`)인가 — 수량자가 붙은 그룹 안에 다시 수량자가 있다.
+ * 완전한 판정은 아니지만 AI·사람이 실수로 넣는 흔한 꼴을 거른다(확장 호스트가 멈추면 VS Code 전체가 멈춘다).
+ */
+export function hasNestedQuantifier(source: string): boolean {
+	return /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,\d*\})/.test(source);
+}
+
+/**
+ * 사용자 입력 정규식을 안전하게 만든다 — 잘못된 패턴·너무 긴 패턴·중첩 수량자는 null(호출자가 bad-pattern 으로 돌려준다,
+ * §1-GZ). 항상 대소문자 무시.
  */
 export function compileUntilPattern(source: string | undefined): RegExp | null | undefined {
 	if (source === undefined || source === null || source === '') { return undefined; }
+	if (source.length > UNTIL_PATTERN_MAX_LENGTH || hasNestedQuantifier(source)) { return null; }
 	try {
 		return new RegExp(source, 'i');
 	} catch {

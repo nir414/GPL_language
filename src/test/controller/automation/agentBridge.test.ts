@@ -7,7 +7,10 @@ import {
     AGENT_BRIDGE_VERSION,
     BRIDGE_STALL_MS,
     AgentBridgeServer,
+    DEFAULT_REQUEST_TTL_MS,
     bridgeDirs,
+    bridgeQueueStallLimitMs,
+    runsOutsideBridgeQueue,
     electLeaderInstanceId,
     instanceBridgeDirs,
     instancePresenceFilePath,
@@ -419,4 +422,25 @@ test('agentBridge: heartbeat가 살아 있어도 대기 요청이 오래 수거�
         releaseFirst();
         server.stop();
     }
+});
+
+// ── 브리지 직렬 처리 밖 실행 · 정체 상한 (§1-GZ) ──────────────────────────────
+
+test('runsOutsideBridgeQueue: 정지 계열 sendCommand 와 수신 버퍼 대기만 큐 밖에서 실행한다', () => {
+    const send = (command: string) => ({ command: 'gpl.controller.sendCommand', args: { command } });
+    assert.strictEqual(runsOutsideBridgeQueue({ command: 'gpl.ai.debug.runtimeConsoleRead' }), true);
+    assert.strictEqual(runsOutsideBridgeQueue(send('Stop -all')), true);
+    assert.strictEqual(runsOutsideBridgeQueue(send('  softestop')), true);
+    assert.strictEqual(runsOutsideBridgeQueue(send('Break Main')), true);
+    assert.strictEqual(runsOutsideBridgeQueue(send('Start Main -compile')), false);
+    assert.strictEqual(runsOutsideBridgeQueue(send('Show Thread')), false);
+    assert.strictEqual(runsOutsideBridgeQueue(send('Stop -all\r\nStart Main')), false, '여러 줄은 정지로 보지 않는다');
+    assert.strictEqual(runsOutsideBridgeQueue({ command: 'gpl.deploy' }), false);
+    assert.strictEqual(runsOutsideBridgeQueue(undefined), false);
+});
+
+test('bridgeQueueStallLimitMs: 요청 유효 시간 + 15 s, 없으면 기본 TTL 기준', () => {
+    assert.strictEqual(bridgeQueueStallLimitMs({ timeoutMs: 30_000 }), 45_000);
+    assert.strictEqual(bridgeQueueStallLimitMs({}), DEFAULT_REQUEST_TTL_MS + 15_000);
+    assert.strictEqual(bridgeQueueStallLimitMs({ timeoutMs: 99 * 60_000 }), 10 * 60_000 + 15_000);
 });

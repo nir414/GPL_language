@@ -4,12 +4,15 @@
  */
 
 import * as vscode from 'vscode';
-import { resolveUriRequest, summarizeUriResult } from '../../controller/automation/uriDispatch';
+import { resolveUriRequest, summarizeUriResult, uriCommandNeedsToken, uriTokenMatches } from '../../controller/automation/uriDispatch';
+import { ensureUriToken, uriTokenPath } from '../../controller/automation/uriToken';
 import { findAiBlockedCommand, aiBlockedDetail } from '../../controller/automation/aiCommandPolicy';
 import type { ExtensionHost } from '../host';
 
 export function activateUriHandler(host: ExtensionHost): void {
 	const { context } = host;
+	// 토큰 파일은 활성화 때 미리 만들어 둔다(터미널·에이전트가 첫 URI 전에 읽을 수 있게). 판정 때마다 다시 읽는다 — 다른 창이 만든 값.
+	ensureUriToken();
 
 	// ── 외부 진입점: URI 핸들러 (GitHub #25 B → 2026-08-28 이 확장의 모든 명령으로 개방) ──────────
 	//   vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>        — 인자 1개(JSON: 객체·배열·원시값)
@@ -17,6 +20,7 @@ export function activateUriHandler(host: ExtensionHost): void {
 	//   vscode://nir414.gpl-language-support/command?id=<gpl.command.id>&args=…
 	//   별칭(종전 호환): /connect?ip&port[&save=settings] · /disconnect · /getState · /dashboard
 	//   터미널/에이전트: code --open-url "vscode://nir414.gpl-language-support/gpl.ai.debug.getState"
+	//   토큰(§1-GZ): 조회 전용(uriDispatch.URI_TOKENLESS_COMMANDS)·별칭 밖의 명령은 `&token=<%TEMP%\gpl-controller\uri-token 값>` 필요
 	// 접근은 막지 않는다(사용자 결정). 제어기 안전 조건(Step 연타 #28·정지 정착 §0.6·Compile→Start 완충 §0.7)은 명령 계층의 정책
 	// (controller/commands/commandPolicy.ts)이 어느 경로에서든 같은 방식으로 충족시키므로 URI 에 별도 허용 목록을 두지 않는다. 다만 이 확장의
 	// 명령(`gpl.*`)만 실행한다 — 임의 VS Code 명령의 프록시가 되지 않도록(범위 한정, 제한이 아님). 유일한 예외는 되돌릴 수 없는
@@ -63,6 +67,12 @@ export function activateUriHandler(host: ExtensionHost): void {
 								await vscode.commands.executeCommand('gpl.controller.showDashboard');
 								return;
 						}
+					}
+					// 링크 클릭만으로 제어기 명령이 나가지 않게 — 조회 전용이 아닌 명령은 토큰 파일 값이 있어야 한다(§1-GZ, uriToken.ts).
+					if (uriCommandNeedsToken(req.commandId) && !uriTokenMatches(ensureUriToken(), req.token)) {
+						host.log(`[URI] 거부 '${req.commandId}' — token 없음/불일치. 같은 PC 에서는 ${uriTokenPath()} 의 값을 token= 쿼리로 함께 보내세요.`);
+						vscode.window.showWarningMessage(`GPL URI: '${req.commandId}' 는 token 이 필요합니다 — 웹 링크로는 실행하지 않습니다(Output 참조).`);
+						return;
 					}
 					// URI 는 터미널/에이전트 진입점이므로 AI 차단 목록(aiCommandPolicy.ts)의 명령은 실행하지 않는다.
 					const blocked = findAiBlockedCommand(req.commandId);

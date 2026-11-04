@@ -749,6 +749,18 @@ async function snapshotThread(thread) {
   }
 }
 
+/**
+ * 사전 상태 확인이 실패했을 때(조회 실패·파싱 실패·없는 쓰레드)의 거부 응답 — 실행을 재개하는 명령(Continue/Step/run_to_line)은
+ * 정지를 확인했을 때만 보낸다. 모르면 보내지 않는다(하드 규칙 2: 간접 신호로 추정하지 않는다, §1-GZ — 종전엔 그냥 진행했다).
+ */
+function threadStateUnknownRefusal(thread, action) {
+  return {
+    ok: false, sent: false, refused: 'thread-state-unknown', thread,
+    hint: `${action} 전에 'Show Thread ${thread}' 로 정지 상태를 확인하지 못했다(응답 없음·파싱 실패·없는 쓰레드). ` +
+      'show_threads 로 쓰레드 이름과 상태를 확인한 뒤 다시 호출할 것.',
+  };
+}
+
 const EVAL_LIMIT_RE = /\(-7(?:29|80)\)/;
 
 /**
@@ -2582,7 +2594,8 @@ tool('continue_thread',
   async ({ thread, ignoreErrors, waitForStopMs }) => {
     resetStepStreak();
     const before = await snapshotThread(thread);
-    if (before && !PAUSED_STATES.has(before.state)) {
+    if (!before) return textResult(threadStateUnknownRefusal(thread, 'Continue'));
+    if (!PAUSED_STATES.has(before.state)) {
       return textResult({
         ok: false, refused: 'thread-not-paused', state: before.state, location: locationOf(before),
         hint: `Continue는 정지 상태에서만 의미가 있다(현재 ${before.state}). 사전 확인은 이 도구에 내장 — 별도 show_thread 불필요.`,
@@ -2617,7 +2630,8 @@ tool('step_thread',
   },
   async ({ thread, mode, evals }) => {
     const before = await snapshotThread(thread);
-    if (before && !PAUSED_STATES.has(before.state)) {
+    if (!before) return textResult(threadStateUnknownRefusal(thread, 'Step'));
+    if (!PAUSED_STATES.has(before.state)) {
       return textResult({
         ok: false, refused: 'thread-not-paused', state: before.state, location: locationOf(before),
         hint: `Step은 정지 상태에서만 가능하다(현재 ${before.state}). 실행 중이면 pause_thread 또는 run_to_line을 사용할 것. 사전 확인은 이 도구에 내장 — 별도 show_thread 불필요.`,
@@ -2659,6 +2673,9 @@ tool('run_to_line',
   },
   async ({ thread, file, line, project, evals, keepBreakpoint, timeoutMs }) => {
     resetStepStreak();
+    // 쓰레드 상태를 모르면 Continue 여부를 판단할 수 없다 — 중단점을 걸기 전에 거부한다(§1-GZ).
+    const before = await snapshotThread(thread);
+    if (!before) return textResult(threadStateUnknownRefusal(thread, 'run_to_line'));
     // 그 줄에 이미 중단점이 있으면(사용자가 찍은 빨간 점·이전 호출의 잔재) 끝나고 지우지 않는다 —
     // 남의 중단점을 소리 없이 없애면 이후 실행이 서야 할 곳에서 서지 않는다.
     const shown = await showBreakpoints();
@@ -2669,46 +2686,58 @@ tool('run_to_line',
     const bp = await runCommand(`Set Break ${proj(project)} "${file}"${line}`, bpOpts);
     if (!bp.ok) return textResult({ phase: 'set_breakpoint', ...bp });
 
-    const before = await snapshotThread(thread);
-    // 이미 실행 중(Running 등)이면 Continue가 불필요 — 중단점 히트만 기다린다.
-    const needContinue = !before || PAUSED_STATES.has(before.state);
-    const cont = needContinue
-      ? await runCommand(`Continue ${thread}`)
-      : { ok: true, skipped: 'thread-already-running' };
-    let wait = { paused: false, detail: null };
-    if (cont.ok) {
-      wait = await waitForThreadPause(thread, {
-        timeoutMs: timeoutMs ?? 20000,
-        staleLocation: before && PAUSED_STATES.has(before.state)
-          ? { file: before.file, fileLine: before.fileLine } : null,
-      });
-    }
-
-    const atRequestedLine = !!(wait.paused && wait.detail
-      && String(wait.detail.file).toLowerCase() === file.toLowerCase()
-      && wait.detail.fileLine === line);
-    const result = {
-      requested: { file, line },
-      continueOk: cont.ok,
-      ...(cont.skipped ? { continueSkipped: cont.skipped } : {}),
-      ...(cont.ok ? {} : { continueStatus: cont.status, ...(cont.hint ? { hint: cont.hint } : {}) }),
-      stopped: wait.paused,
-      atRequestedLine,
-      location: locationOf(wait.detail),
+    // 이후 어느 단계에서 예외가 나도 임시 중단점은 반드시 지운다(§1-GZ) — 남으면 에디터에 보이지 않는 BP 에서 실행이 선다.
+    let cleared;
+    const clearTemporary = async () => {
+      if (!temporary || cleared !== undefined) return;
+      try {
+        cleared = (await runCommand(`Set Nobreak ${proj(project)} "${file}"${line}`, { mirrorBreakpoints: false })).ok;
+      } catch {
+        cleared = false;
+      }
     };
-    if (wait.paused && evals?.length) {
-      result.evals = await evalMany(thread, 0, evals);
+    const result = { requested: { file, line } };
+    try {
+      // 이미 실행 중(Running 등)이면 Continue가 불필요 — 중단점 히트만 기다린다.
+      const needContinue = PAUSED_STATES.has(before.state);
+      const cont = needContinue
+        ? await runCommand(`Continue ${thread}`)
+        : { ok: true, skipped: 'thread-already-running' };
+      let wait = { paused: false, detail: null };
+      if (cont.ok) {
+        wait = await waitForThreadPause(thread, {
+          timeoutMs: timeoutMs ?? 20000,
+          staleLocation: PAUSED_STATES.has(before.state)
+            ? { file: before.file, fileLine: before.fileLine } : null,
+        });
+      }
+
+      const atRequestedLine = !!(wait.paused && wait.detail
+        && String(wait.detail.file).toLowerCase() === file.toLowerCase()
+        && wait.detail.fileLine === line);
+      Object.assign(result, {
+        continueOk: cont.ok,
+        ...(cont.skipped ? { continueSkipped: cont.skipped } : {}),
+        ...(cont.ok ? {} : { continueStatus: cont.status, ...(cont.hint ? { hint: cont.hint } : {}) }),
+        stopped: wait.paused,
+        atRequestedLine,
+        location: locationOf(wait.detail),
+      });
+      if (wait.paused && evals?.length) {
+        result.evals = await evalMany(thread, 0, evals);
+      }
+    } finally {
+      await clearTemporary();
     }
     if (temporary) {
-      const clear = await runCommand(`Set Nobreak ${proj(project)} "${file}"${line}`, { mirrorBreakpoints: false });
-      result.breakpointCleared = clear.ok;
+      result.breakpointCleared = cleared;
     } else if (preexisting) {
       result.breakpointCleared = false;
       result.breakpointKept = 'preexisting — 원래 있던 중단점이라 지우지 않았다(에디터 빨간 점일 수 있음).';
     }
-    if (wait.paused && !atRequestedLine) {
+    if (result.stopped && !result.atRequestedLine) {
       result.note = '요청한 줄이 아닌 다른 지점에서 정지했다(다른 브레이크포인트/에러 가능). location을 확인할 것.';
-    } else if (!wait.paused && cont.ok) {
+    } else if (!result.stopped && result.continueOk) {
       result.note = `${timeoutMs ?? 20000}ms 내 정지 없음 — 해당 줄이 이 실행 경로에서 실행되지 않거나 오래 걸릴 수 있다. ` +
         (temporary ? '임시 중단점은 해제했다.' : '중단점은 남아 있으니 이후 show_thread로 재확인할 것.');
     }

@@ -278,6 +278,35 @@ export function validateBridgeRequest(raw: unknown, fileId: string, now: number)
     return { ok: true, request: { version: AGENT_BRIDGE_VERSION, id: r.id, command: r.command, args: r.args, createdAt, from: typeof r.from === 'string' ? r.from : undefined, timeoutMs: ttl } };
 }
 
+/** 앞 요청이 끝나기를 기다리지 않고 바로 실행하는 1402 명령 — 정지 계열(§1-GZ). 첫 단어 기준, 대소문자 무시. */
+const BRIDGE_STOP_VERBS = new Set(['stop', 'softestop', 'break']);
+
+/**
+ * 이 요청을 브리지 직렬 처리 밖에서(앞 요청을 기다리지 않고) 실행하는가.
+ *  - `gpl.ai.debug.runtimeConsoleRead`: 수신 버퍼 대기 — 제어기 명령 큐를 쓰지 않는다.
+ *  - `gpl.controller.sendCommand` 의 정지 계열(`Stop`·`SoftEStop`·`Break`): 앞 요청이 확인 창 등으로 끝나지 않아도 정지는
+ *    나가야 한다(2026-11-04 리뷰 — 종전엔 큐가 막히면 MCP 가 bridge-timeout(sent:false)으로 정지를 보내지 못했다).
+ *    제어기 전송 자체는 확장의 명령 직렬 큐가 여전히 하나씩 보낸다 — 여기서 건너뛰는 것은 브리지 대기열뿐이다.
+ */
+export function runsOutsideBridgeQueue(req: unknown): boolean {
+    if (!req || typeof req !== 'object') { return false; }
+    const r = req as { command?: unknown; args?: unknown };
+    if (r.command === 'gpl.ai.debug.runtimeConsoleRead') { return true; }
+    if (r.command !== 'gpl.controller.sendCommand') { return false; }
+    const args = r.args as { command?: unknown } | string | undefined;
+    const text = typeof args === 'string' ? args : typeof args?.command === 'string' ? args.command : '';
+    if (/[\r\n]/.test(text)) { return false; }
+    const verb = text.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+    return BRIDGE_STOP_VERBS.has(verb);
+}
+
+/** 직렬 처리에서 한 요청을 기다리는 상한 — 요청 유효 시간(기본 60 s) + 여유 15 s. 넘기면 다음 요청으로 넘어간다. */
+export function bridgeQueueStallLimitMs(req: unknown): number {
+    const t = (req as { timeoutMs?: unknown } | undefined)?.timeoutMs;
+    const ttl = typeof t === 'number' && Number.isFinite(t) && t > 0 ? Math.min(t, 10 * 60_000) : DEFAULT_REQUEST_TTL_MS;
+    return ttl + 15_000;
+}
+
 /** 파일명 → 요청 id. `.json` 이 아니거나 안전하지 않은 이름이면 undefined. */
 export function requestIdFromFileName(name: string): string | undefined {
     if (!name.endsWith('.json')) { return undefined; }
@@ -563,16 +592,27 @@ export class AgentBridgeServer {
                     }
                     for (const name of names) {
                         if (!this.started) { return; }
-                        // 수신 버퍼 대기는 제어기 명령 큐를 쓰지 않는다. Stop 등 후속 요청을 막지 않는다.
-                        let bufferRead = false;
+                        // 수신 버퍼 대기·정지 명령은 직렬 처리를 기다리지 않는다 — 앞 요청이 멈춰도 Stop/SoftEStop 은 나가야 한다(§1-GZ).
+                        let peek: unknown;
                         try {
-                            bufferRead = JSON.parse(fs.readFileSync(path.join(q.reqDir, name), 'utf8')).command
-                                === 'gpl.ai.debug.runtimeConsoleRead';
+                            peek = JSON.parse(fs.readFileSync(path.join(q.reqDir, name), 'utf8'));
                         } catch { /* 잘못된 요청은 processFile에서 응답한다. */ }
-                        if (bufferRead) {
+                        if (runsOutsideBridgeQueue(peek)) {
                             void this.processFile(name, q, true).catch(err => this.env.log?.(`[Bridge] ${String(err)}`));
                         } else {
-                            await this.processFile(name, q);
+                            // 직렬 처리하되 요청 유효 시간(+여유)을 넘기면 기다리기를 그만두고 다음 요청으로 간다 — 확인 창 등으로
+                            // 끝나지 않는 명령 하나가 큐 전체를 막지 않게. 그 명령은 계속 돌고 끝나면 응답을 쓴다(호출자는 이미 결과 미확정).
+                            const limitMs = bridgeQueueStallLimitMs(peek);
+                            const done = this.processFile(name, q).catch(err => this.env.log?.(`[Bridge] ${String(err)}`));
+                            let timer: ReturnType<typeof setTimeout> | undefined;
+                            const stalled = await Promise.race([
+                                done.then(() => false),
+                                new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), limitMs); }),
+                            ]);
+                            if (timer) { clearTimeout(timer); }
+                            if (stalled) {
+                                this.env.log?.(`[Bridge] ${name} 이 ${limitMs} ms 안에 끝나지 않아 다음 요청으로 넘어갑니다(명령은 계속 실행 중).`);
+                            }
                         }
                         processed++;
                     }

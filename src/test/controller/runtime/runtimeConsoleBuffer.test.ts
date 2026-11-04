@@ -127,3 +127,12 @@ test('compileUntilPattern: 빈 값은 undefined, 잘못된 정규식은 null, �
     const re = compileUntilPattern('ready');
     assert.ok(re instanceof RegExp && re.test('READY'));
 });
+
+test('compileUntilPattern(§1-GZ): 너무 긴 식·중첩 수량자는 거부(null) — 확장 호스트 정지 방지', () => {
+    assert.strictEqual(compileUntilPattern('(a+)+$'), null);
+    assert.strictEqual(compileUntilPattern('(\w*)*x'), null);
+    assert.strictEqual(compileUntilPattern('(x+){2,}'), null);
+    assert.strictEqual(compileUntilPattern('a'.repeat(201)), null);
+    assert.ok(compileUntilPattern('DONE|ERROR \d+') instanceof RegExp);
+    assert.ok(compileUntilPattern('(Start|Stop)+ ok') instanceof RegExp, '수량자 없는 그룹 반복은 허용');
+});

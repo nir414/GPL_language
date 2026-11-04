@@ -1152,7 +1152,25 @@ export class RuntimeConsole implements vscode.Disposable {
             ? { host: cfg.ip, port: cfg.consolePort, family: 4 }
             : { host: cfg.ip, port: cfg.consolePort };
 
-        socket.connect(connectOptions, () => {
+        // 잘못된 설정(포트 범위 등)이면 connect 가 동기 예외를 던진다 — 그대로 두면 this.socket 이 리스너 없이 남아
+        // start() 가 "이미 있음"으로 계속 무시된다(§1-GZ). 되돌리고 재연결 경로로 넘긴다.
+        const connectSafely = (onConnect: () => void): boolean => {
+            try {
+                socket.connect(connectOptions, onConnect);
+                return true;
+            } catch (err) {
+                clearTimeout(connectTimer);
+                if (this.socket === socket) { this.socket = null; }
+                this._lastError = err as Error;
+                this._lastErrorCode = ((err as any)?.code as string | undefined) ?? 'CONNECT_THROW';
+                this.logConsoleTraffic('---', `CONNECT failed synchronously: ${(err as Error)?.message ?? err}`);
+                this.updateStatus('socket-error', '연결 실패', (err as Error)?.message ?? String(err));
+                this.scheduleReconnect();
+                return false;
+            }
+        };
+
+        if (!connectSafely(() => {
             clearTimeout(connectTimer);
             this._isConnected = true;
             this._connectedAt = Date.now();
@@ -1191,11 +1209,14 @@ export class RuntimeConsole implements vscode.Disposable {
             this.logConsoleTraffic('---', `CONNECTED (local ${socket.localAddress}:${socket.localPort}, idle=${this._consecutiveEmptySessions})`);
             this.markCaptureOnConnect(`${cfg.ip}:${cfg.consolePort}`);
             this._onDidConnect.fire();
-        });
+        })) { return; }
 
         socket.on('data', (data: Buffer) => {
             const wasWaitingPayload = !this._sessionDataReceived;
             this._sessionDataReceived = true;
+            // payload 를 받은 세션은 "연결이 된다"는 증거 — 에러 백오프 횟수를 되돌린다(2026-11-04 §1-GZ). 종전엔 연결 뒤
+            // 매번 ECONNRESET 으로 끝나는 세션이 이어지면 성공한 연결까지 누적돼 10회에 재연결이 영구 정지됐다.
+            this._reconnectAttempt = 0;
             this._consecutiveNoPayloadAttempts = 0;
             this._consecutiveImmediateEofSessions = 0;
             this._lastPayloadAt = Date.now();
@@ -1254,6 +1275,8 @@ export class RuntimeConsole implements vscode.Disposable {
                 this._noOutputHintTimer = null;
             }
             const dataReceived = this._sessionDataReceived;
+            // 다음 세션의 waitForPayload 가 지난 세션의 수신으로 즉시 true 를 돌려주지 않게 닫힐 때 되돌린다(§1-GZ).
+            this._sessionDataReceived = false;
             let noPayloadReason: string | undefined;
             if (this._isConnected) {
                 this._isConnected = false;

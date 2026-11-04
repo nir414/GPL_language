@@ -114,3 +114,9 @@ test('normalizeCommandInput: 단건/배치 정확히 하나 — 둘 다/둘 다 
   assert.throws(() => normalizeCommandInput({ commands: Array.from({ length: BATCH_MAX + 1 }, (_, i) => `pd ${i}`) }), /최대 50개/);
   assert.equal(normalizeCommandInput({ commands: Array.from({ length: BATCH_MAX }, (_, i) => `pd ${i}`) }).commands.length, BATCH_MAX);
 });
+
+test('normalizeCommandInput(§1-GZ): 한 항목 안의 CR/LF·제어 문자는 거부한다 — 여러 명령은 배열로', () => {
+  assert.throws(() => normalizeCommandInput({ command: 'Show Thread\r\nUnload -all' }), /줄바꿈/);
+  assert.throws(() => normalizeCommandInput({ commands: ['pd 2703', 'Show Thread\nStop -all'] }), /commands\[1\]/);
+  assert.deepEqual(normalizeCommandInput({ command: '  Show Thread  ' }), { mode: 'single', command: 'Show Thread' });
+});

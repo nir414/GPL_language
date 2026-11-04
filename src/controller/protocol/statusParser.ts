@@ -17,12 +17,13 @@ export const NO_STATUS_CODE = -9999;
 
 /**
  * 응답에서 `<STATUS>code,"message"</STATUS>` 추출.
- * STATUS가 없으면 code = NO_STATUS_CODE(-9999).
+ * STATUS가 없으면 code = NO_STATUS_CODE(-9999). **닫는 `</STATUS>` 까지 온 블록만** 인정한다(하드 규칙 2) —
+ * `<STATUS>-75` 에서 잘린 응답의 숫자를 코드로 읽지 않는다(2026-11-04 §1-GZ).
  */
 export function parseStatus(response: string): StatusResult {
     // DATA 본문에 STATUS 텍스트가 포함될 수 있으므로(파일/로그 덤프 응답),
     // 실제 종결 STATUS인 "마지막" 블록을 채택한다.
-    const re = /<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?/g;
+    const re = /<STATUS>\s*(-?\d+)(?:,\s*"([^"]*)")?[^<]*<\/STATUS>/g;
     let m: RegExpExecArray | null;
     let last: RegExpExecArray | null = null;
     while ((m = re.exec(response)) !== null) { last = m; }

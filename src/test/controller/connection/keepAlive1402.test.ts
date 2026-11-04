@@ -14,6 +14,7 @@ import {
     ConsoleSendOptions,
     ConsoleEndpoint,
     TrafficDirection,
+    invalidCommandReason,
 } from '../../../controller/connection/consoleSocket';
 
 // ── 순수 헬퍼 ──────────────────────────────────────────────────────────────
@@ -222,7 +223,7 @@ test('stale 소켓: 재사용 소켓이 0바이트 상태로 닫히면 새 연�
     const before = getConnectionStats();
     try {
         await sendConsoleCommand('Show Thread', endpointOf(fake), opts(), { log });
-        const r2 = await sendConsoleCommand('Show Break', endpointOf(fake), opts(), { log });
+        const r2 = await sendConsoleCommand('Show Break', endpointOf(fake), opts({ retryAfterDeliveryIsSafe: true }), { log });
         assert.strictEqual(r2.raw, OK_RESPONSE.trim());
         assert.strictEqual(r2.meta.responseComplete, true);
         assert.strictEqual(r2.meta.socketReused, false, '재시도 결과는 새 연결');
@@ -235,6 +236,70 @@ test('stale 소켓: 재사용 소켓이 0바이트 상태로 닫히면 새 연�
         assert.strictEqual(after.reuses - before.reuses, 1);
         assert.ok(lines.some(l => l.startsWith('--- 1402 CLOSE (stale-retry')), lines.join('\n'));
         assert.ok(lines.some(l => l.includes('retrying once on a fresh connection: Show Break')), lines.join('\n'));
+    } finally {
+        closeControllerConnection('test-cleanup');
+        await fake.close();
+    }
+});
+
+test('stale 소켓(§1-GZ): 상태 변경 명령은 전달 뒤 0바이트로 끊겨도 재전송하지 않는다 — 결과 미확정(sent:true)', async () => {
+    closeControllerConnection('test-reset');
+    // 제어기가 명령을 받아 실행한 뒤 응답 없이 끊은 경우(Unload 사례)와 구별할 수 없으므로 같은 명령을 다시 보내면 이중 실행이다.
+    const fake = await startFakeConsole((_line, socket, connIndex, lineIndex) => {
+        if (connIndex === 0 && lineIndex >= 1) { socket.destroy(); return; }
+        socket.write(OK_RESPONSE);
+    });
+    const { log } = logCollector();
+    const before = getConnectionStats();
+    try {
+        await sendConsoleCommand('Show Thread', endpointOf(fake), opts(), { log });
+        await assert.rejects(
+            sendConsoleCommand('Start Probe -compile', endpointOf(fake), opts(), { log }),
+            (err: any) => /Connection (closed without response|error)/.test(err.message) && err.sent !== false,
+        );
+        assert.strictEqual(getConnectionStats().retries - before.retries, 0, '재시도 없음');
+        assert.strictEqual(fake.connections, 1, '새 연결로 같은 명령을 보내지 않음');
+    } finally {
+        closeControllerConnection('test-cleanup');
+        await fake.close();
+    }
+});
+
+test('명령 검증(§1-GZ): CR/LF·제어 문자가 든 명령은 보내지 않는다(INVALID_COMMAND, sent:false)', async () => {
+    const fake = await startFakeConsole();
+    const { lines, log } = logCollector();
+    try {
+        for (const bad of ['Show Thread\r\nUnload -all', 'Show Thread\nStop -all', 'Show\u0000Thread', 'Stop\u001bx']) {
+            await assert.rejects(
+                sendConsoleCommand(bad, endpointOf(fake), opts(), { log }),
+                (err: any) => err.code === 'INVALID_COMMAND' && err.sent === false,
+            );
+        }
+        assert.strictEqual(fake.connections, 0, '연결조차 열지 않음');
+        assert.ok(lines.some(l => l.startsWith('--- REJECTED (not sent)')), lines.join('\n'));
+        assert.strictEqual(invalidCommandReason('Show Thread\t-web'), undefined, '탭은 허용');
+    } finally {
+        closeControllerConnection('test-cleanup');
+        await fake.close();
+    }
+});
+
+test('인코딩(§1-GZ): 응답은 다바이트 문자가 chunk 경계에서 갈려도 UTF-8 로 디코딩한다', async () => {
+    closeControllerConnection('test-reset');
+    const korean = Buffer.from('<DATA>경로 /GPL/한글</DATA>\r\n<STATUS>0,"Success"</STATUS>\r\n', 'utf8');
+    const fake = await startFakeConsole((_line, socket) => {
+        // 다바이트 문자 중간에서 chunk 를 끊어 보낸다.
+        socket.write(korean.subarray(0, 9));
+        setTimeout(() => socket.write(korean.subarray(9)), 20);
+    });
+    const { log } = logCollector();
+    try {
+        const pushed: string[] = [];
+        const body = { push: (c: string) => { pushed.push(c); }, flush: () => undefined };
+        const r = await sendConsoleCommand('Show Thread', endpointOf(fake), opts({ idleMs: 200 }), { log, body });
+        assert.strictEqual(r.raw, korean.toString('utf8').trim());
+        assert.strictEqual(pushed.join(''), korean.toString('utf8'));
+        assert.strictEqual(r.meta.bytesReceived, korean.length);
     } finally {
         closeControllerConnection('test-cleanup');
         await fake.close();
@@ -437,7 +502,7 @@ test('응답 본문 sink: chunk 가 push 되고 완료 시 flush 가 한 번 불
         const pushed: string[] = [];
         let flushes = 0;
         const body = { push: (c: string) => { pushed.push(c); }, flush: () => { flushes++; } };
-        const r = await sendConsoleCommand('Show Break', endpointOf(fake), opts(), { log, body });
+        const r = await sendConsoleCommand('Show Break', endpointOf(fake), opts({ retryAfterDeliveryIsSafe: true }), { log, body });
         assert.strictEqual(r.meta.responseComplete, true);
         assert.strictEqual(pushed.join(''), OK_RESPONSE);
         assert.strictEqual(flushes, 1, 'stale 경로에서는 flush 하지 않고 재시도 완료 시 한 번만');

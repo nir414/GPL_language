@@ -8,9 +8,14 @@
 
 import * as path from 'path';
 
-/** XML 태그를 제거한다 — `<DATA>content</DATA>` 같은 인라인 형식 응답 처리용 공통 헬퍼. */
+/**
+ * XML 태그를 제거한다 — `<DATA>content</DATA>` 같은 인라인 형식 응답 처리용 공통 헬퍼.
+ * 닫는 태그는 줄바꿈으로 바꾼다(여는 태그는 지운다): `…|14</DATA><STATUS>0,"Success"</STATUS>` 처럼 닫는 태그 앞에
+ * 줄바꿈이 없으면 태그만 지울 때 줄 번호 14 와 STATUS 0 이 붙어 140 으로 읽혔다(2026-11-04 §1-GZ 재현). 이 헬퍼를 쓰는
+ * 파서는 모두 줄 단위로 읽으므로 빈 줄이 늘어나는 것은 무해하다.
+ */
 export function stripXmlTags(text: string): string {
-    return text.replace(/<\/?[A-Za-z][^>]*>/g, '');
+    return text.replace(/<\/[A-Za-z][^>]*>/g, '\n').replace(/<[A-Za-z][^>]*>/g, '');
 }
 
 /** filePath가 dirPath 하위(또는 동일)인지 판정. 순수 path 연산. */

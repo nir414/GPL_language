@@ -31,3 +31,10 @@ test('parseStatus: DATA 본문에 STATUS 텍스트가 있어도 마지막(종결
     assert.strictEqual(r.code, 0);
     assert.strictEqual(r.message, 'Success');
 });
+
+test('parseStatus(§1-GZ): 닫는 </STATUS> 가 없는 잘린 블록은 코드로 읽지 않는다', () => {
+    assert.strictEqual(parseStatus('<DATA>x</DATA><STATUS>-75').code, -9999);
+    assert.strictEqual(parseStatus('<STATUS>0,"Success"').code, -9999);
+    assert.strictEqual(parseStatus('<STATUS>-750,"*Invalid when thread active*"</STATUS>\r\n').code, -750);
+    assert.strictEqual(parseStatus('<STATUS>0</STATUS>').code, 0);
+});

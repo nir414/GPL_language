@@ -58,3 +58,11 @@ test('normalizeThreadState: Stopped가 Stopping으로 오정규화되지 않는�
 });
 
 // ── latin1ToUtf8 (1403 바이트 보존 디코딩, 2026-08-28) ─────────────────────
+
+test('parseThreadList(-web, §1-GZ): </DATA> 앞에 줄바꿈이 없어도 줄 번호에 STATUS 숫자가 붙지 않는다', () => {
+    const raw = '<DATA>Probe|Paused|0|0|Probe|Main.Run|10|Main.gpl|14</DATA><STATUS>0,"Success"</STATUS>';
+    const [t] = parseThreadList(raw);
+    assert.strictEqual(t.fileLine, 14);
+    assert.strictEqual(t.procLine, 10);
+    assert.strictEqual(parseThreadList(raw).length, 1, 'STATUS 줄은 쓰레드로 읽지 않는다');
+});

@@ -661,6 +661,8 @@ function sendCommandDetailedInternal(
 			keepAlive: effectiveKeepAlive(keepAlive.enabled),
 			keepAliveIdleCloseMs: keepAlive.idleCloseMs,
 			connectTimeoutMs: getConnectTimeoutMs(),
+			// 보관 소켓이 명령 전달 뒤 끊겼을 때 재전송은 조회 명령만(§1-GZ) — 상태 변경 명령은 실행됐을 수 있다.
+			retryAfterDeliveryIsSafe: isReadOnlyConsoleCommand(command),
 		},
 		{ log: logTraffic, body: bodyLog },
 	).then(response => {

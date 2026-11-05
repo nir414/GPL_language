@@ -1437,17 +1437,22 @@ tool('runtime_console_search',
   `파일: %TEMP%\\gpl-controller\\runtime-console-<GPL_HOST>.log(+ 직전 .1.log, 각 2 MB 에서 교체 — 그보다 오래된 기록은 없다). ` +
   '줄은 PC 수신 시각(UTC)·프로젝트·텍스트이고, `--- capture start / reconnected … not listening for N s / capture paused ---` 마커가 확장이 듣지 않은 구간을 알려 준다(마커가 없는 공백 = 출력이 없었음). ' +
   '같은 IP 로 실물 제어기를 바꿔 끼우면 기록이 한 파일에 섞인다 — project 와 시각으로 가를 것. ' +
-  '응답: {ok, files:[{path,exists,bytes}], scannedLines, matchedLines, truncated, lines:[{at,project?,text,marker,file,line}]}. maxLines 를 넘으면 최근 것을 남긴다.',
+  '응답: {ok, files:[{path,exists,bytes}], scannedLines, matchedLines, totalHits, returnedLines, truncated, truncatedBy?:"count"|"chars", omittedOldest?, latestFirst, lines:[{at,project?,text,marker,file,line}]}. ' +
+  '**개수 상한(maxResults, 기본 200)과 출력 크기 상한(maxChars, 기본 30000자)을 넘으면 가장 오래된 것부터 버려** 최근 것을 남긴다 — 흔한 문구 하나로 결과가 도구 한도를 넘어 파일로 잘려 가던 사건(2026-11-05) 때문이다. ' +
+  'totalHits(필터에 걸린 전체)와 returnedLines 를 비교하면 얼마나 잘렸는지 알 수 있고, 더 보려면 since/until 로 구간을 나눌 것. latestFirst:true 면 최신 줄이 맨 앞이다.',
   {
     pattern: z.string().optional().describe('정규식(대소문자 무시). 예: "Repeat (start|end)|Cycle end|ERROR". 생략하면 모든 줄'),
     since: z.string().optional().describe('이 시각 이후(ISO 8601, 예: 2026-10-20T22:00:00+09:00)'),
     until: z.string().optional().describe('이 시각 이전(ISO 8601)'),
     project: z.string().optional().describe('이 프로젝트의 줄만(대소문자 무시). 마커는 항상 포함'),
-    maxLines: z.number().int().min(1).max(2000).optional().describe('최대 줄 수(기본 200)'),
+    maxResults: z.number().int().min(1).max(2000).optional().describe('돌려줄 최대 줄 수(기본 200). 넘으면 가장 오래된 것부터 버린다'),
+    maxLines: z.number().int().min(1).max(2000).optional().describe('maxResults 의 옛 이름 — 둘 다 주면 maxResults 가 이긴다'),
+    latestFirst: z.boolean().optional().describe('true 면 최신 줄이 맨 앞(내림차순). 기본 false = 시각 오름차순'),
+    maxChars: z.number().int().min(1000).max(200000).optional().describe('응답 줄 목록의 대략 최대 문자 수(기본 30000) — 도구 결과 한도 초과를 막는다'),
     includeMarkers: z.boolean().optional().describe('듣기 상태 마커 포함(기본 true)'),
   },
-  async ({ pattern, since, until, project, maxLines, includeMarkers }) => {
-    const result = searchCapture({ files: captureFilesFor(currentHost()), pattern, since, until, project, maxLines: maxLines ?? 200, includeMarkers: includeMarkers ?? true });
+  async ({ pattern, since, until, project, maxResults, maxLines, latestFirst, maxChars, includeMarkers }) => {
+    const result = searchCapture({ files: captureFilesFor(currentHost()), pattern, since, until, project, maxResults: maxResults ?? maxLines ?? 200, latestFirst, maxChars, includeMarkers: includeMarkers ?? true });
     return textResult({ host: currentHost(), ...result });
   });
 

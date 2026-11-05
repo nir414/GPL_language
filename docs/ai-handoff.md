@@ -852,7 +852,7 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 ### 조치(원인 → 수정)
 
 - **라이브러리 BP**(79287e6·08b9281) — 거터 `setBreakpoints` 가 `ProjectLibrary` 형제 폴더 파일을 조용히 버렸다. 이 트리의 AI 경로도
-  `library-source-breakpoint-unsupported` 로 거부했다(보고의 "AI 경로는 됨"은 확인 못 함). `project/remote/breakpointTarget.ts`
+  `library-source-breakpoint-unsupported` 로 거부했다 — 보고자가 알려 온 설치본 0.27.12 의 AI 경로 성공 로그는 기대 프로젝트가 Gantry 자신으로 풀려 `direct-source` 가 된 경우로 보인다(App 기준이면 거부, 추정). `project/remote/breakpointTarget.ts`
   `breakpointSendTarget()` 한 곳이 `Set Break <라이브러리 ProjectName> "<라이브러리 기준 경로>"` 를 정하고 DAP·AI 가 함께 쓴다.
   못 보내면 verified:false + `⚠ BP 전송 생략` 한 줄. MCP `set/clear_breakpoint`·`run_to_line` 은 `<lib>/<file>` 을 재작성(`libraryLocation.js`),
   `atRequestedLine` 은 `sameSourceFile` 로 비교. 에디터 live-sync(`breakpointSync`)는 여전히 라이브러리를 보내지 않고 로그만 남긴다.

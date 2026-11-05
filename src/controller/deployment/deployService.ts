@@ -30,6 +30,7 @@ import {
     beginMemoryNoticeScope,
     checkMemoryBeforeOperation,
     getLastCommandChannelLoss,
+    getLastGplClear,
     getLastMemoryCheck,
     probeControllerCommand,
 } from '../connection/controllerConnection';
@@ -102,6 +103,7 @@ const controllerIo: DeployControllerIo = {
     checkMemoryBeforeOperation,
     getLastMemoryCheck,
     getLastCommandChannelLoss,
+    getLastGplClear,
     createIdentityIo: createControllerIdentityIo,
     recentReachabilityEvidence,
     recordCompiled,
@@ -266,6 +268,8 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         ...(result.memoryPrecheck ? { memoryPrecheck: result.memoryPrecheck } : {}),
         ...(result.memoryRecovery ? { memoryRecovery: result.memoryRecovery } : {}),
         ...(result.uploadStats ? { uploadStats: result.uploadStats } : {}),
+        // 라이브러리(ProjectLibrary) 업로드 — 응답에는 있고 기록에만 빠져 다른 세션이 "라이브러리 없이 컴파일"로 오판한 사건(2026-11-05).
+        ...(result.libraryUploads && result.libraryUploads.length > 0 ? { libraryUploads: result.libraryUploads } : {}),
         ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
         ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),
         // 어느 장치에 올렸는지의 근거 — operation 파일만으로 "그때 진짜 제어기였나" 를 판정할 수 있게.

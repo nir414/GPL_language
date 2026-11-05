@@ -40,6 +40,8 @@ export interface DeployControllerIo {
     checkMemoryBeforeOperation: typeof controllerConnection.checkMemoryBeforeOperation;
     getLastMemoryCheck: typeof controllerConnection.getLastMemoryCheck;
     getLastCommandChannelLoss: typeof controllerConnection.getLastCommandChannelLoss;
+    /** 이 확장이 `/GPL` 을 일부러 비운 마지막 시각(재부팅 정황 오탐 방지). */
+    getLastGplClear: typeof controllerConnection.getLastGplClear;
     createIdentityIo: typeof controllerIdentityIo.createControllerIdentityIo;
     recentReachabilityEvidence: typeof controllerIdentityIo.recentReachabilityEvidence;
     /** 컴파일 스냅샷 기록(deployRecord.recordCompiled, GitHub #21). */

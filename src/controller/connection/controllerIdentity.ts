@@ -261,6 +261,9 @@ export async function observeFtpBanner(io: IdentityPreflightIo, sinceMs: number)
 /** 채널 유실 뒤 이 시간 안에 `/GPL/<프로젝트>` 가 없으면 재부팅 정황으로 본다. */
 export const REBOOT_HINT_WINDOW_MS = 30 * 60_000;
 
+/** 일부러 비운(clear/Unload) 시각 뒤 이 시간 안의 채널 유실은 그 명령의 부작용으로 본다(Unload 뒤 1402 가 2~3분 끊긴 실측: 2026-08-31). */
+export const CLEAR_EXPLAINS_LOSS_MS = 5 * 60_000;
+
 /**
  * `/GPL/<프로젝트>` 가 없고 직전에 명령 콘솔 채널 유실이 있었으면 "재부팅된 것으로 보임" 한 줄.
  * 재부팅하면 `/GPL` 은 비워진다(2026-10-22·23 실측) — 다른 프로젝트·라이브러리도 다시 올려야 한다.
@@ -270,6 +273,11 @@ export function rebootSuspicionHint(input: {
     folderMissing: boolean;
     projectName: string;
     lastChannelLossAt?: number;
+    /**
+     * 이 확장이 `/GPL` 을 일부러 비운(clear_remote_folder·트리 비우기·`Unload`) 마지막 시각. 채널 유실이 그 직후(또는 그 전)라면
+     * 폴더가 없는 것은 재부팅이 아니라 우리가 비운 결과이므로 정황으로 보지 않는다(2026-11-05 inbox — 비운 직후 배포에 오탐).
+     */
+    lastIntentionalClearAt?: number;
     /** `/GPL` 에 폴더가 하나도 없었는가(알면). */
     gplEmpty?: boolean;
     now: number;
@@ -277,6 +285,11 @@ export function rebootSuspicionHint(input: {
     formatTime?: (ms: number) => string;
 }): string | undefined {
     if (!input.folderMissing || input.lastChannelLossAt === undefined) { return undefined; }
+    if (input.lastIntentionalClearAt !== undefined
+        && input.lastIntentionalClearAt <= input.now
+        && input.lastChannelLossAt <= input.lastIntentionalClearAt + CLEAR_EXPLAINS_LOSS_MS) {
+        return undefined;
+    }
     const elapsed = input.now - input.lastChannelLossAt;
     if (elapsed < 0 || elapsed > (input.windowMs ?? REBOOT_HINT_WINDOW_MS)) { return undefined; }
     const formatTime = input.formatTime ?? clock;

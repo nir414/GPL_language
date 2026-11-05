@@ -16,6 +16,7 @@ export class SymbolCache {
     private readonly sourceLoader: WorkspaceSourceLoader;
     private refreshTask: Promise<void> | undefined;
     private refreshRequested = false;
+    private relationsEpoch = 0;
     public isRefreshing = false;
     /** 워크스페이스 전체 인덱싱이 한 번이라도 끝났는가 — 그 전의 "다른 파일 심볼 없음"은 사실이 아니다(Requires 헤더 대조가 본다). */
     public hasIndexed = false;
@@ -110,7 +111,13 @@ export class SymbolCache {
     }
 
     public invalidateProjectRelations(): void {
+        this.relationsEpoch++;
         this.projectScope.invalidateProjectRelations();
+    }
+
+    /** 심볼 인덱스 + 프로젝트 관계(.gpr)의 변경 번호 — 이름 → 파일 대응에 기댄 계산 결과의 캐시 키로 쓴다. */
+    public get indexGeneration(): number {
+        return this.index.generation + this.relationsEpoch;
     }
 
     public async findReferences(symbolName: string, token?: vscode.CancellationToken): Promise<FileReferences[]> {

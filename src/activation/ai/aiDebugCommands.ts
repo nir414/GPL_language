@@ -17,7 +17,7 @@ import {
 import { AI_BLOCKED_ERROR } from '../../controller/automation/aiCommandPolicy';
 import { describeDeployLock } from '../../controller/deployment/deployLock';
 import { listRemoteDir, listRemoteDirs, normalizeAbsoluteRemoteDir } from '../../controller/files/ftpClient';
-import { classifyRemoteClearRoot, clearRemoteFolderEntries, selectRemoteClearTargets } from '../../controller/files/remoteFolderClear';
+import { classifyRemoteClearRoot, clearRemoteFolderEntries, judgeAiClearThreadGate, selectRemoteClearTargets } from '../../controller/files/remoteFolderClear';
 import { verifyControllerForFtpWrite } from '../../controller/connection/controllerIdentityIo';
 import { getCompiledRecord } from '../../controller/deployment/deployRecord';
 import { compileUntilPattern } from '../../controller/runtime/runtimeConsoleBuffer';
@@ -25,7 +25,7 @@ import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThr
 import { buildStepCommand } from '../../controller/commands/stepCommand';
 import type { StepMode } from '../../controller/commands/stepCommand';
 import { waitForThreadPause } from '../controller/controllerOps';
-import { describeThreadActivity, isPausedState } from '../../controller/threads/threadActivity';
+import { isPausedState } from '../../controller/threads/threadActivity';
 import { normalizeEvalValue } from '../../debug/evaluation/showVariableParser';
 import type { SituationDeploySnapshot } from '../../controller/deployment/deployOutcome';
 import { formatBreakpointCommand, normalizeBreakpointCommandFile } from '../../controller/debugging/breakpointCommand';
@@ -577,7 +577,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 			};
 		}
 
-		// 쓰레드 게이트 — 트리 명령과 같은 기준(Show Thread 에 쓰레드가 하나라도 있으면 동작 중). 확인 불가도 거절한다(§0.2).
+		// 쓰레드 게이트 — `stop_threads` 와 같은 정착 판정(Idle/Stopped/Error 는 막지 않는다, remoteFolderClear.judgeAiClearThreadGate). 확인 불가는 거절한다(§0.2).
 		if (!host.isControllerConnected) {
 			return { ok: false, error: 'not-connected', root, detail: '쓰레드 상태를 확인할 수 없어 지우지 않았습니다 — 제어기에 연결한 뒤 다시 호출하십시오.' };
 		}
@@ -591,14 +591,17 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		if (threads === null) {
 			return { ok: false, error: 'thread-state-unknown', root, detail: 'Show Thread 에 응답이 없어 지우지 않았습니다(동작 중일 수 있음). show_threads 로 확인한 뒤 다시 호출하십시오.' };
 		}
-		if (threads.length > 0) {
+		const threadGate = judgeAiClearThreadGate(threads);
+		if (!threadGate.proceed) {
 			return {
 				ok: false,
 				error: 'threads-running',
 				root,
-				threads: threads.map(t => ({ name: t.name, state: t.state })),
-				detail: `${describeThreadActivity(threads)} — 실행 중에 원격 파일을 지우면 파일 충돌·자원 누수가 생길 수 있습니다.`,
-				recovery: { action: 'ASK_USER', retryCurrentCommand: false, detail: '정지도 사용자 동의를 받아 stop_threads 로 한 뒤 다시 호출할 것.' },
+				threads: threadGate.threads,
+				activeThreads: threadGate.active,
+				detail: threadGate.detail,
+				recommendedAction: threadGate.recommendedAction,
+				recovery: { action: 'ASK_USER', retryCurrentCommand: false, detail: threadGate.recommendedAction },
 			};
 		}
 

@@ -12,6 +12,9 @@
  * 그래서 이 모듈의 기본 판정은 **`Show Thread -web` 목록에 항목이 있으면 동작 중**이다.
  * 상태 문자열은 사용자에게 이유를 설명할 때만 쓴다(`describeThreadActivity`).
  *
+ * 예외(2026-11-05): AI 경로의 `/GPL` 비우기만 `stop_threads` 와 같은 정착 판정(`isSettledState`)을 쓴다 —
+ * Idle/Stopped/Error 로 남은 쓰레드는 막지 않는다(`remoteFolderClear.judgeAiClearThreadGate`). 사람 경로·배포 게이트는 위 규약 그대로다.
+ *
  * 프로젝트 단위 판정은 ① `project` 컬럼 일치 ② 쓰레드 이름 == 프로젝트명(기본 이름 규칙)
  * ③ 쓰레드 이름 == `_Cmd_<프로젝트명>`(Execute 쓰레드) 중 하나라도 맞으면 그 프로젝트가 동작 중이다.
  * `Start -name` 으로 이름을 바꾼 쓰레드는 ①로 잡힌다.

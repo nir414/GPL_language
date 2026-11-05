@@ -98,7 +98,7 @@ test('controller project Attach: 초기화와 configurationDone에서 읽기 명
 test('controller project Attach: 기존 BP는 수정·분리 때 남기고 새 BP만 해제한다', async () => {
     const s = sessionFixture();
     await s.session.attachRequest({}, s.args);
-    s.session._bps.resolveBreakpointTarget = () => ({ kind: 'direct-source', file: 'Main.gpl' });
+    s.session._bps.resolveBreakpointTarget = () => ({ kind: 'direct-source', projectName: 'Probe', controllerProject: 'Probe', file: 'Main.gpl' });
     s.session._sources.adjustBreakpointLine = (_file: string, line: number) => ({ line, moved: false });
     s.session._clientSideBpLogicEnabled = () => false;
     await s.session.setBreakPointsRequest({}, { source: { path: 'Main.gpl' }, lines: [10, 11] });
@@ -157,4 +157,38 @@ test('controller project Attach: 동명 사본이 있어도 선택한 폴더와 
         assert.strictEqual(s.session._sources.resolveSourcePath('Core.gpl'), path.join(library, 'Core.gpl'));
         assert.ok(!s.session._sources.projectDirs.includes(copy));
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('controller project Attach: ProjectLibrary 소스 BP는 라이브러리 프로젝트 이름 + 라이브러리 안 파일로 보낸다', async () => {
+    const s = sessionFixture();
+    await s.session.attachRequest({}, s.args);
+    s.session._bps.resolveBreakpointTarget = () => ({
+        kind: 'library-source', projectName: 'Probe', controllerProject: 'Gantry', libraryName: 'Gantry', file: 'Gantry_Station.gpl', line: 310,
+    });
+    s.session._sources.adjustBreakpointLine = (_file: string, line: number) => ({ line, moved: false });
+    s.session._clientSideBpLogicEnabled = () => false;
+    const logs: string[] = [];
+    s.session._log = (line: string) => logs.push(line);
+    let body: any;
+    s.session.sendResponse = (r: any) => { body = r.body; };
+    const response: any = {};
+    await s.session.setBreakPointsRequest(response, { source: { path: 'C:\ws\projects\Gantry\Gantry_Station.gpl' }, lines: [310] });
+    const writes = s.commands.filter(cmd => /^Set /i.test(cmd));
+    assert.deepStrictEqual(writes, ['Set Break Gantry "Gantry_Station.gpl"310']);
+    assert.ok(body.breakpoints.length === 1);
+});
+
+test('controller project Attach: 대상으로 매핑할 수 없는 파일은 전송 없이 verified:false 와 사유를 돌려주고 한 줄 로그를 남긴다', async () => {
+    const s = sessionFixture();
+    await s.session.attachRequest({}, s.args);
+    s.session._bps.resolveBreakpointTarget = () => undefined;
+    const logs: string[] = [];
+    s.session._log = (line: string) => logs.push(line);
+    let body: any;
+    s.session.sendResponse = (r: any) => { body = r.body; };
+    await s.session.setBreakPointsRequest({}, { source: { path: 'C:\elsewhere\Other.gpl' }, lines: [5, 6] });
+    assert.deepStrictEqual(s.commands.filter(cmd => /^Set /i.test(cmd)), []);
+    assert.deepStrictEqual(body.breakpoints.map((b: any) => b.verified), [false, false]);
+    assert.ok(body.breakpoints[0].message.includes('Other.gpl'));
+    assert.strictEqual(logs.filter(l => l.includes('BP 전송 생략')).length, 1);
 });

@@ -15,7 +15,7 @@ import { parseGpr, pickSourceCandidate } from '../../controller/protocol/respons
 import { parseJsonc, upsertLaunchConfiguration } from '../../debug/session/launchJsonc';
 import { walkTree } from '../../project/sources/projectSources';
 import { chooseCompileUnitGprs, GprIdentity, readGprIdentity, readGprIdentityInDir } from '../../project/sources/compileUnitTarget';
-import { ResolvedBreakpointTarget, resolveBreakpointTarget } from '../../project/remote/breakpointTarget';
+import { ResolvedBreakpointTarget, listLibraryProjectNames, resolveBreakpointTarget } from '../../project/remote/breakpointTarget';
 import type { ExtensionHost } from '../host';
 
 export interface ProjectContextApi {
@@ -29,6 +29,8 @@ export interface ProjectContextApi {
 	findExpectedProjectDirs(): string[];
 	resolveGplFilePath(filename: string): string | undefined;
 	resolveBreakpointTarget(file: string, line: number, projectName: string): ResolvedBreakpointTarget | undefined;
+	/** 프로젝트의 컴파일 단위가 `ProjectLibrary`로 끌어오는 프로젝트 이름들(MCP가 `<lib>/<file>` 표기를 풀 때 쓴다). */
+	resolveProjectLibraryNames(projectName: string): string[];
 }
 
 export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
@@ -401,6 +403,25 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 		return fallback;
 	}
 
+	function resolveProjectLibraryNames(projectName: string): string[] {
+		const allGprs = findWorkspaceFilesByName('Project.gpr');
+		const target = readGprIdentityInDir(host.sessionTargetDir);
+		const choice = chooseCompileUnitGprs(
+			projectName,
+			target,
+			() => allGprs.map(readGprIdentity).filter((g): g is GprIdentity => !!g),
+		);
+		const names: string[] = [];
+		for (const gprPath of choice.gprPaths) {
+			try {
+				for (const name of listLibraryProjectNames(gprPath, fs.readFileSync(gprPath, 'utf8'), { knownGprPaths: allGprs })) {
+					if (!names.some(n => n.toLowerCase() === name.toLowerCase())) { names.push(name); }
+				}
+			} catch { /* 다음 동명 프로젝트 후보 확인 */ }
+		}
+		return names;
+	}
+
 	return {
 		detectWorkspaceProjectContext,
 		detectWorkspaceProjectName,
@@ -412,5 +433,6 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 		findExpectedProjectDirs,
 		resolveGplFilePath,
 		resolveBreakpointTarget: resolveBpTarget,
+		resolveProjectLibraryNames,
 	};
 }

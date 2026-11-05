@@ -96,6 +96,7 @@ export const AGENT_READ_ONLY_EXTENSION_COMMANDS: ReadonlySet<string> = new Set([
     'gpl.ai.debug.getState',
     'gpl.ai.debug.getConnectionState',
     'gpl.ai.debug.listRemoteProjects',
+    'gpl.ai.debug.projectLibraries',
     'gpl.ai.debug.runtimeConsoleRead',
     // 식 평가는 사용자 관점에서 "값 읽기"다(Sub 를 실행할 수 있는 점은 -eval 능력 지도에 따로 적혀 있다).
     'gpl.ai.debug.evaluate',

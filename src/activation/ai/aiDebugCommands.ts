@@ -29,6 +29,7 @@ import { describeThreadActivity, isPausedState } from '../../controller/threads/
 import { normalizeEvalValue } from '../../debug/evaluation/showVariableParser';
 import type { SituationDeploySnapshot } from '../../controller/deployment/deployOutcome';
 import { formatBreakpointCommand, normalizeBreakpointCommandFile } from '../../controller/debugging/breakpointCommand';
+import { breakpointSendTarget } from '../../project/remote/breakpointTarget';
 import { isResolvedBreakpointRecord } from '../../controller/debugging/breakpointReconcile';
 import type { ConnectArgs } from '../controller/connection';
 import type { ExtensionHost } from '../host';
@@ -245,22 +246,16 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		if (!target) {
 			return { ok: false, error: 'breakpoint-source-unresolved', file: args.file, line };
 		}
-		if (target.kind === 'library-source') {
-			return {
-				ok: false,
-				error: 'library-source-breakpoint-unsupported',
-				file: args.file,
-				line,
-				message: target.message,
-				suggestedCommand: 'gpl.project.promoteSourceForBreakpoint',
-			};
-		}
-		if (target.kind !== 'direct-source' || !target.file) {
+		// 직접 ProjectSource는 메인 프로젝트 이름으로, ProjectLibrary 소스는 그 라이브러리 이름 + 라이브러리 안 파일 표기로
+		// 보낸다(breakpointTarget.ts — 디버그 어댑터 setBreakpoints 와 같은 함수).
+		const sendTarget = breakpointSendTarget(target);
+		if (!sendTarget) {
 			return { ok: false, error: 'outside-project', file: args.file, line, message: target.message };
 		}
 
-		const fileName = target.file;
-		const cmd = formatBreakpointCommand(clear ? 'Nobreak' : 'Break', target.projectName, fileName, line);
+		const fileName = sendTarget.file;
+		const bpProject = sendTarget.project;
+		const cmd = formatBreakpointCommand(clear ? 'Nobreak' : 'Break', bpProject, fileName, line);
 		let raw = await sendCommand(cmd);
 		let status = parseStatus(raw);
 		let ok = status.code === 0;
@@ -269,14 +264,14 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 			const fileKey = normalizeBreakpointCommandFile(fileName).toLowerCase();
 			const readControllerBreakpoint = async () => {
 				const list = parseBreakList(await sendCommand('Show Break'));
-				return list.find(bp => bp.project.toLowerCase() === target.projectName.toLowerCase()
+				return list.find(bp => bp.project.toLowerCase() === bpProject.toLowerCase()
 					&& normalizeBreakpointCommandFile(bp.file).toLowerCase() === fileKey
 					&& bp.fileLine === line);
 			};
 			controllerBreakpoint = await readControllerBreakpoint();
 			const resolved = !!controllerBreakpoint && isResolvedBreakpointRecord(controllerBreakpoint);
 			if (status.code === -775 && !resolved) {
-				await sendCommand(formatBreakpointCommand('Nobreak', target.projectName, fileName, line));
+				await sendCommand(formatBreakpointCommand('Nobreak', bpProject, fileName, line));
 				raw = await sendCommand(cmd);
 				status = parseStatus(raw);
 				controllerBreakpoint = status.code === 0 ? await readControllerBreakpoint() : undefined;
@@ -388,6 +383,14 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		const result = await vscode.commands.executeCommand<{ ok: boolean; connected: boolean; ip: string; port: number; debugSessionEnded?: boolean }>(
 			'gpl.controller.disconnect', { silent: true });
 		return { ...(result ?? {}), ok: true, connected: false };
+	});
+
+	// MCP 가 `<라이브러리>/<파일>` 표기(show_threads 등이 돌려주는 위치)를 `Set Break <라이브러리> "<파일>"`로 풀 때 묻는다.
+	// 제어기 상태를 바꾸지 않는 조회이고, 로컬 .gpr 만 읽는다.
+	registerAiDebugCommand('gpl.ai.debug.projectLibraries', async (args?: { projectName?: string }) => {
+		const projectName = (args?.projectName || await host.project.resolveExpectedProjectName() || '').trim();
+		if (!projectName) { return { ok: false, error: 'missing-projectName' }; }
+		return { ok: true, projectName, libraries: host.project.resolveProjectLibraryNames(projectName) };
 	});
 
 	registerAiDebugCommand('gpl.ai.debug.getConnectionState', async () => {

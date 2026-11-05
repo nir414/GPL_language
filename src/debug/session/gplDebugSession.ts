@@ -14,6 +14,7 @@ import type { ProbeOutcome } from '../../controller/connection/controllerConnect
 import { checkProjectName, describeProjectNameProblem } from '../../controller/projects/projectNameGuard';
 import { gprPathInDir } from '../../project/sources/projectSources';
 import { normalizeBreakpointCommandFile } from '../../controller/debugging/breakpointCommand';
+import { breakpointSendTarget } from '../../project/remote/breakpointTarget';
 import { breakpointKey, isResolvedBreakpointRecord } from '../../controller/debugging/breakpointReconcile';
 import { getRemoteSourceSession } from '../../controller/files/remoteSourceSession';
 import { getDeployLock } from '../../controller/deployment/deployLock';
@@ -845,17 +846,22 @@ export class GPLDebugSession extends LoggingDebugSession {
         }
 
         const sourceTarget = this._bps.resolveBreakpointTarget(sourcePath, clientLines[0] ?? 1);
-        if (!sourceTarget || sourceTarget.kind !== 'direct-source' || !sourceTarget.file) {
+        // 직접 ProjectSource 는 메인 프로젝트로, ProjectLibrary 소스는 그 라이브러리 프로젝트 이름 + 라이브러리 안 파일 표기로
+        // 보낸다(AI 경로 gpl.ai.debug.setBreakpoint 와 같은 breakpointSendTarget — 2026-11-05 실측).
+        const sendTarget = breakpointSendTarget(sourceTarget);
+        if (!sendTarget) {
             const message = sourceTarget?.message
-                ?? `${baseName}을 ${proj}의 ProjectSource에서 찾을 수 없습니다.`;
+                ?? `${baseName}을 ${proj}의 ProjectSource나 ProjectLibrary 소스에서 찾을 수 없어 제어기로 보내지 않았습니다.`;
             response.body = {
                 breakpoints: clientLines.map(line => ({ verified: false, line, message }) as DebugProtocol.Breakpoint),
             };
-            this._log(`⚠ BP 전송 생략: ${message}`);
+            this._log(`⚠ BP 전송 생략: ${sourcePath} → ${message}`);
             this.sendResponse(response);
             return;
         }
-        const controllerFile = sourceTarget.file;
+        const controllerFile = sendTarget.file;
+        const bpProj = sendTarget.project;
+        const isLibrarySource = sourceTarget?.kind === 'library-source';
         const controllerFileKey = normalizeBreakpointCommandFile(controllerFile).toLowerCase();
 
         // Clear existing breakpoints for this file on the controller.
@@ -866,7 +872,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (preShowResp) {
             const controllerBps = parseBreakList(preShowResp).filter(
                 b => normalizeBreakpointCommandFile(b.file).toLowerCase() === controllerFileKey
-                    && (!b.project || b.project.toLowerCase() === proj.toLowerCase()),
+                    && (!b.project || b.project.toLowerCase() === bpProj.toLowerCase()),
             );
             for (const bp of controllerBps) {
                 if (bp.fileLine > 0) { existingLines.add(bp.fileLine); }
@@ -877,7 +883,7 @@ export class GPLDebugSession extends LoggingDebugSession {
             if (this._bps.functionBps.some(f => f.file.toLowerCase() === baseName.toLowerCase() && f.line === line)) {
                 continue;
             }
-            await this._bps.sendBpCommandWithFallback('Nobreak', proj, controllerFile, line);
+            await this._bps.sendBpCommandWithFallback('Nobreak', bpProj, controllerFile, line);
         }
 
         // Set new breakpoints using correct Brooks syntax (GDE 캡처 기준):
@@ -914,20 +920,20 @@ export class GPLDebugSession extends LoggingDebugSession {
                     });
                 }
             }
-            const cmd = this._bps.bpCommand('Break', proj, controllerFile, line);
+            const cmd = this._bps.bpCommand('Break', bpProj, controllerFile, line);
             // Nobreak 와 같은 폴백을 태운다(무공백/문서 표기 × basename/프로젝트 상대 경로) —
             // 종전에는 Break 만 basename 무공백 1회여서 표기를 가리는 제어기에서 조용히 실패했다.
             // 단, 이미 -508 로 거부된 파일은 표기 문제가 아니므로 1회만 시도해 왕복을 아낀다.
             const sendBreak = () => (!this._bps.preserveExistingBreakpoints && this._bps.bpRejectedFiles.has(baseKey)
                 ? this._sendCmd(cmd)
-                : this._bps.sendBpCommandWithFallback('Break', proj, controllerFile, line));
+                : this._bps.sendBpCommandWithFallback('Break', bpProj, controllerFile, line));
             const resp = await sendBreak();
             // "Duplicate breakpoint" 응답은 컨트롤러에 이미 동일 BP가 있다는 뜻이다.
             // Nobreak 정리가 실패했을 수 있으므로 한 번 더 정리 후 재설정하여 단일 BP 보장.
             let finalResp = resp;
             if (resp !== null && /Duplicate breakpoint/i.test(resp)) {
                 this._log(`⚠ Duplicate BP 감지, 재설정: ${cmd}`);
-                await this._bps.sendBpCommandWithFallback('Nobreak', proj, controllerFile, line);
+                await this._bps.sendBpCommandWithFallback('Nobreak', bpProj, controllerFile, line);
                 finalResp = await sendBreak();
             }
             const verified = finalResp !== null && isSuccess(finalResp);
@@ -942,7 +948,7 @@ export class GPLDebugSession extends LoggingDebugSession {
                 // -508 File not found 는 원문만으로는 원인을 알 수 없다. 라이브러리 소스면
                 // 왜 안 되는지와 손 쓸 방법을 툴팁에 함께 준다 (파일당 1회만 로그).
                 const notFound = finalResp !== null && parseStatus(finalResp).code === -508;
-                const hint = notFound ? this._bps.librarySourceBpHint(baseName) : undefined;
+                const hint = notFound && !isLibrarySource ? this._bps.librarySourceBpHint(baseName) : undefined;
                 bp.message = hint ? `${msg} — ${hint}` : msg;
                 if (notFound && !this._bps.bpRejectedFiles.has(baseKey)) {
                     this._bps.bpRejectedFiles.add(baseKey);
@@ -988,7 +994,7 @@ export class GPLDebugSession extends LoggingDebugSession {
         if (showResp) {
             const controllerBPs = parseBreakList(showResp);
             const matching = controllerBPs.filter(b =>
-                b.project.toLowerCase() === proj.toLowerCase()
+                b.project.toLowerCase() === bpProj.toLowerCase()
                 && normalizeBreakpointCommandFile(b.file).toLowerCase() === controllerFileKey);
             for (const bp of actualBreakpoints) {
                 const line = bp.line ?? 0;

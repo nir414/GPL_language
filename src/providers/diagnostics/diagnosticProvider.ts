@@ -528,11 +528,12 @@ export class GPLDiagnosticProvider {
     }
 
     /**
-     * 실기 확인 사실 검사(-741·-722·-781·-506·-712·-729·-782·tick 조그)를 vscode.Diagnostic 으로 옮긴다.
+     * 실기 확인 사실 검사(-741·-722·-781·-506·-712·-729·-782·-205·tick 조그)를 vscode.Diagnostic 으로 옮긴다.
      * 판정은 순수 모듈 `language/checks/compilerChecks` 가 한다.
      */
     private detectCompilerCheckIssues(document: vscode.TextDocument): vscode.Diagnostic[] {
         const severityOf: Record<CompilerCheckSeverity, vscode.DiagnosticSeverity> = {
+            error: vscode.DiagnosticSeverity.Error,
             warning: vscode.DiagnosticSeverity.Warning,
             information: vscode.DiagnosticSeverity.Information,
         };

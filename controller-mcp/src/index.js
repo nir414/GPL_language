@@ -87,6 +87,7 @@ import { captureFilesFor, searchCapture } from './consoleCapture.js';
 import { readControllerClock, syncControllerClock, clockStatusField, summarizeClockSync } from './clock.js';
 import { deployTargetArgs, projectForCommand, resolveUnloadTarget, sessionTargetAfterDeploy, targetSourceOf } from './configuredTarget.js';
 import { debugSessionRefusal } from './debugSessionGuard.js';
+import { isUploadTimeoutFailure, uploadTimeoutRecovery } from './deployRecovery.js';
 import {
   UNLOAD_RISK_REFUSAL,
   PROJECT_NOT_RUNNABLE,
@@ -1787,8 +1788,8 @@ function deployOutcome(mode, command, res) {
       compileErrors: r.compileErrors ?? [],
       provenance: r.provenance ?? null,
       failedStatusCode: r.failedStatusCode ?? null,
-      ...(isNotRunnableStartFailure(r.failedPhase, r.failedStatusCode) ? { retryable: false } : {}),
-      recovery: deployPhaseRecovery(r.failedPhase, r.failedStatusCode),
+      ...(isNotRunnableStartFailure(r.failedPhase, r.failedStatusCode) || isUploadTimeoutFailure(r.failedPhase, r.failedStatusMessage) ? { retryable: false } : {}),
+      recovery: deployPhaseRecovery(r.failedPhase, r.failedStatusCode, r.failedStatusMessage),
       result: r,
       ms: res.ms,
     };
@@ -1815,7 +1816,9 @@ function deployOutcome(mode, command, res) {
  * 배포 단계별 복구 지시 — 확장 `controller/automation/automationRecovery.ts` 의 표와 **같은 결론**을 유지할 것.
  * (확장을 거치지 않는 응답 경로에서도 같은 지시를 줘야 호출자가 경로마다 다르게 행동하지 않는다.)
  */
-function deployPhaseRecovery(failedPhase, failedStatusCode) {
+function deployPhaseRecovery(failedPhase, failedStatusCode, failedStatusMessage) {
+  // 업로드 중 FTP 타임아웃(2026-11-05) — 일반 UPLOAD 의 "같은 요청 재시도" 대신 먼저 관측한다.
+  if (isUploadTimeoutFailure(failedPhase, failedStatusMessage)) return uploadTimeoutRecovery();
   // -744 *Invalid start procedure* = ProjectStart 없는 그룹을 Start 했다. 같은 요청을 되풀이하면 그룹 Compile 만 또 일어난다.
   if (isNotRunnableStartFailure(failedPhase, failedStatusCode)) {
     return { action: 'RESOLVE_PROJECT', retryCurrentCommand: false, safeToRepeat: false, retryable: false,

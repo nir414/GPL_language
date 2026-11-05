@@ -454,7 +454,7 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		return {
 			ok: true,
 			...r,
-			status: { active: rc.connected, state: rc.state, reason: rc.reason, lastPayloadAt: rc.lastPayloadAt },
+			status: { active: rc.connected, state: rc.state, reason: rc.reason, lastPayloadAt: rc.lastPayloadAt, lastLineAt: rc.lastLineAt, parserStalled: rc.parserStalled, parserPendingBytes: rc.parserPendingBytes, parserRecoveries: rc.parserRecoveries },
 			captureFile: runtimeConsole.captureFilePath,
 			...(r.dropped > 0 ? { note: `커서 이후 ${r.dropped}줄이 버퍼에서 밀려 빠졌습니다 — 더 자주 읽거나 captureFile 을 보십시오.` } : {}),
 		};

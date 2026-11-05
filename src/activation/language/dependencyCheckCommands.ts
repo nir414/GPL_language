@@ -15,6 +15,7 @@ import { isPathUnder, normalizeDirKey, normalizePathKey } from '../../util/pathK
 import type { RequiredFile } from '../../language/analysis/moduleDependencies';
 import { checkPackageDependencies, GprFinding, GprFix } from '../../project/gpr/dependencyCheck';
 import { buildPackageInputs, findCompileRootGpr } from '../../project/gpr/dependencyModel';
+import { FileDepsCache } from '../../project/gpr/fileDepsCache';
 import { findWorkspaceGprPaths } from '../../project/sources/projectFileScope';
 import { computeFileDependencies, isRequiresSourceReady } from '../../providers/diagnostics/requiresHeaderPlan';
 import type { ExtensionHost } from '../host';
@@ -32,8 +33,10 @@ export function registerDependencyCheck(host: ExtensionHost, ensureIndexed: (rea
     context.subscriptions.push(collection);
 
     const fixes = new Map<string, StoredFix[]>();          // .gpr 경로 키 → 빠른 수정
-    const rootsChecked = new Map<string, { rootGpr: string; uris: vscode.Uri[] }>(); // 루트 폴더 키 → 마지막 결과가 쓴 URI
-    const depsCache = new Map<string, { text: string; deps: RequiredFile[] }>();
+    const rootsChecked = new Map<string, { rootGpr: string; uris: vscode.Uri[]; dirs: string[] }>(); // 루트 폴더 키 → 마지막 결과가 쓴 URI·검사 범위 폴더
+    // 키: 본문 + 심볼 인덱스 세대 — 본문이 같아도 모듈이 다른 파일로 옮겨지면 의존이 달라진다(fileDepsCache 머리말)
+    const depsCache = new FileDepsCache<RequiredFile[]>();
+    const MAX_SETTLE_RETRIES = 5;
     const running = new Map<string, Promise<void>>();
 
     const openText = (filePath: string): string | undefined =>
@@ -44,16 +47,22 @@ export function registerDependencyCheck(host: ExtensionHost, ensureIndexed: (rea
         try { return fs.readFileSync(p, 'utf8'); } catch { return ''; }
     };
 
-    async function check(rootGpr: string, reveal: boolean): Promise<void> {
+    async function check(rootGpr: string, reveal: boolean, attempt = 0): Promise<void> {
         const key = normalizeDirKey(path.dirname(rootGpr));
         const prev = running.get(key);
-        if (prev) { return prev; }
+        if (prev) {
+            // 실행 중에 들어온 자동 재검사 요청은 버리지 않는다 — 이미 읽은 낡은 입력으로 끝날 수 있으므로 끝난 뒤 한 번 더
+            if (!reveal && attempt < MAX_SETTLE_RETRIES) { void prev.finally(() => schedule(rootGpr, 500, attempt + 1)); }
+            return prev;
+        }
         const task = (async () => {
             await ensureIndexed('dependency check');
             if (!isRequiresSourceReady(symbolCache)) {
                 if (reveal) { void vscode.window.showWarningMessage('GPL 심볼 인덱스를 다시 만드는 중입니다 — 잠시 후 다시 실행해 주세요.'); }
+                else if (attempt < MAX_SETTLE_RETRIES) { schedule(rootGpr, 1500, attempt + 1); } // 재인덱싱이 끝나면 다시 — 건너뛰면 진단이 낡은 채 남는다
                 return;
             }
+            const generationAtStart = symbolCache.indexGeneration;
             const started = Date.now();
             const packages = buildPackageInputs(rootGpr, { readText: readGpr, knownGprPaths: await findWorkspaceGprPaths() });
             const unitDirs = [path.dirname(rootGpr), ...packages.map(p => path.dirname(p.gprPath))];
@@ -79,14 +88,10 @@ export function registerDependencyCheck(host: ExtensionHost, ensureIndexed: (rea
                     const k = normalizePathKey(f);
                     const text = texts.get(k);
                     if (text === undefined) { return []; }
-                    const cached = depsCache.get(k);
-                    if (cached && cached.text === text) { return cached.deps; }
-                    const deps = computeFileDependencies(text, f, lookup);
-                    depsCache.set(k, { text, deps });
-                    return deps;
+                    return depsCache.getOrCompute(k, text, generationAtStart, () => computeFileDependencies(text, f, lookup));
                 },
             });
-            publish(key, rootGpr, result.gprFindings, result.layerFindings);
+            publish(key, rootGpr, unitDirs, result.gprFindings, result.layerFindings);
             const ms = Date.now() - started;
             const counts = countBy(result.gprFindings.map(f => f.code));
             const summary = `${path.basename(path.dirname(rootGpr))}: 패키지 ${packages.length} · 파일 ${result.fileCount} — `
@@ -98,12 +103,14 @@ export function registerDependencyCheck(host: ExtensionHost, ensureIndexed: (rea
             for (const f of result.gprFindings) { outputChannel.appendLine(`  ${path.relative(path.dirname(rootGpr), f.gprPath)}:${f.line + 1} ${f.code} — ${f.message}`); }
             for (const f of result.layerFindings) { outputChannel.appendLine(`  ${path.relative(path.dirname(rootGpr), f.filePath)}:${f.line + 1} layer-violation — ${f.message}`); }
             if (reveal) { void vscode.window.showInformationMessage(`의존 검사 ${summary} — 자세한 목록은 Problems·Output`); }
+            // 검사 도중 인덱스가 또 바뀌었으면(외부 변경의 워처 갱신이 뒤늦게 도착) 낡은 대응으로 만든 결과이므로 한 번 더 돈다
+            if (!reveal && symbolCache.indexGeneration !== generationAtStart && attempt < MAX_SETTLE_RETRIES) { schedule(rootGpr, 1000, attempt + 1); }
         })().finally(() => running.delete(key));
         running.set(key, task);
         return task;
     }
 
-    function publish(rootKey: string, rootGpr: string, gprFindings: readonly GprFinding[], layer: ReturnType<typeof checkPackageDependencies>['layerFindings']): void {
+    function publish(rootKey: string, rootGpr: string, dirs: string[], gprFindings: readonly GprFinding[], layer: ReturnType<typeof checkPackageDependencies>['layerFindings']): void {
         for (const uri of rootsChecked.get(rootKey)?.uris ?? []) { collection.delete(uri); fixes.delete(normalizePathKey(uri.fsPath)); }
         const byUri = new Map<string, { uri: vscode.Uri; diags: vscode.Diagnostic[] }>();
         const add = (filePath: string, d: vscode.Diagnostic): void => {
@@ -130,7 +137,7 @@ export function registerDependencyCheck(host: ExtensionHost, ensureIndexed: (rea
             add(f.filePath, d);
         }
         for (const e of byUri.values()) { collection.set(e.uri, e.diags); }
-        rootsChecked.set(rootKey, { rootGpr, uris: Array.from(byUri.values()).map(e => e.uri) });
+        rootsChecked.set(rootKey, { rootGpr, uris: Array.from(byUri.values()).map(e => e.uri), dirs });
     }
 
     context.subscriptions.push(vscode.commands.registerCommand('gpl.project.checkDependencies', async (uri?: vscode.Uri) => {
@@ -142,11 +149,18 @@ export function registerDependencyCheck(host: ExtensionHost, ensureIndexed: (rea
 
     // 자동 — .gpr 를 열면 그 루트를 한 번, 검사한 루트 안의 파일을 저장하면 다시
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
-    const schedule = (rootGpr: string, delayMs: number): void => {
+    function schedule(rootGpr: string, delayMs: number, attempt = 0): void {
         const key = normalizeDirKey(path.dirname(rootGpr));
         const prev = timers.get(key);
         if (prev) { clearTimeout(prev); }
-        timers.set(key, setTimeout(() => { timers.delete(key); void check(rootGpr, false); }, delayMs));
+        timers.set(key, setTimeout(() => { timers.delete(key); void check(rootGpr, false, attempt); }, delayMs));
+    }
+    /** 검사한 루트 중 이 파일을 범위(루트 폴더·ProjectLibrary 가 가리키는 패키지 폴더)에 둔 것을 다시 검사한다. */
+    const recheckRootsCovering = (filePath: string, delayMs: number): void => {
+        if (modeOf() !== 'auto') { return; }
+        for (const { rootGpr, dirs } of rootsChecked.values()) {
+            if (dirs.some(d => isPathUnder(filePath, d))) { schedule(rootGpr, delayMs); }
+        }
     };
     context.subscriptions.push(
         vscode.workspace.onDidOpenTextDocument(doc => {
@@ -155,12 +169,22 @@ export function registerDependencyCheck(host: ExtensionHost, ensureIndexed: (rea
             if (rootGpr && !rootsChecked.has(normalizeDirKey(path.dirname(rootGpr)))) { schedule(rootGpr, 1000); }
         }),
         vscode.workspace.onDidSaveTextDocument(doc => {
-            if (modeOf() !== 'auto' || doc.uri.scheme !== 'file' || !/\.(gpl|gpr)$/i.test(doc.uri.fsPath)) { return; }
-            for (const { rootGpr } of rootsChecked.values()) {
-                if (isPathUnder(doc.uri.fsPath, path.dirname(rootGpr))) { schedule(rootGpr, 1500); }
-            }
+            if (doc.uri.scheme !== 'file' || !/\.(gpl|gpr)$/i.test(doc.uri.fsPath)) { return; }
+            recheckRootsCovering(doc.uri.fsPath, 1500);
         }),
         { dispose: () => { for (const t of timers.values()) { clearTimeout(t); } timers.clear(); } },
+    );
+
+    // 에디터 밖(스크립트·git·SVN)에서 .gpl/.gpr 가 만들어지거나 바뀌거나 지워진 경우 — 저장 이벤트가 오지 않으므로 워처로 다시 검사한다.
+    // 심볼 인덱스 갱신(languageFeatures 의 워처, 300~800 ms 디바운스)보다 늦게 돌도록 지연을 두고, 그래도 앞서면
+    // check 가 검사 도중 세대 변화를 보고 한 번 더 돈다.
+    const externalWatcher = vscode.workspace.createFileSystemWatcher('**/*.{gpl,gpr}');
+    const onExternalChange = (uri: vscode.Uri): void => recheckRootsCovering(uri.fsPath, 2000);
+    context.subscriptions.push(
+        externalWatcher,
+        externalWatcher.onDidCreate(onExternalChange),
+        externalWatcher.onDidChange(onExternalChange),
+        externalWatcher.onDidDelete(onExternalChange),
     );
 
     // .gpr 빠른 수정 — 진단 하나씩, 그리고 그 파일 전체

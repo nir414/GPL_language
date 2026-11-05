@@ -14,6 +14,12 @@
  * | `private-shared-outside-class` | 클래스 안 `Private Shared` 를 다른 클래스에서 부름 → -729 | warning |
  * | `byval-string-nothing-check` | Nothing String 을 ByVal 로 넘기면 호출 자리에서 -782(또는 값 깨짐) | information |
  * | `jog-tick-mode-speed` | 조그 속도 5% 이하는 tick 모드 | information |
+ * | `addressof-without-delegate` | `AddressOf X` 를 `New <Delegate>(…)` 로 안 감싸고 인자·대입에 씀 → -205/-712 (빠른 수정 있음) | error |
+ * | `addressof-me-prefix` | `AddressOf Me.X` → -741 (빠른 수정: `Me.` 제거) | error |
+ * | `delegate-signature-mismatch` | `New D(AddressOf X)` 에서 X 의 모든 오버로드가 D 와 시그니처가 다름 → -741 | error |
+ * | `delegate-parameter-direct-call` | delegate 형 매개변수를 이름으로 바로 호출 → -729 | error |
+ * | `mid-member-access` | `Mid(...).Method` → -712 | warning |
+ * (뒤 다섯 규칙의 구현은 `delegateChecks.ts`)
  *
  * 다른 파일의 심볼(라이브러리 프로젝트 포함)은 `CompilerSymbolLookup` 으로 받는다 — `SymbolCache` 가 구조적으로 맞는다.
  * 조회가 없으면(심볼 캐시 초기화 전·단위 테스트) 현재 파일만으로 판정하고, 확신할 수 없는 경우는 조용히 넘어간다.
@@ -22,9 +28,11 @@
 import { GPLParser, GPLSymbol, GPLSymbolKind } from '../syntax/gplParser';
 import { findGplBuiltinMember, isGplBuiltinClassName } from '../dictionary/gplBuiltins';
 import { elementTypeOf } from '../analysis/receiverType';
+import { buildMappedLines, findStringLiterals, splitCallArgs, stripComment, toPhysical, trimSpan, MappedLine } from './logicalLines';
+import { findDelegateCheckFindings } from './delegateChecks';
 import { normalizePathKey } from '../../util/pathKey';
 
-export type CompilerCheckSeverity = 'warning' | 'information';
+export type CompilerCheckSeverity = 'error' | 'warning' | 'information';
 
 export type CompilerCheckCode =
     | 'overload-return-type-mismatch'
@@ -34,7 +42,12 @@ export type CompilerCheckCode =
     | 'thread-name-unstoppable'
     | 'private-shared-outside-class'
     | 'byval-string-nothing-check'
-    | 'jog-tick-mode-speed';
+    | 'jog-tick-mode-speed'
+    | 'addressof-without-delegate'
+    | 'addressof-me-prefix'
+    | 'delegate-signature-mismatch'
+    | 'delegate-parameter-direct-call'
+    | 'mid-member-access';
 
 export interface CompilerCheckFinding {
     /** 물리 줄·열(0 기준). end 는 같은 줄의 끝 열(배타). */
@@ -44,6 +57,8 @@ export interface CompilerCheckFinding {
     code: CompilerCheckCode;
     severity: CompilerCheckSeverity;
     message: string;
+    /** 빠른 수정 — 진단 범위(line·start·end)를 `newText` 로 치환한다(빈 문자열이면 삭제). 없으면 빠른 수정이 없는 진단. */
+    fix?: { title: string; newText: string };
 }
 
 /** 다른 파일의 심볼 조회 — `SymbolCache`/`SymbolIndex` 가 그대로 만족한다. */
@@ -74,123 +89,6 @@ function isProcedure(s: GPLSymbol): boolean {
 
 function escapeRegExp(text: string): string {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// ─── 줄 전처리 ───────────────────────────────────────────────────────────────
-
-/** 문자열은 그대로 두고 문자열 밖 `'` 이후(주석)만 잘라낸다. */
-function stripComment(line: string): string {
-    let inString = false;
-    for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-            if (inString && line[i + 1] === '"') { i++; continue; }
-            inString = !inString;
-        } else if (ch === "'" && !inString) {
-            return line.slice(0, i);
-        }
-    }
-    return line;
-}
-
-/** 줄 연속(` _`)을 이은 논리 줄 — 위치를 물리 줄·열로 되돌릴 수 있게 조각 시작 오프셋을 기억한다. */
-interface MappedLine {
-    /** 주석만 지운 원문(문자열 보존). */
-    text: string;
-    /** 문자열 내부를 공백으로 바꾼 코드(위치 동일). */
-    code: string;
-    segments: { line: number; offset: number; length: number }[];
-}
-
-function buildMappedLines(rawLines: readonly string[]): MappedLine[] {
-    const out: MappedLine[] = [];
-    let i = 0;
-    while (i < rawLines.length) {
-        const first = stripComment(rawLines[i]).replace(/\r$/, '');
-        let text = first;
-        const segments = [{ line: i, offset: 0, length: first.length }];
-        while (GPLParser.endsWithLineContinuation(text) && i + 1 < rawLines.length) {
-            text = GPLParser.stripTrailingContinuation(text) + ' ';
-            i++;
-            const next = stripComment(rawLines[i]).replace(/\r$/, '');
-            segments.push({ line: i, offset: text.length, length: next.length });
-            text += next;
-        }
-        out.push({ text, code: GPLParser.stripToCode(text), segments });
-        i++;
-    }
-    return out;
-}
-
-/** 논리 줄의 [from, to) 를 물리 줄 범위로 — 여러 줄에 걸치면 시작 줄의 끝까지로 자른다. */
-function toPhysical(ml: MappedLine, from: number, to: number): { line: number; start: number; end: number } {
-    let seg = ml.segments[0];
-    for (const s of ml.segments) {
-        if (s.offset <= from) { seg = s; }
-    }
-    const start = Math.max(0, from - seg.offset);
-    const end = Math.min(seg.length, Math.max(start + 1, to - seg.offset));
-    return { line: seg.line, start, end: Math.max(end, start + 1) };
-}
-
-/** 문자열 리터럴 위치(따옴표 포함)와 내용. `""` 는 따옴표 하나로 푼다. */
-function findStringLiterals(text: string, from = 0, to = text.length): { start: number; end: number; value: string }[] {
-    const out: { start: number; end: number; value: string }[] = [];
-    let i = from;
-    while (i < to) {
-        if (text[i] !== '"') { i++; continue; }
-        const start = i;
-        let value = '';
-        i++;
-        while (i < text.length) {
-            if (text[i] === '"') {
-                if (text[i + 1] === '"') { value += '"'; i += 2; continue; }
-                break;
-            }
-            value += text[i];
-            i++;
-        }
-        out.push({ start, end: Math.min(i + 1, text.length), value });
-        i++;
-    }
-    return out;
-}
-
-/**
- * `(` 바로 뒤부터 짝 `)` 까지의 최상위 인자 구간. 문자열·중첩 괄호를 건너뛴다.
- * 짝을 못 찾으면(입력 중) 줄 끝까지를 마지막 인자로 본다.
- */
-function splitCallArgs(code: string, openParen: number): { start: number; end: number }[] {
-    const args: { start: number; end: number }[] = [];
-    let depth = 0;
-    let argStart = openParen + 1;
-    for (let i = openParen + 1; i < code.length; i++) {
-        const ch = code[i];
-        if (ch === '(') { depth++; continue; }
-        if (ch === ')') {
-            if (depth === 0) {
-                args.push({ start: argStart, end: i });
-                return args;
-            }
-            depth--;
-            continue;
-        }
-        if (ch === ',' && depth === 0) {
-            args.push({ start: argStart, end: i });
-            argStart = i + 1;
-        }
-    }
-    args.push({ start: argStart, end: code.length });
-    return args;
-}
-
-/** 구간의 앞뒤 공백을 벗긴 위치. 빈 인자면 undefined. */
-function trimSpan(text: string, span: { start: number; end: number }): { start: number; end: number } | undefined {
-    let s = span.start;
-    let e = span.end;
-    while (s < e && /\s/.test(text[s])) { s++; }
-    while (e > s && /\s/.test(text[e - 1])) { e--; }
-    return s < e ? { start: s, end: e } : undefined;
 }
 
 // ─── 심볼 문맥 ───────────────────────────────────────────────────────────────
@@ -632,5 +530,6 @@ export function findCompilerCheckFindings(content: string, filePath: string, loo
     checkPrivateSharedAccess(ctx, out);
     checkByValStringNothing(ctx, out);
     checkJogSpeed(ctx, out);
+    out.push(...findDelegateCheckFindings(content, filePath, lookup));
     return out.sort((a, b) => a.line - b.line || a.start - b.start);
 }

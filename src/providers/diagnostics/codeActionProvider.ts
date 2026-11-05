@@ -1,11 +1,15 @@
 import * as vscode from 'vscode';
 import { XmlUtils } from '../../language/xml/xmlUtils';
 import { provideDocCommentCodeActions } from '../intellisense/docCommentProvider';
+import { CompilerSymbolLookup, findCompilerCheckFindings } from '../../language/checks/compilerChecks';
 import { COMPILER_CHECK_SOURCE } from './diagnosticProvider';
 import { REQUIRES_HEADER_CODE, REQUIRES_HEADER_SOURCE } from './requiresHeaderPlan';
 
 export class GPLCodeActionProvider implements vscode.CodeActionProvider {
-    
+
+    /** @param symbolLookup 진단과 같은 심볼 조회 — 빠른 수정 계산이 진단과 같은 판정을 다시 돌린다. */
+    constructor(private readonly symbolLookup?: CompilerSymbolLookup) {}
+
     provideCodeActions(
         document: vscode.TextDocument,
         range: vscode.Range | vscode.Selection,
@@ -26,6 +30,9 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
                 }
             } else if (diagnostic.source === COMPILER_CHECK_SOURCE && diagnostic.code === 'new-parens-without-constructor') {
                 actions.push(this.createRemoveNewParensAction(document, diagnostic));
+            } else if (diagnostic.source === COMPILER_CHECK_SOURCE) {
+                const action = this.createCompilerCheckFixAction(document, diagnostic);
+                if (action) { actions.push(action); }
             } else if (diagnostic.source === REQUIRES_HEADER_SOURCE && diagnostic.code === REQUIRES_HEADER_CODE) {
                 // 편집 계산은 명령이 맡는다(심볼 인덱스가 필요하고, 프로젝트 일괄 갱신과 같은 경로를 쓴다).
                 const action = new vscode.CodeAction('Requires 헤더 갱신', vscode.CodeActionKind.QuickFix);
@@ -59,6 +66,22 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
         action.isPreferred = true;
         action.edit = new vscode.WorkspaceEdit();
         action.edit.delete(document.uri, diagnostic.range);
+        return action;
+    }
+
+    /**
+     * 실기 확인 검사(compilerChecks)의 `fix` — 진단과 같은 순수 판정을 다시 돌려 같은 줄·열·코드의 발견에서 치환 텍스트를 얻는다.
+     * (진단 객체는 편집기를 거치며 복사돼 부가 데이터를 실을 수 없다.)
+     */
+    private createCompilerCheckFixAction(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction | undefined {
+        const finding = findCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup).find(f =>
+            f.fix && f.code === diagnostic.code && f.line === diagnostic.range.start.line && f.start === diagnostic.range.start.character);
+        if (!finding?.fix) { return undefined; }
+        const action = new vscode.CodeAction(finding.fix.title, vscode.CodeActionKind.QuickFix);
+        action.diagnostics = [diagnostic];
+        action.isPreferred = true;
+        action.edit = new vscode.WorkspaceEdit();
+        action.edit.replace(document.uri, diagnostic.range, finding.fix.newText);
         return action;
     }
 

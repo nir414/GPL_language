@@ -195,7 +195,7 @@ export function activateLanguageFeatures(host: ExtensionHost): () => void {
 	context.subscriptions.push(
 		vscode.languages.registerCodeActionsProvider(
 			gplSelectors,
-			new GPLCodeActionProvider(),
+			new GPLCodeActionProvider(symbolCache),
 			{
 				providedCodeActionKinds: [
 					vscode.CodeActionKind.QuickFix,

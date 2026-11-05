@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-04** · 현재 package 버전 **0.27.12** (대시보드 I/O 칩 8열 격자·Soft DIO 64 상한 실측, 1646/1646. 상세는 §1-HB.)
-- **직전 세션: §1-HB** — "Soft 64개 정렬을 직사각형으로 + soft IO 더 쓸 수 있지 않나" → I/O 칩을 8열 격자(8×8·12×8)로, 그룹은 같은 폭의 단에 쌓음. 실측으로 Soft DIO 는 20001~20064 가 상한(20065 = -1517, PDB 505 의 "~21000" 은 이 펌웨어와 다름). 실기 확인은 verification §1-HB.
+- **최종 갱신: 2026-11-05** · 현재 package 버전 **0.27.13** (수신함 Sample Prep 보고 11건 처리 — 라이브러리 BP·Delegate 진단·MCP 운영 안전, 1688/1688 · MCP 188/188. 상세는 §1-HC.)
+- **직전 세션: §1-HC** — "수신함 자료 멀티 AI로 진행, 토큰 절약형" → Sonnet 에이전트 4개를 HEAD 기준 worktree 에서 병렬로 돌려 병합. 라이브러리 소스 거터 BP 전송, Delegate·AddressOf 진단 5종, source-missing 낡은 진단, 런타임 콘솔 정체 감지, MCP `unload_project` 기본값·/GPL 비우기 Idle 판정·디버그 세션 가드 등. 보류 항목은 §3, 실기 확인은 verification §1-HC.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -82,6 +82,13 @@
 > **실사용·실기·UI 확인 항목은 `docs/ai-handoff-verification.md`로 옮겼다(2026-11-04).** 이 절에는 코드 작업과 결정 대기만
 > 둔다. 새 VSIX의 확인 항목은 그 파일에 추가한다(규칙: `docs/development/record-keeping.md`).
 
+- [ ] **(2026-11-05, §1-HC) 수신함 보류 항목 — 설계·결정 필요.** 원문은 수신함 `done/` 의 같은 이름 파일.
+  ① `read_remote_file`(허용 목록 읽기 전용 FTP, debug-day §4) ② 바닥 여유 메모리 추적(`bootFloorMb`·`lostSinceBootMb`·경고, memory-floor-leak)과
+  배포 결과 `postStartFreeMb`(perf §3)·부팅 이후 배포/Unload 사이클 수(debug-day §6) ③ `runtime_console_measure`(두 패턴 지연 짝짓기, perf §2)
+  ④ `Show Thread -stack` 크기를 `threadList` 에(perf §4) ⑤ CPU Monitor(`/cpu_mon.pcm` 웹 핸들러 — 제어기 HTTP 경로가 없어 채널 정책 결정 먼저, perf §1)
+  ⑥ 정지→비우기→Unload 한 번에 하는 도구/`deploy_project` 옵션(cmd-thread v2 §4) ⑦ 제어기 사용 표시(lease)·`controller_status` 에 마지막 상태 변경자(debug-day §1-2·3)
+  ⑧ 폴링 대기 정보 진단·`waitevent-loop`/`sendevent-wake` 스니펫·코딩 가이드(coding-guidance) ⑨ `As Object` -734 진단, 초기값 없는 모듈 `String` 필드 `Len()`/`&` 경고(debug-day §5b)
+  ⑩ 에디터 live-sync(`breakpointSync`)도 라이브러리 소스를 `breakpointSendTarget` 으로 보낼지.
 - [ ] **(2026-11-04, §1-GZ) 리뷰 후속 — 남은 코드 작업.** ① `@vscode/vsce` 2.x → 최신 메이저(개발 의존 취약점 5건 — `npm audit`; 패키징 경로라 `npm run package:no-bump` 로 검증)
   ② 디버그 폴 중 `_handleBreakpointStop`/`_resolveStopReasonForThread` 예외 시 pending 만 비워지고 StoppedEvent 가 유실되는 경로(리뷰 D6, 낮음) — 쓰레드별 처리를 try/catch 로
   ③ `setBreakPointsRequest` 파일별 직렬화(§1-GZ)의 회귀 테스트 — 겹친 요청 R1(lines=[10])·R2(lines=[]) 뒤 제어기에 BP 가 남지 않는지
@@ -391,7 +398,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GS ~ §1-HB)만 둔다.
+본문에는 **최근 10개 세션**(§1-GT ~ §1-HC)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있고, 그 세션들의 인덱스는 [archive/handoff/index.md](archive/handoff/index.md)에 있다.
 아래 §1-0 에는 본문에 있는 세션의 행만 둔다.
 
@@ -402,16 +409,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GR (2026-11-03) | 3 |
-| (본문 아래) | §1-GS ~ §1-HB (2026-11-03 ~ 11-04) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GS (2026-11-03) | 4 |
+| (본문 아래) | §1-GT ~ §1-HC (2026-11-03 ~ 11-05) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GR 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GS 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GS | 11-03 | **「컴파일 검증 필요」 라이브러리 해제·라이브러리 배지·결과 미확정 사유·목록에서 지우기** — 수신함 Sample Prep 보고 처리: Compile 성공이 `ProjectLibrary`(전이) 항목도 해제(`clearCompiled`·`compiledLibraries.ts`), 라이브러리 배지는 선택 창으로, STATUS 없는 Start 는 「결과 미확정」, /GPL 비우면 해제, 선택 창 ×. 0.27.4 | 본문 ↓ |
 | §1-GT | 11-03 | **여유 메모리 측정값 정본(SSOT)·디버깅 느림 진단** — 실행 창이 Marketplace 0.18.1 로 되돌아감(스텝 지연 수정 전), 제어기 Free 7.8 → 0.97 MB·RTT 증가 관측. `Show Memory` 는 전송 경로가 `memoryReadings` 에 기록하고 트리·배지·검사가 같은 값을 읽음, 상태 변경 없으면 15 s 재사용, FTP 쓰기·상태 변경 명령이 무효화, R7. 0.27.5 | 본문 ↓ |
 | §1-GU | 11-04 | **체감 속도·규칙 감사** — 트리 쓰레드 상태 즉시 갱신(1403 상태 이벤트·Start/Stop 등 응답 뒤 150/600/1500/3000 ms, `threadRefreshScheduler`·`affectsThreadState`), 디버그 fast poll 20~650 ms·step pending 400 ms·프레임/목록 캐시 정지 중 재사용·변수 조회 중 인터벌 폴 쉼, 구조 테스트 R10(크기 상한)·§7 부채 표·문서 낡음 정리. 0.27.6 | 본문 ↓ |
 | §1-GV | 11-04 | **AI MCP: 워크스페이스 파일 폐기·사용자 범위 한 번 등록·제어기 주소 자동 추종** — MCP 가 확장 창 presence 에서 주소를 따름(`resolveControllerAddress`·`pickAddressInstance`, GPL_HOST 는 창 없을 때 값), 확장은 `claude mcp add-json --scope user`·Codex `config.toml` 에 등록(`gpl.ai.mcpRegistration`), 직접 등록(foreign)은 유지, `.mcp.json`·CLAUDE.md 생성 폐기·주소 불일치 경고 제거, 예전 파일 정리 명령. 1604/1604 · MCP 168/168. 0.27.7 | 본문 ↓ |
@@ -421,42 +427,12 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-GZ | 11-04 | **프로젝트 문제점 리뷰 후속 — 명령 안전·정지 판정 경합·메모리 자동 회수·의존성** — 1402 한 줄 검증(CR/LF 거부)·전달 뒤 재전송은 조회만·UTF-8·닫힌 STATUS·줄 번호 140 수정, 브리지 정지 명령 우선·URI 토큰·상태 모르면 Step/Continue 거부, 디버거 액션 세대·잔류 pending·BP 요청 직렬화, 메모리 부족 시 정지 → Unload 자동 회수(`memoryGuard.autoUnload`), basic-ftp 6.2.5·@types/vscode ~1.74·CI Node 22·.gitattributes. 0.27.10 | 본문 ↓ |
 | §1-HA | 11-04 | **대시보드 축 위치 리밋 막대·추이 그래프 통합·전원/축/좌표 DataID 전환·I/O 클릭 토글** — 4.2K5 실측: `Execute Robot.WhereAngles`/`Where` 는 값 없음, `Execute Controller.PowerEnabled` -712, Execute 명령 상한 136자 → `pd 3504/3506/230/116/2002/16077/16078`(순수 `robotAxes.ts`), 로봇 전체 막대(양끝 소프트 리밋·5% 근접·이동), 「추이」 한 카드 5차트(같은 차트 함수·눈금·호버), 칩 클릭 토글·더블클릭 해제. 1646/1646. 0.27.11 | 본문 ↓ |
 | §1-HB | 11-04 | **대시보드 I/O 칩 8열 격자 · Soft DIO 64 상한 실측** — 칩 flex-wrap → 8열 격자(64 = 8×8, bank 96 = 12×8, 좁으면 4열), 그룹은 multi-column 단에 쌓기. 4.2K5 실측 `Signal.DIO(20065)` = -1517(PDB 505 의 "~21000" 과 다름, com_dio 표 20001~20064 가 맞음). 1646/1646. 0.27.12 | 본문 ↓ |
+| §1-HC | 11-05 | **수신함 Sample Prep 보고 11건 — 멀티 에이전트 처리** — 라이브러리(`ProjectLibrary`) 소스 거터 BP 를 `Set Break <lib> "<file>"` 로(`breakpointSendTarget` 단일화, 못 보내면 verified:false), MCP `<lib>/<file>` 재작성·`atRequestedLine` 정규화, Delegate·AddressOf 진단 5종(-205/-712/-741/-729), `source-missing` 낡은 진단(세대 키 캐시·외부 변경 워처), 런타임 콘솔 정체 감지(`parserStalled`), MCP `unload_project` 생략 = 세션 대상(-all 은 `all:true`)·/GPL 비우기 Idle 통과·디버그 세션 가드(`confirmDebugSession`)·작업 기록 `libraryUploads`·비운 뒤 rebootHint 억제·FTP 타임아웃 재시도 금지·검색 `maxResults`. 1688/1688 · MCP 188/188. 0.27.13 | 본문 ↓ |
 ---
 
-**최근 세션 본문 — §1-GS ~ §1-HB (2026-11-03~11-04).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GT ~ §1-HC (2026-11-03~11-05).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GS. 2026-11-03 세션 — 「컴파일 검증 필요」 라이브러리 해제 · 라이브러리 배지 · 결과 미확정 사유 · 목록에서 지우기 (0.27.4)
-
-### 증상(요청)
-
-수신함 `2026-11-03_SamplePrep_compile-stale-library-never-cleared_v1.md`(다른 세션 SendMessage 동반, 확장 0.27.1, 제어기 192.168.0.1): "제어기 상태·프로젝트 상태에 컴파일 검증 필요가 그냥 계속 떠 있다". workspaceState 에 `pal`·`gantry`(Upload Only)·`gdata_probe`(Start 실패) 세 항목이 남았고, 그 뒤 `apon_probe`·`app` 의 Compile 성공 기록이 있었다.
-
-### 원인
-
-1. [높음] `CompileStaleTracker.clear(ip, projectName)` 는 컴파일한 프로젝트 이름 하나만 지웠다 — 라이브러리를 Upload Only 한 뒤 그것을 쓰는 App 이 `Start -compile` 에 성공해도 PaL·Gantry 는 남았다.
-2. [중간] 라이브러리 줄의 배지 클릭이 `gpl.quickCompile` = 그룹 단독 Compile(requireRunnable 은 Start 경로에만) → 확장이 막고 있는 unload-after-group-compile 위험 상태를 배지가 만든다.
-3. [중간] 1402 ECONNRESET 으로 STATUS 없이(-9999) 끝난 Start 가 "Start 실패 — 컴파일 에러 위치는 응답에서 확인되지 않음"으로 기록 — 소스 에러로 읽힌다.
-4. [낮음] 해제 수단이 Compile 성공뿐 — 일회성 프로브 항목이 영속.
-
-### 조치(의도와 방법)
-
-- 순수(fe9ed26): `clearCompiled(ip, name, libraryValues)` — `ProjectLibrary` 값은 /GPL 기준 경로이고 프로젝트는 `/GPL/<ProjectName>` 에 올라가므로, 경로 조각 전체(소문자, `/` 로 이음)가 항목 이름과 같을 때만 같은 소스로 본다(`libraryReferenceKey` — `MyProject\\MyLibrary` 는 `/GPL/MyLibrary` 와 다른 폴더라 맞추지 않음). 제어기는 `/GPL/<값>` 의 현재 내용을 함께 컴파일했으므로 로컬 사본과 무관하게 이름 기준. `compiledLibraries.readCompiledLibraryValues` 는 `buildLibraryGraph` 로 전이 수집하고, 로컬에서 못 찾은 값(tools\\ 프로브)도 원문을 남긴다. `CompileStaleInfo.library`(ProjectStart 없음) → 배지·요약 명령은 선택 창, 툴팁·설명 문장은 "쓰는 실행 프로젝트의 Compile 로 함께 해제". `compileStaleReasonAfterFailure`: -9999 = 「결과 미확정」, STATUS 없는 실패 = 「Start 미전송(사유)」, Compile 단계 -9999 = 「Compile 결과 미확정」. `remoteFolderClear.onRemoteFolderCleared`(시그니처 불변 — 0.27.3 세션과 조율).
-- 배선(5f847b2): `onDidRecordCompiled` → `host.clearCompileStaleAfterCompile`(로그 한 줄: `해제: App (+ 라이브러리 PaL, Gantry — App Compile 에 포함)`). /GPL 루트에서 지운 폴더 이름 → `releaseCompileStale`(플래시 등 다른 루트는 무시). mark 때 라이브러리 여부 기록, 활성화 때 저장분 보충. 선택 창은 `createQuickPick` — 항목 × = 목록에서 지우기, 라이브러리는 체크 안 함·골라도 컴파일 안 함.
-- `Unload -all` 은 별도 해제하지 않는다 — Unload 는 /GPL 소스를 지우지 않고, 0.27.3 의 사람 경로는 보내기 전에 /GPL 을 비우므로 그 비우기 알림으로 해제된다.
-- 보류: ⑤ 형제 배치가 아닌 프로젝트의 라이브러리 동반 업로드 후보 제안(이름으로 워크스페이스 전체를 찾으면 `Gantry` 가 5곳 — 위험), 라이브러리 배지에서 쓰는 실행 프로젝트 고르기.
-
-### 검증
-
-- `npm test` **1594/1594**(compileStale 6·compiledLibraries 3·badge 1·deployModes 단언 추가).
-- VSIX `dist/gpl-language-support-0.27.4.vsix` 1,684,690 bytes, SHA-256 `05A47187B44DB28802FA7B1A4DD5598035EFCC277250915BFF344A51E38BD74C`(경고는 bundle 권장 1건), 새 모듈 포함·내부 version 0.27.4 확인.
-- 실기·UI 미확인 → §3.
-
-### 남은 일
-
-- §3 실사용 확인, 보류 2건.
-- 알려진 한계: 내장형 패키지(BinderR4) 하위 `.gpr` 의 값은 루트 기준이라(위 §1-GO 계열 기록) 한 조각 값(`Lib`)이 `/GPL/Lib` 에 따로 올린 동명 항목과 우연히 같으면 함께 해제된다. 실사용에서 겹치면 값의 기준(루트/projects)을 그래프 노드로 구분한다.
 
 ## 1-GT. 2026-11-03 세션 — 여유 메모리 측정값 정본(SSOT) · 디버깅 느림 진단 (0.27.5)
 
@@ -859,3 +835,48 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 ### 남은 일
 
 - 세마포어가 64개보다 많이 필요하면 Soft DIO 가 아니라 GPL 전역 변수/`Thread` 이벤트 쪽이다(문서 확인 후 안내).
+
+## 1-HC. 2026-11-05 세션 — 수신함 Sample Prep 보고 11건, 멀티 에이전트 처리 (0.27.13)
+
+### 증상(요청)
+
+"GPL 확장 개선 요청 로컬에 자료들 넘어온거 확인해서 멀티 AI로 작업들좀 진행시켜줘. 토큰 절약형으로."
+수신함 최상위 11건(11-02 ~ 11-05, 전부 Sample Prep). 102-antibody-96ch-d4 세션이 라이브러리 BP 건을 SendMessage 로도 보냈다.
+
+### 진행 방식
+
+- `main` 이 HEAD 보다 98커밋 뒤라 `isolation: worktree` 대신 HEAD 에서 `git worktree add`(`%TEMP%\gpl-wt-*`, node_modules 는 junction)로
+  4갈래를 만들고 Sonnet 에이전트를 병렬로 돌렸다. 브랜치 `inbox/{mcp-ops,bp-path,delegate-diag,stale-fixes}` 를 `--no-ff` 병합(충돌 없음).
+- 실수: 패키징 뒤 `npm run package` 를 한 번 더 돌려 0.27.14 로 올라갔다 → `npm version 0.27.13` 으로 되돌리고 0.27.14 VSIX 삭제.
+
+### 조치(원인 → 수정)
+
+- **라이브러리 BP**(79287e6·08b9281) — 거터 `setBreakpoints` 가 `ProjectLibrary` 형제 폴더 파일을 조용히 버렸다. 이 트리의 AI 경로도
+  `library-source-breakpoint-unsupported` 로 거부했다(보고의 "AI 경로는 됨"은 확인 못 함). `project/remote/breakpointTarget.ts`
+  `breakpointSendTarget()` 한 곳이 `Set Break <라이브러리 ProjectName> "<라이브러리 기준 경로>"` 를 정하고 DAP·AI 가 함께 쓴다.
+  못 보내면 verified:false + `⚠ BP 전송 생략` 한 줄. MCP `set/clear_breakpoint`·`run_to_line` 은 `<lib>/<file>` 을 재작성(`libraryLocation.js`),
+  `atRequestedLine` 은 `sameSourceFile` 로 비교. 에디터 live-sync(`breakpointSync`)는 여전히 라이브러리를 보내지 않고 로그만 남긴다.
+- **Delegate 진단**(e0baf7a) — `language/checks/delegateChecks.ts`: `addressof-without-delegate`(-205/-712, 빠른 수정 감싸기),
+  `addressof-me-prefix`(-741, `Me.` 삭제), `delegate-parameter-direct-call`(-729), `delegate-signature-mismatch`(-741, 오버로드 하나라도
+  맞으면 통과, 숫자 형끼리는 같게 봄 — 미실측), `mid-member-access`(-712 경고). 보고의 「확인된 형태」 표는 거짓 경고 방지 테스트로 고정.
+  `compilerChecks.ts` 의 줄 스캔 헬퍼를 `logicalLines.ts` 로 옮김(같은 커밋 — §7.2 분리 규칙 예외).
+- **source-missing 낡음**(0b459ee) — 파일 의존 캐시가 본문만 키로 써서 모듈 이동 뒤 옛 대응을 돌려줬고, 재검사가 `onDidSave` 에만 걸렸다.
+  `SymbolIndex.generation` + `fileDepsCache.ts`(본문+세대 키), `**/*.{gpl,gpr}` 워처로 외부 변경 재검사.
+- **런타임 콘솔 정체**(fb4614c) — 원인 미확정(후보: `processConsoleText` 예외 뒤 `carry` 잔류, 개행 없는 type-3 청크 누적, 다른 창 수신).
+  `controller/runtime/parserStall.ts` 가 판정해 쥔 바이트를 버리고 `EVENT=PARSER_STALLED/EXCEPTION` 줄로 남김, 상태에 `parserStalled`·`lastLineAt`.
+- **MCP 운영 안전**(4da7511·85e45d7·8a11169·195f733·dfb7414·92d67e6) — `clear_remote_folder` AI 경로는 `stop_threads` 와 같은 `isSettledState`
+  (`judgeAiClearThreadGate`)로 Idle 만 남으면 통과, 거부 시 전체 목록+`recommendedAction`(사람 트리 명령은 종전대로 모든 쓰레드가 막음).
+  `unload_project` 생략 = 세션 대상, 없으면 `UNLOAD_TARGET_REQUIRED`, `-all` 은 `all:true` — **§1-GR(11-03)의 "생략 = -all" 결정을 MCP 에서만 뒤집음**
+  (사람 경로의 Unload -all 기본은 그대로). 디버그 세션 중 Unload·비우기·범위 없는 Stop 은 `refused:"debug-session-active"` → `confirmDebugSession:true`.
+  작업 기록에 `libraryUploads`, 비운 지 5분 안의 채널 유실엔 rebootHint 억제, FTP 타임아웃 `recovery` = 재시도 금지·`controller_status` 먼저,
+  `runtime_console_search` `maxResults`(200)·`latestFirst`·`maxChars`(30000).
+
+### 검증
+
+- 병합 트리 `npm test` 1688/1688, `controller-mcp` 188/188. 제어기 접속 없음(실기 확인은 verification §1-HC).
+- VSIX: `dist/gpl-language-support-0.27.13.vsix` — 1,754,161 bytes, SHA-256 `0C980A291E4BB37639A8BFE9A289472C20CA1ED28147E77005B90E1B27086956`.
+
+### 남은 일
+
+- 보류한 수신함 항목은 §3 「(2026-11-05, §1-HC)」.
+- worktree 4개(`%TEMP%\gpl-wt-*`)와 `inbox/*` 브랜치는 병합 뒤 정리.

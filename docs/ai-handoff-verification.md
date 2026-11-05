@@ -11,6 +11,14 @@
 
 ## 확인 대기 항목
 
+- [ ] **(2026-11-05, §1-HC) 0.27.13 수신함 반영 — 실기 확인(테스트 제어기 192.168.0.1, ②는 Unload 를 보낸다).**
+  ① 디버그 세션(App, ProjectLibrary PaL·Gantry)에서 `Gantry/Gantry_Station.gpl:310` 거터 클릭 → GPL Traffic 에 `Set Break Gantry "Gantry_Station.gpl"310`, 점이 빨강.
+  프로젝트·라이브러리 밖 파일은 회색 점 + `BP 전송 생략` 한 줄. MCP `set_breakpoint {file:"PaL/Data_Store.gpl", project:"App"}` → `Set Break PaL …`·`locationRewritten`,
+  `run_to_line` 이 그 줄에 서면 `atRequestedLine:true`.
+  ② MCP: 인자 없는 `unload_project` 가 세션 대상만 내리는지, Idle 쓰레드만 남은 상태의 `clear_remote_folder` 가 통과하는지, 디버그 세션 중 거부(`debug-session-active`)가 나오는지.
+  ③ Delegate 진단: 수신함 프로브(`tools/DELEGATE_Probe`·`ADDRESSOF_Probe`)를 열어 에러 줄에만 진단이 뜨고 통과 형태엔 없는지.
+  ④ `.gpr` 를 외부 스크립트로 고친 뒤 `source-missing` 이 다시 계산되는지. ⑤ 런타임 콘솔 정체 재발 시 상태 줄 `EVENT=PARSER_*` 로 원인 확정.
+
 - [ ] **(2026-11-04, §1-HB) 0.27.12 대시보드 I/O 배치 — 실기 확인(읽기만).** 디지털 I/O 탭에서 Soft Internal DIO 가 8×8, Digital I/O·Dedicated 가 8개씩 줄을 맞춰 보이는지, 패널을 좁히면(약 460px 이하) 4열로 바뀌는지, 5·6자리 번호가 잘리지 않는지.
 - [ ] **(2026-11-04, §1-HA) 0.27.11 대시보드 — 실기 확인(①~③ 읽기 전용, ④는 Set DIO 를 보낸다 — 장비 정지·무해한 신호로).**
   ① **축 위치**: 로봇 5대(R1 Track·R2 H1 evZ …)가 줄마다 막대로 나오고 양끝 숫자가 `pd 16078/16077, r` 값과 같은지, 표식 위치·%가 `pd 3504, r` 와 맞는지.

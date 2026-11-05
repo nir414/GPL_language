@@ -66,6 +66,7 @@ import {
   DEFAULT_CONTROLLER_PORT,
 } from './extensionBridge.js';
 import { partitionStopTargets } from './stopTargets.js';
+import { sameSourceFile, splitLibraryQualifiedFile } from './libraryLocation.js';
 import { compilerCommandOptions, controllerResponseOutcome } from './commandOptions.js';
 import {
   listOperations,
@@ -703,6 +704,39 @@ const proj = (p) => {
   }
   return name;
 };
+
+/**
+ * 중단점 도구의 입력 위치를 제어기가 받는 표기로 바꾼다. `show_threads`/`run_to_line`/`step_thread` 가 돌려주는
+ * `file:"PaL/Data_Store.gpl", project:"App"` 를 그대로 넣을 수 있게, 첫 구간이 **그 프로젝트의 ProjectLibrary** 일 때만
+ * `project:PaL, file:Data_Store.gpl` 로 풀어 쓴다(libraryLocation.js). 라이브러리 목록은 확장(로컬 .gpr)에서 얻으며,
+ * 확장 브리지가 없거나 못 읽으면 입력을 그대로 쓴다(추측하지 않는다).
+ * @returns {Promise<{ project: string, file: string, rewrittenFrom?: { project: string, file: string } }>}
+ */
+async function resolveBreakpointLocation(file, project) {
+  const name = proj(project);
+  if (!/[\\/]/.test(file)) return { project: name, file };
+  let libraries = [];
+  try {
+    const res = await callExtension('gpl.ai.debug.projectLibraries', { projectName: name }, { timeoutMs: 8_000 });
+    if (res?.ok && res.result?.ok !== false && Array.isArray(res.result?.libraries)) libraries = res.result.libraries;
+  } catch { /* 브리지 없음 — 입력 그대로 */ }
+  const split = splitLibraryQualifiedFile(file, libraries);
+  if (!split) return { project: name, file };
+  return { project: split.project, file: split.file, rewrittenFrom: { project: name, file } };
+}
+
+/** 풀어 쓴 위치를 응답에 알린다(무엇이 실제로 전송됐는지 추론하지 않게). */
+function withRewriteNote(result, loc) {
+  if (!loc.rewrittenFrom) return result;
+  return {
+    ...result,
+    locationRewritten: {
+      from: loc.rewrittenFrom,
+      to: { project: loc.project, file: loc.file },
+      note: '<라이브러리>/<파일> 표기를 ProjectLibrary 프로젝트 이름 + 라이브러리 안 파일로 바꿔 보냈다.',
+    },
+  };
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -2662,7 +2696,7 @@ tool('run_to_line',
   '여러 줄을 지나 특정 지점에 도달할 때는 step_thread 반복 대신 이 도구를 사용할 것. [실행 재개 — 모션 영향 가능]',
   {
     thread: z.string(),
-    file: z.string().describe('예: ProtocolModule.gpl'),
+    file: z.string().describe('예: ProtocolModule.gpl. 위치 응답의 `<라이브러리>/<파일>` 표기도 그대로 받는다'),
     line: z.number().int().positive(),
     project: z.string().optional(),
     evals: z.array(z.string()).optional()
@@ -2671,8 +2705,12 @@ tool('run_to_line',
       'true면 중단점을 남긴다(기본: 종료 시 해제). 그 줄에 원래 있던 중단점은 기본값에서도 지우지 않는다.'),
     timeoutMs: z.number().int().min(500).max(600000).optional().describe('정지 대기 한도(ms, 기본 20000)'),
   },
-  async ({ thread, file, line, project, evals, keepBreakpoint, timeoutMs }) => {
+  async ({ thread, file: fileArg, line, project: projectArg, evals, keepBreakpoint, timeoutMs }) => {
     resetStepStreak();
+    // 위치 응답의 `<라이브러리>/<파일>` 표기를 그대로 받는다 — 제어기 표기(project:<라이브러리>)로 풀어 쓴다.
+    const loc = await resolveBreakpointLocation(fileArg, projectArg);
+    const file = loc.file;
+    const project = loc.project;
     // 쓰레드 상태를 모르면 Continue 여부를 판단할 수 없다 — 중단점을 걸기 전에 거부한다(§1-GZ).
     const before = await snapshotThread(thread);
     if (!before) return textResult(threadStateUnknownRefusal(thread, 'run_to_line'));
@@ -2683,20 +2721,20 @@ tool('run_to_line',
     const temporary = !keepBreakpoint && !preexisting;
     // 임시 BP는 에디터에 반영하지 않는다(빨간 점 깜빡임 방지). 남길 BP는 반영해 눈에 보이게 한다.
     const bpOpts = temporary ? { mirrorBreakpoints: false } : undefined;
-    const bp = await runCommand(`Set Break ${proj(project)} "${file}"${line}`, bpOpts);
-    if (!bp.ok) return textResult({ phase: 'set_breakpoint', ...bp });
+    const bp = await runCommand(`Set Break ${project} "${file}"${line}`, bpOpts);
+    if (!bp.ok) return textResult(withRewriteNote({ phase: 'set_breakpoint', ...bp }, loc));
 
     // 이후 어느 단계에서 예외가 나도 임시 중단점은 반드시 지운다(§1-GZ) — 남으면 에디터에 보이지 않는 BP 에서 실행이 선다.
     let cleared;
     const clearTemporary = async () => {
       if (!temporary || cleared !== undefined) return;
       try {
-        cleared = (await runCommand(`Set Nobreak ${proj(project)} "${file}"${line}`, { mirrorBreakpoints: false })).ok;
+        cleared = (await runCommand(`Set Nobreak ${project} "${file}"${line}`, { mirrorBreakpoints: false })).ok;
       } catch {
         cleared = false;
       }
     };
-    const result = { requested: { file, line } };
+    const result = { requested: { file: fileArg, line } };
     try {
       // 이미 실행 중(Running 등)이면 Continue가 불필요 — 중단점 히트만 기다린다.
       const needContinue = PAUSED_STATES.has(before.state);
@@ -2712,8 +2750,9 @@ tool('run_to_line',
         });
       }
 
+      // 요청 표기와 정지 위치 표기가 달라도(`Data_Store.gpl`@PaL vs `PaL/Data_Store.gpl`@App) 같은 소스면 같은 줄로 본다.
       const atRequestedLine = !!(wait.paused && wait.detail
-        && String(wait.detail.file).toLowerCase() === file.toLowerCase()
+        && sameSourceFile({ project, file }, { project: wait.detail.project, file: wait.detail.file })
         && wait.detail.fileLine === line);
       Object.assign(result, {
         continueOk: cont.ok,
@@ -2741,7 +2780,7 @@ tool('run_to_line',
       result.note = `${timeoutMs ?? 20000}ms 내 정지 없음 — 해당 줄이 이 실행 경로에서 실행되지 않거나 오래 걸릴 수 있다. ` +
         (temporary ? '임시 중단점은 해제했다.' : '중단점은 남아 있으니 이후 show_thread로 재확인할 것.');
     }
-    return textResult(result);
+    return textResult(withRewriteNote(result, loc));
   });
 
 tool('softestop',
@@ -2754,16 +2793,20 @@ tool('softestop',
 tool('set_breakpoint',
   '브레이크포인트 설정(Set Break <project> "<file>"<line>). file은 따옴표 안 파일명. ' +
   '확장 브리지를 거치면 VS Code 에디터의 같은 줄에도 중단점(빨간 점)이 생겨 사용자가 무엇을 걸었는지 보고 F9로 지울 수 있다.',
-  { file: z.string().describe('예: ProtocolModule.gpl'), line: z.number().int().positive(), project: z.string().optional() },
+  { file: z.string().describe('예: ProtocolModule.gpl. show_threads 등이 돌려준 `<라이브러리>/<파일>`(예: PaL/Data_Store.gpl)도 그대로 받는다'), line: z.number().int().positive(), project: z.string().optional() },
   async ({ file, line, project }) => {
     resetStepStreak();
-    return textResult(await runCommand(`Set Break ${proj(project)} "${file}"${line}`));
+    const loc = await resolveBreakpointLocation(file, project);
+    return textResult(withRewriteNote(await runCommand(`Set Break ${loc.project} "${loc.file}"${line}`), loc));
   });
 
 tool('clear_breakpoint',
   '브레이크포인트 해제(Set Nobreak <project> "<file>"<line>). 에디터에 같은 위치의 빨간 점이 있으면 함께 지워진다.',
   { file: z.string(), line: z.number().int().positive(), project: z.string().optional() },
-  async ({ file, line, project }) => textResult(await runCommand(`Set Nobreak ${proj(project)} "${file}"${line}`)));
+  async ({ file, line, project }) => {
+    const loc = await resolveBreakpointLocation(file, project);
+    return textResult(withRewriteNote(await runCommand(`Set Nobreak ${loc.project} "${loc.file}"${line}`), loc));
+  });
 
 tool('list_breakpoints',
   '설정된 모든 브레이크포인트 표시(Show Break) — 프로젝트·파일·줄·히트수를 구조화해 돌려준다.',

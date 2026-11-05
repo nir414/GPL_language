@@ -64,3 +64,32 @@ export function targetSourceOf(explicit, sessionTarget) {
   if (!sessionTarget) return 'unresolved';
   return sessionTarget.via === 'deploy' ? 'session-target-from-deploy' : 'session-target';
 }
+
+/**
+ * `unload_project` 의 대상 결정(2026-11-05 inbox debug-day-feedback §2). 종전에는 인자가 없으면 조용히 `Unload -all`
+ * 이었다 — 세션 대상(`project_target`)을 건너뛰고 전부 내리는 기본값이 위험해서, 이제는
+ * 명시 이름 > 명시 `all:true`(`project:"-all"` 포함) > 세션 대상 > 거부 순으로 푼다. `-all` 은 명시할 때만 나간다.
+ * 반환의 `all` 이 true 면 `Unload -all`, `targetSource` 는 `argument`·`all-argument`·`session-target`·`session-target-from-deploy`.
+ */
+export function resolveUnloadTarget({ project, all } = {}, sessionTarget) {
+  const explicit = typeof project === 'string' ? project.trim() : '';
+  const explicitAll = all === true || explicit.toLowerCase() === '-all';
+  if (explicit && explicit.toLowerCase() !== '-all' && all === true) {
+    return {
+      ok: false,
+      error: 'UNLOAD_TARGET_CONFLICT',
+      detail: `project:"${explicit}" 와 all:true 는 함께 쓸 수 없다 — 한 프로젝트만 내리면 이름만, 전부 내리면 all:true 만 줄 것.`,
+    };
+  }
+  if (explicitAll) return { ok: true, all: true, name: '-all', targetSource: 'all-argument' };
+  if (explicit) return { ok: true, all: false, name: explicit, targetSource: 'argument' };
+  if (sessionTarget?.project) {
+    return { ok: true, all: false, name: sessionTarget.project, targetSource: targetSourceOf(undefined, sessionTarget) };
+  }
+  return {
+    ok: false,
+    error: 'UNLOAD_TARGET_REQUIRED',
+    detail: '내릴 프로젝트가 정해지지 않았다 — 인자 없는 unload_project 는 더 이상 `Unload -all` 이 되지 않는다. ' +
+      'project_target 으로 대상을 고정하거나 project:"<이름>" 을 주고, 전부 내릴 때만 all:true 를 명시할 것.',
+  };
+}

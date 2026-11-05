@@ -85,7 +85,8 @@ import { aiBlockedResult, AI_BLOCKED_COMMANDS } from './aiPolicy.js';
 import { SERVER_INSTRUCTIONS, DOC_COMMENT_GUIDE } from './guidelines.js';
 import { captureFilesFor, searchCapture } from './consoleCapture.js';
 import { readControllerClock, syncControllerClock, clockStatusField, summarizeClockSync } from './clock.js';
-import { deployTargetArgs, projectForCommand, sessionTargetAfterDeploy, targetSourceOf } from './configuredTarget.js';
+import { deployTargetArgs, projectForCommand, resolveUnloadTarget, sessionTargetAfterDeploy, targetSourceOf } from './configuredTarget.js';
+import { debugSessionRefusal } from './debugSessionGuard.js';
 import {
   UNLOAD_RISK_REFUSAL,
   PROJECT_NOT_RUNNABLE,
@@ -1519,6 +1520,17 @@ tool('sync_controller_clock',
     return textResult({ ...result, via: 'direct-tcp', transport: transportInfo() });
   });
 
+/**
+ * 확장 창의 디버그 세션 여부로 파괴적 도구를 거부한다(debugSessionGuard.js — 형식은 unload-after-group-compile 과 같다).
+ * presence 의 `debugSessionActive` 가 정본이고, 브리지가 없으면(직접 접속) 알 수 없어 통과한다.
+ */
+async function guardDebugSession(tool, { confirmDebugSession, action } = {}) {
+  const b = await currentBridge().catch(() => null);
+  const refusal = debugSessionRefusal({ tool, debugSessionActive: b?.presence?.debugSessionActive, confirmDebugSession, action });
+  if (refusal) logLine(`  ${tool} | 전송 안 함 | ${refusal.refused}`);
+  return refusal ? textResult({ ...refusal, transport: transportInfo() }) : null;
+}
+
 // ── 제어기 /GPL 폴더 목록 (2026-10-14 §1-EP, 개선 요청 §8) ─────────────────────────
 // Unload 뒤에도 Free 메모리가 모자라 Start 가 -200 이던 사건의 진짜 원인은 /GPL 에 남아 있던 다른 프로젝트였다.
 // 콘솔에는 로드/잔존 프로젝트를 보는 명령이 없으므로(`Show Project` 는 -714) 확장 FTP 로 폴더 목록을 읽는다.
@@ -1551,15 +1563,22 @@ tool('clear_remote_folder',
   '② 그 목록을 사용자에게 보여 주고 **동의를 받은 뒤에만** `confirm:true` 와 동의받은 `names` 로 다시 호출 → 그 항목만 지운다. ' +
   '`names` 를 생략하면 그 시점의 전부를 지운다(미리보기 뒤 생긴 항목까지) — 동의받은 목록을 넘기는 것을 권장. ' +
   '`/flash/...` 는 되돌릴 수 없어 `AI_BLOCKED`(사용자에게 트리의 Flash 「폴더 비우기」를 요청), 그 밖의 경로는 `root-not-allowed`. ' +
-  '배포 중이면 `deploy-busy`, 쓰레드가 있으면 `threads-running`(정지도 동의를 받아 `stop_threads` 로 한 뒤 재호출), Show Thread 무응답이면 `thread-state-unknown` — 모두 지우지 않은 상태다. ' +
+  '배포 중이면 `deploy-busy`, 정착하지 않은(Running·Paused 등) 쓰레드가 있으면 `threads-running`(응답에 전체 쓰레드 목록·상태와 `recommendedAction` — 정지도 동의를 받아 `stop_threads` 로 한 뒤 재호출. Idle/Stopped 쓰레드는 막지 않는다 — `stop_threads` 와 같은 판정이고, 남은 것은 비운 뒤 `unload_project` 로 걷어 낸다), Show Thread 무응답이면 `thread-state-unknown` — 모두 지우지 않은 상태다. ' +
+  '확장에 디버그 세션이 열려 있으면(`transport.extension.debugSessionActive`) 지우지 않고 `refused:"debug-session-active"` — 사용자 동의 뒤 `confirmDebugSession:true`. ' +
   '응답: {ok, root, targets, deleted, failed:[{name,error}], missing(지정했지만 없던 이름), next}. 확장 브리지가 필요하다.',
   {
     names: z.array(z.string()).optional().describe('지울 항목 이름(/GPL 바로 아래 폴더·파일, 대소문자 무시). 생략하면 전부'),
     confirm: z.boolean().optional().describe('true 일 때만 실제로 지운다 — 사용자 동의를 받은 뒤에만 넣을 것'),
+    confirmDebugSession: z.boolean().optional().describe('디버그 세션이 열려 있다는 거부(refused:"debug-session-active")를 받고 사용자 동의를 받았을 때만 true'),
     root: z.string().optional().describe('비울 원격 폴더(기본 = 설정된 로드 폴더 /GPL). 그 밖의 경로는 거절된다'),
     extensionInstanceId: z.string().optional().describe('FTP 를 열 VS Code 창(생략하면 현재 경로)'),
   },
-  async ({ names, confirm, root, extensionInstanceId }) => {
+  async ({ names, confirm, confirmDebugSession, root, extensionInstanceId }) => {
+    // 목록 미리보기는 읽기 전용이라 통과 — 실제로 지우려는 호출(confirm:true)만 디버그 세션을 본다.
+    if (confirm === true) {
+      const refused = await guardDebugSession('clear_remote_folder', { confirmDebugSession });
+      if (refused) return refused;
+    }
     let res;
     try {
       res = await callExtension('gpl.ai.debug.clearRemoteFolder', { names, confirm, root }, { timeoutMs: 120_000, instanceId: extensionInstanceId });
@@ -1600,7 +1619,7 @@ function describeInstancesForError() {
 
 tool('project_target',
   '이 세션의 대상 프로젝트를 조회/고정/해제한다. **작업 시작 시 한 번 고정할 것** — 이후 모든 도구(compile_project·' +
-  'start_project·deploy_project·show_thread …)가 인자를 생략해도 같은 대상을 쓴다(unload_project 는 예외 — 생략하면 -all). ' +
+  'start_project·deploy_project·show_thread …)가 인자를 생략해도 같은 대상을 쓴다(unload_project 도 같다 — 생략하면 이 대상, 전부 내리려면 all:true 를 명시). ' +
   '인자 없이 부르면 현재 상태만 돌려준다: 세션 대상·출처(argument/session-target)·워크스페이스 후보 목록' +
   '(각 후보의 runnable = `.gpr` 에 ProjectStart 가 있는 실행 가능 프로젝트인지, 라이브러리면 참조하는 프로젝트명). ' +
   '**"왜 이 프로젝트가 올라갔지"를 추론하지 말고 이 도구로 확인할 것.** ' +
@@ -2275,8 +2294,9 @@ async function runnableCandidateNames() {
 }
 
 tool('unload_project',
-  '프로젝트를 메모리에서 제거한다(Unload). **`project` 를 생략하면 `Unload -all`** 이다(2026-11-03 사용자 결정 — 세션 대상 프로젝트가 아님). ' +
-  '한 프로젝트만 내릴 때만 이름을 준다. 보내기 전에 Show Thread -web 로 **그 프로젝트의 활성 쓰레드**를 확인하고, 있으면 ' +
+  '프로젝트를 메모리에서 제거한다(Unload). **`project` 를 생략하면 `project_target` 으로 고정한 세션 대상**을 내리고, 대상이 없으면 `UNLOAD_TARGET_REQUIRED` 로 거부한다 ' +
+  '(2026-11-05: 종전의 "생략 = `Unload -all`" 폐기 — 인자 없는 호출이 전부를 내린 사고). **`Unload -all` 은 `all:true` 를 명시할 때만** 나간다(`project:"-all"` 도 같다). ' +
+  '확장에 디버그 세션이 열려 있으면(`transport.extension.debugSessionActive`) 보내지 않고 `refused:"debug-session-active"` — 사용자 동의 뒤 `confirmDebugSession:true`. 보내기 전에 Show Thread -web 로 **그 프로젝트의 활성 쓰레드**를 확인하고, 있으면 ' +
   '-750 이 뻔하므로 보내지 않고 목록과 함께 거부한다(refused:"threads-active") — 먼저 stop_threads({ project }) 로 멈출 것. ' +
   '`Stop <project>` 는 동명 쓰레드 하나만 멈추므로 다른 이름의 쓰레드(LOG_SOCKET 등)가 남아 -750 이 반복되는 것이 전형이다(2026-10-14 실측). ' +
   '**응답이 없어 타임아웃하면 실패가 아니라 결과 미확정(outcome="unknown")으로 돌아온다** — 제어기가 실행했을 수도 있다. ' +
@@ -2291,7 +2311,9 @@ tool('unload_project',
   '이 조합은 6번 중 6번 명령 콘솔을 끊었고 재부팅이 필요했다. 사용자에게 위험을 알리고 **동의를 받은 뒤에만** `confirm:true` 로 다시 호출할 것. ' +
   '성공하면 `/GPL/<project>` 가 남았는지(`remoteFolder`) 함께 보고, 앱 Unload 로 폴더가 지워졌으면 `next:"redeploy"`(다시 Start 하면 -508).',
   {
-    project: z.string().optional().describe('생략하면 "-all"(로드된 프로젝트 전부 — /GPL 이 비어 있어야 보낸다). 한 프로젝트만 내릴 때 그 이름'),
+    project: z.string().optional().describe('내릴 프로젝트 이름. 생략하면 project_target 으로 고정한 세션 대상(없으면 거부). "-all" 도 받지만 `all:true` 를 쓸 것'),
+    all: z.boolean().optional().describe('true 면 `Unload -all`(로드된 프로젝트 전부 — /GPL 이 비어 있어야 보낸다). project 와 함께 줄 수 없다'),
+    confirmDebugSession: z.boolean().optional().describe('디버그 세션이 열려 있다는 거부(refused:"debug-session-active")를 받고 사용자 동의를 받았을 때만 true'),
     timeoutMs: z.number().int().min(1000).max(600000).optional()
       .describe('응답 대기(ms). 생략하면 max(GPL_TIMEOUT_MS, 180000) — 실행 뒤 Unload 는 수십 초 걸리고, 타임아웃으로 소켓을 닫으면 1402 가 거부 상태로 남는다'),
     skipThreadCheck: z.boolean().optional()
@@ -2301,11 +2323,19 @@ tool('unload_project',
     confirm: z.boolean().optional()
       .describe('그룹 Compile 뒤 Unload 위험을 사용자가 알고 동의했음을 단언 — refused:"unload-after-group-compile" 를 받고 동의를 받았을 때만 true'),
   },
-  async ({ project, timeoutMs, skipThreadCheck, skipGplCheck, confirm }) => {
-    // 기본은 `-all`(2026-11-03 사용자 결정: 사람이 누르는 Unload 와 같은 기본값) — 생략을 세션 대상 프로젝트로 풀지 않는다.
-    const explicit = typeof project === 'string' && project.trim() !== '';
-    const name = explicit ? proj(project) : '-all';
-    const targetSource = explicit ? targetSourceOf(project, sessionTarget) : 'default-all';
+  async ({ project, all, timeoutMs, skipThreadCheck, skipGplCheck, confirm, confirmDebugSession }) => {
+    // 2026-11-05: 생략을 `-all` 로 풀지 않는다(이전 2026-11-03 결정 폐기) — 명시 이름 > all:true > 세션 대상 > 거부.
+    const resolved = resolveUnloadTarget({ project, all }, sessionTarget);
+    if (!resolved.ok) {
+      return textResult({
+        ok: false, error: resolved.error, detail: resolved.detail, sent: false, outcome: SEND_OUTCOME_NOT_SENT,
+        recovery: { action: 'ASK_USER', retryCurrentCommand: false, detail: 'project_target 으로 대상을 고정하거나 project 를 주고, 전부 내릴 때만 all:true 를 명시할 것.' },
+      });
+    }
+    const name = resolved.all ? '-all' : proj(resolved.name);
+    const targetSource = resolved.targetSource;
+    const debugRefusal = await guardDebugSession('unload_project', { confirmDebugSession, action: `Unload ${name}` });
+    if (debugRefusal) return debugRefusal;
     // 그룹 Compile 뒤 Unload — 확인 없이는 쓰레드 조회조차 하지 않고 돌려준다(보내지 않음).
     const risk = assessUnloadRisk(readUnloadRiskState(currentHost()), `Unload ${name}`);
     if (risk?.risky && confirm !== true) {
@@ -2360,6 +2390,16 @@ tool('unload_project',
     });
     if (!(result.ok && result.status?.code === 0)) return textResult({ ...result, targetSource });
     // 4.2K5 실측(2026-10-22): 앱 프로젝트 Unload 는 /GPL/<앱> 폴더까지 지웠다(그룹 Lib 은 남음) — 다음 Start 가 -508 이 되기 전에 알린다.
+    // `Unload -all` 은 /GPL/-all 같은 폴더가 없다 — 폴더 단위 판정·"다시 deploy" 문구는 프로젝트 하나를 내렸을 때만 의미가 있다.
+    if (unloadAll) {
+      return textResult({
+        ...result,
+        targetSource,
+        scope: 'all',
+        next: 'none',
+        hint: '로드된 프로젝트를 전부 내렸다 — 다시 Start 하려면 deploy_project 로 프로젝트를 올릴 것(/GPL 이 비어 있으면 그대로 Start 하면 -508).',
+      });
+    }
     const remoteFolder = await remoteProjectFolderState(name);
     return textResult({
       ...result,
@@ -2469,6 +2509,7 @@ tool('stop_threads',
   '프로젝트 전체를 멈출 때는 controller_command("Stop <project>") 대신 이 도구를 project 범위 또는 전체로 쓸 것. ' +
   '단, 공식 Stop 구문에는 쓰레드 이름의 따옴표/이스케이프 형식이 없고 영숫자·`_` 이외 문자가 든 이름(`RWK[0]`·`TCPLSN:4000` 등)은 실기에서 -712였다. ' +
   '그런 이름은 임의 문법으로 보내지 않고 `skipped`로 보고하며, 전체 정지가 필요하면 사용자가 범위 없는 호출(Stop -all)을 명시해야 한다. ' +
+  '범위 없는 전체 정지는 확장에 디버그 세션이 열려 있으면 `refused:"debug-session-active"` 로 거부된다(사용자 동의 뒤 `confirmDebugSession:true`). ' +
   'GPL 에는 강제 kill 이 없다 — 재시도 뒤에도 남는 쓰레드는 블로킹 I/O(Read/ReadLine)나 탈출 조건 없는 루프일 수 있으니 ' +
   'extension_command("gpl.controller.diagnoseStuckThread") 로 진단할 것(복구 후보만 제시, 자동 전송 없음). [정지 명령 — 돌던 프로그램·모션을 멈춘다]',
   {
@@ -2476,12 +2517,19 @@ tool('stop_threads',
     project: z.string().optional().describe('이 프로젝트(Show Thread 의 project 열)의 활성 쓰레드 전부. thread 와 동시 지정 불가'),
     timeoutMs: z.number().int().min(500).max(60000).optional()
       .describe(`정지 확인 폴링 상한(ms, 기본 ${STOP_SETTLE_TIMEOUT_MS}). 자동 재시도 1회에도 같은 값을 쓴다`),
+    confirmDebugSession: z.boolean().optional()
+      .describe('범위 없는 전체 정지(Stop -all) 전용. 디버그 세션이 열려 있다는 거부(refused:"debug-session-active")를 받고 사용자 동의를 받았을 때만 true'),
   },
-  async ({ thread, project, timeoutMs }) => {
+  async ({ thread, project, timeoutMs, confirmDebugSession }) => {
     const threadName = thread?.trim() || undefined;
     const projectName = project?.trim() || undefined;
     if (threadName && projectName) {
       return textResult({ ok: false, error: 'invalid-args', detail: 'thread 와 project 는 동시에 줄 수 없다', sent: false, outcome: SEND_OUTCOME_NOT_SENT });
+    }
+    // 범위 없는 전체 정지(`Stop -all`)만 디버그 세션 가드를 거친다 — thread/project 범위는 대상이 좁아 그대로 보낸다.
+    if (!threadName && !projectName) {
+      const refused = await guardDebugSession('stop_threads', { confirmDebugSession, action: 'Stop -all' });
+      if (refused) return refused;
     }
     const target = await resolveStopTargets({ thread: threadName, project: projectName });
     if (target.error) {

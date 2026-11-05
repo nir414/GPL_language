@@ -235,6 +235,7 @@ export async function resolveDeployTarget(ctx: DeployContext, project: DeployPro
         folderMissing: gplFolderMissing && !directProbeError,
         projectName,
         lastChannelLossAt: io.getLastCommandChannelLoss(cfg.ip),
+        lastIntentionalClearAt: io.getLastGplClear(cfg.ip),
         gplEmpty,
         now: Date.now(),
     });

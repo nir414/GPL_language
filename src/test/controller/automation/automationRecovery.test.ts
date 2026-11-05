@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { test } from '../../harness';
-import { deployPhaseCode, hasRecovery, recoveryCodes, recoveryFor } from '../../../controller/automation/automationRecovery';
+import { deployFailureRecovery, deployPhaseCode, hasRecovery, isFtpTimeoutMessage, recoveryCodes, recoveryFor } from '../../../controller/automation/automationRecovery';
 
 test('automationRecovery: 모르는 코드는 되풀이 금지 쪽으로 떨어진다', () => {
     const unknown = recoveryFor('SOMETHING_NEW');
@@ -59,4 +59,21 @@ test('automationRecovery: 배포 단계 → 코드 변환, 모든 단계가 표�
         assert.ok(hasRecovery(code), `${code} 의 복구 지시가 없다`);
     }
     assert.ok(recoveryCodes().length >= phases.length, '표가 비어 있지 않다');
+});
+
+test('deployFailureRecovery: 업로드 단계의 FTP 타임아웃은 재시도 대신 관측을 지시한다 (2026-11-05)', () => {
+    const r = deployFailureRecovery('UPLOAD', '/GPL 목록 조회 실패: Timeout (control socket) — /flash/projects로 폴백하지 않고 업로드를 중단합니다.');
+    assert.strictEqual(r.action, 'CHECK_OPERATION');
+    assert.strictEqual(r.retryCurrentCommand, false);
+    assert.strictEqual(r.safeToRepeat, false);
+    assert.match(r.detail, /곧바로 다시 보내지 말 것/);
+    assert.match(r.detail, /controller_status/);
+});
+
+test('deployFailureRecovery: 타임아웃이 아닌 업로드 실패·다른 단계는 표 그대로', () => {
+    assert.deepStrictEqual(deployFailureRecovery('UPLOAD', '550 DELE failed.'), recoveryFor('DEPLOY_UPLOAD'));
+    assert.deepStrictEqual(deployFailureRecovery('COMPILE', 'Timeout'), recoveryFor('DEPLOY_COMPILE'));
+    assert.deepStrictEqual(deployFailureRecovery(undefined), recoveryFor(undefined));
+    assert.strictEqual(isFtpTimeoutMessage('connect ETIMEDOUT 192.168.0.1:21'), true);
+    assert.strictEqual(isFtpTimeoutMessage(undefined), false);
 });

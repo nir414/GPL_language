@@ -144,3 +144,15 @@ test('controllerIdentity: /GPL/<프로젝트> 없음 + 직전 채널 유실이�
     assert.strictEqual(rebootSuspicionHint({ folderMissing: false, projectName: 'Lib', lastChannelLossAt: T0 - 1000, now: T0 }), undefined);
     assert.strictEqual(rebootSuspicionHint({ folderMissing: true, projectName: 'Lib', lastChannelLossAt: T0 - 2 * 3600_000, now: T0 }), undefined, '오래된 유실은 보지 않는다');
 });
+
+test('controllerIdentity: 일부러 비운(clear/Unload) 직후의 채널 유실은 재부팅 정황이 아니다 (2026-11-05)', () => {
+    const base = { folderMissing: true, projectName: 'App', gplEmpty: true, now: T0, formatTime: clock };
+    // Unload 가 1402 를 끊은 경우 — 유실이 비운 시각 뒤 5분 안.
+    assert.strictEqual(rebootSuspicionHint({ ...base, lastChannelLossAt: T0 - 60_000, lastIntentionalClearAt: T0 - 90_000 }), undefined);
+    // 유실이 먼저, 비우기가 나중 — 비어 있는 것은 비운 결과다.
+    assert.strictEqual(rebootSuspicionHint({ ...base, lastChannelLossAt: T0 - 10 * 60_000, lastIntentionalClearAt: T0 - 60_000 }), undefined);
+    // 비운 지 한참 뒤에 새로 유실이 났다 — 재부팅 의심은 살아 있다.
+    assert.ok(rebootSuspicionHint({ ...base, lastChannelLossAt: T0 - 60_000, lastIntentionalClearAt: T0 - 20 * 60_000 }));
+    // 비운 기록이 없으면 종전과 같다.
+    assert.ok(rebootSuspicionHint({ ...base, lastChannelLossAt: T0 - 60_000 }));
+});

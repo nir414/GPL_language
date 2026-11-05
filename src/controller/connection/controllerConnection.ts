@@ -14,6 +14,7 @@ import { parseStatus, parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/
 import { effectiveKeepAlive } from './connectionSession';
 import { assessMemory, checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryGuardOptions, MemoryPrecheck } from '../diagnostics/memoryGuard';
 import { guardBeforeSend, observeAfterResponse, unloadFailureGuidance } from '../commands/unloadRiskGuard';
+import { parseUnloadCommand } from '../commands/unloadRisk';
 import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast, memoryBadge } from '../diagnostics/memoryNotice';
 import { PROBE_MEMORY_CMD } from '../diagnostics/resourceProbes';
 import { controllerMemoryReadings, isMemoryProbeCommand } from '../diagnostics/memoryReadings';
@@ -393,6 +394,7 @@ export function sendCommandDetailed(
 		} catch (err) {
 			noteThreadStateCommand(wire);
 			noteRecentCommand(wire, undefined, err);
+			if (parseUnloadCommand(wire)) { noteGplCleared(controllerId); }
 			// 채널 교란 가능 명령이 응답 없이 끝났으면 연결 건강 모니터에 알린다 → recovering (2026-08-31).
 			// 정책이 보류한 경우(PolicyError)는 여기 오지 않는다 — 제어기에 아무것도 보내지 않았으므로.
 			notifyDisruptiveFailure(wire, err);
@@ -401,6 +403,7 @@ export function sendCommandDetailed(
 		}
 		noteThreadStateCommand(wire);
 		noteRecentCommand(wire, response);
+		if (parseUnloadCommand(wire)) { noteGplCleared(controllerId); }
 		if (policyOn) {
 			commandPolicy.after(wire, response.raw, response.meta.statusTagReceived, Date.now());
 		}
@@ -534,6 +537,19 @@ export function noteCommandChannelLoss(ip: string, at: number = Date.now()): voi
 
 export function getLastCommandChannelLoss(ip: string): number | undefined {
 	return _lastChannelLoss && _lastChannelLoss.ip === ip ? _lastChannelLoss.at : undefined;
+}
+
+// 이 확장이 `/GPL` 을 일부러 비운 마지막 시각(제어기별) — 비운 직후 배포의 "재부팅 정황" 오탐을 막는다(2026-11-05 inbox).
+// 기록처: 보낸 `Unload`(앱 Unload 는 /GPL/<앱> 폴더까지 지운다), 비우기 이벤트(extension.ts 가 onRemoteFolderCleared 로 알린다).
+const _lastGplCleared = new Map<string, number>();
+
+/** `/GPL` 을 일부러 비웠음을 기록한다(Unload 전송·FTP 비우기). */
+export function noteGplCleared(ip: string, at: number = Date.now()): void {
+	_lastGplCleared.set(ip, at);
+}
+
+export function getLastGplClear(ip: string): number | undefined {
+	return _lastGplCleared.get(ip);
 }
 
 // ── 최근 상태 변경 명령 (controller/connection/recentCommands.ts, 2026-11-03) ──────────────────────

@@ -30,6 +30,7 @@ import {
     beginMemoryNoticeScope,
     checkMemoryBeforeOperation,
     getLastCommandChannelLoss,
+    getLastGplClear,
     getLastMemoryCheck,
     probeControllerCommand,
 } from '../connection/controllerConnection';
@@ -39,6 +40,7 @@ import { isNotRunnableStartFailure } from '../commands/unloadRisk';
 import { attachCompileErrorHints } from './compileErrorHints';
 import { getDeployLock, describeDeployLock, DeployLockHandle, DeployLockRecord } from './deployLock';
 import { KeyedSerialQueue } from './deployQueue';
+import { DEPLOY_UPLOAD_TIMEOUT_RECOVERY, deployFailureRecovery } from '../automation/automationRecovery';
 import { beginOperation, findActiveByIdempotencyKey, sweepOperations, OperationHandle, OperationRecord } from '../automation/operationStore';
 import { clearDeployCancellation, readDeployCancellation } from './deployCancellation';
 import { recordCompiled } from './deployRecord';
@@ -102,6 +104,7 @@ const controllerIo: DeployControllerIo = {
     checkMemoryBeforeOperation,
     getLastMemoryCheck,
     getLastCommandChannelLoss,
+    getLastGplClear,
     createIdentityIo: createControllerIdentityIo,
     recentReachabilityEvidence,
     recordCompiled,
@@ -266,6 +269,8 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         ...(result.memoryPrecheck ? { memoryPrecheck: result.memoryPrecheck } : {}),
         ...(result.memoryRecovery ? { memoryRecovery: result.memoryRecovery } : {}),
         ...(result.uploadStats ? { uploadStats: result.uploadStats } : {}),
+        // 라이브러리(ProjectLibrary) 업로드 — 응답에는 있고 기록에만 빠져 다른 세션이 "라이브러리 없이 컴파일"로 오판한 사건(2026-11-05).
+        ...(result.libraryUploads && result.libraryUploads.length > 0 ? { libraryUploads: result.libraryUploads } : {}),
         ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
         ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),
         // 어느 장치에 올렸는지의 근거 — operation 파일만으로 "그때 진짜 제어기였나" 를 판정할 수 있게.
@@ -332,11 +337,14 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         }, summary);
         return;
     }
+    // 업로드 중 FTP 타임아웃 — 곧바로 같은 배포를 되풀이하면 채널 교란을 키운다(2026-11-05). 먼저 관측하게 한다.
+    const uploadTimeout = deployFailureRecovery(result.failedPhase, result.failedStatusMessage) === DEPLOY_UPLOAD_TIMEOUT_RECOVERY;
     operation.fail({
         code: result.failedPhase ? `DEPLOY_${result.failedPhase}` : 'OPERATION_FAILED',
-        message: result.failedStatusMessage ?? `배포가 ${result.failedPhase ?? '알 수 없는 단계'} 에서 중단됐습니다.`,
-        retryable: result.failedPhase !== 'COMPILE',
-        retryMode: result.failedPhase === 'COMPILE' ? 'NONE' : 'RETRY_SAME_REQUEST',
+        message: (result.failedStatusMessage ?? `배포가 ${result.failedPhase ?? '알 수 없는 단계'} 에서 중단됐습니다.`)
+            + (uploadTimeout ? ' — 같은 배포를 곧바로 다시 보내지 말고 controller_status 로 먼저 관측하세요.' : ''),
+        retryable: result.failedPhase !== 'COMPILE' && !uploadTimeout,
+        retryMode: result.failedPhase === 'COMPILE' ? 'NONE' : uploadTimeout ? 'CHECK_OPERATION' : 'RETRY_SAME_REQUEST',
         // 업로드/Compile 은 제어기 상태를 바꾼다 — 같은 요청을 그대로 되풀이해도 되는지는 단계에 달렸다.
         safeToRepeat: result.failedPhase === 'LOCKED' || result.failedPhase === 'AUTO_GATE' || result.failedPhase === 'IN_PROGRESS',
     }, summary);

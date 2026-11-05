@@ -209,6 +209,9 @@ export function summarizeOperationResult(rec) {
     const u = r.uploadStats;
     parts.push(`uploaded ${u.uploaded ?? '?'} · skipped ${u.skipped ?? '?'}${u.deleted ? ` · deleted ${u.deleted}` : ''}`);
   }
+  if (Array.isArray(r.libraryUploads) && r.libraryUploads.length > 0) {
+    parts.push(`libs ${r.libraryUploads.map((l) => `${l.raw ?? '?'} ${l.uploaded ?? '?'}/${l.skipped ?? '?'}`).join(', ')}`);
+  }
   if (typeof r.compileErrorCount === 'number') parts.push(`compileErrors ${r.compileErrorCount}`);
   if (r.provenance && typeof r.provenance === 'object' && typeof r.provenance.inSync === 'boolean') {
     const changed = Array.isArray(r.provenance.changedSinceUpload) ? r.provenance.changedSinceUpload.length : null;

@@ -13,7 +13,7 @@
  */
 import * as vscode from 'vscode';
 import { EXTENSION_VERSION, getTraceServerLevel, isTraceOn } from './config';
-import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection } from './controller/connection/controllerConnection';
+import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection, noteGplCleared } from './controller/connection/controllerConnection';
 import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployment/deployRecord';
 import { getControllerConfig } from './controller/connection/controllerConnection';
 import { normalizeAbsoluteRemoteDir } from './controller/files/ftpClient';
@@ -106,6 +106,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(onRemoteFolderCleared(e => {
 		if (e.base.toLowerCase() !== normalizeAbsoluteRemoteDir(getControllerConfig().ftpBasePath).toLowerCase()) { return; }
 		h.releaseCompileStale(e.deleted, `${e.base} 에서 폴더를 지움(제어기에 소스 없음)`, e.host);
+		// 일부러 비운 직후 배포의 "재부팅 정황" 안내가 틀리지 않게 시각을 남긴다(2026-11-05 inbox).
+		noteGplCleared(e.host);
 	}));
 	// "컴파일 검증 필요" 상태도 같은 workspaceState 에 영속한다 — 창을 다시 열어도 "아직 검증 안 됨"은 사실 그대로다(§1-GN).
 	h.compileStaleProjects.attach(context.workspaceState);

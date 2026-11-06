@@ -45,6 +45,8 @@ import './language/analysis/referenceScope.test';
 import './language/analysis/moduleDependencies.test';
 import './language/documentation/requiresHeader.test';
 import './project/sources/sourceOrder.test';
+import './project/sources/sourceMinify.test';
+import './project/sources/sourceReachability.test';
 import './project/gpr/dependencyCheck.test';
 import './project/gpr/fileDepsCache.test';
 import './language/analysis/referenceCandidates.test';

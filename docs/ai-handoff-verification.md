@@ -11,6 +11,15 @@
 
 ## 확인 대기 항목
 
+- [ ] **(2026-11-06, §1-HD) 0.27.14 배포 전처리 — 실기 확인(①③④는 Stop·Compile 을 보낸다 — 장비 정지 상태에서, ②는 Start — 저속·사용자 확인).**
+  ① Sample Prep App 워크스페이스 설정 `"gpl.deploy.preprocess": { "projects": { "App": { "stripComments": true, "excludeUnreachableLibraryFiles": true } } }` →
+  `deploy_project build` 전후 `Show Memory`. Output 에 `✂ 전처리` 줄과 제외 5개(Core_Parse·Net_Client·Device_Cylinder·Robot_Data·Frame_Tool), `/GPL/PaL/Project.gpr` 에 그 줄이 없고
+  예전 업로드분이 `− del … (배포 전처리로 제외 — 예전 업로드분)` 으로 지워지는지, Compile STATUS 0, 결과 `preprocess.savedBytes`. 기대(추정): 업로드 몫 −0.8 MB 안팎 + 컴파일 몫 −0.2 MB 안팎.
+  ② Start 뒤 문자열 진입점 쓰레드(`New Thread("FLR.…")` 등)·로그 포트(NLG)가 정상인지 — 런타임에만 드러나는 누락 확인.
+  ③ 주석 블록 아래 줄에 BP → 그 줄에서 서는지, 일부러 넣은 컴파일 오류의 file:line 이 원본 줄과 같은지.
+  ④ 설정을 끈 뒤 다시 배포 → 원본이 다시 올라가고(지문 다름 → 업로드) 뺐던 라이브러리 파일이 `/GPL/PaL` 에 돌아오는지. Save to Flash 사본(`/flash/projects`)은 주석이 있는 원본인지.
+  ⑤ 수신함 프로브 `tools/_mem/probe/MEMU_Main.gpl` 을 열어 `Mid(CStr(i) & long300, …)` 줄에만 정보 진단 `mid-temporary-argument` 이 뜨고 변수 형태엔 없는지(제어기 불필요).
+
 - [ ] **(2026-11-05, §1-HC) 0.27.13 수신함 반영 — 실기 확인(테스트 제어기 192.168.0.1, ②는 Unload 를 보낸다).**
   ① 디버그 세션(App, ProjectLibrary PaL·Gantry)에서 `Gantry/Gantry_Station.gpl:310` 거터 클릭 → GPL Traffic 에 `Set Break Gantry "Gantry_Station.gpl"310`, 점이 빨강.
   프로젝트·라이브러리 밖 파일은 회색 점 + `BP 전송 생략` 한 줄. MCP `set_breakpoint {file:"PaL/Data_Store.gpl", project:"App"}` → `Set Break PaL …`·`locationRewritten`,

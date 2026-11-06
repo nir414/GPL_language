@@ -171,8 +171,8 @@ test('결과 요약 한 줄: 업로드/컴파일/동기화 상태가 목록에�
     'uploaded 71 · skipped 0 · libs PaL 38/0, Gantry 6/1 · compileErrors 0 · inSync',
   );
   assert.equal(
-    summarizeOperationResult({ result: { ...deployResult, preprocess: { applied: true, savedBytes: 975000, excluded: [{ remotePath: '/GPL/PaL/Net_Client.gpl' }] } } }),
-    'uploaded 71 · skipped 0 · preprocess −952 KB · excluded 1 · compileErrors 0 · inSync',
+    summarizeOperationResult({ result: { ...deployResult, preprocess: { applied: true, savedBytes: 975000, excluded: [{ remotePath: '/GPL/PaL/Net_Client.gpl' }], removedMemberCount: 350 } } }),
+    'uploaded 71 · skipped 0 · preprocess −952 KB · excluded 1 · members −350 · compileErrors 0 · inSync',
   );
   assert.equal(
     summarizeOperationResult({ result: { ...deployResult, preprocess: { applied: false, note: '클래식 경로' } } }),

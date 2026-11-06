@@ -1919,11 +1919,13 @@ tool('deploy_project',
         stripComments: z.boolean().optional(),
         trimWhitespace: z.boolean().optional(),
         excludeUnreachableLibraryFiles: z.boolean().optional(),
+        removeUnusedMembers: z.boolean().optional(),
         keepFiles: z.array(z.string()).optional(),
       }),
     ]).optional().describe('배포 전처리 이번 호출만 덮어쓰기(설정 gpl.deploy.preprocess 위에 얹음, false=끔). 메모리 절약용 — 워크스페이스 밖 사본을 '
       + '올린다(줄 번호 유지). stripComments=주석 제거, trimWhitespace=들여쓰기·줄 끝 공백 제거, excludeUnreachableLibraryFiles=실행 프로젝트에서 '
-      + '이름으로 닿지 않는 라이브러리 파일 제외, keepFiles=늘 포함할 파일/Module 이름. 결과는 result.preprocess(줄인 바이트·제외 파일)'),
+      + '이름으로 닿지 않는 라이브러리 파일 제외, removeUnusedMembers=라이브러리 안의 닿지 않는 선언(Sub·Function·Class·Const…)을 빈 줄로, '
+      + 'keepFiles=늘 남길 파일/Module/선언(Name·Container.Name). 결과는 result.preprocess(줄인 바이트·제외 파일·removedMembers)'),
   },
   async ({ mode, project, projectDir, projectFile, saveDirty, confirmStart, ignoreCompileStale, timeoutMs, idempotencyKey, verbose, preprocess }) => {
     const m = mode ?? 'build';

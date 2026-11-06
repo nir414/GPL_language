@@ -371,7 +371,7 @@ async function deployLocked(
         clearDiagnostics: () => diagnosticCollection.clear(),
         // 전처리(미사용 제외)로 뺀 파일이 있으면 `-729 Undefined symbol` 에 그 파일을 짚는 안내를 붙인다(deployPreprocess).
         applyCompileDiagnostics: errors => applyCompileDiagnostics(errors, options.projectDir, diagnosticCollection,
-            err => (err.code === -729 && ctx.preprocess ? preprocessUndefinedSymbolHint(err.message, ctx.preprocess.excluded) : undefined)),
+            err => (err.code === -729 && ctx.preprocess ? preprocessUndefinedSymbolHint(err.message, ctx.preprocess.hintEntries) : undefined)),
         readSourceExtensionsSetting: () => vscode.workspace.getConfiguration('gpl').get<unknown>('project.sourceExtensions'),
         // 리소스 범위 — 프로젝트 폴더의 워크스페이스 폴더 설정을 따른다(프로젝트별 값은 설정 안의 projects 맵).
         readPreprocessSetting: projectDir => vscode.workspace.getConfiguration('gpl', vscode.Uri.file(projectDir)).get<unknown>('deploy.preprocess'),

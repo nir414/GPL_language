@@ -12,7 +12,9 @@
  * - `excludeUnreachableLibraryFiles`: 실행 프로젝트의 소스에서 이름으로 닿지 않는 **라이브러리** 파일을 올리지 않고, 사본의
  *   라이브러리 `.gpr` 에서도 그 `ProjectSource` 줄을 뺀다(판정: `project/sources/sourceReachability.ts`). 실행 프로젝트 자신의
  *   파일과 이 배포가 올리지 않는 라이브러리의 파일은 빼지 않는다(그쪽 `.gpr` 은 우리가 고칠 수 없다).
- * - `keepFiles`: 늘 포함할 라이브러리 파일(파일 이름·확장자 뺀 이름·라이브러리 폴더 기준 경로·Module/Class 이름).
+ * - `removeUnusedMembers`: 남은 라이브러리 파일 안에서 닿지 않는 선언(Sub·Function·Property·Class·Const·변수·Delegate)의 줄을 빈 줄로
+ *   바꾼다(판정: `project/sources/memberScan.ts`·`memberReachability.ts`). 줄 번호는 그대로다.
+ * - `keepFiles`: 늘 포함할 라이브러리 파일(파일 이름·확장자 뺀 이름·라이브러리 폴더 기준 경로·Module/Class 이름)과 선언(`Name`·`Container.Name`).
  */
 
 import * as path from 'path';
@@ -20,31 +22,36 @@ import { parseGprText } from '../../project/gpr/gprSync';
 import type { LibraryGraphNode } from '../../project/sources/projectSources';
 import { analyzeSourceReferences, computeReachableSources } from '../../project/sources/sourceReachability';
 import type { SourceReferenceInfo } from '../../project/sources/sourceReachability';
+import { scanSourceMembers } from '../../project/sources/memberScan';
+import { computeMemberReachability } from '../../project/sources/memberReachability';
+import type { MemberUnitFile, RemovedMember } from '../../project/sources/memberReachability';
 import { isPathUnder, normalizePathKey } from '../../util/pathKey';
 
 export interface DeployPreprocessOptions {
     stripComments: boolean;
     trimWhitespace: boolean;
     excludeUnreachableLibraryFiles: boolean;
+    removeUnusedMembers: boolean;
     /** 늘 포함할 라이브러리 파일(머리말 참고). 설정·프로젝트별·호출 인자가 합쳐진다. */
     keepFiles: string[];
 }
 
+const FLAG_KEYS = ['stripComments', 'trimWhitespace', 'excludeUnreachableLibraryFiles', 'removeUnusedMembers'] as const;
+
 export function disabledPreprocess(): DeployPreprocessOptions {
-    return { stripComments: false, trimWhitespace: false, excludeUnreachableLibraryFiles: false, keepFiles: [] };
+    return { stripComments: false, trimWhitespace: false, excludeUnreachableLibraryFiles: false, removeUnusedMembers: false, keepFiles: [] };
 }
 
 export function isPreprocessActive(opts: DeployPreprocessOptions | undefined): boolean {
-    return !!opts && (opts.stripComments || opts.trimWhitespace || opts.excludeUnreachableLibraryFiles);
+    return !!opts && (opts.stripComments || opts.trimWhitespace || opts.excludeUnreachableLibraryFiles || opts.removeUnusedMembers);
 }
 
 /** 켜진 항목 이름 — 트레이스·보고용(`stripComments+excludeUnreachableLibraryFiles`). */
 export function describePreprocessOptions(opts: DeployPreprocessOptions): string {
-    const on = (['stripComments', 'trimWhitespace', 'excludeUnreachableLibraryFiles'] as const).filter(k => opts[k]);
+    const on = FLAG_KEYS.filter(k => opts[k]);
     return on.length > 0 ? on.join('+') : 'off';
 }
 
-const FLAG_KEYS = ['stripComments', 'trimWhitespace', 'excludeUnreachableLibraryFiles'] as const;
 
 function readPartial(raw: unknown): Partial<DeployPreprocessOptions> {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return {}; }
@@ -185,9 +192,11 @@ export function planTreeShake(input: TreeShakeInput): TreeShakePlan {
                 }
                 continue;
             }
-            infos.set(key, analyzeSourceReferences(text, file));
+            const info = analyzeSourceReferences(text, file);
+            infos.set(key, info);
             texts.set(key, { file, text, node });
-            if (canExclude) { candidateKeys.push(key); } else { roots.push(key); }
+            // 모듈 Init 은 참조 없이 자동 호출되므로(부작용이 있을 수 있다) 그 파일은 빼지 않는다.
+            if (canExclude && !info.hasModuleInit) { candidateKeys.push(key); } else { roots.push(key); }
         }
     }
     plan.candidates = candidateKeys.length;
@@ -248,6 +257,78 @@ export function rewriteGprWithout(gprPath: string, gprText: string, excludedKeys
     return kept.join(parsed.eol) + (parsed.endsWithNewline ? parsed.eol : '');
 }
 
+// ─── 선언 단위 미사용 제거 계획 ──────────────────────────────────────────────
+
+export interface PlannedMemberRemoval extends RemovedMember {
+    file: string;
+    remotePath: string;
+}
+
+export interface MemberShakePlan {
+    skipped?: string;
+    /** 분석한 라이브러리 선언 수(지울 수 있는 파일 기준). */
+    candidateMembers: number;
+    removed: PlannedMemberRemoval[];
+    /** 파일 경로 키(`normalizePathKey`) → 빈 줄로 바꿀 물리 줄 범위. */
+    ranges: Map<string, [number, number][]>;
+    /** 구조를 읽지 못해 손대지 않은 라이브러리 파일(원격 경로)과 이유. */
+    irregular: { remotePath: string; reason: string }[];
+}
+
+/** keepFiles 항목이 파일 자체를 가리키는가(파일 이름·확장자 뺀 이름·폴더 기준 경로). 선언 이름은 따로 본다. */
+function keepNamesFile(entry: string, file: string, nodeDir: string): boolean {
+    const e = entry.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+    const base = path.basename(file).toLowerCase();
+    if (e === base || e === base.replace(/\.[^.]*$/, '')) { return true; }
+    const rel = path.relative(nodeDir, file).replace(/\\/g, '/').toLowerCase();
+    return e === rel || rel.endsWith(`/${e}`);
+}
+
+/**
+ * 남은(미사용 제외되지 않은) 소스 전체로 선언 그래프를 만들어, 라이브러리 파일 안의 닿지 않는 선언을 고른다.
+ * 출발점·후보 규칙은 `planTreeShake` 와 같다 — 실행 프로젝트 소스와 이 배포가 올리지 않는 라이브러리는 손대지 않는다.
+ * keepFiles 의 파일 항목은 그 파일 전체를, 이름 항목(`Name`·`Container.Name`)은 그 선언을 남긴다.
+ */
+export function planMemberShake(input: TreeShakeInput, excludedKeys: ReadonlySet<string> = new Set()): MemberShakePlan {
+    const plan: MemberShakePlan = { candidateMembers: 0, removed: [], ranges: new Map(), irregular: [] };
+    if (!input.runnable || !input.compileRootIsSelf) {
+        plan.skipped = !input.runnable
+            ? '.gpr 에 ProjectStart 가 없어(그룹) 출발점을 정할 수 없습니다 — 선언 단위 제거를 건너뜁니다.'
+            : '내장형 하위 패키지는 컴파일 루트가 따로 있어 선언 단위 제거를 건너뜁니다.';
+        return plan;
+    }
+    const rootKey = normalizePathKey(input.rootDir);
+    const files = new Map<string, MemberUnitFile>();
+    const paths = new Map<string, string>();
+    for (const [nodeKey, node] of input.nodes) {
+        const canRemove = nodeKey !== rootKey && input.roots.some(r => isPathUnder(node.dir, r.localDir));
+        for (const file of node.sources) {
+            const key = normalizePathKey(file);
+            if (!input.isSource(file) || files.has(key) || excludedKeys.has(key)) { continue; }
+            const text = input.readText(file);
+            if (text === undefined) {
+                if (canRemove) { continue; }
+                plan.skipped = `소스를 읽지 못해 참조를 확인할 수 없습니다(${path.basename(file)}) — 선언 단위 제거를 건너뜁니다.`;
+                return { ...plan, candidateMembers: 0 };
+            }
+            const scan = scanSourceMembers(text);
+            const pinned = input.keepFiles.some(e => keepNamesFile(e, file, node.dir));
+            const candidate = canRemove && !pinned && !scan.irregular;
+            if (canRemove && scan.irregular) { plan.irregular.push({ remotePath: remotePathFor(file, input.roots) ?? file, reason: scan.irregular }); }
+            files.set(key, { scan, candidate });
+            paths.set(key, file);
+        }
+    }
+    const result = computeMemberReachability(files, input.keepFiles);
+    plan.candidateMembers = result.candidateMembers;
+    plan.ranges = result.ranges;
+    plan.removed = result.removed.map(r => {
+        const file = paths.get(r.fileKey)!;
+        return { ...r, file, remotePath: remotePathFor(file, input.roots) ?? file };
+    });
+    return plan;
+}
+
 // ─── 결과 요약(작업 기록·MCP 응답) ──────────────────────────────────────────
 
 export interface DeployPreprocessSummary {
@@ -271,18 +352,31 @@ export interface DeployPreprocessSummary {
     unmatchedKeepFiles?: string[];
     /** 라이브러리 원격 폴더에 남아 있던 제외 파일을 지운 수(정지 확인 뒤, Upload Only 는 보류). */
     remoteDeleted?: number;
+    /** 선언 단위 제거(`removeUnusedMembers`) — 지운 선언 수·줄 수와 앞쪽 일부 목록(전체는 트레이스). */
+    removedMemberCount?: number;
+    removedMemberLines?: number;
+    removedMembers?: { remotePath: string; kind: string; name: string; container?: string; lines: number }[];
+    memberShakeSkipped?: string;
+    /** 구조를 읽지 못해 선언 단위 제거를 하지 않은 라이브러리 파일. */
+    memberShakeIrregular?: { remotePath: string; reason: string }[];
     note?: string;
 }
 
-/** `-729 Undefined symbol <name>` 이 제외한 파일의 선언 이름이면 그 파일을, 아니면 일반 안내를 돌려준다. 제외가 없으면 undefined. */
+/** 요약에 싣는 지운 선언 목록 상한(작업 기록 크기). */
+export const SUMMARY_MEMBER_LIMIT = 100;
+
+/**
+ * `-729 Undefined symbol <name>` 이 전처리로 뺀 것(파일 또는 선언)의 이름이면 그것을, 아니면 일반 안내를 돌려준다. 뺀 것이 없으면 undefined.
+ * `excluded` 항목: 뺀 파일(선언 이름들) 또는 지운 선언(그 이름 하나, remotePath 에 `파일 (Container.Name)`).
+ */
 export function preprocessUndefinedSymbolHint(message: string, excluded: readonly Pick<ExcludedSource, 'remotePath' | 'declared'>[]): string | undefined {
     if (excluded.length === 0) { return undefined; }
     const name = /Undefined symbol\*?\s*([A-Za-z_]\w*)/i.exec(message)?.[1]?.toLowerCase();
     const owners = name ? excluded.filter(e => e.declared.includes(name)) : [];
     if (owners.length > 0) {
-        return `배포 전처리(미사용 제외)가 이 이름을 선언한 ${owners.map(o => o.remotePath).join(', ')} 을(를) 뺐습니다 — `
-            + 'gpl.deploy.preprocess 의 keepFiles 에 추가하거나 excludeUnreachableLibraryFiles 를 끄세요.';
+        return `배포 전처리(미사용 제외)가 이 이름을 선언한 ${owners.slice(0, 5).map(o => o.remotePath).join(', ')} 을(를) 뺐습니다 — `
+            + 'gpl.deploy.preprocess 의 keepFiles 에 이름을 추가하거나 excludeUnreachableLibraryFiles·removeUnusedMembers 를 끄세요.';
     }
-    return `배포 전처리가 라이브러리 파일 ${excluded.length}개를 뺐습니다 — 이 오류가 그 때문이면 gpl.deploy.preprocess 의 keepFiles 에 `
-        + '추가하거나 excludeUnreachableLibraryFiles 를 끄세요.';
+    return `배포 전처리가 라이브러리에서 파일·선언 ${excluded.length}개를 뺐습니다 — 이 오류가 그 때문이면 gpl.deploy.preprocess 의 keepFiles 에 `
+        + '추가하거나 excludeUnreachableLibraryFiles·removeUnusedMembers 를 끄세요.';
 }

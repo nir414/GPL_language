@@ -93,6 +93,7 @@ export function recordCompileSnapshot(ctx: DeployContext): void {
                 preprocess: {
                     options: describePreprocessOptions(ctx.preprocess.options),
                     excludedFiles: ctx.preprocess.summary.excluded.map(e => e.remotePath),
+                    ...(ctx.preprocess.summary.removedMemberCount ? { removedMembers: ctx.preprocess.summary.removedMemberCount } : {}),
                 },
             } : {}),
         });

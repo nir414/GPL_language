@@ -30,17 +30,23 @@ import type { FileStamp } from './deployRecordCore';
 import {
     describePreprocessOptions,
     isPreprocessActive,
+    planMemberShake,
     planTreeShake,
     remotePathFor,
     resolvePreprocessOptions,
+    SUMMARY_MEMBER_LIMIT,
 } from './deployPreprocess';
-import type { DeployPreprocessOptions, DeployPreprocessSummary, ExcludedSource, PreprocessRoot, TreeShakePlan } from './deployPreprocess';
+import type {
+    DeployPreprocessOptions, DeployPreprocessSummary, ExcludedSource, MemberShakePlan, PreprocessRoot, TreeShakeInput, TreeShakePlan,
+} from './deployPreprocess';
 
 /** 업로드 단계가 쓰는 전처리 결과 — 원본 폴더 → 사본 폴더 대응과 제외 목록. */
 export interface PreparedPreprocess {
     readonly options: DeployPreprocessOptions;
     readonly summary: DeployPreprocessSummary;
     readonly excluded: readonly ExcludedSource[];
+    /** 컴파일 `-729` 안내용 — 뺀 파일과 지운 선언(이름). */
+    readonly hintEntries: readonly Pick<ExcludedSource, 'remotePath' | 'declared'>[];
     /** 원본 업로드 폴더 → 올릴 폴더(사본). 모르는 폴더면 원본 그대로. */
     uploadDirFor(localDir: string): string;
     /** 원격 경로가 미사용 제외 파일인가(미러 삭제 로그 구분용). */
@@ -119,6 +125,28 @@ export function preparePreprocess(ctx: DeployContext, project: DeployProjectInfo
     }
 }
 
+/** 미사용 제외(파일)·선언 단위 제거 계획 — 켜진 것만. 그래프는 한 번만 만든다. */
+function planShakes(project: DeployProjectInfo, roots: PreprocessRoot[], opts: DeployPreprocessOptions, isSource: (f: string) => boolean)
+    : { shake?: TreeShakePlan; members?: MemberShakePlan } {
+    if (!opts.excludeUnreachableLibraryFiles && !opts.removeUnusedMembers) { return {}; }
+    const graph = buildLibraryGraph(project.gprPath, project.gprText);
+    const compileRoot = findCompileRootGpr(project.gprPath);
+    const input: TreeShakeInput = {
+        nodes: graph.nodes,
+        rootDir: graph.rootDir,
+        runnable: !!project.gprInfo.projectStart,
+        compileRootIsSelf: !compileRoot || normalizePathKey(compileRoot) === normalizePathKey(project.gprPath),
+        roots,
+        keepFiles: opts.keepFiles,
+        isSource,
+        readText: readLatin1,
+    };
+    const shake = opts.excludeUnreachableLibraryFiles ? planTreeShake(input) : undefined;
+    const excludedKeys = new Set((shake?.excluded ?? []).map(e => normalizePathKey(e.file)));
+    const members = opts.removeUnusedMembers ? planMemberShake(input, excludedKeys) : undefined;
+    return { shake, members };
+}
+
 function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: DeployTarget, opts: DeployPreprocessOptions): PreparedPreprocess {
     const { options, cfg, result, pushTrace, host } = ctx;
     const roots: PreprocessRoot[] = [
@@ -128,24 +156,10 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
     const exts = sourceExtensionsFrom(host.readSourceExtensionsSetting()).map(e => e.toLowerCase());
     const isSource = (file: string): boolean => exts.includes(path.extname(file).toLowerCase());
     const minifyOpts = { stripComments: opts.stripComments, trimWhitespace: opts.trimWhitespace };
-
-    let shake: TreeShakePlan | undefined;
-    if (opts.excludeUnreachableLibraryFiles) {
-        const graph = buildLibraryGraph(project.gprPath, project.gprText);
-        const compileRoot = findCompileRootGpr(project.gprPath);
-        shake = planTreeShake({
-            nodes: graph.nodes,
-            rootDir: graph.rootDir,
-            runnable: !!project.gprInfo.projectStart,
-            compileRootIsSelf: !compileRoot || normalizePathKey(compileRoot) === normalizePathKey(project.gprPath),
-            roots,
-            keepFiles: opts.keepFiles,
-            isSource,
-            readText: readLatin1,
-        });
-    }
-    const excludedKeys = new Set((shake?.excluded ?? []).map(e => normalizePathKey(e.file)));
-    const excludedRemote = new Set((shake?.excluded ?? []).map(e => e.remotePath.toLowerCase()));
+    const { shake, members } = planShakes(project, roots, opts, isSource);
+    const excluded = shake?.excluded ?? [];
+    const excludedKeys = new Set(excluded.map(e => normalizePathKey(e.file)));
+    const excludedRemote = new Set(excluded.map(e => e.remotePath.toLowerCase()));
 
     /** 원본 파일 → 올릴 내용. null 이면 올리지 않는다(미사용 제외). */
     const transform = (file: string): Buffer | null => {
@@ -154,53 +168,44 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
         const gpr = shake?.gprRewrites.get(key);
         if (gpr !== undefined) { return Buffer.from(gpr.text, 'latin1'); }
         const content = fs.readFileSync(file);
-        return isSource(file) ? minifyGplBuffer(content, minifyOpts) : content;
+        return isSource(file) ? minifyGplBuffer(content, minifyOpts, members?.ranges.get(key) ?? []) : content;
     };
 
     const stageOf = new Map<string, string>();
-    let sourceFiles = 0;
-    let before = 0;
-    let after = 0;
+    const bytes = { sourceFiles: 0, before: 0, after: 0 };
     for (const root of roots) {
         const stageDir = preprocessStageDir(cfg.ip, root.remoteDir);
         fs.mkdirSync(stageDir, { recursive: true });
         clearDir(stageDir);
         for (const file of listUploadFiles(root.localDir)) {
             const source = isSource(file);
-            if (source) { before += fs.statSync(file).size; }
+            if (source) { bytes.before += fs.statSync(file).size; }
             const out = transform(file);
             if (out === null) { continue; }
             const dest = path.join(stageDir, path.relative(root.localDir, file));
             fs.mkdirSync(path.dirname(dest), { recursive: true });
             fs.writeFileSync(dest, out);
-            if (source) { sourceFiles++; after += out.length; }
+            if (source) { bytes.sourceFiles++; bytes.after += out.length; }
         }
         stageOf.set(normalizePathKey(root.localDir), stageDir);
     }
 
-    const excluded = shake?.excluded ?? [];
-    const summary: DeployPreprocessSummary = {
-        applied: true,
-        options: opts,
-        stageDir: preprocessStageDir(cfg.ip, ''),
-        sourceFiles,
-        sourceBytesBefore: before,
-        sourceBytesAfter: after,
-        savedBytes: before - after,
-        excluded: excluded.map(e => ({ remotePath: e.remotePath, bytes: e.bytes, lines: e.lines })),
-        excludedBytes: excluded.reduce((s, e) => s + e.bytes, 0),
-        excludedLines: excluded.reduce((s, e) => s + e.lines, 0),
-        rewrittenGpr: [...(shake?.gprRewrites.values() ?? [])].map(g => remotePathFor(g.gprPath, roots) ?? g.gprPath),
-        ...(shake?.skipped ? { treeShakeSkipped: shake.skipped } : {}),
-        ...(shake && shake.unmatchedKeep.length > 0 ? { unmatchedKeepFiles: shake.unmatchedKeep } : {}),
-    };
+    const summary = buildSummary(cfg.ip, opts, roots, bytes, shake, members);
     result.preprocess = summary;
-    tracePreprocess(pushTrace, summary, shake);
+    tracePreprocess(pushTrace, summary, shake, members);
 
+    const hintEntries = [
+        ...excluded,
+        ...(members?.removed ?? []).map(r => ({
+            remotePath: `${r.remotePath}:${r.startLine + 1} (${r.container ? `${r.container}.` : ''}${r.name})`,
+            declared: [r.name.toLowerCase()],
+        })),
+    ];
     return {
         options: opts,
         summary,
         excluded,
+        hintEntries,
         uploadDirFor: localDir => stageOf.get(normalizePathKey(localDir)) ?? localDir,
         isExcludedRemote: remotePath => excludedRemote.has(remotePath.toLowerCase()),
         staleExcludedRefs: (remoteDir, manifest) => {
@@ -225,7 +230,44 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
     };
 }
 
-function tracePreprocess(pushTrace: (line: string) => void, s: DeployPreprocessSummary, shake: TreeShakePlan | undefined): void {
+function buildSummary(
+    ip: string,
+    opts: DeployPreprocessOptions,
+    roots: PreprocessRoot[],
+    bytes: { sourceFiles: number; before: number; after: number },
+    shake: TreeShakePlan | undefined,
+    members: MemberShakePlan | undefined,
+): DeployPreprocessSummary {
+    const excluded = shake?.excluded ?? [];
+    const removed = members?.removed ?? [];
+    return {
+        applied: true,
+        options: opts,
+        stageDir: preprocessStageDir(ip, ''),
+        sourceFiles: bytes.sourceFiles,
+        sourceBytesBefore: bytes.before,
+        sourceBytesAfter: bytes.after,
+        savedBytes: bytes.before - bytes.after,
+        excluded: excluded.map(e => ({ remotePath: e.remotePath, bytes: e.bytes, lines: e.lines })),
+        excludedBytes: excluded.reduce((n, e) => n + e.bytes, 0),
+        excludedLines: excluded.reduce((n, e) => n + e.lines, 0),
+        rewrittenGpr: [...(shake?.gprRewrites.values() ?? [])].map(g => remotePathFor(g.gprPath, roots) ?? g.gprPath),
+        ...(shake?.skipped ? { treeShakeSkipped: shake.skipped } : {}),
+        // 선언 단위 제거가 켜져 있으면 keepFiles 에 선언 이름이 섞이므로 "맞는 파일 없음" 경고를 내지 않는다.
+        ...(shake && shake.unmatchedKeep.length > 0 && !opts.removeUnusedMembers ? { unmatchedKeepFiles: shake.unmatchedKeep } : {}),
+        ...(members ? {
+            removedMemberCount: removed.length,
+            removedMemberLines: removed.reduce((n, r) => n + r.endLine - r.startLine + 1, 0),
+            removedMembers: removed.slice(0, SUMMARY_MEMBER_LIMIT).map(r => ({
+                remotePath: r.remotePath, kind: r.kind, name: r.name, ...(r.container ? { container: r.container } : {}), lines: r.endLine - r.startLine + 1,
+            })),
+            ...(members.skipped ? { memberShakeSkipped: members.skipped } : {}),
+            ...(members.irregular.length > 0 ? { memberShakeIrregular: members.irregular } : {}),
+        } : {}),
+    };
+}
+
+function tracePreprocess(pushTrace: (line: string) => void, s: DeployPreprocessSummary, shake: TreeShakePlan | undefined, members: MemberShakePlan | undefined): void {
     const pct = s.sourceBytesBefore > 0 ? ` (−${Math.round((s.savedBytes / s.sourceBytesBefore) * 100)}%)` : '';
     pushTrace(`│ ✂ 전처리(${describePreprocessOptions(s.options)}): 소스 ${formatBytes(s.sourceBytesBefore)} → ${formatBytes(s.sourceBytesAfter)}${pct}, `
         + `사본 ${s.stageDir} (워크스페이스는 그대로)`);
@@ -236,6 +278,15 @@ function tracePreprocess(pushTrace: (line: string) => void, s: DeployPreprocessS
         for (const e of s.excluded.slice(0, 12)) { pushTrace(`│   − ${e.remotePath}`); }
         if (s.excluded.length > 12) { pushTrace(`│   … 외 ${s.excluded.length - 12}개`); }
         for (const g of s.rewrittenGpr) { pushTrace(`│   ✎ ${g} — 사본에서 제외 파일의 ProjectSource 줄을 뺌`); }
+    }
+    if (members?.skipped) { pushTrace(`│   선언 단위 제거 생략 — ${members.skipped}`); }
+    if (members && !members.skipped) {
+        pushTrace(`│   선언 단위 제거: 라이브러리 선언 ${members.candidateMembers}개 중 ${s.removedMemberCount ?? 0}개를 빈 줄로(${s.removedMemberLines ?? 0}줄, 줄 번호 유지)`);
+        for (const r of members.removed.slice(0, 20)) {
+            pushTrace(`│   − ${r.remotePath}:${r.startLine + 1} ${r.kind} ${r.container ? `${r.container}.` : ''}${r.name}`);
+        }
+        if (members.removed.length > 20) { pushTrace(`│   … 외 ${members.removed.length - 20}개(전체는 결과 preprocess.removedMembers, 상한 ${SUMMARY_MEMBER_LIMIT})`); }
+        for (const f of members.irregular) { pushTrace(`│   ⚠ 구조를 읽지 못해 손대지 않음: ${f.remotePath} — ${f.reason}`); }
     }
     if (s.unmatchedKeepFiles) { pushTrace(`│   ⚠ keepFiles 중 맞는 라이브러리 파일이 없는 항목: ${s.unmatchedKeepFiles.join(', ')}`); }
 }

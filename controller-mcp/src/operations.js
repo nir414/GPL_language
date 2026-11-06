@@ -220,7 +220,8 @@ export function summarizeOperationResult(rec) {
     } else {
       const saved = typeof p.savedBytes === 'number' ? ` −${(p.savedBytes / 1024).toFixed(0)} KB` : '';
       const excluded = Array.isArray(p.excluded) && p.excluded.length > 0 ? ` · excluded ${p.excluded.length}` : '';
-      parts.push(`preprocess${saved}${excluded}`);
+      const members = typeof p.removedMemberCount === 'number' && p.removedMemberCount > 0 ? ` · members −${p.removedMemberCount}` : '';
+      parts.push(`preprocess${saved}${excluded}${members}`);
     }
   }
   if (typeof r.compileErrorCount === 'number') parts.push(`compileErrors ${r.compileErrorCount}`);

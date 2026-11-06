@@ -24,9 +24,9 @@ test('deployPreprocess: 설정 해석 — 공통 < projects.<이름>(대소문�
         projects: { app: { excludeUnreachableLibraryFiles: true, keepFiles: ['FTL', 'net_log'] } },
     };
     const app = resolvePreprocessOptions(setting, 'App');
-    assert.deepStrictEqual(app, { stripComments: true, trimWhitespace: false, excludeUnreachableLibraryFiles: true, keepFiles: ['Net_Log', 'FTL'] });
+    assert.deepStrictEqual(app, { stripComments: true, trimWhitespace: false, excludeUnreachableLibraryFiles: true, removeUnusedMembers: false, keepFiles: ['Net_Log', 'FTL'] });
     const other = resolvePreprocessOptions(setting, 'Other', { trimWhitespace: true, stripComments: false });
-    assert.deepStrictEqual(other, { stripComments: false, trimWhitespace: true, excludeUnreachableLibraryFiles: false, keepFiles: ['Net_Log'] });
+    assert.deepStrictEqual(other, { stripComments: false, trimWhitespace: true, excludeUnreachableLibraryFiles: false, removeUnusedMembers: false, keepFiles: ['Net_Log'] });
     assert.strictEqual(isPreprocessActive(resolvePreprocessOptions(setting, 'App', false)), false);
     assert.strictEqual(isPreprocessActive(resolvePreprocessOptions(undefined, 'App')), false);
     assert.strictEqual(isPreprocessActive(resolvePreprocessOptions({ stripComments: 'yes', projects: [] }, 'App')), false, '모르는 모양은 무시');
@@ -153,5 +153,38 @@ test('deployPreprocessStage: 꺼져 있으면 아무 기록도 없고, 클래식
         assert.match(classic.result.preprocess!.note!, /클래식/);
     } finally {
         fs.rmSync(ws.projects, { recursive: true, force: true });
+    }
+});
+
+test('deployPreprocessStage: removeUnusedMembers — 라이브러리 안의 안 쓰는 선언을 빈 줄로(줄 수 유지), 앱 파일은 그대로, -729 안내에 선언이 잡힌다', () => {
+    const ws = makeWorkspace();
+    const ip = '10.250.0.3';
+    try {
+        fs.writeFileSync(path.join(ws.pal, 'Core_Parse.gpl'),
+            'Module PRA\r\n    Public Sub ParseLine(s As String)\r\n    End Sub\r\n    Public Sub Dead()\r\n        Dim x As Integer\r\n    End Sub\r\nEnd Module\r\n');
+        const gprPath = path.join(ws.app, 'Project.gpr');
+        const gprText = fs.readFileSync(gprPath, 'utf8');
+        const project: DeployProjectInfo = { gprPath, gprText, gprInfo: parseGpr(gprText), folderName: 'App', projectName: 'App' };
+        const target = {
+            directActive: true,
+            ftpProjectDir: '/GPL/App',
+            libraryPlan: { uploads: [{ raw: 'PaL', localDir: ws.pal, remoteDir: '/GPL/PaL' }], covered: [], embedded: [], skipped: [], unresolved: [] },
+        } as unknown as DeployTarget;
+        const ctx = fakeContext(ws.app, { removeUnusedMembers: true, keepFiles: ['FTL.Offset'] }, ip);
+        const prepared = preparePreprocess(ctx, project, target)!;
+        const staged = fs.readFileSync(path.join(prepared.uploadDirFor(ws.pal), 'Core_Parse.gpl'), 'utf8');
+        assert.strictEqual(staged, 'Module PRA\r\n    Public Sub ParseLine(s As String)\r\n    End Sub\r\n\r\n\r\n\r\nEnd Module\r\n');
+        // Net_Client(NTC) 은 파일 제외가 꺼져 있으니 선언 단위로 비워진다. Frame_Tool 의 Offset 은 keep.
+        const ntc = fs.readFileSync(path.join(prepared.uploadDirFor(ws.pal), 'Net_Client.gpl'), 'utf8');
+        assert.strictEqual(ntc, 'Module NTC\r\n\r\n\r\nEnd Module\r\n');
+        assert.ok(fs.readFileSync(path.join(prepared.uploadDirFor(ws.pal), 'Frame_Tool.gpl'), 'utf8').includes('Offset'));
+        assert.strictEqual(fs.readFileSync(path.join(prepared.uploadDirFor(ws.app), 'App.gpl'), 'utf8'), fs.readFileSync(path.join(ws.app, 'App.gpl'), 'utf8'));
+        const s = ctx.result.preprocess!;
+        assert.strictEqual(s.removedMemberCount, 2);
+        assert.deepStrictEqual(s.removedMembers!.map(m => `${m.container}.${m.name}`).sort(), ['pra.Dead', 'ntc.Connect'].sort());
+        assert.match(preprocessUndefinedSymbolHint('*Undefined symbol* Connect', prepared.hintEntries)!, /Net_Client\.gpl:2 \(ntc\.Connect\)/);
+    } finally {
+        fs.rmSync(ws.projects, { recursive: true, force: true });
+        fs.rmSync(preprocessStageDir(ip, ''), { recursive: true, force: true });
     }
 });

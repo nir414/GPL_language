@@ -37,7 +37,7 @@ export interface CompiledRecord {
      * 배포 전처리 사본을 올려 컴파일했으면 그 요약(deployPreprocess) — 제어기 `/GPL` 소스가 로컬 원본과 다르다는 표시.
      * `files` 는 여전히 **로컬 원본** 지문이다(줄 번호가 같으므로 BP 신뢰성 판정은 원본 기준이 맞다).
      */
-    preprocess?: { options: string; excludedFiles: string[] };
+    preprocess?: { options: string; excludedFiles: string[]; removedMembers?: number };
 }
 
 export interface SnapshotDiff {

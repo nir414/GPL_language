@@ -411,6 +411,23 @@ function checkMidMemberAccess(ctx: DelegateContext, out: CompilerCheckFinding[])
 /** String 을 돌려주는 내장 함수(이 결과는 임시 문자열이다). GPL 에 없는 이름은 맞을 일이 없을 뿐이다. */
 const STRING_BUILTINS = new Set(['cstr', 'left', 'right', 'mid', 'ucase', 'lcase', 'trim', 'ltrim', 'rtrim', 'format', 'space', 'replace']);
 
+/**
+ * `Mid` 첫 인자가 새는 꼴의 임시 문자열인가 — 맨 바깥(괄호 밖)에 `&` 연결이 있거나, 식 전체가 문자열 내장 함수 호출 하나일 때.
+ * 사용자 Function 의 결과(`Mid(Foo(), …)`)나 그 안에서 만든 임시값(`Mid(Foo(a & b), …)`)은 새지 않았다(2026-11-06 실측 표).
+ */
+function isTemporaryStringExpression(expr: string, call: RegExp): boolean {
+    let depth = 0;
+    for (const ch of expr) {
+        if (ch === '(') { depth++; } else if (ch === ')') { depth--; } else if (ch === '&' && depth === 0) { return true; }
+    }
+    call.lastIndex = 0;
+    const head = call.exec(expr.trimStart());
+    if (!head || head.index !== 0 || !STRING_BUILTINS.has(head[1].toLowerCase())) { return false; }
+    const args = splitCallArgs(expr.trimStart(), head[0].length - 1);
+    const close = args[args.length - 1].end;
+    return expr.trimStart().slice(close + 1).trim() === '';
+}
+
 function checkMidTemporaryArgument(ctx: DelegateContext, out: CompilerCheckFinding[]): void {
     const re = /(?<![\w.])Mid\s*\(/gi;
     const call = new RegExp(`(?<![\\w.])(${IDENT})\\s*\\(`, 'g');
@@ -424,26 +441,16 @@ function checkMidTemporaryArgument(ctx: DelegateContext, out: CompilerCheckFindi
             const last = args[args.length - 1];
             if (args.length < 2 || ml.code[last.end] !== ')') { continue; }
             const expr = ml.code.slice(first.start, first.end);
-            let temporary = expr.includes('&');
-            if (!temporary) {
-                call.lastIndex = 0;
-                let c: RegExpExecArray | null;
-                while (!temporary && (c = call.exec(expr)) !== null) {
-                    const name = c[1];
-                    temporary = STRING_BUILTINS.has(name.toLowerCase())
-                        || ctx.visible(name).some(s => s.kind === GPLSymbolKind.Function && /^String\b/i.test(s.returnType ?? ''));
-                }
-            }
-            if (!temporary) { continue; }
+            if (!isTemporaryStringExpression(expr, call)) { continue; }
             const lead = expr.length - expr.trimStart().length;
             const trail = expr.length - expr.trimEnd().length;
             out.push({
                 ...toPhysical(ml, first.start + lead, first.end - trail),
                 code: 'mid-temporary-argument',
                 severity: 'information',
-                message: '`Mid` 의 첫 인자가 임시 문자열(`&` 연결·문자열 함수 결과)입니다. 그 문자열이 120자를 넘으면 호출마다 메모리가 돌아오지 않았습니다 '
-                    + '(GPL 4.2K5 시뮬 제어기 실측 2026-11-06: 300자 연결에 1회당 320 B, Unload 뒤에도 회복 안 됨). '
-                    + '변수에 먼저 받은 뒤 `Mid(변수, …)` 로 부르면 새지 않았습니다.',
+                message: '`Mid` 의 첫 인자가 임시 문자열(`&` 연결·`UCase` 같은 내장 함수 결과)입니다. 그 문자열이 120자를 넘으면 호출마다 메모리가 돌아오지 않았습니다 '
+                    + '(GPL 4.2K5 시뮬 제어기 실측 2026-11-06: 300자에 1회당 320 B, 1000자에 ≈1,120 B, 길이 인자를 생략해도 같음, Unload 뒤에도 회복 안 됨). '
+                    + '변수에 먼저 받은 뒤 `Mid(변수, …)` 로 부르거나 사용자 Function 의 결과를 넘기면 새지 않았습니다.',
             });
         }
     }

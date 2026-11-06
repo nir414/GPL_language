@@ -20,7 +20,8 @@
  * | `delegate-parameter-direct-call` | delegate 형 매개변수를 이름으로 바로 호출 → -729 | error |
  * | `mid-member-access` | `Mid(...).Method` → -712 | warning |
  * | `mid-temporary-argument` | `Mid(<& 연결·문자열 함수 결과>, …)` 가 120자를 넘으면 호출마다 메모리 누수(실측, 길이는 정적으로 모름) | information |
- * (뒤 여섯 규칙의 구현은 `delegateChecks.ts`)
+ * | `string-field-empty-init` | 클래스 인스턴스 String 필드의 `= ""` → 객체마다 칸당 +183 B(실측) | information |
+ * (`addressof-…` 부터 `mid-temporary-argument` 까지는 `delegateChecks.ts`, `string-field-empty-init` 은 `memoryChecks.ts`)
  *
  * 다른 파일의 심볼(라이브러리 프로젝트 포함)은 `CompilerSymbolLookup` 으로 받는다 — `SymbolCache` 가 구조적으로 맞는다.
  * 조회가 없으면(심볼 캐시 초기화 전·단위 테스트) 현재 파일만으로 판정하고, 확신할 수 없는 경우는 조용히 넘어간다.
@@ -31,6 +32,7 @@ import { findGplBuiltinMember, isGplBuiltinClassName } from '../dictionary/gplBu
 import { elementTypeOf } from '../analysis/receiverType';
 import { buildMappedLines, findStringLiterals, splitCallArgs, stripComment, toPhysical, trimSpan, MappedLine } from './logicalLines';
 import { findDelegateCheckFindings } from './delegateChecks';
+import { findMemoryCheckFindings } from './memoryChecks';
 import { normalizePathKey } from '../../util/pathKey';
 
 export type CompilerCheckSeverity = 'error' | 'warning' | 'information';
@@ -49,7 +51,8 @@ export type CompilerCheckCode =
     | 'delegate-signature-mismatch'
     | 'delegate-parameter-direct-call'
     | 'mid-member-access'
-    | 'mid-temporary-argument';
+    | 'mid-temporary-argument'
+    | 'string-field-empty-init';
 
 export interface CompilerCheckFinding {
     /** 물리 줄·열(0 기준). end 는 같은 줄의 끝 열(배타). */
@@ -533,5 +536,6 @@ export function findCompilerCheckFindings(content: string, filePath: string, loo
     checkByValStringNothing(ctx, out);
     checkJogSpeed(ctx, out);
     out.push(...findDelegateCheckFindings(content, filePath, lookup));
+    out.push(...findMemoryCheckFindings(content, filePath));
     return out.sort((a, b) => a.line - b.line || a.start - b.start);
 }

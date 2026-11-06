@@ -344,7 +344,11 @@ test('delegateChecks: Mid 첫 인자가 & 연결·문자열 함수 결과면 inf
     assert.ok(f.message.includes('120자') && f.message.includes('320 B'));
     assert.strictEqual(`        ${line}`.slice(f.start, f.end), 'CStr(i) & s');
     assert.strictEqual(midTemp('x = Mid(UCase(s), 2, 250)').length, 1);
-    assert.strictEqual(midTemp('x = Mid(Build(s), 1, 5)', ['    Public Function Build(ByVal a As String) As String', '        Return a', '    End Function']).length, 1, '사용자 String 함수');
+    assert.strictEqual(midTemp('x = Mid(CStr(i) & s, 5)').length, 1, '길이 인자를 생략해도 샌다(실측)');
+    // 사용자 Function 의 결과는 새지 않았다(2026-11-06 실측 표) — 그 안에서 만든 임시값도.
+    const build = ['    Public Function Build(ByVal a As String) As String', '        Return a', '    End Function'];
+    assert.strictEqual(midTemp('x = Mid(Build(s), 1, 5)', build).length, 0, '사용자 String 함수');
+    assert.strictEqual(midTemp('x = Mid(Build(s & "a"), 1, 5)', build).length, 0, '괄호 안의 & 는 사용자 함수가 받는다');
 });
 
 test('delegateChecks: Mid 첫 인자가 변수·배열 요소·숫자 함수면 조용히 넘어간다(보고의 새지 않는 형태)', () => {
@@ -353,4 +357,26 @@ test('delegateChecks: Mid 첫 인자가 변수·배열 요소·숫자 함수면 
     assert.deepStrictEqual(midTemp('x = Mid(s, Len(s & "a"), 1)'), [], '& 가 첫 인자가 아니면 아님');
     assert.deepStrictEqual(midTemp('x = Mid(s, Count(i), 1)', ['    Public Function Count(ByVal a As Integer) As Integer', '        Return a', '    End Function']), []);
     assert.deepStrictEqual(midTemp('x = UCase(CStr(i) & s)'), []);
+});
+
+// 메모리 실측 정보 진단 (memoryChecks.ts, Sample Prep 2026-11-06 cost-table §2.2)
+
+test('memoryChecks: 클래스 인스턴스 String 필드의 = "" 초기화만 information, Shared·모듈 변수·Nothing 은 조용히', () => {
+    const content = src(
+        'Module M',
+        '    Private Dim moduleText As String = ""',
+        '    Public Class Node',
+        '        Public Name As String = ""',
+        '        Private Dim note As String = "" \' 주석',
+        '        Public Shared Pool As String = ""',
+        '        Public Label As String',
+        '        Public Code As String = "A"',
+        '    End Class',
+        'End Module',
+    );
+    const f = findCompilerCheckFindings(content, 'Main.gpl').filter(x => x.code === 'string-field-empty-init');
+    assert.deepStrictEqual(f.map(x => x.line), [3, 4]);
+    assert.strictEqual(f[0].severity, 'information');
+    assert.ok(f[0].message.includes('183 B') && f[0].message.includes('-782'));
+    assert.strictEqual('        Public Name As String = ""'.slice(f[0].start, f[0].end), '= ""');
 });

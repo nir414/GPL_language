@@ -57,12 +57,15 @@ export function minifyGplText(text: string, opts: MinifyOptions): string {
     return parts.join('');
 }
 
-/** 파일 바이트 경량화 — 인코딩을 해석하지 않는다(머리말 참고). UTF-8 BOM 은 보존한다. */
-export function minifyGplBuffer(content: Buffer, opts: MinifyOptions): Buffer {
-    if (!opts.stripComments && !opts.trimWhitespace) { return content; }
+/**
+ * 파일 바이트 경량화 — 인코딩을 해석하지 않는다(머리말 참고). UTF-8 BOM 은 보존한다.
+ * `blankRanges` 를 주면 그 물리 줄들을 먼저 빈 줄로 바꾼다(선언 단위 미사용 제거, BOM 은 첫 줄과 별개로 남는다).
+ */
+export function minifyGplBuffer(content: Buffer, opts: MinifyOptions, blankRanges: readonly (readonly [number, number])[] = []): Buffer {
+    if (!opts.stripComments && !opts.trimWhitespace && blankRanges.length === 0) { return content; }
     const hasBom = content.length >= 3 && content.subarray(0, 3).equals(UTF8_BOM);
     const body = hasBom ? content.subarray(3) : content;
-    const out = Buffer.from(minifyGplText(body.toString('latin1'), opts), 'latin1');
+    const out = Buffer.from(minifyGplText(blankLineRanges(body.toString('latin1'), blankRanges), opts), 'latin1');
     return hasBom ? Buffer.concat([UTF8_BOM, out]) : out;
 }
 
@@ -70,4 +73,17 @@ export function minifyGplBuffer(content: Buffer, opts: MinifyOptions): Buffer {
 export function countLines(text: string): number {
     if (text.length === 0) { return 0; }
     return (text.split(LINE_SPLIT).length + 1) / 2; // 나눈 조각 = 내용 k+1 + 줄바꿈 k
+}
+
+/**
+ * 지정한 물리 줄 범위(0 기준, 끝 포함)를 빈 줄로 바꾼다 — 줄 수·줄바꿈 문자는 그대로(선언 단위 미사용 제거가 쓴다).
+ * 범위 밖 줄은 건드리지 않는다.
+ */
+export function blankLineRanges(text: string, ranges: readonly (readonly [number, number])[]): string {
+    if (ranges.length === 0) { return text; }
+    const parts = text.split(LINE_SPLIT);
+    for (const [start, end] of ranges) {
+        for (let line = Math.max(0, start); line <= end && line * 2 < parts.length; line++) { parts[line * 2] = ''; }
+    }
+    return parts.join('');
 }

@@ -19,6 +19,7 @@
  * - 문자열 리터럴 안의 낱말도 참조로 센다 — `New Thread("FLR.RecorderLoop", …)` 처럼 진입점을 문자열로 주는 코드가 있다.
  * - 선언 이름을 하나도 찾지 못한 파일(빈 파일·파서가 못 읽은 파일)은 늘 포함하고, 그 파일의 참조도 따라간다.
  * - 같은 Module 이름을 여러 파일이 선언하면(나눠 쓴 모듈) 하나가 닿을 때 모두 포함한다.
+ * - 모듈 직속 `Sub Init` 이 있는 파일은 이름 참조 없이도 초기화 때 불리므로 호출측이 늘 출발점으로 삼는다(`hasModuleInit`).
  * - 이름이 실행 중에 조립되는 경우(`"FL" & "R.Loop"`)는 알 수 없다 — 호출측이 고정 포함 목록(keepFiles)으로 보완한다.
  *
  * 자기 선언 가림(shadowing): 파일이 **모듈 직속으로 직접 선언한 이름**(접근성 무관)은 그 파일 안에서 다른 파일을 가리키지 않는다.
@@ -43,6 +44,8 @@ export interface SourceReferenceInfo {
     ownNames: string[];
     /** 주석을 뺀 코드에 나오는 낱말(소문자) — 문자열 리터럴 안 낱말 포함. */
     words: Set<string>;
+    /** 모듈 직속 `Sub Init` 이 있는가 — 모듈 초기화 때 이름 참조 없이 자동으로 불리므로(문서상 modules.htm) 이 파일은 늘 남긴다. */
+    hasModuleInit: boolean;
 }
 
 const MEMBER_KINDS: ReadonlySet<GPLSymbolKind> = new Set([
@@ -61,6 +64,7 @@ export function analyzeSourceReferences(text: string, filePath: string): SourceR
     const own = new Set<string>();
     const containers: string[] = [];
     const modules: string[] = [];
+    let hasModuleInit = false;
     for (const sym of GPLParser.parseDocument(text, filePath)) {
         const name = sym.name.toLowerCase();
         if (sym.kind === GPLSymbolKind.Module || sym.kind === GPLSymbolKind.Class) {
@@ -72,6 +76,7 @@ export function analyzeSourceReferences(text: string, filePath: string): SourceR
             continue;
         }
         if (!MEMBER_KINDS.has(sym.kind) || sym.className || sym.isLocal || sym.isParameter) { continue; }
+        if (sym.kind === GPLSymbolKind.Sub && name === 'init') { hasModuleInit = true; }
         own.add(name);
         // 모듈 직속(클래스 밖·프로시저 밖) 멤버. 기본 접근성은 Private 이지만 표기가 없으면 포함한다(보수적).
         if (sym.accessModifier !== 'private') { declared.add(name); }
@@ -82,7 +87,7 @@ export function analyzeSourceReferences(text: string, filePath: string): SourceR
             if (!m[1]) { words.add(m[2].toLowerCase()); }
         }
     }
-    return { declared: [...declared], containers, modules, ownNames: [...own], words };
+    return { declared: [...declared], containers, modules, ownNames: [...own], words, hasModuleInit };
 }
 
 /**

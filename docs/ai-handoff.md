@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-06** · 현재 package 버전 **0.27.14** (배포 전처리 — 주석 제거·미사용 라이브러리 파일 제외로 제어기 메모리 절약, Mid 임시 문자열 누수 진단, 1706/1706 · MCP 188/188. 상세는 §1-HD.)
-- **직전 세션: §1-HD** — "로컬 요청 중 메모리 최적화부터 기능 개선" → 수신함 Sample Prep 2건(gpl-source-memory-strip-purge·deploy-preprocess-options)을 `gpl.deploy.preprocess` 로 구현. 워크스페이스 밖 사본에서 주석·공백 제거(줄 번호 유지)와 실행 프로젝트에서 닿지 않는 라이브러리 파일 제외. Sample Prep 실데이터 dry-run: 소스 2.12 → 1.30 MB, PaL 5파일 제외. 세션 중 도착한 mid-temp-leak 보고로 `mid-temporary-argument` 진단과 문서 「메모리 아끼기」 추가. 보류(컴파일 뒤 /GPL 비우기·멤버 단위 제외)는 §3, 실기 확인은 verification §1-HD.
+- **최종 갱신: 2026-11-06** · 현재 package 버전 **0.27.15** (GPL source-to-source 최적화기 — 선언 단위 미사용 제거 `removeUnusedMembers`, 1714/1714 · MCP 188/188. 상세는 §1-HE.)
+- **직전 세션: §1-HE** — "GPL 소스를 더 가벼운 GPL 소스로 바꿔 올리는 최적화기 만들어 보자" → 배포 전처리에 선언 단위 미사용 제거를 더함(엄격한 선언 스캐너 `memberScan` + 선언 그래프 도달성 `memberReachability`, 줄 번호 유지). Sample Prep dry-run: 라이브러리 선언 350개·코드 3,726줄 제거(컴파일 몫 추정 ≈400 KB), 2차 실행 추가 제거 0. 실기 컴파일 확인은 verification §1-HE.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -82,9 +82,12 @@
 > **실사용·실기·UI 확인 항목은 `docs/ai-handoff-verification.md`로 옮겼다(2026-11-04).** 이 절에는 코드 작업과 결정 대기만
 > 둔다. 새 VSIX의 확인 항목은 그 파일에 추가한다(규칙: `docs/development/record-keeping.md`).
 
+- [ ] **(2026-11-06, §1-HE) 최적화기 다음 후보 — 실기 결과를 본 뒤.** ① 선언이 모두 지워져 빈 껍데기가 된 Module 비우기(≈190 B, Init·이름 참조가 없을 때)
+  ② 실행 프로젝트 자신의 안 쓰는 선언(지금은 라이브러리만 — 앱 코드는 사용자 책임 영역이라 옵션 분리) ③ Const 값 치환 후 선언 제거(Const 150~205 B, 식 안 리터럴 비용 미실측)
+  ④ 클래스 멤버 형 추론(지금은 `obj.n` 이면 이름이 같은 모든 클래스의 `n` 을 남김 — 정밀도 향상 여지).
 - [ ] **(2026-11-06, §1-HD) 배포 전처리 보류 — 결정·실기 근거 필요.** ① 컴파일 뒤 `/GPL` 소스 비우기(`upload-start` 선택지, 수신함 strip-purge §2):
   비운 뒤의 Start 는 하드 규칙 7(`-compile` 필수)과 충돌한다 — `-compile` 없는 Start 를 허용할지 사용자 결정, 그리고 소스 없이 런타임 오류 file:line·Show Stack·BP 가 맞는지 실기 확인이 먼저.
-  ② 멤버 단위 미사용 제외(호출 없는 Sub/Function 본문을 빈 줄로, preprocess-options §3) — 이름 충돌·문자열 진입점 때문에 판정 위험이 커서 파일 단위 실측 뒤.
+  ② ~~멤버 단위 미사용 제외~~ — §1-HE 에서 `removeUnusedMembers` 로 구현(실기 확인 대기).
   ③ 제어기 프로젝트 보기(`remoteSourceSession`)로 /GPL 을 열면 전처리 사본(주석 없음)이 보인다 — 표시가 필요하면 `lastCompiledFrom.preprocess` 로 안내.
 - [ ] **(2026-11-05, §1-HC) 수신함 보류 항목 — 설계·결정 필요.** 원문은 수신함 `done/` 의 같은 이름 파일.
   ① `read_remote_file`(허용 목록 읽기 전용 FTP, debug-day §4) ② 바닥 여유 메모리 추적(`bootFloorMb`·`lostSinceBootMb`·경고, memory-floor-leak)과
@@ -380,6 +383,8 @@ src/language/symbols/symbolLocations.ts          # 정의 peek 목록 정리(vsc
 src/language/documentation/docComment.ts               # 문서화 주석 정본(vscode 무의존) — parseDocComment(섹션 별칭·펜스 인식)/renderDocCommentMarkdown(호버·완성·시그니처 공용)/buildDocCommentBlock·mergeDocComment(골격·머지, DocTarget.coveredParams/coveredReturns 로 "차이만" §1-DR). 원문은 손실 없이 보존하고 렌더에만 손보는 원칙: withFenceLanguage(펜스 언어 보정)·stripDecorativeRules(`====` 장식선 제거, §1-CS)
 src/language/documentation/docCommentOverloads.ts      # 오버로드 문서화 주석 병합 정본(vscode 무의존, §1-DR) — filterOverloadSiblings(형제 = 같은 이름·Sub/Function·모듈/클래스·컴파일 단위, 사본 접기)/resolveOverloadDoc(공통 설명은 유일하게 가장 풍부한 문서·자기 설명 없으면 Jaccard 로 가장 닮은 형제·이름별 매개변수·같은 타입 Returns — 선언 순서 무관, provenance 동반)/renderResolvedDocMarkdown/describeOverloadCoverage(골격 "차이만"). 호버·완성(symbolCache.buildSymbolDocumentation)·시그니처·''' 공용, 형제 후보는 symbolCache.findOverloadSiblings
 src/project/sources/sourceMinify.ts              # (§1-HD) 줄 번호 유지 경량화(주석·# 줄·공백, 바이트 안전)
+src/project/sources/memberScan.ts                # (§1-HE) 최적화용 엄격한 선언 스캐너 — 선언·물리 줄 범위·참조 낱말, 모르는 문장이면 irregular
+src/project/sources/memberReachability.ts        # (§1-HE) 선언 그래프 도달성(모듈 이름 생략·자기 모듈 가림·클래스 멤버·New·Init·keep) → 지울 줄 범위
 src/project/sources/sourceReachability.ts        # (§1-HD) 파일 단위 도달성 — 선언 이름(모듈 이름 생략 규칙)·참조 낱말·전이 폐포
 src/project/sources/projectSources.ts            # "프로젝트에 속한 소스" 단일 출처 — 재귀 목록·ProjectSource 해석·소유 .gpr 선택(§1-BW, vscode 무의존) + 중첩 프로젝트 경계(stopAtNestedProject)·ProjectLibrary 해석(resolveProjectLibraryDirs)·관련 프로젝트 수집(collectRelatedGprPaths)(§1-BX)
 src/project/remote/controllerProjectWorkspace.ts # FTP 다운로드 사본 manifest·SHA-256·Live/Snapshot 쓰기 게이트·중첩 배포 루트·staging/저장된 workspace 정본(vscode 무의존, §1-FA)
@@ -406,7 +411,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GU ~ §1-HD)만 둔다.
+본문에는 **최근 10개 세션**(§1-GV ~ §1-HE)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있고, 그 세션들의 인덱스는 [archive/handoff/index.md](archive/handoff/index.md)에 있다.
 아래 §1-0 에는 본문에 있는 세션의 행만 둔다.
 
@@ -417,16 +422,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GT (2026-11-03) | 5 |
-| (본문 아래) | §1-GU ~ §1-HD (2026-11-04 ~ 11-06) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GU (2026-11-03 ~ 11-04) | 6 |
+| (본문 아래) | §1-GV ~ §1-HE (2026-11-04 ~ 11-06) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GT 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GU 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GU | 11-04 | **체감 속도·규칙 감사** — 트리 쓰레드 상태 즉시 갱신(1403 상태 이벤트·Start/Stop 등 응답 뒤 150/600/1500/3000 ms, `threadRefreshScheduler`·`affectsThreadState`), 디버그 fast poll 20~650 ms·step pending 400 ms·프레임/목록 캐시 정지 중 재사용·변수 조회 중 인터벌 폴 쉼, 구조 테스트 R10(크기 상한)·§7 부채 표·문서 낡음 정리. 0.27.6 | 본문 ↓ |
 | §1-GV | 11-04 | **AI MCP: 워크스페이스 파일 폐기·사용자 범위 한 번 등록·제어기 주소 자동 추종** — MCP 가 확장 창 presence 에서 주소를 따름(`resolveControllerAddress`·`pickAddressInstance`, GPL_HOST 는 창 없을 때 값), 확장은 `claude mcp add-json --scope user`·Codex `config.toml` 에 등록(`gpl.ai.mcpRegistration`), 직접 등록(foreign)은 유지, `.mcp.json`·CLAUDE.md 생성 폐기·주소 불일치 경고 제거, 예전 파일 정리 명령. 1604/1604 · MCP 168/168. 0.27.7 | 본문 ↓ |
 | §1-GW | 11-04 | **디버그 체감 속도 — 과거 개선 대조·GDE 방식 잠정 프레임** — §1-D·L·X·GA 대조(GA 0.18.2 는 사용자 창에서 미실행: 0.13.2 → Marketplace 0.18.1), GDE 캡처 분석(Step → 1 ms 뒤 Show Thread -web, Show Stack 없음), 폴 줄로 정지 이유 판정·stackTrace levels=1 잠정 맨 위 프레임·첫 fast poll 5 ms, Show Variable 일괄 형식 없음(문서). 0.27.8 | 본문 ↓ |
 | §1-GX | 11-04 | **제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음** — 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 → 브레이크포인트 → FTP /GPL → 시스템 정보 → I/O → 환경 경고 → Flash Projects, 펼침은 프로젝트 상태·쓰레드·FTP /GPL·시스템 정보만, `SECTION_LAYOUT_EPOCH` 3, 앰프 온도는 시스템 정보 아래 접힌 「앰프 온도 (N)」(헤더에 최고 온도) | 본문 ↓ |
@@ -436,43 +440,12 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-HB | 11-04 | **대시보드 I/O 칩 8열 격자 · Soft DIO 64 상한 실측** — 칩 flex-wrap → 8열 격자(64 = 8×8, bank 96 = 12×8, 좁으면 4열), 그룹은 multi-column 단에 쌓기. 4.2K5 실측 `Signal.DIO(20065)` = -1517(PDB 505 의 "~21000" 과 다름, com_dio 표 20001~20064 가 맞음). 1646/1646. 0.27.12 | 본문 ↓ |
 | §1-HC | 11-05 | **수신함 Sample Prep 보고 11건 — 멀티 에이전트 처리** — 라이브러리(`ProjectLibrary`) 소스 거터 BP 를 `Set Break <lib> "<file>"` 로(`breakpointSendTarget` 단일화, 못 보내면 verified:false), MCP `<lib>/<file>` 재작성·`atRequestedLine` 정규화, Delegate·AddressOf 진단 5종(-205/-712/-741/-729), `source-missing` 낡은 진단(세대 키 캐시·외부 변경 워처), 런타임 콘솔 정체 감지(`parserStalled`), MCP `unload_project` 생략 = 세션 대상(-all 은 `all:true`)·/GPL 비우기 Idle 통과·디버그 세션 가드(`confirmDebugSession`)·작업 기록 `libraryUploads`·비운 뒤 rebootHint 억제·FTP 타임아웃 재시도 금지·검색 `maxResults`. 1688/1688 · MCP 188/188. 0.27.13 | 본문 ↓ |
 | §1-HD | 11-06 | **배포 전처리(메모리 절약)** — 수신함 Sample Prep 2건: `gpl.deploy.preprocess`(기본 꺼짐, `projects.<ProjectName>`·MCP `preprocess` 덮어쓰기). 워크스페이스 밖 `<tmp>/gpl-controller/preprocess/<ip>/…` 사본을 올림 — 주석·`#` 줄·공백 제거(줄 수·줄바꿈·바이트 유지, `sourceMinify`), 실행 프로젝트에서 이름으로 닿지 않는 라이브러리 파일 제외 + 사본 .gpr 고쳐 쓰기(`sourceReachability`: 모듈 이름 생략 규칙·문자열 진입점·점 뒤 멤버 제외·자기 이름 가림), 예전 업로드분 삭제, `-729` 안내, 결과 `preprocess`. 실데이터 dry-run 2.12 → 1.30 MB · PaL 5파일 제외(요청 스크립트의 7개 중 2개는 실제 사용). `Mid(<임시 문자열>, …)` 누수 진단(`mid-temporary-argument`)·문서 「메모리 아끼기」. 1706/1706 · MCP 188/188. 0.27.14 | 본문 ↓ |
+| §1-HE | 11-06 | **GPL source-to-source 최적화기 — 선언 단위 미사용 제거** — `gpl.deploy.preprocess.removeUnusedMembers`: 엄격한 선언 스캐너(`memberScan`, 모르는 문장이면 그 파일 손대지 않음)·선언 그래프 도달성(`memberReachability`: 모듈 이름 생략·자기 모듈 가림·점 뒤 클래스 멤버·New·Sub Init·부작용 초기화·keep `Container.Name`), 줄 비우기(줄 번호 유지), 파일 단위 제외에 모듈 Init 출발점 추가. Sample Prep dry-run 350선언·3,726코드줄(컴파일 ≈400 KB 추정), 남은 이름 52건 수동 대조 모두 다른 모듈 것, 2차 실행 0. 1714/1714 · MCP 188/188. 0.27.15 | 본문 ↓ |
 ---
 
-**최근 세션 본문 — §1-GU ~ §1-HD (2026-11-04~11-06).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GV ~ §1-HE (2026-11-04~11-06).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GU. 2026-11-04 세션 — 쓰레드 상태 즉시 갱신 · 디버그 스텝 왕복 단축 · 크기 상한 R10 (0.27.6)
-
-### 증상(요청)
-
-"프로젝트 전체 검토, 이전에 세워 둔 코딩 규칙이 제대로 반영됐는지 검토, 제어기 조작 체감 속도 개선 — 디버깅 너무 느리고 제어기 상태 표시(쓰레드 상태 등)가 바로바로 갱신되지 않는다."
-
-### 원인
-
-1. [높음] 실행 중인 창은 여전히 0.18.1 이었다(presence `extensionVersion`, Output 첫 줄). 0.27.5 는 09:36 에 VSIX(`pinned: true`)로 설치됐으나 창을 다시 불러오기 전.
-2. [높음, 쓰레드 표시] 디버그 밖 트리의 쓰레드 상태는 정규 폴(기본 5 s, 쓰레드 없으면 15 s)로만 바뀌었다. 명령 뒤 한 번 부르는 `refresh()` 는 제어기가 상태를 바꾸기 전 응답을 받기 쉬웠고(Start 직후 아직 Idle), 1403 상태 이벤트(`<E>1,N</E>` — 콘솔 출력 줄과 별개)는 디버그 세션에만 전달됐다.
-3. [중간, 디버그] 위임 분석(현재 코드 기준): 정지 감지는 fast poll 30/120/250/500/1000 ms 뒤 1 s 백업 폴 — Move 한 줄을 Step 하면 끝난 뒤 최대 1 s 를 더 기다린다. 정지 뒤 1.5 s(프레임 캐시 TTL)가 지나 호버·Watch·Locals 를 열면 `Show Stack` 을 다시 보냈고, 감지~threadsRequest 사이가 300 ms 를 넘으면 `Show Thread -web` 가 한 번 더 나갔다. 정지 중 1 s 인터벌 폴이 변수 조회 사이에 끼었다. 옛 로그의 정지당 `Show Stack` 2회는 0.18.1 의 TTL 400 ms 때문이고 현재 정상 경로는 1회.
-4. [중간, 규칙] 위임 감사: CLAUDE.md 규칙 2(150줄 함수)는 테스트가 없어 무너져 있었다 — 150줄 넘는 이름 있는 함수 32개 중 §7 에 있던 것은 `_pollThreadStates` 하나. `gplDictionaryData.ts`(3,028줄) 미등재. architecture.md 의 허용 목록 개수(views 3→4·debug 2→3)·extension.ts 줄 수·테스트 건수·§7 날짜, ai-handoff §1 안내(GA~GJ)·아카이브 표가 낡았다. 상태 머신 두 곳(`_pollThreadStates`·runtimeConsole 재연결)은 여전히 플래그 조합. SSOT 후보: 포트 리터럴·`<STATUS>` 제거 정규식 5벌·`Show Thread <name>` 조립 6곳·`getConfiguration` 74곳.
-
-### 조치(의도와 방법)
-
-- 117ecdd 트리: `views/tree/threadRefreshScheduler.ts`(순수) — 요청 합치기·burst(150/600/1500/3000 ms)·조회 중 요청은 끝난 뒤 1회·시작 간격 250 ms. `consoleCommandClassifier.affectsThreadState`(Start·Stop·Execute·Continue·Step·Break·SoftEStop·Unload — `Set Break`·Compile·Load 제외). `controllerConnection` 이 그런 명령의 응답(실패 포함 — 실행됐을 수 있다)을 관찰자로 알려 보낸 경로(트리·팔레트·배포·AI 브리지)와 무관하게 트리가 burst 한다. 디버그 밖 1403 상태 이벤트 → 트리 즉시 1회. 예약 갱신은 진행 중 폴을 기다렸다 돌고 정규 폴 간격을 다시 잡는다. 해제·디버그 진입 시 취소.
-- d41b198 디버그: fast poll 20/60/120/200/300/450/650 ms(앞 폴이 끝난 뒤 예약이라 RTT 가 길면 자연히 벌어짐). step/pause/entry pending 백업 폴은 처음 10 s 400 ms(설정이 더 짧으면 설정), 그 뒤 종전. 정지 중 인터벌 폴은 data 차선에 조회가 남아 있으면 한 주기 쉼(Running 이 있으면 그대로). threadsRequest 목록 캐시는 pending 없으면 1.5 s. 프레임 캐시는 TTL 이 지나도 마지막 폴이 같은 파일·줄 정지를 보고하면 재사용(`isFrameCacheReusable`, 순수). 정지 확인 게이트(stepGate·commandPolicy.gateResume)는 그대로.
-- 908b9e8 규칙: 구조 테스트 **R10** — TypeScript AST 로 재서 1,000줄 파일·150줄 이름 있는 함수가 `SIZE_DEBT` 와 architecture.md §7 에 없으면 실패, 상한 아래로 내려가면 지우라고 실패. §7.1 크기 부채 표(분해 방향 포함), §7.2 상태 머신 플래그·SSOT 후보·루트 예외, 허용 목록 개수, 메모리 측정값 정본 문단, ai-handoff §1 안내·아카이브 표·인덱스 순서, CLAUDE.md(scripts/dev, R10).
-- 하지 않은 것: `INTER_COMMAND_GAP_MS`(15 ms) 축소 — ECONNRESET/idle EOF 완화용이라 실기 A/B 없이 바꾸지 않음. StoppedEvent 를 Show Stack 앞으로 당기기 — VS Code 가 곧바로 stackTrace 를 기다리므로 이득이 작음. 대형 함수 분해·상태 머신 분리 — 기능 변경과 섞지 않는다(규칙 2·4), §7.1 이 순서표. `AGENTS.md` 가 `CLAUDE.md` 와 달라짐(끝에 Cowork 임포트 블록, "편집 주의") — 사용자 판단.
-
-### 검증
-
-- `npm test` **1608/1608**(threadRefreshScheduler 4·affectsThreadState 1·frameCache 3·pollSchedule 갱신·R10).
-- VSIX `dist/gpl-language-support-0.27.6.vsix` 1,678,357 bytes, SHA-256 `2A22BA82BFE106027EF6C72AA9905296B98827ABA82FFE1303B43649C29A18FB`(경고는 bundle 권장 1건). **HEAD 의 깨끗한 worktree(`%TEMP%\gpl-wt-0276`, npm ci)에서 다시 만든 것** — 작업 트리에서 처음 만든 VSIX 에는 같은 시각 다른 세션이 고치던 `controller-mcp/src/*`(미커밋, `retarget`)가 MCP 번들에 섞여 들어가 버렸다. 그 세 파일은 커밋에서도 빼 두었다(작업 트리에 그대로 있음).
-- 실기 미확인 → §3. MCP 는 여전히 `GPL_HOST=192.168.0.1`(확장 창은 192.168.0.102).
-
-### 남은 일
-
-- §3 실사용 확인.
-- §7.1 순서대로 분해: 상태 머신(`_pollThreadStates` → 상태 타입 + 순수 전이, runtimeConsole `decideReconnect`)이 체감 속도와도 맞닿아 가장 먼저.
-- SSOT 후보 4건을 R7 규칙으로 하나씩.
 
 ## 1-GV. 2026-11-04 세션 — AI MCP: 워크스페이스 파일 폐기 · 사용자 범위 한 번 등록 · 제어기 주소 자동 추종 (0.27.7)
 
@@ -903,3 +876,43 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 ### 남은 일
 
 - 보류: 컴파일 뒤 /GPL 소스 비우기, 멤버 단위 미사용 제외 → §3 「(2026-11-06, §1-HD)」. 수신함 나머지 6건(stale IP·JointOnly·binder facts·ctor Init·Catch·try-finally)은 다음 세션.
+
+## 1-HE. 2026-11-06 세션 — GPL source-to-source 최적화기: 선언 단위 미사용 제거 (0.27.15)
+
+### 증상(요청)
+
+"우리가 임베디드 컴파일러 비슷한걸 구현해서 넣을 수 있을까? 코드 최적화 되도록?" → 검토 답변(제어기는 소스만 받으므로 진짜 컴파일러는 불가,
+소스를 더 가벼운 소스로 바꾸는 최적화기는 가능 — 남은 메모리 이득의 주력은 안 쓰는 선언 제거) 뒤 "GPL 소스를 더 가벼운 GPL 소스로 바꿔 올리는 최적화기(source-to-source) 만들어 보자."
+
+### 판단
+
+- 제어기 입력은 `/GPL` 소스 + `Compile` 뿐이고 컴파일 결과 형식은 비공개(`.gpo` 는 전역 Location/Profile 모듈 — project-file-gpr.md) → 최적화는 소스 단계에서.
+- 실측 단가(Sample Prep, Sub 165 B·Const 150~205 B·문장 59~140 B, 주석 0 B)상 남은 컴파일 몫은 **안 쓰는 선언**이다. 줄 번호는 유지(빈 줄로) — 오류 file:line·BP·Show Stack 보존.
+- 기존 `GPLParser` 는 편집 중 소스를 견디는 관대한 IDE 파서라, 줄을 **지우는** 최적화에는 모르는 문장이면 통째로 포기하는 엄격한 스캐너를 따로 둔다.
+- 함수 인라인·이름 줄이기는 하지 않는다(코드가 커지고 줄 번호가 깨짐 / `-eval`·Show Stack 이 이름을 씀).
+
+### 조치
+
+- **`project/sources/memberScan.ts`** — Module·Class(최상위·모듈·중첩)·Sub·Function·Property·Delegate·Const·변수 선언과 물리 줄 범위, 범위 안 참조 낱말
+  (점 앞 낱말을 prefix, 문자열 안 포함, 숫자 표기 제외). 모르는 문장(`Event` 등)·짝 없는 블록·Module/Class 밖 문장 → `irregular`(그 파일은 지우지 않고 파일 전체 참조를 출발점으로).
+  변수 초기화에 `New`·호출이 있으면 지울 수 없음, `Shared` 표시.
+- **`project/sources/memberReachability.ts`** — 선언 그래프 고정점. 수식 없는 이름 = 모듈 직속(이름 유일 시 모듈 생략 — 문서상 modules.htm, 참조하는 모듈이 같은 이름을
+  모듈 직속으로 선언했으면 그 모듈 것만 — scope_names.htm)·클래스 이름·클래스 멤버, `P.n` = 클래스 멤버 `n`(형을 모르니 이름이 같은 모든 클래스) + `P` 가 모듈이면 그 모듈의 `n`.
+  클래스 멤버는 클래스가 닿을 때만, 닿으면 `Sub New` 함께(user_classes.htm). 출발점: 비후보 파일 전체, `Sub Init`, 지울 수 없는 모듈 직속·Shared 선언(인스턴스 필드는 클래스가 닿을 때만), keep(`Name`·`Container.Name`). 오버로드는 이름 단위.
+- **`deployPreprocess.planMemberShake`** + 스테이지: 파일 단위 제외 뒤 남은 소스로 계획, 라이브러리 파일 안 범위를 빈 줄로(`blankLineRanges`, BOM 보존) → 주석·공백 경량화.
+  결과 `preprocess.removedMemberCount·removedMemberLines·removedMembers`(상한 100)·`memberShakeIrregular`, `-729` 안내가 지운 선언(`파일:줄 (Container.Name)`)을 짚음, MCP 요약 `members −N`.
+- **파일 단위 보강**: 모듈 직속 `Sub Init` 이 있는 라이브러리 파일은 미사용 제외에서 늘 남긴다(참조 없이 초기화 때 자동 호출 — 부작용 손실 방지, §1-HD 의 빈틈).
+
+### 검증
+
+- `npm test` 1714/1714(새 테스트 8건 — 스캐너 범위·참조·irregular, 모듈/클래스/출발점 규칙, 줄 수 유지·닫힌 집합, 스테이지 사본), `controller-mcp` 188/188.
+- Sample Prep App **읽기 전용 dry-run**(사본은 scratchpad 에만): 라이브러리 선언 5,415개 중 350개(const 93·function 161·sub 70·class 15·property 7·variable 4), 4,565줄(코드 3,726줄) 제거.
+  소스 −141 KB(주석·공백까지 2.07 → 1.06 MB), 컴파일 몫 추정 ≈400 KB(코드 줄당 110 B — Sample Prep 실측 비율, **추정**). 46파일 줄 수 동일, 결과를 다시 스캔해도 irregular 0,
+  결과에 2차 실행 → 추가 제거 0(닫힌 집합). 지운 이름이 남은 코드에 나오는 52곳을 모두 대조 — 전부 다른 모듈이 자기 것으로 가린 `POLL_MS` 류나 `HFM.ERR_SETTING` 처럼 다른 모듈 수식.
+- 제어기 접속 없음 — **실기 Compile 로 확인하기 전에는 운용 장비에 쓰지 않는다**(verification §1-HE).
+- VSIX: `dist/gpl-language-support-0.27.15.vsix` — 1,784,171 bytes, SHA-256 `648A33F94E178A3F98846FDAD0A254638D59C0E29F99D45E122EE0ACF65F2BC2`. 패키징 경고는 vsce 번들 권장 하나.
+
+### 남은 일
+
+- 실기: 시뮬레이션 제어기에서 원본/최적화본 Compile STATUS·Show Memory 비교, Start 뒤 문자열 진입점·콜백 동작(verification §1-HE).
+- 다음 후보(§3): 빈 껍데기가 된 Module(≈190 B) 비우기, 실행 프로젝트 자신의 안 쓰는 선언(지금은 라이브러리만), Const 값 치환.

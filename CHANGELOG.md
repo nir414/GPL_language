@@ -2,6 +2,16 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.27.15] - 2026-11-06
+
+### Added
+
+- **배포 최적화: 쓰지 않는 선언 제거** — `gpl.deploy.preprocess.removeUnusedMembers` 를 켜면 배포 사본에서 라이브러리 파일 안의 쓰이지 않는 Sub·Function·Property·Class·Const·변수·Delegate 를 빈 줄로 바꿔 올립니다. 제어기 컴파일 결과가 그만큼 작아집니다. 줄 번호는 그대로라 오류 위치·중단점은 원본과 같고, 구조를 읽지 못한 파일·부작용 있는 초기화가 붙은 변수·`Sub Init`·`Sub New` 는 남깁니다. 늘 남길 선언은 `keepFiles` 에 `이름` 또는 `모듈.이름` 으로 적습니다. AI(MCP) `deploy_project.preprocess` 에서도 켤 수 있습니다.
+
+### Fixed
+
+- 미사용 라이브러리 파일 제외가 모듈 `Sub Init` 만 있고 이름으로는 불리지 않는 파일을 뺄 수 있던 문제를 고쳤습니다(`Init` 은 초기화 때 자동으로 불립니다).
+
 ## [0.27.14] - 2026-11-06
 
 ### Added

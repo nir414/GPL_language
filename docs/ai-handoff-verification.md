@@ -11,6 +11,11 @@
 
 ## 확인 대기 항목
 
+- [ ] **(2026-11-06, §1-HE) 0.27.15 선언 단위 미사용 제거 — 실기 확인(시뮬레이션 제어기 권장, ①은 Stop·Compile, ②는 Start — 저속·사용자 확인).**
+  ① Sample Prep App 설정에 `"removeUnusedMembers": true`(+ `excludeUnreachableLibraryFiles`·`stripComments`) → `deploy_project build`. Output 의 `선언 단위 제거: … 350개 안팎`, Compile STATUS 0,
+  Show Memory 를 끈 상태와 비교(기대, 추정: 컴파일 몫 −0.3~0.4 MB). 컴파일 오류가 나면 Problems 힌트의 `(Container.Name)` 을 keepFiles 에 넣어 원인 기록.
+  ② Start 뒤 문자열 진입점 쓰레드·Delegate 콜백·로그 포트가 정상인지(런타임에만 드러나는 오삭제). ③ 지운 선언 아래 줄에 BP·오류 줄이 원본과 같은지.
+
 - [ ] **(2026-11-06, §1-HD) 0.27.14 배포 전처리 — 실기 확인(①③④는 Stop·Compile 을 보낸다 — 장비 정지 상태에서, ②는 Start — 저속·사용자 확인).**
   ① Sample Prep App 워크스페이스 설정 `"gpl.deploy.preprocess": { "projects": { "App": { "stripComments": true, "excludeUnreachableLibraryFiles": true } } }` →
   `deploy_project build` 전후 `Show Memory`. Output 에 `✂ 전처리` 줄과 제외 5개(Core_Parse·Net_Client·Device_Cylinder·Robot_Data·Frame_Tool), `/GPL/PaL/Project.gpr` 에 그 줄이 없고

@@ -11,6 +11,10 @@
 
 ## 확인 대기 항목
 
+- [ ] **(2026-11-06, §1-HF) 0.27.16 컴파일 메모리 추정 — 실기 대조(Compile 을 보낸다 — 장비 정지 상태에서).**
+  ① 전처리 전부 켠 배포의 Output `컴파일 메모리 추정: A → B` 를 적어 두고, Compile 전후 `Show Memory` Free 차이와 비교(원본·사본 각각). ±5 % 밖이면 `compileCostModel.COMPILE_COST` 를 다시 맞춘다.
+  ② 지역 Dim·빈 Module 을 지운 사본이 Compile STATUS 0 인지(§1-HE ① 과 함께). ③ 클래스 String 필드 `= ""` 줄에 정보 진단이 뜨는지(제어기 불필요).
+
 - [ ] **(2026-11-06, §1-HE) 0.27.15 선언 단위 미사용 제거 — 실기 확인(시뮬레이션 제어기 권장, ①은 Stop·Compile, ②는 Start — 저속·사용자 확인).**
   ① Sample Prep App 설정에 `"removeUnusedMembers": true`(+ `excludeUnreachableLibraryFiles`·`stripComments`) → `deploy_project build`. Output 의 `선언 단위 제거: … 350개 안팎`, Compile STATUS 0,
   Show Memory 를 끈 상태와 비교(기대, 추정: 컴파일 몫 −0.3~0.4 MB). 컴파일 오류가 나면 Problems 힌트의 `(Container.Name)` 을 keepFiles 에 넣어 원인 기록.

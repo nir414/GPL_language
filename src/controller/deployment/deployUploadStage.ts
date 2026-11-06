@@ -17,7 +17,7 @@
 import * as path from 'path';
 import { uploadProject, mirrorProject, removeRemoteFiles, isUploadCancelledError } from '../files/ftpClient';
 import type { RemoteFileRef } from '../files/ftpClient';
-import { getSyncManifest, mergeSyncManifest, recordSyncManifest } from '../files/syncManifest';
+import { dropSyncManifestFiles, getSyncManifest, mergeSyncManifest, recordSyncManifest } from '../files/syncManifest';
 import { snapshotProjectFiles } from './deployRecordCore';
 import { compareProvenance, describeProvenance } from './deployProvenance';
 import type { UploadProgressEvent, UploadSummary } from './uploadProgress';
@@ -28,6 +28,7 @@ import type { LibraryUpload } from './libraryUploadPlan';
 import { stopGateLabelFor, uploadLockStageFor } from './deployModes';
 import { runStopGate } from './deployStopStage';
 import { recoverMemoryBeforeUpload } from './deployMemoryRecovery';
+import { preparePreprocess } from './deployPreprocessStage';
 
 /** 업로드 작업의 결과 — 예외를 던지지 않고 돌려준다(Promise.all에서 다른 쪽을 끝까지 기다리기 위해). */
 export type UploadOutcome = { ok: true; pendingDeletes: RemoteFileRef[] } | { ok: false; message: string };
@@ -97,6 +98,17 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
 
     const useMirror = shouldMirrorUpload(directActive, useChangedOnly);
 
+    // 배포 전처리(설정 gpl.deploy.preprocess, deployPreprocessStage.ts) — 켜져 있으면 워크스페이스 밖에 만든 사본을 올린다.
+    // 변경 파일 경로(autoOnSave)도 같은 사본의 같은 상대 경로를 올린다(미사용 제외된 파일은 사본에 없어 건너뛴다).
+    const prepared = preparePreprocess(ctx, project, target);
+    ctx.preprocess = prepared;
+    const projectUploadDir = prepared?.uploadDirFor(options.projectDir) ?? options.projectDir;
+    const uploadChangedFiles = prepared
+        ? changedFiles.map(f => path.join(projectUploadDir, path.relative(options.projectDir, f)))
+        : changedFiles;
+    /** 라이브러리 원격 폴더에 예전 업로드로 남은 미사용 제외 파일 — 정지 확인 뒤 지운다(Upload Only 는 보류). */
+    const staleExcluded: { remoteDir: string; refs: RemoteFileRef[] }[] = [];
+
     /**
      * 진행 알림 — 파일 완료마다 잠금 생존 신호 + 실제 전송분만 로그 한 줄(스킵까지 나열하면 파일 수만큼 쏟아진다).
      * 바이트 갱신은 로그에 찍지 않고 상태바 구독자에게만 간다(출력 패널은 줄을 제자리에서 못 고친다, §1-EE).
@@ -139,7 +151,7 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
         for (const lib of uploads) {
             try {
                 pushTrace(`│ ↑ Library ${lib.raw} → ${lib.remoteDir}`);
-                const stats = await uploadProject(cfg.ip, lib.localDir, lib.remoteDir, {
+                const stats = await uploadProject(cfg.ip, prepared?.uploadDirFor(lib.localDir) ?? lib.localDir, lib.remoteDir, {
                     skipUnchanged: true,
                     manifest: getSyncManifest(cfg.ip, lib.remoteDir),
                     onProgress: progress => {
@@ -152,6 +164,8 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
                     isCancelled,
                 });
                 mergeSyncManifest(cfg.ip, lib.remoteDir, stats.manifest);
+                const stale = prepared?.staleExcludedRefs(lib.remoteDir, getSyncManifest(cfg.ip, lib.remoteDir)) ?? [];
+                if (stale.length > 0) { staleExcluded.push({ remoteDir: lib.remoteDir, refs: stale }); }
                 result.libraryUploads.push({ ...lib, uploaded: stats.uploaded, skipped: stats.skipped });
                 pushTrace(`│ ✔ Library done: ${stats.uploaded} sent, ${stats.skipped} skipped (${lib.remoteDir})`);
             } catch (e: any) {
@@ -175,7 +189,7 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
                     : '원격 전용 파일 삭제는 정지 확인 뒤';
                 pushTrace(`│ ↑ Mode: mirror sync (변경분만 업로드, ${remoteOnlyPolicy}, Unload 생략)`);
                 const previousManifest = getSyncManifest(cfg.ip, ftpProjectDir);
-                const stats = await mirrorProject(cfg.ip, options.projectDir, ftpProjectDir, {
+                const stats = await mirrorProject(cfg.ip, projectUploadDir, ftpProjectDir, {
                     deferDelete: true,
                     // 크기만 같고 내용이 바뀐 파일을 스킵하지 않도록 직전 업로드 지문(SHA-1)을 함께 본다.
                     manifest: previousManifest,
@@ -195,9 +209,9 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
                 fireUploadEnd(stats);
                 return { ok: true, pendingDeletes: stats.pendingDeletes };
             }
-            const stats = await uploadProject(cfg.ip, options.projectDir, ftpProjectDir, {
+            const stats = await uploadProject(cfg.ip, projectUploadDir, ftpProjectDir, {
                 skipUnchanged: options.skipUnchanged,
-                onlyFiles: useChangedOnly ? changedFiles : undefined,
+                onlyFiles: useChangedOnly ? uploadChangedFiles : undefined,
                 manifest: getSyncManifest(cfg.ip, ftpProjectDir),
                 onProgress: onUploadProgress,
                 isCancelled,
@@ -261,12 +275,40 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
         lock.setStage('UPLOAD');
         pushTrace(`│ 원격 전용 파일 ${pendingDeletes.length}개 삭제 (정지 확인 후)`);
         // ✘는 실패 기호로 오독된다 — 미러 삭제는 정상 동작이므로 −로 표기.
-        const deleted = await removeRemoteFiles(cfg.ip, pendingDeletes, file => pushTrace(`│ − del ${file} (원격 전용 — 로컬에 없어 삭제)`));
+        const deleted = await removeRemoteFiles(cfg.ip, pendingDeletes, file => pushTrace(
+            prepared?.isExcludedRemote(`${ftpProjectDir}/${file}`)
+                ? `│ − del ${file} (배포 전처리로 제외)`
+                : `│ − del ${file} (원격 전용 — 로컬에 없어 삭제)`));
         if (isCancelled()) { cancelResult('원격 파일 삭제 후'); return false; }
         if (result.uploadStats) { result.uploadStats.deleted = deleted; }
         if (deleted < pendingDeletes.length) {
             pushTrace(`│ ⚠ 삭제 실패 ${pendingDeletes.length - deleted}개 (non-fatal — 남은 파일은 Compile 결과로 드러남)`);
         }
+    }
+
+    // ── 라이브러리 원격 폴더의 미사용 제외 파일 삭제 (정지 확인 뒤) ──
+    // 라이브러리 업로드는 원격 전용 파일을 지우지 않는다(다른 프로젝트도 쓸 수 있다). 다만 예전 배포가 올린 제외 파일은 /GPL 메모리를
+    // 계속 차지하므로, 우리 동기화 기록에 있는 것만 골라 지운다. 실행 중 삭제는 미검증이라 Upload Only 에서는 보류한다.
+    const staleCount = staleExcluded.reduce((n, s) => n + s.refs.length, 0);
+    if (staleCount > 0 && options.uploadOnly) {
+        pushTrace(`│ 라이브러리 폴더의 미사용 제외 파일 ${staleCount}개 삭제는 보류 (Upload Only — 다음 배포에서 정지 확인 뒤 지움)`);
+    } else if (staleCount > 0) {
+        if (isCancelled()) { cancelResult('라이브러리 제외 파일 삭제 전'); return false; }
+        lock.setStage('UPLOAD');
+        let removed = 0;
+        for (const s of staleExcluded) {
+            const done: string[] = [];
+            removed += await removeRemoteFiles(cfg.ip, s.refs, rel => {
+                done.push(rel);
+                pushTrace(`│ − del ${s.remoteDir}/${rel} (배포 전처리로 제외 — 예전 업로드분)`);
+            });
+            dropSyncManifestFiles(cfg.ip, s.remoteDir, done);
+        }
+        if (result.preprocess) { result.preprocess.remoteDeleted = removed; }
+        if (removed < staleCount) {
+            pushTrace(`│ ⚠ 제외 파일 삭제 실패 ${staleCount - removed}개 (non-fatal — 사본 .gpr 에 없어 컴파일되지 않음)`);
+        }
+        if (isCancelled()) { cancelResult('라이브러리 제외 파일 삭제 후'); return false; }
     }
 
     // ── 배포 증적 대조 (개선안 §12·§13) ──
@@ -276,7 +318,8 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
     if (ftpProjectDir) {
         try {
             result.provenance = compareProvenance({
-                local: snapshotProjectFiles(options.projectDir),
+                // 전처리 사본을 올렸으면 원본을 같은 규칙으로 전처리한 지문과 맞춘다(원본 지문과는 당연히 다르다).
+                local: prepared ? prepared.snapshot(options.projectDir) : snapshotProjectFiles(options.projectDir),
                 uploaded: getSyncManifest(cfg.ip, ftpProjectDir),
             });
             pushTrace(`│ 증적: ${describeProvenance(result.provenance)}`);

@@ -28,6 +28,8 @@ export type QuickDeployOpts = {
 	 * 브리지 응답 대기가 끊긴 뒤의 재시도가 두 번째 배포를 만드는 것을 막는다.
 	 */
 	idempotencyKey?: string;
+	/** 배포 전처리 호출 단위 덮어쓰기(자동화 인자 `preprocess`) — deployTypes.DeployOptions.preprocessOverride 로 그대로 간다. */
+	preprocessOverride?: unknown;
 };
 
 export interface DeployContext {

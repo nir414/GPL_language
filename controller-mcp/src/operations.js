@@ -212,6 +212,17 @@ export function summarizeOperationResult(rec) {
   if (Array.isArray(r.libraryUploads) && r.libraryUploads.length > 0) {
     parts.push(`libs ${r.libraryUploads.map((l) => `${l.raw ?? '?'} ${l.uploaded ?? '?'}/${l.skipped ?? '?'}`).join(', ')}`);
   }
+  // 배포 전처리(주석 제거·미사용 제외) — /GPL 에 원본이 아닌 사본을 올렸다는 사실과 줄인 양.
+  if (r.preprocess && typeof r.preprocess === 'object') {
+    const p = r.preprocess;
+    if (p.applied === false) {
+      parts.push('preprocess skipped');
+    } else {
+      const saved = typeof p.savedBytes === 'number' ? ` −${(p.savedBytes / 1024).toFixed(0)} KB` : '';
+      const excluded = Array.isArray(p.excluded) && p.excluded.length > 0 ? ` · excluded ${p.excluded.length}` : '';
+      parts.push(`preprocess${saved}${excluded}`);
+    }
+  }
   if (typeof r.compileErrorCount === 'number') parts.push(`compileErrors ${r.compileErrorCount}`);
   if (r.provenance && typeof r.provenance === 'object' && typeof r.provenance.inSync === 'boolean') {
     const changed = Array.isArray(r.provenance.changedSinceUpload) ? r.provenance.changedSinceUpload.length : null;

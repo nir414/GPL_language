@@ -19,6 +19,7 @@ import { resolveErrorFilePath } from './compileErrorPath';
 import type { DeployContext } from './deployContext';
 import type { DeployProjectInfo } from './deployPrecheck';
 import type { DeployTarget } from './deployTargetStage';
+import { describePreprocessOptions } from './deployPreprocess';
 
 /** Compile 에 시도할 이름 후보. Direct 모드에서는 /GPL의 실제 폴더명(=로드된 프로젝트명)을 최우선 후보로 사용한다. */
 export function compileCandidatesFor(project: DeployProjectInfo, target: DeployTarget): string[] {
@@ -88,6 +89,12 @@ export function recordCompileSnapshot(ctx: DeployContext): void {
             projectDir: options.projectDir,
             compiledAt: Date.now(),
             files,
+            ...(ctx.preprocess ? {
+                preprocess: {
+                    options: describePreprocessOptions(ctx.preprocess.options),
+                    excludedFiles: ctx.preprocess.summary.excluded.map(e => e.remotePath),
+                },
+            } : {}),
         });
         result.compiledSnapshotFiles = Object.keys(files).length;
         pushTrace(`│ ✔ 컴파일 스냅샷 기록 ${result.compiledSnapshotFiles} files (Attach only BP 신뢰성 판정용, GitHub #21)`);

@@ -1913,8 +1913,19 @@ tool('deploy_project',
     timeoutMs: z.number().int().min(5000).max(600000).optional().describe('확장 명령 응답 대기(ms, 기본 240000 — 업로드+컴파일은 오래 걸린다)'),
     idempotencyKey: z.string().optional().describe('같은 키의 배포가 진행 중이면 새로 시작하지 않는다. 생략하면 (명령+대상 폴더)로 자동 생성'),
     verbose: z.boolean().optional().describe('true면 결과 본문 원문(해시·전체 목록 포함). 기본은 축약본 — 판단에 필요한 필드는 모두 남는다'),
+    preprocess: z.union([
+      z.literal(false),
+      z.object({
+        stripComments: z.boolean().optional(),
+        trimWhitespace: z.boolean().optional(),
+        excludeUnreachableLibraryFiles: z.boolean().optional(),
+        keepFiles: z.array(z.string()).optional(),
+      }),
+    ]).optional().describe('배포 전처리 이번 호출만 덮어쓰기(설정 gpl.deploy.preprocess 위에 얹음, false=끔). 메모리 절약용 — 워크스페이스 밖 사본을 '
+      + '올린다(줄 번호 유지). stripComments=주석 제거, trimWhitespace=들여쓰기·줄 끝 공백 제거, excludeUnreachableLibraryFiles=실행 프로젝트에서 '
+      + '이름으로 닿지 않는 라이브러리 파일 제외, keepFiles=늘 포함할 파일/Module 이름. 결과는 result.preprocess(줄인 바이트·제외 파일)'),
   },
-  async ({ mode, project, projectDir, projectFile, saveDirty, confirmStart, ignoreCompileStale, timeoutMs, idempotencyKey, verbose }) => {
+  async ({ mode, project, projectDir, projectFile, saveDirty, confirmStart, ignoreCompileStale, timeoutMs, idempotencyKey, verbose, preprocess }) => {
     const m = mode ?? 'build';
     const command = m === 'quick'
 		? 'gpl.quickCompile'
@@ -1932,6 +1943,7 @@ tool('deploy_project',
       // 같은 키의 배포가 이미 돌고 있으면 확장이 두 번째를 시작하지 않는다(§10). 키를 주지 않으면
       // 확장이 (명령 + 대상 폴더)로 만든다 — 여기서 굳이 무작위 키를 만들면 중복 방지가 꺼진다.
       idempotencyKey: idempotencyKey ?? undefined,
+      preprocess: preprocess ?? undefined,
     };
     if (!args.project && !args.projectDir && !args.projectFile) {
       return textResult({

@@ -59,6 +59,7 @@ import { runCompilePhase } from './deployCompileStage';
 import { runStartPhase } from './deployStartStage';
 import { runErrorCheckPhase } from './deployErrorCheckStage';
 import { createCompileSourceLineReader, resolveErrorFilePath } from './compileErrorPath';
+import { preprocessUndefinedSymbolHint } from './deployPreprocess';
 
 // 공개 API — 타입과 경로 해석은 분리 모듈이 정본이지만 호출측은 종전대로 이 모듈에서 가져간다.
 export type { DeployUploadEvent, DeployOptions, DeployPhase, CompileAttemptLog, DeployResult } from './deployTypes';
@@ -271,6 +272,8 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         ...(result.uploadStats ? { uploadStats: result.uploadStats } : {}),
         // 라이브러리(ProjectLibrary) 업로드 — 응답에는 있고 기록에만 빠져 다른 세션이 "라이브러리 없이 컴파일"로 오판한 사건(2026-11-05).
         ...(result.libraryUploads && result.libraryUploads.length > 0 ? { libraryUploads: result.libraryUploads } : {}),
+        // 배포 전처리(주석 제거·미사용 제외) — 무엇을 줄여 무엇을 올렸는지. /GPL 사본이 원본과 다르다는 사실의 기록이다.
+        ...(result.preprocess ? { preprocess: result.preprocess } : {}),
         ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
         ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),
         // 어느 장치에 올렸는지의 근거 — operation 파일만으로 "그때 진짜 제어기였나" 를 판정할 수 있게.
@@ -366,8 +369,12 @@ async function deployLocked(
     const host: DeployHostIo = {
         appendLine: line => output.appendLine(line),
         clearDiagnostics: () => diagnosticCollection.clear(),
-        applyCompileDiagnostics: errors => applyCompileDiagnostics(errors, options.projectDir, diagnosticCollection),
+        // 전처리(미사용 제외)로 뺀 파일이 있으면 `-729 Undefined symbol` 에 그 파일을 짚는 안내를 붙인다(deployPreprocess).
+        applyCompileDiagnostics: errors => applyCompileDiagnostics(errors, options.projectDir, diagnosticCollection,
+            err => (err.code === -729 && ctx.preprocess ? preprocessUndefinedSymbolHint(err.message, ctx.preprocess.excluded) : undefined)),
         readSourceExtensionsSetting: () => vscode.workspace.getConfiguration('gpl').get<unknown>('project.sourceExtensions'),
+        // 리소스 범위 — 프로젝트 폴더의 워크스페이스 폴더 설정을 따른다(프로젝트별 값은 설정 안의 projects 맵).
+        readPreprocessSetting: projectDir => vscode.workspace.getConfiguration('gpl', vscode.Uri.file(projectDir)).get<unknown>('deploy.preprocess'),
         readRequireStartConfirmation: () => vscode.workspace.getConfiguration('gpl').get<boolean>('controller.requireStartConfirmation', true),
         confirmStart: async projectName => {
             const pick = await vscode.window.showWarningMessage(
@@ -431,10 +438,18 @@ async function deployLocked(
 export function applyCompileDiagnostics(
     errors: CompileError[],
     projectDir: string,
-    collection: vscode.DiagnosticCollection
+    collection: vscode.DiagnosticCollection,
+    /** 배포 문맥의 덧붙임 안내(예: 전처리로 뺀 파일이 `-729` 의 원인일 수 있음). 기존 안내 뒤에 붙는다. */
+    extraHint?: (err: CompileError) => string | undefined,
 ): void {
     // 그 줄의 소스를 보고 원인 안내를 붙인다(-741 선언 줄·-722 `New X()`·-737 등). 자동화 결과의 compileErrors 도 같은 값을 쓴다.
     attachCompileErrorHints(errors, createCompileSourceLineReader(projectDir));
+    if (extraHint) {
+        for (const err of errors) {
+            const extra = extraHint(err);
+            if (extra) { err.hint = err.hint ? `${err.hint} ${extra}` : extra; }
+        }
+    }
 
     // fsPath 문자열을 키로 사용해 동일 파일의 진단을 묶는다.
     // (Uri.toString() ↔ Uri.parse() 왕복 인코딩으로 인한 경로 불일치를 피하기 위해 Uri를 직접 보관한다.)

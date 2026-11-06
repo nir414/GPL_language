@@ -24,6 +24,11 @@ export interface AutomationTargetArgs extends ProjectTargetRequest {
 	 * 브리지 응답이 끊긴 뒤 호출자가 같은 요청을 다시 보내도 중복 배포가 되지 않게 하는 장치다.
 	 */
 	idempotencyKey?: string;
+	/**
+	 * 배포 전처리 호출 단위 덮어쓰기 — `{ stripComments?, trimWhitespace?, excludeUnreachableLibraryFiles?, keepFiles? }` 또는 `false`(끔).
+	 * 설정 `gpl.deploy.preprocess` 위에 얹는다(controller/deployment/deployPreprocess.resolvePreprocessOptions).
+	 */
+	preprocess?: unknown;
 }
 
 export type AutomationErrorCode =

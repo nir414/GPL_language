@@ -55,6 +55,7 @@ GPL 컴파일은 제어기에서 수행하며, 상태 조회 항목은 제어기
 - **컴파일 오류:** 제어기가 알려 준 컴파일 오류는 **Problems** 패널에 표시되고, 오류가 난 위치로 바로 이동할 수 있습니다.
 - **저장 시 자동 업로드:** 제어기에 연결한 상태에서 파일을 저장할 때 자동으로 업로드·컴파일할지는 `gpl.quickCompile.autoOnSave`에서 설정합니다. `auto` 모드에서는 저장한 소스를 업로드하되, 모든 스레드가 정지한 상태일 때만 컴파일합니다.
 - **여유 메모리:** Compile·Start 전에 제어기의 여유 메모리가 부족하면 경고하고, 배포·Quick Compile 은 쓰레드를 정지한 뒤 로드된 실행 프로젝트를 Unload 해 메모리를 회수하고 진행합니다(`gpl.controller.memoryGuard.autoUnload`, 기본 켬). 자세한 내용은 `GPL: Show Controller Memory Status`로 보고, 쓰지 않는 프로젝트는 `GPL: Unload Project`로 메모리에서 내릴 수 있습니다. 기본은 `/GPL`을 비운 뒤 전부 내리는 `Unload -all`이고, 한 프로젝트만 내리려면 목록에서 고릅니다.
+- **배포 전처리(메모리 절약):** `gpl.deploy.preprocess`를 켜면 워크스페이스 밖에 만든 사본을 올립니다. 주석·들여쓰기를 지우고(`stripComments`·`trimWhitespace`), 실행 프로젝트에서 이름으로 닿지 않는 라이브러리 파일은 올리지도 컴파일하지도 않습니다(`excludeUnreachableLibraryFiles`, 늘 넣을 파일은 `keepFiles`). 줄 수를 그대로 지키므로 컴파일 오류 위치와 중단점은 원본과 같고, 로컬 파일과 Save to Flash 는 원본 그대로입니다. 프로젝트별로 켜려면 `projects`에 프로젝트 이름으로 적습니다.
 
 제어기 파일 트리의 `Compile & Run`은 **제어기에 있는 소스**를 컴파일하고 실행합니다. PC에서 수정한 내용을 실행하려면 먼저 업로드해 주세요.
 
@@ -166,6 +167,7 @@ VS Code 설정에서 `@ext:nir414.gpl-language-support`를 검색하면 확장 �
 | `gpl.controller.consolePort` | 런타임 콘솔 포트 |
 | `gpl.quickCompile.autoOnSave` | 파일 저장 시 업로드·컴파일 방식 |
 | `gpl.deploy.uploadLibraries` | 업로드할 때 형제 폴더의 참조 라이브러리도 함께 올릴지 여부 |
+| `gpl.deploy.preprocess` | 배포 사본에서 주석·공백을 지우고 쓰지 않는 라이브러리 파일을 빼서 제어기 메모리를 아낌(기본 꺼짐, 프로젝트별 설정 가능) |
 | `gpl.project.autoSyncSources` | 소스 파일 변경 시 `.gpr` 목록 반영 방식 |
 | `gpl.controller.memoryGuard.autoUnload` | 여유 메모리가 경고 기준 미만이면 배포 전에 정지 → Unload 로 회수하고 진행(기본 켬) |
 | `gpl.controller.memoryGuard.confirmOnCritical` | 여유 메모리 심각 구간에서 Compile/Start 전 계속·취소 확인 |

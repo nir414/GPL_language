@@ -502,7 +502,12 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 				newestModifiedAt: newest > 0 ? new Date(newest).toISOString() : null,
 				...(listing?.error ? { error: listing.error } : {}),
 				// 확장이 이 창에서 마지막으로 컴파일 확정한 출처 — 다른 과제 폴더의 동명 프로젝트인지 가린다.
-				lastCompiledFrom: rec ? { projectDir: rec.projectDir, compiledAt: new Date(rec.compiledAt).toISOString() } : null,
+				// 전처리 사본(주석 제거·미사용 제외)을 올려 컴파일했으면 그 표시 — /GPL 소스가 로컬 원본과 다르다.
+				lastCompiledFrom: rec ? {
+					projectDir: rec.projectDir,
+					compiledAt: new Date(rec.compiledAt).toISOString(),
+					...(rec.preprocess ? { preprocess: rec.preprocess } : {}),
+				} : null,
 			};
 		});
 		const looseFiles = entries.filter(e => !e.isDirectory).map(e => e.name);

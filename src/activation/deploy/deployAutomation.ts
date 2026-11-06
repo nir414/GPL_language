@@ -167,6 +167,7 @@ export async function runDeployForAutomation(
 		overrideProjectDir: target.dir,
 		nonInteractive: true,
 		startConfirmed: args.confirmStart === true,
+		preprocessOverride: args.preprocess,
 		// 호출자가 키를 주지 않으면 (명령 + 대상 폴더)로 만든다 — 같은 대상에 같은 종류의 배포가
 		// 겹쳐 들어오는 것이 막으려는 상황이므로, 키가 없다고 중복 방지가 꺼지면 안 된다(§10).
 		idempotencyKey: args.idempotencyKey ?? `${label}:${normalizeDirKey(target.dir)}`,

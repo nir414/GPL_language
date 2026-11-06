@@ -170,6 +170,14 @@ test('결과 요약 한 줄: 업로드/컴파일/동기화 상태가 목록에�
     summarizeOperationResult({ result: { ...deployResult, libraryUploads: [{ raw: 'PaL', remoteDir: '/GPL/PaL', uploaded: 38, skipped: 0 }, { raw: 'Gantry', remoteDir: '/GPL/Gantry', uploaded: 6, skipped: 1 }] } }),
     'uploaded 71 · skipped 0 · libs PaL 38/0, Gantry 6/1 · compileErrors 0 · inSync',
   );
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, preprocess: { applied: true, savedBytes: 975000, excluded: [{ remotePath: '/GPL/PaL/Net_Client.gpl' }] } } }),
+    'uploaded 71 · skipped 0 · preprocess −952 KB · excluded 1 · compileErrors 0 · inSync',
+  );
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, preprocess: { applied: false, note: '클래식 경로' } } }),
+    'uploaded 71 · skipped 0 · preprocess skipped · compileErrors 0 · inSync',
+  );
   assert.deepEqual(compactOperationResult({ ...deployResult, libraryUploads: [{ raw: 'PaL', remoteDir: '/GPL/PaL', uploaded: 38, skipped: 0 }] }).libraryUploads,
     [{ raw: 'PaL', remoteDir: '/GPL/PaL', uploaded: 38, skipped: 0 }]);
   assert.equal(summarizeOperationResult({ error: { message: '컴파일 실패' } }), 'error: 컴파일 실패');

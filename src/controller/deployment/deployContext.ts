@@ -19,6 +19,7 @@ import type { CompileError } from '../protocol/responseParser';
 import { readDeployCancellation } from './deployCancellation';
 import type { DeployLockHandle } from './deployLock';
 import type { CompiledRecord, FileStamp } from './deployRecordCore';
+import type { PreparedPreprocess } from './deployPreprocessStage';
 import { emptyDeployResult } from './deployTypes';
 import type { DeployOptions, DeployResult, DeployUploadEvent } from './deployTypes';
 import { totalPhasesFor } from './deployModes';
@@ -67,6 +68,8 @@ export interface DeployHostIo {
     confirmStart(projectName: string): Promise<boolean>;
     /** 업로드 진행/종료 이벤트(`onDidUploadProgress` 구독자에게). */
     emitUploadEvent(event: DeployUploadEvent): void;
+    /** 설정 `gpl.deploy.preprocess` 원값(그 프로젝트 폴더 기준 리소스 범위). 없으면 전처리를 하지 않는다. */
+    readPreprocessSetting?(projectDir: string): unknown;
 }
 
 export interface DeployContext {
@@ -108,6 +111,8 @@ export interface DeployContext {
     preUploadSnapshot?: Record<string, FileStamp>;
     /** Compile 이 성공했는가(skipCompile 경로는 "통과"로 본다). 컴파일 단계가 정하고 ERROR CHECK 가 `success` 로 옮긴다. */
     compiled: boolean;
+    /** 배포 전처리 사본(deployPreprocessStage.ts) — 업로드 단계가 채운다. 컴파일 오류 안내가 제외 목록을 본다. */
+    preprocess?: PreparedPreprocess;
 }
 
 export interface DeployContextInput {

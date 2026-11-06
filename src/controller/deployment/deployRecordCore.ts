@@ -33,6 +33,11 @@ export interface CompiledRecord {
     compiledAt: number;
     /** key = projectDir 기준 상대 경로('/' 구분, 원래 대소문자). 비교는 대소문자 무시 */
     files: Record<string, FileStamp>;
+    /**
+     * 배포 전처리 사본을 올려 컴파일했으면 그 요약(deployPreprocess) — 제어기 `/GPL` 소스가 로컬 원본과 다르다는 표시.
+     * `files` 는 여전히 **로컬 원본** 지문이다(줄 번호가 같으므로 BP 신뢰성 판정은 원본 기준이 맞다).
+     */
+    preprocess?: { options: string; excludedFiles: string[] };
 }
 
 export interface SnapshotDiff {

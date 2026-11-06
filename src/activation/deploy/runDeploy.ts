@@ -98,6 +98,8 @@ export async function runDeploy(ctx: DeployContext, skipStart: boolean, quickOpt
 			skipCompile: quickOpts?.skipCompile,
 			// ProjectLibrary 중 컴파일 루트 밖·같은 projects 폴더의 라이브러리를 /GPL/<값> 으로 함께(libraryUploadPlan.ts).
 			uploadLibraries: vscode.workspace.getConfiguration('gpl').get<boolean>('deploy.uploadLibraries', true) !== false,
+			// 배포 전처리 — 설정 gpl.deploy.preprocess 는 deploy() 가 읽고, 자동화 인자(preprocess)만 여기서 덮어쓴다.
+			preprocessOverride: quickOpts?.preprocessOverride,
 			skipUnchanged: quickOpts?.skipUnchanged,
 			changedFiles: quickOpts?.changedFiles,
 			autoGate: quickOpts?.autoGate,

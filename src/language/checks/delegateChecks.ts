@@ -6,6 +6,7 @@
  *   - `gpl-language-facts-delegates_v1` §1·§2(`AddressOf` 를 delegate 로 감싸지 않으면 -205/-712, `Mid(...)` 바로 뒤 멤버 접근 -712)
  *   - `gpl-language-facts-instance-delegates_v1` §1·§2·§3(`AddressOf Me.X` -741, 시그니처 불일치 -741, 거짓 경고 방지표)
  *   - `debug-day-feedback_v1` §5(a)(delegate 매개변수를 이름으로 바로 호출하면 -729)
+ *   - `mid-temp-leak-and-memory-costs_v1` §1(`Mid(<임시 문자열 식>, …)` 이 120자를 넘으면 호출마다 메모리가 돌아오지 않음, 2026-11-06 시뮬 제어기)
  *
  * 거짓 경고를 피하려고 확신할 수 없으면 조용히 넘어간다 — 호출 대상을 못 찾거나, `New <사용자 클래스>(…)` 생성자 인자이거나,
  * 시그니처 비교의 한쪽을 풀지 못하면 판정하지 않는다.
@@ -405,6 +406,49 @@ function checkMidMemberAccess(ctx: DelegateContext, out: CompilerCheckFinding[])
     }
 }
 
+// ─── ⑤ Mid(<임시 문자열 식>, …) — 메모리 누수 ─────────────────────────────────
+
+/** String 을 돌려주는 내장 함수(이 결과는 임시 문자열이다). GPL 에 없는 이름은 맞을 일이 없을 뿐이다. */
+const STRING_BUILTINS = new Set(['cstr', 'left', 'right', 'mid', 'ucase', 'lcase', 'trim', 'ltrim', 'rtrim', 'format', 'space', 'replace']);
+
+function checkMidTemporaryArgument(ctx: DelegateContext, out: CompilerCheckFinding[]): void {
+    const re = /(?<![\w.])Mid\s*\(/gi;
+    const call = new RegExp(`(?<![\\w.])(${IDENT})\\s*\\(`, 'g');
+    for (const ml of ctx.mapped) {
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(ml.code)) !== null) {
+            const open = m.index + m[0].length - 1;
+            const args = splitCallArgs(ml.code, open);
+            const first = args[0];
+            const last = args[args.length - 1];
+            if (args.length < 2 || ml.code[last.end] !== ')') { continue; }
+            const expr = ml.code.slice(first.start, first.end);
+            let temporary = expr.includes('&');
+            if (!temporary) {
+                call.lastIndex = 0;
+                let c: RegExpExecArray | null;
+                while (!temporary && (c = call.exec(expr)) !== null) {
+                    const name = c[1];
+                    temporary = STRING_BUILTINS.has(name.toLowerCase())
+                        || ctx.visible(name).some(s => s.kind === GPLSymbolKind.Function && /^String\b/i.test(s.returnType ?? ''));
+                }
+            }
+            if (!temporary) { continue; }
+            const lead = expr.length - expr.trimStart().length;
+            const trail = expr.length - expr.trimEnd().length;
+            out.push({
+                ...toPhysical(ml, first.start + lead, first.end - trail),
+                code: 'mid-temporary-argument',
+                severity: 'information',
+                message: '`Mid` 의 첫 인자가 임시 문자열(`&` 연결·문자열 함수 결과)입니다. 그 문자열이 120자를 넘으면 호출마다 메모리가 돌아오지 않았습니다 '
+                    + '(GPL 4.2K5 시뮬 제어기 실측 2026-11-06: 300자 연결에 1회당 320 B, Unload 뒤에도 회복 안 됨). '
+                    + '변수에 먼저 받은 뒤 `Mid(변수, …)` 로 부르면 새지 않았습니다.',
+            });
+        }
+    }
+}
+
 // ─── 진입점 ──────────────────────────────────────────────────────────────────
 
 /** Delegate·`Mid` 검사. 결과는 compilerChecks 가 다른 규칙과 합쳐 정렬한다. */
@@ -414,5 +458,6 @@ export function findDelegateCheckFindings(content: string, filePath: string, loo
     checkAddressOf(ctx, out);
     checkDelegateParameterCalls(ctx, out);
     checkMidMemberAccess(ctx, out);
+    checkMidTemporaryArgument(ctx, out);
     return out;
 }

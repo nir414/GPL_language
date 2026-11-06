@@ -329,3 +329,28 @@ test('delegateChecks: 다른 내장 함수·Mid 의 일반 사용은 경고하�
     assert.deepStrictEqual(codes(body('x = a.Mid(s, p).Length')), []);
     assert.deepStrictEqual(codes(body('x = Mid(s, p) \' .Split')), []);
 });
+
+// ⑤ Mid(<임시 문자열 식>, …) — 메모리 누수 (inbox 2026-11-06 mid-temp-leak-and-memory-costs §1)
+
+function midTemp(line: string, extra: string[] = []) {
+    const content = src('Module M', ...extra, '    Public Sub T(ByVal s As String, ByVal i As Integer)', '        Dim x As String', `        ${line}`, '    End Sub', 'End Module');
+    return findCompilerCheckFindings(content, 'Main.gpl').filter(f => f.code === 'mid-temporary-argument');
+}
+
+test('delegateChecks: Mid 첫 인자가 & 연결·문자열 함수 결과면 information, 범위는 첫 인자', () => {
+    const line = 'x = Mid(CStr(i) & s, 1, 10)';
+    const [f] = midTemp(line);
+    assert.strictEqual(f.severity, 'information');
+    assert.ok(f.message.includes('120자') && f.message.includes('320 B'));
+    assert.strictEqual(`        ${line}`.slice(f.start, f.end), 'CStr(i) & s');
+    assert.strictEqual(midTemp('x = Mid(UCase(s), 2, 250)').length, 1);
+    assert.strictEqual(midTemp('x = Mid(Build(s), 1, 5)', ['    Public Function Build(ByVal a As String) As String', '        Return a', '    End Function']).length, 1, '사용자 String 함수');
+});
+
+test('delegateChecks: Mid 첫 인자가 변수·배열 요소·숫자 함수면 조용히 넘어간다(보고의 새지 않는 형태)', () => {
+    assert.deepStrictEqual(midTemp('x = Mid(s, 2, 250)'), []);
+    assert.deepStrictEqual(midTemp('x = Mid(arr(i), 1, 3)'), []);
+    assert.deepStrictEqual(midTemp('x = Mid(s, Len(s & "a"), 1)'), [], '& 가 첫 인자가 아니면 아님');
+    assert.deepStrictEqual(midTemp('x = Mid(s, Count(i), 1)', ['    Public Function Count(ByVal a As Integer) As Integer', '        Return a', '    End Function']), []);
+    assert.deepStrictEqual(midTemp('x = UCase(CStr(i) & s)'), []);
+});

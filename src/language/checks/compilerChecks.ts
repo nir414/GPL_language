@@ -19,7 +19,8 @@
  * | `delegate-signature-mismatch` | `New D(AddressOf X)` 에서 X 의 모든 오버로드가 D 와 시그니처가 다름 → -741 | error |
  * | `delegate-parameter-direct-call` | delegate 형 매개변수를 이름으로 바로 호출 → -729 | error |
  * | `mid-member-access` | `Mid(...).Method` → -712 | warning |
- * (뒤 다섯 규칙의 구현은 `delegateChecks.ts`)
+ * | `mid-temporary-argument` | `Mid(<& 연결·문자열 함수 결과>, …)` 가 120자를 넘으면 호출마다 메모리 누수(실측, 길이는 정적으로 모름) | information |
+ * (뒤 여섯 규칙의 구현은 `delegateChecks.ts`)
  *
  * 다른 파일의 심볼(라이브러리 프로젝트 포함)은 `CompilerSymbolLookup` 으로 받는다 — `SymbolCache` 가 구조적으로 맞는다.
  * 조회가 없으면(심볼 캐시 초기화 전·단위 테스트) 현재 파일만으로 판정하고, 확신할 수 없는 경우는 조용히 넘어간다.
@@ -47,7 +48,8 @@ export type CompilerCheckCode =
     | 'addressof-me-prefix'
     | 'delegate-signature-mismatch'
     | 'delegate-parameter-direct-call'
-    | 'mid-member-access';
+    | 'mid-member-access'
+    | 'mid-temporary-argument';
 
 export interface CompilerCheckFinding {
     /** 물리 줄·열(0 기준). end 는 같은 줄의 끝 열(배타). */

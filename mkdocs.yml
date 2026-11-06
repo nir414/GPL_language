@@ -90,6 +90,7 @@ nav:
       - 에러 방지 체크리스트: gpl-language/error-prevention.md
       - 스레딩: gpl-language/threading.md
       - 스레드 안전성: gpl-language/thread-safety.md
+      - 메모리 아끼기: gpl-language/memory-costs.md
       - 네트워킹: gpl-language/networking.md
       - 파일 입출력: gpl-language/file-io.md
   - 개발 가이드:

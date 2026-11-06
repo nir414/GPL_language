@@ -176,12 +176,14 @@ test('deployPreprocessStage: removeUnusedMembers — 라이브러리 안의 안 
         assert.strictEqual(staged, 'Module PRA\r\n    Public Sub ParseLine(s As String)\r\n    End Sub\r\n\r\n\r\n\r\nEnd Module\r\n');
         // Net_Client(NTC) 은 파일 제외가 꺼져 있으니 선언 단위로 비워진다. Frame_Tool 의 Offset 은 keep.
         const ntc = fs.readFileSync(path.join(prepared.uploadDirFor(ws.pal), 'Net_Client.gpl'), 'utf8');
-        assert.strictEqual(ntc, 'Module NTC\r\n\r\n\r\nEnd Module\r\n');
+        // 선언이 하나도 안 남은 Module 은 껍데기(Module·End Module)까지 비운다.
+        assert.strictEqual(ntc, '\r\n\r\n\r\n\r\n');
         assert.ok(fs.readFileSync(path.join(prepared.uploadDirFor(ws.pal), 'Frame_Tool.gpl'), 'utf8').includes('Offset'));
         assert.strictEqual(fs.readFileSync(path.join(prepared.uploadDirFor(ws.app), 'App.gpl'), 'utf8'), fs.readFileSync(path.join(ws.app, 'App.gpl'), 'utf8'));
         const s = ctx.result.preprocess!;
-        assert.strictEqual(s.removedMemberCount, 2);
-        assert.deepStrictEqual(s.removedMembers!.map(m => `${m.container}.${m.name}`).sort(), ['pra.Dead', 'ntc.Connect'].sort());
+        assert.strictEqual(s.removedMemberCount, 3);
+        assert.deepStrictEqual(s.removedMembers!.filter(m => m.kind !== 'module').map(m => `${m.container}.${m.name}`).sort(), ['pra.Dead', 'ntc.Connect'].sort());
+        assert.deepStrictEqual(s.removedMembers!.filter(m => m.kind === 'module').map(m => m.name), ['ntc']);
         assert.match(preprocessUndefinedSymbolHint('*Undefined symbol* Connect', prepared.hintEntries)!, /Net_Client\.gpl:2 \(ntc\.Connect\)/);
     } finally {
         fs.rmSync(ws.projects, { recursive: true, force: true });

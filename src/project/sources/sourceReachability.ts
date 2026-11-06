@@ -16,7 +16,7 @@
  *
  * 판정은 보수적이다(빼면 안 되는 파일을 빼지 않는 쪽):
  * - 낱말 집합으로 본다 — 같은 낱말이 다른 뜻(지역 변수·클래스 멤버)이어도 그 이름을 선언한 파일을 포함한다.
- * - 문자열 리터럴 안의 낱말도 참조로 센다 — `New Thread("FLR.RecorderLoop", …)` 처럼 진입점을 문자열로 주는 코드가 있다.
+ * - 이름처럼 생긴 문자열(`"FLR.RecorderLoop"`·`"Proc"`)도 참조로 센다 — 진입점을 문자열로 주는 코드가 있다. 자유 문장 속 낱말은 세지 않는다.
  * - 선언 이름을 하나도 찾지 못한 파일(빈 파일·파서가 못 읽은 파일)은 늘 포함하고, 그 파일의 참조도 따라간다.
  * - 같은 Module 이름을 여러 파일이 선언하면(나눠 쓴 모듈) 하나가 닿을 때 모두 포함한다.
  * - 모듈 직속 `Sub Init` 이 있는 파일은 이름 참조 없이도 초기화 때 불리므로 호출측이 늘 출발점으로 삼는다(`hasModuleInit`).
@@ -32,6 +32,7 @@
 
 import { GPLParser, GPLSymbolKind } from '../../language/syntax/gplParser';
 import { stripComment } from '../../language/checks/logicalLines';
+import { splitCodeAndNameStrings } from './memberScan';
 
 export interface SourceReferenceInfo {
     /** 다른 파일이 이름으로 부를 수 있는 선언 이름(소문자) — Module·Class 이름과 모듈 직속 비-Private 멤버. */
@@ -83,8 +84,11 @@ export function analyzeSourceReferences(text: string, filePath: string): SourceR
     }
     const words = new Set<string>();
     for (const line of text.split(/\r\n|\n|\r/)) {
-        for (const m of stripComment(line).matchAll(WORD)) {
-            if (!m[1]) { words.add(m[2].toLowerCase()); }
+        const { code, names } = splitCodeAndNameStrings(stripComment(line));
+        for (const piece of [code, ...names]) {
+            for (const m of piece.matchAll(WORD)) {
+                if (!m[1]) { words.add(m[2].toLowerCase()); }
+            }
         }
     }
     return { declared: [...declared], containers, modules, ownNames: [...own], words, hasModuleInit };

@@ -175,3 +175,47 @@ test('memberReachability: 지운 줄을 빈 줄로 바꿔도 줄 수 그대로, 
     files.set('lib', { scan: scanSourceMembers(blanked), candidate: true });
     assert.deepStrictEqual(computeMemberReachability(files).removed, []);
 });
+
+test('memberScan: 매개변수·맨 바깥 지역 이름은 가리고, 블록 안 Dim 은 가리지 않는다 · 안 쓰는 지역 Dim 표시', () => {
+    const s = scanSourceMembers(lines(
+        'Module M',
+        '    Public Sub Run(ByVal count As Integer, Optional ByRef total As Double = 0)',
+        '        Dim unusedA As Integer = 5',
+        '        Dim made As New Foo()',
+        '        Dim limit As Integer',
+        '        limit = count + total + LIB.Size',
+        '        If limit > 0 Then',
+        '            Dim inner As Integer',
+        '            inner = Shared1',
+        '        End If',
+        '        Static keep As Integer',
+        '    End Sub',
+        'End Module',
+    ));
+    const run = s.members[0];
+    assert.strictEqual(run.params, 2);
+    assert.ok(!run.refs.undotted.includes('count') && !run.refs.undotted.includes('total') && !run.refs.undotted.includes('limit'), '매개변수·바깥 지역은 가림');
+    assert.ok(run.refs.undotted.includes('inner') && run.refs.undotted.includes('shared1'), '블록 안 Dim 은 가리지 않음');
+    const flags = run.locals!.map(l => `${l.names.join(',')}:${l.unused ? 'unused' : 'used'}`);
+    assert.deepStrictEqual(flags, ['unuseda:unused', 'made:used', 'limit:used', 'inner:used', 'keep:used'], '부작용 초기화(New)·Static 은 지우지 않음');
+    assert.deepStrictEqual(s.moduleSpans, [{ name: 'm', startLine: 0, endLine: 12 }]);
+});
+
+test('memberReachability: 남는 프로시저의 안 쓰는 지역 Dim 과, 선언이 모두 지워진 Module 껍데기를 비운다', () => {
+    const files = unit({
+        app: { candidate: false, text: lines('Module App', '    Public Sub Main()', '        LIB.Go', '    End Sub', 'End Module') },
+        lib: { candidate: true, text: lines(
+            'Module LIB',
+            '    Public Sub Go()',
+            '        Dim spare As Integer',
+            '    End Sub',
+            'End Module',
+            'Module DEADMOD',
+            '    Public Sub Never()',
+            '    End Sub',
+            'End Module') },
+    });
+    const r = computeMemberReachability(files);
+    assert.deepStrictEqual(r.removed.map(m => `${m.kind}:${m.name}`).sort(), ['local:spare', 'module:deadmod', 'sub:Never'].sort());
+    assert.deepStrictEqual(r.ranges.get('lib')!.sort((a, b) => a[0] - b[0]), [[2, 2], [5, 8]], 'Never 는 Module 범위가 덮는다');
+});

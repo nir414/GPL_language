@@ -357,6 +357,11 @@ export interface DeployPreprocessSummary {
     removedMemberLines?: number;
     removedMembers?: { remotePath: string; kind: string; name: string; container?: string; lines: number }[];
     memberShakeSkipped?: string;
+    /**
+     * 컴파일 단위 전체의 컴파일 메모리 **추정**(바이트) — 원본·사본. 단가는 `project/sources/compileCostModel.ts`(Sample Prep 2026-11-06 실측).
+     * 미사용 제외·선언 단위 제거를 켰을 때만 있다. 실제 값은 Compile 전후 Show Memory 로 확인한다.
+     */
+    estimatedCompile?: { before: number; after: number; saved: number };
     /** 구조를 읽지 못해 선언 단위 제거를 하지 않은 라이브러리 파일. */
     memberShakeIrregular?: { remotePath: string; reason: string }[];
     note?: string;

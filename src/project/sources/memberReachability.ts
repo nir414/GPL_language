@@ -22,7 +22,8 @@ export interface MemberUnitFile {
 
 export interface RemovedMember {
     fileKey: string;
-    kind: SourceMember['kind'];
+    /** 선언 종류. `local` 은 남는 프로시저 안의 안 쓰는 지역 Dim, `module` 은 선언이 모두 지워진 껍데기 Module. */
+    kind: SourceMember['kind'] | 'local' | 'module';
     name: string;
     /** 둘러싼 클래스 또는 모듈 이름(원래 대소문자를 모르면 소문자). */
     container?: string;
@@ -141,25 +142,59 @@ export function computeMemberReachability(files: ReadonlyMap<string, MemberUnitF
     return collectRemovals(nodes, files);
 }
 
+function addRange(result: MemberShakeResult, removed: RemovedMember): void {
+    result.removed.push(removed);
+    const list = result.ranges.get(removed.fileKey) ?? [];
+    list.push([removed.startLine, removed.endLine]);
+    result.ranges.set(removed.fileKey, list);
+}
+
+/**
+ * 지울 범위 모으기 — 닿지 않은 선언(바깥이 지워지면 안쪽은 생략), 남는 프로시저 안의 안 쓰는 지역 Dim(컴파일 87 B/줄 실측),
+ * 그리고 선언이 하나도 남지 않은 Module 껍데기(≈190 B 실측). 모두 지울 수 있는 파일만.
+ */
 function collectRemovals(nodes: readonly Node[], files: ReadonlyMap<string, MemberUnitFile>): MemberShakeResult {
     const result: MemberShakeResult = { removed: [], ranges: new Map(), candidateMembers: 0, reachableCandidateMembers: 0 };
+    const liveModules = new Set<string>();
+    for (const n of nodes) {
+        if (n.reachable && n.member.module) { liveModules.add(n.fileKey + SEP + n.member.module); }
+    }
+    for (const n of nodes) {
+        if (!files.get(n.fileKey)?.candidate || !n.reachable || n.member.names.length === 0) { continue; }
+        for (const local of n.member.locals ?? []) {
+            if (!local.unused) { continue; }
+            addRange(result, {
+                fileKey: n.fileKey, kind: 'local', name: local.names.join(','), container: n.member.displayName,
+                startLine: local.startLine, endLine: local.endLine,
+            });
+        }
+    }
+    for (const [fileKey, file] of files) {
+        if (!file.candidate || file.scan.irregular) { continue; }
+        for (const span of file.scan.moduleSpans) {
+            if (liveModules.has(fileKey + SEP + span.name)) { continue; }
+            // 안쪽 선언 범위는 아래에서 따로 싣지 않는다 — 모듈 범위 하나로 덮는다.
+            addRange(result, { fileKey, kind: 'module', name: span.name, startLine: span.startLine, endLine: span.endLine });
+        }
+    }
+    const deadModule = (n: Node): boolean => !!n.member.module && !liveModules.has(n.fileKey + SEP + n.member.module);
     for (const n of nodes) {
         if (!files.get(n.fileKey)?.candidate || n.member.names.length === 0) { continue; }
         result.candidateMembers++;
         if (n.reachable) { result.reachableCandidateMembers++; continue; }
         if (n.parent && !n.parent.reachable) { continue; }
         const { member } = n;
-        result.removed.push({
+        // 껍데기째 지우는 Module 안이면 그 범위가 이미 덮는다(목록에는 선언 이름을 남겨 안내에 쓰게 한다).
+        const covered = deadModule(n);
+        const removed: RemovedMember = {
             fileKey: n.fileKey,
             kind: member.kind,
             name: member.displayName,
             container: n.parent ? n.parent.member.displayName : member.module,
             startLine: member.startLine,
             endLine: member.endLine,
-        });
-        const list = result.ranges.get(n.fileKey) ?? [];
-        list.push([member.startLine, member.endLine]);
-        result.ranges.set(n.fileKey, list);
+        };
+        if (covered) { result.removed.push(removed); } else { addRange(result, removed); }
     }
     return result;
 }

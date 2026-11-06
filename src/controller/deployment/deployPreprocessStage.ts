@@ -17,6 +17,7 @@ import { sourceExtensionsFrom } from '../../project/gpr/gprFolderSync';
 import { findCompileRootGpr } from '../../project/gpr/dependencyModel';
 import { buildLibraryGraph } from '../../project/sources/projectSources';
 import { minifyGplBuffer } from '../../project/sources/sourceMinify';
+import { estimateSourceCompileBytes } from '../../project/sources/compileCostModel';
 import { formatBytes } from '../../util/formatBytes';
 import { normalizePathKey } from '../../util/pathKey';
 import { manifestFileKey } from '../files/syncManifest';
@@ -127,7 +128,7 @@ export function preparePreprocess(ctx: DeployContext, project: DeployProjectInfo
 
 /** 미사용 제외(파일)·선언 단위 제거 계획 — 켜진 것만. 그래프는 한 번만 만든다. */
 function planShakes(project: DeployProjectInfo, roots: PreprocessRoot[], opts: DeployPreprocessOptions, isSource: (f: string) => boolean)
-    : { shake?: TreeShakePlan; members?: MemberShakePlan } {
+    : { shake?: TreeShakePlan; members?: MemberShakePlan; unitSources?: string[] } {
     if (!opts.excludeUnreachableLibraryFiles && !opts.removeUnusedMembers) { return {}; }
     const graph = buildLibraryGraph(project.gprPath, project.gprText);
     const compileRoot = findCompileRootGpr(project.gprPath);
@@ -144,7 +145,8 @@ function planShakes(project: DeployProjectInfo, roots: PreprocessRoot[], opts: D
     const shake = opts.excludeUnreachableLibraryFiles ? planTreeShake(input) : undefined;
     const excludedKeys = new Set((shake?.excluded ?? []).map(e => normalizePathKey(e.file)));
     const members = opts.removeUnusedMembers ? planMemberShake(input, excludedKeys) : undefined;
-    return { shake, members };
+    const unitSources = [...new Set([...graph.nodes.values()].flatMap(n => n.sources).filter(isSource))];
+    return { shake, members, unitSources };
 }
 
 function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: DeployTarget, opts: DeployPreprocessOptions): PreparedPreprocess {
@@ -156,7 +158,7 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
     const exts = sourceExtensionsFrom(host.readSourceExtensionsSetting()).map(e => e.toLowerCase());
     const isSource = (file: string): boolean => exts.includes(path.extname(file).toLowerCase());
     const minifyOpts = { stripComments: opts.stripComments, trimWhitespace: opts.trimWhitespace };
-    const { shake, members } = planShakes(project, roots, opts, isSource);
+    const { shake, members, unitSources } = planShakes(project, roots, opts, isSource);
     const excluded = shake?.excluded ?? [];
     const excludedKeys = new Set(excluded.map(e => normalizePathKey(e.file)));
     const excludedRemote = new Set(excluded.map(e => e.remotePath.toLowerCase()));
@@ -191,6 +193,7 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
     }
 
     const summary = buildSummary(cfg.ip, opts, roots, bytes, shake, members);
+    if (unitSources) { summary.estimatedCompile = estimateUnitCompile(unitSources, transform); }
     result.preprocess = summary;
     tracePreprocess(pushTrace, summary, shake, members);
 
@@ -230,6 +233,39 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
     };
 }
 
+/**
+ * 컴파일 단위 전체의 컴파일 메모리 추정 — 원본과 사본(제외 파일은 0). 단가는 compileCostModel(Sample Prep 실측)이고 **추정**이다.
+ * 못 읽는 파일은 양쪽에서 뺀다.
+ */
+function estimateUnitCompile(sources: readonly string[], transform: (file: string) => Buffer | null): NonNullable<DeployPreprocessSummary['estimatedCompile']> {
+    let before = 0;
+    let after = 0;
+    for (const file of sources) {
+        const text = readLatin1(file);
+        if (text === undefined) { continue; }
+        before += estimateSourceCompileBytes(text);
+        let out: Buffer | null;
+        try { out = transform(file); } catch { out = Buffer.from(text, 'latin1'); }
+        if (out !== null) { after += estimateSourceCompileBytes(out.toString('latin1')); }
+    }
+    return { before, after, saved: before - after };
+}
+
+/** 범위들의 합집합 줄 수(겹치는 범위 — Module 껍데기와 그 안 선언 — 를 두 번 세지 않는다). */
+function unionLineCount(ranges: ReadonlyMap<string, [number, number][]>): number {
+    let total = 0;
+    for (const list of ranges.values()) {
+        const sorted = [...list].sort((a, b) => a[0] - b[0]);
+        let end = -1;
+        for (const [s, e] of sorted) {
+            if (e <= end) { continue; }
+            total += e - Math.max(s, end + 1) + 1;
+            end = e;
+        }
+    }
+    return total;
+}
+
 function buildSummary(
     ip: string,
     opts: DeployPreprocessOptions,
@@ -257,7 +293,7 @@ function buildSummary(
         ...(shake && shake.unmatchedKeep.length > 0 && !opts.removeUnusedMembers ? { unmatchedKeepFiles: shake.unmatchedKeep } : {}),
         ...(members ? {
             removedMemberCount: removed.length,
-            removedMemberLines: removed.reduce((n, r) => n + r.endLine - r.startLine + 1, 0),
+            removedMemberLines: unionLineCount(members.ranges),
             removedMembers: removed.slice(0, SUMMARY_MEMBER_LIMIT).map(r => ({
                 remotePath: r.remotePath, kind: r.kind, name: r.name, ...(r.container ? { container: r.container } : {}), lines: r.endLine - r.startLine + 1,
             })),
@@ -287,6 +323,9 @@ function tracePreprocess(pushTrace: (line: string) => void, s: DeployPreprocessS
         }
         if (members.removed.length > 20) { pushTrace(`│   … 외 ${members.removed.length - 20}개(전체는 결과 preprocess.removedMembers, 상한 ${SUMMARY_MEMBER_LIMIT})`); }
         for (const f of members.irregular) { pushTrace(`│   ⚠ 구조를 읽지 못해 손대지 않음: ${f.remotePath} — ${f.reason}`); }
+    }
+    if (s.estimatedCompile) {
+        pushTrace(`│   컴파일 메모리 추정: ${formatBytes(s.estimatedCompile.before)} → ${formatBytes(s.estimatedCompile.after)} (−${formatBytes(s.estimatedCompile.saved)}, 실측 단가 기반 추정)`);
     }
     if (s.unmatchedKeepFiles) { pushTrace(`│   ⚠ keepFiles 중 맞는 라이브러리 파일이 없는 항목: ${s.unmatchedKeepFiles.join(', ')}`); }
 }

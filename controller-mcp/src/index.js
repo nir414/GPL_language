@@ -2859,7 +2859,10 @@ tool('continue_thread',
       stopped: wait.paused,
       location: locationOf(wait.detail),
       ...(wait.paused ? {} : {
-        note: `waitForStopMs 내 정지 없음 — 계속 실행 중일 수 있다(마지막 관측 상태: ${wait.detail?.state ?? '불명'}). 성공/실패 판정에 이 응답을 그대로 쓰지 말 것.`,
+        // Idle 은 "계속 실행 중" 이 아니라 그 쓰레드의 프로시저가 끝난 것이다(2026-11-13 실측: 루프 탈출 뒤 Idle 인데 "실행 중일 수 있다" 로 안내).
+        note: wait.detail?.state === 'Idle'
+          ? '재개 뒤 쓰레드가 끝까지 실행해 Idle 이 됐다(프로시저 종료) — 다시 서지 않는다.'
+          : `waitForStopMs 내 정지 없음 — 계속 실행 중일 수 있다(마지막 관측 상태: ${wait.detail?.state ?? '불명'}). 성공/실패 판정에 이 응답을 그대로 쓰지 말 것.`,
       }),
     });
   });

@@ -136,3 +136,16 @@ test('compileUntilPattern(§1-GZ): 너무 긴 식·중첩 수량자는 거부(nu
     assert.ok(compileUntilPattern('DONE|ERROR \d+') instanceof RegExp);
     assert.ok(compileUntilPattern('(Start|Stop)+ ok') instanceof RegExp, '수량자 없는 그룹 반복은 허용');
 });
+
+test('RuntimeConsoleBuffer.waitFor: maxLines 에서 잘리면 remaining 과, 창 뒤에 있는 패턴 줄(matchAheadSeq)을 알린다', async () => {
+    const buf = new RuntimeConsoleBuffer(100);
+    for (let i = 0; i < 10; i++) { buf.push(i === 8 ? 'worker exit' : `line ${i}`); }
+    const r = await buf.waitFor({ cursor: 0, maxLines: 4, untilPattern: /worker exit/i, timeoutMs: 1000 });
+    assert.strictEqual(r.matched, false);
+    assert.strictEqual(r.lines.length, 4);
+    assert.strictEqual(r.remaining, 6);
+    assert.strictEqual(r.matchAheadSeq, 8);
+    const all = await buf.waitFor({ cursor: 0, maxLines: 50, untilPattern: /worker exit/i, timeoutMs: 0 });
+    assert.strictEqual(all.matched, true);
+    assert.strictEqual(all.remaining, undefined);
+});

@@ -11,6 +11,14 @@
 
 ## 확인 대기 항목
 
+- [ ] **(2026-11-13, §1-HG) 0.27.17 수신함 11건 — 실사용·실기 확인(①~④ 모션 무영향 조회·연결만, ⑤는 배포 — 장비 정지 상태에서).**
+  ① 창 하나를 미연결로 두고 IP 를 GPL_HOST 와 다르게 → MCP `controller_status` 가 `extension-disconnected`(두 IP)로 즉시 답하는지, 연결 뒤 다음 호출에서 따라가는지. 창 둘(다른 IP)에서 `extension_resolve {extensionInstanceId}` 고정 → `runtime_console_read` 가 그 창 줄을 읽는지·`routeMismatch` 표시.
+  ② 워크스페이스 A·B 에서 서로 다른 IP 로 연결 → 창을 다시 열 때 각자 마지막 IP 가 대상인지, 상태 표시줄 툴팁의 출처. `autoConnectOnStartup` 켜고 재시작 → 조용히 연결·실패 시 경고.
+  ③ 연결 직후 Output 에 제어기 정체(serial·ID·이름·모델), `gpl.controller.expectedSerial` 을 다른 값으로 두면 비모달 경고. MCP `controller_status` 의 `controllerIdentity`·`powerEnabled`(pd 230).
+  ④ `show_threads({stack:true})` 의 `stackUsage` 숫자가 `Show Thread <name> -stack` 원문과 맞는지(열 순서 **추정**) — 맞으면 §3 ⑩ 해제. 디버그 attach 때 DataID 307 ≠ 0 이면 Debug Console 한 줄.
+  ⑤ Sample Prep App 전처리 배포 → `Device_HanyoungML` 제외·`preprocess.kept` 사유·Compile STATUS 0. 결과 `libraries`/`librarySummary`·`preflight.libraries`(PaL 로컬 변경 경고), `list_remote_projects` 의 `lastCompiledFrom.librarySummary`.
+  ⑥ 제어기 불필요: 끝 줄바꿈 없는 .gpl 에 `missing-final-newline` + 빠른 수정, `File.CreateDirectory("/ROMDISK")` 경고, 같은 파일 `New Thread` 진입점에 Catch 없으면 정보 진단.
+
 - [ ] **(2026-11-06, §1-HF) 0.27.16 컴파일 메모리 추정 — 실기 대조(Compile 을 보낸다 — 장비 정지 상태에서).**
   ① 전처리 전부 켠 배포의 Output `컴파일 메모리 추정: A → B` 를 적어 두고, Compile 전후 `Show Memory` Free 차이와 비교(원본·사본 각각). ±5 % 밖이면 `compileCostModel.COMPILE_COST` 를 다시 맞춘다.
   ② 지역 Dim·빈 Module 을 지운 사본이 Compile STATUS 0 인지(§1-HE ① 과 함께). ③ 클래스 String 필드 `= ""` 줄에 정보 진단이 뜨는지(제어기 불필요).

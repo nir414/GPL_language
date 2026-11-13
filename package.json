@@ -2,7 +2,7 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.27.16",
+    "version": "0.27.17",
     "publisher": "nir414",
     "icon": "assets/icons/gpl-logo.png",
     "repository": {
@@ -1685,7 +1685,12 @@
                             "type": "array",
                             "items": {
                                 "type": "string",
-                                "enum": ["missing", "pinnedDrift", "modified", "uploadMismatch"]
+                                "enum": [
+                                    "missing",
+                                    "pinnedDrift",
+                                    "modified",
+                                    "uploadMismatch"
+                                ]
                             },
                             "default": [],
                             "description": "배포를 멈출 검사 항목(missing·pinnedDrift·modified·uploadMismatch). 비어 있으면 경고만 합니다."

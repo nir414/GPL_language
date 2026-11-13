@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-06** · 현재 package 버전 **0.27.16** (최적화기 정밀도·범위 확장과 컴파일 메모리 추정, 메모리 진단 보정, 1719/1719 · MCP 188/188. 상세는 §1-HF.)
-- **직전 세션: §1-HF** — "메모리 최적화 정리(ChatGPT 대화)·_mem.zip(Sample Prep 실측) 참고해서 더 개선" → 이름 같은 문자열만 참조·지역/매개변수 가림·안 쓰는 지역 Dim·빈 Module 제거, 실측 단가 컴파일 추정(원본 4.09 MB 추정 vs 실측 4.13 MB), Mid 누수 조건 정밀화, `string-field-empty-init`, 문서 「메모리 아끼기」 정정(스레드 33 KB 제어 블록). 실기 확인은 verification §1-HE·§1-HF.
+- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.17** (수신함 Sample Prep 보고 11건 처리, 1752/1752 · MCP 206/206. 상세는 §1-HG.)
+- **직전 세션: §1-HG** — "확장 개선 요청들 처리" → 수신함 11건을 4갈래(MCP 경로·언어 진단/문서·배포/라이브러리·제어기 식별)로 나눠 병렬 처리: 미연결 창 IP 즉시 거부·창 고정·런타임 콘솔 경로, IP 워크스페이스별 기억, `controllerIdentity`·스택 사용률·DataID 307, -505/-300/진입점 Catch 진단, 전처리 오포함 수정·라이브러리 출처/preflight. 라이브러리 버전 #4~#8 은 §3 보류. 실기 확인은 verification §1-HG.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -82,6 +82,11 @@
 > **실사용·실기·UI 확인 항목은 `docs/ai-handoff-verification.md`로 옮겼다(2026-11-04).** 이 절에는 코드 작업과 결정 대기만
 > 둔다. 새 VSIX의 확인 항목은 그 파일에 추가한다(규칙: `docs/development/record-keeping.md`).
 
+- [ ] **(2026-11-13, §1-HG) 수신함 보류 — 다음 작업 후보.** 원문은 수신함 `done/` 의 같은 이름 파일.
+  ① 라이브러리 버전 v2 #8 배포 묶음 내보내기(`GPL: Export Deployed Bundle` — §1-HG 의 `libraries` 출처·해시 위에) ② #4 라이브러리 두 판의 Public 선언 차이 목록 ③ #5 고정 external 안 파일 편집 경고 ④ #6 `.gpr` 지시문으로 형제 밖 라이브러리 경로
+  ⑤ #7 같은 제어기에 다른 판 라이브러리 함께 로드 가능 여부(실기 — 사용자 동의) ⑥ `-729` 안내에 "원격 /GPL/<lib> 는 다른 출처에서 올라왔다"(preflight `previousUpload` 활용)
+  ⑦ `gpl.controller.expectedSerial` 을 MCP 로 전달(지금 MCP 는 env `GPL_EXPECTED_SERIAL` 만 — presence 에 싣는 방안) ⑧ `thread-entry-without-catch` 를 다른 파일 진입점·`ProjectStart` 까지(심볼 인덱스)
+  ⑨ 잠금 Acquire 뒤 예외 경로 해제 누락 린트(binder #3) ⑩ 스택 사용률 `Show Thread -stack -web` 열 순서 실측 확인 뒤 주석의 「미실측」 해제.
 - [ ] **(2026-11-06, §1-HE) 최적화기 다음 후보 — 실기 결과를 본 뒤.** ① ~~빈 껍데기 Module 비우기~~ — §1-HF 에서 구현
   ② 실행 프로젝트 자신의 안 쓰는 선언(지금은 라이브러리만 — 앱 코드는 사용자 책임 영역이라 옵션 분리) ③ Const 값 치환 후 선언 제거(Const 150~205 B, 식 안 리터럴 비용 미실측)
   ④ 클래스 멤버 형 추론(지금은 `obj.n` 이면 이름이 같은 모든 클래스의 `n` 을 남김 — 정밀도 향상 여지).
@@ -92,7 +97,7 @@
 - [ ] **(2026-11-05, §1-HC) 수신함 보류 항목 — 설계·결정 필요.** 원문은 수신함 `done/` 의 같은 이름 파일.
   ① `read_remote_file`(허용 목록 읽기 전용 FTP, debug-day §4) ② 바닥 여유 메모리 추적(`bootFloorMb`·`lostSinceBootMb`·경고, memory-floor-leak)과
   배포 결과 `postStartFreeMb`(perf §3)·부팅 이후 배포/Unload 사이클 수(debug-day §6) ③ `runtime_console_measure`(두 패턴 지연 짝짓기, perf §2)
-  ④ `Show Thread -stack` 크기를 `threadList` 에(perf §4) ⑤ CPU Monitor(`/cpu_mon.pcm` 웹 핸들러 — 제어기 HTTP 경로가 없어 채널 정책 결정 먼저, perf §1)
+  ④ ~~`Show Thread -stack` 크기~~ — §1-HG 에서 `stackUsage`(선택 조회) ⑤ CPU Monitor(`/cpu_mon.pcm` 웹 핸들러 — 제어기 HTTP 경로가 없어 채널 정책 결정 먼저, perf §1)
   ⑥ 정지→비우기→Unload 한 번에 하는 도구/`deploy_project` 옵션(cmd-thread v2 §4) ⑦ 제어기 사용 표시(lease)·`controller_status` 에 마지막 상태 변경자(debug-day §1-2·3)
   ⑧ 폴링 대기 정보 진단·`waitevent-loop`/`sendevent-wake` 스니펫·코딩 가이드(coding-guidance) ⑨ `As Object` -734 진단, 초기값 없는 모듈 `String` 필드 `Len()`/`&` 경고(debug-day §5b)
   ⑩ 에디터 live-sync(`breakpointSync`)도 라이브러리 소스를 `breakpointSendTarget` 으로 보낼지.
@@ -103,7 +108,6 @@
 - [ ] **(2026-11-04, §1-GY) 실사용 확인 대기 117건 정리 — 사용자 결정.** `docs/ai-handoff-verification.md` 의 08~09월 항목은 이미 실사용으로 확인됐거나
   이후 변경으로 무의미해졌을 수 있다. 사용자와 한 번 훑어 확인된 것·무의미한 것을 지우고, 문제로 남은 것만 이 절에 코드 작업으로 올린다.
 
-- [ ] **(2026-11-04, §1-HA) MCP `controller_status` 의 전원 조회를 `pd 230` 으로.** `controller-mcp/src/index.js` `probePowerEnabled` 가 `Execute Controller.PowerEnabled` 를 쓰는데 4.2K5 실측은 `-712 *Invalid syntax*` — `powerEnabled` 가 늘 실패할 것이다. 대시보드는 `robotAxes.readPowerState`(230: 8~12 켜짐) 로 바꿨으니 같은 판정으로 맞추고 Execute(`_Cmd_` 쓰레드)를 없앤다. (대시보드 샘플러의 Execute → Unload 지연 보고(§1-GN inbox)는 §1-HA 에서 Execute 를 없애 해소.)
 - [ ] **(2026-10-28, §1-GL) ProjectName = 폴더 이름 — 결정·실기 확인.** ① BinderR4 리프·그룹 42개를 Quick Fix 로 고칠지(일괄은 .gpr 마다 「모두 고치기」) 사용자 결정 ② 고치면 `Data`(Gantry\Data·Lib\Data)·`Cmd`(Lib\Motion\Cmd·Lib\Robot\Cmd) 가 겹친다 — 폴더를 `GantryData`/`MotionCmd` 처럼 바꿀지(그러면 이 폴더를 가리키는 ProjectLibrary 경로·루트 ProjectSource 도 함께) 결정 ③ 라이브러리 ProjectName 이 폴더와 다를 때/겹칠 때 제어기 Compile·Start 가 실제로 어떻게 되는지는 미확인 — 바꾼 뒤 `Compile BinderR4` STATUS 로 확인.
 
 - [ ] **(2026-10-22, §1-FK) 구조 개편 후속.** 0.14.3의 F5 활성화·정의/참조·완성·호버·워처 갱신을 확인한다. 다음 코드 작업은 GPLDebugSession의 중단점·변수·실행 제어·폴링 객체 합성이며, 전체 순서는 `docs/development/architecture.md` §2.3을 따른다. 연결·배포·디버그 실행 순서 변경은 별도 안전 시험에서 검증한다.
@@ -412,7 +416,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GW ~ §1-HF)만 둔다.
+본문에는 **최근 10개 세션**(§1-GX ~ §1-HG)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있고, 그 세션들의 인덱스는 [archive/handoff/index.md](archive/handoff/index.md)에 있다.
 아래 §1-0 에는 본문에 있는 세션의 행만 둔다.
 
@@ -423,16 +427,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GV (2026-11-03 ~ 11-04) | 7 |
-| (본문 아래) | §1-GW ~ §1-HF (2026-11-04 ~ 11-06) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GW (2026-11-03 ~ 11-04) | 8 |
+| (본문 아래) | §1-GX ~ §1-HG (2026-11-04 ~ 11-13) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GV 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GW 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GW | 11-04 | **디버그 체감 속도 — 과거 개선 대조·GDE 방식 잠정 프레임** — §1-D·L·X·GA 대조(GA 0.18.2 는 사용자 창에서 미실행: 0.13.2 → Marketplace 0.18.1), GDE 캡처 분석(Step → 1 ms 뒤 Show Thread -web, Show Stack 없음), 폴 줄로 정지 이유 판정·stackTrace levels=1 잠정 맨 위 프레임·첫 fast poll 5 ms, Show Variable 일괄 형식 없음(문서). 0.27.8 | 본문 ↓ |
 | §1-GX | 11-04 | **제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음** — 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 → 브레이크포인트 → FTP /GPL → 시스템 정보 → I/O → 환경 경고 → Flash Projects, 펼침은 프로젝트 상태·쓰레드·FTP /GPL·시스템 정보만, `SECTION_LAYOUT_EPOCH` 3, 앰프 온도는 시스템 정보 아래 접힌 「앰프 온도 (N)」(헤더에 최고 온도) | 본문 ↓ |
 | §1-GY | 11-04 | **AI 지침 정리** — `AGENTS.md` 정본화(`CLAUDE.md` 는 `@AGENTS.md` import), 요청 이력의 방침(커밋 자유·합쇼체 문구·포커스 강제 금지·/flash/projects) 명문화, `record-keeping.md`, §3 실사용 확인 117건 → `ai-handoff-verification.md`, 아카이브 인덱스 196행 → `archive/handoff/index.md`, 하드 규칙 번호 §0 로 통일(모션 6→9). 문서 전용 | 본문 ↓ |
 | §1-GZ | 11-04 | **프로젝트 문제점 리뷰 후속 — 명령 안전·정지 판정 경합·메모리 자동 회수·의존성** — 1402 한 줄 검증(CR/LF 거부)·전달 뒤 재전송은 조회만·UTF-8·닫힌 STATUS·줄 번호 140 수정, 브리지 정지 명령 우선·URI 토큰·상태 모르면 Step/Continue 거부, 디버거 액션 세대·잔류 pending·BP 요청 직렬화, 메모리 부족 시 정지 → Unload 자동 회수(`memoryGuard.autoUnload`), basic-ftp 6.2.5·@types/vscode ~1.74·CI Node 22·.gitattributes. 0.27.10 | 본문 ↓ |
@@ -442,57 +445,12 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-HD | 11-06 | **배포 전처리(메모리 절약)** — 수신함 Sample Prep 2건: `gpl.deploy.preprocess`(기본 꺼짐, `projects.<ProjectName>`·MCP `preprocess` 덮어쓰기). 워크스페이스 밖 `<tmp>/gpl-controller/preprocess/<ip>/…` 사본을 올림 — 주석·`#` 줄·공백 제거(줄 수·줄바꿈·바이트 유지, `sourceMinify`), 실행 프로젝트에서 이름으로 닿지 않는 라이브러리 파일 제외 + 사본 .gpr 고쳐 쓰기(`sourceReachability`: 모듈 이름 생략 규칙·문자열 진입점·점 뒤 멤버 제외·자기 이름 가림), 예전 업로드분 삭제, `-729` 안내, 결과 `preprocess`. 실데이터 dry-run 2.12 → 1.30 MB · PaL 5파일 제외(요청 스크립트의 7개 중 2개는 실제 사용). `Mid(<임시 문자열>, …)` 누수 진단(`mid-temporary-argument`)·문서 「메모리 아끼기」. 1706/1706 · MCP 188/188. 0.27.14 | 본문 ↓ |
 | §1-HE | 11-06 | **GPL source-to-source 최적화기 — 선언 단위 미사용 제거** — `gpl.deploy.preprocess.removeUnusedMembers`: 엄격한 선언 스캐너(`memberScan`, 모르는 문장이면 그 파일 손대지 않음)·선언 그래프 도달성(`memberReachability`: 모듈 이름 생략·자기 모듈 가림·점 뒤 클래스 멤버·New·Sub Init·부작용 초기화·keep `Container.Name`), 줄 비우기(줄 번호 유지), 파일 단위 제외에 모듈 Init 출발점 추가. Sample Prep dry-run 350선언·3,726코드줄(컴파일 ≈400 KB 추정), 남은 이름 52건 수동 대조 모두 다른 모듈 것, 2차 실행 0. 1714/1714 · MCP 188/188. 0.27.15 | 본문 ↓ |
 | §1-HF | 11-06 | **최적화기 정밀도·범위 확장 + 컴파일 메모리 추정 + 메모리 진단 보정** — Sample Prep 실측(_mem.zip cost-table·unreferenced-members)·ChatGPT 정리 반영: 문자열은 이름 모양만 참조, 매개변수·맨 바깥 지역 가림, 안 쓰는 지역 Dim(87 B)·빈 Module(≈190 B) 제거, `compileCostModel`(원본 4.09 MB 추정 vs 실측 4.13 MB) → `preprocess.estimatedCompile`. 스테이지 dry-run 컴파일 4.1 → 3.5 MB 추정·소스 2.0 → 1.0 MB, 보고서 미참조 299개 중 249개 일치. Mid 누수 조건 정밀화(사용자 Function 결과 제외), `string-field-empty-init`(+183 B/칸), 문서 스레드 정정. 1719/1719 · MCP 188/188. 0.27.16 | 본문 ↓ |
+| §1-HG | 11-13 | **수신함 Sample Prep 보고 11건 — 4갈래 병렬 처리** — MCP: 미연결 창 `extension-disconnected` 즉시 거부·작업 폴더 양방향 일치·창 고정(`extension_resolve`)·런타임 콘솔 세션 대상 경로(`routeMismatch`)·`bridge-host-mismatch`·번들 다운그레이드 방지·버전 경고, 제어기 IP 워크스페이스별 기억(`workspaceState`)·`autoConnectOnStartup`(opt-in); 제어기 정체 `controllerIdentity`(pd 110/114)·`expectedSerial`·스택 사용률·DataID 307 안내·전원 pd 230; 진단 `missing-final-newline`(-505)·`create-directory-device-root`(-300)·`thread-entry-without-catch`, Catch 정정 문서; 전처리 `Device_HanyoungML` 오포함(매개변수 가림·선언 줄 자기 이름) 수정·`preprocess.kept`, 라이브러리 출처(SVN·업로드 해시)·`gpl.deploy.libraryPreflight`. 1752/1752 · MCP 206/206. 0.27.17 | 본문 ↓ |
 ---
 
-**최근 세션 본문 — §1-GW ~ §1-HF (2026-11-04~11-06).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GX ~ §1-HG (2026-11-04~11-13).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GW. 2026-11-04 세션 — 디버그 체감 속도: 과거 개선 대조 · GDE 방식 잠정 맨 위 프레임 (0.27.8)
-
-### 증상(요청)
-
-"이전에도 디버깅 체감 속도 개선 작업을 한 적이 있는데 확인해 봤나? 이번에도 같은 문제로 해결되는 건지, 더 개선할 수 있는지 검토."
-
-### 과거 작업 대조
-
-| 세션 | 한 일 | 현재 코드 |
-| --- | --- | --- |
-| §1-D (07-03) | fast poll 500 ms×2 → 30/120/250/500/1000, 1403 트리거 force, 쓰레드 목록 캐시 300 ms, 프레임 TTL 400 → 1500 | 유지(§1-GU 에서 간격·캐시 조정) |
-| §1-L (07-13) | 1403 숫자 상태 이벤트 트리거, 비-pending 코얼레싱 폴, 적응형 인터벌, 프레임 선조회·in-flight 합류 | 유지 |
-| §1-X (07-22) | Globals 조회 방식 메모·열거 캐시 | 유지 |
-| §1-GA (10-26, 0.18.2) | control/data 차선 큐, pending 백업 폴, `⏱` 타이밍 줄 | 유지 — **그러나 사용자 창에서 돈 적이 없다**: 10-26 설치본 0.13.2, 11-03~04 는 Marketplace 0.18.1(0.18.2 직전). 그래서 `⏱` 실측도 한 건도 없다 |
-
-판단: 이번 체감도 **같은 문제**(수정이 설치본에 없음)가 첫째이고, 11-03 에는 제어기 RTT 증가(여유 메모리 0.97 MB 무렵 `Show Thread` p50 66 ms, §1-GT)가 겹쳤다. 0.27.x 는 VSIX `pinned: true` 로 설치돼 다시 되돌아갈 가능성은 줄었다.
-
-### 더 줄일 수 있는 것 — GDE 캡처 대조(`captures/gde_1402.pcapng`)
-
-GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerror` → **응답 1 ms 뒤 `Show Thread  -web`** 한 번 → 그 줄(`Test_robot| Paused| 0| ""| Test_robot| MAIN| 4| Entry_Main.gpl| 24`)로 바로 다음 줄을 표시. 같은 프로시저 안 Step 에는 `Show Stack`·`Show Variable` 을 보내지 않고, 다른 프로시저로 들어갔을 때만 `Show Thread <이름>` 을 한 번 더 보냈다(변수·스택은 `PD 464` "Web RPC: debug, timeout, stack" 으로 보아 웹 RPC 경로로 추정 — 1402 캡처 밖).
-
-우리 경로는 폴 → (정지 이유 판정을 위해) `Show Stack` 응답 대기 → StoppedEvent → stackTrace 였다. 현재 줄 표시가 Show Stack 1왕복(RTT+15 ms; 느린 날 80~115 ms) 뒤였다.
-
-### 조치(7550145)
-
-- 정지 이유(step/breakpoint) 판정을 폴 줄의 파일·줄로 — StoppedEvent 가 Show Stack 을 기다리지 않는다(BP 판정은 맨 위 프레임 위치만 본다). 위치 없는 형식일 때만 종전대로 스택을 읽는다.
-- `FrameCache.noteProvisionalTop`·`topFrameWithoutWaiting`: 정지를 감지하면 폴 줄로 잠정 맨 위 프레임(프로시저·procLine·파일·줄)을 기억하고 Show Stack 선조회를 띄운다. VS Code 의 첫 stackTrace(levels=1 — `supportsDelayedStackTraceLoading`)는 그것으로 바로 답하고, 나머지 프레임 요청은 진행 중 조회에 합류한다. Show Stack 은 정지당 1회 그대로, 위치가 바뀌는 순간(invalidate·clearAll·dropThread) 잠정값을 지운다.
-- 첫 fast poll 20 → 5 ms.
-- 회귀 하니스(`sessionStepPoll.test`): levels=1 이 명령 없이 줄 14 로 답하고 Show Stack 1회. 하니스의 폴 줄 끝에 `\r\n` 을 넣었다 — 없으면 `parseThreadList` 가 뒤의 `<STATUS>0` 숫자까지 줄 번호로 읽어 14 → 140(실제 응답은 항상 `\r\n</DATA>`).
-
-### 더 줄이지 않은 것(근거)
-
-- **Locals 한 번에 읽기**: 문서상 `Show Variable [-eval] thread frame variable` 은 변수 하나씩이다(https://www2.brooksautomation.com/Controller_Software/Software_Reference/Console_Commands/show_variable.htm). `Show Stack thread [frame]` 은 프레임 줄만 준다(show_stack.htm). 변수 N개 = N왕복은 1402 로는 줄일 수 없다 — GDE 의 웹 RPC(`PD 464`) 경로를 캡처해 보는 것이 다음 단계.
-- 명령 간 15 ms 간격·정지 확인 게이트: 실기 검증 없이 바꾸지 않는다(§1-GA·§1-GU 와 같은 판단).
-
-### 검증
-
-- `npm test` **1608/1608**. 같은 시각 다른 세션이 `src/views/tree/*`·`src/test/index.ts` 를 고치는 중이라 이 세션 파일 4개만 커밋했다.
-- VSIX `dist/gpl-language-support-0.27.8.vsix` 1681184 bytes, SHA-256 `9B5D90801FA7E7BE583C904C94CDCB2AAEACCEEB29489EC3838400ABF5D6E052` — HEAD(d2a7f17)의 깨끗한 worktree 에서 만들었다(worktree `npm test` 1604/1604; 작업 트리의 1608 은 다른 세션의 미커밋 트리 테스트 4건 포함). 경고는 bundle 권장 1건.
-- 실기 미확인 → §3.
-
-### 남은 일
-
-- §3 (§1-GW) — 특히 ④ `⏱` 줄 실측.
-- GDE 웹 RPC 캡처(디버그 중 GDE 의 HTTP 트래픽)로 변수·스택 일괄 조회 가능성 확인.
 
 ## 1-GX. 2026-11-04 세션 — 제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음 (0.27.9)
 
@@ -902,3 +860,58 @@ GDE 의 Step 1회: `PD 464`·`PD 307`(설정 읽기) → `Step … -over -noerro
 
 - 실기: verification §1-HE(선언 단위 제거 Compile·Start)와 §1-HF(추정 대비 실측). 추정이 실측과 ±5 % 밖이면 `COMPILE_COST` 를 다시 맞춘다.
 - 다음 후보는 §3 「(2026-11-06, §1-HE)」 — 남은 것은 실행 프로젝트 선언·Const 치환·클래스 멤버 형 추론(이번에 Module 껍데기는 처리).
+
+## 1-HG. 2026-11-13 세션 — 수신함 Sample Prep 보고 11건, 4갈래 병렬 처리 (0.27.17)
+
+### 증상(요청)
+
+"확장 개선 요청들 처리 작업좀 진행해줘." 수신함 최상위 11건(11-05 ~ 11-12, 전부 Sample Prep): stale IP · mcp-host-auto-follow · runtime-console 경로 · binder facts ·
+JointOnly · ctor Init · Catch 새 객체 · try-finally · thread-block/Mid · 전처리 오포함 · 라이브러리 버전 v2.
+
+### 진행 방식
+
+- HEAD(`codex/domain-modules`)가 `main` 보다 125커밋 앞이라 §1-HC 처럼 HEAD 에서 `git worktree add`(`%TEMP%\gpl-wt-*`, node_modules junction)로 4갈래를 만들고
+  Sonnet 에이전트를 병렬로 돌렸다. 브랜치 `inbox2/{lang-docs,ctl-identity,mcp-route,deploy-lib}` 를 `--no-ff` 병합 — 충돌은 `package.json` 설정 두 개·`connection.ts` import 한 줄(둘 다 살림).
+- 이미 있던 것 확인: 클래스 `Init` 경고(`init-hook-class-member`, §1-EA)·`try-without-catch` 기본 꺼짐(§1-FG)·스레드 33 KB/Mid 범위(§1-HF)·주소 자동 추종(§1-GV — 11-10 보고는 옛 0.18.1 MCP 번들 탓).
+
+### 조치(원인 → 수정)
+
+- **MCP 경로·주소**(62bf4dd·f37201a·d4e5296)
+  - 미연결(`connected:false`) 창의 IP 가 GPL_HOST 와 다르면 `extension-disconnected`(두 IP·nextStep)로 1402 명령을 not-sent 거부 — 옛 IP 로 3 s 접속 시도 없음(`assessWindowAddress`). 같은 IP·GPL_HOST 없음·명시/고정 창은 종전대로.
+  - 작업 폴더 일치는 양방향 포함(창 폴더가 프로젝트를 품는 쪽 우선, `matchWorkspaceInstances`). not-sent 를 `host-unreachable` 이 아니라 `bridge-host-mismatch` 로.
+  - `extension_resolve {extensionInstanceId}` 가 이 MCP 세션을 그 창에 고정(메모리만, `.mcp.json` 무관, `{unpin:true}`), `transport.controller.pinned`.
+  - `runtime_console_read` 는 세션 대상의 창으로(`routedBy`), 다른 창을 읽으면 `routeMismatch`. `runtime_console_search` 는 그 창 IP 의 캡처 파일. 보고 재현 경로는 코드로 확정 못 함(요청대로 수정).
+  - globalStorage MCP 번들: 더 새 사본을 옛 확장이 덮지 않음(`decideStableBundleOverwrite`, `kept-newer` 로그). `controller_status.transport.versionWarning`(서버 ≠ 확장).
+  - 제어기 IP 해석(`controller/connection/ipSource.ts`): 세션 > 워크스페이스 설정 > `workspaceState` 마지막 연결 > User. 저장은 지금 값이 있는 범위(워크스페이스 값이 없으면 User) — 작업 공간에 파일을 새로 만들지 않는다. 상태 표시줄 툴팁에 IP 와 출처.
+    한계: User 값을 손으로 고쳐도 그 워크스페이스의 마지막 연결 값이 가린다(Settings Sync 때문에 설정 변경 시 기억을 지우지 않음).
+  - `gpl.controller.autoConnectOnStartup`(기본 false — 1402 단일 클라이언트를 다른 창·GDE 에서 뺏을 수 있어 opt-in). MCP `session start` 줄에 출처·connected·GPL_HOST.
+- **제어기 식별·진단**(ad4fda2·e5fe9f0·d6b4997·2ab5d5a)
+  - `controllerIdentity {serial,id,name,model}`(pd 110/114/109/101, host:port 별 10분 캐시)을 `controller_status`·`project_target`·배포 결과에. 확장은 연결 직후 Output 기록 + `gpl.controller.expectedSerial` 불일치 시 비모달 경고.
+    MCP 는 env `GPL_EXPECTED_SERIAL` 만 본다(확장 설정 전달은 §3 보류). 문서상 system identification.htm(110 serial RO, 114 Controller ID RO).
+  - `stackUsage`(`Show Thread -stack -web` 끝 세 숫자 = 사용·크기·최대 KB로 **추정**, 90 % 경고) — `show_threads({stack:true})`·`controller_status({detail:true})`·`diagnostic_snapshot({includeStack:true})`.
+  - 디버그 attach 때 `pd 307`(Break on exception code) 1회, 0 이 아니면 Debug Console 한 줄(문서상 trycatchfinally.htm Prerequisites — 켜져 있으면 Try…Catch 무시). 세션 명령 순서를 고정한 기존 테스트 10건은 `pd 307` 을 건너뛰게 고침.
+  - MCP 전원 조회 `Execute Controller.PowerEnabled`(4.2K5 -712) → `pd 230`(8~12 켜짐, `robotAxes.readPowerState` 와 같은 판정).
+- **언어 진단·문서**(bfeafa1·1fe798a)
+  - `missing-final-newline`(코드 줄 warning·주석 줄 information, 빠른 수정은 파일 EOL 로) — 끝 줄바꿈 없으면 Compile -505(실측 11-05). `create-directory-device-root`(warning) — `File.CreateDirectory("/ROMDISK")` 류 -300.
+  - `thread-entry-without-catch`(information, `gpl.diagnostics.threadEntryWithoutCatch` 기본 true): 같은 파일의 `New Thread("Mod.Proc", …)` 대상 본문에 Catch 가 하나도 없을 때. 다른 파일·`ProjectStart` 는 §3 보류.
+  - `init-hook-class-member` 메시지에 생성자 호출 사례. 문서: Catch 는 던진 객체가 아니라 코드·Qualifier·로봇 정보만 옮긴 객체(앞 판 "Message 대입 무시" 정정, Catch 변수 Nothing 허용 — 문서와 다른 실측),
+    `Catch ex : Throw ex` 덧붙이기 무용·-755 도 Finally 실행, 스택 4 KB·잠금 Finally 해제, 장치 루트, 변수 기본값, Joint Only Location·Pitch 0 → Roll, `CStr(Controller.PDb(110))` = "14"(미확정).
+- **배포·라이브러리**(8b63adb·9daad53·feda129)
+  - 전처리 오포함 원인: MLD 의 모듈 직속 `Function CodeText` 를 Gantry 의 `ByVal codeText` 매개변수와 클래스 멤버 선언 줄 `Public Function CodeText()` 가 참조로 읽힘(보고 추정 "멤버 이름 겹침"은 아님).
+    `sourceReachability` 에 매개변수·지역 가림, 선언 줄 자기 이름 제외. Binder App dry-run 제외 5 → 6파일(`Device_HanyoungML` 추가, 37.8 → 82.9 KB). `preprocess.kept[]`(상한 60)·`keptCount`, MCP `· kept N`.
+    `-729` 의 "전처리가 뺐다" 안내는 그 이름이 원본 어디에도 선언돼 있지 않으면 내지 않음. 사본 `.gpl` 끝 줄바꿈 보장(-505).
+  - 라이브러리 출처 `libraries[] {name, localPath, remoteDir, vcs{kind,url,revision,mode,peg,modifiedFiles}|null, uploaded{files,sha256}}`·`librarySummary`(`libs PaL v2@r5405(pinned) · …`) → 결과·작업 기록·`lastCompiledFrom`.
+    svn 은 `info`/`propget svn:externals`(상위 3단)/`status -q`, 4 s, 실패면 `vcs:null`. 실제 작업 사본 dry-run: PaL following r5365 변경 3, Gantry following 변경 0.
+  - `preflight.libraries[]`(missing·pinnedDrift·modified·uploadMismatch, 이전 업로드는 `globalState gpl.libraryProvenance`, 모르면 `unknown`), 기본 경고만, `gpl.deploy.libraryPreflight.blockOn` 으로 막음.
+    autoOnSave 저장 경로는 건너뜀(feda129 — 저장마다 svn 호출 방지, 병합 뒤 조정자가 추가). `.svn` 독립 작업 사본 라이브러리 회귀 테스트.
+
+### 검증
+
+- 병합 트리 `npm test` 1752/1752, `controller-mcp` 206/206. 제어기 접속 없음 — 실기·UI 확인은 verification §1-HG.
+- 새 단계의 배포 전체 흐름 통합 실행은 가짜 컨텍스트·가짜 svn 실행기 수준(`runLibraryPreflight` 배선은 실사용으로 확인).
+- VSIX: `dist/gpl-language-support-0.27.17.vsix` — 1,828,592 bytes, SHA-256 `4F6A0DE5F71909BC362DD50AF82459C927045B60A29CE6CF1D1C0C9952B7FB81`. 패키징 경고는 vsce 번들 권장 하나.
+
+### 남은 일
+
+- 보류 항목은 §3 「(2026-11-13, §1-HG)」(라이브러리 버전 #4~#8, `expectedSerial` MCP 전달, 진입점 린트 확장, 잠금 린트, 스택 열 순서 실측).
+- worktree 4개(`%TEMP%\gpl-wt-*`)와 `inbox2/*` 브랜치는 병합 뒤 정리.

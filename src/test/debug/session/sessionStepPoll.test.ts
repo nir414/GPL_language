@@ -66,9 +66,9 @@ function stepFixture() {
             return {
                 getControllerConfig: () => config,
                 getConnectionProbeTimeoutMs: () => 1000,
-                sendCommand: async (cmd: string) => { commands.push(cmd); return respond(cmd); },
-                sendCommandDetailed: async (cmd: string) => { commands.push(cmd); return { raw: respond(cmd) }; },
-                probeControllerCommand: async (cmd: string) => { commands.push(cmd); return { ok: true, raw: respond(cmd) }; },
+                sendCommand: async (cmd: string) => { if (cmd !== 'pd 307') { commands.push(cmd); } return respond(cmd); },
+                sendCommandDetailed: async (cmd: string) => { if (cmd !== 'pd 307') { commands.push(cmd); } return { raw: respond(cmd) }; },
+                probeControllerCommand: async (cmd: string) => { if (cmd !== 'pd 307') { commands.push(cmd); } return { ok: true, raw: respond(cmd) }; },
             };
         }
         if (id.endsWith('/deployService')) { return {}; }

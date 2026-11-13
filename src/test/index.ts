@@ -128,6 +128,8 @@ import './project/sources/projectSources.test';
 import './project/remote/controllerProjectWorkspace.test';
 import './project/remote/controllerProjectDebug.test';
 import './debug/session/controllerProjectAttach.test';
+import './debug/session/breakOnExceptionNotice.test';
+import './controller/connection/controllerHardwareId.test';
 import './activation/remote/controllerProjectOpen.test';
 import './controller/files/remoteSourceSession.test';
 import './debug/session/remoteSourceDebug.test';

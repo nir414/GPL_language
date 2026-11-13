@@ -89,7 +89,7 @@ function fixture(sources = ['Main.gpl', 'Sub/Space Name.gpl']) {
 		if (id === 'vscode') { return vscode; }
 		if (id.endsWith('/remoteSourceSession')) { return { getRemoteSourceSession: (sessionId: string) => sessionId === remote.id ? remote : undefined }; }
 		if (id.endsWith('/controllerConnection')) {
-			return { getControllerConfig: () => config, getConnectionProbeTimeoutMs: () => 1000, sendCommand: async (command: string) => { commands.push(command); return SUCCESS; } };
+			return { getControllerConfig: () => config, getConnectionProbeTimeoutMs: () => 1000, sendCommand: async (command: string) => { if (command !== 'pd 307') { commands.push(command); } return SUCCESS; } };
 		}
 		if (id.endsWith('/deployService')) { return {}; }
 		if (id.endsWith('/deployRecord')) { return { onDidRecordCompiled: disposable }; }
@@ -113,7 +113,7 @@ function fixture(sources = ['Main.gpl', 'Sub/Space Name.gpl']) {
 	session._clientSideBpLogicEnabled = () => false;
 	const breakpoints = new Map<string, Set<number>>();
 	session._sendCmd = async (command: string) => {
-		commands.push(command);
+		if (command !== 'pd 307') { commands.push(command); }
 		const bp = parseBreakpointCommand(command);
 		if (bp) {
 			const lines = breakpoints.get(bp.file) ?? new Set<number>();

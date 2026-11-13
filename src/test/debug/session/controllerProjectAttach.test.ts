@@ -41,7 +41,7 @@ function sessionFixture(breakResponse = BREAKS, requireStartConfirmation = true,
     const stubRequire = (id: string, from: string): any => {
         if (id === 'vscode') { return vscode; }
         if (id.endsWith('/controllerConnection')) {
-            return { getControllerConfig: () => config, getConnectionProbeTimeoutMs: () => 1000, sendCommand: async (cmd: string) => { commands.push(cmd); return SUCCESS; } };
+            return { getControllerConfig: () => config, getConnectionProbeTimeoutMs: () => 1000, sendCommand: async (cmd: string) => { if (cmd !== 'pd 307') { commands.push(cmd); } return SUCCESS; } };
         }
         if (id.endsWith('/deployService')) { return {}; }
         if (id.endsWith('/deployRecord')) { return { onDidRecordCompiled: disposable }; }
@@ -60,7 +60,7 @@ function sessionFixture(breakResponse = BREAKS, requireStartConfirmation = true,
     session.sendErrorResponse = (_response: unknown, error: unknown) => errors.push(error);
     const controllerLines = new Set([10]);
     session._sendCmd = async (cmd: string) => {
-        commands.push(cmd);
+        if (cmd !== 'pd 307') { commands.push(cmd); }
         const bp = parseBreakpointCommand(cmd);
         if (bp?.project === 'Probe') {
             if (bp.kind === 'Break') { controllerLines.add(bp.line); } else { controllerLines.delete(bp.line); }

@@ -33,6 +33,7 @@ import {
 	getRecentTraffic,
 	noteCommandChannelLoss,
 	probeControllerCommand,
+	sendCommand,
 	setDisruptiveCommandObserver,
 	setHeldSocketObserver,
 	setIdlePingActive,
@@ -57,6 +58,9 @@ import { PC_POWER_LOOKBACK_MINUTES, describePcResume, matchPcResume, readPcPower
 import type { PcPowerEvent, PcResumeMatch } from '../../controller/connection/pcPowerEvents';
 import { RECONNECT_ACTION, composeLossNotice } from '../../controller/connection/lossNotice';
 import { SHOW_THREAD_LIST_CMD } from '../../controller/protocol/responseParser';
+import {
+	describeHardwareId, describeIdentityMismatch, evaluateExpectedSerial, readControllerHardwareId,
+} from '../../controller/connection/controllerHardwareId';
 import { setDashboardConnectionObserver } from '../../views/dashboard/controllerDashboardPanel';
 import type { ExtensionHost } from '../host';
 
@@ -287,6 +291,27 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		}
 	}
 
+	/**
+	 * 연결 직후 제어기 정체(serial 110·ID 114·이름 109·모델 101)를 읽어 Output 에 남기고, 설정 `gpl.controller.expectedSerial` 과
+	 * 다르면 비모달 경고를 띄운다(포커스를 뺏지 않는다). 읽기 전용 pd 4건, 실패는 로그만 남기고 연결에 영향 없음.
+	 * 같은 IP 에 다른 제어기가 붙는 사고(2026-11-06 보고)를 사람이 알아채게 하려는 것이다.
+	 */
+	async function checkControllerIdentity(cfg: ControllerConfig): Promise<void> {
+		try {
+			const id = await readControllerHardwareId(command => sendCommand(command, cfg, getConnectionProbeTimeoutMs()).catch(() => null));
+			host.log(`[Controller] Identity ${cfg.ip}: ${id ? describeHardwareId(id) : '읽지 못했습니다(pd 110·114·109·101)'}`);
+			const expected = vscode.workspace.getConfiguration('gpl.controller', vscode.workspace.workspaceFolders?.[0]?.uri).get<unknown>('expectedSerial');
+			const mismatch = evaluateExpectedSerial(id, expected);
+			if (mismatch) {
+				const message = describeIdentityMismatch(mismatch, cfg.ip);
+				host.log(`[Controller] WARNING ${message}`);
+				void vscode.window.showWarningMessage(message);
+			}
+		} catch (err: any) {
+			host.log(`[Controller] Identity 확인 실패(연결은 유지): ${err?.message ?? err}`);
+		}
+	}
+
 	// ── 연결 건강 모니터 (2026-08-28, controller/connection/connectionHealth.ts) ──────────────────────────────
 	// 연결 유실 판정의 단일 출처. 프로브(트리 Show Thread 폴·디버그 어댑터 폴·재프로브) 결과와 힌트(1403 connect-failed/
 	// socket-error·keep-alive 소켓 error·대시보드 프로브 실패·어댑터 실패 종료)를 받아 connected → suspect → lost 로 판정한다.
@@ -477,6 +502,7 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 				if (!silent) { vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`); }
 				host.setControllerConnected(true, { syncBreakpoints: !preserveBreakpoints });
 				void checkUnloadRiskRebootEvidence('연결');
+				void checkControllerIdentity(cfg);
 				// controller 연결 성공 시 1403도 바로 유지 연결한다.
 				try { host.ensureRuntimeConsole(); } catch (err: any) {
 					host.log(`[Console] auto-start on connect failed: ${err?.message ?? err}`);

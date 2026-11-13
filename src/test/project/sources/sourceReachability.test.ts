@@ -120,3 +120,25 @@ test('sourceReachability: 클래스 멤버 선언 줄의 이름은 참조가 아
     assert.deepStrictEqual(reasons.get('pra'), { kind: 'name', name: 'pra', by: 'app', line: 7 });
     assert.deepStrictEqual(reasons.get('app'), { kind: 'root' });
 });
+
+// 2026-11-13 코드 리뷰에서 발견: 대소문자를 가리지 않아 변수와 타입의 철자가 같으면 가림 규칙이 타입 이름까지 지웠다.
+test('sourceReachability: 타입 자리(As·New) 낱말은 같은 철자의 지역·매개변수·자기 선언이 있어도 참조다', () => {
+    const motor = analyzeSourceReferences(lines('Class Motor', 'End Class'), 'C:/h/Motor.gpl');
+    const reachFrom = (...src: string[]): string[] => {
+        const app = analyzeSourceReferences(lines(...src), 'C:/h/App.gpl');
+        return [...computeReachableSources(new Map([['app', app], ['motor', motor]]), ['app'])].sort();
+    };
+    // 지역 변수
+    assert.deepStrictEqual(reachFrom('Module M', '    Sub Main()', '        Dim motor As Motor', '        motor = New Motor()', '    End Sub', 'End Module'), ['app', 'motor']);
+    // 매개변수
+    assert.deepStrictEqual(reachFrom('Module M', '    Sub Run(ByVal motor As Motor)', '    End Sub', 'End Module'), ['app', 'motor']);
+    // 모듈 직속 변수(자기 선언 가림)
+    assert.deepStrictEqual(reachFrom('Module M', '    Private motor As Motor', 'End Module'), ['app', 'motor']);
+    // As New
+    assert.deepStrictEqual(reachFrom('Module M', '    Sub Main()', '        Dim motor As New Motor', '    End Sub', 'End Module'), ['app', 'motor']);
+    // 타입 자리가 아니면 종전대로 가린다 — 지역 이름만 쓰는 파일은 끌어오지 않는다.
+    assert.deepStrictEqual(reachFrom('Module M', '    Sub Main()', '        Dim motor As Integer', '        motor = 1', '    End Sub', 'End Module'), ['app']);
+    // 점 뒤 낱말은 타입 자리로 세지 않는다(`As PAL.Motor` 는 PAL 이 이끈다).
+    const viaModule = analyzeSourceReferences(lines('Module M', '    Sub Run(ByVal motor As PAL.Motor)', '    End Sub', 'End Module'), 'C:/h/App2.gpl');
+    assert.deepStrictEqual([...viaModule.typeWords], ['pal']);
+});

@@ -32,6 +32,11 @@
  * 같은 파일의 다른 모듈에서 수식 없이 쓰면 모호해 원본이 컴파일되지 않는다 — 다른 파일의 것을 쓰려면 `MOD.NAME` 으로 수식하므로
  * 모듈 이름 낱말이 따로 남는다. 흔한 상수 이름(`POLL_MS`·`ERR_TIMEOUT`)을 모듈마다 따로 두는 코드에서 오포함을 줄인다
  * (Sample Prep: 이것 없이는 `Device_Cylinder` 가 `POLL_MS` 하나로 끌려 들어왔다). 지역 변수·클래스 멤버는 가리는 범위가 좁아 쓰지 않는다.
+ *
+ * 타입 자리 낱말은 가리지 않는다: `As`·`New`·`Inherits`·`Implements` 바로 뒤 낱말은 변수가 아니라 타입(또는 그 모듈) 이름이라,
+ * 같은 철자의 지역·매개변수·자기 선언이 있어도 늘 참조로 센다(`typeWords`). 대소문자를 가리지 않는 언어라 `Dim motor As Motor`·
+ * `ByVal config As Config`·모듈 직속 `Private motor As Motor` 처럼 변수와 타입의 철자가 같은 코드가 흔한데, 가림 규칙이 타입 이름까지
+ * 지워 `Class Motor` 파일이 업로드에서 빠졌다(2026-11-13 코드 리뷰에서 발견·재현). 더 넣는 쪽으로만 틀린다.
  */
 
 import { GPLParser, GPLSymbolKind } from '../../language/syntax/gplParser';
@@ -49,6 +54,8 @@ export interface SourceReferenceInfo {
     ownNames: string[];
     /** 주석을 뺀 코드에 나오는 낱말(소문자) — 문자열 리터럴 안 낱말 포함. */
     words: Set<string>;
+    /** 타입 자리(`As`·`New`·`Inherits`·`Implements` 바로 뒤) 낱말(소문자) — 지역·자기 선언 가림과 무관하게 늘 참조로 센다. `words` 에도 들어 있다. */
+    typeWords: Set<string>;
     /** 낱말(소문자) → 처음 나온 줄(1-기준) — 파일이 남은 이유를 "어디서 불렀나"로 보고할 때 쓴다. */
     wordLines: Map<string, number>;
     /** 모듈 직속 `Sub Init` 이 있는가 — 모듈 초기화 때 이름 참조 없이 자동으로 불리므로(문서상 modules.htm) 이 파일은 늘 남긴다. */
@@ -64,6 +71,8 @@ const MEMBER_KINDS: ReadonlySet<GPLSymbolKind> = new Set([
  * 모듈 직속 이름을 수식 없이 부르는 참조는 점 뒤에 올 수 없고, `MOD.NAME` 은 `MOD` 가 그 파일로 이끈다.
  */
 const WORD = /(\.\s*)?([A-Za-z_][A-Za-z0-9_]*)/g;
+/** 바로 뒤 낱말이 타입(또는 타입을 품은 모듈) 이름인 키워드. */
+const TYPE_LEADERS: ReadonlySet<string> = new Set(['as', 'new', 'inherits', 'implements']);
 
 /** 프로시저 하나의 물리 줄 범위(0-기준)와 그 안에서 선언된 매개변수·지역 이름(소문자). */
 interface LocalScope { start: number; end: number; names: Set<string> }
@@ -114,22 +123,28 @@ export function analyzeSourceReferences(text: string, filePath: string): SourceR
     }
     const { scopes, declaredAt } = procedureLocalScopes(text, filePath);
     const words = new Set<string>();
+    const typeWords = new Set<string>();
     const wordLines = new Map<string, number>();
     const lines = text.split(/\r\n|\n|\r/);
     for (let i = 0; i < lines.length; i++) {
         const hidden = scopes.find(sc => i >= sc.start && i <= sc.end)?.names;
         const { code, names } = splitCodeAndNameStrings(stripComment(lines[i]));
         for (const piece of [code, ...names]) {
+            // 타입 자리 판정은 코드 조각에서만 한다 — 이름처럼 생긴 문자열 안의 "As"·"New" 는 키워드가 아니다.
+            let previous = '';
             for (const m of piece.matchAll(WORD)) {
-                if (m[1]) { continue; }
                 const w = m[2].toLowerCase();
-                if (hidden?.has(w) || declaredAt.has(`${i}:${w}`)) { continue; }
+                const typePosition = piece === code && !m[1] && TYPE_LEADERS.has(previous);
+                previous = m[1] ? '' : w;
+                if (m[1]) { continue; }
+                if (typePosition) { typeWords.add(w); }
+                else if (hidden?.has(w) || declaredAt.has(`${i}:${w}`)) { continue; }
                 words.add(w);
                 if (!wordLines.has(w)) { wordLines.set(w, i + 1); }
             }
         }
     }
-    return { declared: [...declared], containers, modules, ownNames: [...own], words, wordLines, hasModuleInit };
+    return { declared: [...declared], containers, modules, ownNames: [...own], words, typeWords, wordLines, hasModuleInit };
 }
 
 /** 파일이 닿은 이유 — `name` 은 낱말로 닿은 것(`by` 파일의 `line` 줄), 나머지는 낱말과 무관한 규칙. */
@@ -145,7 +160,7 @@ export type ReachReason =
  * 같은 Module 이름을 선언한 파일들은 함께 묶는다(머리말). `reasons` 를 주면 파일마다 처음 닿은 이유를 채운다.
  */
 export function computeReachableSources(
-    files: ReadonlyMap<string, Pick<SourceReferenceInfo, 'declared' | 'words'> & Partial<Pick<SourceReferenceInfo, 'ownNames' | 'modules' | 'wordLines'>>>,
+    files: ReadonlyMap<string, Pick<SourceReferenceInfo, 'declared' | 'words'> & Partial<Pick<SourceReferenceInfo, 'ownNames' | 'modules' | 'wordLines' | 'typeWords'>>>,
     roots: Iterable<string>,
     reasons?: Map<string, ReachReason>,
 ): Set<string> {
@@ -179,7 +194,7 @@ export function computeReachableSources(
         const info = files.get(from)!;
         const own = new Set(info.ownNames ?? []);
         for (const word of info.words) {
-            if (own.has(word)) { continue; }
+            if (own.has(word) && !info.typeWords?.has(word)) { continue; }
             for (const target of byName.get(word) ?? []) { add(target, { kind: 'name', name: word, by: from, line: info.wordLines?.get(word) }); }
         }
     }

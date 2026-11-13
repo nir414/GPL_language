@@ -3,7 +3,7 @@ import { test } from '../../harness';
 import {
 	GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, LEGACY_GUIDE_FILE_HEADER, MCP_SERVER_NAME,
 	classifyEntry, classifyClaudeUserConfig, classifyCodexConfig, desiredMcpEntry, readCodexEntry,
-	upsertCodexServer, stripMcpJsonEntry, stripGuideBlock,
+	upsertCodexServer, stripMcpJsonEntry, stripGuideBlock, decideStableBundleOverwrite, compareVersions,
 } from '../../../controller/automation/agentSetupChecks';
 
 const STABLE = 'C:\\Users\\me\\AppData\\Roaming\\Code\\User\\globalStorage\\nir414.gpl-language-support\\mcp\\gpl-controller-mcp.cjs';
@@ -123,4 +123,14 @@ test('워크스페이스 안내 블록 정리: 자동 블록만 지우고 사용
 	assert.deepStrictEqual(user, { changed: true, text: '# 사용자 규칙\r\n\r\n기존 본문\r\n\r\n나머지\r\n' });
 	assert.deepStrictEqual(stripGuideBlock(`# 내 규칙\n\n${block.replace(/\r\n/g, '\n')}\n`), { changed: true, text: '# 내 규칙\n' });
 	assert.deepStrictEqual(stripGuideBlock('# 블록 없음\n'), { changed: false, text: '# 블록 없음\n' });
+});
+
+test('MCP 번들 사본: 더 새 사본은 옛 번들로 덮지 않고, 버전을 모르면 종전처럼 덮는다', () => {
+	assert.strictEqual(decideStableBundleOverwrite('0.27.12', '0.18.1'), 'keep-newer');
+	assert.strictEqual(decideStableBundleOverwrite('0.27.12', '0.27.12'), 'overwrite');
+	assert.strictEqual(decideStableBundleOverwrite('0.18.1', '0.27.12'), 'overwrite');
+	assert.strictEqual(decideStableBundleOverwrite('1.0.0', '0.99.99'), 'keep-newer');
+	assert.strictEqual(decideStableBundleOverwrite('dev', '0.18.1'), 'overwrite');
+	assert.strictEqual(decideStableBundleOverwrite(undefined, '0.18.1'), 'overwrite');
+	assert.strictEqual(compareVersions('v0.27.16', '0.27.16'), 0);
 });

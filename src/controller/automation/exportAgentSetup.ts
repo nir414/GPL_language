@@ -6,7 +6,7 @@ import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import {
 	MCP_SERVER_NAME, RegistrationReport, desiredMcpEntry, classifyClaudeUserConfig, classifyCodexConfig,
-	upsertCodexServer, stripMcpJsonEntry, stripGuideBlock, StripResult,
+	upsertCodexServer, stripMcpJsonEntry, stripGuideBlock, StripResult, decideStableBundleOverwrite,
 } from './agentSetupChecks';
 
 /**
@@ -111,6 +111,11 @@ function ensureStableBundle(context: vscode.ExtensionContext): string {
 	const src = bundledPaths(context);
 	const a = sha256Of(src.bundle);
 	if (a && a === sha256Of(dst.bundle)) { return dst.bundle; }
+	// 더 새 사본을 옛 번들로 덮지 않는다(11-10 #2) — 사본이 있고 버전이 분명히 새로우면 그대로 등록한다.
+	if (fs.existsSync(dst.bundle)
+		&& decideStableBundleOverwrite(readBuildInfo(dst.buildInfo)?.version, readBuildInfo(src.buildInfo)?.version) === 'keep-newer') {
+		return dst.bundle;
+	}
 	return copyBundleToStablePath(context);
 }
 
@@ -118,6 +123,7 @@ export type StableBundleSyncResult =
 	| { action: 'absent' }
 	| { action: 'bundle-missing'; detail: string }
 	| { action: 'up-to-date'; stablePath: string }
+	| { action: 'kept-newer'; stablePath: string; stable?: BundleBuildInfo; bundled?: BundleBuildInfo }
 	| { action: 'updated'; stablePath: string; previous?: BundleBuildInfo; current?: BundleBuildInfo }
 	| { action: 'error'; detail: string };
 
@@ -140,10 +146,15 @@ export function syncStableBundleIfStale(context: vscode.ExtensionContext): Stabl
 	if (a && b && a === b) {
 		return { action: 'up-to-date', stablePath: dst.bundle };
 	}
+	const previous = readBuildInfo(dst.buildInfo);
+	const bundled = readBuildInfo(src.buildInfo);
+	// 여러 확장 버전이 같은 globalStorage 를 공유한다 — 옛 확장이 활성화돼도 더 새 사본을 다운그레이드하지 않는다(11-10 #2).
+	if (decideStableBundleOverwrite(previous?.version, bundled?.version) === 'keep-newer') {
+		return { action: 'kept-newer', stablePath: dst.bundle, stable: previous, bundled };
+	}
 	try {
-		const previous = readBuildInfo(dst.buildInfo);
 		copyBundleToStablePath(context);
-		return { action: 'updated', stablePath: dst.bundle, previous, current: readBuildInfo(src.buildInfo) };
+		return { action: 'updated', stablePath: dst.bundle, previous, current: bundled };
 	} catch (err) {
 		return { action: 'error', detail: err instanceof Error ? err.message : String(err) };
 	}

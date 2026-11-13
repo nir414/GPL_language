@@ -62,9 +62,12 @@ import {
   bridgeHealthSummary,
   describeBridgeFailure,
   resolveControllerAddress,
+  assessWindowAddress,
+  describeAddressSource,
   DEFAULT_CONTROLLER_HOST,
   DEFAULT_CONTROLLER_PORT,
 } from './extensionBridge.js';
+import { preSendCauseOf, pickSessionWindow, routeMismatchOf, serverVersionWarning } from './routing.js';
 import { partitionStopTargets } from './stopTargets.js';
 import { sameSourceFile, splitLibraryQualifiedFile } from './libraryLocation.js';
 import { compilerCommandOptions, controllerResponseOutcome } from './commandOptions.js';
@@ -255,7 +258,7 @@ async function currentBridge({ force = false, wake = false } = {}) {
   const now = Date.now();
   if (!force && now - bridgeState.checkedAt < BRIDGE_RECHECK_MS) return bridgeState;
   // projectDir 는 host-mismatch 판정에서 "같은 작업의 창" 을 가려내는 근거(§1-ES)다.
-  const r = await resolveBridge(currentHost(), { mode: BRIDGE_MODE, wake, projectDir: sessionTarget?.dir ?? undefined });
+  const r = await resolveBridge(currentHost(), { mode: BRIDGE_MODE, wake, projectDir: sessionTarget?.dir ?? undefined, instanceId: pinnedInstanceId ?? undefined });
   bridgeState = { ...r, checkedAt: now };
   return bridgeState;
 }
@@ -265,6 +268,9 @@ async function currentBridge({ force = false, wake = false } = {}) {
 // 제어기 IP 를 바꾸면 presence 가 바뀌고, 다음 호출부터 이 값이 따라간다 — 설정 파일 재작성·/mcp 재연결이 필요 없다.
 const ADDRESS_RECHECK_MS = 1000;
 let addressState = { at: 0, value: null };
+// 창이 여럿이고 연결 IP 가 서로 다를 때 이 세션이 따를 창을 런타임에 고정한다(extension_resolve {extensionInstanceId}, 11-10 #1).
+// 여러 Claude 세션이 같은 .mcp.json 을 공유하므로 설정 파일 대신 프로세스(=세션) 안에만 둔다. 창이 사라지면 고정은 저절로 무효가 된다.
+let pinnedInstanceId = null;
 
 function controllerAddress({ force = false } = {}) {
   const now = Date.now();
@@ -273,6 +279,7 @@ function controllerAddress({ force = false } = {}) {
     configuredHost: CONFIGURED_HOST,
     configuredPort: CONFIGURED_PORT,
     mode: BRIDGE_MODE,
+    instanceId: pinnedInstanceId ?? undefined,
     // 창이 여럿이면 이 작업의 창을 고른다 — 세션 대상이 아직 없으면 Claude Code 가 띄운 작업 폴더(cwd).
     projectDir: sessionTarget?.dir ?? process.cwd(),
   });
@@ -319,6 +326,13 @@ async function callExtension(command, args, { timeoutMs, instanceId } = {}) {
  * 모호한 실패(타임아웃·확장 내부 오류)는 조회 명령만 재전송한다 — 상태 변경 명령 중복 전송 금지.
  */
 async function sendGuarded(command, opts) {
+  // 주소를 정한 확장 창이 미연결이고 그 IP 가 GPL_HOST 와 다르면 보내지 않는다(extensionBridge.assessWindowAddress 의 규칙).
+  const disconnected = assessWindowAddress(controllerAddress());
+  if (disconnected) {
+    logLine(`  1402> ${command} | 전송 안 함 | extension-disconnected (창 ${disconnected.windowIp}, GPL_HOST ${disconnected.configuredHost})`);
+    throw taggedError(`${disconnected.detail} ${disconnected.nextStep}.`, SEND_OUTCOME_NOT_SENT,
+      { code: 'extension-disconnected', preSendCause: { state: disconnected.reason, detail: disconnected.detail, nextStep: disconnected.nextStep }, extensionDisconnected: disconnected });
+  }
   // 그룹 Compile 뒤 Unload 는 확인(confirm) 없이는 보내지 않는다 — 확장과 같은 파일·같은 판정(src/unloadRisk.js).
   // 잠금 대기보다 먼저 본다(어차피 보내지 않을 명령을 기다릴 이유가 없다).
   const unloadRisk = parseUnloadCommand(command) ? assessUnloadRisk(readUnloadRiskState(currentHost()), command) : null;
@@ -433,7 +447,7 @@ async function sendGuarded(command, opts) {
     throw taggedError(
       `GPL_BRIDGE=only — 확장 브리지를 쓸 수 없다(${b.reason}). ${bridgeHint(b)}`,
       SEND_OUTCOME_NOT_SENT,
-      { bridgeReason: b.reason },
+      { bridgeReason: b.reason, hostMismatch: b.hostMismatch ?? null },
     );
   }
   const raw = await consoleClient.send(command, opts);
@@ -469,10 +483,11 @@ function withUnloadRiskGuidance(command, result) {
 function transportInfo() {
   const p = bridgeState.presence;
   const address = controllerAddress();
+  const disconnectedWindow = assessWindowAddress(address);
   return {
     mode: BRIDGE_MODE,
     // 제어기 주소와 그 출처 — source:'extension' 이면 확장 창의 현재 연결을 따른 값이다(§1-GU).
-    controller: { host: address.host, port: address.port, source: address.source, via: address.via },
+    controller: { host: address.host, port: address.port, source: address.source, via: address.via, pinned: pinnedInstanceId !== null && address.instanceId === pinnedInstanceId },
     using: bridgeState.available ? 'extension-bridge' : 'direct-tcp',
     reason: bridgeState.available ? null : bridgeState.reason,
     extension: p ? {
@@ -483,10 +498,24 @@ function transportInfo() {
       workspace: p.workspace ?? null,
       extensionInstanceId: p.extensionInstanceId ?? null,
     } : null,
+    // 확장 버전과 이 서버 버전이 다르면 경고 — globalStorage 사본이 옛 확장에 덮이는 사고(11-10 #2)를 AI 가 바로 알아본다.
+    versionWarning: serverVersionWarning(BUILD.version, p?.extensionVersion),
     // 같은 제어기를 보는 VS Code 창이 몇 개인지 — 2개 이상이면 배포 대상 창을 특정해야 한다(§6).
     extensionInstances: (bridgeState.instances ?? []).length,
     // 이 제어기를 보는 창은 없는데 다른 IP 에 살아 있는 창(§1-ES) — null 이 아니면 "확장 미실행" 이 아니라 .mcp.json GPL_HOST 문제다.
-    hostMismatch: bridgeState.hostMismatch ?? null,
+    // 창이 미연결인데 마지막 IP 가 GPL_HOST 와 다른 경우(extension-disconnected)도 같은 모양으로 채운다 — null 이면 오해를 부른다(11-05 #1).
+    hostMismatch: bridgeState.hostMismatch ?? (disconnectedWindow
+      ? {
+        mcp: disconnectedWindow.configuredHost,
+        reason: disconnectedWindow.reason,
+        extensions: [{
+          extensionInstanceId: disconnectedWindow.extensionInstanceId, ip: disconnectedWindow.windowIp, port: disconnectedWindow.windowPort,
+          workspace: disconnectedWindow.workspace, connected: false,
+        }],
+        nextStep: disconnectedWindow.nextStep,
+      }
+      : null),
+    extensionDisconnected: disconnectedWindow,
     // 1402 명령이 지금 어느 창으로 나가는지와 그 근거(§1-EK) — ECONNREFUSED 를 "제어기 이상"으로 읽기 전에 이것을 볼 것.
     consoleRoute: p && !bridgeState.legacy ? {
       extensionInstanceId: p.extensionInstanceId ?? null,
@@ -1202,6 +1231,22 @@ tool('controller_status',
     try {
       raw = await sendGuarded('Show Thread -web');
     } catch (err) {
+      // 보내지 않은 실패(창 미연결·브리지 주소 불일치)는 접속을 시도하지 않았으므로 도달성 프로브·host-unreachable 로 적지 않고 원인 이름 그대로 낸다.
+      const cause = preSendCauseOf(err);
+      if (cause) {
+        return textResult({
+          ...base,
+          ok: false,
+          connected: false,
+          channel: { port: currentPort(), state: cause.state, lastError: { kind: cause.state, message: String(err?.message ?? err) } },
+          assessment: { state: cause.state, confidence: 'high', alternativeExplanations: [], controllerCrashConfirmed: false },
+          controllerHealth: { state: 'unknown', reason: '명령을 보내지 않았다(not-sent) — 제어기 상태는 관측되지 않았다.' },
+          recommendedAction: `ask-user — ${cause.nextStep ?? cause.detail}`,
+          verdict: cause.detail,
+          hostMismatch: base.transport.hostMismatch ?? null,
+          hint: `${cause.detail} ${cause.nextStep ?? ''} 이 조회의 전송 결과: ${sendOutcomeOf(err)}.`.trim(),
+        });
+      }
       const reachable = await probeReachability(err);
       const sendOutcome = sendOutcomeOf(err);
       return textResult({
@@ -1359,14 +1404,28 @@ tool('extension_list',
 tool('extension_resolve',
   '어느 VS Code 창(확장 인스턴스)이 이 작업을 수행해야 하는지 결정한다(§6). ' +
   '우선순위: 명시 extensionInstanceId → projectDir 를 품은 워크스페이스 → 제어기에 connected → 유일 후보. ' +
+  '`extensionInstanceId` 를 주면 이 MCP 세션이 따를 창으로 **고정**한다(IP 가 다른 창이어도 됨 — .mcp.json 수정·/mcp 재연결 불필요, 다른 Claude 세션에는 영향 없음). `unpin:true` 로 푼다. ' +
   '**하나로 좁혀지지 않으면 임의로 고르지 않고** `{ok:false, error:"EXTENSION_AMBIGUOUS", candidates:[…]}` 를 돌려준다 — ' +
   '창을 하나만 남기라고 요구하지 말고 후보를 사용자에게 보여 주고 물을 것.',
   {
     projectDir: z.string().optional().describe('작업 대상 프로젝트 폴더 경로'),
-    extensionInstanceId: z.string().optional().describe('창을 직접 지정'),
+    extensionInstanceId: z.string().optional().describe('창을 직접 지정 — **이 세션이 따를 창으로 고정**된다(다른 IP 의 창도 가능, 제어기 주소가 그 창을 따라간다)'),
+    unpin: z.boolean().optional().describe('true 면 고정을 푼다(주소가 다시 자동 선택)'),
   },
-  async ({ projectDir, extensionInstanceId }) => {
-    const r = resolveExtensionInstance(currentHost(), { instanceId: extensionInstanceId, projectDir: projectDir ?? sessionTarget?.dir ?? undefined });
+  async ({ projectDir, extensionInstanceId, unpin }) => {
+    if (unpin === true) {
+      pinnedInstanceId = null;
+      controllerAddress({ force: true });
+      return textResult({ ok: true, pinned: null, transport: transportInfo() });
+    }
+    // 창을 직접 지정하면 IP 로 거르지 않는다 — 여러 창의 IP 가 서로 다를 때 .mcp.json·/mcp 없이 세션 대상을 바꾸는 경로다(11-10 #1).
+    const r = resolveExtensionInstance(extensionInstanceId ? undefined : currentHost(), { instanceId: extensionInstanceId, projectDir: projectDir ?? sessionTarget?.dir ?? undefined });
+    if (r.ok && extensionInstanceId) {
+      pinnedInstanceId = r.instance.extensionInstanceId;
+      const before = controllerAddress().host;
+      const after = controllerAddress({ force: true });
+      logLine(`  pin   이 세션의 확장 창 고정 ${pinnedInstanceId} (${r.instance.workspace ?? '?'}, ${r.instance.ip}) — 주소 ${before} → ${after.host}`);
+    }
     if (!r.ok) {
       return textResult({
         ...r,
@@ -1386,6 +1445,8 @@ tool('extension_resolve',
     return textResult({
       ok: true,
       via: r.via,
+      pinned: pinnedInstanceId,
+      controllerHost: controllerAddress().host,
       extension: {
         extensionInstanceId: r.instance.extensionInstanceId,
         pid: r.instance.pid,
@@ -1446,12 +1507,14 @@ tool('runtime_console_read',
   },
   async ({ cursor, maxLines, waitMs, untilPattern, extensionInstanceId }) => {
     const wait = waitMs ?? 0;
+    // 창을 지정하지 않았고 세션 대상(project_target)이 있으면 그 대상의 창(workspace-match)으로 보낸다 — deploy/controller_status 와 같은 기준(11-11).
+    const route = sessionConsoleRoute(extensionInstanceId);
     let res;
     try {
       res = await callExtension(
         'gpl.ai.debug.runtimeConsoleRead',
         { cursor, maxLines, waitMs: wait, untilPattern },
-        { timeoutMs: wait + 20_000, instanceId: extensionInstanceId },
+        { timeoutMs: wait + 20_000, instanceId: route.instanceId },
       );
     } catch (err) {
       return textResult({ ok: false, error: 'bridge-unavailable', detail: err?.message ?? String(err), hint: 'extension_status 로 확장 브리지를 확인할 것. 런타임 콘솔은 확장이 수신한다.' });
@@ -1459,8 +1522,29 @@ tool('runtime_console_read',
     if (!res?.ok) {
       return textResult({ ok: false, error: res?.error ?? 'bridge-failed', detail: res?.detail ?? null, transport: transportInfo() });
     }
-    return textResult({ ...(res.result ?? {}), transport: transportInfo() });
+    // 실제로 읽은 창이 세션 대상의 창이 아니면 경고 — "출력 없음 = 제어기 무출력" 오판과 헛기다림을 막는다.
+    const readId = route.instanceId ?? bridgeState.presence?.extensionInstanceId ?? null;
+    const readInstance = route.instances.find((p) => p.extensionInstanceId === readId) ?? null;
+    const routeMismatch = routeMismatchOf({ sessionTarget, readInstance });
+    return textResult({
+      ...(res.result ?? {}),
+      routedBy: route.routedBy,
+      ...(routeMismatch ? { routeMismatch } : {}),
+      transport: transportInfo(),
+    });
   });
+
+/**
+ * 런타임 콘솔 도구가 읽을 창 — 명시 id > 세션 대상 폴더의 창 > (없음: 종전 경로 = 제어기에 연결된 창).
+ * @returns {{instances:Array<object>, instanceId:string|undefined, host:string|null, routedBy:'explicit'|'session-target'|'console-route'}}
+ */
+function sessionConsoleRoute(explicitId) {
+  const instances = listExtensionInstances(undefined, {});
+  if (explicitId) return { instances, instanceId: explicitId, host: instances.find((p) => p.extensionInstanceId === explicitId)?.ip ?? null, routedBy: 'explicit' };
+  const win = sessionTarget?.dir ? pickSessionWindow(instances, sessionTarget.dir) : null;
+  if (win) return { instances, instanceId: win.instance.extensionInstanceId, host: win.instance.ip ?? null, routedBy: 'session-target' };
+  return { instances, instanceId: undefined, host: null, routedBy: 'console-route' };
+}
 
 // ── 런타임 콘솔 이력 검색 (2026-10-22 Sample Prep 요청) ──────────────────────────
 // 링버퍼 밖의 지난 출력은 확장이 남기는 캡처 파일에만 있다. 사용자·AI 모두 그 파일이 있는 줄 몰라 Bash 로 %TEMP% 를 뒤졌다.
@@ -1486,8 +1570,11 @@ tool('runtime_console_search',
     includeMarkers: z.boolean().optional().describe('듣기 상태 마커 포함(기본 true)'),
   },
   async ({ pattern, since, until, project, maxResults, maxLines, latestFirst, maxChars, includeMarkers }) => {
-    const result = searchCapture({ files: captureFilesFor(currentHost()), pattern, since, until, project, maxResults: maxResults ?? maxLines ?? 200, latestFirst, maxChars, includeMarkers: includeMarkers ?? true });
-    return textResult({ host: currentHost(), ...result });
+    // 캡처 파일은 제어기 IP 별이다 — 세션 대상의 창이 보는 제어기 파일을 읽는다(runtime_console_read 와 같은 기준, 11-11).
+    const route = sessionConsoleRoute(undefined);
+    const host = route.host ?? currentHost();
+    const result = searchCapture({ files: captureFilesFor(host), pattern, since, until, project, maxResults: maxResults ?? maxLines ?? 200, latestFirst, maxChars, includeMarkers: includeMarkers ?? true });
+    return textResult({ host, routedBy: route.routedBy, ...result });
   });
 
 // ── 제어기 시계 (2026-10-24 SamplePrep 요청) ─────────────────────────────────
@@ -3003,7 +3090,7 @@ async function main() {
     console.error(`[gpl-controller-mcp] session log: ${LOG_FILE}`);
     console.error(`[gpl-controller-mcp] 실시간 관찰: Get-Content "${LOG_FILE}" -Wait`);
   }
-  logLine(`session start — ${BUILD_LABEL} — target ${currentHost()}:${currentPort()}, project target session-scoped, idleClose ${IDLE_CLOSE}ms`);
+  logLine(`session start — ${BUILD_LABEL} — target ${currentHost()}:${currentPort()} (${describeAddressSource(controllerAddress())}), project target session-scoped, idleClose ${IDLE_CLOSE}ms`);
 }
 
 main().catch((err) => {

@@ -113,13 +113,29 @@ export class LibraryProvenanceStore {
 
     attach(memento: MementoLike): void {
         this.memento = memento;
+        this.mergeFromMemento();
+    }
+
+    /**
+     * 저장소(Memento)의 현재 값을 메모리에 합친다 — 키마다 더 나중에 기록된 쪽이 이긴다. 읽기·쓰기 직전에 이것을 거쳐, Memento 가
+     * 다른 창이 쓴 값을 돌려주는 한 "다른 창이 올린 것"을 알고(읽기) 다른 창의 기록을 지우지 않는다(쓰기). attach 때 한 번만 읽던 때는
+     * 먼저 열린 창이 옛 기록으로 '일치'를 판정하고, 다음 기록 때 다른 창의 항목을 덮어썼다(2026-11-13 코드 리뷰). 창 사이 전파 시점은
+     * VS Code 구현에 달려 있고 두 창으로 실측하지는 않았다 — 전파되지 않아도 종전보다 나빠지지 않는다.
+     */
+    private mergeFromMemento(): void {
+        if (!this.memento) { return; }
         try {
-            const saved = memento.get<Record<string, StoredLibraryProvenance>>(LIBRARY_PROVENANCE_MEMENTO_KEY, {});
-            for (const [k, v] of Object.entries(saved ?? {})) { if (!this.records.has(k) && v?.library) { this.records.set(k, v); } }
+            const saved = this.memento.get<Record<string, StoredLibraryProvenance>>(LIBRARY_PROVENANCE_MEMENTO_KEY, {});
+            for (const [k, v] of Object.entries(saved ?? {})) {
+                if (!v?.library) { continue; }
+                const mine = this.records.get(k);
+                if (!mine || (v.recordedAt ?? 0) > mine.recordedAt) { this.records.set(k, v); }
+            }
         } catch (err) { this.onError?.(err); }
     }
 
     record(ip: string, remoteDir: string, library: LibraryProvenance, now = Date.now()): void {
+        this.mergeFromMemento();
         this.records.set(libraryProvenanceKey(ip, remoteDir), { recordedAt: now, library });
         try {
             void this.memento?.update(LIBRARY_PROVENANCE_MEMENTO_KEY, Object.fromEntries(this.records));
@@ -127,6 +143,7 @@ export class LibraryProvenanceStore {
     }
 
     get(ip: string, remoteDir: string): StoredLibraryProvenance | undefined {
+        this.mergeFromMemento();
         return this.records.get(libraryProvenanceKey(ip, remoteDir));
     }
 }

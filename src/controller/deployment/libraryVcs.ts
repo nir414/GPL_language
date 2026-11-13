@@ -33,6 +33,8 @@ export interface LibraryVcsInfo {
     peg?: number;
     /** 커밋하지 않은 로컬 변경 파일 수(`svn status -q`, externals·무시 항목 제외). */
     modifiedFiles: number;
+    /** `svn status` 가 실패했거나 시간 안에 끝나지 않았다 — `modifiedFiles: 0` 은 "변경 없음"이 아니라 "모름"이다. */
+    statusUnknown?: true;
     /** externals 값이 가리키는 URL(해석 가능할 때) — 실제 URL 과 대조해 드리프트를 본다. */
     expectedUrl?: string;
     /** 변경 파일 앞쪽 일부(상한 `MODIFIED_LIST_LIMIT`) — 경고에 파일 목록을 싣는다. */
@@ -174,8 +176,17 @@ export function versionLabelFromUrl(url: string): string | undefined {
 // ─── 수집(svn 실행은 주입) ───────────────────────────────────────────────────
 
 async function infoItem(run: SvnRunner, item: string, target: string, cwd: string): Promise<string | undefined> {
-    const r = await run(['info', '--show-item', item, target], cwd);
+    const r = await run(['info', '--show-item', item, svnTarget(target)], cwd);
     return r.ok ? parseInfoItem(r.stdout) : undefined;
+}
+
+/**
+ * svn 대상 인자 — 경로에 `@` 가 있으면 끝에 `@` 를 붙인다. svn 은 대상 끝의 `@<rev>` 를 peg revision 으로 읽어서, `Lib\PaL@2` 같은 폴더는
+ * 그대로 넘기면 조회가 실패한다(문서상 Peg and Operative Revisions: 끝에 빈 `@` 를 붙이면 앞의 `@` 는 이름으로 남는다
+ * https://svnbook.red-bean.com/en/1.7/svn.advanced.pegrevs.html).
+ */
+export function svnTarget(target: string): string {
+    return target.includes('@') ? `${target}@` : target;
 }
 
 /** `libDir` 로 받는 externals 항목을 찾는다 — 상위 폴더 최대 3단계의 속성을 본다. */
@@ -183,7 +194,7 @@ async function findExternalFor(run: SvnRunner, libDir: string): Promise<{ entry:
     const want = normalizePathKey(libDir);
     let holder = path.dirname(path.resolve(libDir));
     for (let level = 0; level < 3; level++) {
-        const prop = await run(['propget', 'svn:externals', holder], holder);
+        const prop = await run(['propget', 'svn:externals', svnTarget(holder)], holder);
         if (!prop.ok) { return undefined; }
         const entries = parseSvnExternals(prop.stdout);
         const hit = entries.find(e => normalizePathKey(path.resolve(holder, e.target)) === want);
@@ -222,12 +233,13 @@ export async function collectLibraryVcs(libDir: string, run: SvnRunner): Promise
             expectedUrl = resolveExternalUrl(ext.entry.url, ext.holderUrl, root);
         }
 
-        const status = await run(['status', '-q', dir], cwd);
+        const status = await run(['status', '-q', svnTarget(dir)], cwd);
         const summary = status.ok ? parseStatusQ(status.stdout) : { count: 0, files: [] };
         return {
             kind: 'svn', url: normalizeSvnUrl(url), revision, mode,
             ...(peg !== undefined ? { peg } : {}),
             modifiedFiles: summary.count,
+            ...(status.ok ? {} : { statusUnknown: true as const }),
             ...(expectedUrl ? { expectedUrl } : {}),
             ...(summary.files.length > 0 ? { modified: summary.files } : {}),
         };

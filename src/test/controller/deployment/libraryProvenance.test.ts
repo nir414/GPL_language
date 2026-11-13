@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { test } from '../../harness';
 import {
-    collectLibraryVcs, normalizeSvnUrl, parseInfoItem, parseStatusQ, parseSvnExternals, resolveExternalUrl, versionLabelFromUrl,
+    collectLibraryVcs, normalizeSvnUrl, parseInfoItem, parseStatusQ, parseSvnExternals, resolveExternalUrl, svnTarget, versionLabelFromUrl,
 } from '../../../controller/deployment/libraryVcs';
 import type { LibraryVcsInfo, SvnRunner } from '../../../controller/deployment/libraryVcs';
 import {
@@ -219,6 +219,26 @@ test('libraryProvenance: 이전 업로드 기록 저장소 — 키는 ip+원격 
     assert.strictEqual(b.get('192.168.0.2', '/GPL/PaL'), undefined);
 });
 
+test('libraryProvenance: 두 창이 같은 저장소를 쓸 때 — 먼저 붙은 창도 나중 기록을 읽고, 기록할 때 상대 항목을 지우지 않는다', () => {
+    const mem: Record<string, any> = {};
+    const memento = { get: <T>(k: string, d: T): T => (k in mem ? mem[k] : d), update: (k: string, v: any) => { mem[k] = v; return Promise.resolve(); } };
+    const libOf = (sha: string) => buildLibraryProvenance({ name: 'PaL', localPath: '/x', remoteDir: '/GPL/PaL', vcs: null, uploaded: { files: 1, sha256: sha } });
+    const early = new LibraryProvenanceStore();
+    early.attach(memento);
+    early.record('192.168.0.1', '/GPL/PaL', libOf('old'), 1000);
+    const late = new LibraryProvenanceStore();
+    late.attach(memento);
+    late.record('192.168.0.1', '/GPL/PaL', libOf('new'), 2000);
+    late.record('192.168.0.1', '/GPL/Gantry', libOf('g'), 2001);
+    // 먼저 붙은 창이 낡은 기록으로 판정하지 않는다.
+    assert.strictEqual(early.get('192.168.0.1', '/GPL/PaL')?.library.uploaded.sha256, 'new');
+    // 먼저 붙은 창이 다른 항목을 기록해도 상대가 쓴 항목이 남는다.
+    early.record('192.168.0.1', '/GPL/Other', libOf('o'), 3000);
+    const keys = Object.keys(mem['gpl.libraryProvenance']).sort();
+    assert.deepStrictEqual(keys, ['192.168.0.1|/gpl/gantry', '192.168.0.1|/gpl/other', '192.168.0.1|/gpl/pal']);
+    assert.strictEqual(mem['gpl.libraryProvenance']['192.168.0.1|/gpl/pal'].library.uploaded.sha256, 'new');
+});
+
 // ─── preflight 판정 ──────────────────────────────────────────────────────────
 
 const vcsOf = (over: Partial<LibraryVcsInfo> = {}): LibraryVcsInfo => ({
@@ -256,6 +276,23 @@ test('libraryPreflight: 이전 업로드 출처 — 같으면 match, 다르면 m
     assert.strictEqual(judgeLibrary({ ...base, vcs: null, previous: prevOf(vcsOf()) }).previousUpload, 'unknown');
     assert.strictEqual(judgeLibrary({ ...base, vcs: vcsOf(), previous: prevOf(null) }).previousUpload, 'unknown');
     assert.strictEqual(judgeLibrary({ ...base, vcs: vcsOf({ modifiedFiles: 1 }), previous: prevOf(vcsOf()) }).previousUpload, 'unknown');
+    // svn status 가 실패·시간 초과면 "변경 없음"이 아니라 모름 — 일치로 보지 않고, 막지도 않고, 확인하지 못했다고 남긴다.
+    const unknown = judgeLibrary({ ...base, vcs: vcsOf({ statusUnknown: true }), previous: prevOf(vcsOf()) });
+    assert.strictEqual(unknown.previousUpload, 'unknown');
+    assert.deepStrictEqual(unknown.issues, []);
+    assert.match(unknown.notes.join(' '), /확인하지 못했습니다/);
+});
+
+test('libraryVcs: svn status 실패는 statusUnknown 으로 남고, 경로의 @ 는 끝에 @ 를 붙여 peg 로 읽히지 않게 한다', async () => {
+    const projects = path.resolve('/ws/101/projects');
+    const inner = fakeSvn();
+    const failing: SvnRunner = async (args, cwd) => { return args[0] === 'status' ? { ok: false, stdout: '' } : inner(args, cwd); };
+    const pal = await collectLibraryVcs(path.join(projects, 'PaL'), failing);
+    assert.strictEqual(pal?.statusUnknown, true);
+    assert.strictEqual(pal?.modifiedFiles, 0);
+    assert.strictEqual((await collectLibraryVcs(path.join(projects, 'PaL'), fakeSvn()))?.statusUnknown, undefined);
+    assert.strictEqual(svnTarget('C:\\ws\\Lib\\PaL@2'), 'C:\\ws\\Lib\\PaL@2@');
+    assert.strictEqual(svnTarget('C:\\ws\\Lib\\PaL'), 'C:\\ws\\Lib\\PaL');
 });
 
 test('libraryPreflight: blockOn — 기본 [] 는 경고만, 지정한 항목에 해당하면 막고 사유를 담는다', () => {

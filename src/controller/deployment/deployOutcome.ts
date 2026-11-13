@@ -263,12 +263,13 @@ export function selectErrorLogNotice(
     return notice;
 }
 
-/** 제어기 시각 표기 `MM-DD-YYYY HH:MM:SS[.mmm]` → 비교용 정수 키(YYYYMMDDHHMMSSmmm). 없으면 undefined. */
+/** 제어기 시각 표기 `MM-DD-YYYY HH:MM:SS[.mmm]` → 비교용 정수 키(YYYYMMDDHHMMSS, 초 단위). 없으면 undefined. */
 export function controllerStampKey(text: string): number | undefined {
     const m = /(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/.exec(text);
     if (!m) { return undefined; }
-    const ms = (m[7] ?? '0').padEnd(3, '0');
-    return Number(`${m[3]}${m[1]}${m[2]}${m[4]}${m[5]}${m[6]}${ms}`);
+    // 초 단위까지만 쓴다(14자리). 밀리초까지 붙인 17자리는 2^53 을 넘어 끝자리가 틀어지고(…123 → …124), 기준 줄(Compile 시작)에는
+    // 밀리초가 없어 같은 초에 찍힌 항목을 "이전"으로 숨길 수 있었다. 같은 초의 항목은 숨기지 않는 쪽(recent)으로 간다.
+    return Number(`${m[3]}${m[1]}${m[2]}${m[4]}${m[5]}${m[6]}`);
 }
 
 /**

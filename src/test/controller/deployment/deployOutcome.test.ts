@@ -293,4 +293,9 @@ test('partitionErrorLogSince: Compile 시작 이전 항목은 개수만, 이후�
     assert.deepStrictEqual(partitionErrorLogSince(log, since), { recent: [log[2], log[3]], older: 2 });
     assert.strictEqual(partitionErrorLogSince(log, 'no stamp'), undefined);
     assert.ok((controllerStampKey('12-31-2025 23:59:59') ?? 0) < (controllerStampKey('01-01-2026 00:00:00') ?? 0));
+    // 키는 초 단위 정수(정확히 표현되는 범위) — 기준 줄에는 밀리초가 없으므로 같은 초에 찍힌 항목은 숨기지 않는다.
+    assert.strictEqual(controllerStampKey('11-13-2026 14:22:33.123'), 20261113142233);
+    assert.ok(Number.isSafeInteger(controllerStampKey('11-13-2026 14:22:33.999')));
+    const sameSecond = ['11-13-2026 14:58:56.001, LtApp, -757, "x"', '11-13-2026 14:58:56, LtApp, -757, "y"', '11-13-2026 14:58:55.999, LtApp, -700, "z"'];
+    assert.deepStrictEqual(partitionErrorLogSince(sameSecond, since), { recent: [sameSecond[0], sameSecond[1]], older: 1 });
 });

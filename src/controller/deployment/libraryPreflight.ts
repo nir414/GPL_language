@@ -81,6 +81,9 @@ export function judgeLibrary(input: LibraryPreflightInput): LibraryPreflightEntr
             entry.modified = { count: vcs.modifiedFiles, files: vcs.modified ?? [] };
             notes.push(`커밋하지 않은 로컬 변경 ${vcs.modifiedFiles}개${entry.modified.files.length > 0 ? `: ${entry.modified.files.slice(0, 5).join(', ')}${vcs.modifiedFiles > 5 ? ' …' : ''}` : ''}`
                 + `${vcs.mode === 'pinned' ? ' — 고정 external 의 변경은 svn commit --include-externals 에서도 조용히 빠집니다' : ''}.`);
+        } else if (vcs.statusUnknown) {
+            // 실패·시간 초과를 "변경 없음"으로 읽지 않는다 — 막지는 않되(모르는 것을 문제로 단정하지 않음) 확인하지 못했다고 남긴다.
+            notes.push('커밋하지 않은 로컬 변경이 있는지 확인하지 못했습니다(svn status 실패 또는 시간 초과).');
         }
     }
 
@@ -91,7 +94,7 @@ export function judgeLibrary(input: LibraryPreflightInput): LibraryPreflightEntr
         entry.previousUpload = 'mismatch';
         issues.push('uploadMismatch');
         notes.push(`원격에 마지막으로 올린 출처(${prev.url}@${prev.revision})와 이번 로컬(${vcs.url}@${vcs.revision})이 다릅니다.`);
-    } else if (prev.modifiedFiles > 0 || vcs.modifiedFiles > 0) {
+    } else if (prev.modifiedFiles > 0 || vcs.modifiedFiles > 0 || vcs.statusUnknown) {
         entry.previousUpload = 'unknown';
     } else {
         entry.previousUpload = 'match';

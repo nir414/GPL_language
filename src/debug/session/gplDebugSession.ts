@@ -51,6 +51,7 @@ import type { PollHost } from '../execution/pollDriver';
 import { PollDriver } from '../execution/pollDriver';
 import type { IAttachRequestArguments } from './attachPreflight';
 import { AttachPreflight } from './attachPreflight';
+import { reportBreakOnException } from './breakOnExceptionNotice';
 import { ErrorLocationReporter } from './errorLocation';
 
 // ─── Launch/Attach argument interfaces ───────────────────
@@ -701,6 +702,8 @@ export class GPLDebugSession extends LoggingDebugSession {
         // InitializedEvent를 여기서 전송 — VS Code는 이 이벤트 수신 후
         // setBreakPointsRequest를 보내므로 _projectName이 확실히 설정된 상태에서 처리된다.
         this.sendEvent(new InitializedEvent());
+        // DataID 307(Break on exception code)이 켜져 있으면 Try…Catch 가 무시된다(문서상) — 1회 읽기, 실패 허용, 세션 시작을 막지 않는다.
+        void reportBreakOnException(cmd => this._sendCmd(cmd), message => this._log(message));
     }
 
     protected override async disconnectRequest(

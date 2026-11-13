@@ -72,6 +72,23 @@ export function makeExistsOnDisk(projectDir: string): (relPath: string) => boole
 }
 
 /**
+ * 새 `.gpr` 에 적을 시작 프로시저 — 소스 어디에든 `Sub Main` 선언이 있으면 `'Main'`, 없으면 `null`(라이브러리로 보고
+ * `ProjectStart` 줄을 쓰지 않는다). 주석·문자열 속 낱말에 속지 않게 줄 머리의 선언 꼴만 본다. 못 읽은 파일은 건너뛴다.
+ * 중첩 폴더 소스를 `.gpr` 하나로 묶는 라이브러리(docs/reference/project-file-gpr.md §4.1)를 만들 때 `ProjectStart="Main"` 이
+ * 따라붙지 않게 하려는 것이다.
+ */
+export function detectStartProcedure(projectDir: string, files: readonly string[]): 'Main' | null {
+    const decl = /^[ \t]*(?:(?:Public|Private|Friend)[ \t]+)?(?:Shared[ \t]+)?Sub[ \t]+Main\b/im;
+    for (const rel of files) {
+        try {
+            const full = path.join(projectDir, rel.replace(/[\\/]+/g, path.sep));
+            if (decl.test(fs.readFileSync(full, 'latin1'))) { return 'Main'; }
+        } catch { /* 다음 파일 */ }
+    }
+    return null;
+}
+
+/**
  * 폴더와 `.gpr` 를 대조한다. 탐색이 잘렸으면(`truncated`) 제거 제안을 비운다 — 못 본 파일을 "없다"고 하지 않기 위해.
  */
 export function checkGprFolderSync(projectDir: string, gprPath: string, opts: GprFolderSyncOptions = {}): GprFolderSyncCheck {

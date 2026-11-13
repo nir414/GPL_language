@@ -216,7 +216,12 @@ export function applyGprSync(text: string, opts: ApplyGprSyncOptions): string {
 export interface CreateGprOptions {
     projectName: string;
     sources: string[];
-    projectStart?: string;
+    /**
+     * 시작 프로시저. 생략하면 `Main`. **`null` 이면 `ProjectStart` 줄을 쓰지 않는다** — 라이브러리 프로젝트용.
+     * 라이브러리에 `ProjectStart` 를 적으면 확장이 그 폴더를 실행 프로젝트·컴파일 루트로 보아(`findCompileRootGpr`)
+     * 그 안의 파일에서 배포하면 라이브러리를 앱처럼 올리게 된다.
+     */
+    projectStart?: string | null;
     eol?: GprEol;
     now?: Date;
 }
@@ -228,7 +233,7 @@ export function createGprText(opts: CreateGprOptions): string {
         formatGprTimestamp(opts.now ?? new Date()),
         'ProjectBegin',
         `ProjectName="${opts.projectName}"`,
-        `ProjectStart="${opts.projectStart ?? 'Main'}"`,
+        ...(opts.projectStart === null ? [] : [`ProjectStart="${opts.projectStart ?? 'Main'}"`]),
         ...opts.sources.map(f => `ProjectSource="${f}"`),
         'ProjectEnd',
     ];

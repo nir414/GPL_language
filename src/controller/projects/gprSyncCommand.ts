@@ -25,6 +25,7 @@ import {
     GprFolderSyncCheck,
     checkGprFolderSync,
     describeGprSyncPlan,
+    detectStartProcedure,
     findGprFile,
     sourceExtensionsFrom,
 } from '../../project/gpr/gprFolderSync';
@@ -118,14 +119,20 @@ async function resolveTarget(resource: unknown, interactive: boolean): Promise<S
 
     if (!interactive) { return undefined; }
     const files = listSourceFiles(projectDir);
+    // 소스에 `Sub Main` 이 없으면 라이브러리로 보고 ProjectStart 줄을 쓰지 않는다 — 라이브러리에 ProjectStart 가 있으면
+    // 확장이 그 폴더를 실행 프로젝트·컴파일 루트로 본다(중첩 폴더 소스를 .gpr 하나로 묶는 라이브러리, project-file-gpr.md §4.1).
+    const projectStart = detectStartProcedure(projectDir, files);
+    const startNote = projectStart
+        ? `ProjectStart="${projectStart}" 으로 생성합니다. 이름·시작 프로시저는 생성 후 파일에서 고치십시오.`
+        : '소스에 Sub Main 이 없어 ProjectStart 없이(라이브러리 프로젝트로) 생성합니다. 실행 프로젝트라면 생성 후 ProjectStart 줄을 추가하십시오.';
     const choice = await vscode.window.showInformationMessage(
         `'${path.basename(projectDir)}'에 Project.gpr가 없습니다. 소스 ${files.length}개로 새로 만들까요?`,
-        { modal: true, detail: `ProjectName="${path.basename(projectDir)}", ProjectStart="Main" 으로 생성합니다. 이름/시작 프로시저는 생성 후 파일에서 고치세요.` },
+        { modal: true, detail: `ProjectName="${path.basename(projectDir)}", ${startNote}` },
         '만들기',
     );
     if (choice !== '만들기') { return undefined; }
     const gprPath = path.join(projectDir, 'Project.gpr');
-    const text = createGprText({ projectName: path.basename(projectDir), sources: files });
+    const text = createGprText({ projectName: path.basename(projectDir), sources: files, projectStart });
     await vscode.workspace.fs.writeFile(vscode.Uri.file(gprPath), Buffer.from(text, 'utf8'));
     return { projectDir, gprPath };
 }

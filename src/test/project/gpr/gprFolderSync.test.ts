@@ -3,7 +3,56 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from '../../harness';
-import { checkGprFolderSync, describeGprSyncPlan, findGprFile, makeExistsOnDisk, sourceExtensionsFrom } from '../../../project/gpr/gprFolderSync';
+import { checkGprFolderSync, describeGprSyncPlan, detectStartProcedure, findGprFile, makeExistsOnDisk, sourceExtensionsFrom } from '../../../project/gpr/gprFolderSync';
+import { applyGprSync, createGprText } from '../../../project/gpr/gprSync';
+
+// 중첩 폴더 소스를 .gpr 하나로 묶는 라이브러리(project-file-gpr.md §4.1) — 2026-11-13 실제 Sample Prep Lib/v1 사본으로 확인한 동작을 고정한다.
+test('gprFolderSync: 라이브러리 루트 .gpr 하나 — 하위 폴더 소스를 역슬래시 경로로 채우고 다시 대조하면 동기화됨', () => {
+    const root = makeProject({
+        'Project.gpr': ['ProjectBegin', 'ProjectName="Lib"', 'ProjectEnd', ''].join('\r\n'),
+        'Core/Log/Logger.gpl': 'Module LOG\r\nEnd Module\r\n',
+        'Core/Text/StringUtils.gpl': 'Module PRS\r\nEnd Module\r\n',
+        'Util/Util.gpl': 'Module UTL\r\nEnd Module\r\n',
+    });
+    try {
+        const gpr = path.join(root, 'Project.gpr');
+        const check = checkGprFolderSync(root, gpr);
+        assert.deepStrictEqual(check.plan.toAdd, ['Core\\Log\\Logger.gpl', 'Core\\Text\\StringUtils.gpl', 'Util\\Util.gpl']);
+        assert.deepStrictEqual(check.nestedProjects, []);
+        fs.writeFileSync(gpr, applyGprSync(check.text, { add: check.plan.toAdd }), 'utf8');
+        assert.ok(fs.readFileSync(gpr, 'utf8').includes('ProjectSource="Core\\Log\\Logger.gpl"'));
+        assert.strictEqual(checkGprFolderSync(root, gpr).inSync, true);
+    } finally { cleanup(root); }
+});
+
+test('gprFolderSync: 하위 폴더에 리프 .gpr 가 남아 있으면 그 폴더는 루트 .gpr 대상에서 빠진다(중첩 프로젝트)', () => {
+    const root = makeProject({
+        'Project.gpr': ['ProjectBegin', 'ProjectName="Lib"', 'ProjectEnd', ''].join('\r\n'),
+        'Core/Log/Project.gpr': ['ProjectBegin', 'ProjectName="Lib_Log"', 'ProjectSource="Logger.gpl"', 'ProjectEnd', ''].join('\r\n'),
+        'Core/Log/Logger.gpl': 'Module LOG\r\nEnd Module\r\n',
+        'Frame/Tool/ToolTable.gpl': 'Module TOOL\r\nEnd Module\r\n',
+    });
+    try {
+        const check = checkGprFolderSync(root, path.join(root, 'Project.gpr'));
+        assert.deepStrictEqual(check.plan.toAdd, ['Frame\\Tool\\ToolTable.gpl']);
+        assert.strictEqual(check.nestedProjects.length, 1);
+    } finally { cleanup(root); }
+});
+
+test('gprFolderSync: detectStartProcedure — Sub Main 선언이 있을 때만 Main, 없으면 null 이고 새 .gpr 에 ProjectStart 줄이 없다', () => {
+    const root = makeProject({
+        'App/Main.gpl': 'Module Main\r\n    Public Sub Main()\r\n    End Sub\r\nEnd Module\r\n',
+        'Lib/Core/Log/Logger.gpl': "Module LOG\r\n    ' Sub Main 은 여기 없다\r\n    Public Sub Write()\r\n        Console.WriteLine(\"Sub Main\")\r\n    End Sub\r\n    Public Sub MainLoop()\r\n    End Sub\r\nEnd Module\r\n",
+    });
+    try {
+        assert.strictEqual(detectStartProcedure(path.join(root, 'App'), ['Main.gpl']), 'Main');
+        assert.strictEqual(detectStartProcedure(path.join(root, 'Lib'), ['Core\\Log\\Logger.gpl', 'Missing.gpl']), null);
+        const lib = createGprText({ projectName: 'Lib', sources: ['Core\\Log\\Logger.gpl'], projectStart: null });
+        assert.ok(!/ProjectStart/.test(lib));
+        assert.ok(lib.includes('ProjectSource="Core\\Log\\Logger.gpl"'));
+        assert.ok(/ProjectStart="Main"/.test(createGprText({ projectName: 'App', sources: ['Main.gpl'] })));
+    } finally { cleanup(root); }
+});
 
 function makeProject(files: Record<string, string>): string {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gpl-gprsync-'));

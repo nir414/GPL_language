@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { XmlUtils } from '../../language/xml/xmlUtils';
 import { provideDocCommentCodeActions } from '../intellisense/docCommentProvider';
-import { CompilerSymbolLookup, findCompilerCheckFindings } from '../../language/checks/compilerChecks';
+import { CompilerSymbolLookup, findAllCompilerCheckFindings } from '../../language/checks/compilerChecks';
 import { COMPILER_CHECK_SOURCE } from './diagnosticProvider';
 import { REQUIRES_HEADER_CODE, REQUIRES_HEADER_SOURCE } from './requiresHeaderPlan';
 
@@ -74,7 +74,7 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
      * (진단 객체는 편집기를 거치며 복사돼 부가 데이터를 실을 수 없다.)
      */
     private createCompilerCheckFixAction(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction | undefined {
-        const finding = findCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup).find(f =>
+        const finding = findAllCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup).find(f =>
             f.fix && f.code === diagnostic.code && f.line === diagnostic.range.start.line && f.start === diagnostic.range.start.character);
         if (!finding?.fix) { return undefined; }
         const action = new vscode.CodeAction(finding.fix.title, vscode.CodeActionKind.QuickFix);

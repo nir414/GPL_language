@@ -33,6 +33,7 @@ test('initHook: 클래스 멤버 Init 은 warning — GenAdp/-757 사고 경로'
     assert.strictEqual(f.symbol.className, 'Probe');
     assert.strictEqual(f.symbol.line, 6, '`Private Sub Init()` 선언 줄(0 기반)');
     assert.ok(f.message.includes('-757') && f.message.includes('인스턴스 없이'));
+    assert.ok(f.message.includes('Sub New'), '생성자에서 부르는 꼴도 메시지에 언급');
 });
 
 test('initHook: 모듈 수준 Sub Init 은 hint — 문서화된 합법 훅(레거시의 빈 Init 은 소음이 아니다)', () => {

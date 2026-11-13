@@ -1954,7 +1954,13 @@
                     "scope": "resource",
                     "type": "boolean",
                     "default": true,
-                    "description": "실제 제어기(GPL 4.2K5)에서 확인한 컴파일러·제어기 사실을 정적 진단으로 표시합니다. 반환형이 다른 오버로드(-741), Sub New 없는 클래스의 New X()(-722), Module 이름을 가리는 멤버(-781/-729), 다른 클래스의 Private Shared 접근(-729), Stop 으로 멈출 수 없는 쓰레드 이름(-712)은 Warning, 100바이트를 넘는 문자열 리터럴(-506, 한도 미확정)·ByVal String 매개변수의 Is Nothing 검사(-782)·5% 이하 조그 속도(tick 모드)는 Information입니다."
+                    "description": "실제 제어기(GPL 4.2K5)에서 확인한 컴파일러·제어기 사실을 정적 진단으로 표시합니다. 반환형이 다른 오버로드(-741), Sub New 없는 클래스의 New X()(-722), Module 이름을 가리는 멤버(-781/-729), 다른 클래스의 Private Shared 접근(-729), Stop 으로 멈출 수 없는 쓰레드 이름(-712), 줄바꿈 없이 끝나는 파일(-505), 장치 루트 File.CreateDirectory(-300)은 Warning, 100바이트를 넘는 문자열 리터럴(-506, 한도 미확정)·ByVal String 매개변수의 Is Nothing 검사(-782)·5% 이하 조그 속도(tick 모드)·Catch 없는 스레드 진입점은 Information입니다."
+                },
+                "gpl.diagnostics.threadEntryWithoutCatch": {
+                    "scope": "resource",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "New Thread(\"Mod.Proc\", …) 의 진입점(같은 파일에서 찾은 것)에 Try … Catch 가 없으면 정보 진단(thread-entry-without-catch)을 표시합니다. 잡히지 않은 예외는 스레드를 Error 로 멈춥니다. gpl.diagnostics.compilerChecks 가 꺼져 있으면 표시되지 않습니다."
                 },
                 "gpl.requiresHeader.mode": {
                     "scope": "resource",

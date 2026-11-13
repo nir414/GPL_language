@@ -278,3 +278,19 @@ test('selectErrorLogNotice: quiet 코드가 비어 있으면 -1600 도 알림 �
     assert.strictEqual(notice.quiet.length, 0);
     assert.strictEqual(notice.newSys.length + notice.newDeployErr.length, 4);
 });
+
+// ErrorLog 를 이번 Compile 시작(제어기 시계) 기준으로 나누기 — 2026-11-13 실측 형식
+import { controllerStampKey, partitionErrorLogSince } from '../../../controller/deployment/deployOutcome';
+
+test('partitionErrorLogSince: Compile 시작 이전 항목은 개수만, 이후·시각 없는 항목은 recent', () => {
+    const log = [
+        '11-06-2026 22:15:55.786, s01, -3140, "*Encoder communication error* Robot 1: 1"',
+        '11-13-2026 14:48:49.833, syntax_tour, -700, "*Thread execution aborted*"',
+        '11-13-2026 14:58:57.120, LtApp, -757, "*Object not instantiated*"',
+        'garbage without stamp',
+    ];
+    const since = '<DATA>11-13-2026 14:58:56: project LtApp, begin compiler pass 1\r\n';
+    assert.deepStrictEqual(partitionErrorLogSince(log, since), { recent: [log[2], log[3]], older: 2 });
+    assert.strictEqual(partitionErrorLogSince(log, 'no stamp'), undefined);
+    assert.ok((controllerStampKey('12-31-2025 23:59:59') ?? 0) < (controllerStampKey('01-01-2026 00:00:00') ?? 0));
+});

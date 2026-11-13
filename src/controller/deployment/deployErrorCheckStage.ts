@@ -7,6 +7,7 @@ import { parseErrorLog } from '../protocol/responseParser';
 import { watchMainThreadAfterStart } from '../threads/postStartWatch';
 import type { DeployContext } from './deployContext';
 import { doneLabelFor } from './deployModes';
+import { controllerStampKey, partitionErrorLogSince } from './deployOutcome';
 
 /** Start 뒤 감시 창(ms) — skipStart 면 0, 아니면 옵션(음수는 0). */
 export function postStartWatchWindowMs(options: { skipStart?: boolean; postStartWatchMs?: number }): number {
@@ -54,10 +55,21 @@ export async function runErrorCheckPhase(ctx: DeployContext): Promise<void> {
             // "에러 없음"으로 읽히지 않게 시점을 문장에 넣는다.
             pushTrace('│ ✔ ErrorLog empty (snapshot right after Start — later runtime errors arrive via GPL Console / debug events)');
         } else {
-            // 과거 누적 항목이 섞일 수 있으므로 "에러 N개" 단정 대신 ErrorLog 항목 수로 표기.
-            pushTrace(`│ ⚠ ErrorLog ${result.errorLog.length}건:`);
-            for (const el of result.errorLog) {
-                pushTrace(`│   ${el}`);
+            // 이번 Compile 시작 시각(제어기 시계)으로 이번 배포분과 예전 누적분을 가른다 — 예전 것은 개수만.
+            const since = result.compileAttemptLogs.map(a => a.raw).find(raw => controllerStampKey(raw ?? '') !== undefined);
+            const split = partitionErrorLogSince(result.errorLog, since);
+            if (split) {
+                result.errorLogSinceDeploy = split.recent;
+                pushTrace(split.recent.length === 0
+                    ? `│ ✔ 이번 배포 이후 새 ErrorLog 없음 (이전 기록 ${split.older}건 — result.errorLog 에 전체)`
+                    : `│ ⚠ 이번 배포 이후 ErrorLog ${split.recent.length}건${split.older ? ` (이전 기록 ${split.older}건 생략)` : ''}:`);
+                for (const el of split.recent) { pushTrace(`│   ${el}`); }
+            } else {
+                // 과거 누적 항목이 섞일 수 있으므로 "에러 N개" 단정 대신 ErrorLog 항목 수로 표기.
+                pushTrace(`│ ⚠ ErrorLog ${result.errorLog.length}건:`);
+                for (const el of result.errorLog) {
+                    pushTrace(`│   ${el}`);
+                }
             }
         }
     } else {

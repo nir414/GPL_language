@@ -263,6 +263,32 @@ export function selectErrorLogNotice(
     return notice;
 }
 
+/** 제어기 시각 표기 `MM-DD-YYYY HH:MM:SS[.mmm]` → 비교용 정수 키(YYYYMMDDHHMMSSmmm). 없으면 undefined. */
+export function controllerStampKey(text: string): number | undefined {
+    const m = /(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/.exec(text);
+    if (!m) { return undefined; }
+    const ms = (m[7] ?? '0').padEnd(3, '0');
+    return Number(`${m[3]}${m[1]}${m[2]}${m[4]}${m[5]}${m[6]}${ms}`);
+}
+
+/**
+ * ErrorLog 를 "이번 배포의 Compile 시작 이후"와 그 전으로 나눈다. 기준 시각은 Compile/Start 응답의
+ * `MM-DD-YYYY HH:MM:SS: project …, begin compiler pass 1` 줄(제어기 시계 — PC 시계와 어긋나도 같은 시계끼리 비교).
+ * 제어기 ErrorLog 는 지울 때까지 쌓여, 배포 기록마다 한 주 전 항목까지 다시 찍혔다(2026-11-13 실측 14건 중 이번 배포분 0건).
+ * 기준을 못 찾거나 시각이 없는 항목은 `recent` 쪽에 둔다(숨기지 않음).
+ */
+export function partitionErrorLogSince(errorLog: readonly string[], sinceText: string | undefined): { recent: string[]; older: number } | undefined {
+    const since = sinceText ? controllerStampKey(sinceText) : undefined;
+    if (since === undefined) { return undefined; }
+    const recent: string[] = [];
+    let older = 0;
+    for (const entry of errorLog) {
+        const k = controllerStampKey(entry);
+        if (k !== undefined && k < since) { older++; } else { recent.push(entry); }
+    }
+    return { recent, older };
+}
+
 /** ErrorLog 중 제어기 시스템 항목만(실패 경로의 "배포 원인 아님" 집계용). */
 export function controllerSystemErrorEntries(errorLog: readonly string[]): string[] {
     return errorLog.filter(e => classifyErrorEntry(e).isControllerSystem);

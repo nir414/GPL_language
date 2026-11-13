@@ -198,6 +198,8 @@ export interface DeployResult {
         skippedAll?: string;
     };
     errorLog: string[];
+    /** 이번 Compile 시작(제어기 시계) 이후의 ErrorLog 항목 — 기준 시각을 못 찾으면 없음(`errorLog` 전체를 볼 것). */
+    errorLogSinceDeploy?: string[];
     selectedRemoteBasePath?: string;
     selectedRemoteProjectPath?: string;
     candidateRemoteProjectPaths?: string[];

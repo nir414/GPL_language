@@ -59,7 +59,9 @@ export function findInitHookFindings(symbols: readonly GPLSymbol[]): InitHookFin
                 code: 'init-hook-class-member',
                 message: `클래스 '${s.className}' 의 메서드 이름이 \`Init\` 입니다. GPL 은 모듈 초기화 때 \`Init\` 을 이름으로 찾아 시작 프로시저보다 먼저 `
                     + '자동 호출하는데, 클래스 멤버도 잡아채 **인스턴스 없이** 부릅니다 → 첫 필드 접근에서 `-757 Object not instantiated`, '
-                    + '시작 프로시저는 실행되지 않습니다(2026-09-21 실기 재현). `InitDefaults`·`Reset` 등 다른 이름을 쓰세요. '
+                    + '시작 프로시저는 실행되지 않습니다(2026-09-21 실기 재현). `Sub New` 안에서 `Init(n)` 으로 직접 부르는 꼴도 마찬가지입니다 — '
+                    + '생성자까지 가기 전에 자동 호출이 먼저 죽습니다(2026-11-06 실기: 같은 Sub 를 `InitN`·`Setup` 으로 바꾸면 정상). '
+                    + '`InitDefaults`·`Reset`·`Setup` 등 다른 이름을 쓰세요. '
                     + `(${DOC_URL})`,
             });
             continue;

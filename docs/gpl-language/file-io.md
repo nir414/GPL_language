@@ -14,6 +14,10 @@ GPL(Guidance Programming Language)의 파일 입출력 API와 Flash 메모리 �
   - **부팅 직후에는 하위 폴더가 없다.** `StreamWriter`는 폴더를 만들지 않으므로 `/ROMDISK/tmp/...`에 처음 쓰면 `-508` *File not found*가 난다.
     쓰기 전에 `File.CreateDirectory`를 부르고 `-510`(이미 있음)은 성공으로 본다(아래 [common-mistakes 0-6-1](common-mistakes.md)).
     실기 확인(2026-10-22, Sample Prep `FileStore.gpl` `SafeSaveToFlash`): 최종 경로에만 폴더를 만들고 temp 경로에는 만들지 않아 첫 저장이 실패했다.
+  - **장치 루트 자체는 만들지 않는다.** `File.CreateDirectory("/ROMDISK")`·`("/flash")`·`("/GPL")`(끝 슬래시 유무 무관)는 `-300`(Invalid device 계열)이 났다
+    (2026-11-05 Sample Prep 실측: `/ROMDISK` 장치는 정상이고 로거가 부모 폴더를 만들려고 장치 루트를 넘겼다가 실행 로그가 꺼졌다).
+    문서상 CreateDirectory 경로는 "장치 이름으로 시작해 새 디렉터리 이름으로 끝남"이다. 부모가 장치 루트면 건너뛴다. 확장은 문자열 리터럴 인자를
+    경고 진단 `create-directory-device-root` 로 알린다.
 - **Flash 쓰기 시간**: 안전 저장(temp 쓰기 + `.bak` 복사 + Copy·Delete) 한 번에 약 0.6~2.3 s가 걸렸다(2026-10-22 실측).
   명령 처리 스레드에서 동기로 저장하면 그 연결의 다음 응답이 그만큼 늦으므로, 잦은 저장은 워커 스레드 큐로 넘긴다.
 - 안전 저장 패턴: **ROMDISK에 임시 파일로 먼저 쓴 뒤 Flash로 이동(원자적 쓰기)**, 기존 파일은

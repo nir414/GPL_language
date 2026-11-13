@@ -158,6 +158,7 @@ import './controller/commands/startProcedureCheck.test';
 import './language/checks/initHook.test';
 import './language/checks/compilerChecks.test';
 import './language/checks/delegateChecks.test';
+import './language/checks/fileChecks.test';
 import './controller/deployment/compileErrorHints.test';
 import './language/checks/tryCatch.test';
 import './providers/diagnostics/diagnosticProvider.test';

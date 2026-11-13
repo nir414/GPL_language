@@ -108,6 +108,18 @@ Core_ErrorHandler.log("Distance from point to segment: " & CStr(DPdistance), "MA
 
 ---
 
+## 2-1) 실측 메모 — Joint Only 로봇, Pitch 0 의 Yaw/Roll, `Mul` 과 RefFrame
+
+2026-11-06 Sample Prep 실측(시뮬 제어기, DataID 116 = 1,1,1,1,1 즉 Module 1 Joint Only, 콘솔 전용 프로브 `FRAME_Probe`, 로봇 attach 없음).
+
+- **Joint Only(운동학 모듈 1) 로봇에서도 Location 값 계산은 된다.** `New Location` / `Location.XYZ` / `Mul` / `Inverse` / `Here3` / `RefFrame` 중첩 `Pos` / `PosWrtRef` 가 예외 없이 맞는 값을 냈다.
+  문서상 [Kinematics Library Summary](https://www2.brooksautomation.com/Controller_Software/Software_Setup/Selected_Setup_Procedures/Kinematic_Library/Kine_intro.htm) 는 Module 1 에 "Cartesian motions and Locations are not supported" 라 적지만,
+  실측으로는 운동학이 필요한 것(`KineSol`·Cartesian 모션)만 안 되는 것으로 보인다(StageVialDecapper, GPL 4.2 사내 기록도 같은 결론).
+- **Pitch = 0 이면 Z 회전 전체가 Roll 로 읽힌다.** `loc.XYZ(1.5, -2.5, 3, 30, 0, 0)` → `Yaw = 0`, `Roll = 30`. `loc.XYZ(0, 0, 0, 30, 0, 40)` → `Yaw 0 · Pitch 0 · Roll 70`.
+  `(10, 20, 0, 90, 0, 0)` 의 `Inverse` → `Yaw 0 · Roll -90`. 평면 각이 필요하면 `Yaw` 하나만 읽지 말고 Pitch 가 0 일 때 `Yaw + Roll` 로 봐야 한다.
+  문서상 [Location.Yaw](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Location/yaw.htm) 에는 이 분해 규칙이 없다.
+- **`a.Mul(b)` 는 a 의 RefFrame 을 계산에 넣지 않는다**(문서 Location.Mul 과 일치): RefFrame (100,0,0) 아래 a = (1,2) 이면 `a.Mul(I)` = (1,2), 전체 자세 합성 = (101,2).
+
 ## 3) 권장 코드 패턴 (안전/간단)
 
 ```vb

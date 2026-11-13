@@ -12,7 +12,7 @@ function setup() {
     const uri = { fsPath: 'Main.gpl', toString: () => 'file:///Main.gpl' };
     const document = {
         uri,
-        content: 'Public Sub Main()\nTry\nFinally\nEnd Try\nEnd Sub',
+        content: 'Public Sub Main()\nTry\nFinally\nEnd Try\nEnd Sub\n',
         getText() { return this.content; },
     };
     const vscode = {
@@ -105,7 +105,7 @@ test('diagnostics: Catch 추가·삭제를 일반 문서 업데이트로 경고�
 test('diagnostics: Catch 누락 경고만 끄고 기존 실험 진단은 유지', () => {
     const s = setup();
     s.configuration.set('diagnostics.experimental', true);
-    s.document.content += '\nPublic Sub lower()\nEnd Sub';
+    s.document.content += '\nPublic Sub lower()\nEnd Sub\n';
     s.provider.updateDiagnostics(s.document);
     assert.ok(s.current().some(d => d.code === 'try-without-catch'));
     assert.ok(s.current().some(d => d.code === 'function-name-first-letter-uppercase'));
@@ -168,7 +168,7 @@ test('diagnostics: 실기 확인 검사는 기본 켜짐 Warning, gpl.diagnostic
         '        Dim p As Plain = New Plain()',
         '    End Sub',
         'End Module',
-    ].join('\r\n');
+    ].join('\r\n') + '\r\n';
     s.provider.updateDiagnostics(s.document);
     assert.strictEqual(s.current().length, 1);
     const diagnostic = s.current()[0];

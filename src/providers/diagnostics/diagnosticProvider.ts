@@ -3,7 +3,7 @@ import { GPLParser } from '../../language/syntax/gplParser';
 import { findInitHookFindings, InitHookSeverity } from '../../language/checks/initHook';
 import { isGplFile } from '../../config';
 import { findTryCatchFindings } from '../../language/checks/tryCatch';
-import { CompilerCheckSeverity, CompilerSymbolLookup, findCompilerCheckFindings } from '../../language/checks/compilerChecks';
+import { CompilerCheckSeverity, CompilerSymbolLookup, findAllCompilerCheckFindings } from '../../language/checks/compilerChecks';
 import { describeRequiresPlan } from '../../language/documentation/requiresHeader';
 import {
     DEFAULT_REQUIRES_HEADER_MODE, isRequiresSourceReady, planRequiresForText,
@@ -537,7 +537,8 @@ export class GPLDiagnosticProvider {
             warning: vscode.DiagnosticSeverity.Warning,
             information: vscode.DiagnosticSeverity.Information,
         };
-        return findCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup).map(f => {
+        const threadEntryWithoutCatch = vscode.workspace.getConfiguration('gpl', document.uri).get<boolean>('diagnostics.threadEntryWithoutCatch', true);
+        return findAllCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup, { threadEntryWithoutCatch }).map(f => {
             const diagnostic = new vscode.Diagnostic(
                 new vscode.Range(f.line, f.start, f.line, f.end),
                 f.message,

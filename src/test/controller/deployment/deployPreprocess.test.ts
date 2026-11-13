@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { test } from '../../harness';
 import {
+    ensureTrailingNewline,
     isPreprocessActive,
     preprocessUndefinedSymbolHint,
     resolvePreprocessOptions,
@@ -185,6 +186,52 @@ test('deployPreprocessStage: removeUnusedMembers — 라이브러리 안의 안 
         assert.deepStrictEqual(s.removedMembers!.filter(m => m.kind !== 'module').map(m => `${m.container}.${m.name}`).sort(), ['pra.Dead', 'ntc.Connect'].sort());
         assert.deepStrictEqual(s.removedMembers!.filter(m => m.kind === 'module').map(m => m.name), ['ntc']);
         assert.match(preprocessUndefinedSymbolHint('*Undefined symbol* Connect', prepared.hintEntries)!, /Net_Client\.gpl:2 \(ntc\.Connect\)/);
+    } finally {
+        fs.rmSync(ws.projects, { recursive: true, force: true });
+        fs.rmSync(preprocessStageDir(ip, ''), { recursive: true, force: true });
+    }
+});
+
+test('deployPreprocess: -729 안내 — 원본 어디에도 선언이 없는 이름이면(전처리와 무관) 안내를 내지 않는다', () => {
+    const excluded = [{ remotePath: '/GPL/PaL/Net_Client.gpl', declared: ['ntc', 'connect'] }];
+    const declared = new Set(['brk', 'ntc', 'connect']);
+    const has = (n: string): boolean => declared.has(n);
+    assert.strictEqual(preprocessUndefinedSymbolHint('Gantry_Service.gpl:114:(-729): *Undefined symbol* BRK.StagedSetupChanges', excluded, has), undefined);
+    assert.match(preprocessUndefinedSymbolHint('*Undefined symbol* NTC.Connect', excluded, has)!, /Net_Client\.gpl/);
+    assert.match(preprocessUndefinedSymbolHint('*Undefined symbol* NTC', excluded, has)!, /Net_Client\.gpl/);
+});
+
+test('deployPreprocess: ensureTrailingNewline — 끝 줄바꿈이 없으면 그 파일의 EOL 로 붙인다', () => {
+    const t = (s: string): string => ensureTrailingNewline(Buffer.from(s, 'latin1')).toString('latin1');
+    assert.strictEqual(t('A\r\nB'), 'A\r\nB\r\n');
+    assert.strictEqual(t('A\nB'), 'A\nB\n');
+    assert.strictEqual(t('A'), 'A\r\n');
+    assert.strictEqual(t('A\r\nB\r\n'), 'A\r\nB\r\n');
+    assert.strictEqual(t(''), '');
+});
+
+test('deployPreprocessStage: 사본의 .gpl 은 끝 줄바꿈으로 끝나고(-505 방지), 남긴 라이브러리 파일은 이유와 함께 kept 에 기록된다', () => {
+    const ws = makeWorkspace();
+    const ip = '10.250.0.4';
+    try {
+        fs.writeFileSync(path.join(ws.pal, 'Core_Parse.gpl'), 'Module PRA\n    Public Sub ParseLine(s As String)\n    End Sub\nEnd Module');
+        const gprPath = path.join(ws.app, 'Project.gpr');
+        const gprText = fs.readFileSync(gprPath, 'utf8');
+        const project: DeployProjectInfo = { gprPath, gprText, gprInfo: parseGpr(gprText), folderName: 'App', projectName: 'App' };
+        const target = {
+            directActive: true,
+            ftpProjectDir: '/GPL/App',
+            libraryPlan: { uploads: [{ raw: 'PaL', localDir: ws.pal, remoteDir: '/GPL/PaL' }], covered: [], embedded: [], skipped: [], unresolved: [] },
+        } as unknown as DeployTarget;
+        const ctx = fakeContext(ws.app, { excludeUnreachableLibraryFiles: true }, ip);
+        const prepared = preparePreprocess(ctx, project, target)!;
+        assert.strictEqual(fs.readFileSync(path.join(prepared.uploadDirFor(ws.pal), 'Core_Parse.gpl'), 'utf8'),
+            'Module PRA\n    Public Sub ParseLine(s As String)\n    End Sub\nEnd Module\n');
+        const s = ctx.result.preprocess!;
+        const byFile = Object.fromEntries((s.kept ?? []).map(k => [k.remotePath, k.reason]));
+        assert.strictEqual(byFile['/GPL/PaL/Core_Parse.gpl'], 'name pra referenced from /GPL/App/App.gpl:4');
+        assert.strictEqual(s.keptCount, s.kept!.length);
+        assert.ok(prepared.declaredInOriginal('parseline') && !prepared.declaredInOriginal('staged_setup'));
     } finally {
         fs.rmSync(ws.projects, { recursive: true, force: true });
         fs.rmSync(preprocessStageDir(ip, ''), { recursive: true, force: true });

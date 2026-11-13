@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { test } from '../../harness';
 import { analyzeSourceReferences, computeReachableSources } from '../../../project/sources/sourceReachability';
+import type { ReachReason } from '../../../project/sources/sourceReachability';
 
 const lines = (...l: string[]): string => l.join('\r\n');
 
@@ -70,4 +71,52 @@ test('sourceReachability: 같은 Module 을 나눠 쓴 파일은 함께 닿는�
         ['pra2', analyzeSourceReferences(lines('Module PRA', '    Private Sub B()', '    End Sub', 'End Module'), 'C:/m/Pra2.gpl')],
     ]);
     assert.deepStrictEqual([...computeReachableSources(files, ['app'])].sort(), ['app', 'pra1', 'pra2']);
+});
+
+test('sourceReachability: 매개변수·지역 이름은 그 프로시저 안에서 모듈 선언을 가리킨다(매개변수 하나로 파일이 끌려오지 않는다)', () => {
+    const app = analyzeSourceReferences(lines(
+        'Module App',
+        '    Public Sub Fail(ByVal codeText As String)',
+        '        Dim label As String',
+        '        label = codeText',
+        '    End Sub',
+        'End Module',
+    ), 'C:/h/App.gpl');
+    assert.ok(!app.words.has('codetext') && !app.words.has('label'));
+    const dev = analyzeSourceReferences(lines('Module MLD', '    Public Function CodeText(ByVal code As Integer) As String', '    End Function', 'End Module'), 'C:/h/Dev.gpl');
+    assert.deepStrictEqual([...computeReachableSources(new Map([['app', app], ['dev', dev]]), ['app'])].sort(), ['app']);
+    // 다른 프로시저에서 수식 없이 부르면 여전히 참조다.
+    const caller = analyzeSourceReferences(lines(
+        'Module App',
+        '    Public Sub A(ByVal codeText As String)',
+        '    End Sub',
+        '    Public Sub B()',
+        '        Console.WriteLine(CodeText(1))',
+        '    End Sub',
+        'End Module',
+    ), 'C:/h/App2.gpl');
+    assert.ok(caller.words.has('codetext'));
+    assert.strictEqual(caller.wordLines.get('codetext'), 5);
+});
+
+test('sourceReachability: 클래스 멤버 선언 줄의 이름은 참조가 아니다, 이유(reasons)를 돌려준다', () => {
+    const app = analyzeSourceReferences(lines(
+        'Module App',
+        '    Public Class Latch',
+        '        Public Function CodeText() As String',
+        '        End Function',
+        '    End Class',
+        '    Public Sub Main()',
+        '        PRA.Go()',
+        '    End Sub',
+        'End Module',
+    ), 'C:/h/App.gpl');
+    assert.ok(!app.words.has('codetext'));
+    const dev = analyzeSourceReferences(lines('Module MLD', '    Public Function CodeText() As String', '    End Function', 'End Module'), 'C:/h/Dev.gpl');
+    const pra = analyzeSourceReferences(lines('Module PRA', '    Public Sub Go()', '    End Sub', 'End Module'), 'C:/h/Pra.gpl');
+    const reasons = new Map<string, ReachReason>();
+    const reach = computeReachableSources(new Map([['app', app], ['dev', dev], ['pra', pra]]), ['app'], reasons);
+    assert.deepStrictEqual([...reach].sort(), ['app', 'pra']);
+    assert.deepStrictEqual(reasons.get('pra'), { kind: 'name', name: 'pra', by: 'app', line: 7 });
+    assert.deepStrictEqual(reasons.get('app'), { kind: 'root' });
 });

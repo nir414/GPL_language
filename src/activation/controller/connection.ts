@@ -31,13 +31,16 @@ import {
 	getControllerConfig,
 	getRecentStateChangingCommands,
 	getRecentTraffic,
+	getSessionControllerOverride,
 	noteCommandChannelLoss,
 	probeControllerCommand,
+	saveControllerIpSetting,
 	sendCommand,
 	setDisruptiveCommandObserver,
 	setHeldSocketObserver,
 	setIdlePingActive,
 	setIdlePingObserver,
+	setLastConnectedIp,
 	setSessionControllerOverride,
 	setThreadStateCommandObserver,
 	testConnection,
@@ -244,8 +247,20 @@ async function stopDebugSessionAndWait(
 	}
 }
 
+/** 이 워크스페이스에서 마지막으로 연결에 성공한 제어기 IP — workspaceState 키(controller/connection/ipSource.ts 해석 순서). */
+const LAST_CONNECTED_IP_KEY = 'gpl.controller.lastConnectedIp';
+
 export function activateConnection(host: ExtensionHost): ConnectionApi {
 	const { context, outputChannel } = host;
+
+	// ── 제어기 IP 의 워크스페이스별 기억 (2026-11-13, inbox 11-05 #2) ────────────────────────────────
+	// 워크스페이스 파일을 만들지 않고 workspaceState 에 둔다. 해석 순서는 ipSource.resolveControllerIp.
+	setLastConnectedIp(context.workspaceState.get<string>(LAST_CONNECTED_IP_KEY));
+	/** IP 를 기억한다(메모리 + workspaceState). 상태바가 곧바로 다시 그려지도록 호출측이 연결 상태 갱신과 함께 부른다. */
+	const rememberControllerIp = (ip: string): void => {
+		setLastConnectedIp(ip);
+		void context.workspaceState.update(LAST_CONNECTED_IP_KEY, ip);
+	};
 
 	// ── 그룹 Compile 뒤 Unload 위험 (controller/commands/unloadRisk.ts) ─────────────────────────────
 	// 그룹 판정(ProjectStart 유무)은 워크스페이스 .gpr 로 한다. 제어기 명령 인자는 .gpr ProjectName 이지만 배포가 폴더명 후보로
@@ -499,6 +514,8 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			const ok = await testConnection(cfg);
 			if (ok) {
 				host.log(`[Controller] Connected: ${cfg.ip}:${cfg.port}`);
+				// "이번만 사용"(세션 오버라이드)은 기억하지 않는다 — 그 외 연결 성공은 이 워크스페이스의 마지막 연결 IP 로 남긴다.
+				if (!getSessionControllerOverride().ip) { rememberControllerIp(cfg.ip); }
 				if (!silent) { vscode.window.showInformationMessage(`GPL Controller 연결 성공: ${cfg.ip}`); }
 				host.setControllerConnected(true, { syncBreakpoints: !preserveBreakpoints });
 				void checkUnloadRiskRebootEvidence('연결');
@@ -538,7 +555,10 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 		}
 		if (args.save === 'settings') {
 			const section = vscode.workspace.getConfiguration('gpl.controller');
-			await section.update('ip', ip, vscode.ConfigurationTarget.Global);
+			// 지금 유효한 값이 있는 범위에 쓴다(워크스페이스 값이 있으면 거기) — 마지막 연결 IP 도 같이 맞춰 저장값이 가려지지 않게 한다.
+			const scope = await saveControllerIpSetting(ip);
+			rememberControllerIp(ip);
+			host.log(`[Controller] IP 저장: ${ip} → ${scope === 'workspace' ? '워크스페이스' : 'User'} 설정`);
 			if (port !== (section.get<number>('port') ?? currentCfg.port)) {
 				await section.update('port', port, vscode.ConfigurationTarget.Global);
 			}
@@ -588,7 +608,9 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			});
 			if (!save) { return cancelled(); }
 			if (save.label === '저장') {
-				await vscode.workspace.getConfiguration('gpl.controller').update('ip', inputIp, vscode.ConfigurationTarget.Global);
+				const scope = await saveControllerIpSetting(inputIp);
+				rememberControllerIp(inputIp);
+				host.log(`[Controller] IP 저장: ${inputIp} → ${scope === 'workspace' ? '워크스페이스' : 'User'} 설정`);
 				clearSessionControllerOverride();
 			} else {
 				setSessionControllerOverride(inputIp, launchInfo?.port);
@@ -800,6 +822,21 @@ export function activateConnection(host: ExtensionHost): ConnectionApi {
 			return { ok: true, connected: false, ip: cfg.ip, port: cfg.port, debugSessionEnded };
 		})
 	);
+
+	// ── 시작 시 자동 연결(선택, 기본 꺼짐) ─────────────────────────────────────────────────────────
+	// 연결하면 단일 클라이언트인 명령 콘솔을 쥐게 되어 다른 창·GDE 가 쓰던 세션을 빼앗을 수 있으므로 기본값은 false 다.
+	// 켜면 활성화 직후 현재 대상 IP(ipSource 해석 결과)로 조용히 연결하고, 실패하면 알린다.
+	if (vscode.workspace.getConfiguration('gpl.controller').get<boolean>('autoConnectOnStartup', false) === true) {
+		const timer = setTimeout(() => {
+			if (host.isControllerConnected) { return; }
+			void finishConnect('args', true).then(r => {
+				if (!r.ok) {
+					void vscode.window.showWarningMessage(`시작 시 자동 연결에 실패했습니다: ${r.ip}:${r.port} (${r.error ?? '원인 미상'}). 상태 표시줄에서 다시 연결할 수 있습니다.`);
+				}
+			});
+		}, 1500);
+		context.subscriptions.push({ dispose: () => clearTimeout(timer) });
+	}
 
 	return { connectControllerWithArgs };
 }

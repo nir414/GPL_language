@@ -252,3 +252,31 @@ export function stripGuideBlock(text: string): StripResult {
 	if (meaningful === '' || meaningful === LEGACY_GUIDE_FILE_HEADER) { return { changed: true, text: null }; }
 	return { changed: true, text: rest };
 }
+
+/** `0.27.16`·`v0.27.16` 형태의 버전을 [major, minor, patch] 로 — 해석할 수 없으면 undefined(`dev` 등). */
+function parseVersionTriple(v: string | undefined): [number, number, number] | undefined {
+	const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v ?? '').trim());
+	return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+}
+
+/** a > b 면 1, 같으면 0, 작으면 -1. 둘 중 하나라도 해석할 수 없으면 undefined. */
+export function compareVersions(a: string | undefined, b: string | undefined): 1 | 0 | -1 | undefined {
+	const x = parseVersionTriple(a);
+	const y = parseVersionTriple(b);
+	if (!x || !y) { return undefined; }
+	for (let i = 0; i < 3; i++) {
+		if (x[i] !== y[i]) { return x[i] > y[i] ? 1 : -1; }
+	}
+	return 0;
+}
+
+/**
+ * globalStorage 의 MCP 서버 사본을 동봉 번들로 덮어써도 되는가(2026-11-13, inbox 11-10 #2).
+ *
+ * 여러 VS Code 버전·옛 확장 폴더가 같은 globalStorage 를 공유하므로, 옛 확장(0.18.1)이 활성화되며 더 새 사본(0.27.x)을
+ * 옛 번들로 덮어 세션마다 서버 버전이 달라졌다. 사본의 버전이 동봉 번들보다 **분명히 새로우면** 유지한다.
+ * 버전을 해석할 수 없으면(`dev`·스탬프 없음) 종전처럼 덮어쓴다 — 개발 빌드·손상 사본을 고치는 경로를 막지 않는다.
+ */
+export function decideStableBundleOverwrite(stableVersion: string | undefined, bundledVersion: string | undefined): 'overwrite' | 'keep-newer' {
+	return compareVersions(stableVersion, bundledVersion) === 1 ? 'keep-newer' : 'overwrite';
+}

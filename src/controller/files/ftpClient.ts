@@ -53,12 +53,35 @@ export interface FtpEntry {
 	modifiedAt?: Date;
 }
 
+const FTP_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * Unix 형식 LIST 의 시각(`Nov 13 14:22` 또는 `Nov 13 2025`)을 Date 로. 연도가 없으면 `ls` 관례대로 올해, 그 값이 하루 넘게 미래면
+ * 작년으로 본다. 시각은 제어기 로컬 시계 그대로를 PC 로컬로 해석한다(제어기 시계가 현지 시각이었다 — 2026-11-13 실측).
+ * 종전 `new Date("Nov 13 14:22")` 는 V8 이 연도를 2001 로 채워 `list_remote_projects.newestModifiedAt` 가 2001-11-13 이었다.
+ */
+export function parseFtpListDate(raw: string | undefined, now: Date = new Date()): Date | undefined {
+	const m = /^\s*([A-Za-z]{3})\s+(\d{1,2})\s+(?:(\d{1,2}):(\d{2})|(\d{4}))\s*$/.exec(raw ?? '');
+	if (!m) {
+		if (!raw) { return undefined; }
+		const d = new Date(raw);
+		return Number.isNaN(d.getTime()) ? undefined : d;
+	}
+	const month = FTP_MONTHS.indexOf(m[1].toLowerCase());
+	if (month < 0) { return undefined; }
+	const day = Number(m[2]);
+	if (m[5]) { return new Date(Number(m[5]), month, day); }
+	const d = new Date(now.getFullYear(), month, day, Number(m[3]), Number(m[4]));
+	if (d.getTime() - now.getTime() > 24 * 3600 * 1000) { d.setFullYear(d.getFullYear() - 1); }
+	return d;
+}
+
 function toFtpEntry(fi: FileInfo): FtpEntry {
 	return {
 		name: fi.name,
 		isDirectory: fi.isDirectory,
 		size: fi.size,
-		modifiedAt: fi.modifiedAt ?? (fi.rawModifiedAt ? new Date(fi.rawModifiedAt) : undefined),
+		modifiedAt: fi.modifiedAt ?? parseFtpListDate(fi.rawModifiedAt),
 	};
 }
 

@@ -166,3 +166,17 @@ test('syncManifest: 보관 개수 상한을 넘으면 오래된 기록부터 버
     const newest: SyncManifestRecord[] = store.all();
     assert.ok(newest.every(r => r.syncedAt > 3));
 });
+
+// FTP LIST 시각 — 연도 없는 형식이 V8 에서 2001 년이 되던 문제(2026-11-13 실측 list_remote_projects)
+import { parseFtpListDate } from '../../../controller/files/ftpClient';
+
+test('parseFtpListDate: 연도 없으면 올해(하루 넘게 미래면 작년), 연도 있으면 그 날 0시', () => {
+    const now = new Date(2026, 10, 13, 15, 0);
+    const a = parseFtpListDate('Nov 13 14:22', now)!;
+    assert.deepStrictEqual([a.getFullYear(), a.getMonth(), a.getDate(), a.getHours(), a.getMinutes()], [2026, 10, 13, 14, 22]);
+    assert.strictEqual(parseFtpListDate('Dec 30 09:00', now)!.getFullYear(), 2025);
+    const b = parseFtpListDate('Mar  5 2024', now)!;
+    assert.deepStrictEqual([b.getFullYear(), b.getMonth(), b.getDate()], [2024, 2, 5]);
+    assert.strictEqual(parseFtpListDate(undefined, now), undefined);
+    assert.strictEqual(parseFtpListDate('nonsense', now), undefined);
+});

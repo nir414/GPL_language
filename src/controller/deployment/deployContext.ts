@@ -19,6 +19,8 @@ import type { CompileError } from '../protocol/responseParser';
 import { readDeployCancellation } from './deployCancellation';
 import type { DeployLockHandle } from './deployLock';
 import type { CompiledRecord, FileStamp } from './deployRecordCore';
+import type { LibraryProvenance } from './libraryProvenance';
+import type { LibraryVcsInfo, SvnRunner } from './libraryVcs';
 import type { PreparedPreprocess } from './deployPreprocessStage';
 import { emptyDeployResult } from './deployTypes';
 import type { DeployOptions, DeployResult, DeployUploadEvent } from './deployTypes';
@@ -47,6 +49,10 @@ export interface DeployControllerIo {
     recentReachabilityEvidence: typeof controllerIdentityIo.recentReachabilityEvidence;
     /** 컴파일 스냅샷 기록(deployRecord.recordCompiled, GitHub #21). */
     recordCompiled: (rec: CompiledRecord) => void;
+    /** 원격 라이브러리 폴더에 마지막으로 올린 출처(이 확장의 기록, libraryProvenance.ts). 기록이 없으면 undefined. */
+    getLibraryProvenance?: (ip: string, remoteDir: string) => LibraryProvenance | undefined;
+    /** 라이브러리 업로드가 끝난 뒤 그 출처를 기록한다. */
+    recordLibraryProvenance?: (ip: string, remoteDir: string, library: LibraryProvenance) => void;
 }
 
 /**
@@ -70,6 +76,10 @@ export interface DeployHostIo {
     emitUploadEvent(event: DeployUploadEvent): void;
     /** 설정 `gpl.deploy.preprocess` 원값(그 프로젝트 폴더 기준 리소스 범위). 없으면 전처리를 하지 않는다. */
     readPreprocessSetting?(projectDir: string): unknown;
+    /** 설정 `gpl.deploy.libraryPreflight` 원값(리소스 범위). 없으면 경고만 한다. */
+    readLibraryPreflightSetting?(projectDir: string): unknown;
+    /** svn 실행기 — 시험에서 바꿔 끼운다. 없으면 실제 `svn`(짧은 타임아웃). */
+    svnRunner?: SvnRunner;
 }
 
 export interface DeployContext {
@@ -113,6 +123,8 @@ export interface DeployContext {
     compiled: boolean;
     /** 배포 전처리 사본(deployPreprocessStage.ts) — 업로드 단계가 채운다. 컴파일 오류 안내가 제외 목록을 본다. */
     preprocess?: PreparedPreprocess;
+    /** 배포 전 검사가 읽은 라이브러리 SVN 출처(로컬 폴더 키 → 정보, 못 읽으면 null) — 업로드 뒤 출처 기록이 다시 읽지 않고 쓴다. */
+    libraryVcs?: Map<string, LibraryVcsInfo | null>;
 }
 
 export interface DeployContextInput {

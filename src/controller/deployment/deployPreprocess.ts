@@ -21,7 +21,7 @@ import * as path from 'path';
 import { parseGprText } from '../../project/gpr/gprSync';
 import type { LibraryGraphNode } from '../../project/sources/projectSources';
 import { analyzeSourceReferences, computeReachableSources } from '../../project/sources/sourceReachability';
-import type { SourceReferenceInfo } from '../../project/sources/sourceReachability';
+import type { ReachReason, SourceReferenceInfo } from '../../project/sources/sourceReachability';
 import { scanSourceMembers } from '../../project/sources/memberScan';
 import { computeMemberReachability } from '../../project/sources/memberReachability';
 import type { MemberUnitFile, RemovedMember } from '../../project/sources/memberReachability';
@@ -89,6 +89,20 @@ export function resolvePreprocessOptions(setting: unknown, projectName: string, 
     return merge(opts, readPartial(override));
 }
 
+/**
+ * 소스 파일 끝에 줄바꿈이 없으면 그 파일의 줄바꿈 방식(첫 줄바꿈 기준, 없으면 CRLF)으로 하나 붙인다 — 제어기 Compile 이 마지막 줄 뒤 LF 가 없는
+ * 파일에서 `-505 Unexpected end of file` 로 실패한다(Sample Prep 2026-11-05 실측 보고). 빈 내용·이미 줄바꿈으로 끝나면 그대로.
+ * 줄 수는 변하지 않는다(마지막 줄의 끝을 닫을 뿐).
+ */
+export function ensureTrailingNewline(content: Buffer): Buffer {
+    if (content.length === 0) { return content; }
+    const last = content[content.length - 1];
+    if (last === 0x0a || last === 0x0d) { return content; }
+    const lf = content.indexOf(0x0a);
+    const eol = lf > 0 && content[lf - 1] === 0x0d ? '\r\n' : (lf >= 0 ? '\n' : '\r\n');
+    return Buffer.concat([content, Buffer.from(eol, 'latin1')]);
+}
+
 // ─── 파일 단위 미사용 제외 계획 ──────────────────────────────────────────────
 
 /** 업로드 단위 하나 — 로컬 폴더와 그것이 올라가는 원격 폴더. */
@@ -106,6 +120,15 @@ export interface ExcludedSource {
     lines: number;
     /** 그 파일이 선언한 이름(소문자) — 컴파일 `-729` 안내에서 원인 파일을 집을 때 쓴다. */
     declared: string[];
+}
+
+/** 빼지 않고 남긴 라이브러리 후보 파일과 그 이유("왜 남았나" 보고용). */
+export interface KeptSource {
+    /** 로컬 절대 경로. */
+    file: string;
+    remotePath: string;
+    /** 예: `name CodeText referenced from /GPL/Gantry/Gantry_Host.gpl:112`. */
+    reason: string;
 }
 
 export interface TreeShakeInput {
@@ -131,6 +154,8 @@ export interface TreeShakePlan {
     /** 뺄 수 있는 후보(분석한 라이브러리 파일) 수. */
     candidates: number;
     excluded: ExcludedSource[];
+    /** 후보 중 남긴 파일과 이유(전체 — 요약에는 상한을 둔다). */
+    kept: KeptSource[];
     /** `.gpr` 경로 키(`normalizePathKey`) → 그 경로와 제외 파일의 `ProjectSource` 줄을 뺀 텍스트(latin1). */
     gprRewrites: Map<string, { gprPath: string; text: string }>;
     /** 어느 후보에도 맞지 않은 keepFiles 항목 — 오타 알림용. */
@@ -161,7 +186,7 @@ function countTextLines(text: string): number {
 }
 
 export function planTreeShake(input: TreeShakeInput): TreeShakePlan {
-    const plan: TreeShakePlan = { candidates: 0, excluded: [], gprRewrites: new Map(), unmatchedKeep: [] };
+    const plan: TreeShakePlan = { candidates: 0, excluded: [], kept: [], gprRewrites: new Map(), unmatchedKeep: [] };
     if (!input.runnable) {
         plan.skipped = '.gpr 에 ProjectStart 가 없어(그룹) 출발점을 정할 수 없습니다 — 미사용 제외를 건너뜁니다.';
         return plan;
@@ -213,10 +238,19 @@ export function planTreeShake(input: TreeShakeInput): TreeShakePlan {
     }
     plan.unmatchedKeep = input.keepFiles.filter(e => !matchedKeep.has(e));
 
-    const reach = computeReachableSources(infos, roots);
+    const reasons = new Map<string, ReachReason>();
+    const reach = computeReachableSources(infos, roots, reasons);
+    const remoteOf = (key: string): string => {
+        const f = texts.get(key)?.file;
+        return f ? (remotePathFor(f, input.roots) ?? f) : key;
+    };
     const excludedKeys = new Set<string>();
     for (const key of candidateKeys) {
-        if (reach.has(key)) { continue; }
+        if (reach.has(key)) {
+            const { file } = texts.get(key)!;
+            plan.kept.push({ file, remotePath: remotePathFor(file, input.roots) ?? file, reason: describeKeepReason(reasons.get(key), remoteOf) });
+            continue;
+        }
         const { file, text } = texts.get(key)!;
         excludedKeys.add(key);
         plan.excluded.push({
@@ -236,6 +270,17 @@ export function planTreeShake(input: TreeShakeInput): TreeShakePlan {
         if (rewritten !== undefined) { plan.gprRewrites.set(normalizePathKey(node.gprPath), { gprPath: node.gprPath, text: rewritten }); }
     }
     return plan;
+}
+
+/** 남긴 이유를 사람이 읽는 한 줄로. */
+export function describeKeepReason(why: ReachReason | undefined, remoteOf: (key: string) => string): string {
+    if (!why) { return 'reachable'; }
+    switch (why.kind) {
+        case 'root': return 'keepFiles';
+        case 'no-declarations': return 'no declarations found (always kept)';
+        case 'sibling-module': return `same Module ${why.module} as ${remoteOf(why.via)}`;
+        case 'name': return `name ${why.name} referenced from ${remoteOf(why.by)}${why.line ? `:${why.line}` : ''}`;
+    }
 }
 
 /**
@@ -344,6 +389,9 @@ export interface DeployPreprocessSummary {
     sourceBytesAfter: number;
     savedBytes: number;
     excluded: { remotePath: string; bytes: number; lines: number }[];
+    /** 후보 중 빼지 않고 남긴 라이브러리 파일과 이유(앞쪽 `SUMMARY_KEPT_LIMIT` 개) — 왜 안 빠졌나를 보고 keepFiles·코드를 조정한다. */
+    kept?: { remotePath: string; reason: string }[];
+    keptCount?: number;
     excludedBytes: number;
     excludedLines: number;
     /** 사본에서 `ProjectSource` 줄을 뺀 `.gpr` 의 원격 경로. */
@@ -367,17 +415,30 @@ export interface DeployPreprocessSummary {
     note?: string;
 }
 
+/** 요약에 싣는 남긴 파일 목록 상한(작업 기록 크기). */
+export const SUMMARY_KEPT_LIMIT = 60;
+
 /** 요약에 싣는 지운 선언 목록 상한(작업 기록 크기). */
 export const SUMMARY_MEMBER_LIMIT = 100;
 
 /**
  * `-729 Undefined symbol <name>` 이 전처리로 뺀 것(파일 또는 선언)의 이름이면 그것을, 아니면 일반 안내를 돌려준다. 뺀 것이 없으면 undefined.
  * `excluded` 항목: 뺀 파일(선언 이름들) 또는 지운 선언(그 이름 하나, remotePath 에 `파일 (Container.Name)`).
+ * `declaredInOriginal` 을 주면, 정의되지 않은 이름(점 표기면 마지막 낱말)이 **전처리 전 원본 소스 어디에도 선언돼 있지 않을 때** 안내를 내지 않는다 —
+ * 전처리와 무관한 원본의 미완성 편집이라 "그 때문이면 keepFiles" 가 오히려 헷갈린다(Sample Prep 2026-11-10).
  */
-export function preprocessUndefinedSymbolHint(message: string, excluded: readonly Pick<ExcludedSource, 'remotePath' | 'declared'>[]): string | undefined {
+export function preprocessUndefinedSymbolHint(
+    message: string,
+    excluded: readonly Pick<ExcludedSource, 'remotePath' | 'declared'>[],
+    declaredInOriginal?: (name: string) => boolean,
+): string | undefined {
     if (excluded.length === 0) { return undefined; }
-    const name = /Undefined symbol\*?\s*([A-Za-z_]\w*)/i.exec(message)?.[1]?.toLowerCase();
-    const owners = name ? excluded.filter(e => e.declared.includes(name)) : [];
+    const dotted = /Undefined symbol\*?:?\s*([A-Za-z_][\w.]*)/i.exec(message)?.[1]?.toLowerCase();
+    const segments = dotted ? dotted.split('.').filter(Boolean) : [];
+    const last = segments[segments.length - 1];
+    if (last && declaredInOriginal && !declaredInOriginal(last)) { return undefined; }
+    const name = segments[0];
+    const owners = name ? excluded.filter(e => e.declared.includes(name) || (last !== undefined && e.declared.includes(last))) : [];
     if (owners.length > 0) {
         return `배포 전처리(미사용 제외)가 이 이름을 선언한 ${owners.slice(0, 5).map(o => o.remotePath).join(', ')} 을(를) 뺐습니다 — `
             + 'gpl.deploy.preprocess 의 keepFiles 에 이름을 추가하거나 excludeUnreachableLibraryFiles·removeUnusedMembers 를 끄세요.';

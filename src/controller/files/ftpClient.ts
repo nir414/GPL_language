@@ -581,7 +581,7 @@ async function uploadVerified(client: FtpClient, localFile: string, remotePath: 
 	}
 }
 
-function getAllFiles(dir: string): string[] {
+export function getAllFiles(dir: string): string[] {
 	const results: string[] = [];
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
 		// dot 항목(.git/.history/.vscode/.DS_Store 등)은 제어기로 올릴 대상이 아니다.

@@ -22,6 +22,10 @@
  * - 모듈 직속 `Sub Init` 이 있는 파일은 이름 참조 없이도 초기화 때 불리므로 호출측이 늘 출발점으로 삼는다(`hasModuleInit`).
  * - 이름이 실행 중에 조립되는 경우(`"FL" & "R.Loop"`)는 알 수 없다 — 호출측이 고정 포함 목록(keepFiles)으로 보완한다.
  *
+ * 지역 가림: **프로시저의 매개변수·지역 변수 이름**은 그 프로시저 안에서 모듈 직속 선언을 가리키지 않는다(선언된 블록 안에서 먼저 알려진다 —
+ * Scope of Names). 다른 파일 함수 `CodeText` 가 있을 때 `ByVal codeText As String` 매개변수 하나로 그 파일이 끌려오던 오포함을 막는다
+ * (Sample Prep 2026-11-10 `Device_HanyoungML`). 프로시저 범위를 알 수 없으면(짝 `End` 없음) 가리지 않는다 — 보수적이다.
+ *
  * 자기 선언 가림(shadowing): 파일이 **모듈 직속으로 직접 선언한 이름**(접근성 무관)은 그 파일 안에서 다른 파일을 가리키지 않는다.
  * 이름은 선언된 블록 안에서 먼저 알려지고(Scope of Names
  * https://www2.brooksautomation.com/Controller_Software/Introduction_To_The_Software/Guidance_Programming_Language/scope_names.htm),
@@ -45,6 +49,8 @@ export interface SourceReferenceInfo {
     ownNames: string[];
     /** 주석을 뺀 코드에 나오는 낱말(소문자) — 문자열 리터럴 안 낱말 포함. */
     words: Set<string>;
+    /** 낱말(소문자) → 처음 나온 줄(1-기준) — 파일이 남은 이유를 "어디서 불렀나"로 보고할 때 쓴다. */
+    wordLines: Map<string, number>;
     /** 모듈 직속 `Sub Init` 이 있는가 — 모듈 초기화 때 이름 참조 없이 자동으로 불리므로(문서상 modules.htm) 이 파일은 늘 남긴다. */
     hasModuleInit: boolean;
 }
@@ -58,6 +64,30 @@ const MEMBER_KINDS: ReadonlySet<GPLSymbolKind> = new Set([
  * 모듈 직속 이름을 수식 없이 부르는 참조는 점 뒤에 올 수 없고, `MOD.NAME` 은 `MOD` 가 그 파일로 이끈다.
  */
 const WORD = /(\.\s*)?([A-Za-z_][A-Za-z0-9_]*)/g;
+
+/** 프로시저 하나의 물리 줄 범위(0-기준)와 그 안에서 선언된 매개변수·지역 이름(소문자). */
+interface LocalScope { start: number; end: number; names: Set<string> }
+
+/** 짝 `End` 줄이 있는 프로시저마다 매개변수·지역 이름을 모은다. 지역은 프로시저 줄 범위 안의 심볼로 판단한다. */
+function procedureLocalScopes(text: string, filePath: string): { scopes: LocalScope[]; declaredAt: Set<string> } {
+    const syms = GPLParser.parseDocument(text, filePath, { includeLocals: true, includeParameters: true });
+    const scopes: LocalScope[] = [];
+    // 선언 줄에 적힌 그 선언의 이름(`Public Function CodeText()`)은 참조가 아니다 — 클래스 멤버 선언이 같은 이름의 모듈 함수 쪽 파일을 끌어오지 않게 한다.
+    const declaredAt = new Set<string>();
+    for (const sym of syms) { declaredAt.add(`${sym.line}:${sym.name.toLowerCase()}`); }
+    for (const sym of syms) {
+        if ((sym.kind !== GPLSymbolKind.Sub && sym.kind !== GPLSymbolKind.Function && sym.kind !== GPLSymbolKind.Property)
+            || sym.endLine === undefined || sym.isLocal) { continue; }
+        scopes.push({ start: sym.line, end: sym.endLine, names: new Set() });
+    }
+    for (const sym of syms) {
+        if (!sym.isLocal) { continue; }
+        for (const sc of scopes) {
+            if (sym.line >= sc.start && sym.line <= sc.end) { sc.names.add(sym.name.toLowerCase()); }
+        }
+    }
+    return { scopes, declaredAt };
+}
 
 /** 파일 하나의 선언 이름과 참조 낱말. `filePath` 는 파서 캐시 키로만 쓴다. */
 export function analyzeSourceReferences(text: string, filePath: string): SourceReferenceInfo {
@@ -82,26 +112,42 @@ export function analyzeSourceReferences(text: string, filePath: string): SourceR
         // 모듈 직속(클래스 밖·프로시저 밖) 멤버. 기본 접근성은 Private 이지만 표기가 없으면 포함한다(보수적).
         if (sym.accessModifier !== 'private') { declared.add(name); }
     }
+    const { scopes, declaredAt } = procedureLocalScopes(text, filePath);
     const words = new Set<string>();
-    for (const line of text.split(/\r\n|\n|\r/)) {
-        const { code, names } = splitCodeAndNameStrings(stripComment(line));
+    const wordLines = new Map<string, number>();
+    const lines = text.split(/\r\n|\n|\r/);
+    for (let i = 0; i < lines.length; i++) {
+        const hidden = scopes.find(sc => i >= sc.start && i <= sc.end)?.names;
+        const { code, names } = splitCodeAndNameStrings(stripComment(lines[i]));
         for (const piece of [code, ...names]) {
             for (const m of piece.matchAll(WORD)) {
-                if (!m[1]) { words.add(m[2].toLowerCase()); }
+                if (m[1]) { continue; }
+                const w = m[2].toLowerCase();
+                if (hidden?.has(w) || declaredAt.has(`${i}:${w}`)) { continue; }
+                words.add(w);
+                if (!wordLines.has(w)) { wordLines.set(w, i + 1); }
             }
         }
     }
-    return { declared: [...declared], containers, modules, ownNames: [...own], words, hasModuleInit };
+    return { declared: [...declared], containers, modules, ownNames: [...own], words, wordLines, hasModuleInit };
 }
+
+/** 파일이 닿은 이유 — `name` 은 낱말로 닿은 것(`by` 파일의 `line` 줄), 나머지는 낱말과 무관한 규칙. */
+export type ReachReason =
+    | { kind: 'root' }
+    | { kind: 'no-declarations' }
+    | { kind: 'sibling-module'; module: string; via: string }
+    | { kind: 'name'; name: string; by: string; line?: number };
 
 /**
  * `roots` 에서 출발해 낱말 → 선언 이름으로 닿는 파일 키 집합. 선언 이름이 없는 파일은 늘 포함하고 출발점으로도 쓴다.
  * 같은 이름을 여러 파일이 선언하면 모두 포함한다. 파일 자신이 모듈 직속으로 선언한 이름(`ownNames`)은 그 파일에서는 참조로 보지 않고,
- * 같은 Module 이름을 선언한 파일들은 함께 묶는다(머리말).
+ * 같은 Module 이름을 선언한 파일들은 함께 묶는다(머리말). `reasons` 를 주면 파일마다 처음 닿은 이유를 채운다.
  */
 export function computeReachableSources(
-    files: ReadonlyMap<string, Pick<SourceReferenceInfo, 'declared' | 'words'> & Partial<Pick<SourceReferenceInfo, 'ownNames' | 'modules'>>>,
+    files: ReadonlyMap<string, Pick<SourceReferenceInfo, 'declared' | 'words'> & Partial<Pick<SourceReferenceInfo, 'ownNames' | 'modules' | 'wordLines'>>>,
     roots: Iterable<string>,
+    reasons?: Map<string, ReachReason>,
 ): Set<string> {
     const byName = new Map<string, string[]>();
     const byModule = new Map<string, string[]>();
@@ -115,25 +161,40 @@ export function computeReachableSources(
     }
     const reach = new Set<string>();
     const queue: string[] = [];
-    const add = (key: string): void => {
+    const add = (key: string, why: ReachReason): void => {
         if (!files.has(key) || reach.has(key)) { return; }
         reach.add(key);
+        reasons?.set(key, why);
         queue.push(key);
         for (const name of files.get(key)!.modules ?? []) {
-            for (const sibling of byModule.get(name) ?? []) { add(sibling); }
+            for (const sibling of byModule.get(name) ?? []) { add(sibling, { kind: 'sibling-module', module: name, via: key }); }
         }
     };
-    for (const key of roots) { add(key); }
+    for (const key of roots) { add(key, { kind: 'root' }); }
     for (const [key, info] of files) {
-        if (info.declared.length === 0) { add(key); }
+        if (info.declared.length === 0) { add(key, { kind: 'no-declarations' }); }
     }
     while (queue.length > 0) {
-        const info = files.get(queue.pop()!)!;
+        const from = queue.pop()!;
+        const info = files.get(from)!;
         const own = new Set(info.ownNames ?? []);
         for (const word of info.words) {
             if (own.has(word)) { continue; }
-            for (const target of byName.get(word) ?? []) { add(target); }
+            for (const target of byName.get(word) ?? []) { add(target, { kind: 'name', name: word, by: from, line: info.wordLines?.get(word) }); }
         }
     }
     return reach;
+}
+
+/**
+ * 소스 전체의 선언 이름(소문자, 클래스 멤버 포함) — "원본 어디에도 선언이 없는 이름"인지 가를 때 쓴다. 못 읽은 파일(`text` undefined)이 있으면
+ * 어디에 선언됐는지 말할 수 없으므로 모든 이름을 선언된 것으로 본다(안내를 숨기지 않는 쪽).
+ */
+export function collectDeclaredNames(files: Iterable<{ file: string; text: string | undefined }>): { has(name: string): boolean } {
+    const names = new Set<string>();
+    for (const { file, text } of files) {
+        if (text === undefined) { return { has: () => true }; }
+        for (const sym of GPLParser.parseDocument(text, file)) { names.add(sym.name.toLowerCase()); }
+    }
+    return names;
 }

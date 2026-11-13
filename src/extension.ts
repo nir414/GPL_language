@@ -14,7 +14,7 @@
 import * as vscode from 'vscode';
 import { EXTENSION_VERSION, getTraceServerLevel, isTraceOn } from './config';
 import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection, noteGplCleared } from './controller/connection/controllerConnection';
-import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployment/deployRecord';
+import { attachDeployRecordStore, attachLibraryProvenanceStore, onDidRecordCompiled } from './controller/deployment/deployRecord';
 import { getControllerConfig } from './controller/connection/controllerConnection';
 import { normalizeAbsoluteRemoteDir } from './controller/files/ftpClient';
 import { onRemoteFolderCleared } from './controller/files/remoteFolderClear';
@@ -94,6 +94,8 @@ export function activate(context: vscode.ExtensionContext) {
 	// 컴파일 스냅샷 레코드(#21) — Deploy/F5 Compile 성공 시 deployService가 기록, 디버그 어댑터가 attach 시 대조.
 	// projectDir 이 워크스페이스 종속이라 globalState 가 아닌 workspaceState 에 둔다.
 	attachDeployRecordStore(context.workspaceState);
+	// 제어기·원격 폴더가 창·워크스페이스 사이에 공유되므로 이 기록은 globalState 에 둔다(다른 창이 올린 라이브러리도 알아야 한다).
+	attachLibraryProvenanceStore(context.globalState);
 
 	// "컴파일 검증 필요" 배지 해제를 배포 경로와 분리한다(§1-CT 원인 ①). 종전에는 runDeploy 래퍼만 해제해서
 	// F5 의 deployBeforeAttach(deployService.deploy() 직접 호출)나 MCP 경유 배포는 Compile 이 성공해도 배지가 남았다.

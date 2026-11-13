@@ -17,6 +17,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { LibraryProvenance } from './libraryProvenance';
 
 export interface FileStamp {
     size: number;
@@ -38,6 +39,8 @@ export interface CompiledRecord {
      * `files` 는 여전히 **로컬 원본** 지문이다(줄 번호가 같으므로 BP 신뢰성 판정은 원본 기준이 맞다).
      */
     preprocess?: { options: string; excludedFiles: string[]; removedMembers?: number };
+    /** 이 배포가 함께 올린 라이브러리의 출처·업로드 해시(libraryProvenance) — `list_remote_projects` 의 `lastCompiledFrom` 에 그대로 보인다. */
+    libraries?: LibraryProvenance[];
 }
 
 export interface SnapshotDiff {

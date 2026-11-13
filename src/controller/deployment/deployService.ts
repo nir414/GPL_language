@@ -43,7 +43,7 @@ import { KeyedSerialQueue } from './deployQueue';
 import { DEPLOY_UPLOAD_TIMEOUT_RECOVERY, deployFailureRecovery } from '../automation/automationRecovery';
 import { beginOperation, findActiveByIdempotencyKey, sweepOperations, OperationHandle, OperationRecord } from '../automation/operationStore';
 import { clearDeployCancellation, readDeployCancellation } from './deployCancellation';
-import { recordCompiled } from './deployRecord';
+import { getLibraryProvenance, recordCompiled, recordLibraryProvenance } from './deployRecord';
 import { PROJECT_EXCLUDE_GLOB } from '../../project/sources/projectFileScope';
 import { collapseControllerProjectDirs, getControllerProjectWriteBlock } from '../../project/remote/controllerProjectWorkspace';
 import { summarizeCompileCommand } from './compileAbort';
@@ -54,6 +54,7 @@ import { createDeployContext } from './deployContext';
 import type { DeployControllerIo, DeployHostIo } from './deployContext';
 import { checkMemoryBeforeUpload, readProjectForDeploy } from './deployPrecheck';
 import { resolveDeployTarget, traceDeployHeader } from './deployTargetStage';
+import { runLibraryPreflight } from './libraryPreflightStage';
 import { runUploadAndStopPhase } from './deployUploadStage';
 import { runCompilePhase } from './deployCompileStage';
 import { runStartPhase } from './deployStartStage';
@@ -109,6 +110,8 @@ const controllerIo: DeployControllerIo = {
     createIdentityIo: createControllerIdentityIo,
     recentReachabilityEvidence,
     recordCompiled,
+    getLibraryProvenance: (ip, remoteDir) => getLibraryProvenance(ip, remoteDir)?.library,
+    recordLibraryProvenance,
 };
 
 /**
@@ -274,6 +277,10 @@ function finishOperation(operation: OperationHandle, result: DeployResult | unde
         ...(result.libraryUploads && result.libraryUploads.length > 0 ? { libraryUploads: result.libraryUploads } : {}),
         // 배포 전처리(주석 제거·미사용 제외) — 무엇을 줄여 무엇을 올렸는지. /GPL 사본이 원본과 다르다는 사실의 기록이다.
         ...(result.preprocess ? { preprocess: result.preprocess } : {}),
+        // 라이브러리 출처(SVN)·업로드 집합 해시·배포 전 검사 — "어느 버전 라이브러리로 컴파일했나"를 기록에서 뽑는다(수신함 2026-11-12 v2 §2·§3).
+        ...(result.libraries && result.libraries.length > 0 ? { libraries: result.libraries } : {}),
+        ...(result.librarySummary ? { librarySummary: result.librarySummary } : {}),
+        ...(result.preflight ? { preflight: result.preflight } : {}),
         ...(result.selectedRemoteProjectPath ? { remoteProjectPath: result.selectedRemoteProjectPath } : {}),
         ...(result.compiledSnapshotFiles === undefined ? {} : { compiledSnapshotFiles: result.compiledSnapshotFiles }),
         // 어느 장치에 올렸는지의 근거 — operation 파일만으로 "그때 진짜 제어기였나" 를 판정할 수 있게.
@@ -371,10 +378,11 @@ async function deployLocked(
         clearDiagnostics: () => diagnosticCollection.clear(),
         // 전처리(미사용 제외)로 뺀 파일이 있으면 `-729 Undefined symbol` 에 그 파일을 짚는 안내를 붙인다(deployPreprocess).
         applyCompileDiagnostics: errors => applyCompileDiagnostics(errors, options.projectDir, diagnosticCollection,
-            err => (err.code === -729 && ctx.preprocess ? preprocessUndefinedSymbolHint(err.message, ctx.preprocess.hintEntries) : undefined)),
+            err => (err.code === -729 && ctx.preprocess ? preprocessUndefinedSymbolHint(err.message, ctx.preprocess.hintEntries, n => ctx.preprocess!.declaredInOriginal(n)) : undefined)),
         readSourceExtensionsSetting: () => vscode.workspace.getConfiguration('gpl').get<unknown>('project.sourceExtensions'),
         // 리소스 범위 — 프로젝트 폴더의 워크스페이스 폴더 설정을 따른다(프로젝트별 값은 설정 안의 projects 맵).
         readPreprocessSetting: projectDir => vscode.workspace.getConfiguration('gpl', vscode.Uri.file(projectDir)).get<unknown>('deploy.preprocess'),
+        readLibraryPreflightSetting: projectDir => vscode.workspace.getConfiguration('gpl', vscode.Uri.file(projectDir)).get<unknown>('deploy.libraryPreflight'),
         readRequireStartConfirmation: () => vscode.workspace.getConfiguration('gpl').get<boolean>('controller.requireStartConfirmation', true),
         confirmStart: async projectName => {
             const pick = await vscode.window.showWarningMessage(
@@ -411,6 +419,9 @@ async function deployLocked(
     const target = await resolveDeployTarget(ctx, project);
     if (!target) { return result; }
     traceDeployHeader(ctx, project, target);
+
+    // ── 라이브러리 출처 검사(경고만, 설정이 막을 수 있음) — 업로드·컴파일 전 ──
+    if (!(await runLibraryPreflight(ctx, project, target))) { return result; }
 
     // ── Phase 1: UPLOAD ∥ STOP(정지 게이트) → 원격 전용 파일 삭제 → 증적 (Upload Only 는 여기서 끝) ──
     if (!(await runUploadAndStopPhase(ctx, project, target))) { return result; }

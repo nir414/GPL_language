@@ -15,6 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { sourceExtensionsFrom } from '../../project/gpr/gprFolderSync';
 import { findCompileRootGpr } from '../../project/gpr/dependencyModel';
+import { collectDeclaredNames } from '../../project/sources/sourceReachability';
 import { buildLibraryGraph } from '../../project/sources/projectSources';
 import { minifyGplBuffer } from '../../project/sources/sourceMinify';
 import { estimateSourceCompileBytes } from '../../project/sources/compileCostModel';
@@ -30,11 +31,13 @@ import { snapshotProjectFiles } from './deployRecordCore';
 import type { FileStamp } from './deployRecordCore';
 import {
     describePreprocessOptions,
+    ensureTrailingNewline,
     isPreprocessActive,
     planMemberShake,
     planTreeShake,
     remotePathFor,
     resolvePreprocessOptions,
+    SUMMARY_KEPT_LIMIT,
     SUMMARY_MEMBER_LIMIT,
 } from './deployPreprocess';
 import type {
@@ -48,6 +51,8 @@ export interface PreparedPreprocess {
     readonly excluded: readonly ExcludedSource[];
     /** 컴파일 `-729` 안내용 — 뺀 파일과 지운 선언(이름). */
     readonly hintEntries: readonly Pick<ExcludedSource, 'remotePath' | 'declared'>[];
+    /** 전처리 전 원본 컴파일 단위 소스 어디에든(클래스 멤버 포함) 이 이름(소문자)이 선언돼 있는가 — `-729` 안내를 낼지 가른다. */
+    declaredInOriginal(name: string): boolean;
     /** 원본 업로드 폴더 → 올릴 폴더(사본). 모르는 폴더면 원본 그대로. */
     uploadDirFor(localDir: string): string;
     /** 원격 경로가 미사용 제외 파일인가(미러 삭제 로그 구분용). */
@@ -170,7 +175,7 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
         const gpr = shake?.gprRewrites.get(key);
         if (gpr !== undefined) { return Buffer.from(gpr.text, 'latin1'); }
         const content = fs.readFileSync(file);
-        return isSource(file) ? minifyGplBuffer(content, minifyOpts, members?.ranges.get(key) ?? []) : content;
+        return isSource(file) ? ensureTrailingNewline(minifyGplBuffer(content, minifyOpts, members?.ranges.get(key) ?? [])) : content;
     };
 
     const stageOf = new Map<string, string>();
@@ -197,6 +202,7 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
     result.preprocess = summary;
     tracePreprocess(pushTrace, summary, shake, members);
 
+    const originalNames = collectDeclaredNames((unitSources ?? []).map(f => ({ file: f, text: readLatin1(f) })));
     const hintEntries = [
         ...excluded,
         ...(members?.removed ?? []).map(r => ({
@@ -209,6 +215,7 @@ function buildPrepared(ctx: DeployContext, project: DeployProjectInfo, target: D
         summary,
         excluded,
         hintEntries,
+        declaredInOriginal: name => originalNames.has(name),
         uploadDirFor: localDir => stageOf.get(normalizePathKey(localDir)) ?? localDir,
         isExcludedRemote: remotePath => excludedRemote.has(remotePath.toLowerCase()),
         staleExcludedRefs: (remoteDir, manifest) => {
@@ -285,6 +292,10 @@ function buildSummary(
         sourceBytesAfter: bytes.after,
         savedBytes: bytes.before - bytes.after,
         excluded: excluded.map(e => ({ remotePath: e.remotePath, bytes: e.bytes, lines: e.lines })),
+        ...(shake && !shake.skipped ? {
+            keptCount: shake.kept.length,
+            kept: shake.kept.slice(0, SUMMARY_KEPT_LIMIT).map(k => ({ remotePath: k.remotePath, reason: k.reason })),
+        } : {}),
         excludedBytes: excluded.reduce((n, e) => n + e.bytes, 0),
         excludedLines: excluded.reduce((n, e) => n + e.lines, 0),
         rewrittenGpr: [...(shake?.gprRewrites.values() ?? [])].map(g => remotePathFor(g.gprPath, roots) ?? g.gprPath),

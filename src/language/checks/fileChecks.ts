@@ -137,12 +137,36 @@ function checkExitProperty(content: string, out: CompilerCheckFinding[]): void {
     }
 }
 
+/**
+ * 한 줄에 `:` 로 문장 여럿 — VB 식 `Callee(4) : i = 4` 는 4.2K5 Compile `-722 *Unexpected text at end of line*` 였다
+ * (2026-11-13 실측, captures/probe-callerline). 줄 맨 앞 라벨(`Retry:`)은 문법이므로 건너뛰고, 그 뒤의 `:` 만 본다.
+ */
+function checkColonSeparator(content: string, out: CompilerCheckFinding[]): void {
+    if (!content.includes(':')) { return; }
+    for (const ml of buildMappedLines(content.split('\n'))) {
+        const label = /^\s*[A-Za-z_]\w*\s*:(?!=)/.exec(ml.code);
+        const from = label ? label[0].length : 0;
+        const idx = ml.code.slice(from).search(/:(?!=)/);
+        if (idx < 0) { continue; }
+        const at = from + idx;
+        if (ml.code.slice(at + 1).trim() === '' && !ml.code.slice(0, at).trim()) { continue; }
+        out.push({
+            ...toPhysical(ml, at, at + 1),
+            code: 'statement-separator-colon',
+            severity: 'error',
+            message: '`:` 로 한 줄에 문장을 여럿 쓸 수 없습니다 — 제어기(GPL 4.2K5)가 Compile `-722 *Unexpected text at end of line*` 로 거부합니다'
+                + '(2026-11-13 실측). 문장마다 줄을 나누세요.',
+        });
+    }
+}
+
 /** 파일·제어기 실기 사실 검사 결과. 정렬은 호출자가 한다. */
 export function findFileCheckFindings(content: string, filePath: string, options: FileCheckOptions = {}): CompilerCheckFinding[] {
     const out: CompilerCheckFinding[] = [];
     checkFinalNewline(content, out);
     checkCreateDirectoryDeviceRoot(content, out);
     checkExitProperty(content, out);
+    checkColonSeparator(content, out);
     if (options.threadEntryWithoutCatch !== false) { checkThreadEntryWithoutCatch(content, filePath, out); }
     return out;
 }

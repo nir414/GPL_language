@@ -136,3 +136,22 @@ test('fileChecks: Exit Property 는 Get·Set 어디서든 error(-719), 주석·�
     assert.strictEqual(text.split('\n')[8].slice(f[1].start, f[1].end), 'Exit Property');
     assert.ok(f[0].message.includes('-719'));
 });
+
+// statement-separator-colon (2026-11-13 실측 -722)
+
+test('fileChecks: `:` 문장 구분은 error(-722), 라벨·문자열·주석 속 콜론은 알리지 않음', () => {
+    const text = lines(
+        'Module M',
+        '    Public Sub A()',
+        '        Callee(4) : i = 4',
+        'Retry:',
+        '        s = "a:b"',
+        "        ' x : y",
+        '        Console.WriteLine("t=" & "1:2")',
+        '    End Sub',
+        'End Module',
+        '');
+    const f = of(text, 'statement-separator-colon');
+    assert.deepStrictEqual(f.map(x => [x.line, x.start, x.severity]), [[2, 18, 'error']]);
+    assert.ok(f[0].message.includes('-722'));
+});

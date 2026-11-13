@@ -54,6 +54,17 @@ test('gprFolderSync: detectStartProcedure — Sub Main 선언이 있을 때만 M
     } finally { cleanup(root); }
 });
 
+test('gprFolderSync: detectStartProcedure — 클래스의 Sub Main 메서드는 시작 프로시저가 아니고, 모듈 직속이면 접근 표기가 없어도 Main', () => {
+    const root = makeProject({
+        'Lib/Runner.gpl': 'Module RUN\r\n    Public Class Runner\r\n        Public Sub Main()\r\n        End Sub\r\n    End Class\r\nEnd Module\r\n',
+        'App/Start.gpl': 'Module Start\r\n    Sub Main()\r\n    End Sub\r\nEnd Module\r\n',
+    });
+    try {
+        assert.strictEqual(detectStartProcedure(path.join(root, 'Lib'), ['Runner.gpl']), null);
+        assert.strictEqual(detectStartProcedure(path.join(root, 'App'), ['Start.gpl']), 'Main');
+    } finally { cleanup(root); }
+});
+
 function makeProject(files: Record<string, string>): string {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gpl-gprsync-'));
     for (const [rel, text] of Object.entries(files)) {

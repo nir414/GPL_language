@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { GPR_PATH_SEPARATOR, DEFAULT_SOURCE_EXTENSIONS, listSourceFilesRecursive } from '../sources/projectSources';
 import { GprSyncPlan, ParsedGpr, parseGprText, planGprSync } from './gprSync';
+import { GPLParser, GPLSymbolKind } from '../../language/syntax/gplParser';
 
 export interface GprFolderSyncOptions {
     /** 소스로 볼 확장자(기본 `.gpl`). 설정 `gpl.project.sourceExtensions` 를 호출측이 읽어 넘긴다. */
@@ -72,17 +73,22 @@ export function makeExistsOnDisk(projectDir: string): (relPath: string) => boole
 }
 
 /**
- * 새 `.gpr` 에 적을 시작 프로시저 — 소스 어디에든 `Sub Main` 선언이 있으면 `'Main'`, 없으면 `null`(라이브러리로 보고
- * `ProjectStart` 줄을 쓰지 않는다). 주석·문자열 속 낱말에 속지 않게 줄 머리의 선언 꼴만 본다. 못 읽은 파일은 건너뛴다.
+ * 새 `.gpr` 에 적을 시작 프로시저 — 소스 어디에든 **모듈 직속** `Sub Main` 선언이 있으면 `'Main'`, 없으면 `null`(라이브러리로 보고
+ * `ProjectStart` 줄을 쓰지 않는다). 판정은 파서 심볼로 한다: 주석·문자열 속 낱말에 속지 않고, 클래스의 `Sub Main` 메서드는 시작
+ * 프로시저가 아니며, 수식어 순서(`Shared Public Sub Main`)와 무관하다. 못 읽은 파일은 건너뛴다.
  * 중첩 폴더 소스를 `.gpr` 하나로 묶는 라이브러리(docs/reference/project-file-gpr.md §4.1)를 만들 때 `ProjectStart="Main"` 이
  * 따라붙지 않게 하려는 것이다.
  */
 export function detectStartProcedure(projectDir: string, files: readonly string[]): 'Main' | null {
-    const decl = /^[ \t]*(?:(?:Public|Private|Friend)[ \t]+)?(?:Shared[ \t]+)?Sub[ \t]+Main\b/im;
     for (const rel of files) {
         try {
             const full = path.join(projectDir, rel.replace(/[\\/]+/g, path.sep));
-            if (decl.test(fs.readFileSync(full, 'latin1'))) { return 'Main'; }
+            // 선언 줄의 키워드·이름은 ASCII 라 1바이트 읽기로 충분하다(한글 주석이 깨져도 판정과 무관). 낱말이 아예 없으면 파싱을 건너뛴다.
+            const text = fs.readFileSync(full, 'latin1');
+            if (!/\bMain\b/i.test(text)) { continue; }
+            const hit = GPLParser.parseDocument(text, full).some(sym =>
+                sym.kind === GPLSymbolKind.Sub && !sym.className && sym.name.toLowerCase() === 'main');
+            if (hit) { return 'Main'; }
         } catch { /* 다음 파일 */ }
     }
     return null;

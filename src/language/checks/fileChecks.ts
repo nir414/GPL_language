@@ -116,11 +116,33 @@ function checkThreadEntryWithoutCatch(content: string, filePath: string, out: Co
     }
 }
 
+/**
+ * `Exit Property` — 문서상 Exit.htm 구문 목록에 있지만 4.2K5 는 Property 의 Get·Set·ReadOnly Get 어디서든
+ * Compile `-719 *Illegal use of keyword*` 로 거부했다(2026-11-13 실측, G2400C 192.168.0.1, captures/probe-exitprop).
+ */
+function checkExitProperty(content: string, out: CompilerCheckFinding[]): void {
+    if (!/\bExit\s+Property\b/i.test(content)) { return; }
+    for (const ml of buildMappedLines(content.split('\n'))) {
+        // 문장 머리(줄 처음·`:` 뒤·한 줄 If 의 Then/Else 뒤)에 올 때만 — 문자열은 ml.code 에서 이미 지워져 있다.
+        const m = /(?:^|:|\bThen\b|\bElse\b)\s*(Exit\s+Property)\b/i.exec(ml.code);
+        if (!m) { continue; }
+        const start = m.index + m[0].length - m[1].length;
+        out.push({
+            ...toPhysical(ml, start, start + m[1].length),
+            code: 'exit-property-rejected',
+            severity: 'error',
+            message: '`Exit Property` 는 문서상 구문이지만 제어기(GPL 4.2K5)가 Compile `-719 *Illegal use of keyword*` 로 거부합니다'
+                + '(Get·Set 모두, 2026-11-13 실측). Get 에서는 `Return 값`, Set 에서는 If … Else 분기로 바꾸세요.',
+        });
+    }
+}
+
 /** 파일·제어기 실기 사실 검사 결과. 정렬은 호출자가 한다. */
 export function findFileCheckFindings(content: string, filePath: string, options: FileCheckOptions = {}): CompilerCheckFinding[] {
     const out: CompilerCheckFinding[] = [];
     checkFinalNewline(content, out);
     checkCreateDirectoryDeviceRoot(content, out);
+    checkExitProperty(content, out);
     if (options.threadEntryWithoutCatch !== false) { checkThreadEntryWithoutCatch(content, filePath, out); }
     return out;
 }

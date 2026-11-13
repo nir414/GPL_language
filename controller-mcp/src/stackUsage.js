@@ -3,9 +3,9 @@
 // 형식(미실측 부분 있음): `Show Thread -web -stack` 의 파이프 행 끝에 숫자 3개가 붙는다 — 확장 threadParser.stackTiming 과 같은 열(index 9+).
 //   실측 샘플 3줄(2026-10-23 보고): `RWK[0]` 0.168 / 4.000 / 0.500, `TCPLSN:4000` 0.242 / 4.000 / 1.258, MAIN 0.094 / 4.000 / 1.289
 //   단독 `Show Thread <name> -stack` 의 수치 줄: `0.172, 4.000, 0.172`.
-//   해석: [현재(level), 스택 크기(size), 최대 사용(max)] — 가운데가 크기라는 것은 위 샘플과 보고 문구("최대 3.984 / 4.000 KB",
-//   Thread 생성자 stack_size KB)로 추정한 것이고 Brooks 도움말에는 열 이름이 없다(미실측). 그래서 size<=0 이거나 max>size 인
-//   행은 비율을 계산하지 않고 raw 만 보존한다.
+//   해석: [현재(level), 스택 크기(size), 최대 사용(max)]. Brooks 도움말에는 열 이름이 없지만 2026-11-13 실측(G2400C 4.2K5,
+//   192.168.0.1)에서 가운데 값이 생성자 stack_size 와 같았다 — Sample Prep App 의 `TCPCMD` 0.086 / 8.000 / 3.621(8 KB 로 띄움),
+//   `TCPCLI_0` 0.090 / 6.000 / 2.371, 나머지는 4.000. 그래도 size<=0 이거나 max>size 인 행은 비율을 계산하지 않고 raw 만 보존한다.
 // 문서상 Thread 생성자 stack_size(KB): https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/new.htm
 // -755 Thread stack too small: https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Error_Code/language_errors.htm
 

@@ -570,16 +570,9 @@ export const GPL_STATEMENT_SNIPPETS: readonly GplStatementSnippet[] = [
         scopes: ['procedure'],
         requiresOpen: 'function',
         sourceUrl: STATEMENT_BASE + 'Exit.htm'
-    },
-    {
-        label: 'Exit Property',
-        detail: 'Exit Property',
-        documentation: 'Property 절 실행을 끝낸다.',
-        body: ['Exit Property'],
-        scopes: ['procedure'],
-        requiresOpen: 'property',
-        sourceUrl: STATEMENT_BASE + 'Exit.htm'
     }
+    // `Exit Property` 는 문서상 Exit.htm 구문 목록에 있지만 GPL 4.2K5 실측(2026-11-13, G2400C)에서 Get·Set·ReadOnly Get 어디서든
+    // Compile `-719 *Illegal use of keyword*` 였다 — 완성에 올리지 않고, 쓰면 진단 `exit-property-rejected` 가 알린다(fileChecks.ts).
 ];
 
 /** 완성 목록에 올리는 키워드 종류. 항목 아이콘/설명 구분에 쓴다. */

@@ -49,11 +49,12 @@ Module Shapes
                 Return current
             End Get
             Set (newValue As Integer)    ' [syntax] Set ... End Set
+                ' `Exit Property` 는 문서상 구문이지만 4.2K5 가 -719 로 거부한다(2026-11-13 실측) — 분기로 쓴다.
                 If newValue > Ceiling Then
                     current = Ceiling
-                    Exit Property    ' [syntax] Exit Property
+                Else
+                    current = newValue
                 End If
-                current = newValue
             End Set
         End Property
 

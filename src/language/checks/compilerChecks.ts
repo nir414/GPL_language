@@ -24,6 +24,7 @@
  * | `missing-final-newline` | 파일이 줄바꿈으로 끝나지 않으면 Compile -505(실측). 코드 줄이면 warning, 주석 줄이면 information (빠른 수정 있음) | warning |
  * | `create-directory-device-root` | `File.CreateDirectory("/ROMDISK")` 등 장치 루트 리터럴 → -300(실측) | warning |
  * | `thread-entry-without-catch` | `New Thread("Mod.Proc", …)` 의 같은 파일 진입점 본문에 Catch 없음 → 잡히지 않은 예외로 스레드 Error | information |
+ * | `exit-property-rejected` | `Exit Property`(문서상 구문) → Get·Set 모두 Compile -719(2026-11-13 실측) | error |
  * (`missing-final-newline` 부터는 `fileChecks.ts`, `findAllCompilerCheckFindings` 가 합친다. `addressof-…` 부터 `mid-temporary-argument` 까지는 `delegateChecks.ts`, `string-field-empty-init` 은 `memoryChecks.ts`)
  *
  * 다른 파일의 심볼(라이브러리 프로젝트 포함)은 `CompilerSymbolLookup` 으로 받는다 — `SymbolCache` 가 구조적으로 맞는다.
@@ -59,7 +60,8 @@ export type CompilerCheckCode =
     | 'string-field-empty-init'
     | 'missing-final-newline'
     | 'create-directory-device-root'
-    | 'thread-entry-without-catch';
+    | 'thread-entry-without-catch'
+    | 'exit-property-rejected';
 
 export interface CompilerCheckFinding {
     /** 물리 줄·열(0 기준). end 는 같은 줄의 끝 열(배타). */

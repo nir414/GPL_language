@@ -110,3 +110,29 @@ test('compilerChecks: findCompilerCheckFindings 는 파일 검사를 섞지 않�
     assert.deepStrictEqual(findCompilerCheckFindings(text, 'M.gpl').map(f => f.code), []);
     assert.deepStrictEqual(findAllCompilerCheckFindings(text, 'M.gpl').map(f => f.code), ['create-directory-device-root', 'missing-final-newline']);
 });
+
+// exit-property-rejected (2026-11-13 실측 -719)
+
+test('fileChecks: Exit Property 는 Get·Set 어디서든 error(-719), 주석·문자열 속은 알리지 않음', () => {
+    const text = lines(
+        'Module M',
+        '    Public Class C',
+        '        Public Property P As Integer',
+        '            Get',
+        '                If x Then Exit Property',
+        '                Return 1',
+        '            End Get',
+        '            Set (n As Integer)',
+        '                Exit Property',
+        '            End Set',
+        '        End Property',
+        '        \' Exit Property 는 쓰지 않는다',
+        '        Dim s As String = "Exit Property"',
+        '    End Class',
+        'End Module',
+        '');
+    const f = of(text, 'exit-property-rejected');
+    assert.deepStrictEqual(f.map(x => [x.line, x.severity]), [[4, 'error'], [8, 'error']]);
+    assert.strictEqual(text.split('\n')[8].slice(f[1].start, f[1].end), 'Exit Property');
+    assert.ok(f[0].message.includes('-719'));
+});

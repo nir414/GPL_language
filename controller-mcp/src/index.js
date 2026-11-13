@@ -45,6 +45,8 @@ import {
   statusHint,
   isSuccess,
 } from './parse.js';
+import { IDENTITY_DATAIDS, POWER_STATE_DATAID, parseIdentity, createIdentityProbe, powerEnabledFromDataId } from './identity.js';
+import { buildStackReport } from './stackUsage.js';
 import { readDeployLock, waitForDeployLockRelease, describeDeployLock, DEPLOY_GUARDED_COMMAND_RE } from './deployLock.js';
 import { isStopAllCommand, requestDeployCancellation } from './deployCancellation.js';
 import {
@@ -859,19 +861,28 @@ async function evalMany(thread, frame, expressions) {
   return out;
 }
 
-/** 고전원 상태(Execute Controller.PowerEnabled — 확장 controllerStatus.ts와 같은 프로브). 실패/해석 불가면 null. */
+/** 고전원 상태 — DataID 230 Power state(8~12 = 켜짐; 확장 robotAxes.readPowerState 와 같은 판정, identity.js). 실패/해석 불가면 null. */
 async function probePowerEnabled() {
-  try {
-    const raw = await sendGuarded('Execute Controller.PowerEnabled', { timeoutMs: 4000 });
-    if (!isSuccess(parseStatus(raw))) return null;
-    const payload = extractData(raw);
-    if (/\b(true|on|enabled)\b/i.test(payload)) return true;
-    if (/\b(false|off|disabled)\b/i.test(payload)) return false;
-    const m = payload.match(/-?\d+/);
-    return m ? parseInt(m[0], 10) !== 0 : null;
-  } catch {
-    return null;
-  }
+  const r = await runCommand(`pd ${POWER_STATE_DATAID}`, { timeoutMs: 4000 });
+  return r.ok ? powerEnabledFromDataId(r.data) : null;
+}
+
+/** 제어기 정체(pd 110·114·109·101) — 연결(host:port)별 1회 캐시. 기대 serial 은 환경변수 GPL_EXPECTED_SERIAL(콤마 구분). */
+const identityProbe = createIdentityProbe({
+  key: () => `${currentHost()}:${currentPort()}`,
+  expected: () => process.env.GPL_EXPECTED_SERIAL,
+  readIdentity: async () => {
+    const keys = Object.keys(IDENTITY_DATAIDS);
+    const batch = await runBatch(keys.map((k) => `pd ${IDENTITY_DATAIDS[k]}`), (c) => runCommand(c, { timeoutMs: 3000 }));
+    return parseIdentity(Object.fromEntries(keys.map((k, i) => [k, batch.results[i]])));
+  },
+});
+
+/** 쓰레드별 스택 사용량(`Show Thread -stack -web`, 읽기 전용) — { threads, warnings } 또는 { error }. */
+async function probeStackUsage() {
+  const r = await runCommand('Show Thread  -stack -web', { timeoutMs: 5000 });
+  if (!r.ok) return { error: r.error ?? r.status };
+  return buildStackReport(parseThreadList(r.data).threads);
 }
 
 /** ICMP 1회(best-effort). ping 미지원/실패면 alive:null. Windows ping은 "Destination host unreachable"에도 종료코드 0이라 TTL= 응답으로 판정. */
@@ -1259,11 +1270,13 @@ tool('controller_status',
       controllerHealth: { state: 'healthy', reason: 'Show Thread -web 에 <STATUS> 응답 — 런타임이 명령을 처리했다.' },
     };
     result.clock = await probeClock(); // 읽기 전용 date 1회 — 실패해도 상태 조회는 계속(clock.ok:false)
+    Object.assign(result, await identityProbe.fields()); // controllerIdentity·identityMismatch(기대 serial 설정 시)
     if (detail) {
       result.threadList = threads.map(compactThread);
       const log = await runCommand('ErrorLog -web ,10');
       result.errorLog = log.ok ? log.data.split(/\r?\n/).map((l) => l.trim()).filter(Boolean) : (log.error ?? log.status);
       result.resources = await probeResources(); // GitHub #22 — 자원 시계열이 상태 조회마다 자동으로 남게
+      result.stackUsage = await probeStackUsage(); // 쓰레드별 스택 최대 사용량·한도 대비 %(90% 이상 경고)
     }
     return textResult(result);
   });
@@ -1740,6 +1753,7 @@ tool('project_target',
       source: info.source,
       // 성공 응답에는 target 만 — 후보 전체(워크스페이스의 라이브러리까지 70개, 수천 토큰)는 PROJECT_AMBIGUOUS 때만 실린다(개선 요청 §2).
       extension: compactTargetResponse(extension),
+      ...(await identityProbe.fields()),
       extensionError,
       // 브리지 요청이 수거되지 않았으면 어느 창이 살아 있고 어느 창이 제어기를 쥐고 있는지 함께 준다(개선 요청 §1).
       ...(extensionError ? { extensionInstances: describeInstancesForError() } : {}),
@@ -2075,6 +2089,7 @@ tool('deploy_project',
       targetSent: args,
       targetSource,
       ...targetUpdate,
+      ...(out.ok ? await identityProbe.fields() : {}),
       extensionInstanceId: instanceId ?? null,
       transport: transportInfo(),
     });
@@ -2109,9 +2124,10 @@ function applyDeploySessionTarget(name, dir) {
 tool('diagnostic_snapshot',
   '자동화가 어긋났을 때 **관계 전체를 한 번에** 본다(2026-09-10 개선안 §22): 살아 있는 VS Code 창 목록 · 진행 중/최근 작업 · ' +
   '배포 잠금 보유자 · 세션 대상 프로젝트 · 현재 전송 경로. **제어기에 명령을 보내지 않는다**(파일과 presence 만 읽는다) — ' +
-  '"왜 엉뚱한 프로젝트가 올라갔지", "왜 LOCKED 지"를 추측하지 말고 이것으로 확인할 것.',
-  {},
-  async () => {
+  '"왜 엉뚱한 프로젝트가 올라갔지", "왜 LOCKED 지"를 추측하지 말고 이것으로 확인할 것. ' +
+  '예외: includeStack=true 면 읽기 전용 Show Thread -stack 1회로 쓰레드별 스택 사용량(stackUsage, 90% 이상 경고)을 더한다.',
+  { includeStack: z.boolean().optional().describe('true면 Show Thread -stack 을 1회 보내 stackUsage 를 포함(기본 false — 명령 미전송)') },
+  async ({ includeStack }) => {
     const instances = listExtensionInstances(currentHost(), {});
     const ops = listOperations({ controllerId: currentHost() });
     const lock = readDeployLock(currentHost());
@@ -2120,6 +2136,7 @@ tool('diagnostic_snapshot',
       ok: true,
       controller: { id: currentHost(), port: currentPort() },
       sessionTarget,
+      ...(includeStack === true ? { stackUsage: await probeStackUsage() } : {}),
       // 이 제어기를 보는 창이 없을 때 다른 IP 의 창(§1-ES) — extensions 가 비었는데 이것이 있으면 주소 불일치다.
       hostMismatch: instances.length === 0
         ? describeHostMismatch(currentHost(), { projectDir: sessionTarget?.dir ?? undefined })
@@ -2940,8 +2957,11 @@ tool('debug_snapshot',
 tool('show_threads',
   '전체 스레드 목록(Show Thread -web) — 이름 있는 키(name/state/project/procedure/file/line)로 구조화해 반환. ' +
   'verbose=true일 때만 원문 줄(rawLines)과 열 배열(fields)을 함께 준다(기본은 compact — 토큰 절약).',
-  { verbose: z.boolean().optional().describe('원문 줄·fields 포함') },
-  async ({ verbose }) => {
+  {
+    verbose: z.boolean().optional().describe('원문 줄·fields 포함'),
+    stack: z.boolean().optional().describe('true면 쓰레드별 스택 최대 사용량·한도 대비 %(Show Thread -stack, 90% 이상 경고)를 stackUsage 로 함께 준다'),
+  },
+  async ({ verbose, stack }) => {
     // 연결 실패도 controller_command 와 같은 구조(ok:false·outcome·recommendedAction)로 — 문자열 ERROR 로 떨어지면
     // 호출자가 "제어기 다운" 으로 읽는다(개선 요청 §5).
     let raw;
@@ -2957,6 +2977,7 @@ tool('show_threads',
       summary: summarizeThreads(threads),
       threads: verbose ? threads : threads.map(compactThread),
       ...(verbose ? { rawLines } : {}),
+      ...(stack === true ? { stackUsage: await probeStackUsage() } : {}),
     });
   });
 

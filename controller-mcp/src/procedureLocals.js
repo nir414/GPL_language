@@ -50,6 +50,15 @@ function namesFromList(text) {
   return names;
 }
 
+/** `start` 줄에서 시작하는 논리 줄 — 줄 끝 ` _`(줄 이음)을 따라 다음 물리 줄을 붙인다. 주석은 이미 지운 줄을 받는다. */
+function joinContinuation(lines, start) {
+  let text = lines[start] ?? '';
+  for (let i = start + 1; /\s_\s*$/.test(text) && i < lines.length; i++) {
+    text = text.replace(/\s_\s*$/, ' ') + lines[i];
+  }
+  return text;
+}
+
 /**
  * `line1`(1 기준) 을 품은 프로시저의 지역 이름. 프로시저 밖이거나 찾지 못하면 null.
  * @returns {{procedure:string, kind:string, headerLine:number, names:string[]}|null}
@@ -64,7 +73,8 @@ export function localNamesAt(sourceText, line1, { max = 40 } = {}) {
     if (HEADER_RE.test(lines[i]) && !/^\s*End\b/i.test(lines[i])) { header = i; break; }
   }
   if (header < 0) return null;
-  const hm = HEADER_RE.exec(lines[header]);
+  // 머리 줄이 ` _` 로 이어지면 논리 줄로 합쳐서 읽는다 — 첫 물리 줄에 닫는 괄호가 없으면 매개변수가 통째로 빠졌다.
+  const hm = HEADER_RE.exec(joinContinuation(lines, header));
   let end = lines.length;
   for (let i = header + 1; i < lines.length; i++) {
     if (END_RE.test(lines[i])) { end = i; break; }
@@ -74,7 +84,7 @@ export function localNamesAt(sourceText, line1, { max = 40 } = {}) {
   for (let i = header + 1; i < end; i++) {
     const set = SET_ACCESSOR_RE.exec(lines[i]);
     if (set && i <= at) names.push(...namesFromList(set[1]));
-    const dim = DIM_RE.exec(lines[i]);
+    const dim = DIM_RE.exec(joinContinuation(lines, i));
     if (dim) names.push(...namesFromList(dim[1]));
   }
   const seen = new Set();
@@ -96,7 +106,9 @@ export function onlyNonCodeBetween(sourceText, from, to) {
   const lines = String(sourceText ?? '').split(/\r?\n/);
   if (to - 1 > lines.length) return false;
   for (let i = from - 1; i < to - 1; i++) {
-    if (stripComment(lines[i] ?? '').trim() !== '') return false;
+    const code = stripComment(lines[i] ?? '').trim();
+    // `Rem` 줄도 주석이다 — callSiteLineOf·확장의 isBlankOrComment 와 같은 기준.
+    if (code !== '' && !/^rem(\s|$)/i.test(code)) return false;
   }
   return true;
 }

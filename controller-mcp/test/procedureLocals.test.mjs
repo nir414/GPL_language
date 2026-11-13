@@ -71,3 +71,15 @@ test('callSiteLineOf / parseStackFrames: 실측 스택(호출 20 → 보고 21, 
   const frames = parseStackFrames('0, p, Callee, 1, Main.gpl, 3, 0.055\r\n1, p, Twice, 2, Main.gpl, 25, 0.117\r\n2, p, Main, 16, Main.gpl, 21, 0.145');
   assert.deepEqual(frames.map((f) => [f.frame, f.procedure, f.line]), [[0, 'Callee', 3], [1, 'Twice', 25], [2, 'Main', 21]]);
 });
+
+test('localNamesAt: 머리 줄·Dim 이 ` _` 로 이어져도 매개변수와 이름을 모두 읽는다', () => {
+  const src = ['Module M', '  Sub Foo(a As Integer, _', '          ByVal b As String)', '    Dim c As Integer, _', '        d As Integer', '    c = 1', '  End Sub', 'End Module'].join('\n');
+  assert.deepEqual(localNamesAt(src, 6).names, ['a', 'b', 'c', 'd']);
+});
+
+test('onlyNonCodeBetween: Rem 줄도 주석으로 본다', async () => {
+  const { onlyNonCodeBetween } = await import('../src/procedureLocals.js');
+  const src = ['Sub A()', 'Rem note', '  rem', '  x = 1', 'Remove()', '  y = 2'].join('\n');
+  assert.equal(onlyNonCodeBetween(src, 2, 4), true);
+  assert.equal(onlyNonCodeBetween(src, 5, 6), false);
+});

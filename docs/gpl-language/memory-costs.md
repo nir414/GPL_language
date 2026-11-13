@@ -65,7 +65,7 @@ PA 제어기는 업로드한 소스, 컴파일 결과, 실행 중 객체와 스�
 | 객체 참조 대입 `b = a` | 0 B |
 | `ReDim Preserve`·문자열 이어 붙이기·예외 | 끝난 뒤 남는 것 없음 |
 
-- 객체를 많이 만드는 클래스는 String 필드를 `""` 로 초기화하지 마세요. Nothing 으로 두고 바깥에 돌려줄 때만 빈 문자열로 바꾸면 크게 줄어듭니다(Data_Apon 노드 1,219 → 285 B). 다만 Nothing 인 String 을 ByVal 로 넘기면 -782 가 날 수 있습니다. 확장은 이 초기화를 정보 진단 `string-field-empty-init` 으로 알려 드립니다.
+- 객체를 많이 만드는 클래스는 String 필드를 `""` 로 초기화하지 마세요. Nothing 으로 두고 바깥에 돌려줄 때만 빈 문자열로 바꾸면 크게 줄어듭니다(Data_Apon 노드 1,219 → 285 B). 다만 Nothing 인 String 을 ByVal 로 넘기거나 `Len` 에 쓰면 -782 가 날 수 있습니다([common-mistakes 0-5](common-mistakes.md)). 확장은 이 초기화를 정보 진단 `string-field-empty-init` 으로 알려 드립니다.
 - 로그 링 버퍼는 항목을 String 한 줄로 두는 편이 가장 작았습니다(256칸 기준 164 B/칸, 객체로 나누면 411 B/칸).
 
 ## 4. 스레드

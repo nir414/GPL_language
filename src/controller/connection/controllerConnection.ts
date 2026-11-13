@@ -12,6 +12,8 @@ import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS, commandChannel
 import type { CommandPolicyOptions, CommandChannelTraits } from '../commands/commandPolicy';
 import { parseStatus, parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
 import { effectiveKeepAlive } from './connectionSession';
+import { resolveControllerIp, pickIpSaveScope } from './ipSource';
+import type { ResolvedControllerIp } from './ipSource';
 import { assessMemory, checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryGuardOptions, MemoryPrecheck } from '../diagnostics/memoryGuard';
 import { guardBeforeSend, observeAfterResponse, unloadFailureGuidance } from '../commands/unloadRiskGuard';
 import { parseUnloadCommand } from '../commands/unloadRisk';
@@ -276,10 +278,33 @@ export function getSessionControllerOverride(): { ip?: string; port?: number } {
 	return { ip: _sessionIpOverride, port: _sessionPortOverride };
 }
 
+// 이 워크스페이스에서 마지막으로 연결에 성공한 IP(메모리 사본). 영속은 activation 이 workspaceState 로 한다(ipSource.ts).
+let _lastConnectedIp: string | undefined;
+
+export function setLastConnectedIp(ip: string | undefined): void {
+	_lastConnectedIp = ip && ip.trim() ? ip.trim() : undefined;
+}
+
+/** 지금 유효한 제어기 IP 와 그 출처(세션 > 워크스페이스 설정 > 마지막 연결 > User 설정 > 기본값). */
+export function resolveControllerIpSource(): ResolvedControllerIp {
+	const cfg = vscode.workspace.getConfiguration('gpl.controller');
+	return resolveControllerIp({ sessionOverride: _sessionIpOverride, inspect: cfg.inspect('ip'), lastConnected: _lastConnectedIp });
+}
+
+/** IP 를 설정에 저장한다 — 워크스페이스 값이 이미 있으면 그 범위, 아니면 User(새 워크스페이스 파일을 만들지 않는다). */
+export async function saveControllerIpSetting(ip: string): Promise<'workspace' | 'global'> {
+	const cfg = vscode.workspace.getConfiguration('gpl.controller');
+	const scope = pickIpSaveScope(cfg.inspect('ip'));
+	await cfg.update('ip', ip, scope === 'workspace' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global);
+	return scope;
+}
+
 export function getControllerConfig(): ControllerConfig {
 	const cfg = vscode.workspace.getConfiguration('gpl.controller');
 	const rawIp = cfg.get('ip');
-	const settingsIp = typeof rawIp === 'string' ? rawIp : (rawIp as any)?.ip ?? '192.168.0.1';
+	const legacyIp = typeof rawIp === 'string' ? rawIp : (rawIp as any)?.ip ?? '192.168.0.1';
+	const resolved = resolveControllerIpSource();
+	const settingsIp = resolved.source === 'default' ? legacyIp : resolved.ip;
 	const settingsPort = cfg.get<number>('port') ?? DEFAULT_PORT;
 	return {
 		ip: _sessionIpOverride ?? settingsIp,

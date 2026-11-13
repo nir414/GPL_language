@@ -18,7 +18,8 @@
  */
 
 import * as vscode from 'vscode';
-import { getControllerConfig, SHOW_MEMORY_STATUS_COMMAND } from '../../controller/connection/controllerConnection';
+import { getControllerConfig, resolveControllerIpSource, SHOW_MEMORY_STATUS_COMMAND } from '../../controller/connection/controllerConnection';
+import { describeIpSourceLine } from '../../controller/connection/ipSource';
 import type { CompileStaleInfo } from '../../controller/deployment/compileStale';
 import type { FlashSafetyState } from '../../controller/deployment/flashSafety';
 import type { UploadProgressEvent, UploadSummary } from '../../controller/deployment/uploadProgress';
@@ -336,6 +337,7 @@ export class ConnectionStatusBar implements vscode.Disposable {
     /** 연결 항목을 그린다. 확인 중/복구 대기 표시를 그렸으면 true. */
     private updateDisplay(connected: boolean): boolean {
         const cfg = getControllerConfig();
+        const ipSourceLine = describeIpSourceLine(resolveControllerIpSource());
         const health = connected ? this.healthSource?.() : undefined;
         const badge = health ? presentConnectionHealth(cfg.ip, health.snapshot, health.policy, Date.now()) : undefined;
         if (badge) {
@@ -348,11 +350,13 @@ export class ConnectionStatusBar implements vscode.Disposable {
             // "컴파일 검증 필요"는 여기 덧붙이지 않는다 — 별도 항목(updateCompileStaleItem). 이 항목의 클릭은 연결 해제다.
             this.item.text = `$(plug) GPL: ${cfg.ip}`;
             this.item.backgroundColor = undefined;
-            this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect`;
+            this.item.tooltip = `Connected to ${cfg.ip}:${cfg.port} — click to disconnect
+${ipSourceLine}`;
         } else {
-            this.item.text = `$(debug-disconnect) GPL: ${cfg.ip} (offline)`;
+            this.item.text = `$(debug-disconnect) GPL: ${cfg.ip} (offline — 미연결)`;
             this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-            this.item.tooltip = `Disconnected (${cfg.ip}:${cfg.port}) — click to connect`;
+            this.item.tooltip = `Disconnected (${cfg.ip}:${cfg.port}) — click to connect.
+${ipSourceLine}`;
         }
         return false;
     }

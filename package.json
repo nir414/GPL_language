@@ -1756,6 +1756,12 @@
                     "default": "192.168.0.1",
                     "description": "Brooks controller IP address."
                 },
+                "gpl.controller.autoConnectOnStartup": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Connect to the controller automatically when the extension activates (opt-in). Off by default: connecting takes over the controller's single command-console client, which can steal the session from another VS Code window or GDE. On failure a warning is shown; the status bar always shows the disconnected state."
+                },
                 "gpl.controller.port": {
                     "scope": "window",
                     "type": "number",

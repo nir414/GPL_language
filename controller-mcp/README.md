@@ -192,7 +192,7 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 - `controller_status(detail?)` — 상태 요약 1회: 연결(1402 도달성) · 스레드 상태별 개수와 정지 스레드 위치(`pausedThreads` = Paused/Break,
   `errorThreads` = Error, `stoppedThreads` = 정지 계열 전체) · 연결 실패 시 `observations.localConnections`(이 PC 에서 같은 포트로 맺어진 연결의
   pid·프로세스명, `foreignOwners` = 이 서버·확장 창이 아닌 ESTABLISHED — 있으면 그 점유가 1순위 원인 후보, `measured:false` 는 조회 못 함) ·
-  고전원(`Execute Controller.PowerEnabled`) · 배포 잠금 · `server`(빌드 스탬프). **연결 실패 시** ICMP/TCP를 구분해
+  고전원(`pd 230`) · `controllerIdentity`(pd 110·114·109·101, `GPL_EXPECTED_SERIAL` 과 다르면 `identityMismatch`) · 배포 잠금 · `server`(빌드 스탬프). **연결 실패 시** ICMP/TCP를 구분해
   "재부팅 중 / 서비스 다운(ECONNREFUSED) / 완전 무응답" verdict를 돌려준다(단명 연결 반복 금지). `detail:true`면
   스레드 전체 목록(compact)과 최근 `ErrorLog` 10줄, 그리고 **`resources`**(GitHub #22): 읽기 전용 `Show Memory` / `Show Network -tcp` /
   `Show Network -mbuf` 3명령을 배치로 보내 `{ memory:{freeMb,usedMb,segments,freeSegments,usedSegments}, tcp:{accepted,established,dropped,closed,

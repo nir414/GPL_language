@@ -1194,7 +1194,7 @@ function deployLockInfo() {
 }
 
 tool('controller_status',
-  '제어기 상태 요약 1회: 연결(1402 도달성)·스레드 상태별 개수와 정지 스레드 위치·고전원(Controller.PowerEnabled)·배포 잠금·서버 빌드. ' +
+  '제어기 상태 요약 1회: 연결(1402 도달성)·스레드 상태별 개수와 정지 스레드 위치·고전원(pd 230)·제어기 정체 controllerIdentity(serial·ID·이름·모델; GPL_EXPECTED_SERIAL 과 다르면 identityMismatch)·배포 잠금·서버 빌드. ' +
   'clock={controller, pc, offsetSec(제어기 − PC), uncertaintySec, pcTimeZone}는 읽기 전용 `date` 1회 조회(실패하면 clock.ok:false, 상태 조회는 계속) — 맞추려면 sync_controller_clock. ' +
   '연결 실패 시 응답은 **관측(observations)과 추론(assessment)을 분리**해 돌려준다 — observations는 icmp/tcp1402/route(측정값), ' +
   'assessment는 {state, confidence, alternativeExplanations, controllerCrashConfirmed}, controllerHealth는 런타임 상태다. ' +

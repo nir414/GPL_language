@@ -919,7 +919,9 @@ export class RuntimeConsole implements vscode.Disposable {
     }
 
     private processConsoleText(raw: string, flush = false): void {
-        this.carry += raw.replace(/\r/g, '');
+        // NUL 도 지운다 — 제어기가 프레임 사이에 NUL 1바이트를 보내고, 그것이 carry 에 남아 정체 감지가 정상 스트림을
+        // `EVENT=PARSER_STALLED pending=1B head="\u0000"` 로 오판했다(2026-11-13 실측 2회, 192.168.0.1). 프레임 안 NUL 은 emitConsoleFrame 이 이미 지운다.
+        this.carry += raw.replace(/[\r\0]/g, '');
 
         let searchFrom = 0;
         while (true) {

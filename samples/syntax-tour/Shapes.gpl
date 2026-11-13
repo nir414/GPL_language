@@ -61,7 +61,7 @@ Module Shapes
         ' 지금까지 초기화된 Counter 개수.
         '
         ' # Returns
-        ' `Init`이 호출된 횟수
+        ' `Setup`이 호출된 횟수
         '
         ' # Remarks
         ' `ReadOnly`를 붙이면 Set 절을 둘 수 없다.
@@ -85,7 +85,11 @@ Module Shapes
         '
         ' # Parameters
         ' - `text`: 이 카운터에 붙일 이름
-        Public Sub Init(ByVal text As String)
+        '
+        ' # Remarks
+        ' 이름을 `Init` 으로 하면 안 된다 — 모듈 초기화 훅이 클래스 메서드까지 잡아 인스턴스 없이 먼저 불러 `-757` 로 멈춘다
+        ' (2026-11-13 이 샘플에서 실기 재현, 진단 `init-hook-class-member`).
+        Public Sub Setup(ByVal text As String)
             current = 0
             name = text
             created = created + 1
@@ -126,7 +130,7 @@ Module Shapes
         Dim c As New Counter
         Dim i As Integer
 
-        c.Init("tour")
+        c.Setup("tour")
         c.Label = "tour-counter"
 
         For i = 0 To 2

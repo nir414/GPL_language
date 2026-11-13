@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { test } from '../../harness';
 import {
+    callSiteLine,
     breakpointCandidateLines,
     buildProcedureRanges,
     enclosingProcedure,
@@ -137,4 +138,42 @@ test('sourceTargets: 주석·문자열 안의 호출은 무시한다', () => {
 
 test('sourceTargets: 같은 이름이 두 번 나오면 한 번만', () => {
     assert.deepStrictEqual(parseCallTargets('        Beta(Beta(1))').map(t => t.label), ['Beta']);
+});
+
+// 호출자 프레임 줄 — 실측(2026-11-13 captures/probe-callerline): Show Stack 은 호출자에 "돌아가 실행할 다음 문장" 줄을 준다.
+test('callSiteLine: 보고 줄 → 바로 앞 코드 줄(빈 줄·주석·End If·Next 사례, 실측 표 그대로)', () => {
+    const src = [
+        'Module Main',                                   // 1
+        '    Public Sub Callee(ByVal tag As Integer)',   // 2
+        '        Console.WriteLine("CS " & CStr(tag))',  // 3
+        '    End Sub',                                   // 4
+        '    Public Sub Main()',                         // 5
+        '        Dim i As Integer',                      // 6
+        '        Callee(1)',                             // 7
+        '',                                              // 8
+        "        ' comment",                             // 9
+        '        i = 1',                                 // 10
+        '        If i = 1 Then',                         // 11
+        '            Callee(2)',                         // 12
+        '        End If',                                // 13
+        '        i = 2',                                 // 14
+        '        For i = 0 To 0',                        // 15
+        '            Callee(3)',                         // 16
+        '        Next i',                                // 17
+        '        i = 3',                                 // 18
+        '        Callee(4)',                             // 19
+        '        i = Twice(5)',                          // 20
+        '        Console.WriteLine("CS done")',          // 21
+    ];
+    const observed: Array<[number, number]> = [[10, 7], [13, 12], [17, 16], [20, 19], [21, 20]];
+    for (const [reported, call] of observed) {
+        assert.strictEqual(callSiteLine(src, reported), call, `reported ${reported}`);
+    }
+});
+
+test('callSiteLine: `_` 연속 줄이면 논리 줄 첫 줄, 소스 없음·첫 줄은 undefined', () => {
+    const src = ['    x = Foo(1, _', '            2)', '    y = 1'];
+    assert.strictEqual(callSiteLine(src, 3), 1);
+    assert.strictEqual(callSiteLine(undefined, 3), undefined);
+    assert.strictEqual(callSiteLine(src, 1), undefined);
 });

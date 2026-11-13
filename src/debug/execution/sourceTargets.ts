@@ -66,6 +66,23 @@ export function isBlankOrComment(line: string | undefined): boolean {
     return /^rem(\s|$)/i.test(code);
 }
 
+/**
+ * 호출자 프레임의 호출 줄 — `Show Stack` 은 호출자 프레임에 **호출 문장이 아니라 돌아가 실행할 다음 문장의 줄**을 준다.
+ *
+ * 실측(2026-11-13, G2400C 4.2K5, captures/probe-callerline): 호출 7 → 보고 10(빈 줄·주석 건너뜀), If 안 12 → 13(`End If`),
+ * For 안 16 → 17(`Next i`), 19 → 20, 식 안 `i = Twice(5)` 20 → 21, 함수 안 24 → 25. 모두 "보고 줄 바로 앞의 코드 줄"이 호출 줄이었다.
+ * 그 규칙대로 보고 줄 위로 빈 줄·주석을 건너뛴 첫 코드 줄을 돌려주고, 그 줄이 `_` 연속 줄의 끝이면 논리 줄의 첫 줄로 올린다.
+ * 소스가 없거나 위에 코드 줄이 없으면 undefined(호출자가 보고 줄을 그대로 쓴다).
+ */
+export function callSiteLine(lines: readonly string[] | undefined, reportedLine: number): number | undefined {
+    if (!lines || reportedLine <= 1 || reportedLine - 1 > lines.length) { return undefined; }
+    let l = reportedLine - 1;
+    while (l >= 1 && isBlankOrComment(lines[l - 1])) { l--; }
+    if (l < 1) { return undefined; }
+    while (l > 1 && /\s_\s*$/.test(stripToCode(lines[l - 2] ?? ''))) { l--; }
+    return l;
+}
+
 /** `End Sub` / `End Function` 줄인가(프로시저 끝 판정용). */
 export function isProcedureEnd(line: string | undefined): boolean {
     return /^\s*end\s+(sub|function)\s*$/i.test(stripToCode(line ?? ''));

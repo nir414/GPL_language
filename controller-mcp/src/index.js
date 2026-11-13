@@ -47,6 +47,7 @@ import {
 } from './parse.js';
 import { IDENTITY_DATAIDS, POWER_STATE_DATAID, parseIdentity, createIdentityProbe, powerEnabledFromDataId } from './identity.js';
 import { buildStackReport } from './stackUsage.js';
+import { localNamesAt, frameLocation, onlyNonCodeBetween, localSourceCandidates, callSiteLineOf, parseStackFrames } from './procedureLocals.js';
 import { readDeployLock, waitForDeployLockRelease, describeDeployLock, DEPLOY_GUARDED_COMMAND_RE } from './deployLock.js';
 import { isStopAllCommand, requestDeployCancellation } from './deployCancellation.js';
 import {
@@ -884,6 +885,41 @@ async function evalOne(thread, frame, expression) {
 }
 
 /** 정지 직후 여러 변수를 한 번에 평가(관측 배치). 각 결과는 evalOne과 같은 구조. */
+/** 세션 대상 기준으로 제어기 위치의 파일을 로컬에서 찾는다(없으면 null). */
+function findLocalSource(project, file) {
+  return localSourceCandidates(sessionTarget?.dir, project, file)
+    .find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } }) ?? null;
+}
+
+/** 로컬 소스로 본 "요청 줄 ~ 정지 줄 사이가 빈 줄·주석뿐" 인가(run_to_line 의 다음 실행 줄 정지 판정). */
+function stoppedAtNextExecutableLine(project, file, requestedLine, stopLine) {
+  const p = findLocalSource(project, file);
+  if (!p) return false;
+  try { return onlyNonCodeBetween(fs.readFileSync(p, 'utf8'), requestedLine, stopLine); } catch { return false; }
+}
+
+/**
+ * 지역 변수 목록 — 이름은 세션 대상의 로컬 소스(매개변수·Dim)에서, 값은 `Show Variable -eval` 로 하나씩(procedureLocals.js).
+ * `Show Variable <thread> <frame>`(이름 생략)은 4.2K5 에서 -505 라 쓰지 않는다(2026-11-13 실측).
+ */
+async function listLocalsFromSource(thread, frame, stackText) {
+  const loc = frameLocation(stackText, frame);
+  if (!loc) return { ok: false, source: 'local-source', note: `Show Stack 에서 frame ${frame} 의 파일·줄을 찾지 못했다.` };
+  const dir = sessionTarget?.dir;
+  const file = findLocalSource(null, loc.file);
+  if (!file) {
+    return { ok: false, source: 'local-source', file: loc.file, line: loc.line,
+      note: dir ? `세션 대상 폴더(${dir})와 그 형제 라이브러리에서 ${loc.file} 를 찾지 못했다 — evals 에 이름을 직접 줄 것.`
+        : '세션 대상(project_target)이 없어 소스를 찾을 수 없다 — project_target 을 고정하거나 evals 에 이름을 직접 줄 것.' };
+  }
+  let found;
+  try { found = localNamesAt(fs.readFileSync(file, 'utf8'), loc.line); } catch (err) { found = null; }
+  if (!found) return { ok: false, source: 'local-source', file, line: loc.line, note: '그 줄을 품은 Sub/Function/Property 를 소스에서 찾지 못했다(로컬 소스가 제어기 것과 다를 수 있다).' };
+  return { ok: true, source: 'local-source', file, line: loc.line, procedure: found.procedure, names: found.names,
+    values: found.names.length ? await evalMany(thread, frame, found.names) : [],
+    note: '이름은 로컬 소스의 매개변수·Dim, 값은 Show Variable -eval. 로컬 소스가 올린 것과 다르면 이름이 어긋날 수 있다.' };
+}
+
 async function evalMany(thread, frame, expressions) {
   const out = [];
   for (const expression of expressions) out.push(await evalOne(thread, frame, expression));
@@ -2926,9 +2962,13 @@ tool('run_to_line',
       }
 
       // 요청 표기와 정지 위치 표기가 달라도(`Data_Store.gpl`@PaL vs `PaL/Data_Store.gpl`@App) 같은 소스면 같은 줄로 본다.
-      const atRequestedLine = !!(wait.paused && wait.detail
-        && sameSourceFile({ project, file }, { project: wait.detail.project, file: wait.detail.file })
-        && wait.detail.fileLine === line);
+      const sameFile = !!(wait.paused && wait.detail
+        && sameSourceFile({ project, file }, { project: wait.detail.project, file: wait.detail.file }));
+      // 빈 줄·주석 줄을 요청하면 제어기는 다음 실행 줄에 선다(2026-11-13 실측: Shapes.gpl 142(빈 줄) → 143) — 로컬 소스로 확인되면 도달로 본다.
+      const adjusted = sameFile && wait.detail.fileLine > line
+        && stoppedAtNextExecutableLine(project, file, line, wait.detail.fileLine);
+      const atRequestedLine = sameFile && (wait.detail.fileLine === line || adjusted);
+      if (adjusted) result.adjustedTo = { line: wait.detail.fileLine, reason: '요청 줄이 빈 줄·주석이라 제어기가 다음 실행 줄에서 섰다(로컬 소스 확인).' };
       Object.assign(result, {
         continueOk: cont.ok,
         ...(cont.skipped ? { continueSkipped: cont.skipped } : {}),
@@ -3006,7 +3046,8 @@ tool('debug_snapshot',
     evals: z.array(z.string()).optional().describe('정지 스레드에서 평가할 필드/로컬 변수 목록(프로퍼티는 m_백킹 필드로 자동 재시도)'),
     frame: z.number().int().min(0).optional().describe('evals 평가 프레임(기본 0)'),
     listLocals: z.boolean().optional()
-      .describe('true면 정지 스레드의 해당 프레임 변수 전체 덤프(`Show Variable <thread> <frame>`, 이름 생략)를 원문으로 포함 — Brooks 문서상 구문, 실기기 미검증. 어떤 이름이 있는지 몰라 evals 이름을 추측하는 왕복을 없애는 용도'),
+      .describe('true면 정지 위치를 품은 프로시저의 매개변수·Dim 이름을 세션 대상의 로컬 소스에서 뽑아 값을 함께 돌려준다(locals.names·values). ' +
+        '이름 생략 `Show Variable <thread> <frame>` 은 4.2K5 에서 -505 라 쓰지 않는다(2026-11-13 실측). evals 이름을 추측하는 왕복을 없애는 용도'),
   },
   async ({ thread, evals, frame, listLocals }) => {
     let raw;
@@ -3029,9 +3070,7 @@ tool('debug_snapshot',
       result.stack = stack.ok ? stack.data : stack;
       const isPaused = !!(detail && PAUSED_STATES.has(detail.state));
       if (listLocals && isPaused) {
-        const locals = await runCommand(`Show Variable ${focus} ${frame ?? 0}`);
-        result.locals = locals.ok ? locals.data : locals;
-        result.localsNote = '`Show Variable <thread> <frame>`(변수명 생략) — Brooks 문서상 "해당 레벨 변수 전체 표시", 실기기 미검증. 형식이 다르면 사용자에게 보고할 것.';
+        result.locals = await listLocalsFromSource(focus, frame ?? 0, typeof result.stack === 'string' ? result.stack : '');
       }
       if (evals?.length && isPaused) {
         result.evals = await evalMany(focus, frame ?? 0, evals);
@@ -3075,9 +3114,21 @@ tool('show_thread',
   async ({ thread }) => textResult(await runCommand(`Show Thread ${thread}`)));
 
 tool('show_stack',
-  '스레드의 호출 스택(Show Stack <thread>).',
+  '스레드의 호출 스택(Show Stack <thread>). frames[] 로 구조화한다 — frame ≥ 1 의 line 은 제어기가 준 "돌아가 실행할 다음 문장" 줄이고, ' +
+  '로컬 소스가 있으면 실제 호출 줄을 callLine 으로 덧붙인다(2026-11-13 실측: 호출 7 → 보고 10, If 안 12 → 13 End If).',
   { thread: z.string() },
-  async ({ thread }) => textResult(await runCommand(`Show Stack ${thread}`)));
+  async ({ thread }) => {
+    const r = await runCommand(`Show Stack ${thread}`);
+    if (!r.ok) return textResult(r);
+    const frames = parseStackFrames(r.data).map((f) => {
+      if (f.frame === 0) return f;
+      const p = findLocalSource(null, f.file);
+      let callLine;
+      try { callLine = p ? callSiteLineOf(fs.readFileSync(p, 'utf8'), f.line) : undefined; } catch { callLine = undefined; }
+      return callLine ? { ...f, callLine } : f;
+    });
+    return textResult({ ...r, frames });
+  });
 
 tool('eval_expression',
   '정지된 스레드의 특정 프레임에서 변수를 평가한다(Show Variable -eval <thread> <frame> <expr>). 결과는 `{name,type,value,kind,members?}`로 구조화된다. ' +

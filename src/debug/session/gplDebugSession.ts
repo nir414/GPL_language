@@ -35,7 +35,7 @@ import { formatReplBatchResults, parseReplInput } from '../evaluation/replInput'
 import { SpontaneousPauseTracker } from '../execution/spontaneousPause';
 import { isAllThreadsResumeRequest, resolveExecutionThread, shouldPreserveFocus } from '../execution/threadLock';
 import { buildStartCommand, commandRunsCompiler } from '../../controller/commands/startCommand';
-import { breakpointCandidateLines, enclosingProcedure, parseCallTargets, resolveBreakpointLine } from '../execution/sourceTargets';
+import { breakpointCandidateLines, callSiteLine, enclosingProcedure, parseCallTargets, resolveBreakpointLine } from '../execution/sourceTargets';
 import { classifyVarEntry, dapColorizeType } from '../evaluation/showVariableParser';
 import type { SessionSourcesHost } from './sessionSources';
 import { SessionSources } from './sessionSources';
@@ -1132,7 +1132,11 @@ export class GPLDebugSession extends LoggingDebugSession {
                 source = this._sources.dapSource(f.file);
             }
 
-            dapFrames.push(new StackFrame(frameId, f.process || '(unknown)', source, f.fileLine));
+            // 호출자 프레임(1 이상)은 제어기가 "돌아가 실행할 다음 문장" 줄을 준다 — 로컬 소스로 호출 줄을 되짚는다(callSiteLine 실측 근거).
+            const line = f.frameIndex > 0 && f.file
+                ? (callSiteLine(this._sources.readSourceLines(f.file), f.fileLine) ?? f.fileLine)
+                : f.fileLine;
+            dapFrames.push(new StackFrame(frameId, f.process || '(unknown)', source, line));
         }
 
         response.body = {

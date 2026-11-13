@@ -42,6 +42,8 @@ function dirExists(dir: string): boolean {
 /** true 면 계속, false 면 `ctx.result` 가 확정된 상태(설정이 막은 경우만). */
 export async function runLibraryPreflight(ctx: DeployContext, project: DeployProjectInfo, target: DeployTarget): Promise<boolean> {
     const { cfg, result, pushTrace, host, io, options } = ctx;
+    // autoOnSave 게이트 경로는 저장마다 돈다 — 라이브러리마다 svn 을 여러 번 부르면 저장이 느려지므로 건너뛴다(명시 배포에서만 검사).
+    if (options.autoGate) { return true; }
     let libs: PreflightLibrary[];
     try { libs = librariesOf(ctx, project, target); } catch { return true; }
     if (libs.length === 0) { return true; }

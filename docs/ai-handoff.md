@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.17** (수신함 Sample Prep 보고 11건 처리, 1752/1752 · MCP 206/206. 상세는 §1-HG.)
-- **직전 세션: §1-HG** — "확장 개선 요청들 처리" → 수신함 11건을 4갈래(MCP 경로·언어 진단/문서·배포/라이브러리·제어기 식별)로 나눠 병렬 처리: 미연결 창 IP 즉시 거부·창 고정·런타임 콘솔 경로, IP 워크스페이스별 기억, `controllerIdentity`·스택 사용률·DataID 307, -505/-300/진입점 Catch 진단, 전처리 오포함 수정·라이브러리 출처/preflight. 라이브러리 버전 #4~#8 은 §3 보류. 실기 확인은 verification §1-HG.
+- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.18** (시뮬 제어기 실기 시험으로 찾은 디버깅·배포·진단 문제 수정, 1759/1759 · MCP 213/213. 상세는 §1-HH.)
+- **직전 세션: §1-HH** — "192.168.0.1 시뮬 제어기에 연결해 테스트하며 개선" → App 정지·Unload(사용자 동의) 뒤 시험 프로젝트로 배포·BP·스텝·변수·전처리 점검. `Exit Property` -719·`:` -722 진단, 호출자 프레임 줄 복원, listLocals 대체, NUL 오판, ErrorLog 이번 배포분, FTP 시각 수정. 새 MCP 응답·DAP 스택 줄은 실기 재확인 전(verification §1-HH). /GPL 에 시험 폴더 남음.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -82,11 +82,12 @@
 > **실사용·실기·UI 확인 항목은 `docs/ai-handoff-verification.md`로 옮겼다(2026-11-04).** 이 절에는 코드 작업과 결정 대기만
 > 둔다. 새 VSIX의 확인 항목은 그 파일에 추가한다(규칙: `docs/development/record-keeping.md`).
 
+- [ ] **(2026-11-13, §1-HH) 실기 시험 후속.** ① Running 쓰레드의 `Show Thread` 줄도 "다음 문장" 줄로 나온다(`Thread.Sleep` 12 → 13 `End While`) — 트리·대시보드 위치 표시에 `callSiteLine` 식 보정을 넣을지(정지 쓰레드는 정확) ② `callSiteLine` 을 라이브러리 소스(`<lib>/<file>`)·원격 소스 세션에서도 확인 ③ `Exit Property`·`:` 구분을 docs/gpl-language/common-mistakes 에 실측표로 ④ 문서와 다른 실측(Exit Property, 이름 없는 Show Variable)을 다른 펌웨어에서 재확인할 기회가 있으면 기록.
 - [ ] **(2026-11-13, §1-HG) 수신함 보류 — 다음 작업 후보.** 원문은 수신함 `done/` 의 같은 이름 파일.
   ① 라이브러리 버전 v2 #8 배포 묶음 내보내기(`GPL: Export Deployed Bundle` — §1-HG 의 `libraries` 출처·해시 위에) ② #4 라이브러리 두 판의 Public 선언 차이 목록 ③ #5 고정 external 안 파일 편집 경고 ④ #6 `.gpr` 지시문으로 형제 밖 라이브러리 경로
   ⑤ #7 같은 제어기에 다른 판 라이브러리 함께 로드 가능 여부(실기 — 사용자 동의) ⑥ `-729` 안내에 "원격 /GPL/<lib> 는 다른 출처에서 올라왔다"(preflight `previousUpload` 활용)
   ⑦ `gpl.controller.expectedSerial` 을 MCP 로 전달(지금 MCP 는 env `GPL_EXPECTED_SERIAL` 만 — presence 에 싣는 방안) ⑧ `thread-entry-without-catch` 를 다른 파일 진입점·`ProjectStart` 까지(심볼 인덱스)
-  ⑨ 잠금 Acquire 뒤 예외 경로 해제 누락 린트(binder #3) ⑩ 스택 사용률 `Show Thread -stack -web` 열 순서 실측 확인 뒤 주석의 「미실측」 해제.
+  ⑨ 잠금 Acquire 뒤 예외 경로 해제 누락 린트(binder #3) ⑩ ~~스택 열 순서 실측~~ — §1-HH 에서 확인(가운데 = stack_size).
 - [ ] **(2026-11-06, §1-HE) 최적화기 다음 후보 — 실기 결과를 본 뒤.** ① ~~빈 껍데기 Module 비우기~~ — §1-HF 에서 구현
   ② 실행 프로젝트 자신의 안 쓰는 선언(지금은 라이브러리만 — 앱 코드는 사용자 책임 영역이라 옵션 분리) ③ Const 값 치환 후 선언 제거(Const 150~205 B, 식 안 리터럴 비용 미실측)
   ④ 클래스 멤버 형 추론(지금은 `obj.n` 이면 이름이 같은 모든 클래스의 `n` 을 남김 — 정밀도 향상 여지).
@@ -416,7 +417,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GX ~ §1-HG)만 둔다.
+본문에는 **최근 10개 세션**(§1-GY ~ §1-HH)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있고, 그 세션들의 인덱스는 [archive/handoff/index.md](archive/handoff/index.md)에 있다.
 아래 §1-0 에는 본문에 있는 세션의 행만 둔다.
 
@@ -427,16 +428,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GW (2026-11-03 ~ 11-04) | 8 |
-| (본문 아래) | §1-GX ~ §1-HG (2026-11-04 ~ 11-13) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GX (2026-11-03 ~ 11-04) | 9 |
+| (본문 아래) | §1-GY ~ §1-HH (2026-11-04 ~ 11-13) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GW 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GX 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GX | 11-04 | **제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음** — 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 → 브레이크포인트 → FTP /GPL → 시스템 정보 → I/O → 환경 경고 → Flash Projects, 펼침은 프로젝트 상태·쓰레드·FTP /GPL·시스템 정보만, `SECTION_LAYOUT_EPOCH` 3, 앰프 온도는 시스템 정보 아래 접힌 「앰프 온도 (N)」(헤더에 최고 온도) | 본문 ↓ |
 | §1-GY | 11-04 | **AI 지침 정리** — `AGENTS.md` 정본화(`CLAUDE.md` 는 `@AGENTS.md` import), 요청 이력의 방침(커밋 자유·합쇼체 문구·포커스 강제 금지·/flash/projects) 명문화, `record-keeping.md`, §3 실사용 확인 117건 → `ai-handoff-verification.md`, 아카이브 인덱스 196행 → `archive/handoff/index.md`, 하드 규칙 번호 §0 로 통일(모션 6→9). 문서 전용 | 본문 ↓ |
 | §1-GZ | 11-04 | **프로젝트 문제점 리뷰 후속 — 명령 안전·정지 판정 경합·메모리 자동 회수·의존성** — 1402 한 줄 검증(CR/LF 거부)·전달 뒤 재전송은 조회만·UTF-8·닫힌 STATUS·줄 번호 140 수정, 브리지 정지 명령 우선·URI 토큰·상태 모르면 Step/Continue 거부, 디버거 액션 세대·잔류 pending·BP 요청 직렬화, 메모리 부족 시 정지 → Unload 자동 회수(`memoryGuard.autoUnload`), basic-ftp 6.2.5·@types/vscode ~1.74·CI Node 22·.gitattributes. 0.27.10 | 본문 ↓ |
 | §1-HA | 11-04 | **대시보드 축 위치 리밋 막대·추이 그래프 통합·전원/축/좌표 DataID 전환·I/O 클릭 토글** — 4.2K5 실측: `Execute Robot.WhereAngles`/`Where` 는 값 없음, `Execute Controller.PowerEnabled` -712, Execute 명령 상한 136자 → `pd 3504/3506/230/116/2002/16077/16078`(순수 `robotAxes.ts`), 로봇 전체 막대(양끝 소프트 리밋·5% 근접·이동), 「추이」 한 카드 5차트(같은 차트 함수·눈금·호버), 칩 클릭 토글·더블클릭 해제. 1646/1646. 0.27.11 | 본문 ↓ |
@@ -446,44 +446,12 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-HE | 11-06 | **GPL source-to-source 최적화기 — 선언 단위 미사용 제거** — `gpl.deploy.preprocess.removeUnusedMembers`: 엄격한 선언 스캐너(`memberScan`, 모르는 문장이면 그 파일 손대지 않음)·선언 그래프 도달성(`memberReachability`: 모듈 이름 생략·자기 모듈 가림·점 뒤 클래스 멤버·New·Sub Init·부작용 초기화·keep `Container.Name`), 줄 비우기(줄 번호 유지), 파일 단위 제외에 모듈 Init 출발점 추가. Sample Prep dry-run 350선언·3,726코드줄(컴파일 ≈400 KB 추정), 남은 이름 52건 수동 대조 모두 다른 모듈 것, 2차 실행 0. 1714/1714 · MCP 188/188. 0.27.15 | 본문 ↓ |
 | §1-HF | 11-06 | **최적화기 정밀도·범위 확장 + 컴파일 메모리 추정 + 메모리 진단 보정** — Sample Prep 실측(_mem.zip cost-table·unreferenced-members)·ChatGPT 정리 반영: 문자열은 이름 모양만 참조, 매개변수·맨 바깥 지역 가림, 안 쓰는 지역 Dim(87 B)·빈 Module(≈190 B) 제거, `compileCostModel`(원본 4.09 MB 추정 vs 실측 4.13 MB) → `preprocess.estimatedCompile`. 스테이지 dry-run 컴파일 4.1 → 3.5 MB 추정·소스 2.0 → 1.0 MB, 보고서 미참조 299개 중 249개 일치. Mid 누수 조건 정밀화(사용자 Function 결과 제외), `string-field-empty-init`(+183 B/칸), 문서 스레드 정정. 1719/1719 · MCP 188/188. 0.27.16 | 본문 ↓ |
 | §1-HG | 11-13 | **수신함 Sample Prep 보고 11건 — 4갈래 병렬 처리** — MCP: 미연결 창 `extension-disconnected` 즉시 거부·작업 폴더 양방향 일치·창 고정(`extension_resolve`)·런타임 콘솔 세션 대상 경로(`routeMismatch`)·`bridge-host-mismatch`·번들 다운그레이드 방지·버전 경고, 제어기 IP 워크스페이스별 기억(`workspaceState`)·`autoConnectOnStartup`(opt-in); 제어기 정체 `controllerIdentity`(pd 110/114)·`expectedSerial`·스택 사용률·DataID 307 안내·전원 pd 230; 진단 `missing-final-newline`(-505)·`create-directory-device-root`(-300)·`thread-entry-without-catch`, Catch 정정 문서; 전처리 `Device_HanyoungML` 오포함(매개변수 가림·선언 줄 자기 이름) 수정·`preprocess.kept`, 라이브러리 출처(SVN·업로드 해시)·`gpl.deploy.libraryPreflight`. 1752/1752 · MCP 206/206. 0.27.17 | 본문 ↓ |
+| §1-HH | 11-13 | **시뮬 제어기 실기 시험 — 디버깅·배포 점검과 수정** — 4.2K5 실측: `Exit Property` -719(`exit-property-rejected`)·`:` 문장 구분 -722(`statement-separator-colon`)·이름 없는 `Show Variable` -505(listLocals 를 로컬 소스 + -eval 로)·`Show Stack` 호출자 프레임은 다음 문장 줄(`callSiteLine` 로 호출 줄 복원)·run_to_line 빈 줄 → 다음 실행 줄(`adjustedTo`), 런타임 콘솔 NUL 로 인한 `PARSER_STALLED` 오판 해소, 배포 ErrorLog 이번 배포분만(`errorLogSinceDeploy`), FTP LIST 시각 2001년 수정, 콘솔 읽기 `remaining`·`matchAheadSeq`, 스택 열 순서·controllerIdentity·pd 230 실기 확인. 1759/1759 · MCP 213/213. 0.27.18 | 본문 ↓ |
 ---
 
-**최근 세션 본문 — §1-GX ~ §1-HG (2026-11-04~11-13).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GY ~ §1-HH (2026-11-04~11-13).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GX. 2026-11-04 세션 — 제어기 패널 섹션 순서·기본 펼침 재배치 + 앰프 온도 접힌 묶음 (0.27.9)
-
-### 요청(사용자)
-
-- 패널 스크린숏을 보이며 "기본 펼침 상태를 이렇게 바꾸고, 순서를 사용자가 편하게 재배치해 달라". 스크린숏의 펼침: 프로젝트 상태·쓰레드·FTP 파일(/GPL)·시스템 정보.
-  접힘: 연결·브레이크포인트·Flash Projects·I/O·코드 오류·환경 경고.
-- 작업 중 추가: "AMP 온도는 따로 분리해서 접어 달라 — CPU 온도면 모를까 모터(앰프)는 굳이". 시스템 정보에 Robot 1~5 · Amp 1 온도 행이 CPU 온도와 같이 늘어서 있었다.
-
-### 조치
-
-1. **순서**(`views/tree/treeSections.ts` `buildConnectedRoot` — 순서의 정본): (런타임 오류 컨텍스트) → 연결 → 프로젝트 상태 → 쓰레드 → 코드 오류 →
-   브레이크포인트 → FTP 파일 → 시스템 정보 → I/O → 환경 경고 → Flash Projects. 묶음 기준: 어느 제어기·프로젝트 / 실행·디버그 / 배포 파일 / 장비 /
-   드물게 여는 진단·보관. 연결은 헤더 한 줄이 "어느 제어기에 붙어 있나"라 맨 위(접힘), 코드 오류는 실행·디버그 묶음으로 올리고 환경 경고와
-   Flash Projects(/flash/projects 는 손대지 않는 영역)는 맨 아래로. 이 순서는 사용자 스크린숏이 아니라 AI 판단이다 — 사용자가 바꾸고 싶어 하면 그대로 따른다.
-2. **기본 접힘** — 프로젝트 상태 펼침(종전: 불일치·검증 필요일 때만 펼침 → 항상 펼침이라 조건 분기 삭제), 쓰레드 펼침, Flash Projects 접힘
-   (`buildFtpSection` 이 `input.flash` 로 결정 — FTP 탐색 전용 모드에서도 같음), 시스템 정보 펼침, 코드 오류·환경 경고 접힘. Error 쓰레드는 펼친 쓰레드 섹션
-   맨 위에 정렬돼 보이므로 코드 오류를 접어도 놓치지 않는다. **`SECTION_LAYOUT_EPOCH` 2 → 3** — 저장된 접기 상태가 한 번 초기화돼 새 기본값이 보인다(§1-DF 방식).
-3. **앰프 온도 묶음** — `SystemInfoItem` 에 `group?: 'ampTemperature'`·`celsius?` 를 더하고 `buildSystemInfoItems` 가 `kind === 'amplifier'` 행에 붙인다.
-   `buildSystemInfoSection` 이 묶음 행을 하위 `SectionNode('ampTemps')`(「앰프 온도 (N)」, 아이콘 `flame`, 접힘)로 모으고, 헤더 설명에 판정 가능한 값의 최고 온도
-   (`최고 41.0°C`, 값이 없으면 `센서 값 미확인`)를 보인다. 섹션 노드라 `section-ampTemps@<epoch>` id 로 사용자의 펼침이 기억된다. 상황 보고서(snapshotMarkdown)는 평면 행 그대로.
-- 동시 작업: 다른 세션이 0.27.8(§1-GW)을 릴리스 중이라 그 커밋(414e879)이 끝난 뒤 이어서 기록했다. 그 세션은 이 세션 파일을 커밋·VSIX 에 넣지 않았다.
-
-### 검증
-
-- `npm test` **1608/1608** — 새 `src/test/views/tree/treeSectionsLayout.test.ts` 4건: 루트 순서·기본 접힘 고정, 검증 필요가 있어도 프로젝트 상태 펼침,
-  CPU 온도는 섹션 바로 아래·앰프는 접힌 묶음(헤더 최고 온도·자식 순서), 앰프 행이 없으면 묶음 없음.
-- VSIX `dist/gpl-language-support-0.27.9.vsix` 1,682,267 bytes(361 files), SHA-256 `B5B45173C113CBA7783E6106D70908F7707869EF027FFFD4CE7CF0CCEB871621` — HEAD(8540f51)의 깨끗한 worktree(`%TEMP%\gpl-wt-0279`, 루트·controller-mcp 모두 `npm ci`)에서 만들었다(worktree `npm test` 1608/1608). 작업 트리에는 다른 세션(gpl-language-57, 지침 정리)의 미커밋 변경이 있었다. 번들의 `treeSections.js` 에 `ampTemps`·`SECTION_LAYOUT_EPOCH = 3` 확인.
-- 실제 패널 표시는 미확인 → §3.
-
-### 남은 일
-
-- §3 §1-GX 패널 UI 확인. 순서는 사용자 피드백에 따라 조정.
 
 ## 1-GY. 2026-11-04 세션 — AI 지침 정리: AGENTS.md 정본화 · ai-handoff 다이어트 · 하드 규칙 번호 통일 (문서 전용, 버전 변경 없음)
 
@@ -915,3 +883,43 @@ JointOnly · ctor Init · Catch 새 객체 · try-finally · thread-block/Mid ·
 
 - 보류 항목은 §3 「(2026-11-13, §1-HG)」(라이브러리 버전 #4~#8, `expectedSerial` MCP 전달, 진입점 린트 확장, 잠금 린트, 스택 열 순서 실측).
 - worktree 4개(`%TEMP%\gpl-wt-*`)와 `inbox2/*` 브랜치는 병합 뒤 정리.
+
+## 1-HH. 2026-11-13 세션 — 시뮬 제어기 실기 시험: 디버깅·배포 기능 점검과 그 자리 수정 (0.27.18)
+
+### 증상(요청)
+
+"192.168.0.1 시뮬 제어기에 연결해서 테스트 하며 개선 검토. 디버깅도 해보고 이것 저것 기능 테스트해서 개선." 제어기 G2400C 4.2K5(110 `0014FF-02300289`, 2105 = 1, 전원 꺼짐).
+돌고 있던 Sample Prep `App`(쓰레드 12, Free 0.80 MB)은 사용자 동의로 정지·Unload 했고 다시 올리지 않았다(/GPL 의 PaL·Gantry 는 그대로).
+
+### 시험한 것과 결과
+
+- 시험 프로젝트: `samples/syntax-tour`, 프로브 `captures/probe-exitprop`·`probe-callerline`·`probe-loop`·`libtest/{LtApp,LtLib}`(captures 는 git 미추적).
+- 정상 확인(§1-HG 실기 항목 일부 해소): `controllerIdentity`(project_target·배포·status), 전원 `pd 230` = 7 → `powerEnabled:false`, attach 없이도 `pd 307` 읽기,
+  스택 열 순서(가운데 = 생성자 stack_size: TCPCMD 8.000·TCPCLI_0 6.000), `stop_threads({project})` 10쓰레드 정착, Unload 뒤 `next:"redeploy"`,
+  전처리 `excludeUnreachableLibraryFiles`(매개변수 `codeText` 와 겹치는 `ZMOD.CodeText` 파일 제외 → Compile 0·Start 정상)·`preprocess.kept`·`libraries`(vcs null)·`preflight`(unknown),
+  BP·Continue·Step over/into/out·run_to_line·eval(객체 덤프·`Counter.Ceiling`)·Break·`Execute Main.stopFlag = True`·런타임 콘솔 `routedBy:"session-target"`.
+
+### 찾은 문제 → 조치
+
+- **`Exit Property` 는 -719**(f888fed) — 문서상 Exit.htm 구문 목록에 있으나 Get·Set·ReadOnly Get 모두 Compile `-719 *Illegal use of keyword*`. 완성 목록에서 빼고 진단 `exit-property-rejected`(error), syntax-tour 수정.
+- **`:` 문장 구분은 -722**(49b37ac) — `Callee(4) : i = 4` → `*Unexpected text at end of line*`. 진단 `statement-separator-colon`(error, 줄 머리 라벨·문자열·주석 제외). Sample Prep 47파일 스캔 거짓 경고 0.
+- **syntax-tour 가 Start 때 -757**(1a7e013) — 샘플의 클래스 `Sub Init` 이 초기화 훅에 잡힘(§1-EA 와 같은 원인, 진단은 이미 있음). `Setup` 으로 바꿈.
+- **호출자 프레임 줄**(1a7e013) — `Show Stack` 은 frame ≥ 1 에 호출 줄이 아니라 **돌아가 실행할 다음 문장 줄**을 준다(7 → 10 빈 줄·주석 건너뜀, If 안 12 → 13 `End If`, For 안 16 → 17 `Next`, 식 안 20 → 21, 함수 안 24 → 25).
+  DAP 호출 스택이 로컬 소스로 호출 줄을 되짚는다(`sourceTargets.callSiteLine`, 맨 위 프레임은 그대로), MCP `show_stack` 은 `frames[].callLine`.
+- **이름 없는 `Show Variable <thread> <frame>` 은 -505**(Paused·Error 모두, 문서상으로는 전체 표시) — `debug_snapshot({listLocals})` 를 로컬 소스의 매개변수·Dim 이름 + `-eval` 로(`controller-mcp/src/procedureLocals.js`).
+- **`run_to_line` 빈 줄 요청**(142 → 143 에 섬) — 사이가 빈 줄·주석뿐이면 도달로 보고 `adjustedTo`.
+- **런타임 콘솔 `PARSER_STALLED` 오판** — 프레임 사이 NUL 1바이트가 `carry` 에 남아 정체로 판정(`pending=1B head="\u0000"`, 세션 중 6회). 파서 입력에서 NUL 제거. §1-HC 의 "원인 미확정" 정체 후보 하나가 이것일 수 있다(추정).
+- **배포 ErrorLog 누적**(280b3e4) — 배포마다 일주일 전 항목까지 14건이 다시 찍힘(이번 배포분 0). Compile 응답의 `begin compiler pass 1` 시각(제어기 시계)으로 갈라 예전 것은 개수만, `result.errorLogSinceDeploy`.
+- **FTP LIST 시각이 2001년**(51fc817) — 연도 없는 `Nov 13 14:22` 를 V8 이 2001 로 채움 → `parseFtpListDate`. 동기화 지문의 원격 mtime 이 달라져 업데이트 뒤 첫 배포는 전체 업로드될 수 있다.
+- **런타임 콘솔 읽기 잘림**(a4e102f) — `untilPattern` + `maxLines` 에서 잘리면 `matched:false`·`timedOut:false` 만 와 "안 나왔다" 로 읽힘 → `remaining`·`matchAheadSeq`. Continue 뒤 Idle 을 "실행 중일 수 있다" 로 안내하던 문구 수정.
+- 수신함 12번째(flash 경로 대소문자, 5917cdc)도 이 버전에 실림.
+
+### 검증
+
+- `npm test` 1759/1759, `controller-mcp` 213/213. 고친 샘플은 실기에서 Compile STATUS 0·Start 정상.
+- 이 세션의 MCP 서버는 수정 전 소스로 떠 있어 `listLocals`·`show_stack.callLine`·`adjustedTo`·`remaining` 과 DAP 호출 스택 줄은 **실기 재확인 전**(단위 테스트는 실측 표를 그대로 고정) — verification §1-HH.
+
+### 남은 일
+
+- 제어기 `/GPL` 에 시험 폴더(syntax_tour·probe_exitprop·probe_callerline·probe_loop·LtApp·LtLib)가 남아 있다 — 지우기는 사용자 동의 뒤. Sample Prep App 은 내려간 상태.
+- 관찰만 한 것(§3): Running 쓰레드의 `Show Thread` 줄도 Sleep 다음 문장 줄로 나온다(`Thread.Sleep` 12 → 13) — 트리 표시 보정 여부, `c.Count`(-780)·`c.current`(-729) 는 객체 덤프로만 읽힘(기존 사실).

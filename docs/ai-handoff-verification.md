@@ -11,11 +11,16 @@
 
 ## 확인 대기 항목
 
+- [ ] **(2026-11-13, §1-HH) 0.27.18 — 실기 재확인(시뮬레이션 제어기, Start·Step 을 보낸다 — 모션 없는 `captures/probe-callerline` 권장).**
+  ① F5 로 `Callee` 안 BP 에 선 뒤 호출 스택의 `Main` 프레임을 누르면 호출 줄(7·12·16·19·20)이 강조되는지(전에는 다음 문장 줄). ② `/mcp` 재연결 뒤 `debug_snapshot({listLocals:true})` 의 `locals.names·values`, `show_stack` 의 `frames[].callLine`, 빈 줄로 `run_to_line` → `adjustedTo`.
+  ③ 실행 뒤 한동안 두어도 「GPL Traffic」 에 `EVENT=PARSER_STALLED pending=1B` 가 안 생기는지. ④ 배포 Output 의 `이번 배포 이후 새 ErrorLog 없음 (이전 기록 N건)`. ⑤ `list_remote_projects.newestModifiedAt` 연도, 업데이트 뒤 첫 배포가 전체 업로드로 한 번 도는지.
+  ⑥ 제어기 불필요: `Exit Property`·`A() : b = 1` 에 오류 진단, 완성 목록에 `Exit Property` 없음.
+
 - [ ] **(2026-11-13, §1-HG) 0.27.17 수신함 11건 — 실사용·실기 확인(①~④ 모션 무영향 조회·연결만, ⑤는 배포 — 장비 정지 상태에서).**
   ① 창 하나를 미연결로 두고 IP 를 GPL_HOST 와 다르게 → MCP `controller_status` 가 `extension-disconnected`(두 IP)로 즉시 답하는지, 연결 뒤 다음 호출에서 따라가는지. 창 둘(다른 IP)에서 `extension_resolve {extensionInstanceId}` 고정 → `runtime_console_read` 가 그 창 줄을 읽는지·`routeMismatch` 표시.
   ② 워크스페이스 A·B 에서 서로 다른 IP 로 연결 → 창을 다시 열 때 각자 마지막 IP 가 대상인지, 상태 표시줄 툴팁의 출처. `autoConnectOnStartup` 켜고 재시작 → 조용히 연결·실패 시 경고.
   ③ 연결 직후 Output 에 제어기 정체(serial·ID·이름·모델), `gpl.controller.expectedSerial` 을 다른 값으로 두면 비모달 경고. MCP `controller_status` 의 `controllerIdentity`·`powerEnabled`(pd 230).
-  ④ `show_threads({stack:true})` 의 `stackUsage` 숫자가 `Show Thread <name> -stack` 원문과 맞는지(열 순서 **추정**) — 맞으면 §3 ⑩ 해제. 디버그 attach 때 DataID 307 ≠ 0 이면 Debug Console 한 줄.
+  ④ ~~스택 열 순서~~(§1-HH 에서 확인). 디버그 attach 때 DataID 307 ≠ 0 이면 Debug Console 한 줄.
   ⑤ Sample Prep App 전처리 배포 → `Device_HanyoungML` 제외·`preprocess.kept` 사유·Compile STATUS 0. 결과 `libraries`/`librarySummary`·`preflight.libraries`(PaL 로컬 변경 경고), `list_remote_projects` 의 `lastCompiledFrom.librarySummary`.
   ⑥ 제어기 불필요: 끝 줄바꿈 없는 .gpl 에 `missing-final-newline` + 빠른 수정, `File.CreateDirectory("/ROMDISK")` 경고, 같은 파일 `New Thread` 진입점에 Catch 없으면 정보 진단.
 

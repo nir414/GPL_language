@@ -251,7 +251,11 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 		// 보낸다(breakpointTarget.ts — 디버그 어댑터 setBreakpoints 와 같은 함수).
 		const sendTarget = breakpointSendTarget(target);
 		if (!sendTarget) {
-			return { ok: false, error: 'outside-project', file: args.file, line, message: target.message };
+			return {
+				ok: false, error: target.nestedLibraryRef ? 'nested-library-unaddressable' : 'outside-project',
+				file: args.file, line, message: target.message,
+				...(target.nestedLibraryRef ? { nestedLibraryRef: target.nestedLibraryRef } : {}),
+			};
 		}
 
 		const fileName = sendTarget.file;
@@ -391,7 +395,12 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 	registerAiDebugCommand('gpl.ai.debug.projectLibraries', async (args?: { projectName?: string }) => {
 		const projectName = (args?.projectName || await host.project.resolveExpectedProjectName() || '').trim();
 		if (!projectName) { return { ok: false, error: 'missing-projectName' }; }
-		return { ok: true, projectName, libraries: host.project.resolveProjectLibraryNames(projectName) };
+		// libraries = 제어기가 아는 이름(ProjectLibrary 값이 낱말 하나), nestedLibraries = 중첩 값(중단점 지정 불가 — 2026-11-13 실측).
+		return {
+			ok: true, projectName,
+			libraries: host.project.resolveProjectLibraryNames(projectName),
+			nestedLibraries: host.project.resolveNestedLibraryRefs(projectName),
+		};
 	});
 
 	registerAiDebugCommand('gpl.ai.debug.getConnectionState', async () => {

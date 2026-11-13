@@ -104,8 +104,46 @@ projects/MyProject/MyLibrary/Project.gpl   Public Sub T1()
 배포하는 프로젝트의 라이브러리 그래프(재귀)에서 **컴파일 루트 밖 · 같은 projects 폴더 안**이고 값을 projects 폴더에 붙이면
 그 폴더가 나오는 라이브러리를 `/GPL/<값>` 으로 함께 올린다(설정 `gpl.deploy.uploadLibraries`). 프로젝트 폴더 안 라이브러리는
 원래 재귀 업로드에 포함되고, `ProjectStart` 가 있는 상위 `.gpr` 안의 하위 패키지(내장형, 예: BinderR4 — 값이 루트 기준)는
-라이브러리가 그 컴파일 루트에 속하므로 따로 올리지 않는다. **[미검증]** 형제 폴더(`/GPL/Main` + `/GPL/Libraries`)
-배치에서 제어기가 라이브러리를 찾는지는 실기 확인 전이다.
+라이브러리가 그 컴파일 루트에 속하므로 따로 올리지 않는다. 형제 폴더(`/GPL/Main` + `/GPL/Libraries`) 배치에서 제어기가
+라이브러리를 찾는 것은 **[실측]** 2026-11-13(아래 §4.1).
+
+### 4.1 라이브러리 배치와 중단점 — 무엇이 걸리고 무엇이 안 걸리나 **[실측]**
+
+2026-11-13, G2400C GPL 4.2K5(시뮬레이션 제어기)에서 작은 프로브(`captures/nesttest` — git 미추적)와 실제 Sample Prep
+`Lib/v1`(Group–Leaf 83파일) 사본으로 확인했다. 문서상 `Set Break project_name "file_name" line_number` 의
+`project_name` 은 "프로시저가 든 프로젝트"라고만 적혀 있다
+([set_break.htm](https://www2.brooksautomation.com/Controller_Software/Software_Reference/Console_Commands/set_break.htm)).
+
+| 배치 | `ProjectLibrary` 값 | 컴파일·실행·Step | `Set Break` |
+| --- | --- | --- | --- |
+| 형제 폴더, `.gpr` 하나 | `"FDir"` | 됨 | `Set Break FDir "F.gpl"4` → 0. **이름은 폴더 이름**이다 — `ProjectName="FName"` 으로는 -508 |
+| 형제 폴더, `.gpr` 하나 + **하위 폴더 소스** | `"TLib"` (`ProjectSource="Core\Log\Logger.gpl"`) | 됨 | `Set Break TLib "Core\Log\Logger.gpl"4` → 0, 히트. `/` 로 쓰면 -508 |
+| **중첩 라이브러리**(폴더마다 `.gpr`) | `"NLib\Core\Log"` | 됨(Show Stack `NLib\Core\Log/Logger.gpl`) | **지정할 방법 없음** — 24종 표기 모두 -508/-205 |
+
+- 위치 표기는 `<ProjectLibrary 값>/<ProjectSource 표기>` 다(`TLib/Core\Log\Logger.gpl`, `NLib\Core\Log/Logger.gpl`).
+- 중첩 라이브러리에 시도한 표기: 메인 프로젝트 + 파일명·`\` 경로·`/` 경로·Show Stack 표기·`/GPL` 절대 경로·`..\`,
+  폴더명(`Log`·`Base`·`Util`)·ProjectName(`NLib_Base`·`NLib_Util`)·최상위 폴더(`NLib`) + 하위 경로 → -508,
+  값 자체(`NLib\Core\Log`·`NLib/Core/Log`·따옴표·`\\`·`/GPL/…`)를 프로젝트 인자로 → -205 *Missing argument*
+  (프로젝트 인자는 구분자 없는 낱말 하나만 받는다). 없는 프로젝트·없는 파일·없는 줄도 모두 -508 이라 오류 코드로는 원인을 가를 수 없다.
+- `Lib` 는 GPL 예약어(`Module Lib` → -719)지만 **폴더·프로젝트 이름으로는 문제없다** — `/GPL/Lib`(중첩 리프 참조, 그리고
+  `.gpr` 하나 + 하위 폴더 소스) 모두 Compile·Start·`Set Break Lib "Core\Log\Logger.gpl"4`·Stop·Unload 가 정상이었다.
+- 메인 프로젝트 Unload 는 라이브러리 폴더(`/GPL/NLib`)를 남긴다(메인 폴더만 사라진다).
+
+**중첩 폴더 구조를 쓰면서 중단점도 쓰려면**: 폴더 구조는 그대로 두고 **라이브러리 맨 위에 `.gpr` 하나**만 두어 하위 폴더 소스를
+직접 등재한다. 앱은 `ProjectLibrary="Lib"` 한 줄로 참조한다.
+
+```txt
+projects/App/Project.gpr          ProjectLibrary="Lib"
+projects/Lib/Project.gpr          ProjectSource="Core\Log\Logger.gpl"
+                                  ProjectSource="Core\Text\StringUtils.gpl"  …(하위 폴더 소스 전부)
+projects/Lib/Core/Log/Logger.gpl
+projects/Lib/Core/Text/StringUtils.gpl
+```
+
+리프 단위로 골라 쓰던 메모리 절약은 배포 전처리 `excludeUnreachableLibraryFiles`(`gpl.deploy.preprocess`)가 대신한다 —
+실제 `Lib/v1` 83파일(1.64 MB)을 이 형태로 묶고 로거만 쓰는 앱을 배포하니 4파일(15.6 KB)만 올라가 Compile STATUS 0,
+`Set Break V1Lib "Core\Log\Logger.gpl"84` 히트, 그 프레임의 매개변수 값 조회까지 됐다. 확장은 중첩 라이브러리 소스에
+중단점을 찍으면 보내지 않고 이 사유를 중단점 메시지로 알린다(`project/remote/breakpointTarget.ts`).
 
 GDS 문서 "GPL Project Libraries" 절의 서술:
 

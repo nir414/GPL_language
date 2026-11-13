@@ -15,7 +15,7 @@ import { parseGpr, pickSourceCandidate } from '../../controller/protocol/respons
 import { parseJsonc, upsertLaunchConfiguration } from '../../debug/session/launchJsonc';
 import { walkTree } from '../../project/sources/projectSources';
 import { chooseCompileUnitGprs, GprIdentity, readGprIdentity, readGprIdentityInDir } from '../../project/sources/compileUnitTarget';
-import { ResolvedBreakpointTarget, listLibraryProjectNames, resolveBreakpointTarget } from '../../project/remote/breakpointTarget';
+import { ResolvedBreakpointTarget, listLibraryProjectNames, listNestedLibraryRefs, resolveBreakpointTarget } from '../../project/remote/breakpointTarget';
 import type { ExtensionHost } from '../host';
 
 export interface ProjectContextApi {
@@ -31,6 +31,8 @@ export interface ProjectContextApi {
 	resolveBreakpointTarget(file: string, line: number, projectName: string): ResolvedBreakpointTarget | undefined;
 	/** 프로젝트의 컴파일 단위가 `ProjectLibrary`로 끌어오는 프로젝트 이름들(MCP가 `<lib>/<file>` 표기를 풀 때 쓴다). */
 	resolveProjectLibraryNames(projectName: string): string[];
+	/** 중첩 라이브러리의 `ProjectLibrary` 값(`/` 구분) — 제어기가 중단점 대상으로 지정하지 못하는 위치 접두어. */
+	resolveNestedLibraryRefs(projectName: string): string[];
 }
 
 export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
@@ -404,6 +406,17 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 	}
 
 	function resolveProjectLibraryNames(projectName: string): string[] {
+		return collectLibraryIdentities(projectName, listLibraryProjectNames);
+	}
+
+	function resolveNestedLibraryRefs(projectName: string): string[] {
+		return collectLibraryIdentities(projectName, listNestedLibraryRefs);
+	}
+
+	function collectLibraryIdentities(
+		projectName: string,
+		list: (gprPath: string, gprText: string, opts: { knownGprPaths: string[] }) => string[],
+	): string[] {
 		const allGprs = findWorkspaceFilesByName('Project.gpr');
 		const target = readGprIdentityInDir(host.sessionTargetDir);
 		const choice = chooseCompileUnitGprs(
@@ -414,7 +427,7 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 		const names: string[] = [];
 		for (const gprPath of choice.gprPaths) {
 			try {
-				for (const name of listLibraryProjectNames(gprPath, fs.readFileSync(gprPath, 'utf8'), { knownGprPaths: allGprs })) {
+				for (const name of list(gprPath, fs.readFileSync(gprPath, 'utf8'), { knownGprPaths: allGprs })) {
 					if (!names.some(n => n.toLowerCase() === name.toLowerCase())) { names.push(name); }
 				}
 			} catch { /* 다음 동명 프로젝트 후보 확인 */ }
@@ -434,5 +447,6 @@ export function activateProjectContext(host: ExtensionHost): ProjectContextApi {
 		resolveGplFilePath,
 		resolveBreakpointTarget: resolveBpTarget,
 		resolveProjectLibraryNames,
+		resolveNestedLibraryRefs,
 	};
 }

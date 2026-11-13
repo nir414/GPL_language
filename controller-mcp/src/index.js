@@ -72,7 +72,7 @@ import {
 } from './extensionBridge.js';
 import { preSendCauseOf, pickSessionWindow, routeMismatchOf, serverVersionWarning } from './routing.js';
 import { partitionStopTargets } from './stopTargets.js';
-import { sameSourceFile, splitLibraryQualifiedFile } from './libraryLocation.js';
+import { sameSourceFile, splitLibraryQualifiedFile, nestedLibraryOf } from './libraryLocation.js';
 import { compilerCommandOptions, controllerResponseOutcome } from './commandOptions.js';
 import {
   listOperations,
@@ -750,13 +750,36 @@ async function resolveBreakpointLocation(file, project) {
   const name = proj(project);
   if (!/[\\/]/.test(file)) return { project: name, file };
   let libraries = [];
+  let nested = [];
   try {
     const res = await callExtension('gpl.ai.debug.projectLibraries', { projectName: name }, { timeoutMs: 8_000 });
     if (res?.ok && res.result?.ok !== false && Array.isArray(res.result?.libraries)) libraries = res.result.libraries;
+    if (res?.ok && Array.isArray(res.result?.nestedLibraries)) nested = res.result.nestedLibraries;
   } catch { /* 브리지 없음 — 입력 그대로 */ }
+  // 중첩 라이브러리(ProjectLibrary="Lib\Core\Log")의 소스는 제어기가 Set Break 대상으로 지정하지 못한다 — 보내지 않는다(libraryLocation.js 실측).
+  const nestedLibrary = nestedLibraryOf(file, nested);
+  if (nestedLibrary) return { project: name, file, nestedLibrary };
   const split = splitLibraryQualifiedFile(file, libraries);
   if (!split) return { project: name, file };
   return { project: split.project, file: split.file, rewrittenFrom: { project: name, file } };
+}
+
+/** 중첩 라이브러리 위치에 대한 거부 응답 — 제어기에 보내지 않았다(not-sent). */
+function nestedLibraryRefusal(loc, line) {
+  const top = String(loc.nestedLibrary).split('/')[0];
+  return {
+    ok: false,
+    sent: false,
+    refused: 'nested-library-unaddressable',
+    file: loc.file,
+    line,
+    nestedLibrary: loc.nestedLibrary,
+    detail: `이 파일은 중첩 라이브러리(ProjectLibrary="${String(loc.nestedLibrary).replace(/\//g, '\\')}")의 소스다. 제어기의 Set Break 는 프로젝트 인자로 `
+      + '/GPL 바로 아래 폴더 이름만 받아 중첩 라이브러리를 지정할 방법이 없다(2026-11-13 실측: 폴더명·ProjectName·경로 표기 24종 모두 -508/-205). '
+      + '표기를 바꿔 재시도하지 말 것. Step into 로 들어가는 것은 된다.',
+    remedy: `${top} 폴더 맨 위 Project.gpr 하나에 하위 폴더 소스를 ProjectSource="하위\\경로\\파일.gpl" 로 직접 등재하고 앱이 ProjectLibrary="${top}" 로 `
+      + `참조하게 바꾸면(폴더 구조는 그대로) Set Break ${top} "하위\\경로\\파일.gpl"<줄> 이 걸린다 — 사용자에게 구조 변경을 제안할 것.`,
+  };
 }
 
 /** 풀어 쓴 위치를 응답에 알린다(무엇이 실제로 전송됐는지 추론하지 않게). */
@@ -2923,6 +2946,7 @@ tool('run_to_line',
     resetStepStreak();
     // 위치 응답의 `<라이브러리>/<파일>` 표기를 그대로 받는다 — 제어기 표기(project:<라이브러리>)로 풀어 쓴다.
     const loc = await resolveBreakpointLocation(fileArg, projectArg);
+    if (loc.nestedLibrary) return textResult({ phase: 'set_breakpoint', ...nestedLibraryRefusal(loc, line) });
     const file = loc.file;
     const project = loc.project;
     // 쓰레드 상태를 모르면 Continue 여부를 판단할 수 없다 — 중단점을 걸기 전에 거부한다(§1-GZ).
@@ -3015,6 +3039,7 @@ tool('set_breakpoint',
   async ({ file, line, project }) => {
     resetStepStreak();
     const loc = await resolveBreakpointLocation(file, project);
+    if (loc.nestedLibrary) return textResult(nestedLibraryRefusal(loc, line));
     return textResult(withRewriteNote(await runCommand(`Set Break ${loc.project} "${loc.file}"${line}`), loc));
   });
 
@@ -3023,6 +3048,7 @@ tool('clear_breakpoint',
   { file: z.string(), line: z.number().int().positive(), project: z.string().optional() },
   async ({ file, line, project }) => {
     const loc = await resolveBreakpointLocation(file, project);
+    if (loc.nestedLibrary) return textResult(nestedLibraryRefusal(loc, line));
     return textResult(withRewriteNote(await runCommand(`Set Nobreak ${loc.project} "${loc.file}"${line}`), loc));
   });
 

@@ -1,8 +1,8 @@
 /**
- * 배포 결과 보고의 순수 규칙 — activation/deploy.ts `runDeployCore` 의 결과 보고부에서 분리(2026-09-07 §1-DB, 동작 동일).
+ * 배포 결과 보고의 순수 규칙 — activation/deploy/deploy.ts `runDeployCore` 의 결과 보고부에서 분리(2026-09-07 §1-DB, 동작 동일).
  *
  * 무엇을 담는가:
- * - `SituationDeploySnapshot`: 트리(상황 요약)·오류 상세가 읽는 "마지막 배포 결과". 종전에는 views/controllerTreeProvider.ts 에
+ * - `SituationDeploySnapshot`: 트리(상황 요약)·오류 상세가 읽는 "마지막 배포 결과". 종전에는 views/tree/controllerTreeProvider.ts 에
  *   정의돼 있어 생산자(controller/activation)가 views 를 import 했다 — 생산자 쪽으로 옮겨 의존 방향을 views → controller 로 맞췄다.
  * - 결과 서명(`buildDeployOutcomeSignature`)과 이력(`DeployOutcomeHistory`): 같은 결과 패턴이 반복되면 "회귀 아님" 주석을 붙인다.
  * - ErrorLog 분류 로그(`classifyDeployErrorLog`)·COMPILE 원문 로그(`buildCompileRawSectionLines`): Output 채널에 찍을 줄을
@@ -20,7 +20,7 @@ export interface SituationDeploySnapshot {
     mode: 'Build' | 'Deploy & Run' | 'Upload & Start' | 'Upload Only';
     success: boolean;
     // 순서(2026-08-25 재배치): UPLOAD → STOP/THREAD_CHECK → COMPILE → START → ERROR_CHECK
-    lastStage: 'LOCKED' | 'CANCELLED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
+    lastStage: 'LOCKED' | 'CANCELLED' | 'UPLOAD' | 'STOP' | 'THREAD_CHECK' | 'MEMORY_CHECK' | 'COMPILE_DEFERRED' | 'COMPILE' | 'START' | 'ERROR_CHECK' | 'SUCCESS';
     compileErrorCodes: number[];
     controllerSystemCodes: number[];
     updatedAt: number;
@@ -128,10 +128,16 @@ export class DeployOutcomeHistory {
     }
 }
 
-/** 같은 패턴이 이전에 있었으면 "회귀 아님" 주석(성공 경로는 '결과', 실패 경로는 '실패' 패턴으로 표기). */
+/**
+ * 같은 패턴이 이전에 있었으면 반복 횟수 주석(성공 경로는 '결과', 실패 경로는 '실패' 패턴으로 표기).
+ * 종전 문구 `회귀 아님: 동일 실패 패턴 3회 관측` 은 "원인이 아니다"로 읽혀 사용자가 원인을 오해했다(2026-10-26 Sample Prep) —
+ * 뜻은 "이번에 새로 생긴 문제가 아니라 같은 원인이 되풀이된 것"이다.
+ */
 export function comparisonNoteFor(sameCount: number, kind: 'result' | 'failure'): string | undefined {
     if (sameCount <= 0) { return undefined; }
-    return `회귀 아님: 동일 ${kind === 'failure' ? '실패' : '결과'} 패턴 ${sameCount + 1}회 관측`;
+    return kind === 'failure'
+        ? `같은 실패 ${sameCount + 1}회째 (새 회귀가 아니라 같은 원인의 반복)`
+        : `같은 결과 ${sameCount + 1}회째`;
 }
 
 export interface ErrorLogClassification {
@@ -257,6 +263,33 @@ export function selectErrorLogNotice(
     return notice;
 }
 
+/** 제어기 시각 표기 `MM-DD-YYYY HH:MM:SS[.mmm]` → 비교용 정수 키(YYYYMMDDHHMMSS, 초 단위). 없으면 undefined. */
+export function controllerStampKey(text: string): number | undefined {
+    const m = /(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/.exec(text);
+    if (!m) { return undefined; }
+    // 초 단위까지만 쓴다(14자리). 밀리초까지 붙인 17자리는 2^53 을 넘어 끝자리가 틀어지고(…123 → …124), 기준 줄(Compile 시작)에는
+    // 밀리초가 없어 같은 초에 찍힌 항목을 "이전"으로 숨길 수 있었다. 같은 초의 항목은 숨기지 않는 쪽(recent)으로 간다.
+    return Number(`${m[3]}${m[1]}${m[2]}${m[4]}${m[5]}${m[6]}`);
+}
+
+/**
+ * ErrorLog 를 "이번 배포의 Compile 시작 이후"와 그 전으로 나눈다. 기준 시각은 Compile/Start 응답의
+ * `MM-DD-YYYY HH:MM:SS: project …, begin compiler pass 1` 줄(제어기 시계 — PC 시계와 어긋나도 같은 시계끼리 비교).
+ * 제어기 ErrorLog 는 지울 때까지 쌓여, 배포 기록마다 한 주 전 항목까지 다시 찍혔다(2026-11-13 실측 14건 중 이번 배포분 0건).
+ * 기준을 못 찾거나 시각이 없는 항목은 `recent` 쪽에 둔다(숨기지 않음).
+ */
+export function partitionErrorLogSince(errorLog: readonly string[], sinceText: string | undefined): { recent: string[]; older: number } | undefined {
+    const since = sinceText ? controllerStampKey(sinceText) : undefined;
+    if (since === undefined) { return undefined; }
+    const recent: string[] = [];
+    let older = 0;
+    for (const entry of errorLog) {
+        const k = controllerStampKey(entry);
+        if (k !== undefined && k < since) { older++; } else { recent.push(entry); }
+    }
+    return { recent, older };
+}
+
 /** ErrorLog 중 제어기 시스템 항목만(실패 경로의 "배포 원인 아님" 집계용). */
 export function controllerSystemErrorEntries(errorLog: readonly string[]): string[] {
     return errorLog.filter(e => classifyErrorEntry(e).isControllerSystem);
@@ -303,9 +336,7 @@ export function describeDeployFailure(
 
     let message: string;
     let jumpToCompileErrors = false;
-    if (result.memoryPrecheck?.level === 'blocked' || result.memoryPrecheck?.level === 'unknown') {
-        message = `메모리 사전 검사로 중단: ${result.memoryPrecheck.message}`;
-    } else if (result.compileAborted) {
+    if (result.compileAborted) {
         // 컴파일 에러가 아니라 연결 끊김 — 소스를 고칠 일이 아니라 제어기 생존부터 볼 일이다(2026-10-22 사고).
         const a = result.compileAborted;
         const health = result.controllerHealth

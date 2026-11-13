@@ -13,9 +13,9 @@ Module._load = function (request) {
     return request === 'vscode' ? mock : originalLoad.apply(this, arguments);
 };
 const out = path.resolve(__dirname, '../../out');
-const { walkTree } = require(path.join(out, 'project/projectSources'));
+const { walkTree } = require(path.join(out, 'project/sources/projectSources'));
 const { SymbolCache } = require(path.join(out, 'language/vscode/symbolCache'));
-const { GPLHoverProvider } = require(path.join(out, 'providers/hoverProvider'));
+const { GPLHoverProvider } = require(path.join(out, 'providers/intellisense/hoverProvider'));
 
 const [rootArg, sourceArg, lineArg, wordArg] = process.argv.slice(2);
 if (!rootArg) {

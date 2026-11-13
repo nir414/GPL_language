@@ -166,6 +166,20 @@ test('결과 요약 한 줄: 업로드/컴파일/동기화 상태가 목록에�
     summarizeOperationResult({ result: { ...deployResult, compileErrorCount: 2, provenance: { inSync: false, changedSinceUpload: ['a', 'b', 'c'] } } }),
     'uploaded 71 · skipped 0 · compileErrors 2 · notInSync (changed 3)',
   );
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, libraryUploads: [{ raw: 'PaL', remoteDir: '/GPL/PaL', uploaded: 38, skipped: 0 }, { raw: 'Gantry', remoteDir: '/GPL/Gantry', uploaded: 6, skipped: 1 }] } }),
+    'uploaded 71 · skipped 0 · libs PaL 38/0, Gantry 6/1 · compileErrors 0 · inSync',
+  );
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, preprocess: { applied: true, savedBytes: 975000, excluded: [{ remotePath: '/GPL/PaL/Net_Client.gpl' }], removedMemberCount: 350 } } }),
+    'uploaded 71 · skipped 0 · preprocess −952 KB · excluded 1 · members −350 · compileErrors 0 · inSync',
+  );
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, preprocess: { applied: false, note: '클래식 경로' } } }),
+    'uploaded 71 · skipped 0 · preprocess skipped · compileErrors 0 · inSync',
+  );
+  assert.deepEqual(compactOperationResult({ ...deployResult, libraryUploads: [{ raw: 'PaL', remoteDir: '/GPL/PaL', uploaded: 38, skipped: 0 }] }).libraryUploads,
+    [{ raw: 'PaL', remoteDir: '/GPL/PaL', uploaded: 38, skipped: 0 }]);
   assert.equal(summarizeOperationResult({ error: { message: '컴파일 실패' } }), 'error: 컴파일 실패');
   assert.equal(summarizeOperationResult({ result: { anything: 1 } }), null);
 });
@@ -205,4 +219,23 @@ import { summarizeOperationResult as summarizeOperationResultForRuntimeError } f
 test('summarizeOperationResult: runtimeError 가 있으면 목록 요약에 코드·위치가 붙는다', () => {
   const rec = { result: { success: true, compileErrorCount: 0, runtimeError: { threadName: 'AntiBodyR2', statusCode: -1509, file: '_robot_ExtraModuleHandler.gpl', line: 484 } } };
   assert.equal(summarizeOperationResultForRuntimeError(rec), 'compileErrors 0 · runtimeError -1509 @ _robot_ExtraModuleHandler.gpl:484');
+});
+
+test('결과 요약 한 줄: 라이브러리 출처(libs …)·배포 전 검사·전처리 kept 개수', () => {
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, librarySummary: 'libs PaL v2@r5405(pinned) · Gantry v2@HEAD+3M' } }),
+    'uploaded 71 · skipped 0 · libs PaL v2@r5405(pinned) · Gantry v2@HEAD+3M · compileErrors 0 · inSync',
+  );
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, preflight: { libraries: [{ name: 'PaL', status: 'mismatch' }, { name: 'Gantry', status: 'ok' }] } } }),
+    'uploaded 71 · skipped 0 · libPreflight PaL mismatch · compileErrors 0 · inSync',
+  );
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, preflight: { libraries: [{ name: 'PaL', status: 'fail' }], blocked: { on: ['missing'], reasons: [] } } } }),
+    'uploaded 71 · skipped 0 · libPreflight PaL fail (blocked) · compileErrors 0 · inSync',
+  );
+  assert.equal(
+    summarizeOperationResult({ result: { ...deployResult, preprocess: { applied: true, savedBytes: 2048, excluded: [], keptCount: 38, kept: [{ remotePath: '/GPL/PaL/A.gpl', reason: 'name x referenced from /GPL/App/App.gpl:3' }] } } }),
+    'uploaded 71 · skipped 0 · preprocess −2 KB · kept 38 · compileErrors 0 · inSync',
+  );
 });

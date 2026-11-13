@@ -37,6 +37,10 @@ export interface ConsoleWaitResult extends ConsoleReadResult {
 	/** 시간 안에 조건을 못 채웠는가. */
 	timedOut: boolean;
 	waitedMs: number;
+	/** maxLines 에서 잘려 `nextCursor` 뒤에 남은 줄 수(없으면 생략) — 같은 인자에 cursor 만 바꿔 이어 읽는다. */
+	remaining?: number;
+	/** 패턴이 돌려준 창 밖(뒤)에 이미 있으면 그 줄의 seq — matched:false 가 "안 나왔다" 가 아님을 알린다. */
+	matchAheadSeq?: number;
 }
 
 export interface ConsoleWaitOptions {
@@ -140,7 +144,15 @@ export class RuntimeConsoleBuffer {
 
 		const finish = (matched: boolean, timedOut: boolean): ConsoleWaitResult => {
 			const r = this.read(cursor, maxLines);
-			return { ...r, matched, timedOut, waitedMs: now() - started };
+			// maxLines 에서 잘렸으면 그 뒤에 남은 줄 수와, 패턴이 그 뒤에 이미 있는지를 알린다 — 종전에는 matched:false·timedOut:false 만 와서
+			// "패턴이 안 나왔다" 로 읽혔다(2026-11-13 실측: maxLines 8, 패턴 줄은 버퍼 뒤쪽에 있었음).
+			const remaining = this.lines.filter(l => l.seq >= r.nextCursor).length;
+			const ahead = pattern && !matched ? this.lines.find(l => l.seq >= r.nextCursor && pattern.test(l.text)) : undefined;
+			return {
+				...r, matched, timedOut, waitedMs: now() - started,
+				...(remaining > 0 ? { remaining } : {}),
+				...(ahead ? { matchAheadSeq: ahead.seq } : {}),
+			};
 		};
 		const evaluate = (): { done: boolean; matched: boolean } => {
 			const r = this.read(cursor, maxLines);
@@ -197,11 +209,24 @@ export class RuntimeConsoleBuffer {
 	}
 }
 
+/** `untilPattern` 길이 상한 — 확장 호스트에서 매 줄 실행되므로 짧은 식만 받는다. */
+export const UNTIL_PATTERN_MAX_LENGTH = 200;
+
 /**
- * 사용자 입력 정규식을 안전하게 만든다 — 잘못된 패턴은 null(호출자가 bad-pattern 으로 돌려준다). 항상 대소문자 무시.
+ * 파국적 백트래킹이 나는 대표 꼴(`(a+)+`, `(\w*)*`, `(x+){2,}`)인가 — 수량자가 붙은 그룹 안에 다시 수량자가 있다.
+ * 완전한 판정은 아니지만 AI·사람이 실수로 넣는 흔한 꼴을 거른다(확장 호스트가 멈추면 VS Code 전체가 멈춘다).
+ */
+export function hasNestedQuantifier(source: string): boolean {
+	return /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,\d*\})/.test(source);
+}
+
+/**
+ * 사용자 입력 정규식을 안전하게 만든다 — 잘못된 패턴·너무 긴 패턴·중첩 수량자는 null(호출자가 bad-pattern 으로 돌려준다,
+ * §1-GZ). 항상 대소문자 무시.
  */
 export function compileUntilPattern(source: string | undefined): RegExp | null | undefined {
 	if (source === undefined || source === null || source === '') { return undefined; }
+	if (source.length > UNTIL_PATTERN_MAX_LENGTH || hasNestedQuantifier(source)) { return null; }
 	try {
 		return new RegExp(source, 'i');
 	} catch {

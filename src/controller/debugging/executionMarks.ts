@@ -11,7 +11,7 @@
  *
  * 상태 문자열의 출처는 `Show Thread -web`(폴링)과 디버그 어댑터의 같은 목록(debugBridge)이라 두 경로가 같은 판정을 받는다.
  *
- * 단위 테스트: src/test/executionMarks.test.ts
+ * 단위 테스트: src/test/controller/debugging/executionMarks.test.ts
  */
 import { isPausedState, ThreadLike } from '../threads/threadActivity';
 

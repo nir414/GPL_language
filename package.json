@@ -2,9 +2,9 @@
     "name": "gpl-language-support",
     "displayName": "Brooks GPL",
     "description": "GPL (Guidance Programming Language) support for Visual Studio Code - IntelliSense, Go to Definition, Find References for Brooks Automation robot control language",
-    "version": "0.18.1",
+    "version": "0.27.21",
     "publisher": "nir414",
-    "icon": "resources/gpl-logo.png",
+    "icon": "assets/icons/gpl-logo.png",
     "repository": {
         "type": "git",
         "url": "https://github.com/nir414/GPL_language"
@@ -36,6 +36,9 @@
         "onView:gplThreads",
         "onCommand:gpl.refreshSymbols",
         "onCommand:gpl.insertDocComment",
+        "onCommand:gpl.requiresHeader.update",
+        "onCommand:gpl.requiresHeader.updateProject",
+        "onCommand:gpl.project.checkDependencies",
         "onCommand:gpl.debugSymbolCache",
         "onCommand:gpl.showXmlBestPractices",
         "onCommand:gpl.analyzeXmlEncoding",
@@ -70,6 +73,7 @@
         "onCommand:gpl.controller.refreshBreakpoints",
         "onCommand:gpl.ai.exportAgentSetup",
         "onCommand:gpl.ai.checkAgentSetup",
+        "onCommand:gpl.ai.cleanWorkspaceAgentSetup",
         "onCommand:gpl.ai.debugAssist",
         "onCommand:gpl.ai.debug.getState",
         "onCommand:gpl.ai.debug.setBreakpoint",
@@ -100,14 +104,14 @@
                     ".gpl",
                     ".gpo"
                 ],
-                "configuration": "./language-configuration.json"
+                "configuration": "./assets/language-configuration.json"
             }
         ],
         "grammars": [
             {
                 "language": "gpl",
                 "scopeName": "source.gpl",
-                "path": "./syntaxes/gpl.tmGrammar.json"
+                "path": "./assets/syntaxes/gpl.tmGrammar.json"
             }
         ],
         "breakpoints": [
@@ -255,6 +259,16 @@
                 "category": "GPL"
             },
             {
+                "command": "gpl.requiresHeader.update",
+                "title": "Update Requires Header (현재 파일 Requires 헤더 갱신/추가)",
+                "category": "GPL"
+            },
+            {
+                "command": "gpl.requiresHeader.updateProject",
+                "title": "Update Requires Headers in Project (프로젝트 전체 Requires 헤더 갱신)",
+                "category": "GPL"
+            },
+            {
                 "command": "gpl.debugSymbolCache",
                 "title": "Debug Symbol Cache (심볼 캐시 진단)",
                 "category": "GPL"
@@ -330,6 +344,12 @@
                 "icon": "$(zap)"
             },
             {
+                "command": "gpl.compileStale.pick",
+                "title": "Quick Compile Unverified Projects (컴파일 검증 필요 프로젝트 골라서 컴파일·목록에서 지우기)",
+                "category": "GPL",
+                "icon": "$(warning)"
+            },
+            {
                 "command": "gpl.debug.generateLaunch",
                 "title": "Create/Update launch.json (디버그 구성 만들기)",
                 "category": "GPL",
@@ -352,6 +372,12 @@
                 "title": "Sync Project Sources (.gpr 소스 목록 동기화)",
                 "category": "GPL",
                 "icon": "$(list-tree)"
+            },
+            {
+                "command": "gpl.project.checkDependencies",
+                "title": "Check Project Dependencies (ProjectLibrary·계층 의존 검사)",
+                "category": "GPL",
+                "icon": "$(type-hierarchy)"
             },
             {
                 "command": "gpl.project.promoteSourceForBreakpoint",
@@ -502,7 +528,7 @@
             },
             {
                 "command": "gpl.ai.exportAgentSetup",
-                "title": "Export AI Agent Setup (AI 설정 내보내기·점검)",
+                "title": "Register AI Agent MCP (Claude Code·Codex 사용자 설정에 등록)",
                 "category": "GPL",
                 "icon": "$(hubot)"
             },
@@ -511,6 +537,12 @@
                 "title": "Check AI Agent Setup (AI 설정 점검)",
                 "category": "GPL",
                 "icon": "$(checklist)"
+            },
+            {
+                "command": "gpl.ai.cleanWorkspaceAgentSetup",
+                "title": "Remove AI Agent Files from Workspace (예전 .mcp.json·CLAUDE.md 안내 정리)",
+                "category": "GPL",
+                "icon": "$(trash)"
             },
             {
                 "command": "gpl.ai.debugAssist",
@@ -758,7 +790,13 @@
             },
             {
                 "command": "gpl.controller.ftpUnload",
-                "title": "Unload (메모리에서 내리기)",
+                "title": "Unload -all (/GPL 비운 뒤 모두 내리기)",
+                "category": "GPL",
+                "icon": "$(close)"
+            },
+            {
+                "command": "gpl.controller.unloadProject",
+                "title": "Unload Project (프로젝트 내리기 — 메모리 회수)",
                 "category": "GPL",
                 "icon": "$(close)"
             },
@@ -773,7 +811,7 @@
                 {
                     "id": "gpl-controller",
                     "title": "GPL Controller",
-                    "icon": "resources/gpl-controller.svg"
+                    "icon": "assets/icons/gpl-controller.svg"
                 }
             ]
         },
@@ -782,7 +820,7 @@
                 {
                     "id": "gplThreads",
                     "name": "Status",
-                    "icon": "resources/gpl-controller.svg"
+                    "icon": "assets/icons/gpl-controller.svg"
                 }
             ]
         },
@@ -1018,6 +1056,11 @@
                     "group": "gpl_project@1"
                 },
                 {
+                    "command": "gpl.project.checkDependencies",
+                    "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.gpr$/i",
+                    "group": "gpl_project@2"
+                },
+                {
                     "command": "gpl.project.promoteSourceForBreakpoint",
                     "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.gpl$/i",
                     "group": "gpl_project@2"
@@ -1072,6 +1115,11 @@
                 {
                     "command": "gpl.saveToFlash",
                     "group": "1_deploy@4",
+                    "when": "view == gplThreads && gpl.ui.connected"
+                },
+                {
+                    "command": "gpl.controller.unloadProject",
+                    "group": "1_deploy@5",
                     "when": "view == gplThreads && gpl.ui.connected"
                 },
                 {
@@ -1447,8 +1495,8 @@
                         "messages",
                         "verbose"
                     ],
-                    "default": "off",
-                    "description": "Controls GPL Language Support extension tracing (Output: 'GPL Language Support')."
+                    "default": "verbose",
+                    "description": "확장 자체 로그(출력 패널 「GPL Language Support」)의 상세 수준입니다. off: 심볼 인덱싱·언어 기능 로그를 남기지 않음 · messages: 인덱싱 요약 · verbose: 정의/호버/참조 탐색까지. 베타 기간에는 분석을 위해 기본 verbose 입니다. 어느 수준이든 출력 패널을 자동으로 열지는 않습니다(필요할 때 「출력 보기」나 트리의 연결 항목으로 엽니다)."
                 },
                 "gpl.trace.liveTerminal.autoStart": {
                     "scope": "window",
@@ -1621,6 +1669,99 @@
                     "default": true,
                     "description": "On compile failure during Deploy/Build, open the first compile error's file at its line and reveal the Problems panel."
                 },
+                "gpl.deploy.uploadLibraries": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "업로드(Upload Only·Deploy·Upload & Start·Quick Compile) 때 .gpr 의 ProjectLibrary 를 따라가, 프로젝트 폴더 밖이지만 같은 projects 폴더 안에 있는 라이브러리(예: projects/Main 이 참조하는 projects/Libraries)를 /GPL/<ProjectLibrary 값> 으로 함께 올립니다. 프로젝트 폴더 안의 라이브러리는 원래 함께 올라갑니다. 내장형 패키지(ProjectStart 가 있는 상위 .gpr 안의 하위 패키지, 예: BinderR4\\Gantry\\Data)의 라이브러리는 그 컴파일 루트에 속하므로 따로 올리지 않습니다. 변경분만 올리고 원격 전용 파일은 지우지 않습니다. 저장 시 자동 업로드(autoOnSave)에는 적용되지 않습니다."
+                },
+                "gpl.deploy.libraryPreflight": {
+                    "scope": "resource",
+                    "type": "object",
+                    "default": {},
+                    "markdownDescription": "배포(Upload Only·Deploy·Upload & Start·Quick Compile) 전에 함께 컴파일되는 라이브러리(.gpr 의 `ProjectLibrary`)마다 출처를 검사합니다. 폴더·`Project.gpr` 존재, `svn:externals` 값과 실제 작업 사본의 URL·revision 어긋남(고정 드리프트), 커밋하지 않은 로컬 변경, 원격에 마지막으로 올린 출처와 이번 로컬 출처의 일치 여부(일치·불일치·확인 불가)를 보고하고, 결과는 배포 결과와 작업 기록의 `preflight` 에 남습니다. SVN 정보를 읽지 못하면(svn 없음·작업 사본 아님) 검사 없이 계속합니다. **기본은 경고만 하고 막지 않습니다.**\n\n- `blockOn`: 이 항목에 해당하면 배포를 멈춥니다. `missing`(폴더·Project.gpr 없음), `pinnedDrift`(externals 와 작업 사본 불일치), `modified`(커밋하지 않은 변경), `uploadMismatch`(이전 업로드 출처와 다름). 확인 불가는 일치로 보지 않지만 막지도 않습니다.\n\n예: `{ \"blockOn\": [\"missing\", \"pinnedDrift\"] }`",
+                    "properties": {
+                        "blockOn": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "missing",
+                                    "pinnedDrift",
+                                    "modified",
+                                    "uploadMismatch"
+                                ]
+                            },
+                            "default": [],
+                            "description": "배포를 멈출 검사 항목(missing·pinnedDrift·modified·uploadMismatch). 비어 있으면 경고만 합니다."
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "gpl.deploy.preprocess": {
+                    "scope": "resource",
+                    "type": "object",
+                    "default": {},
+                    "markdownDescription": "배포할 때 워크스페이스 밖(OS 임시 폴더)에 전처리한 사본을 만들어 `/GPL` 에 원본 대신 올립니다. 제어기 메모리(업로드한 소스·컴파일 결과)를 줄이기 위한 기능이며 로컬 파일과 `.gpr` 은 바꾸지 않습니다. 줄 수를 그대로 지키므로 컴파일 오류 위치·중단점·Show Stack 의 줄은 원본과 같습니다. 모두 기본 꺼짐이고 direct `/GPL` 업로드에서만 적용됩니다(Save to Flash 는 로컬 원본을 저장합니다).\n\n- `stripComments`: 주석 줄과 `#` 줄을 빈 줄로, 줄 끝 주석을 지웁니다(문자열 안 `'` 는 보존).\n- `trimWhitespace`: 줄 앞 들여쓰기와 줄 끝 공백을 지웁니다.\n- `excludeUnreachableLibraryFiles`: 실행 프로젝트(ProjectStart 가 있는 .gpr)의 소스에서 Module·Class·모듈 멤버 이름으로 닿지 않는 라이브러리 파일을 올리지 않고, 사본의 라이브러리 `.gpr` 에서도 뺍니다. 문자열 안의 이름(예: `New Thread(\"Mod.Loop\", …)`)도 참조로 셉니다.\n- `removeUnusedMembers`: 남은 라이브러리 파일 안에서 실행 프로젝트로부터 닿지 않는 선언(Sub·Function·Property·Class·Const·변수·Delegate), 남는 프로시저 안의 안 쓰는 지역 `Dim`, 선언이 하나도 남지 않은 Module 을 빈 줄로 바꿉니다(줄 번호 유지). 구조를 읽지 못한 파일과 부작용 있는 초기화(`New`·함수 호출)가 붙은 변수, `Sub Init`·`Sub New` 는 남깁니다.\n- `keepFiles`: 늘 포함할 라이브러리 파일(파일 이름·확장자 뺀 이름·라이브러리 폴더 기준 경로·Module/Class 이름)과 선언(`Name` 또는 `Container.Name`). 이름이 실행 중에 조립되는 진입점은 여기에 적습니다.\n- `projects`: 프로젝트 이름(.gpr 의 ProjectName)별 값 — 공통 값 위에 얹고 `keepFiles` 는 합칩니다.\n\n예: `{ \"projects\": { \"App\": { \"stripComments\": true, \"excludeUnreachableLibraryFiles\": true } } }`",
+                    "properties": {
+                        "stripComments": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "주석 줄·# 줄을 빈 줄로, 줄 끝 주석을 지운 사본을 올립니다(줄 번호 유지)."
+                        },
+                        "trimWhitespace": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "줄 앞 들여쓰기와 줄 끝 공백을 지운 사본을 올립니다(줄 번호 유지)."
+                        },
+                        "excludeUnreachableLibraryFiles": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "실행 프로젝트에서 이름으로 닿지 않는 라이브러리 파일을 올리지도 컴파일하지도 않습니다."
+                        },
+                        "removeUnusedMembers": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "라이브러리 파일 안에서 실행 프로젝트로부터 닿지 않는 선언(Sub·Function·Class·Const 등)을 빈 줄로 바꾼 사본을 올립니다(줄 번호 유지)."
+                        },
+                        "keepFiles": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "default": [],
+                            "description": "미사용 제외·선언 단위 제거에서 늘 남길 라이브러리 파일(파일 이름·라이브러리 폴더 기준 경로·Module/Class 이름)과 선언(Name 또는 Container.Name)."
+                        },
+                        "projects": {
+                            "type": "object",
+                            "default": {},
+                            "description": "프로젝트 이름(.gpr 의 ProjectName)별 값. 공통 값 위에 얹고 keepFiles 는 합칩니다.",
+                            "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                    "stripComments": {
+                                        "type": "boolean"
+                                    },
+                                    "trimWhitespace": {
+                                        "type": "boolean"
+                                    },
+                                    "excludeUnreachableLibraryFiles": {
+                                        "type": "boolean"
+                                    },
+                                    "removeUnusedMembers": {
+                                        "type": "boolean"
+                                    },
+                                    "keepFiles": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
                 "gpl.deploy.errorLogQuietCodes": {
                     "scope": "window",
                     "type": "array",
@@ -1637,6 +1778,24 @@
                     "type": "string",
                     "default": "192.168.0.1",
                     "description": "Brooks controller IP address."
+                },
+                "gpl.controller.expectedSerial": {
+                    "scope": "resource",
+                    "type": [
+                        "string",
+                        "array"
+                    ],
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": "",
+                    "markdownDescription": "이 워크스페이스가 기대하는 제어기 시리얼 번호(DataID 110)입니다. 문자열 하나 또는 여러 개의 배열(문자열이면 콤마로 구분)로 적습니다. 연결할 때 읽은 serial 이 여기에 없으면 비모달 경고를 띄우고 Output 에 남깁니다(같은 IP 에 다른 제어기가 붙은 경우를 알아채기 위한 것). 비워 두면 대조하지 않으며, 읽은 정체(serial·ID·이름·모델)는 항상 Output 에 기록합니다. MCP 서버에서 같은 대조를 하려면 MCP 서버 환경변수 `GPL_EXPECTED_SERIAL` 에 같은 값을 적습니다."
+                },
+                "gpl.controller.autoConnectOnStartup": {
+                    "scope": "window",
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Connect to the controller automatically when the extension activates (opt-in). Off by default: connecting takes over the controller's single command-console client, which can steal the session from another VS Code window or GDE. On failure a warning is shown; the status bar always shows the disconnected state."
                 },
                 "gpl.controller.port": {
                     "scope": "window",
@@ -1669,6 +1828,12 @@
                     "minimum": 1000,
                     "description": "연결 끊김 감지용 프로브(Show Thread 폴링·재프로브)의 응답 대기 시간(ms). 명령 타임아웃(timeoutMs)과 별개입니다. 프로브가 연속 3회(연결 거부·도달 불가는 2회) 실패하면 연결 유실로 판정해 연결 상태를 끊습니다(자동 재접속 없음 — 다시 Connect). 첫 실패나 런타임 콘솔 오류·keep-alive 소켓 오류·대시보드 프로브 실패 뒤에는 정규 폴링 간격을 기다리지 않고 1초 간격으로 재프로브합니다."
                 },
+                "gpl.controller.connectTimeoutMs": {
+                    "scope": "window",
+                    "type": "number",
+                    "default": 3000,
+                    "description": "명령 콘솔(1402) 새 연결의 TCP 핸드셰이크 상한(ms). 이 시간 안에 연결이 성립하지 않으면 명령을 보내지 않고(sent:false) 실패로 끝냅니다 — 응답 없는 제어기에 명령 타임아웃 전체(8~10초)를 기다리지 않아 연결 유실 판정이 빨라집니다. 직결 제어기의 핸드셰이크는 실측 대부분 30ms 미만·최대 1.1초입니다. 이미 열린(keep-alive) 연결에는 적용되지 않습니다. 0이면 끕니다(명령 타임아웃만 적용, 종전 동작). 최소 500."
+                },
                 "gpl.controller.connectionRecoveryWindowMs": {
                     "scope": "window",
                     "type": "number",
@@ -1679,13 +1844,13 @@
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 명령 콘솔 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. Export 설정은 브리지 전용(`GPL_BRIDGE=only`)이므로 이 옵션을 끄면 MCP가 직접 접속으로 우회하지 않고 브리지 사용 불가를 보고합니다. 직접 접속은 `.mcp.json`에서 `GPL_BRIDGE=auto` 또는 `off`를 명시한 개발 환경만 사용합니다."
+                    "description": "Agent Bridge — 외부 AI 에이전트(MCP 서버 `controller-mcp`)가 이 확장의 `gpl.*` 명령을 호출하고 결과를 받을 수 있게 합니다. `%TEMP%\\gpl-controller\\`에 확장 상태 파일(<ip>.extension.json)과 요청/응답 파일을 주고받는 방식(배포 잠금과 같은 계약, 새 포트·서버 없음). 이 통로로 보낸 명령은 확장의 명령 콘솔 단일 세션·직렬 큐·명령 정책을 그대로 타므로 MCP가 제어기에 따로 접속해 세션이 경쟁하는 일이 없어집니다. 확장이 등록하는 MCP는 브리지 전용(`GPL_BRIDGE=only`)이고 제어기 주소도 이 창의 상태 파일에서 따르므로, 이 옵션을 끄면 MCP가 직접 접속으로 우회하지 않고 브리지 사용 불가를 보고합니다. 직접 접속은 MCP 등록에 `GPL_BRIDGE=auto` 또는 `off`를 명시한 개발 환경만 사용합니다."
                 },
                 "gpl.agentBridge.revealOutput": {
                     "scope": "window",
                     "type": "boolean",
                     "default": true,
-                    "description": "AI 에이전트(MCP)의 요청이 들어오면 출력 패널 「GPL Language Support」를 자동으로 엽니다(포커스는 편집기에 둡니다). 사람이 보내는 명령·배포처럼 AI 가 제어기에 보낸 명령과 응답도 같은 자리에 남습니다. 요청마다 여는 것이 아니라 30초 이상 조용하다가 다시 요청이 올 때(새 작업 시작)만 열므로, 다른 채널을 보고 있는 동안 AI 의 폴링이 패널을 되돌려 놓지 않습니다. 끄면 패널을 열지 않습니다(로그는 그대로 남습니다)."
+                    "description": "AI 에이전트(MCP)가 제어기 상태를 바꾸는 요청(배포·Compile·Start·Stop·중단점·Unload·쓰기 명령)을 보내면 출력 패널 「GPL Language Support」를 엽니다(포커스는 편집기에 둡니다). 조회 요청(Show Thread·변수 읽기·목록·상태 조회)으로는 열지 않으므로 로그를 보는 동안 AI 가 데이터를 읽어도 패널이 바뀌지 않습니다. 상태 변경 요청도 30초 이상 조용하다가 다시 올 때(새 작업 시작)만 엽니다. 끄면 패널을 열지 않습니다(로그는 그대로 남습니다)."
                 },
                 "gpl.controller.commandPolicyEnabled": {
                     "scope": "window",
@@ -1830,7 +1995,29 @@
                     "scope": "resource",
                     "type": "boolean",
                     "default": true,
-                    "description": "실제 제어기(GPL 4.2K5)에서 확인한 컴파일러·제어기 사실을 정적 진단으로 표시합니다. 반환형이 다른 오버로드(-741), Sub New 없는 클래스의 New X()(-722), Module 이름을 가리는 멤버(-781/-729), 다른 클래스의 Private Shared 접근(-729), Stop 으로 멈출 수 없는 쓰레드 이름(-712)은 Warning, 100바이트를 넘는 문자열 리터럴(-506, 한도 미확정)·ByVal String 매개변수의 Is Nothing 검사(-782)·5% 이하 조그 속도(tick 모드)는 Information입니다."
+                    "description": "실제 제어기(GPL 4.2K5)에서 확인한 컴파일러·제어기 사실을 정적 진단으로 표시합니다. 반환형이 다른 오버로드(-741), Sub New 없는 클래스의 New X()(-722), Module 이름을 가리는 멤버(-781/-729), 다른 클래스의 Private Shared 접근(-729), Stop 으로 멈출 수 없는 쓰레드 이름(-712), 줄바꿈 없이 끝나는 파일(-505), 장치 루트 File.CreateDirectory(-300)은 Warning, 100바이트를 넘는 문자열 리터럴(-506, 한도 미확정)·ByVal String 매개변수의 Is Nothing 검사(-782)·5% 이하 조그 속도(tick 모드)·Catch 없는 스레드 진입점은 Information입니다."
+                },
+                "gpl.diagnostics.threadEntryWithoutCatch": {
+                    "scope": "resource",
+                    "type": "boolean",
+                    "default": true,
+                    "description": "New Thread(\"Mod.Proc\", …) 의 진입점(같은 파일에서 찾은 것)에 Try … Catch 가 없으면 정보 진단(thread-entry-without-catch)을 표시합니다. 잡히지 않은 예외는 스레드를 Error 로 멈춥니다. gpl.diagnostics.compilerChecks 가 꺼져 있으면 표시되지 않습니다."
+                },
+                "gpl.requiresHeader.mode": {
+                    "scope": "resource",
+                    "type": "string",
+                    "enum": [
+                        "check",
+                        "onSave",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "모듈 머리 주석의 'Requires: 블록이 실제 참조와 다르면 Information 진단과 빠른 수정(Requires 헤더 갱신)을 표시합니다(기본).",
+                        "저장할 때 'Requires: 블록을 바로 고칩니다. 블록이 없는 파일은 건드리지 않습니다.",
+                        "대조하지 않습니다. 명령(GPL: Update Requires Header)만 사용합니다."
+                    ],
+                    "default": "check",
+                    "description": "'Requires: 블록(파일이 쓰는 다른 파일의 Module·Class·멤버 목록)을 정의 이동과 같은 이름 해석으로 계산해 맞춥니다. 블록이 있는 파일만 대상이고, 형식에 맞지 않는 설명은 'Notes: 블록으로 옮깁니다. 'Used by: 는 다루지 않습니다."
                 },
                 "gpl.diagnostics.experimental": {
                     "scope": "window",
@@ -1931,7 +2118,23 @@
                     "scope": "application",
                     "type": "boolean",
                     "default": true,
-                    "description": "확장 활성화 시 globalStorage의 gpl-controller MCP 서버 사본이 동봉 번들과 다르면(sha256) 자동으로 갱신합니다. GPL: Export AI Agent Setup을 실행한 적이 없는 PC에는 영향이 없습니다. 갱신 뒤에는 Claude Code에서 /mcp 재연결이 필요합니다."
+                    "description": "확장 활성화 시 globalStorage의 gpl-controller MCP 서버 사본이 동봉 번들과 다르면(sha256) 자동으로 갱신합니다. 등록한 적이 없는 PC에는 영향이 없습니다. 갱신 뒤에는 Claude Code에서 /mcp 재연결이 필요합니다."
+                },
+                "gpl.ai.mcpRegistration": {
+                    "scope": "application",
+                    "type": "string",
+                    "enum": [
+                        "prompt",
+                        "auto",
+                        "off"
+                    ],
+                    "enumDescriptions": [
+                        "Claude Code/Codex가 설치돼 있는데 gpl-controller가 등록돼 있지 않으면 한 번 묻습니다.",
+                        "묻지 않고 사용자 설정에 등록합니다.",
+                        "자동 등록·제안을 하지 않습니다(GPL: Register AI Agent MCP 명령으로만)."
+                    ],
+                    "default": "prompt",
+                    "description": "gpl-controller MCP 서버를 Claude Code(사용자 범위)·Codex(~/.codex/config.toml) 사용자 설정에 등록하는 방식. 프로젝트 폴더에는 파일을 만들지 않고, 제어기 주소는 MCP 서버가 이 확장 창의 현재 연결을 따르므로 IP가 바뀌어도 다시 등록할 필요가 없습니다. 확장 번들이 아닌 파일을 가리키는 기존 등록(직접 등록한 개발 소스 등)은 건드리지 않습니다."
                 },
                 "gpl.quickCompile.autoOnSave": {
                     "scope": "window",
@@ -1958,12 +2161,26 @@
                         "off"
                     ],
                     "enumDescriptions": [
-                        "VS Code 안에서 소스 파일을 새로 만들거나 이름 변경·삭제하면 Project.gpr에 반영할지 물어봅니다(기본).",
-                        "묻지 않고 바로 Project.gpr를 갱신합니다(상태바에 요약 표시).",
-                        "자동 반영을 하지 않습니다. 'GPL: Project.gpr 소스 목록 동기화' 명령(.gpr 우클릭)만 사용합니다."
+                        "소스 파일이 생기거나 지워지면(VS Code 안의 생성·이름 변경·삭제와 SVN 갱신·GDE·탐색기 같은 외부 변경 모두) Project.gpr에 반영할지 물어봅니다(기본). 배포·Quick Compile 직전에도 목록이 폴더와 다르면 「반영 후 배포 / 그대로 배포 / 취소」를 묻습니다.",
+                        "묻지 않고 바로 Project.gpr를 갱신합니다(상태바에 요약 표시). 배포 직전 차이도 묻지 않고 반영합니다(AI·autoOnSave 경로 포함).",
+                        "자동 반영을 하지 않습니다. 'GPL: Project.gpr 소스 목록 동기화' 명령(.gpr 우클릭)만 사용합니다. 배포 직전 차이는 배포 경고로만 알립니다."
                     ],
                     "default": "prompt",
-                    "description": "프로젝트 폴더 안의 소스 파일 생성/이름 변경/삭제를 Project.gpr의 ProjectSource 목록에 반영하는 방식입니다. 에디터 밖 변경(git checkout 등)에는 반응하지 않습니다."
+                    "description": "프로젝트 폴더 안의 소스 파일 생성/삭제(VS Code 안팎)를 Project.gpr의 ProjectSource 목록에 반영하는 방식입니다. 대량 변경도 프로젝트당 한 번만 다루며, 파일 내용 변경(저장)에는 반응하지 않습니다. 제어기는 이 목록만 컴파일하므로 배포 직전에도 같은 대조를 합니다."
+                },
+                "gpl.project.dependencyCheck": {
+                    "scope": "window",
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "manual"
+                    ],
+                    "enumDescriptions": [
+                        ".gpr 를 열면 그 컴파일 루트(ProjectStart 가 있는 .gpr)를 검사하고, 검사한 루트 안의 .gpl·.gpr 를 저장하면 다시 검사합니다(기본).",
+                        "'GPL: Check Project Dependencies' 명령(.gpr 우클릭)으로만 검사합니다."
+                    ],
+                    "default": "auto",
+                    "description": "패키지(.gpr) 의존 검사 — 각 .gpr 의 ProjectLibrary·ProjectSource 선언을 소스의 실제 사용(정의 이동과 같은 이름 해석)과 대조해 누락(Warning)·간접 의존·쓰지 않는 라이브러리(Information)를 .gpr 에 표시하고 빠른 수정으로 줄을 더하거나 지웁니다. 루트 .gpr 주석 ' Dependencies: App -> Config/Gantry/Lib; … 가 있으면 계층 규칙 위반을 .gpl 사용 위치에 Warning 으로 표시합니다. ProjectName 이 .gpr 폴더 이름과 (대소문자까지) 다르면 Warning 과 ProjectName 고치기 빠른 수정을 냅니다."
                 },
                 "gpl.project.sourceExtensions": {
                     "scope": "window",
@@ -1980,13 +2197,30 @@
                     "type": "number",
                     "default": 4,
                     "minimum": 0,
-                    "description": "Compile/Start 및 배포 전 여유 메모리 경고 기준(MB). 현장 보고 기반 운영 기준이며 제어기 사양의 절대 한계가 아닙니다."
+                    "description": "Compile/Start 및 배포 전 여유 메모리 경고 기준(MB). 경고만 하며 전송을 막지 않습니다. 현장 보고 기반 운영 기준이며 제어기 사양의 절대 한계가 아닙니다."
+                },
+                "gpl.controller.memoryGuard.criticalMb": {
+                    "type": "number",
+                    "default": 2.5,
+                    "minimum": 0,
+                    "description": "Compile/Start 및 배포 전 여유 메모리 '심각' 경고 기준(MB). 이 값 미만이면 심각 경고를 남기지만 전송은 막지 않습니다(실제로 모자라면 제어기 Compile이 실패를 알립니다). 배포에서는 정지 뒤 Compile 직전 값으로 다시 판단합니다. 파일 삭제는 자동으로 하지 않습니다(Unload 자동 회수는 memoryGuard.autoUnload)."
+                },
+                "gpl.controller.memoryGuard.autoUnload": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "배포·Quick Compile·Upload & Start 에서 여유 메모리가 경고 기준(warnMb) 미만이면 업로드 전에 쓰레드를 정지하고 다시 잰 뒤, 그래도 모자라면 /GPL 에 로드된 실행 프로젝트(배포 대상 포함)를 하나씩 Unload 하고 진행합니다(사람·AI 경로 모두 확인 없이). 그룹(라이브러리)·워크스페이스에 없는 프로젝트는 Unload 하지 않고, 같은 부팅에서 그룹 Compile 표시가 있으면 회수를 건너뜁니다(그 상태의 Unload 는 명령 콘솔을 끊었습니다). Upload Only·정지 없는 빠른 컴파일·autoOnSave 에서는 하지 않습니다. Unload 한 프로젝트는 /GPL 폴더가 지워질 수 있어 다시 배포해야 실행됩니다."
+                },
+                "gpl.controller.memoryGuard.confirmOnCritical": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "여유 메모리가 '심각'(criticalMb 미만)이면 사람이 실행한 배포·Quick Compile·Start·FTP Run 에서 정지 뒤 Compile/Start 직전에 「그래도 진행」/「취소」를 묻습니다. 취소하면 올린 파일은 그대로 두고 Compile/Start 를 보내지 않습니다. 업로드 전 측정(실행 중 앱의 메모리 포함)으로는 묻지 않습니다. AI·자동화·autoOnSave 경로는 묻지 않고 경고만 남깁니다. 끄면 사람 경로도 경고만 하고 계속합니다."
                 },
                 "gpl.controller.memoryGuard.blockMb": {
                     "type": "number",
                     "default": 2.5,
                     "minimum": 0,
-                    "description": "Compile/Start 및 배포 전 여유 메모리 차단 기준(MB). 이 값 미만이면 전송하지 않습니다. 0이면 수치 차단을 해제하지만 측정 실패는 차단합니다. 삭제·Unload는 자동 수행하지 않습니다."
+                    "deprecationMessage": "더 이상 전송을 막지 않습니다. gpl.controller.memoryGuard.criticalMb 를 사용하세요(이 값은 criticalMb 를 설정하지 않았을 때 심각 기준으로만 읽힙니다).",
+                    "description": "(사용 중단) 종전 여유 메모리 차단 기준(MB). 이제 경고 전용이며 criticalMb 로 대체됐습니다."
                 },
                 "gpl.controller.verifyControllerIdentity": {
                     "type": "boolean",
@@ -2014,6 +2248,7 @@
         "package": "node scripts/package.js --bump patch",
         "package:no-bump": "node scripts/package.js",
         "dev:cycle": "npm run package",
+        "verify:split": "npm run compile && node scripts/dev/deployReplay.js && node scripts/dev/compareTreeProvider.js",
         "dev:host": "npm run compile && code --new-window --extensionDevelopmentPath=. --profile=GPL-DevHost samples/hello-project",
         "dev:watch": "npm run watch",
         "docs:serve": "mkdocs serve",
@@ -2021,7 +2256,7 @@
     },
     "devDependencies": {
         "@types/node": "16.x",
-        "@types/vscode": "^1.74.0",
+        "@types/vscode": "~1.74.0",
         "@vscode/vsce": "^2.26.1",
         "esbuild": "^0.28.1",
         "typescript": "^4.9.4"
@@ -2029,7 +2264,7 @@
     "dependencies": {
         "@vscode/debugadapter": "^1.68.0",
         "@vscode/debugprotocol": "^1.68.0",
-        "basic-ftp": "^5.3.0",
+        "basic-ftp": "^6.2.5",
         "jsonc-parser": "^3.3.1"
     },
     "author": "nir414",

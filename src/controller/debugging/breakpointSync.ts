@@ -4,7 +4,7 @@ import { sendCommand } from '../connection/controllerConnection';
 import { parseStatus, isSuccess, parseBreakList } from '../protocol/responseParser';
 import { BreakpointTarget, controllerTargets, isResolvedBreakpointRecord, planReconcile, ReconcilePlan } from './breakpointReconcile';
 import { formatBreakpointCommand, MirrorEchoMemory, normalizeBreakpointCommandFile } from './breakpointCommand';
-import type { ResolvedBreakpointTarget } from '../../project/breakpointTarget';
+import type { ResolvedBreakpointTarget } from '../../project/remote/breakpointTarget';
 
 /**
  * 에디터 중단점 → 제어기 동기화 (VS Code가 중단점의 단일 원본).
@@ -169,6 +169,13 @@ export class EditorBreakpointSync implements vscode.Disposable {
 	}
 
 	private _noteUnsendable(resolved: ResolvedBreakpointTarget | undefined): void {
+		if (resolved?.nestedLibraryRef && resolved.message) { this.deps.log(`[BP Sync] ${resolved.message}`); return; }
+		if (resolved?.kind === 'library-source') {
+			// 라이브러리 소스는 디버그 세션의 setBreakpoints(거터)와 AI 경로가 `Set Break <라이브러리> "<파일>"`로 보낸다.
+			// 이 실시간 동기화·Pull/Push 장부는 프로젝트 하나 기준이라 라이브러리를 다루지 않는다 — 조용히 넘기지 않고 알린다.
+			this.deps.log(`[BP Sync] ${resolved.libraryName ?? '라이브러리'} 소스(${resolved.localPath})는 실시간 동기화 대상이 아닙니다 — 디버그 세션 중 에디터 중단점으로 설정하세요.`);
+			return;
+		}
 		if (resolved?.message) { this.deps.log(`[BP Sync] ${resolved.message}`); }
 	}
 

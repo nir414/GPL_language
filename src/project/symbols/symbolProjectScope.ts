@@ -1,9 +1,9 @@
 import * as path from 'path';
-import type { GPLSymbol } from '../../language/gplParser';
+import type { GPLSymbol } from '../../language/syntax/gplParser';
 import type { SymbolResolutionContext } from '../../language/symbols/symbolIndex';
 import { isPathUnder, normalizePathKey } from '../../util/pathKey';
-import { CompileUnitIndex, narrowToCompileUnit } from '../compileUnit';
-import { pickOwningGprPath } from '../projectSources';
+import { CompileUnitIndex, narrowToCompileUnit } from '../sources/compileUnit';
+import { pickOwningGprPath } from '../sources/projectSources';
 
 // scoreFilePath 점수 체계 — 높을수록 우선 (정의 후보가 여럿일 때 경로 근접도로 선택)
 const SCORE_SAME_FILE = 1000;

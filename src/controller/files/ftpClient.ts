@@ -17,6 +17,16 @@ import {
 } from './syncManifest';
 import { UploadProgressTracker } from '../deployment/uploadProgress';
 import type { UploadProgressEvent } from '../deployment/uploadProgress';
+import { controllerMemoryReadings } from '../diagnostics/memoryReadings';
+
+/**
+ * FTP 쓰기(업로드·삭제)를 시작할 때와 끝낼 때 알린다 — 그 전·도중에 잰 여유 메모리를 다시 쓰지 않게(memoryReadings, 2026-11-03).
+ * `/GPL` 파일이 제어기 여유 메모리에 잡힐 수 있다고 보고(배포 안내가 /GPL 잔존 파일 정리를 권하는 근거와 같다, 문서 확인 전)
+ * 쓰기 뒤에는 새로 재게 한다.
+ */
+function noteRemoteWrite(host: string, what: string): void {
+	controllerMemoryReadings.noteChange(host, Date.now(), `FTP ${what}`);
+}
 
 const TIMEOUT_MS = 10_000;
 
@@ -43,12 +53,35 @@ export interface FtpEntry {
 	modifiedAt?: Date;
 }
 
+const FTP_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * Unix 형식 LIST 의 시각(`Nov 13 14:22` 또는 `Nov 13 2025`)을 Date 로. 연도가 없으면 `ls` 관례대로 올해, 그 값이 하루 넘게 미래면
+ * 작년으로 본다. 시각은 제어기 로컬 시계 그대로를 PC 로컬로 해석한다(제어기 시계가 현지 시각이었다 — 2026-11-13 실측).
+ * 종전 `new Date("Nov 13 14:22")` 는 V8 이 연도를 2001 로 채워 `list_remote_projects.newestModifiedAt` 가 2001-11-13 이었다.
+ */
+export function parseFtpListDate(raw: string | undefined, now: Date = new Date()): Date | undefined {
+	const m = /^\s*([A-Za-z]{3})\s+(\d{1,2})\s+(?:(\d{1,2}):(\d{2})|(\d{4}))\s*$/.exec(raw ?? '');
+	if (!m) {
+		if (!raw) { return undefined; }
+		const d = new Date(raw);
+		return Number.isNaN(d.getTime()) ? undefined : d;
+	}
+	const month = FTP_MONTHS.indexOf(m[1].toLowerCase());
+	if (month < 0) { return undefined; }
+	const day = Number(m[2]);
+	if (m[5]) { return new Date(Number(m[5]), month, day); }
+	const d = new Date(now.getFullYear(), month, day, Number(m[3]), Number(m[4]));
+	if (d.getTime() - now.getTime() > 24 * 3600 * 1000) { d.setFullYear(d.getFullYear() - 1); }
+	return d;
+}
+
 function toFtpEntry(fi: FileInfo): FtpEntry {
 	return {
 		name: fi.name,
 		isDirectory: fi.isDirectory,
 		size: fi.size,
-		modifiedAt: fi.modifiedAt ?? (fi.rawModifiedAt ? new Date(fi.rawModifiedAt) : undefined),
+		modifiedAt: fi.modifiedAt ?? parseFtpListDate(fi.rawModifiedAt),
 	};
 }
 
@@ -66,7 +99,9 @@ export function getLastFtpBanner(host: string): { banner: string; at: number } |
  * 접속 응답(220 배너)은 호스트별로 기억한다 — 업로드 전 정체 확인이 새 접속 없이 쓴다.
  */
 async function createClient(host: string): Promise<FtpClient> {
-	const client = new FtpClient(TIMEOUT_MS);
+	// basic-ftp 6.x 는 PASV 응답의 데이터 주소가 제어 연결 호스트와 다르면 기본으로 거부한다(FTP bounce 방어). 5.x 까지의 동작을
+	// 유지한다 — 제어기 FTP(RTEMS)의 PASV 주소가 접속 IP 와 늘 같은지는 실기로 확인하지 않았다(§1-GZ, 확인되면 이 줄을 지운다).
+	const client = new FtpClient(TIMEOUT_MS, { allowSeparateTransferHost: true });
 	const welcome = await client.access({ host, user: 'anonymous', password: 'anonymous' });
 	if (welcome && typeof welcome.message === 'string') {
 		lastBannerByHost.set(host, { banner: welcome.message, at: Date.now() });
@@ -192,11 +227,13 @@ export async function listRemoteDirs(host: string, remotePaths: string[]): Promi
  * 제어기 원격 디렉터리 재귀 삭제.
  */
 export async function removeRemoteDir(host: string, remotePath: string): Promise<void> {
+	noteRemoteWrite(host, `삭제 ${remotePath}`);
 	const client = await createClient(host);
 	try {
 		await client.removeDir(remotePath);
 	} finally {
 		client.close();
+		noteRemoteWrite(host, `삭제 ${remotePath}`);
 	}
 }
 
@@ -204,11 +241,13 @@ export async function removeRemoteDir(host: string, remotePath: string): Promise
  * 제어기 원격 파일 삭제.
  */
 export async function removeRemoteFile(host: string, remotePath: string): Promise<void> {
+	noteRemoteWrite(host, `삭제 ${remotePath}`);
 	const client = await createClient(host);
 	try {
 		await client.remove(remotePath);
 	} finally {
 		client.close();
+		noteRemoteWrite(host, `삭제 ${remotePath}`);
 	}
 }
 
@@ -238,6 +277,7 @@ export async function clearRemoteDir(
 	if (base === '/') {
 		throw new Error(`원격 폴더 비우기 대상이 안전하지 않습니다: "${remotePath}" (빈 경로·루트는 허용하지 않음)`);
 	}
+	noteRemoteWrite(host, `비우기 ${base}`);
 	const client = await createClient(host);
 	try {
 		const result: ClearRemoteDirResult = { deleted: [], failed: [] };
@@ -261,6 +301,7 @@ export async function clearRemoteDir(
 		return result;
 	} finally {
 		client.close();
+		noteRemoteWrite(host, `비우기 ${base}`);
 	}
 }
 
@@ -309,6 +350,7 @@ export async function uploadProject(
 	},
 ): Promise<{ uploaded: number; skipped: number; totalBytes: number; manifest: SyncManifestFiles }> {
 	throwIfCancelled(options?.isCancelled);
+	noteRemoteWrite(host, `업로드 ${remoteDir}`);
 	const client = await createClient(host);
 
 	try {
@@ -373,6 +415,7 @@ export async function uploadProject(
 	} finally {
 		client.trackProgress();
 		client.close();
+		noteRemoteWrite(host, `업로드 ${remoteDir}`);
 	}
 }
 
@@ -425,6 +468,7 @@ export async function mirrorProject(
 	manifest: SyncManifestFiles;
 }> {
 	throwIfCancelled(options?.isCancelled);
+	noteRemoteWrite(host, `업로드 ${remoteDir}`);
 	const client = await createClient(host);
 	try {
 		// 1) 원격 파일 목록(재귀). 원격 폴더가 없거나 조회 실패면 빈 목록으로 취급 → 전체 업로드.
@@ -504,6 +548,7 @@ export async function mirrorProject(
 	} finally {
 		client.trackProgress();
 		client.close();
+		noteRemoteWrite(host, `업로드 ${remoteDir}`);
 	}
 }
 
@@ -517,6 +562,7 @@ export async function removeRemoteFiles(
 	onDelete?: (file: string) => void,
 ): Promise<number> {
 	if (files.length === 0) { return 0; }
+	noteRemoteWrite(host, `삭제 ${files.length}개`);
 	const client = await createClient(host);
 	let deleted = 0;
 	try {
@@ -532,6 +578,7 @@ export async function removeRemoteFiles(
 		return deleted;
 	} finally {
 		client.close();
+		noteRemoteWrite(host, `삭제 ${files.length}개`);
 	}
 }
 
@@ -557,7 +604,7 @@ async function uploadVerified(client: FtpClient, localFile: string, remotePath: 
 	}
 }
 
-function getAllFiles(dir: string): string[] {
+export function getAllFiles(dir: string): string[] {
 	const results: string[] = [];
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
 		// dot 항목(.git/.history/.vscode/.DS_Store 등)은 제어기로 올릴 대상이 아니다.

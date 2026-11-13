@@ -22,6 +22,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { getControllerConfig, getTrafficChannel, formatTrafficTimestamp, recordTrafficLine } from '../connection/controllerConnection';
 import { RuntimeConsoleBuffer } from './runtimeConsoleBuffer';
+import { ParserStallTracker, ParserStallVerdict } from './parserStall';
 import { isConsoleStatusEventFrame, normalizeConsoleLine, latin1ToUtf8 } from '../protocol/responseParser';
 import { appendLiveLog } from '../../log/liveLogTerminal';
 import {
@@ -134,6 +135,14 @@ export interface RuntimeConsoleStatusSnapshot {
     connectsPerMinute?: number;
     /** 재연결 워치독이 개입(강제 재연결/지연 타이머 대리 발화/connecting 고착 정리)한 누적 횟수 */
     watchdogKicks?: number;
+    /** 마지막으로 링버퍼에 줄이 적재된 시각 — `lastPayloadAt` 과 어긋나면 파서가 줄을 못 만드는 중이다(2026-11-02 SamplePrep) */
+    lastLineAt?: number;
+    /** payload 는 계속 오는데 파서가 미완 바이트를 쥔 채 진전이 없다(parserStall.ts) */
+    parserStalled?: boolean;
+    /** 파서가 지금 줄로 내보내지 못하고 쥔 바이트 수(미완 프레임 + 재조립 버퍼) */
+    parserPendingBytes?: number;
+    /** 정체/예외로 쥔 바이트를 강제로 비운 누적 횟수 */
+    parserRecoveries?: number;
 }
 
 export class RuntimeConsole implements vscode.Disposable {
@@ -146,6 +155,8 @@ export class RuntimeConsole implements vscode.Disposable {
     // 개행이 올 때까지 메시지를 이어붙이기 위한 버퍼.
     private _frameMsgBuf = '';
     private _frameMsgProject = '';
+    private readonly _stall = new ParserStallTracker();
+    private _parserRecoveries = 0;
     /** 세션 내 `<L>N</L>` ≠ 실제 청크 바이트 수 건수(프레임 경계 오판 진단용, 첫 1회만 로그). */
     private _sessionLenMismatch = 0;
     private disposed = false;
@@ -309,6 +320,7 @@ export class RuntimeConsole implements vscode.Disposable {
     get isConnected(): boolean { return this._isConnected; }
 
     getStatusSnapshot(): RuntimeConsoleStatusSnapshot {
+        const stall = this._stall.evaluate(Date.now());
         return {
             state: this._state,
             connected: this._isConnected,
@@ -326,6 +338,10 @@ export class RuntimeConsole implements vscode.Disposable {
             connectCount: this._connectStats.total,
             connectsPerMinute: this._connectStats.perMinute(Date.now()),
             watchdogKicks: this._watchdogKicks,
+            lastLineAt: this._stall.lastLine || undefined,
+            parserStalled: stall.stalled || undefined,
+            parserPendingBytes: stall.pendingBytes > 0 ? stall.pendingBytes : undefined,
+            parserRecoveries: this._parserRecoveries > 0 ? this._parserRecoveries : undefined,
         };
     }
 
@@ -790,6 +806,7 @@ export class RuntimeConsole implements vscode.Disposable {
         this.output.appendLine(formatRuntimeConsoleLine(normalized, project, this.getLinePrefixMode()));
         const buffered = this.lineBuffer.push(normalized, project || undefined);
         this.appendCapture(normalized, project, buffered.at);
+        this._stall.onLine(buffered.at);
         this._onDidReceiveLine.fire(normalized);
     }
 
@@ -866,8 +883,45 @@ export class RuntimeConsole implements vscode.Disposable {
         this.outputLine(msg, project);
     }
 
+    /**
+     * payload 를 파서에 넣고, 파서가 줄로 내보내지 못한 바이트를 추적한다(정체 감지, parserStall.ts).
+     * - 예외: 같은 프레임에서 매번 던지면 `carry` 가 그대로 남아 이후 모든 payload 가 줄이 되지 못한다(lastPayloadAt 만 오르는 증상의
+     *   유력 후보 중 하나) — 쥔 바이트를 버리고 계속한다.
+     * - 정체: 미완 바이트를 쥔 채 오래 진전이 없으면(payload 는 계속 옴) 재조립 버퍼는 내보내고 carry 는 버린다.
+     */
+    private feedParser(raw: string): void {
+        try {
+            this.processConsoleText(raw);
+        } catch (err) {
+            this.dropParserState(`EVENT=PARSER_EXCEPTION message=${(err as Error)?.message ?? err}`);
+        }
+        const now = Date.now();
+        this._stall.onPending(this.carry.length + this._frameMsgBuf.length, now);
+        const verdict = this._stall.evaluate(now);
+        if (verdict.stalled) { this.recoverStalledParser(verdict); }
+    }
+
+    private recoverStalledParser(verdict: ParserStallVerdict): void {
+        const reason = `EVENT=PARSER_STALLED pending=${verdict.pendingBytes}B noProgressMs=${verdict.noProgressMs}`;
+        try { this.flushConsoleFrameBuffer(); } catch { /* 아래에서 버린다 */ }
+        this.dropParserState(reason);
+    }
+
+    /** 파서가 쥔 바이트(미완 프레임·재조립 버퍼)를 버리고 다음 payload 부터 새로 시작한다. 버린 앞머리는 상태 줄에 남긴다. */
+    private dropParserState(reason: string): void {
+        const head = JSON.stringify((this.carry || this._frameMsgBuf).slice(0, 80));
+        this.appendStateLine(`[Console][RC1403] ${reason} carry=${this.carry.length}B frameBuf=${this._frameMsgBuf.length}B head=${head} — 쥔 바이트를 비우고 계속`);
+        this.carry = '';
+        this._frameMsgBuf = '';
+        this._frameMsgProject = '';
+        this._stall.resetPending();
+        this._parserRecoveries++;
+    }
+
     private processConsoleText(raw: string, flush = false): void {
-        this.carry += raw.replace(/\r/g, '');
+        // NUL 도 지운다 — 제어기가 프레임 사이에 NUL 1바이트를 보내고, 그것이 carry 에 남아 정체 감지가 정상 스트림을
+        // `EVENT=PARSER_STALLED pending=1B head="\u0000"` 로 오판했다(2026-11-13 실측 2회, 192.168.0.1). 프레임 안 NUL 은 emitConsoleFrame 이 이미 지운다.
+        this.carry += raw.replace(/[\r\0]/g, '');
 
         let searchFrom = 0;
         while (true) {
@@ -1152,13 +1206,32 @@ export class RuntimeConsole implements vscode.Disposable {
             ? { host: cfg.ip, port: cfg.consolePort, family: 4 }
             : { host: cfg.ip, port: cfg.consolePort };
 
-        socket.connect(connectOptions, () => {
+        // 잘못된 설정(포트 범위 등)이면 connect 가 동기 예외를 던진다 — 그대로 두면 this.socket 이 리스너 없이 남아
+        // start() 가 "이미 있음"으로 계속 무시된다(§1-GZ). 되돌리고 재연결 경로로 넘긴다.
+        const connectSafely = (onConnect: () => void): boolean => {
+            try {
+                socket.connect(connectOptions, onConnect);
+                return true;
+            } catch (err) {
+                clearTimeout(connectTimer);
+                if (this.socket === socket) { this.socket = null; }
+                this._lastError = err as Error;
+                this._lastErrorCode = ((err as any)?.code as string | undefined) ?? 'CONNECT_THROW';
+                this.logConsoleTraffic('---', `CONNECT failed synchronously: ${(err as Error)?.message ?? err}`);
+                this.updateStatus('socket-error', '연결 실패', (err as Error)?.message ?? String(err));
+                this.scheduleReconnect();
+                return false;
+            }
+        };
+
+        if (!connectSafely(() => {
             clearTimeout(connectTimer);
             this._isConnected = true;
             this._connectedAt = Date.now();
             this.carry = '';
             this._frameMsgBuf = '';
             this._frameMsgProject = '';
+            this._stall.resetPending();
             this._sessionDataReceived = false;
             this._sessionRxBytes = 0;
             this._sessionFrames = 0;
@@ -1191,14 +1264,18 @@ export class RuntimeConsole implements vscode.Disposable {
             this.logConsoleTraffic('---', `CONNECTED (local ${socket.localAddress}:${socket.localPort}, idle=${this._consecutiveEmptySessions})`);
             this.markCaptureOnConnect(`${cfg.ip}:${cfg.consolePort}`);
             this._onDidConnect.fire();
-        });
+        })) { return; }
 
         socket.on('data', (data: Buffer) => {
             const wasWaitingPayload = !this._sessionDataReceived;
             this._sessionDataReceived = true;
+            // payload 를 받은 세션은 "연결이 된다"는 증거 — 에러 백오프 횟수를 되돌린다(2026-11-04 §1-GZ). 종전엔 연결 뒤
+            // 매번 ECONNRESET 으로 끝나는 세션이 이어지면 성공한 연결까지 누적돼 10회에 재연결이 영구 정지됐다.
+            this._reconnectAttempt = 0;
             this._consecutiveNoPayloadAttempts = 0;
             this._consecutiveImmediateEofSessions = 0;
             this._lastPayloadAt = Date.now();
+            this._stall.onPayload(this._lastPayloadAt);
             this._lastPayloadBytes = data.length;
             this.resolvePayloadWaiters(true);
             // 세션에서 처음 데이터가 도착하면 즉시 폴 트리거 (디버그 세션용)
@@ -1219,7 +1296,7 @@ export class RuntimeConsole implements vscode.Disposable {
             if (wasWaitingPayload) {
                 this.updateStatus('connected', 'Connected', `payload ${data.length} bytes 수신`);
             }
-            this.processConsoleText(raw);
+            this.feedParser(raw);
         });
 
         socket.on('end', () => {
@@ -1254,6 +1331,8 @@ export class RuntimeConsole implements vscode.Disposable {
                 this._noOutputHintTimer = null;
             }
             const dataReceived = this._sessionDataReceived;
+            // 다음 세션의 waitForPayload 가 지난 세션의 수신으로 즉시 true 를 돌려주지 않게 닫힐 때 되돌린다(§1-GZ).
+            this._sessionDataReceived = false;
             let noPayloadReason: string | undefined;
             if (this._isConnected) {
                 this._isConnected = false;

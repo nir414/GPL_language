@@ -19,7 +19,7 @@
  * 같은 PC의 다른 워크스페이스와 기록을 공유하고, mtime 관측치를 함께 들고 다닌다.
  *
  * 저장 위치 연결은 `attachSyncManifestStore(context.globalState)` 한 번(extension.ts activate).
- * 단위 테스트: src/test/syncManifest.test.ts.
+ * 단위 테스트: src/test/controller/files/syncManifest.test.ts.
  */
 
 import * as crypto from 'crypto';
@@ -229,6 +229,18 @@ export class SyncManifestStore {
         this.write(host, remoteDir, { ...this.get(host, remoteDir), ...files }, syncedAt);
     }
 
+    /** 원격에서 지운 파일들의 지문만 뺀다(나머지는 유지). 기록이 없거나 뺄 것이 없으면 아무것도 하지 않는다. */
+    drop(host: string, remoteDir: string, keys: readonly string[], syncedAt: number): void {
+        const current = this._records.get(syncManifestKey(host, remoteDir));
+        if (!current) { return; }
+        const files = { ...current.files };
+        let changed = false;
+        for (const key of keys) {
+            if (key in files) { delete files[key]; changed = true; }
+        }
+        if (changed) { this.write(host, remoteDir, files, syncedAt); }
+    }
+
     /** 그 원격 경로의 기록을 버린다(Unload·폴더 삭제 등 원격을 통째로 무효화했을 때). */
     forget(host: string, remoteDir: string): void {
         if (this._records.delete(syncManifestKey(host, remoteDir))) { this.persist(); }
@@ -295,6 +307,11 @@ export function recordSyncManifest(host: string, remoteDir: string, files: SyncM
 /** 일부 파일 업로드 성공 후 기록(기존 지문 유지). */
 export function mergeSyncManifest(host: string, remoteDir: string, files: SyncManifestFiles): void {
     _store.merge(host, remoteDir, files, Date.now());
+}
+
+/** 원격에서 일부 파일을 지운 뒤 그 지문만 폐기(키는 `manifestFileKey`). */
+export function dropSyncManifestFiles(host: string, remoteDir: string, keys: readonly string[]): void {
+    _store.drop(host, remoteDir, keys, Date.now());
 }
 
 /** 원격을 통째로 무효화했을 때(Unload/폴더 삭제) 기록 폐기. */

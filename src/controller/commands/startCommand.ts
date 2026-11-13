@@ -32,7 +32,7 @@
  * 2. **GDE 와 같은 기본값**: 캡처 2회 모두 GDE 는 `Start <project> -event` 를 보냈다(2026-06-23).
  *    상태 변경을 1403 이벤트로 받는 쪽이 폴링 의존을 줄이므로 기본값을 `-event` 로 둔다.
  *
- * 단위 테스트: src/test/startCommand.test.ts
+ * 단위 테스트: src/test/controller/commands/startCommand.test.ts
  */
 
 export interface StartCommandOptions {

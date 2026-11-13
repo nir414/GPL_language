@@ -32,6 +32,7 @@ export function normalizeCommandInput(input, { max = BATCH_MAX } = {}) {
   if (hasSingle) {
     const command = String(input.command).trim();
     if (!command) throw new Error('command가 비어 있다.');
+    rejectMultiLine(command, 'command');
     return { mode: 'single', command };
   }
   if (!Array.isArray(input.commands)) {
@@ -45,9 +46,21 @@ export function normalizeCommandInput(input, { max = BATCH_MAX } = {}) {
     if (typeof c !== 'string') throw new Error(`commands[${i}]가 문자열이 아니다.`);
     const t = c.trim();
     if (!t) throw new Error(`commands[${i}]가 비어 있다(공백만).`);
+    rejectMultiLine(t, `commands[${i}]`);
     return t;
   });
   return { mode: 'batch', commands };
+}
+
+/**
+ * 한 항목 = 한 줄 명령. CR/LF·제어 문자가 있으면 거부한다(§1-GZ) — 제어기는 두 명령으로 실행하는데 Unload 위험·배포 잠금·
+ * 재전송 안전 판정은 첫 단어만 본다. 여러 명령은 commands 배열로 나눠 보낼 것. (전송 계층 console.js 도 같은 규칙으로 막는다.)
+ */
+function rejectMultiLine(command, label) {
+  // eslint-disable-next-line no-control-regex
+  if (/[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(command)) {
+    throw new Error(`${label}에 줄바꿈(CR/LF)이나 제어 문자가 있다 — 한 항목에 한 줄 명령만. 여러 명령은 commands 배열로 나눠 보낼 것.`);
+  }
 }
 
 /**

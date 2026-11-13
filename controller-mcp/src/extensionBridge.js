@@ -154,7 +154,7 @@ export function describeHostMismatch(ip, { projectDir, dir, now, staleMs, pidAli
     workspace: p.workspace ?? null,
     workspaceFolders: p.workspaceFolders ?? [],
     connected: !!p.connected,
-    workspaceMatch: !!projectDir && (p.workspaceFolders ?? []).some((f) => pathIsInside(projectDir, f)),
+    workspaceMatch: !!projectDir && workspaceMatchTier(projectDir, p.workspaceFolders) > 0,
   }));
   return { mcp: ip, extensions, workspaceMatched: extensions.some((e) => e.workspaceMatch) };
 }
@@ -164,10 +164,10 @@ export function hostMismatchFix(hm) {
   const ips = [...new Set((hm?.extensions ?? []).map((e) => e.ip))];
   const matched = (hm?.extensions ?? []).filter((e) => e.workspaceMatch).map((e) => e.ip);
   const target = matched.length > 0 ? [...new Set(matched)].join(' / ') : ips.length === 1 ? ips[0] : `${ips.join(' / ')} 중 작업 창의 IP`;
-  return `살아 있는 확장 창은 ${ips.join(', ')} 에 연결돼 있고 이 MCP 의 GPL_HOST 는 ${hm?.mcp} 다 — 확장 미실행이 아니라 주소 불일치다. `
-    + `.mcp.json 의 GPL_HOST 를 ${target} 로 바꾸고 Claude Code 에서 /mcp 로 재연결할 것`
-    + '(또는 VS Code 에서 「GPL: Export AI Agent Setup」 을 다시 실행하면 현재 연결 주소로 다시 쓴다). '
-    + '확장 재시작이나 /mcp 재연결만으로는 해결되지 않는다.';
+  return `살아 있는 확장 창은 ${ips.join(', ')} 에 연결돼 있고 이 MCP 가 보는 제어기는 ${hm?.mcp} 다 — 확장 미실행이 아니라 주소 불일치다. `
+    + '최신 MCP 서버는 확장 창의 연결 주소를 자동으로 따르므로 GPL_BRIDGE=off(직접 접속 고정)인지 확인하고, '
+    + `직접 접속이 의도라면 GPL_HOST 를 ${target} 로 바꾼 뒤 /mcp 로 재연결할 것. `
+    + '파일 수정 없이 이 세션만 창을 고르려면 extension_resolve {extensionInstanceId} 로 창을 고정한다.';
 }
 
 /** 레거시(IP) 큐를 맡은 인스턴스 — 확장 `electLeaderInstanceId` 와 같은 규칙(가장 먼저 뜬 것, 동률이면 id 순). */
@@ -213,6 +213,125 @@ export function pickConsoleRouteInstance(instances, { instanceId } = {}) {
   return { instance: [...instances].sort(bySince)[0], via: 'first' };
 }
 
+export const DEFAULT_CONTROLLER_HOST = '192.168.0.1';
+export const DEFAULT_CONTROLLER_PORT = 1402;
+
+/**
+ * 제어기 주소를 정할 확장 창을 고른다(순수). 창마다 연결한 제어기가 다를 수 있으므로 "이 작업의 창"을 먼저 본다.
+ *
+ * 우선순위: 명시 instanceId → projectDir 를 품은 워크스페이스의 창(여럿이면 연결된 창) → 제어기에 연결된 창
+ * (여럿이면 설정 주소와 같은 창) → 설정 주소(GPL_HOST)와 같은 창 → 리더 → 가장 먼저 뜬 창.
+ * @returns {{instance, via:string}|null}
+ */
+export function pickAddressInstance(instances, { instanceId, projectDir, configuredHost } = {}) {
+  const live = (instances || []).filter((p) => typeof p?.ip === 'string' && p.ip.trim());
+  if (live.length === 0) return null;
+  const bySince = (a, b) => (a.since ?? 0) - (b.since ?? 0)
+    || String(a.extensionInstanceId).localeCompare(String(b.extensionInstanceId));
+  const first = (list) => [...list].sort(bySince)[0];
+  const sameHost = (p) => !!configuredHost && p.ip.trim().toLowerCase() === String(configuredHost).trim().toLowerCase();
+  if (instanceId) {
+    const hit = live.find((p) => p.extensionInstanceId === instanceId);
+    if (hit) return { instance: hit, via: 'explicit-instance' };
+  }
+  if (live.length === 1) return { instance: live[0], via: 'sole-instance' };
+  if (projectDir) {
+    const inWorkspace = matchWorkspaceInstances(live, projectDir);
+    if (inWorkspace.length > 0) {
+      const connected = inWorkspace.filter((p) => p.connected === true);
+      return { instance: first(connected.length > 0 ? connected : inWorkspace), via: 'workspace-match' };
+    }
+  }
+  const connected = live.filter((p) => p.connected === true);
+  if (connected.length > 0) {
+    return { instance: connected.find(sameHost) ?? first(connected), via: 'connected' };
+  }
+  const configured = live.find(sameHost);
+  if (configured) return { instance: configured, via: 'configured-host' };
+  const leader = live.find((p) => p.leader);
+  if (leader) return { instance: leader, via: 'leader' };
+  return { instance: first(live), via: 'first' };
+}
+
+/**
+ * 이 MCP 가 다룰 제어기 주소(2026-11-04, ai-handoff §1-GU).
+ *
+ * 왜: 종전에는 `.mcp.json` 의 GPL_HOST 가 Export 시점 IP 로 박혀, 확장이 다른 IP 로 연결하면 MCP 가 창을 못 찾고
+ * (`host-mismatch`) Export 재실행·/mcp 재연결을 해야 했다. 브리지 모드(auto/only)에서는 MCP 가 제어기에 직접 붙지
+ * 않으므로 주소의 정본은 **확장 창의 현재 연결**이다 — 살아 있는 창의 presence 에서 따온다. GPL_HOST/GPL_PORT 는
+ * 창이 없을 때(직접 접속 폴백·`GPL_BRIDGE=off`)의 값이자, 창이 여럿일 때의 동률 깨기용 힌트로만 쓴다.
+ * 확장 창이 `connected:false` 면 그 창의 IP 는 "마지막 대상"일 뿐 실제 연결이 아니다 — `assessWindowAddress` 가 이를 가른다.
+ * @returns {{host:string, port:number, source:'extension'|'configured'|'default', via:string|null, instanceId:string|null,
+ *   connected:boolean|null, configuredHost:string|null, workspace:string|null}}
+ */
+export function resolveControllerAddress({
+  configuredHost, configuredPort, mode = 'auto', instanceId, projectDir, dir, now, staleMs, pidAlive,
+} = {}) {
+  const host = typeof configuredHost === 'string' && configuredHost.trim() ? configuredHost.trim() : null;
+  const port = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : null;
+  const fallback = {
+    host: host ?? DEFAULT_CONTROLLER_HOST,
+    port: port ?? DEFAULT_CONTROLLER_PORT,
+    source: host ? 'configured' : 'default',
+    via: null,
+    instanceId: null,
+    connected: null,
+    configuredHost: host,
+    workspace: null,
+  };
+  if (mode === 'off') return fallback;
+  const instances = listExtensionInstances(undefined, { dir, now, staleMs, pidAlive });
+  const chosen = pickAddressInstance(instances, { instanceId, projectDir, configuredHost: host });
+  if (!chosen) return fallback;
+  const p = chosen.instance;
+  return {
+    host: p.ip.trim(),
+    port: Number.isInteger(p.port) && p.port > 0 ? p.port : fallback.port,
+    source: 'extension',
+    via: chosen.via,
+    instanceId: p.extensionInstanceId ?? null,
+    // 필드가 없는 옛 presence 는 null(모름) — 미연결로 단정하지 않는다.
+    connected: typeof p.connected === 'boolean' ? p.connected : null,
+    configuredHost: host,
+    workspace: p.workspace ?? null,
+  };
+}
+
+/**
+ * 주소를 정한 창이 **제어기에 연결돼 있지 않고** 그 IP 가 GPL_HOST 와 다른가(2026-11-13, 11-05 inbox #1).
+ *
+ * 규칙: source 가 extension 이고, 창을 명시로 고른 것(`explicit-instance`)이 아니며, 창이 `connected:false` 이고,
+ * GPL_HOST 가 설정돼 있고 창의 IP 와 다를 때만 `extension-disconnected` 다. 이때 창의 IP 는 "그 창이 마지막으로 가리킨 장비"
+ * (다른 실기일 수 있다)일 뿐이라 명령을 보내면 확장이 옛 IP 로 3 s 접속을 시도하다 timeout 한다 — 보내지 않고 사유를 이름으로 돌려준다.
+ * 창의 IP 가 GPL_HOST 와 같으면(재연결해도 같은 장비) 종전 동작을 유지한다. GPL_HOST 가 없으면 비교 대상이 없어 null.
+ * @returns {null|{reason:'extension-disconnected', windowIp:string, windowPort:number, configuredHost:string, extensionInstanceId:string|null, workspace:string|null, detail:string, nextStep:string}}
+ */
+export function assessWindowAddress(address) {
+  if (!address || address.source !== 'extension' || address.via === 'explicit-instance') return null;
+  if (address.connected !== false) return null;
+  const cfg = typeof address.configuredHost === 'string' ? address.configuredHost.trim().toLowerCase() : '';
+  if (!cfg || cfg === String(address.host).trim().toLowerCase()) return null;
+  return {
+    reason: 'extension-disconnected',
+    windowIp: address.host,
+    windowPort: address.port,
+    configuredHost: address.configuredHost,
+    extensionInstanceId: address.instanceId ?? null,
+    workspace: address.workspace ?? null,
+    detail: `확장 창${address.workspace ? `(${address.workspace})` : ''}이 제어기에 연결돼 있지 않다 — 창의 마지막 대상은 ${address.host}, 이 MCP 의 GPL_HOST 는 ${address.configuredHost} 다. `
+      + '다른 장비일 수 있어 명령을 보내지 않았다.',
+    nextStep: 'VS Code 에서 GPL 연결',
+  };
+}
+
+/** 세션 시작 로그용 — 주소의 출처·창 연결 여부·GPL_HOST 를 한 줄로(2026-11-13, 11-05 inbox #4). */
+export function describeAddressSource(address) {
+  const src = address?.source === 'extension'
+    ? `extension presence${address.via ? `/${address.via}` : ''}, connected:${address.connected === null || address.connected === undefined ? '?' : address.connected}`
+    : address?.source ?? '?';
+  return `source: ${src}; GPL_HOST ${address?.configuredHost ?? '(없음)'}`;
+}
+
 /** 경로 비교용 정규화 — Windows 대소문자·구분자 차이를 없앤다. */
 function normalizePathKey(p) {
   const s = String(p || '').trim().replace(/[\\/]+/g, '/').replace(/\/+$/, '');
@@ -225,6 +344,28 @@ export function pathIsInside(child, parent) {
   const p = normalizePathKey(parent);
   if (!c || !p) return false;
   return c === p || c.startsWith(`${p}/`);
+}
+
+/**
+ * MCP 쪽 작업 폴더(`projectDir` — 세션 대상 폴더나 cwd)와 창의 워크스페이스 폴더가 얼마나 겹치는가(2026-11-13).
+ * 2 = 작업 폴더가 워크스페이스 안(가장 정확), 1 = 워크스페이스가 작업 폴더 안(MCP 가 `.mcp.json` 이 있는 상위 폴더에서 뜬 경우),
+ * 0 = 무관. 종전에는 2 만 일치로 봐 `V2` 창과 상위 `34. Sample Prep` cwd 가 불일치로 판정됐다.
+ */
+export function workspaceMatchTier(projectDir, workspaceFolders) {
+  let tier = 0;
+  for (const f of workspaceFolders ?? []) {
+    if (pathIsInside(projectDir, f)) return 2;
+    if (pathIsInside(f, projectDir)) tier = 1;
+  }
+  return tier;
+}
+
+/** 작업 폴더와 겹치는 창만 남긴다 — 더 정확한 일치(tier 2)가 하나라도 있으면 그것들만, 없으면 포함 방향이 반대인 창(tier 1). */
+export function matchWorkspaceInstances(instances, projectDir) {
+  if (!projectDir) return [];
+  const tiered = (instances || []).map((p) => ({ p, tier: workspaceMatchTier(projectDir, p.workspaceFolders) })).filter((x) => x.tier > 0);
+  const best = tiered.reduce((m, x) => Math.max(m, x.tier), 0);
+  return tiered.filter((x) => x.tier === best).map((x) => x.p);
 }
 
 /**
@@ -276,7 +417,7 @@ export function resolveExtensionInstance(ip, { instanceId, projectDir, dir, now,
   let pool = all;
   let via = 'sole-instance';
   if (projectDir) {
-    const inWorkspace = all.filter((p) => (p.workspaceFolders ?? []).some((f) => pathIsInside(projectDir, f)));
+    const inWorkspace = matchWorkspaceInstances(all, projectDir);
     if (inWorkspace.length > 0) {
       pool = inWorkspace;
       via = 'workspace-match';

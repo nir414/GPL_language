@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DOC_COMMENT_GUIDE, SERVER_INSTRUCTIONS } from '../src/guidelines.js';
+import { DOC_COMMENT_GUIDE, GPL_REFERENCE_GUIDE, SERVER_INSTRUCTIONS } from '../src/guidelines.js';
 
 // initialize 응답의 instructions로 나가는 지침 — 규약의 핵심 항목이 빠지면 AI가 형식을 지킬 근거를 잃는다.
 // (실제 전달 경로는 index.js의 McpServer instructions + gpl://guidelines/doc-comment 리소스)
@@ -36,7 +36,15 @@ test('SERVER_INSTRUCTIONS: 제어기 안전 규칙과 코딩 규약을 함께 �
   assert.ok(SERVER_INSTRUCTIONS.includes(DOC_COMMENT_GUIDE), '문서화 주석 규약이 포함되지 않았다');
   // 세션 내내 컨텍스트에 남는 텍스트 — 비대해지지 않게 상한을 둔다.
   // 2026-10-14: 재확인 금지·대기 도구 규칙 1건 추가로 4000 → 4300 (규칙을 더 넣을 때는 기존 규칙을 줄여 상한 안에 둘 것).
-  assert.ok(SERVER_INSTRUCTIONS.length < 4300, `instructions가 너무 길다(${SERVER_INSTRUCTIONS.length}자)`);
+  // 2026-10-27: 사용자 지시로 GPL 근거(Brooks 공식 문서) 절을 새로 넣어 4300 → 4900.
+  assert.ok(SERVER_INSTRUCTIONS.length < 4900, `instructions가 너무 길다(${SERVER_INSTRUCTIONS.length}자)`);
+});
+
+test('SERVER_INSTRUCTIONS: GPL 근거를 Brooks 공식 문서로 확인하라는 절이 들어 있다 (2026-10-27)', () => {
+  assert.ok(SERVER_INSTRUCTIONS.includes(GPL_REFERENCE_GUIDE), 'GPL 근거 절이 포함되지 않았다');
+  assert.ok(GPL_REFERENCE_GUIDE.includes('GPL_Dictionary/intro.htm'), 'GPL Dictionary 루트 URL 누락');
+  assert.ok(GPL_REFERENCE_GUIDE.includes('Prerequisites'), 'Prerequisites 확인 항목 누락');
+  assert.ok(GPL_REFERENCE_GUIDE.includes('실기 응답이 사실'), '문서=가설 규칙 누락');
 });
 
 test('SERVER_INSTRUCTIONS: 재확인 금지와 대기 도구를 안내한다(§1-EP)', () => {

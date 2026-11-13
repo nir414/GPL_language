@@ -1,6 +1,6 @@
 /**
  * 장시간 작업 기록(Operation) — "지금 무엇이 어디까지 진행됐는가"를 프로세스 밖에서도 읽을 수 있게 하는 저장소.
- * vscode 무의존 — 단위 테스트: `src/test/operationStore.test.ts`.
+ * vscode 무의존 — 단위 테스트: `src/test/controller/automation/operationStore.test.ts`.
  *
  * 왜(2026-09-10 사용자 개선안 §8~§11): Deploy/Quick Compile 은 업로드+Compile 로 수 분이 걸리는데, MCP 는 그것을
  * **브리지 RPC 한 번**으로 기다렸다. 응답 대기가 끝나면(기본 240초) 결과가 **불명**이 되고, AI 는 같은 작업을

@@ -1,25 +1,40 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { isTraceOn } from '../../config';
-import type { GPLSymbol } from '../gplParser';
-import type { CallContext } from '../overloadResolution';
-import { isMissingFile } from '../symbolLocations';
+import type { GPLSymbol } from '../syntax/gplParser';
+import type { CallContext } from '../analysis/overloadResolution';
+import { isMissingFile } from '../symbols/symbolLocations';
 import { SymbolIndex } from '../symbols/symbolIndex';
 import { SymbolProjectScope } from '../../project/symbols/symbolProjectScope';
 import { WorkspaceSourceLoader, FileReferences } from './workspaceSourceLoader';
-import { getCompletionItems, buildSymbolDocumentation, getCompletionItemKind } from './symbolPresentation';
+import { getCompletionItems, buildSymbolDocumentation, getCompletionItemKind, resolveSymbolCompletionItem } from './symbolPresentation';
 
 /** 기존 Provider API를 유지하면서 인덱스·프로젝트 경계·VS Code 연동의 수명주기를 조립한다. */
 export class SymbolCache {
-    private readonly projectScope = new SymbolProjectScope(filePath =>
-        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath);
-    private readonly index = new SymbolIndex(this.projectScope);
-    private readonly sourceLoader = new WorkspaceSourceLoader(this.index, this.projectScope, message => this.log(message));
+    private readonly projectScope: SymbolProjectScope;
+    private readonly index: SymbolIndex;
+    private readonly sourceLoader: WorkspaceSourceLoader;
     private refreshTask: Promise<void> | undefined;
     private refreshRequested = false;
+    private relationsEpoch = 0;
     public isRefreshing = false;
+    /** 워크스페이스 전체 인덱싱이 한 번이라도 끝났는가 — 그 전의 "다른 파일 심볼 없음"은 사실이 아니다(Requires 헤더 대조가 본다). */
+    public hasIndexed = false;
 
-    constructor(private readonly outputChannel?: vscode.OutputChannel) {}
+    /**
+     * @param workspaceFolderFor 경로 근접도 점수(scoreFilePath)의 "최상위 폴더" 기준. 기본은 VS Code 작업공간 폴더.
+     *   원격 소스 세션(activation/remote/controllerSourceLanguage)은 TMP 캐시 루트를 넘겨, 열어 본 원격 사본이 매핑된 로컬 사본보다
+     *   같은 프로젝트 폴더 점수로 앞서게 한다.
+     */
+    constructor(
+        private readonly outputChannel?: vscode.OutputChannel,
+        workspaceFolderFor: (filePath: string) => string | undefined = filePath =>
+            vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
+    ) {
+        this.projectScope = new SymbolProjectScope(workspaceFolderFor);
+        this.index = new SymbolIndex(this.projectScope);
+        this.sourceLoader = new WorkspaceSourceLoader(this.index, this.projectScope, message => this.log(message));
+    }
 
     private log(message: string) {
         if (!isTraceOn(vscode.workspace)) {
@@ -47,6 +62,7 @@ export class SymbolCache {
                 this.index.clear();
                 await this.sourceLoader.indexWorkspace();
             } while (this.refreshRequested);
+            this.hasIndexed = true;
             this.log(`[SymbolCache] Refresh complete. Total symbols: ${this.getAllSymbols().length}`);
         } finally {
             this.isRefreshing = false;
@@ -95,7 +111,13 @@ export class SymbolCache {
     }
 
     public invalidateProjectRelations(): void {
+        this.relationsEpoch++;
         this.projectScope.invalidateProjectRelations();
+    }
+
+    /** 심볼 인덱스 + 프로젝트 관계(.gpr)의 변경 번호 — 이름 → 파일 대응에 기댄 계산 결과의 캐시 키로 쓴다. */
+    public get indexGeneration(): number {
+        return this.index.generation + this.relationsEpoch;
     }
 
     public async findReferences(symbolName: string, token?: vscode.CancellationToken): Promise<FileReferences[]> {
@@ -109,8 +131,15 @@ export class SymbolCache {
         return references;
     }
 
+    /** 워크스페이스 심볼 완성 항목 — 인덱스가 바뀌기 전까지 같은 배열이다(고치지 말 것). 문서는 `resolveCompletionItem` 이 채운다. */
     public getCompletionItems(): vscode.CompletionItem[] {
         return getCompletionItems(this.index);
+    }
+
+    /** 완성 항목이 선택될 때 문서를 채운다 — 워크스페이스 심볼 항목이 아니면 그대로 둔다. */
+    public resolveCompletionItem(item: vscode.CompletionItem): vscode.CompletionItem {
+        resolveSymbolCompletionItem(item);
+        return item;
     }
 
     public buildSymbolDocumentation(symbol: GPLSymbol): vscode.MarkdownString {

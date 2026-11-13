@@ -17,7 +17,7 @@
  * 그래서 절차를 여기 하나로 모으고, 호출부는 전송 수단(IO)과 **정책(재시도 여부·복구 허용 여부)** 만 정한다.
  * 결과는 불리언이 아니라 구조화해서 돌려주므로, 진단(Problems) 표시·모달 확인 같은 UI 는 호출부가 그대로 맡는다.
  *
- * 단위 테스트: `src/test/projectCommands.test.ts` (가짜 IO 로 시나리오를 재현한다).
+ * 단위 테스트: `src/test/controller/commands/projectCommands.test.ts` (가짜 IO 로 시나리오를 재현한다).
  */
 
 import { buildStartCommand, commandRunsCompiler, StartCommandOptions } from './startCommand';
@@ -185,6 +185,18 @@ export interface UnloadOutcome {
 
 /** 쓰레드 실행 중 Unload 거부 STATUS. */
 export const UNLOAD_BLOCKED_BY_THREAD = -750;
+
+/**
+ * Unload 응답 대기 하한(ms) — UI·MCP 공통. 실행을 거친 앱의 Unload 는 힙 세그먼트 수에 비례해 18 s 넘게 걸렸고(2026-10-27 inbox
+ * "unload-slow-not-hang": Compile 만 한 뒤 3.6 s, 실행 뒤 18.4 s), 기본 명령 타임아웃(10~15 s)으로 소켓을 먼저 닫으면 제어기의
+ * 1402 세션이 정리되지 않아 거부 상태가 된다. 그래서 설정값이 더 작으면 이 값까지 올린다(§1-GN).
+ */
+export const UNLOAD_TIMEOUT_MIN_MS = 180_000;
+
+/** Unload 전송에 쓸 타임아웃 — 설정값과 하한 중 큰 쪽. */
+export function unloadTimeoutMs(configuredMs: number | undefined): number {
+    return Math.max(configuredMs ?? 0, UNLOAD_TIMEOUT_MIN_MS);
+}
 
 /** `Unload <project>` — "로드 안 됨"과 "쓰레드 실행 중 거부"를 구분해 돌려준다. */
 export async function unloadProject(

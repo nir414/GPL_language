@@ -10,15 +10,43 @@
  * 왜 `gpl.*` 만인가: 접근 제한이 아니라 범위 한정이다 — 이 확장의 진입점이 임의 VS Code 명령(`workbench.action.terminal.sendSequence` 등)의
  * 프록시가 되면 안 된다. 제어기 안전 조건은 명령 계층의 정책(commandPolicy.ts)이 경로와 무관하게 충족시키므로 여기에 허용 목록을 두지 않는다.
  *
- * 단위 테스트: src/test/uriDispatch.test.ts
+ * 토큰(2026-11-04 §1-GZ): URI 는 웹 페이지·문서의 링크로도 열린다. VS Code 의 "이 URI 열기 허용"에서 다시 묻지 않음을 고르면 링크
+ * 클릭만으로 1402 명령(모션 포함)이 나갈 수 있었다. 그래서 조회 전용 몇 개(`URI_TOKENLESS_COMMANDS`·별칭)를 뺀 명령은 쿼리
+ * `token=<값>` 이 `%TEMP%\gpl-controller\uri-token` 과 같아야 실행한다 — 같은 PC 의 터미널·에이전트는 파일을 읽어 그대로 쓸 수
+ * 있으므로 AI 접근을 막는 것이 아니고, 파일을 읽을 수 없는 웹 페이지만 막힌다.
+ *
+ * 단위 테스트: src/test/controller/automation/uriDispatch.test.ts
  */
 
 export type UriAliasAction = 'connect' | 'disconnect' | 'getState' | 'dashboard';
 
 export type UriResolution =
     | { kind: 'alias'; action: UriAliasAction; query: URLSearchParams }
-    | { kind: 'command'; commandId: string; args: unknown }
+    | { kind: 'command'; commandId: string; args: unknown; token?: string }
     | { kind: 'invalid'; reason: string };
+
+/**
+ * 토큰 없이 URI 로 실행해도 되는 명령 — 상태를 읽어 Output 에 남기거나 화면만 여는 것. MCP 가 확장을 깨울 때 쓰는
+ * `gpl.ai.debug.getConnectionState`(controller-mcp extensionBridge.wakeExtension)가 여기 있어야 한다.
+ */
+export const URI_TOKENLESS_COMMANDS: ReadonlySet<string> = new Set([
+    'gpl.ai.debug.getConnectionState',
+    'gpl.ai.debug.getState',
+    'gpl.controller.showDashboard',
+]);
+
+/** 이 명령을 URI 로 실행하려면 토큰이 필요한가. */
+export function uriCommandNeedsToken(commandId: string): boolean {
+    return !URI_TOKENLESS_COMMANDS.has(commandId);
+}
+
+/** 토큰 비교(길이가 같을 때 상수 시간). 기대값이 없으면(파일을 만들지 못함) 항상 거짓 — 닫힌 쪽으로 실패한다. */
+export function uriTokenMatches(expected: string | undefined, given: string | undefined): boolean {
+    if (!expected || !given || expected.length !== given.length) { return false; }
+    let diff = 0;
+    for (let i = 0; i < expected.length; i++) { diff |= expected.charCodeAt(i) ^ given.charCodeAt(i); }
+    return diff === 0;
+}
 
 const ALIASES: ReadonlyMap<string, UriAliasAction> = new Map([
     ['connect', 'connect'],
@@ -57,8 +85,11 @@ export function resolveUriRequest(path: string, query: string | undefined): UriR
         return { kind: 'invalid', reason: `'${commandId}' — 이 확장의 명령(gpl.*)만 URI로 실행할 수 있음` };
     }
 
+    // 토큰은 인자가 아니다 — 명령에 넘기기 전에 뺀다.
+    const token = q.get('token') ?? undefined;
+    q.delete('token');
     try {
-        return { kind: 'command', commandId, args: parseUriArgs(q) };
+        return { kind: 'command', commandId, args: parseUriArgs(q), ...(token !== undefined ? { token } : {}) };
     } catch (err) {
         return { kind: 'invalid', reason: (err as Error).message };
     }

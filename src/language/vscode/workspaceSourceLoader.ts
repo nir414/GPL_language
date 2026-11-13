@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { GPLParser } from '../gplParser';
+import { GPLParser } from '../syntax/gplParser';
 import { SymbolIndex } from '../symbols/symbolIndex';
 import { SymbolProjectScope } from '../../project/symbols/symbolProjectScope';
-import { PROJECT_EXCLUDE_GLOB, findWorkspaceGprPaths } from '../../project/projectFileScope';
-import { collectProjectSourcePaths } from '../../project/projectSources';
+import { PROJECT_EXCLUDE_GLOB, findWorkspaceGprPaths } from '../../project/sources/projectFileScope';
+import { collectProjectSourcePaths } from '../../project/sources/projectSources';
 import { normalizePathKey } from '../../util/pathKey';
 
 const INDEX_EXCLUDE_GLOB = PROJECT_EXCLUDE_GLOB;
@@ -112,6 +112,7 @@ export class WorkspaceSourceLoader {
         // Prefer Project.gpr-based indexing when available.
         // Many GPL projects are single-folder, and Project.gpr defines the actual compile/reference set.
         // This avoids scanning the entire workspace (which can be huge) when only a handful of sources matter.
+        const enumerateStarted = Date.now();
         const projectFiles = await this.getProjectSourcesFromGpr();
 
         const filesToIndex = projectFiles ?? (await vscode.workspace.findFiles(
@@ -120,9 +121,9 @@ export class WorkspaceSourceLoader {
         ));
 
         if (projectFiles) {
-            this.log(`[SymbolCache] Using Project.gpr sources (${filesToIndex.length} files)`);
+            this.log(`[SymbolCache] Using Project.gpr sources (${filesToIndex.length} files, 탐색 ${Date.now() - enumerateStarted} ms)`);
         } else {
-            this.log(`[SymbolCache] Workspace glob: found ${filesToIndex.length} .gpl files`);
+            this.log(`[SymbolCache] Workspace glob: found ${filesToIndex.length} .gpl files (findFiles ${Date.now() - enumerateStarted} ms)`);
         }
 
         // 확장 호스트 스레드를 독점하지 않도록 이 개수마다 이벤트 루프에 한 번 양보한다 —
@@ -170,7 +171,7 @@ export class WorkspaceSourceLoader {
      * 워크스페이스에 `.gpr`가 하나도 없으면 undefined(호출측이 워크스페이스 glob으로 폴백).
      *
      * `ProjectSource`는 폴더 기준 상대 경로여서 `T1\T2\T2.gpl`처럼 하위 폴더가 임의 깊이로
-     * 중첩될 수 있다(2026-08-28 실제 파일 확인 — `project/projectSources.ts` 참고).
+     * 중첩될 수 있다(2026-08-28 실제 파일 확인 — `project/sources/projectSources.ts` 참고).
      * 폴더 재귀 스캔을 합집합으로 두는 이유는 `.gpr`에 아직 추가하지 않은 새 파일도
      * 정의 이동·참조 검색·자동완성에 잡히게 하려는 것이다(참조 검색 범위와 같은 규칙).
      */

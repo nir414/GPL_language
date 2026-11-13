@@ -24,6 +24,11 @@ GDS·Controller Software 문서 어디에도 `ProjectBegin` 등의 리터럴이 
 - **[문서]** 프로젝트를 메모리에 올려 실행하면 GPL이 **`Project.gpr`를 가장 먼저 읽는다**.
 - **[문서]** 폴더 이름과 프로젝트 이름은 동의어다. 제어기 플래시에서는 `/flash/projects/` 아래에 놓인다.
   (이 확장의 FTP 배포 경로는 `/GPL/<ProjectName>` — `src/controller/deployment/deployService.ts` 참조.)
+- **[규칙]** 그래서 `ProjectName` 은 `.gpr` 이 있는 폴더 이름과 **대소문자까지 같게** 쓴다(2026-10-28 사용자 규칙). 리프·그룹
+  라이브러리 `.gpr` 도 같다. 확장의 패키지 의존 검사(`gpl.project.dependencyCheck`)가 어긋난 `.gpr` 에 Warning 과
+  「ProjectName 바꾸기」 빠른 수정을 낸다 — 폴더 이름은 다른 `.gpr` 의 `ProjectLibrary` 경로가 가리키므로 바꾸지 않는다.
+  같은 이름의 폴더가 둘이면(예: `Gantry\Data`·`Lib\Data`) 고친 뒤 ProjectName 이 겹치므로 문구로 알린다 — 겹친 라이브러리
+  이름을 제어기가 어떻게 다루는지는 **미확인**이다.
 
 ## 2. 최소 형식 **[실측]**
 
@@ -68,7 +73,7 @@ ProjectEnd
 파싱 시 알려진 관용:
 
 - **[실측]** 값은 큰따옴표로 감싼다. 이 저장소의 파서는 작은따옴표도 허용하고 키워드 대소문자를 무시한다
-  (`src/project/gprSync.ts`의 `SOURCE_RE`).
+  (`src/project/gpr/gprSync.ts`의 `SOURCE_RE`).
 - **[문서]** `ProjectStart`가 가리키는 프로시저는 **`Public`으로 선언되어야** 한다.
 - 순서 규칙·중복 허용 여부·주석 문법(첫 줄 외 위치의 `'`)은 **문서화되어 있지 않다**. 확장은 알 수 없는 줄을
   **그대로 보존**하는 방식으로 대응한다(`applyGprSync`).
@@ -89,11 +94,56 @@ projects/MyProject/MyLibrary/Project.gpl   Public Sub T1()
 
 - 값 `MyProject\MyLibrary`는 **projects 루트 기준 상대 경로**다(프로젝트 폴더 기준이면 `MyLibrary`였을 것).
   단, 표본이 하나뿐이라 확장은 두 기준을 **후보 순서대로 모두 시도**한다
-  (`src/project/projectSources.ts` `resolveProjectLibraryDirs`).
+  (`src/project/sources/projectSources.ts` `resolveProjectLibraryDirs`).
 - 라이브러리는 **메인 프로젝트 폴더 안에 중첩**될 수 있다. 즉 "프로젝트 폴더 = 프로젝트 하나"가 아니다.
 - 라이브러리의 `.gpr`에는 `ProjectStart`가 없어도 된다(관측된 `MyLibrary/Project.gpr`에는 없다).
 
 **[미검증]** 라이브러리를 2개 이상 참조할 때 줄이 반복되는지(vs. 한 줄 콤마 구분) — §8.
+
+**확장의 업로드 규칙(0.27.0, `controller/deployment/libraryUploadPlan.ts`).** 위 "projects 루트 기준" 관측을 근거로,
+배포하는 프로젝트의 라이브러리 그래프(재귀)에서 **컴파일 루트 밖 · 같은 projects 폴더 안**이고 값을 projects 폴더에 붙이면
+그 폴더가 나오는 라이브러리를 `/GPL/<값>` 으로 함께 올린다(설정 `gpl.deploy.uploadLibraries`). 프로젝트 폴더 안 라이브러리는
+원래 재귀 업로드에 포함되고, `ProjectStart` 가 있는 상위 `.gpr` 안의 하위 패키지(내장형, 예: BinderR4 — 값이 루트 기준)는
+라이브러리가 그 컴파일 루트에 속하므로 따로 올리지 않는다. 형제 폴더(`/GPL/Main` + `/GPL/Libraries`) 배치에서 제어기가
+라이브러리를 찾는 것은 **[실측]** 2026-11-13(아래 §4.1).
+
+### 4.1 라이브러리 배치와 중단점 — 무엇이 걸리고 무엇이 안 걸리나 **[실측]**
+
+2026-11-13, G2400C GPL 4.2K5(시뮬레이션 제어기)에서 작은 프로브(`captures/nesttest` — git 미추적)와 실제 Sample Prep
+`Lib/v1`(Group–Leaf 83파일) 사본으로 확인했다. 문서상 `Set Break project_name "file_name" line_number` 의
+`project_name` 은 "프로시저가 든 프로젝트"라고만 적혀 있다
+([set_break.htm](https://www2.brooksautomation.com/Controller_Software/Software_Reference/Console_Commands/set_break.htm)).
+
+| 배치 | `ProjectLibrary` 값 | 컴파일·실행·Step | `Set Break` |
+| --- | --- | --- | --- |
+| 형제 폴더, `.gpr` 하나 | `"FDir"` | 됨 | `Set Break FDir "F.gpl"4` → 0. **이름은 폴더 이름**이다 — `ProjectName="FName"` 으로는 -508 |
+| 형제 폴더, `.gpr` 하나 + **하위 폴더 소스** | `"TLib"` (`ProjectSource="Core\Log\Logger.gpl"`) | 됨 | `Set Break TLib "Core\Log\Logger.gpl"4` → 0, 히트. `/` 로 쓰면 -508 |
+| **중첩 라이브러리**(폴더마다 `.gpr`) | `"NLib\Core\Log"` | 됨(Show Stack `NLib\Core\Log/Logger.gpl`) | **지정할 방법 없음** — 24종 표기 모두 -508/-205 |
+
+- 위치 표기는 `<ProjectLibrary 값>/<ProjectSource 표기>` 다(`TLib/Core\Log\Logger.gpl`, `NLib\Core\Log/Logger.gpl`).
+- 중첩 라이브러리에 시도한 표기: 메인 프로젝트 + 파일명·`\` 경로·`/` 경로·Show Stack 표기·`/GPL` 절대 경로·`..\`,
+  폴더명(`Log`·`Base`·`Util`)·ProjectName(`NLib_Base`·`NLib_Util`)·최상위 폴더(`NLib`) + 하위 경로 → -508,
+  값 자체(`NLib\Core\Log`·`NLib/Core/Log`·따옴표·`\\`·`/GPL/…`)를 프로젝트 인자로 → -205 *Missing argument*
+  (프로젝트 인자는 구분자 없는 낱말 하나만 받는다). 없는 프로젝트·없는 파일·없는 줄도 모두 -508 이라 오류 코드로는 원인을 가를 수 없다.
+- `Lib` 는 GPL 예약어(`Module Lib` → -719)지만 **폴더·프로젝트 이름으로는 문제없다** — `/GPL/Lib`(중첩 리프 참조, 그리고
+  `.gpr` 하나 + 하위 폴더 소스) 모두 Compile·Start·`Set Break Lib "Core\Log\Logger.gpl"4`·Stop·Unload 가 정상이었다.
+- 메인 프로젝트 Unload 는 라이브러리 폴더(`/GPL/NLib`)를 남긴다(메인 폴더만 사라진다).
+
+**중첩 폴더 구조를 쓰면서 중단점도 쓰려면**: 폴더 구조는 그대로 두고 **라이브러리 맨 위에 `.gpr` 하나**만 두어 하위 폴더 소스를
+직접 등재한다. 앱은 `ProjectLibrary="Lib"` 한 줄로 참조한다.
+
+```txt
+projects/App/Project.gpr          ProjectLibrary="Lib"
+projects/Lib/Project.gpr          ProjectSource="Core\Log\Logger.gpl"
+                                  ProjectSource="Core\Text\StringUtils.gpl"  …(하위 폴더 소스 전부)
+projects/Lib/Core/Log/Logger.gpl
+projects/Lib/Core/Text/StringUtils.gpl
+```
+
+리프 단위로 골라 쓰던 메모리 절약은 배포 전처리 `excludeUnreachableLibraryFiles`(`gpl.deploy.preprocess`)가 대신한다 —
+실제 `Lib/v1` 83파일(1.64 MB)을 이 형태로 묶고 로거만 쓰는 앱을 배포하니 4파일(15.6 KB)만 올라가 Compile STATUS 0,
+`Set Break V1Lib "Core\Log\Logger.gpl"84` 히트, 그 프레임의 매개변수 값 조회까지 됐다. 확장은 중첩 라이브러리 소스에
+중단점을 찍으면 보내지 않고 이 사유를 중단점 메시지로 알린다(`project/remote/breakpointTarget.ts`).
 
 GDS 문서 "GPL Project Libraries" 절의 서술:
 
@@ -162,8 +212,8 @@ graph LR
 
 | 항목 | 상태 | 위치 |
 | --- | --- | --- |
-| `ProjectName`/`ProjectStart`/`ProjectSource` 파싱 | 지원 | `src/project/gprSync.ts`, `src/controller/protocol/responseParser.ts` |
-| 하위 폴더 상대 경로(`T1\T2\T2.gpl`) | 지원 | `src/project/projectSources.ts` |
+| `ProjectName`/`ProjectStart`/`ProjectSource` 파싱 | 지원 | `src/project/gpr/gprSync.ts`, `src/controller/protocol/responseParser.ts` |
+| 하위 폴더 상대 경로(`T1\T2\T2.gpl`) | 지원 | `src/project/sources/projectSources.ts` |
 | 첫 줄 타임스탬프 주석 보존·갱신 | 지원 | `formatGprTimestamp` |
 | 알 수 없는 줄 보존 | 지원 | `applyGprSync` (매칭 안 되는 줄은 그대로 통과) |
 | `ProjectLibrary` 인식 | 지원 | `parseGprText().libraries` / `parseGpr().libraries` — 동기화 대상이 아니며 그대로 보존 |

@@ -56,6 +56,29 @@ export function projectDirFromResource(resourcePath: string, dirs: string[], isD
 }
 
 /**
+ * 탐색기 다중 선택(여러 폴더/파일)을 프로젝트 폴더 목록으로 바꾼다 — 각 리소스에 `projectDirFromResource`
+ * 규칙을 그대로 적용하고, 같은 프로젝트로 모이는 리소스는 한 번만 담는다(선택 순서 유지).
+ * 프로젝트를 찾지 못한 리소스는 `unresolved` 로 따로 돌려준다 — 호출측이 버릴지 물을지 정한다.
+ */
+export function projectDirsFromResources(
+    resources: readonly { path: string; isDirectory: boolean }[],
+    dirs: string[],
+): { dirs: string[]; unresolved: string[] } {
+    const seen = new Set<string>();
+    const picked: string[] = [];
+    const unresolved: string[] = [];
+    for (const r of resources) {
+        const hit = projectDirFromResource(r.path, dirs, r.isDirectory);
+        if (!hit) { unresolved.push(r.path); continue; }
+        const key = normalizeDirKey(hit);
+        if (seen.has(key)) { continue; }
+        seen.add(key);
+        picked.push(hit);
+    }
+    return { dirs: picked, unresolved };
+}
+
+/**
  * 후보 폴더들 중 **폴더명이 겹치는 것들**에 붙일 위치 표기를 계산한다 — QuickPick 라벨이
  * `$(folder) GPL_Code` 로 똑같이 보이는 문제(§1-CN 남은 일)를 위한 것이다.
  *

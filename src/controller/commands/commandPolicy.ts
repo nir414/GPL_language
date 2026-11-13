@@ -26,7 +26,7 @@
  *  R3. Start <project>: 같은 프로젝트의 Compile 응답 완료 뒤 `startAfterCompileGapMs` 가 지나기 전이면 그만큼 기다린다(§0.7 —
  *      Start 가 `-compile` 로 컴파일을 수행하므로 컴파일 연속을 피한다. 안전성 실측 전이라 거부가 아닌 완충 지연으로 둔다).
  *
- * 단위 테스트: src/test/commandPolicy.test.ts
+ * 단위 테스트: src/test/controller/commands/commandPolicy.test.ts
  */
 
 import { parseThreadList } from '../protocol/responseParser';

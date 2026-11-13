@@ -1,12 +1,16 @@
 /**
- * Project.gpr 소스 목록 동기화 — VS Code 명령·자동 반영 (순수 로직은 gprSync.ts).
+ * Project.gpr 소스 목록 동기화 — VS Code 명령·자동 반영·배포 전 대조 (판단은 project/gpr/gprFolderSync.ts, 편집은 project/gpr/gprSync.ts).
  *
  * - 명령 `gpl.project.syncSources`: 탐색기에서 .gpr 우클릭(Uri) 또는 팔레트(프로젝트 선택) →
  *   폴더의 소스 파일과 ProjectSource 목록을 대조해 추가/제거 항목을 QuickPick(다중 선택)으로 확인 후 반영.
  *   .gpr가 없는 폴더면 새로 만들지 물어본다.
- * - 자동 반영(`gpl.project.autoSyncSources`): VS Code 안에서 .gpl을 새로 만들거나 이름 변경·삭제하면
- *   해당 프로젝트의 Project.gpr에 반영할지 묻거나(prompt, 기본) 바로 반영(auto)한다. 에디터 밖 변경
- *   (git checkout 등)에는 반응하지 않는다 — 대량 변경을 조용히 .gpr에 쓰지 않기 위해.
+ * - 자동 반영(`gpl.project.autoSyncSources`): 소스 파일(.gpl)이 생기거나 지워지면 — VS Code 안의 생성·이름 변경·삭제뿐
+ *   아니라 **외부 변경(SVN 갱신·GDE·탐색기)도 파일 시스템 워처로** — 해당 프로젝트의 Project.gpr에 반영할지 묻거나(prompt,
+ *   기본) 바로 반영(auto)한다(2026-10-27 "Project.gpr 자동 동기화" 요청으로 외부 변경까지 넓힘). 대량 변경도 프로젝트당
+ *   한 번만 묻고, `auto` 가 아니면 조용히 쓰지 않는다. 내용 변경(저장)에는 반응하지 않는다 — 목록은 파일의 유무만 본다.
+ * - 배포 전 대조(`reconcileProjectGprBeforeDeploy`): 사람 경로의 배포·Quick Compile 은 업로드 전에 목록이 폴더와 다르면
+ *   「반영 후 배포 / 그대로 배포 / 취소」를 묻고(auto 면 바로 반영), 비대화형 경로는 반영(auto)하거나 그대로 둔다
+ *   (deployService 가 `precheckWarnings` 로 알린다).
  * - 편집은 WorkspaceEdit로 적용해 열려 있는(더티 포함) 문서와 충돌하지 않고 Undo가 된다.
  */
 
@@ -16,14 +20,16 @@ import * as path from 'path';
 import { findProjectDirs } from '../deployment/deployService';
 import { pickProjectDir } from './projectPicker';
 import { isPathUnder, normalizeDirKey } from '../../util/pathKey';
-import { GPR_PATH_SEPARATOR, listSourceFilesRecursive } from '../../project/projectSources';
+import { GPR_PATH_SEPARATOR, listSourceFilesRecursive } from '../../project/sources/projectSources';
 import {
-    applyGprSync,
-    createGprText,
-    parseGprText,
-    planGprSync,
-    GprSyncPlan,
-} from '../../project/gprSync';
+    GprFolderSyncCheck,
+    checkGprFolderSync,
+    describeGprSyncPlan,
+    detectStartProcedure,
+    findGprFile,
+    sourceExtensionsFrom,
+} from '../../project/gpr/gprFolderSync';
+import { applyGprSync, createGprText } from '../../project/gpr/gprSync';
 
 export const GPR_SYNC_COMMAND = 'gpl.project.syncSources';
 
@@ -36,9 +42,7 @@ export interface GprSyncDeps {
 }
 
 function sourceExtensions(): string[] {
-    const raw = vscode.workspace.getConfiguration('gpl').get<unknown>('project.sourceExtensions');
-    const list = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : [];
-    return list.length > 0 ? list : ['.gpl'];
+    return sourceExtensionsFrom(vscode.workspace.getConfiguration('gpl').get<unknown>('project.sourceExtensions'));
 }
 
 function autoSyncMode(): AutoSyncMode {
@@ -46,60 +50,44 @@ function autoSyncMode(): AutoSyncMode {
     return raw === 'auto' || raw === 'off' ? raw : 'prompt';
 }
 
-function findGprFile(projectDir: string): string | undefined {
-    try {
-        const names = fs.readdirSync(projectDir).filter(f => f.toLowerCase().endsWith('.gpr'));
-        // Project.gpr 우선, 없으면 첫 .gpr
-        const preferred = names.find(f => f.toLowerCase() === 'project.gpr') ?? names[0];
-        return preferred ? path.join(projectDir, preferred) : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
 /**
- * 프로젝트 폴더 아래 소스 파일 목록 — **하위 폴더 포함(재귀)**, 폴더 기준 상대 경로.
+ * 프로젝트 폴더 아래 소스 파일 목록 — **하위 폴더 포함(재귀)**, 폴더 기준 상대 경로. 새 .gpr 를 만들 때 쓴다.
+ * 대조(추가/제거 계획)는 `checkProject` 가 같은 규칙으로 한다.
  *
  * `.gpr`의 `ProjectSource`는 상대 경로여서 `T1\T2\T2.gpl`처럼 임의 깊이로 중첩될 수 있다
- * (2026-08-28 실제 파일 확인). 종전에는 폴더 직속 파일만 훑어 하위 폴더 소스를 추가하지 못했고,
- * 이미 목록에 있던 하위 폴더 항목을 "파일 없음"으로 보고 제거를 제안했다.
- * 구분자는 GDE가 쓰는 `\`로 맞춘다(기존 항목과 형식이 어긋나지 않게).
- *
+ * (2026-08-28 실제 파일 확인). 구분자는 GDE가 쓰는 `\`로 맞춘다(기존 항목과 형식이 어긋나지 않게).
  * 단, **자기 `.gpr`를 가진 하위 폴더는 다른 프로젝트**이므로 목록에 넣지 않는다
- * (`projects/MyProject/MyLibrary/`, 2026-08-31 실측). 그 파일들은 `ProjectLibrary` 참조로 이미
- * 함께 컴파일되므로, 상위 프로젝트의 `ProjectSource`에 또 넣으면 이중 등록이 된다.
+ * (`projects/MyProject/MyLibrary/`, 2026-08-31 실측) — 그 파일들은 `ProjectLibrary` 참조로 이미 함께 컴파일된다.
  */
 function listSourceFiles(projectDir: string, log?: (line: string) => void): string[] {
     const listed = listSourceFilesRecursive(projectDir, {
         extensions: sourceExtensions(),
         separator: GPR_PATH_SEPARATOR,
     });
-    if (listed.truncated) {
-        log?.(`[GprSync] ⚠ ${projectDir}: 소스 탐색 상한(파일 수·깊이)에 걸려 일부 파일은 목록에서 빠졌습니다.`);
-    }
-    if (listed.nestedProjects.length > 0) {
-        const names = listed.nestedProjects.map(d => path.relative(projectDir, d) || path.basename(d));
-        log?.(`[GprSync] 중첩 프로젝트는 동기화 대상에서 제외: ${names.join(', ')} `
-            + '(별개 .gpr — 라이브러리라면 ProjectLibrary 참조로 함께 컴파일됩니다)');
-    }
+    noteListingLimits(projectDir, listed.truncated, listed.nestedProjects, log);
     return listed.files;
 }
 
-/** `.gpr` 항목(상대 경로)이 실제 디스크에 있는지 — 제거 제안은 이 확인을 통과해야 한다. */
-function makeExistsOnDisk(projectDir: string): (relPath: string) => boolean {
-    return (relPath: string): boolean => {
-        const native = relPath.trim().replace(/[\\/]+/g, path.sep);
-        if (!native) { return false; }
-        const full = path.isAbsolute(native) ? native : path.join(projectDir, native);
-        try {
-            return fs.statSync(full).isFile();
-        } catch {
-            return false;
-        }
-    };
+function noteListingLimits(projectDir: string, truncated: boolean, nestedProjects: readonly string[], log?: (line: string) => void): void {
+    if (truncated) {
+        log?.(`[GprSync] ⚠ ${projectDir}: 소스 탐색 상한(파일 수·깊이)에 걸려 일부 파일은 목록에서 빠졌습니다(제거 제안은 내지 않습니다).`);
+    }
+    if (nestedProjects.length > 0) {
+        const names = nestedProjects.map(d => path.relative(projectDir, d) || path.basename(d));
+        log?.(`[GprSync] 중첩 프로젝트는 동기화 대상에서 제외: ${names.join(', ')} `
+            + '(별개 .gpr — 라이브러리라면 ProjectLibrary 참조로 함께 컴파일됩니다)');
+    }
 }
 
 interface SyncTarget { projectDir: string; gprPath: string }
+
+/** 대조 한 번 — 열려 있는 문서의 본문(더티 포함)으로 계산해 적용 시 같은 본문을 편집한다. */
+async function checkProject(target: SyncTarget, log?: (line: string) => void): Promise<{ doc: vscode.TextDocument; check: GprFolderSyncCheck }> {
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(target.gprPath));
+    const check = checkGprFolderSync(target.projectDir, target.gprPath, { extensions: sourceExtensions(), gprText: doc.getText() });
+    noteListingLimits(target.projectDir, check.truncated, check.nestedProjects, log);
+    return { doc, check };
+}
 
 /** 명령 인자(Uri/문자열/없음)에서 대상 .gpr를 정한다. 없으면 만들지 물어본다. */
 async function resolveTarget(resource: unknown, interactive: boolean): Promise<SyncTarget | undefined> {
@@ -131,14 +119,20 @@ async function resolveTarget(resource: unknown, interactive: boolean): Promise<S
 
     if (!interactive) { return undefined; }
     const files = listSourceFiles(projectDir);
+    // 소스에 `Sub Main` 이 없으면 라이브러리로 보고 ProjectStart 줄을 쓰지 않는다 — 라이브러리에 ProjectStart 가 있으면
+    // 확장이 그 폴더를 실행 프로젝트·컴파일 루트로 본다(중첩 폴더 소스를 .gpr 하나로 묶는 라이브러리, project-file-gpr.md §4.1).
+    const projectStart = detectStartProcedure(projectDir, files);
+    const startNote = projectStart
+        ? `ProjectStart="${projectStart}" 으로 생성합니다. 이름·시작 프로시저는 생성 후 파일에서 고치십시오.`
+        : '소스에 Sub Main 이 없어 ProjectStart 없이(라이브러리 프로젝트로) 생성합니다. 실행 프로젝트라면 생성 후 ProjectStart 줄을 추가하십시오.';
     const choice = await vscode.window.showInformationMessage(
         `'${path.basename(projectDir)}'에 Project.gpr가 없습니다. 소스 ${files.length}개로 새로 만들까요?`,
-        { modal: true, detail: `ProjectName="${path.basename(projectDir)}", ProjectStart="Main" 으로 생성합니다. 이름/시작 프로시저는 생성 후 파일에서 고치세요.` },
+        { modal: true, detail: `ProjectName="${path.basename(projectDir)}", ${startNote}` },
         '만들기',
     );
     if (choice !== '만들기') { return undefined; }
     const gprPath = path.join(projectDir, 'Project.gpr');
-    const text = createGprText({ projectName: path.basename(projectDir), sources: files });
+    const text = createGprText({ projectName: path.basename(projectDir), sources: files, projectStart });
     await vscode.workspace.fs.writeFile(vscode.Uri.file(gprPath), Buffer.from(text, 'utf8'));
     return { projectDir, gprPath };
 }
@@ -151,13 +145,10 @@ interface SyncOutcome { added: string[]; removed: string[] }
  */
 async function syncGpr(target: SyncTarget, deps: GprSyncDeps, opts: { interactive: boolean; confirmAll?: boolean }): Promise<SyncOutcome | undefined> {
     const uri = vscode.Uri.file(target.gprPath);
-    const doc = await vscode.workspace.openTextDocument(uri);
-    const text = doc.getText();
-    const parsed = parseGprText(text);
-    const files = listSourceFiles(target.projectDir, deps.log);
-    const plan: GprSyncPlan = planGprSync(parsed, files, { existsOnDisk: makeExistsOnDisk(target.projectDir) });
+    const { doc, check } = await checkProject(target, deps.log);
+    const { text, plan } = check;
 
-    if (plan.toAdd.length === 0 && plan.toRemove.length === 0) {
+    if (check.inSync) {
         if (opts.interactive) {
             vscode.window.setStatusBarMessage(`$(check) Project.gpr 이미 동기화됨 — 소스 ${plan.kept}개`, 4000);
         }
@@ -211,6 +202,77 @@ function summarize(o: SyncOutcome): string {
     return parts.join(', ');
 }
 
+export type GprReconcileOutcome =
+    /** 목록이 이미 폴더와 같다(또는 .gpr 없음 — 배포 서비스가 따로 알린다). */
+    | 'unchanged'
+    /** 반영했다 — 업로드가 갱신된 .gpr 를 올린다. */
+    | 'synced'
+    /** 차이가 있지만 그대로 둔다(사람이 「그대로 배포」, 또는 비대화형·off). */
+    | 'kept'
+    /** 사람이 배포를 취소했다. */
+    | 'cancelled';
+
+/**
+ * 배포 직전 Project.gpr ↔ 폴더 대조(2026-10-27). 사람 경로(`interactive`)는 차이가 있으면 모달로 「반영 후 배포 / 그대로 배포 /
+ * 취소」를 묻고, `autoSyncSources: auto` 면 묻지 않고 반영한다. 비대화형(AI·autoOnSave)은 auto 일 때만 반영하고 아니면 그대로 둔다 —
+ * 모달은 브리지를 막고, 저장 트리거에 모달은 과하다(차이는 deployService 가 `precheckWarnings` 로 알린다).
+ */
+export async function reconcileProjectGprBeforeDeploy(
+    projectDir: string,
+    deps: GprSyncDeps,
+    opts: { interactive: boolean; action?: string },
+): Promise<GprReconcileOutcome> {
+    const mode = autoSyncMode();
+    if (mode === 'off') { return 'kept'; }
+    const gprPath = findGprFile(projectDir);
+    if (!gprPath) { return 'unchanged'; }
+    const target: SyncTarget = { projectDir, gprPath };
+    let check: GprFolderSyncCheck;
+    try {
+        check = (await checkProject(target, deps.log)).check;
+    } catch (err: any) {
+        deps.log(`[GprSync] 배포 전 대조 실패(${gprPath}): ${err?.message ?? err} — 그대로 진행`);
+        return 'kept';
+    }
+    if (check.inSync) { return 'unchanged'; }
+    const summary = describeGprSyncPlan(check.plan);
+    if (mode === 'auto') {
+        const outcome = await syncGpr(target, deps, { interactive: false, confirmAll: true });
+        deps.log(`[GprSync] 배포 전 자동 반영(${path.basename(gprPath)}): ${summary}`);
+        return outcome ? 'synced' : 'kept';
+    }
+    if (!opts.interactive) {
+        deps.log(`[GprSync] 배포 전 대조: ${path.basename(gprPath)} 소스 목록이 폴더와 다름 — ${summary} (비대화형 경로라 그대로 진행)`);
+        return 'kept';
+    }
+    const action = opts.action ?? '배포';
+    const apply: vscode.MessageItem = { title: `반영 후 ${action}` };
+    const keep: vscode.MessageItem = { title: `그대로 ${action}` };
+    const cancel: vscode.MessageItem = { title: '취소', isCloseAffordance: true };
+    const pick = await vscode.window.showWarningMessage(
+        `${path.basename(projectDir)}/${path.basename(gprPath)} 소스 목록이 폴더와 다릅니다 — ${summary}`,
+        {
+            modal: true,
+            detail: [
+                ...check.plan.toAdd.map(f => `+ ${f}  (폴더에 있지만 목록에 없음 → 컴파일되지 않음)`),
+                ...check.plan.toRemove.map(e => `− ${e.path}  (목록에 있지만 파일 없음 → Compile 실패)`),
+                '',
+                '제어기는 Project.gpr 목록만 컴파일합니다. 「반영 후」를 고르면 목록을 고친 뒤 올립니다.',
+            ].join('\n'),
+        },
+        apply, keep, cancel,
+    );
+    if (pick === apply) {
+        const outcome = await syncGpr(target, deps, { interactive: true, confirmAll: true });
+        return outcome ? 'synced' : 'kept';
+    }
+    if (pick === keep) {
+        deps.log(`[GprSync] 배포 전 대조: 사용자가 그대로 ${action} 선택 — ${summary}`);
+        return 'kept';
+    }
+    return 'cancelled';
+}
+
 export function activateGprSync(context: vscode.ExtensionContext, deps: GprSyncDeps): void {
     context.subscriptions.push(
         vscode.commands.registerCommand(GPR_SYNC_COMMAND, async (resource?: unknown) => {
@@ -228,7 +290,7 @@ export function activateGprSync(context: vscode.ExtensionContext, deps: GprSyncD
         }),
     );
 
-    // ── 자동 반영: VS Code 안에서의 생성/이름 변경/삭제만 ──
+    // ── 자동 반영: 소스 파일의 생성/삭제(VS Code 안팎) — 프로젝트별 디바운스로 대량 변경도 한 번만 다룬다 ──
     const pending = new Map<string, ReturnType<typeof setTimeout>>();
     const scheduleForFiles = (uris: readonly vscode.Uri[]): void => {
         if (autoSyncMode() === 'off') { return; }
@@ -258,13 +320,10 @@ export function activateGprSync(context: vscode.ExtensionContext, deps: GprSyncD
         if (mode === 'off') { return; }
 
         // 반영할 것이 있는지 먼저 계산(없으면 조용히 끝)
-        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(gprPath));
-        const plan = planGprSync(
-            parseGprText(doc.getText()),
-            listSourceFiles(projectDir, deps.log),
-            { existsOnDisk: makeExistsOnDisk(projectDir) },
-        );
-        if (plan.toAdd.length === 0 && plan.toRemove.length === 0) { return; }
+        let check: GprFolderSyncCheck;
+        try { check = (await checkProject(target, deps.log)).check; } catch { return; }
+        if (check.inSync) { return; }
+        const plan = check.plan;
 
         if (mode === 'auto') {
             const outcome = await syncGpr(target, deps, { interactive: false, confirmAll: true });
@@ -289,10 +348,24 @@ export function activateGprSync(context: vscode.ExtensionContext, deps: GprSyncD
         }
     };
 
+    // 외부 변경(SVN 갱신·GDE·탐색기)까지 잡는 워처 — 내용 변경은 무시(목록은 유무만 본다). VS Code 안의 조작은 아래 이벤트와
+    // 겹쳐 두 번 들어오지만 프로젝트별 디바운스가 한 번으로 합친다. 확장자 설정을 바꾸면 워처를 다시 만든다.
+    let watcher: vscode.FileSystemWatcher | undefined;
+    const startWatcher = (): void => {
+        watcher?.dispose();
+        const exts = [...new Set(sourceExtensions().map(e => e.replace(/^\./, '').toLowerCase()).filter(e => /^[a-z0-9_]+$/i.test(e)))];
+        if (exts.length === 0) { watcher = undefined; return; }
+        watcher = vscode.workspace.createFileSystemWatcher(`**/*.{${exts.join(',')}}`, false, true, false);
+        watcher.onDidCreate(uri => scheduleForFiles([uri]));
+        watcher.onDidDelete(uri => scheduleForFiles([uri]));
+    };
+    startWatcher();
+
     context.subscriptions.push(
         vscode.workspace.onDidCreateFiles(e => scheduleForFiles(e.files)),
         vscode.workspace.onDidDeleteFiles(e => scheduleForFiles(e.files)),
         vscode.workspace.onDidRenameFiles(e => scheduleForFiles([...e.files.map(f => f.oldUri), ...e.files.map(f => f.newUri)])),
-        { dispose: () => { for (const t of pending.values()) { clearTimeout(t); } pending.clear(); } },
+        vscode.workspace.onDidChangeConfiguration(e => { if (e.affectsConfiguration('gpl.project.sourceExtensions')) { startWatcher(); } }),
+        { dispose: () => { watcher?.dispose(); for (const t of pending.values()) { clearTimeout(t); } pending.clear(); } },
     );
 }

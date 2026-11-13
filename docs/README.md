@@ -11,7 +11,7 @@
 
 ## AI 작업자라면 (필독 순서)
 
-1. 루트 [CLAUDE.md](https://github.com/nir414/GPL_language/blob/main/CLAUDE.md) — 시작 가이드, 하드 규칙 요약, 기록 규칙
+1. 루트 [AGENTS.md](https://github.com/nir414/GPL_language/blob/main/AGENTS.md) — AI 작업 지침 정본(작업 방식·하드 규칙·제품 규칙·구조 규칙). Claude Code의 CLAUDE.md는 이 파일을 import 한다
 2. [ai-handoff.md](https://github.com/nir414/GPL_language/blob/main/docs/ai-handoff.md) — **핵심 인계 문서.** 하드 규칙(§0), 미해결 항목(§2), **다음 할 일(§3)**, 핵심 파일(§4), 세션 이력(§1).
    문서 상단 "이 문서 읽는 법" 표가 읽는 순서를 안내합니다. §1은 최근 10세션만 두고 그 이전은
    `docs/archive/handoff/<YYYY-MM>.md`에 있습니다. 저장소 전용 작업 문서라 문서 사이트에는 포함되지 않습니다.

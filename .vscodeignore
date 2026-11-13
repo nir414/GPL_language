@@ -8,8 +8,6 @@ src/
 scripts/
 docs/
 mkdocs.yml
-requirements-docs.txt
-site/**
 out/**/*.js.map
 out/test/**
 *.vsix
@@ -28,7 +26,6 @@ scripts/dev/**
 # Local agent instructions and work notes are not extension assets
 AGENTS.md
 CLAUDE.md
-REQUESTS.md
 .agents/**
 .codex/**
 .env

@@ -13,37 +13,40 @@
  */
 import * as vscode from 'vscode';
 import { EXTENSION_VERSION, getTraceServerLevel, isTraceOn } from './config';
-import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection } from './controller/connection/controllerConnection';
-import { attachDeployRecordStore, onDidRecordCompiled } from './controller/deployment/deployRecord';
+import { setTrafficChannel, setHeldSocketObserver, closeControllerConnection, noteGplCleared } from './controller/connection/controllerConnection';
+import { attachDeployRecordStore, attachLibraryProvenanceStore, onDidRecordCompiled } from './controller/deployment/deployRecord';
+import { getControllerConfig } from './controller/connection/controllerConnection';
+import { normalizeAbsoluteRemoteDir } from './controller/files/ftpClient';
+import { onRemoteFolderCleared } from './controller/files/remoteFolderClear';
 import { attachSyncManifestStore } from './controller/files/syncManifest';
 import { setRuntimeConsoleHealthProvider, RuntimeConsoleHealth } from './controller/debugging/debugBridge';
 import { activateProjectPicker } from './controller/projects/projectPicker';
 import { activateGprSync } from './controller/projects/gprSyncCommand';
-import { activatePromoteSource } from './project/promoteSourceCommand';
-import { ControllerTreeProvider } from './views/controllerTreeProvider';
-import { ConnectionStatusBar } from './views/connectionStatusBar';
-import { setDashboardConnectionObserver } from './views/controllerDashboardPanel';
+import { activatePromoteSource } from './project/gpr/promoteSourceCommand';
+import { ControllerTreeProvider } from './views/tree/controllerTreeProvider';
+import { ConnectionStatusBar } from './views/statusbar/connectionStatusBar';
+import { setDashboardConnectionObserver } from './views/dashboard/controllerDashboardPanel';
 import { stopLiveLogTerminal } from './log/liveLogTerminal';
-import { activateDebug } from './debug/activateDebug';
+import { activateDebug } from './debug/session/activateDebug';
 
 import { ExtensionHost } from './activation/host';
-import { ExecutionDecorations } from './activation/debugDecorations';
-import { activateLanguageFeatures } from './activation/languageFeatures';
-import { activateXmlCommands } from './activation/xmlCommands';
-import { activateProjectContext } from './activation/projectContext';
-import { activateBreakpointCommands } from './activation/breakpointCommands';
-import { activateConnection } from './activation/connection';
-import { activateDeployCommands } from './activation/deploy';
-import { activateConsoleCommands } from './activation/consoleCommands';
-import { activateAiAgentSetup } from './activation/aiAgentSetup';
-import { activateAiDebugCommands } from './activation/aiDebugCommands';
-import { activateControllerCommands } from './activation/controllerCommands';
-import { activateClockSync } from './activation/clockSync';
-import { activateTreeCommands } from './activation/treeCommands';
-import { activateFtpCommands } from './activation/ftpCommands';
-import { activateDebugIntegration } from './activation/debugIntegration';
-import { activateUriHandler } from './activation/uriHandler';
-import { activateControllerProjectDebug } from './activation/controllerProjectDebug';
+import { ExecutionDecorations } from './activation/debug/debugDecorations';
+import { activateLanguageFeatures } from './activation/language/languageFeatures';
+import { activateXmlCommands } from './activation/language/xmlCommands';
+import { activateProjectContext } from './activation/deploy/projectContext';
+import { activateBreakpointCommands } from './activation/debug/breakpointCommands';
+import { activateConnection } from './activation/controller/connection';
+import { activateDeployCommands } from './activation/deploy/deploy';
+import { activateConsoleCommands } from './activation/controller/consoleCommands';
+import { activateAiAgentSetup } from './activation/ai/aiAgentSetup';
+import { activateAiDebugCommands } from './activation/ai/aiDebugCommands';
+import { activateControllerCommands } from './activation/controller/controllerCommands';
+import { activateClockSync } from './activation/controller/clockSync';
+import { activateTreeCommands } from './activation/controller/treeCommands';
+import { activateFtpCommands } from './activation/remote/ftpCommands';
+import { activateDebugIntegration } from './activation/debug/debugIntegration';
+import { activateUriHandler } from './activation/ai/uriHandler';
+import { activateControllerProjectDebug } from './activation/remote/controllerProjectDebug';
 
 /** 활성화된 호스트 — deactivate()·logMessage() 가 쓴다. */
 let host: ExtensionHost | undefined;
@@ -56,11 +59,12 @@ export function activate(context: vscode.ExtensionContext) {
 	h.log(`GPL Language Support extension is now active! (v${EXTENSION_VERSION})`);
 
 	// Debug/trace logging (workspace/user settings)
-	// - gpl.trace.server = off | messages | verbose
+	// - gpl.trace.server = off | messages | verbose (베타 기간 기본 verbose — 분석용 로그는 늘 남긴다)
+	// 트레이스 레벨은 "얼마나 자세히 남길지"이지 "패널을 열지"가 아니다 — 종전에는 켜져 있으면 활성화 때 Output 을 강제로 열어
+	// 사용자가 보던 패널(GPL Console·터미널)을 덮었다(2026-10-27 지적). 패널은 사용자가 열 때만 연다.
 	const traceLevel = getTraceServerLevel(vscode.workspace);
 	if (isTraceOn(vscode.workspace)) {
 		h.log(`[Trace] gpl.trace.server = ${traceLevel}`);
-		h.outputChannel.show(true);
 	}
 
 	// ── 언어 기능 ─────────────────────────────────────────────────────────────
@@ -90,11 +94,26 @@ export function activate(context: vscode.ExtensionContext) {
 	// 컴파일 스냅샷 레코드(#21) — Deploy/F5 Compile 성공 시 deployService가 기록, 디버그 어댑터가 attach 시 대조.
 	// projectDir 이 워크스페이스 종속이라 globalState 가 아닌 workspaceState 에 둔다.
 	attachDeployRecordStore(context.workspaceState);
+	// 제어기·원격 폴더가 창·워크스페이스 사이에 공유되므로 이 기록은 globalState 에 둔다(다른 창이 올린 라이브러리도 알아야 한다).
+	attachLibraryProvenanceStore(context.globalState);
 
 	// "컴파일 검증 필요" 배지 해제를 배포 경로와 분리한다(§1-CT 원인 ①). 종전에는 runDeploy 래퍼만 해제해서
 	// F5 의 deployBeforeAttach(deployService.deploy() 직접 호출)나 MCP 경유 배포는 Compile 이 성공해도 배지가 남았다.
-	// recordCompiled 는 Compile 성공 확정 지점과 업로드 스타트의 Start 성공 지점에서만 발화하므로 해제 조건과 일치한다.
-	context.subscriptions.push(onDidRecordCompiled(rec => h.clearCompileStale(rec.projectName)));
+	// recordCompiled 는 Compile 성공 확정 지점·업로드 스타트의 Start 성공 지점·`GPL: Start`(-compile) 성공 지점에서만 발화하므로
+	// 해제 조건과 일치한다. 상태는 제어기별이라 기록의 ip 로 해제한다(§1-GN).
+	// 그 Compile 에 함께 포함된 ProjectLibrary(전이 포함)도 함께 해제한다 — 라이브러리를 Upload Only 한 뒤 쓰는 쪽이 Compile 에
+	// 성공해도 라이브러리 항목이 남던 문제(2026-11-03 inbox ①).
+	context.subscriptions.push(onDidRecordCompiled(rec => h.clearCompileStaleAfterCompile(rec.projectName, rec.ip, rec.projectDir)));
+	// /GPL 에서 프로젝트 폴더가 지워지면(트리 비우기·Unload -all 전 비우기·AI clear_remote_folder) 제어기에 그 소스가 없다 — 해제(inbox ④).
+	context.subscriptions.push(onRemoteFolderCleared(e => {
+		if (e.base.toLowerCase() !== normalizeAbsoluteRemoteDir(getControllerConfig().ftpBasePath).toLowerCase()) { return; }
+		h.releaseCompileStale(e.deleted, `${e.base} 에서 폴더를 지움(제어기에 소스 없음)`, e.host);
+		// 일부러 비운 직후 배포의 "재부팅 정황" 안내가 틀리지 않게 시각을 남긴다(2026-11-05 inbox).
+		noteGplCleared(e.host);
+	}));
+	// "컴파일 검증 필요" 상태도 같은 workspaceState 에 영속한다 — 창을 다시 열어도 "아직 검증 안 됨"은 사실 그대로다(§1-GN).
+	h.compileStaleProjects.attach(context.workspaceState);
+	h.backfillCompileStaleLibraryFlags();
 
 	// 업로드 동기화 지문(syncManifest) — 미러/업로드의 스킵 판정을 크기뿐 아니라 내용(SHA-1) 기준으로 만든다.
 	// 기록 대상이 "그 제어기 경로에 올려 둔 내용"이라 워크스페이스에 매이지 않는다 → globalState.
@@ -115,6 +134,8 @@ export function activate(context: vscode.ExtensionContext) {
 	const controllerTree = new ControllerTreeProvider();
 	h.controllerTree = controllerTree;
 	controllerTree.setRuntimeConsoleStatus(h.currentRuntimeConsoleStatus());
+	// 영속된 "컴파일 검증 필요" 목록을 트리·상태바에 올린다(상태바는 연결 전까지 숨김).
+	h.syncCompileStaleViews();
 	context.subscriptions.push(
 		vscode.window.registerTreeDataProvider('gplThreads', controllerTree)
 	);

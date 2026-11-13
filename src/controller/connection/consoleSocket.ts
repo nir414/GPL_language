@@ -13,9 +13,13 @@
  *  - 재사용 조건은 엄격하다: 직전 응답이 **버퍼 끝 `</STATUS>`(terminator-first)**로 완료된 경우에만 보관한다.
  *    idle 조기 완료·close 부분 버퍼·TIMEOUT·error로 끝난 응답 뒤에는 소켓을 폐기한다 — 늦게 도착하는 잔류
  *    바이트가 다음 명령 응답 앞에 붙어 프레이밍(`<DATA>`/`<STATUS>` 경계)이 깨지는 것을 막기 위해서다.
- *  - 재사용 소켓에 write가 실패했거나, 0바이트 수신 상태에서 error/close 되면(제어기가 유휴 연결을 먼저 끊었는데
- *    우리가 아직 모르는 경합) 새 연결로 같은 명령을 1회 재시도한다(controller-mcp console.js와 동일).
- *    TIMEOUT은 재시도하지 않는다 — 명령이 이미 제어기에 도달해 실행됐을 수 있어(Start/Step 등) 이중 실행 위험.
+ *  - 재사용 소켓에 write 자체가 실패하면(명령이 나가지 않았다) 새 연결로 같은 명령을 1회 재시도한다.
+ *    write 가 성공한 뒤 0바이트 상태로 error/close 되면 명령이 제어기에 도달해 실행됐는지 알 수 없다 — 이때는
+ *    호출자가 `retryAfterDeliveryIsSafe`(조회 명령)를 준 경우에만 재시도한다(2026-11-04 §1-GZ: 종전엔 Start/Unload 도
+ *    재전송돼 이중 실행 위험이 있었다). TIMEOUT은 재시도하지 않는다.
+ *  - 명령 문자열에 CR/LF/NUL 등 제어 문자가 있으면 보내지 않는다(`INVALID_COMMAND`, sent:false) — 한 줄 안에 두 번째
+ *    명령이 끼어들어 첫 단어만 보는 분류·가드를 우회하는 것을 막는다. 송신은 UTF-8, 수신은 latin1 로 누적한 뒤
+ *    완성 응답 단위로 UTF-8 디코딩한다(1403 과 같은 규약 — 종전 'ascii' 는 비ASCII 를 깨뜨렸다).
  *  - keepAlive=false면 종전과 동일한 단명 연결(connect→write→end)로 동작한다.
  *  - `CommandResponse` 의미(meta 필드, idle/extraIdle/waitForStatusClose, HTTP 교차 응답 감지를 위해 부분 버퍼도
  *    반환하는 규약)는 그대로 유지한다. 새 meta 필드(`socketReused`/`socketKept`)만 추가.
@@ -24,6 +28,8 @@
  */
 
 import * as net from 'net';
+import { StringDecoder } from 'string_decoder';
+import { latin1ToUtf8 } from '../protocol/runtimeConsoleLine';
 
 export type TrafficDirection = '>>>' | '<<<' | '---' | ' | ';
 export type TrafficLogger = (direction: TrafficDirection, message: string) => void;
@@ -46,6 +52,17 @@ export interface ConsoleSendOptions {
     keepAlive: boolean;
     /** 보관 소켓을 닫기까지의 유휴 시간(ms). */
     keepAliveIdleCloseMs: number;
+    /**
+     * 재사용 소켓에 write 가 성공한 뒤 응답 0바이트로 끊겼을 때 새 연결로 다시 보내도 되는가(조회 명령만 true).
+     * 기본 false — 명령이 이미 실행됐을 수 있어 상태 변경 명령은 재전송하지 않는다.
+     */
+    retryAfterDeliveryIsSafe?: boolean;
+    /**
+     * 새 연결의 TCP 핸드셰이크 상한(ms). 없거나 0 이거나 timeoutMs 이상이면 timeoutMs 만 적용한다(종전).
+     * 직결 제어기의 핸드셰이크는 실측 p50 8 ms·최대 1.1 s(2026-10 사후 스냅샷 25건) — SYN 이 답 없이 사라지는
+     * 제어기에 명령 타임아웃 전체(8~10 s)를 기다리지 않게 한다.
+     */
+    connectTimeoutMs?: number;
 }
 
 /** 응답 본문 실시간 표시용 sink(trafficResponseBody.ResponseBodyStreamer 호환). flush는 멱등이어야 한다. */
@@ -57,6 +74,8 @@ export interface ResponseBodySink {
 export interface ConsoleSendHooks {
     log: TrafficLogger;
     body?: ResponseBodySink | null;
+    /** 새 소켓 생성(테스트 주입용 — 응답 없는 핸드셰이크 재현). 기본 `new net.Socket()`. */
+    createSocket?: () => net.Socket;
 }
 
 export interface CommandResponseMeta {
@@ -98,6 +117,15 @@ export interface ConnectionStats {
 const TCP_KEEPALIVE_PROBE_MS = 10_000;
 /** 우리가 FIN을 보낸 뒤 제어기가 FIN을 돌려주지 않을 때 강제 정리까지 기다리는 시간(종전 단명 경로와 동일). */
 const FIN_WAIT_FORCE_CLOSE_MS = 1000;
+
+/**
+ * 타임아웃 판정을 이미 도착한 I/O 처리 뒤로 미룬다. 확장 호스트 이벤트 루프가 멈췄다 풀리면 Node 는 timers 단계를
+ * poll(I/O) 단계보다 먼저 돌린다 — 그 사이 커널 버퍼에 와 있던 응답·connect 완료를 읽기도 전에 타임아웃을 선언하게 된다.
+ * check 단계(setImmediate)에서 판정하면 그 poll 단계가 먼저 지나간다(2026-10-26 17:48 확장 호스트 71 s 정지 실측).
+ */
+function afterPendingIo(fn: () => void): void {
+    setImmediate(fn);
+}
 
 // ── 순수 헬퍼 ──────────────────────────────────────────────────────────────
 
@@ -203,6 +231,18 @@ export function setHeldSocketObserver(fn: ((event: HeldSocketEvent) => void) | n
 
 function notifyHeldSocket(event: HeldSocketEvent): void {
     try { _heldSocketObserver?.(event); } catch { /* 관찰자 예외가 소켓 정리를 막지 않게 */ }
+}
+
+/**
+ * 1402 로 보낼 수 없는 명령 문자열이면 사유를, 아니면 undefined. 명령은 한 줄이다 — CR/LF 가 끼면 제어기는 두 명령으로
+ * 실행하는데, 우리 쪽 분류·가드(Unload 위험·배포 잠금·재전송 안전 판정)는 첫 단어만 본다. NUL·그 밖의 C0 제어 문자도
+ * 콘솔 명령에 쓸 일이 없어 함께 막는다(탭은 공백처럼 허용).
+ */
+export function invalidCommandReason(command: string): string | undefined {
+    if (/[\r\n]/.test(command)) { return '명령 안에 줄바꿈(CR/LF)이 있습니다 — 한 번에 한 줄 명령만 보낼 수 있습니다.'; }
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(command)) { return '명령 안에 제어 문자가 있습니다.'; }
+    return undefined;
 }
 
 /** reject 사유에 errno 스타일 code 를 붙인다 — 호출자(connectionHealth.classifyCommandFailure)가 실패 종류를 가르는 데 쓴다. */
@@ -337,6 +377,11 @@ export function sendConsoleCommand(
     options: ConsoleSendOptions,
     hooks: ConsoleSendHooks,
 ): Promise<CommandResponse> {
+    const invalid = invalidCommandReason(command);
+    if (invalid) {
+        hooks.log('---', `REJECTED (not sent): ${invalid} ${JSON.stringify(command)}`);
+        return Promise.reject(Object.assign(codedError(`Invalid command (not sent): ${invalid}`, 'INVALID_COMMAND'), { sent: false }));
+    }
     return attempt(command, endpoint, options, hooks, false);
 }
 
@@ -368,7 +413,7 @@ function attempt(
             _stats.reuses++;
         } else {
             if (_held) { dropHeld('not reusable', true); }
-            socket = new net.Socket();
+            socket = hooks.createSocket ? hooks.createSocket() : new net.Socket();
             connectedAt = Date.now();
             _stats.connects++;
             _stats.lastConnectAt = connectedAt;
@@ -377,9 +422,14 @@ function attempt(
 
         // ── 응답 누적 수신: <STATUS> 찾을 때까지 기다리되, 최소 바이트 수 && idle 조건으로도 완성 응답으로 판단 ──
         const { timeoutMs: timeout, idleMs, minResponseBytes, extraIdleMsOnIncomplete, waitForStatusClose } = opts;
+        /** latin1(바이트 1:1)로 누적 — 다바이트 문자가 chunk 경계에서 갈려도 잃지 않는다. 돌려줄 때 UTF-8 로 디코딩한다. */
         let responseBuffer = '';
+        /** 실시간 본문 표시용 — chunk 경계의 다바이트 문자를 다음 chunk 와 이어 붙여 디코딩한다. */
+        const bodyDecoder = new StringDecoder('utf8');
         let settled = false;
         let kept = false;
+        /** 명령 바이트를 소켓에 넘겼는가(write 콜백 성공). 그 뒤의 끊김은 명령 실행 여부를 알 수 없다. */
+        let delivered = false;
         /** 이 소켓이 닫히는 이유(우리가 닫기 시작한 쪽이 기록). 'close' 이벤트에서 `--- 1402 CLOSE (reason)` 한 줄로 남긴다. */
         let closeReason: string | null = null;
         let gracefulCloseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -396,7 +446,7 @@ function attempt(
                 // 하드 규칙 2: 완전한 응답은 종결자 </STATUS> 수신으로만 판정한다.
                 // (</DATA>만 닫힌 응답은 STATUS 누락 — idle/close 완료 경로에서 잘렸을 수 있음)
                 responseComplete: statusTagReceived,
-                bytesReceived: Buffer.byteLength(raw, 'utf8'),
+                bytesReceived: raw.length, // latin1 누적이라 문자 수 = 바이트 수
                 lastChunkAt: new Date(lastChunkAtMs).toISOString(),
                 idleTimeoutMs: idleMs,
                 statusTagReceived,
@@ -429,17 +479,43 @@ function attempt(
 
         log('>>>', `${endpoint.ip}:${endpoint.port}  ${command}`);
 
-        const timer = setTimeout(() => {
+        const timer = setTimeout(() => afterPendingIo(() => {
             if (settled) { return; }
             settled = true;
             clearIdle();
+            clearConnectTimer();
             // 응답 미완 상태 — 잔류 바이트가 언제 올지 모르므로 재사용 금지, 즉시 폐기.
             closeReason = 'timeout';
             socket.destroy();
             body?.flush();
             log('---', `TIMEOUT (${timeout}ms): ${command}`);
             reject(codedError(`Command timeout (${timeout}ms): ${command}`, 'COMMAND_TIMEOUT'));
-        }, timeout);
+        }), timeout);
+
+        // 새 연결의 핸드셰이크 상한 — 명령 타임아웃보다 짧을 때만 의미가 있다. 재사용 소켓에는 걸지 않는다.
+        const connectTimeout = !reused && opts.connectTimeoutMs && opts.connectTimeoutMs > 0 && opts.connectTimeoutMs < timeout
+            ? opts.connectTimeoutMs : 0;
+        let connectTimer: ReturnType<typeof setTimeout> | null = null;
+        function clearConnectTimer(): void { if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; } }
+        if (connectTimeout > 0) {
+            connectTimer = setTimeout(() => afterPendingIo(() => {
+                connectTimer = null;
+                if (settled || !socket.connecting) { return; }
+                settled = true;
+                clearTimeout(timer);
+                clearIdle();
+                // 명령은 아직 보내지 않았다(write 는 connect 콜백에서) — 호출자가 다시 보내도 이중 실행이 아니다.
+                closeReason = 'connect-timeout';
+                socket.destroy();
+                body?.flush();
+                log('---', `CONNECT TIMEOUT (${connectTimeout}ms, no handshake): ${command}`);
+                reject(Object.assign(
+                    codedError(`Connect timeout (${connectTimeout}ms, ${key}): ${command}`, 'CONNECT_TIMEOUT'),
+                    { sent: false },
+                ));
+            }), connectTimeout);
+            connectTimer.unref?.();
+        }
 
         const completeResponse = () => {
             if (settled) { return; }
@@ -468,11 +544,15 @@ function attempt(
             } else {
                 releaseSocket('single-shot');
             }
-            resolve({ raw: responseBuffer.trim(), meta: buildMeta() });
+            resolve({ raw: latin1ToUtf8(responseBuffer).trim(), meta: buildMeta() });
         };
 
-        /** 재사용 소켓이 죽어 있었다(0바이트 수신 상태에서 write 실패/error/close) → 새 연결로 같은 명령 1회 재시도. */
-        const canRetryStale = () => reused && !settled && responseBuffer.length === 0;
+        /**
+         * 재사용 소켓이 죽어 있었다(0바이트 수신 상태에서 write 실패/error/close) → 새 연결로 같은 명령 1회 재시도.
+         * write 가 이미 성공했다면 명령이 실행됐을 수 있으므로 조회 명령(`retryAfterDeliveryIsSafe`)만 다시 보낸다.
+         */
+        const canRetryStale = () => reused && !settled && responseBuffer.length === 0
+            && (!delivered || opts.retryAfterDeliveryIsSafe === true);
         const retryStale = (why: string) => {
             settled = true;
             clearTimeout(timer);
@@ -488,9 +568,9 @@ function attempt(
 
         const onData = (data: Buffer) => {
             lastChunkAtMs = Date.now();
-            const text = data.toString('ascii').replace(/\0/g, '');
+            const text = data.toString('latin1').replace(/\0/g, '');
             responseBuffer += text;
-            body?.push(text);
+            if (body) { body.push(bodyDecoder.write(data.filter(b => b !== 0))); }
 
             clearIdle();
 
@@ -503,21 +583,27 @@ function attempt(
             // 완성 응답 조건 2: 최소 바이트 수 && idle 대기 (부분 수신으로 인한 "무응답" 오해 방지)
             // waitForStatusClose면 idle 조기 완료를 끄고 오직 </STATUS>/소켓 종료/하드 타임아웃으로만 완료한다.
             // idle로 완료된 STATUS 없는 응답은 meta.responseComplete=false로 표시된다(하드 규칙 2, B4).
+            // idle 판정도 하드 타임아웃처럼 이미 도착해 있는 소켓 I/O 를 먼저 처리한 뒤 한다(afterPendingIo) — 확장 호스트가
+            // 멈췄다 풀리면 timers 단계가 poll 보다 먼저 돌아, 커널 버퍼에 와 있는 나머지 chunk 를 두고 잘린 응답으로 끝낼 수 있다.
             if (!waitForStatusClose && responseBuffer.length >= minResponseBytes) {
-                idleTimer = setTimeout(() => {
+                const armedAt = lastChunkAtMs;
+                const stillIdle = () => !settled && lastChunkAtMs === armedAt;
+                idleTimer = setTimeout(() => afterPendingIo(() => {
+                    if (!stillIdle()) { return; }
                     if (!responseBuffer.includes('</STATUS>') && extraIdleMsOnIncomplete > 0 && !extraIdleApplied) {
                         extraIdleApplied = true;
-                        idleTimer = setTimeout(() => { if (!settled) { completeResponse(); } }, extraIdleMsOnIncomplete);
+                        idleTimer = setTimeout(() => afterPendingIo(() => { if (stillIdle()) { completeResponse(); } }), extraIdleMsOnIncomplete);
                         return;
                     }
-                    if (!settled) { completeResponse(); }
-                }, idleMs);
+                    completeResponse();
+                }), idleMs);
             }
         };
 
         const onError = (err: Error) => {
             clearGraceful();
             clearIdle();
+            clearConnectTimer();
             if (settled) {
                 if (!closeReason) { closeReason = `error: ${err.message}`; }
                 return;
@@ -534,6 +620,7 @@ function attempt(
         const onClose = () => {
             clearGraceful();
             clearIdle();
+            clearConnectTimer();
             if (!settled) {
                 if (canRetryStale()) { retryStale('closed with no response'); return; }
                 settled = true;
@@ -546,11 +633,13 @@ function attempt(
                     const hasStatusClose = responseBuffer.includes('</STATUS>');
                     log('<<<', `(closed${hasStatusClose ? '' : ', INCOMPLETE — no </STATUS>'}) ${responseBuffer.length} bytes  ${elapsed}ms`);
                     log('---', `1402 CLOSE (${closeReason ?? 'by peer'})`);
-                    resolve({ raw: responseBuffer.trim(), meta: buildMeta() });
+                    resolve({ raw: latin1ToUtf8(responseBuffer).trim(), meta: buildMeta() });
                 } else {
                     log('---', `CLOSED without response: ${command}`);
                     log('---', `1402 CLOSE (${closeReason ?? 'by peer'})`);
-                    reject(codedError(`Connection closed without response: ${command}`, 'ECONNCLOSED'));
+                    // 명령을 넘긴 뒤의 끊김 — 제어기가 실행했는지 모른다(상태 변경 명령이면 결과 미확정, 재전송 금지).
+                    reject(Object.assign(codedError(`Connection closed without response: ${command}`, 'ECONNCLOSED'),
+                        delivered ? { sent: true } : {}));
                 }
                 return;
             }
@@ -558,13 +647,18 @@ function attempt(
         };
 
         const writeCommand = () => {
-            const payload = Buffer.from(command + '\r\n', 'ascii');
+            const payload = Buffer.from(command + '\r\n', 'utf8');
             try {
                 socket.write(payload, (err?: Error | null) => {
-                    if (!err || settled) { return; }
+                    if (!err) { return; }
+                    // write 자체가 실패했다 — 명령 바이트가 나가지 않았으므로 재전송해도 이중 실행이 아니다.
+                    delivered = false;
+                    if (settled) { return; }
                     if (canRetryStale()) { retryStale(`write failed: ${err.message}`); }
                     else { onError(err); }
                 });
+                // 커널로 넘긴 순간부터는 "보냈을 수 있음"으로 본다 — write 콜백보다 close/error 가 먼저 와도 보수적으로.
+                delivered = true;
             } catch (err) {
                 if (canRetryStale()) { retryStale(`write threw: ${(err as Error).message}`); }
                 else { onError(err as Error); }
@@ -583,6 +677,7 @@ function attempt(
             ? { host: endpoint.ip, port: endpoint.port, family: 4 }
             : { host: endpoint.ip, port: endpoint.port };
         socket.connect(connectOptions, () => {
+            clearConnectTimer();
             // 요청-응답형 짧은 명령이므로 Nagle을 꺼서 command 전송 지연(및 delayed-ACK 상호작용)을 줄인다.
             // 1403 스트림 소켓과 동일한 정책.
             socket.setNoDelay(true);

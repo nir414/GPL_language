@@ -12,6 +12,8 @@
 
 import * as vscode from 'vscode';
 import { CompiledRecord, DeployRecordStore } from './deployRecordCore';
+import { LibraryProvenanceStore } from './libraryProvenance';
+import type { LibraryProvenance, StoredLibraryProvenance } from './libraryProvenance';
 
 export type { FileStamp, CompiledRecord, SnapshotDiff } from './deployRecordCore';
 export {
@@ -51,4 +53,26 @@ export function recordCompiled(rec: CompiledRecord): void {
 /** 키: ip + projectName(대소문자 무시). 없으면 undefined. */
 export function getCompiledRecord(ip: string, projectName: string): CompiledRecord | undefined {
     return _store.get(ip, projectName);
+}
+
+// ── 라이브러리 출처 기록(libraryProvenance.ts) — 원격 라이브러리 폴더마다 마지막으로 올린 출처 ──────────
+const _libraryStore = new LibraryProvenanceStore(err => {
+    console.warn(`[gpl libraryProvenance] Memento 저장 실패(무시): ${(err as any)?.message ?? err}`);
+});
+
+/** 영속 저장소 연결(기존 저장분 로드) — `attachDeployRecordStore` 와 같은 Memento 를 쓴다(키 `gpl.libraryProvenance`). */
+export function attachLibraryProvenanceStore(
+    memento: { get<T>(key: string, def: T): T; update(key: string, v: any): Thenable<void> },
+): void {
+    _libraryStore.attach(memento);
+}
+
+/** 라이브러리 업로드가 끝난 뒤 그 출처를 기록한다. */
+export function recordLibraryProvenance(ip: string, remoteDir: string, library: LibraryProvenance): void {
+    _libraryStore.record(ip, remoteDir, library);
+}
+
+/** 원격 폴더에 마지막으로 올린 출처. 이 확장이 올린 기록이 없으면 undefined(= 확인 불가). */
+export function getLibraryProvenance(ip: string, remoteDir: string): StoredLibraryProvenance | undefined {
+    return _libraryStore.get(ip, remoteDir);
 }

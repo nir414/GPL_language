@@ -85,6 +85,16 @@ End Sub
 - 동적 배열(ReDim)과 문자열 변경은 race에 취약 → interlock 필수
 - read-modify-write(증감/누산)는 절대로 락 없이 수행하지 말 것
 - StartProcedure는 **모듈 Public Sub** 또는 **클래스 Public Shared Sub** 중 하나로 노출
+- **기본 스택 4 KB 는 파일 저장·깊은 파서 호출을 하는 스레드에는 모자랄 수 있다(`-755 Thread stack too small`).**
+  2026-11-06 Sample Prep 실측: 명령 펌프 스레드(TCPCMD, 프로젝트 기본 4 KB)가 저장 호출(`AponTree.Save`)을 돌리다 `Show Thread TCPCMD -stack` 최대 3.984 / 4.000 KB 에서 -755 가 났고,
+  `Thread` 생성자에 8 KB 를 주자 같은 작업이 4.148 KB 로 성공했다. 같은 머신의 TCPCLI 스레드도 4 KB 중 3.25 KB 를 썼다.
+  문서상 [language_errors.htm](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Error_Code/language_errors.htm)은 스택보다 많이 쓰면 생성자로 늘리라 하고,
+  [Thread/new.htm](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Thread/new.htm)은 `stack_size` 를 KB 로 받는다.
+  스택은 KB 그대로 메모리를 쓰므로([memory-costs](memory-costs.md) §4) 실측 최대 사용량을 보고 필요한 만큼만 늘린다.
+- **잠금(`Acquire`)을 잡은 뒤 예외를 던질 수 있는 호출이 있으면 해제는 `Finally` 에 둔다.** 2026-11-06 Sample Prep 실측: `AponTree.Save` 가 잡은 쓰기 잠금을
+  예외 경로(-755)에서 풀지 않아 뒤따른 펌프 스레드가 `SNC Acquire` 에서 영영 멈췄다(큐 명령 4000개 전부 무응답, 2회 재현).
+  `-755` 도 `Finally` 를 실행하므로([common-mistakes](common-mistakes.md) Try…Finally 절) `Try … Finally : Release : End Try` 로 감싸면 풀린다.
+  이 잠금 누수는 정적 진단으로 잡지 않는다(호출이 던질 수 있는지 정적으로 알 수 없어 소음이 크다).
 
 ## 연결 문서
 

@@ -1,6 +1,6 @@
 /**
  * 배포 증적(provenance) — "지금 제어기에 올라가 있는 것이 **내 로컬 소스와 같은가**"를 한 번에 답한다.
- * vscode 무의존 — 단위 테스트: `src/test/deployProvenance.test.ts`.
+ * vscode 무의존 — 단위 테스트: `src/test/controller/deployment/deployProvenance.test.ts`.
  *
  * 왜(2026-09-10 사용자 개선안 §12·§13): 배포 성공은 그동안 "Compile 명령이 STATUS 0을 냈다"였다. 그런데
  * 정작 알고 싶은 것은 **방금 고친 파일이 실제로 올라갔는가**이다. 업로드는 변경분만 올리고(스킵 판정),

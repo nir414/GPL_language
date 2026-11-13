@@ -7,6 +7,7 @@
 
 import { ClearRemoteDirResult, FtpEntry, clearRemoteDir, normalizeAbsoluteRemoteDir } from './ftpClient';
 import { forgetSyncManifest } from './syncManifest';
+import { isSettledState } from '../threads/threadActivity';
 
 /**
  * 비우기 대상 루트의 종류.
@@ -81,7 +82,33 @@ export async function clearRemoteFolderEntries(
 	for (const name of result.deleted) {
 		forgetSyncManifest(host, `${base}/${name}`);
 	}
+	if (result.deleted.length > 0) {
+		const event: RemoteFolderCleared = { host, base, deleted: [...result.deleted] };
+		for (const listener of [...clearedListeners]) {
+			try { listener(event); } catch { /* 구독자 실패가 비우기 결과를 바꾸지 않는다 */ }
+		}
+	}
 	return result;
+}
+
+/** 원격 폴더에서 항목을 지운 뒤의 알림 — 사람·AI 어느 경로로 비웠든 한 번. */
+export interface RemoteFolderCleared {
+	host: string;
+	/** 정규화한 절대 경로(`/GPL`). */
+	base: string;
+	/** 실제로 지운 최상위 항목 이름. */
+	deleted: string[];
+}
+
+const clearedListeners = new Set<(e: RemoteFolderCleared) => void>();
+
+/**
+ * 비우기 결과 구독 — "컴파일 검증 필요" 목록이 /GPL 에서 사라진 프로젝트를 해제하는 데 쓴다(2026-11-03 inbox ④:
+ * 제어기에 소스가 없으면 "미검증 소스"도 없다). 호출 경로(트리·Unload -all 전 비우기·AI)마다 꿰지 않으려고 절차 쪽에서 알린다.
+ */
+export function onRemoteFolderCleared(listener: (e: RemoteFolderCleared) => void): { dispose(): void } {
+	clearedListeners.add(listener);
+	return { dispose: () => { clearedListeners.delete(listener); } };
 }
 
 // ── 삭제 전 정지 게이트 판정 (2026-10-23 inbox unload-guard-request ③) ─────────────────────
@@ -131,4 +158,57 @@ export function remoteDeleteGateAfterStop(outcome: {
 		};
 	}
 	return { proceed: true };
+}
+
+// ── AI 비우기의 쓰레드 게이트 (2026-11-05 inbox cmd-thread-blocks-clear-gpl v2) ─────────────────
+// 종전에는 목록에 쓰레드가 하나라도 있으면(Idle `_Cmd_App`·`TCPCLI_0` 포함) 거절해, `stop_threads` 가 정착(settled)을
+// 보고한 직후에도 비울 수 없었다. 이제 `stop_threads` 와 같은 정착 판정(threadActivity.isSettledState: Idle/Stopped/Error)만
+// 쓴다 — Running·Paused·Break·Stopping 처럼 정착하지 않은 쓰레드만 막는다. 정지 계열로 남은 쓰레드는 `unload_project` 로 걷어 낸다.
+// 사람 경로(트리 명령 `remoteDeleteGateForThreads`)는 그대로다(존재 자체를 동작 중으로 보는 보수 규약 유지).
+
+/** 거절 때 응답에 싣는 쓰레드 한 줄. */
+export interface ClearGateThread {
+	name: string;
+	state: string;
+	project?: string;
+}
+
+/** AI 비우기 쓰레드 게이트 판정. 진행하더라도 정착 상태로 남은 쓰레드는 알려 준다. */
+export type AiClearThreadGate =
+	| { proceed: true; settledRemaining: ClearGateThread[] }
+	| {
+		proceed: false;
+		/** 정착하지 않아 막는 쓰레드. */
+		active: ClearGateThread[];
+		/** 정착했지만 목록에 남은 쓰레드(참고용). */
+		settledRemaining: ClearGateThread[];
+		/** 전체 목록(막는 것 + 남은 것) — 걸러서 숨기지 않는다. */
+		threads: ClearGateThread[];
+		detail: string;
+		recommendedAction: string;
+	};
+
+/** `Show Thread` 목록으로 AI 비우기 진행 여부를 판정한다 — 목록을 못 받은 경우(null)는 호출측이 따로 거절한다. */
+export function judgeAiClearThreadGate(threads: readonly { name: string; state?: string; project?: string }[]): AiClearThreadGate {
+	const all: ClearGateThread[] = threads.map(t => ({
+		name: t.name,
+		state: (t.state ?? '?').trim() || '?',
+		...(t.project ? { project: t.project } : {}),
+	}));
+	const active = all.filter(t => !isSettledState(t.state));
+	const settledRemaining = all.filter(t => isSettledState(t.state));
+	if (active.length === 0) { return { proceed: true, settledRemaining }; }
+	const projects = [...new Set(active.map(t => t.project).filter((p): p is string => !!p))];
+	const stopArg = projects.length === 1 ? `stop_threads({ project: "${projects[0]}" })` : 'stop_threads(사용자 동의 범위)';
+	const unloadArg = projects.length === 1 ? `unload_project({ project: "${projects[0]}" })` : 'unload_project(프로젝트별)';
+	return {
+		proceed: false,
+		active,
+		settledRemaining,
+		threads: all,
+		detail: `정착하지 않은 쓰레드 ${active.length}개(${active.map(t => `${t.name}(${t.state})`).join(', ')}) — 실행 중에 원격 파일을 지우면 파일 충돌·자원 누수가 생길 수 있습니다.`
+			+ (settledRemaining.length > 0 ? ` 정지 계열로 남은 쓰레드: ${settledRemaining.map(t => `${t.name}(${t.state})`).join(', ')}.` : ''),
+		recommendedAction: `사용자 동의를 받아 ${stopArg} 로 정지시키고 정착을 확인한 뒤 다시 호출할 것. `
+			+ `Idle/Stopped 로 남은 쓰레드(_Cmd_<project>·TCPCLI_n 등)는 비우기를 막지 않는다 — 비운 뒤 ${unloadArg} 로 걷어 낼 수 있다.`,
+	};
 }

@@ -6,7 +6,7 @@
  * 스택·시각·분류·직전 사건이 다 빠졌다(2026-09-21 사용자 지적 "내용이 너무 적다"). 이제 두 경로가 같은 입력을
  * 같은 렌더러로 그린다 — 보이는 것과 복사되는 것이 같다(§1-EA).
  *
- * 재료 수집(1402 `Show Stack`/`Show Thread`, .gpr, 링버퍼)은 접착 계층(`activation/controllerCommands`)이 하고,
+ * 재료 수집(1402 `Show Stack`/`Show Thread`, .gpr, 링버퍼)은 접착 계층(`activation/controller/controllerCommands`)이 하고,
  * 여기는 **모은 사실을 마크다운 줄로 옮기기만** 한다. 모르는 값은 "(미확인)" 으로 적고 지어내지 않는다(하드 규칙 3).
  */
 

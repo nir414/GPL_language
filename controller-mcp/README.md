@@ -8,8 +8,9 @@ Claude(Desktop / Cowork / Code)가 **compile · run · debug** 도구를 직접 
 
 > **권장 배포 경로 (v0.8.9+)**: 이 폴더를 직접 쓰는 대신, 확장 VSIX에 esbuild 단일 파일로
 > 동봉된 번들(`out/mcp/gpl-controller-mcp.cjs`)을 쓰는 것이 기본이다. VS Code 명령
-> **`GPL: Export AI Agent Setup`** 을 실행하면 번들이 globalStorage(버전 무관 경로)로 복사되고
-> 워크스페이스에 `.mcp.json`이 자동 생성된다 — 저장소 클론·`npm install` 없이 AI-ready.
+> **`GPL: Register AI Agent MCP`**(또는 활성화 때의 등록 제안)를 수락하면 번들이 globalStorage(버전 무관 경로)로
+> 복사되고 Claude Code 사용자 범위(`claude mcp add-json … --scope user`)·Codex `~/.codex/config.toml` 에 한 번 등록된다 —
+> 워크스페이스에는 파일을 만들지 않고, 저장소 클론·`npm install` 도 필요 없다. 제어기 주소는 적지 않는다(아래 `GPL_HOST`).
 > 이 폴더는 그 번들의 **소스**이며, 아래 수동 절차는 개발/디버깅용이다.
 
 ---
@@ -28,7 +29,7 @@ npm install
 
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
-| `GPL_HOST` | `192.168.0.1` | 제어기 IP |
+| `GPL_HOST` | `192.168.0.1` | 제어기 IP. **브리지 모드(auto/only)에서 확장 창이 살아 있으면 그 창의 현재 연결 주소를 따르고**(창이 여럿이면 작업 폴더의 창 → 연결된 창 → 이 값과 같은 창 순), 이 값은 창이 없을 때의 직접 접속 주소다. 적지 않아도 된다. `GPL_PORT` 도 같다. |
 | `GPL_PORT` | `1402` | ASCII 콘솔 포트 |
 | `GPL_LOCK_WAIT_MS` | `20000` | **배포 잠금 대기 상한(ms)**. VS Code 확장이 FTP 업로드/배포 중이면 `%TEMP%\gpl-controller\<ip>.lock.json`을 잡는다. 이때 `compile_project`/`start_project`/`unload_project`와 `controller_command`의 Compile/Start/Load/Unload는 잠금이 풀릴 때까지 이 시간만 기다렸다 진행하고, 초과 시 보유자 정보와 함께 거부한다(업로드 도중 Compile/Start는 제어기 이상 유발 — GitHub #17) |
 | `GPL_LOCK_DIR` | `%TEMP%\gpl-controller` | 배포 잠금 파일 디렉터리 재지정(테스트/특수 환경용. 확장과 같은 경로여야 한다) |
@@ -40,7 +41,7 @@ npm install
 
 | 변수 | 기본 | 설명 |
 | --- | --- | --- |
-| `GPL_BRIDGE` | `auto` | VS Code 확장 브리지 사용. `auto`=확장이 있으면 확장 세션으로, 없으면 직접 접속 / `only`=브리지 필수(세션 단일화 보장) / `off`=항상 직접 접속. 확장의 `GPL: Export AI Agent Setup`은 사람과 AI의 동시 사용을 위해 `only`를 명시한다. |
+| `GPL_BRIDGE` | `auto` | VS Code 확장 브리지 사용. `auto`=확장이 있으면 확장 세션으로, 없으면 직접 접속 / `only`=브리지 필수(세션 단일화 보장) / `off`=항상 직접 접속. 확장이 등록하는 항목은 사람과 AI의 동시 사용을 위해 `only`를 명시한다. |
 | `GPL_VSCODE_CLI` | `code` | 확장이 비활성일 때 깨우는 데 쓸 VS Code CLI 경로 |
 | `GPL_LOCK_DIR` | `%TEMP%\gpl-controller` | 배포 잠금·브리지 파일 디렉터리(확장과 같은 값이어야 한다) |
 
@@ -91,15 +92,17 @@ claude mcp add gpl-controller \
 
 ## 5. 연결 시 전달되는 지침 (instructions · 리소스)
 
-서버는 `initialize` 응답의 **`instructions`**로 두 가지를 함께 알린다(`src/guidelines.js`).
+서버는 `initialize` 응답의 **`instructions`**로 세 가지를 함께 알린다(`src/guidelines.js`).
 도구 설명과 달리 **도구를 부르기 전에** 읽히므로, 작업을 시작하기 전에 알아야 할 규약만 담는다.
 
 1. **제어기 안전 규칙** — 원시 TCP 소켓 금지, `</STATUS>`까지 읽고 판정, 모션 유발 명령은 사용자 확인,
    Compile 직후 Start 연속 호출 금지.
-2. **GPL 문서화 주석 규약** — GPL 소스를 쓰거나 고칠 때 선언 바로 위에 남기는 주석 형식.
+2. **GPL 근거 규칙** — GPL 문법·내장 클래스·콘솔 명령·DataID는 추측하지 말고 Brooks GPL Dictionary 등
+   공식 문서로 확인한다(Prerequisites·Remarks·Attr 중심). 문서는 가설이고 실기 응답이 사실이다.
+3. **GPL 문서화 주석 규약** — GPL 소스를 쓰거나 고칠 때 선언 바로 위에 남기는 주석 형식.
    설명은 항상, `# Parameters`는 매개변수가 있을 때, `# Returns`는 반환값이 있을 때,
    `# Examples`는 도움이 될 때만. VS Code 확장이 이 형식을 호버·자동완성·시그니처 도움말에
-   구조로 표시한다(형식의 단일 출처는 확장의 `src/language/docComment.ts`).
+   구조로 표시한다(형식의 단일 출처는 확장의 `src/language/documentation/docComment.ts`).
 
 ```gpl
 ' 값을 지정된 범위로 제한합니다.
@@ -132,8 +135,8 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
   (`extension-bridge` / `direct-tcp`). *"1402를 VS Code가 점유 중"이라고 추측하지 말고 이 도구로 확인할 것.*
   `wake:true`면 확장이 비활성일 때 `code --open-url`로 활성화를 시도한다.
   `available:false` 에 `reason:"host-mismatch"` 와 `hostMismatch{ mcp, extensions[{ip, workspace, workspaceMatch}] }` 가 오면
-  **확장은 떠 있고 이 서버의 `GPL_HOST` 와 다른 제어기 IP 에 연결된 것**이다(Export 뒤 연결 주소를 바꾼 경우) — 확장 재시작·wake 가
-  아니라 `.mcp.json` 의 `GPL_HOST` 를 고치고 `/mcp` 재연결(또는 VS Code 에서 `GPL: Export AI Agent Setup` 재실행)이 조치다.
+  **확장은 떠 있고 이 서버가 보는 제어기와 다른 IP 에 연결된 것**이다. 브리지 모드(auto/only)의 서버는 주소를 확장 창에서
+  따오므로(§1-GV) 이 사유는 `GPL_BRIDGE=off` 로 직접 접속을 고정한 개발 설정에서만 나온다 — 그때는 `GPL_HOST` 를 고치고 `/mcp` 재연결.
   같은 사실은 `controller_status.hostMismatch`·`project_target`·`extension_resolve(EXTENSION_HOST_MISMATCH)`·`diagnostic_snapshot` 에도 실린다.
 - `extension_command(command, args?, timeoutMs?)` — 확장 명령(`gpl.*`) 실행. 제어기 콘솔 명령이 아니라 **확장 기능**을 쓴다:
   `gpl.deploy`(/GPL 업로드+Compile) · `gpl.quickCompile` · `gpl.uploadStart`(업로드+Start) · `gpl.start` · `gpl.controller.pushBreakpoints`/`pullBreakpoints` ·
@@ -189,7 +192,7 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 - `controller_status(detail?)` — 상태 요약 1회: 연결(1402 도달성) · 스레드 상태별 개수와 정지 스레드 위치(`pausedThreads` = Paused/Break,
   `errorThreads` = Error, `stoppedThreads` = 정지 계열 전체) · 연결 실패 시 `observations.localConnections`(이 PC 에서 같은 포트로 맺어진 연결의
   pid·프로세스명, `foreignOwners` = 이 서버·확장 창이 아닌 ESTABLISHED — 있으면 그 점유가 1순위 원인 후보, `measured:false` 는 조회 못 함) ·
-  고전원(`Execute Controller.PowerEnabled`) · 배포 잠금 · `server`(빌드 스탬프). **연결 실패 시** ICMP/TCP를 구분해
+  고전원(`pd 230`) · `controllerIdentity`(pd 110·114·109·101, `GPL_EXPECTED_SERIAL` 과 다르면 `identityMismatch`) · 배포 잠금 · `server`(빌드 스탬프). **연결 실패 시** ICMP/TCP를 구분해
   "재부팅 중 / 서비스 다운(ECONNREFUSED) / 완전 무응답" verdict를 돌려준다(단명 연결 반복 금지). `detail:true`면
   스레드 전체 목록(compact)과 최근 `ErrorLog` 10줄, 그리고 **`resources`**(GitHub #22): 읽기 전용 `Show Memory` / `Show Network -tcp` /
   `Show Network -mbuf` 3명령을 배치로 보내 `{ memory:{freeMb,usedMb,segments,freeSegments,usedSegments}, tcp:{accepted,established,dropped,closed,
@@ -220,7 +223,10 @@ Public Function Clamp(value As Number, min As Number, max As Number) As Number
 - `start_project(project?, stopOnEntry?)` — `Start` (`-break -bex` 시 진입점 정지). 세션 대상이 ProjectStart 없는 그룹이면 보내지 않고
   `PROJECT_NOT_RUNNABLE`(+ 실행 가능한 후보)을 돌려준다. 제어기가 `-744 *Invalid start procedure*` 로 거부하면 `retryable:false` —
   같은 Start 를 되풀이하면 그룹 Compile 만 또 일어난다.
-- `unload_project(project?, timeoutMs?, skipThreadCheck?, confirm?)` — `Unload`. 보내기 전에 `Show Thread -web`로 그 프로젝트의
+- `unload_project(project?, all?, timeoutMs?, skipThreadCheck?, skipGplCheck?, confirm?, confirmDebugSession?)` — `Unload`. **`project` 를 생략하면 `project_target` 대상**이고
+  대상이 없으면 `UNLOAD_TARGET_REQUIRED` 로 거부한다(2026-11-05 — 종전의 "생략 = `Unload -all`" 폐기). `Unload -all` 은 `all:true` 를 명시할 때만 나가고(`targetSource:"all-argument"`),
+  그 응답에는 `/GPL/-all` 같은 폴더 판정 대신 `scope:"all"` 이 실린다. 확장에 디버그 세션이 열려 있으면 `refused:"debug-session-active"`(`clear_remote_folder` 삭제 호출·범위 없는 `stop_threads` 도 같다) —
+  사용자 동의 뒤 `confirmDebugSession:true`. 보내기 전에 `Show Thread -web`로 그 프로젝트의
   활성 스레드를 확인하고, 있으면 -750이 뻔하므로 보내지 않고 `refused:"threads-active"`와 목록을 돌려준다.
   성공하면 `remoteFolder:{path, exists}` 로 `/GPL/<project>` 가 남았는지 알려 주고, 지워졌으면 `next:"redeploy"`
   (4.2K5 실측: 앱 프로젝트 Unload 는 `/GPL/<앱>` 폴더까지 지웠다 — 그대로 Start 하면 -508).

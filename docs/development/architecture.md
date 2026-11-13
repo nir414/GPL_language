@@ -64,44 +64,114 @@ flowchart BT
 | `config.ts` | 설정 값 정규화 단일 출처, `EXTENSION_VERSION` | `language` | 허용 |
 | `controller/` | 제어기 축 — 소켓·명령 정책·응답 파서·배포 파이프라인(업로드 진행 집계 `uploadProgress` 포함)·잠금·중단점·상태 판정·AI 정책 | `project`, `util`, `log` | 허용 목록 9개만 (아래 §3) |
 | `language/vscode/` | `SymbolCache` 조립·워크스페이스 소스 로딩·VS Code 완성/문서 표현 | `language`, `project`, `util`, `config` | 허용(접착 계층) |
-| `debug/` | DAP 어댑터(`gplDebugSession`)·구성 provider·정지/스텝 판정·launch.json 편집 | `controller`, `project`, `language`, `util` | 허용 목록 2개만 |
-| `views/` | 트리·상태바·대시보드와 그 표시 규칙 | `controller`, `util`, `config` | 허용 목록 3개만 |
+| `debug/` | DAP 어댑터(`gplDebugSession`)·구성 provider·정지/스텝 판정·launch.json 편집 | `controller`, `project`, `language`, `util` | 허용 목록 3개만 |
+| `views/` | 트리·상태바·대시보드와 그 표시 규칙 | `controller`, `util`, `config` | 허용 목록 4개만 |
 | `providers/` | VS Code 언어 provider 구현 13종 + 공용 대응표(`symbolKinds`: 개요 분류 → `SymbolKind`, R7 정본) | `language`, `project`, `util`, `config`, `language/vscode` | 전부 허용(접착 계층) |
-| `ai/` | AI 에이전트 설정 내보내기·점검. 대상 해석은 `controller/projects/projectTarget`, 경로 비교는 `util/pathKey` 사용 | `controller`, `util` | `exportAgentSetup`만 허용 (`agentSetupChecks`는 순수) |
 | `activation/` | 명령 그룹별 `activateXxx(host)` + `ExtensionHost` + 공용 제어기 조작(`controllerOps`) | 위 전부 | 전부 허용(접착 계층) |
-| `extension.ts` | `activate()`/`deactivate()` — 배선만(195줄) | 전부 | 허용 |
+| `extension.ts` | `activate()`/`deactivate()` — 배선만 | 전부 | 허용 |
 | `test/` | Node 단독 러너(`harness.ts`) + 순수 모듈 테스트 + 구조 테스트 | 전부 | **금지** (러너가 vscode 없이 돈다) |
 
 같은 계층 안의 import 는 항상 허용된다. `import type` 도 방향 규칙을 따른다(설계상의 의존이므로) —
 단 **런타임 순환 금지** 규칙(R3)에서는 지워지는 `import type` 을 제외한다.
 
-### 2.1 controller 기능별 하위 모듈 (2026-10-22)
+### 2.1 계층 안의 기능별 하위 폴더(area) (controller 2026-10-22 → 전 계층 2026-10-27)
 
-기술 계층의 의존 방향은 유지하면서, `controller/`의 파일 64개를 변경 이유가 같은 기능별로 묶었다.
-하위 폴더는 탐색과 책임 분류의 경계다. 각 폴더의 독립적인 공개 API나 객체 수명주기는 아직 분리하지 않았다.
+기술 계층(§2 표)의 의존 방향은 그대로 두고, 각 계층 폴더 안을 **변경 이유가 같은 기능별 하위 폴더(area)** 로 묶는다.
+2026-10-22 에 `controller/` 64개 파일을 먼저 묶었고, 2026-10-27 에 나머지 계층(`language`·`project`·`debug`·`providers`·
+`views`·`activation`)과 `test/` 를 같은 방식으로 재배치했다(232개 파일 이동, 동작 변경 없음 — ai-handoff §1-GD).
+하위 폴더는 탐색과 책임 분류의 경계이며, 폴더별 독립 공개 API 나 객체 수명주기는 아직 분리하지 않았다.
+계층 루트에 남는 파일은 허브뿐이다(`activation/host.ts`, `test/harness.ts`·`test/index.ts`·`test/architecture.test.ts`).
+파일이 한두 개인 계층(`util/`·`log/`)은 나누지 않는다. (옛 `ai/` 계층 2파일은 2026-10-27 `controller/automation/` 으로 — `activation/ai/` 와 이름이 겹쳐 혼동을 줬다.)
+
+**`language/`**
+
+| 하위 폴더 | 책임 |
+| --- | --- |
+| `syntax/` | 파서(`gplParser`)·문 사전(`gplStatements`)·예약어·블록 문맥(`blockContext`)·선언자 목록·커서 식(`cursorExpression`)·식별자 비교 |
+| `dictionary/` | GPL Dictionary 데이터(`gplDictionaryData`)와 조회 API(`gplBuiltins`) |
+| `symbols/` | 심볼 인덱스(`symbolIndex`)·이름 인덱스·스코프 판정(`symbolScope`)·정의 위치 다듬기·개요 모델(`outlineModel`) |
+| `analysis/` | 수신자 타입·오버로드 해석·분기형 getter·참조 찾기 코어 — 출현 판정(`referenceScope`)·참조 표기(`referenceSyntax`)·후보 텍스트 규칙(`referenceCandidates`)·대상 선언 복원(`referenceTarget`)·검색 계획과 스캔 세션(`referenceScan`)·verbose 트레이스 문구(`referenceTrace`)·이름 바꾸기 스캔(`renameCore`)·파일 간 의존 계산(`moduleDependencies` — Requires 헤더) |
+| `checks/` | 실기 확인 사실의 정적 검사(`compilerChecks`)·`Init` 훅 충돌·Try/Catch 검사 |
+| `documentation/` | 문서화 주석 파서·렌더러(`docComment`)·오버로드 병합·모듈 머리 주석 `'Requires:` 블록 읽기/쓰기(`requiresHeader`) |
+| `xml/` | XML 유틸(완성·코드 액션이 쓴다) |
+| `vscode/` | 접착 계층(§2 표의 `language/vscode/`) — `SymbolCache` 조립·소스 로딩·VS Code 표현 |
+
+**`project/`**
+
+| 하위 폴더 | 책임 |
+| --- | --- |
+| `sources/` | 프로젝트 소스 목록(`projectSources`)·컴파일 단위(`compileUnit`·`compileUnitTarget`)·컴파일 순서(`sourceOrder` — Requires 정렬)·워크스페이스 검색 래퍼(`projectFileScope`) |
+| `gpr/` | Project.gpr ↔ 폴더 동기화(`gprSync`·`gprFolderSync`)·소스 승격(`sourcePromotion`·`promoteSourceCommand`)·패키지 의존 검사(`dependencyCheck` 순수 판정 — ProjectLibrary/ProjectSource 선언 ↔ 실제 사용·계층 규칙, `dependencyModel` 컴파일 루트·.gpr 해석) |
+| `remote/` | 제어기 사본과 로컬의 대응 — 다운로드 작업공간 메타(`controllerProjectWorkspace`)·Attach 대상(`controllerProjectDebug`)·원격 사본 매핑(`remoteSourceMapping`)·`Set Break` 파일 identity(`breakpointTarget`) |
+| `symbols/` | 컴파일 단위 기반 심볼 범위(`symbolProjectScope`) |
+
+**`controller/`**
 
 | 하위 폴더 | 책임 |
 | --- | --- |
 | `connection/` | 명령 연결·직렬 큐·keep-alive·세션·연결 건강·트래픽 본문 |
 | `commands/` | 명령 정책·분류·Compile/Load/Unload/Start·스텝 명령 생성 |
-| `protocol/` | 응답 파서·상태 코드·채널 이름 |
+| `protocol/` | 응답 파서(`statusParser`·`compileErrorParser`·`threadParser`·`stackParser`·`breakListParser`·`variableParser`·`errorLogParser`·`runtimeConsoleLine`·`gprParser`·`projectSelection`·`sourceCandidates`, 공용 `protocolText`; `responseParser.ts` 는 배럴)·상태 코드·채널 이름 |
 | `runtime/` | 런타임 콘솔 연결·버퍼·재연결 판정·표현 |
-| `deployment/` | 배포·잠금·큐·취소·이력·출처 검증·Flash 안전·진행률 |
+| `deployment/` | 배포·잠금·큐·취소·이력·출처 검증·Flash 안전·진행률. `deployService` 는 오케스트레이터이고 파이프라인은 단계 모듈(`deployPrecheck`→`deployTargetStage`→`deployUploadStage`(∥`deployStopStage`)→`deployCompileStage`→`deployStartStage`→`deployErrorCheckStage`)이 `deployContext` 를 공유해 수행하며 `deployModes`·`deployTypes`·`compileErrorPath` 가 순수 보조 |
 | `files/` | FTP·원격 폴더 정리·동기화 지문 |
 | `projects/` | 제어기 대상 프로젝트·이름·원격 경로·선택·GPR 동기화 명령 |
 | `threads/` | 쓰레드 인자·상태·보고서·정지 절차·진단·기동 후 관찰 |
 | `debugging/` | 제어기 중단점 명령·에디터 동기화·디버그 이벤트·실행 표시 |
-| `automation/` | Agent Bridge·AI 정책·복구 안내·작업 기록·URI 전달 |
+| `automation/` | Agent Bridge·AI 정책·복구 안내·작업 기록·URI 전달·AI 에이전트 MCP 사용자 범위 등록·점검·예전 워크스페이스 파일 정리(`exportAgentSetup`·`agentSetupChecks`) |
 | `diagnostics/` | 제어기 상태·메모리 검사·자원 프로브·에러 보고·최근 사건 |
-| `io/` | 디지털 I/O 파싱·명령 |
+| `io/` | 디지털 I/O 파싱·명령·신호 번호 분류(`dioGroups` — Local/Remote 그룹, Soft 조회 분할) |
+
+**`debug/`**
+
+| 하위 폴더 | 책임 |
+| --- | --- |
+| `session/` | DAP 어댑터 등록(`activateDebug`)·세션(`gplDebugSession` — DAP 요청 처리·정지 상태 머신)·세션 협력자(`sessionIo` 세션 창, `sessionSources` 소스 지도·컴파일 단위, `frameCache`, `threadRegistry`, `sessionBreakpoints` BP 장부·표기 폴백, `sourceStaleness` GitHub #21, `attachPreflight` F5 배포·정지 절차, `errorLocation`)·명령 차선 큐(`commandLanes`)·launch.json 편집 |
+| `execution/` | 정지/스텝 판정 — Step 게이트·스레드 잠금·자발적 Paused·정지 감지 폴 일정(`pollSchedule` 계산·`pollDriver` 타이머 실행)·대상 줄/호출 후보(`sourceTargets`) |
+| `evaluation/` | 변수 평가 — `Show Variable` 파싱·-eval 사다리와 DAP Variable 조립·REPL 평가(`variableEvaluator`, vscode 없음)·소스 심볼 색인(`sourceSymbolIndex`)·평가 실패 문구·REPL 입력 분할 |
+
+**`providers/`**
+
+| 하위 폴더 | 책임 |
+| --- | --- |
+| `navigation/` | 정의 이동·참조 찾기·이름 바꾸기 — `referenceProvider` 는 문서/Uri/설정/워크스페이스 검색 접착과 순서 조율만 한다(판정·스캔·로그 문구는 `language/analysis/reference*`) |
+| `structure/` | 개요(DocumentSymbol)·워크스페이스 심볼·분류 대응표(`symbolKinds`)·접기 |
+| `intellisense/` | 완성·호버·시그니처 도움말·문서화 주석 골격·수신자 컨텍스트(`receiverContext`)·디버그 호버 식 |
+| `diagnostics/` | 진단(`diagnosticProvider`)과 빠른 수정(`codeActionProvider`) |
+
+**`views/`**
+
+| 하위 폴더 | 책임 |
+| --- | --- |
+| `statusbar/` | 연결 상태바·업로드 진행 바·Flash 안전 표현·컴파일 검증 필요 배지(`compileStaleBadge`, 트리와 공유) |
+| `tree/` | 제어기 트리: `controllerTreeProvider`(오케스트레이터) + 순수 모듈 `treeSnapshot`(상태 평문)·`treeSections`(섹션/루트 빌더)·`snapshotMarkdown`(상황/진단 보고서)·`systemInfoItems`·`threadRowPresentation`·`threadPauseTransition`·`treeNodes`·`treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`(vscode 사용은 provider·`treeItems`뿐) |
+| `dashboard/` | 실시간 상태 대시보드 Webview |
+
+**`activation/`** (`host.ts` 는 루트 — 모든 그룹이 공유하는 허브)
+
+| 하위 폴더 | 책임 |
+| --- | --- |
+| `controller/` | 연결·제어기 직접 조작 명령·공용 절차(`controllerOps`)·시계 동기화·1403 콘솔/라이브 로그·트리 명령 |
+| `remote/` | FTP 노드 명령·원격 파일 읽기·현재 창 Attach·원격 사본 언어 기능 |
+| `deploy/` | 배포 계열 명령(2026-10-27 `deploy.ts` 를 허브로 분할) — 진입점 `runDeploy`·결과 보고 `deployReport`/`errorLogNotice`·대상 확인 `deployTargets`(+순수 `deployTargetRules`)·자동화 `deployAutomation`(+순수 `automationResult`)·명령 등록 `deployCommands`/`startProjectCommand`/`saveToFlashCommand`/`automationCommands`·`autoOnSave`(+순수 `autoOnSaveRules`)·공유 컨텍스트 `deployContext`·순수 모드 판정 `deployModes`·워크스페이스 프로젝트 컨텍스트 `projectContext` |
+| `debug/` | 중단점 명령·실행 위치 데코레이션·디버그 세션 연동 |
+| `language/` | provider 등록·문서 이벤트(`languageFeatures`)·XML 명령 |
+| `ai/` | AI Agent Setup·AI 자율 디버깅 API·URI 핸들러 |
+
+**`test/`** — `test/<계층>/<area>/<이름>.test.ts` 로 검사 대상 모듈의 폴더를 거울처럼 따른다
+(`language/syntax/gplParser.ts` ↔ `test/language/syntax/gplParserFixes.test.ts`). 저장소 자산 검사(문법 파일·indentation
+규칙·샘플 커버리지)는 가장 가까운 area(`test/language/syntax/`)에, `scripts/*.js` 검사는 `test/scripts/` 에 둔다.
+루트에는 러너(`harness`·`index`)와 구조 테스트만 남는다. `index.ts` 등록 경로도 폴더를 포함한다.
 
 `project/`는 로컬 Project.gpr와 소스 구성을, `controller/projects/`는 제어기 대상 선택과 조작을 맡는다.
 `debug/`는 DAP 요청과 디버그 세션을, `controller/debugging/`는 제어기 측 중단점·동기화 프리미티브를 맡는다.
+`activation/<이름>/` 은 그 이름의 계층을 VS Code 명령에 배선하는 그룹이지 그 계층이 아니다(`activation/debug/` ≠ `debug/`).
 `controller/automation/`과 별도 프로세스인 `controller-mcp/` 사이의 파일 계약은 그대로 유지한다.
 
-새 파일은 책임에 맞는 하위 폴더에 둔다. 필요하면 그 안을 더 나누며, 중첩 깊이를 고정하지 않는다.
-구조 테스트 R9는 루트 재적재와 미분류 폴더를 막는다. 상위 계층 규칙(R2), vscode 허용 목록(R1),
-런타임 순환 금지(R3), 판정 정본(R7)은 기존대로 적용한다. 하위 폴더 간 별도 의존 방향은 아직 강제하지 않는다.
+새 파일은 책임에 맞는 하위 폴더에 둔다. 필요하면 그 안을 더 나누며, 중첩 깊이를 고정하지 않는다. 새 area 가 필요하면
+`architecture.test.ts` 의 `LAYER_AREAS` 와 이 표를 같은 커밋에서 고친다. 구조 테스트 R9는 계층 루트 재적재·미분류 폴더·
+src 에 대응 폴더가 없는 테스트 폴더를 막는다. 상위 계층 규칙(R2), vscode 허용 목록(R1), 런타임 순환 금지(R3),
+판정 정본(R7)은 기존대로 적용한다. 하위 폴더 간 별도 의존 방향은 아직 강제하지 않는다.
 
 ### 2.2 언어 서비스의 객체 합성 (2026-10-22)
 
@@ -150,6 +220,24 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 각 단계는 별도 diff로 검토하고 컴파일·단위/구조 테스트·VSIX 패키징까지 끝낸다. 연결·배포·디버그의
 실행 순서나 수명주기를 바꾸는 단계는 안전한 시험 조건에서 F5 및 제어기 검증을 별도로 진행한다.
 
+### 2.4 성장 규칙 — 저장소가 커져도 구조가 풀리지 않게 (2026-10-27)
+
+이 절이 구조 설계 방향의 정본이다. AGENTS.md 의 「구조 설계 방향」은 이 절의 요약이며, 둘이 어긋나면 이 절을 고치고 요약을 따라 맞춘다.
+
+| 규칙 | 내용 | 강제 수단 |
+| --- | --- | --- |
+| 두 단계 폴더 | `src/<계층>/<area>/<파일>`. 계층 루트에는 허브만(§2.1). 새 area 는 `LAYER_AREAS` + §2.1 표를 같은 커밋에서 | 구조 테스트 R9 |
+| 루트는 도구 규약만 | 저장소 루트에 새 폴더·파일을 더하지 않는다. 정적 자원은 `assets/`, 문서 부속은 `docs/`, 스크립트는 `scripts/`, 생성물은 `dist/`·`out/` | 코드 리뷰(§7 에 위반 기록) |
+| 크기 상한 = 분해 신호 | 파일 1,000줄·함수/메서드 150줄 초과는 §7 부채 표에 등록. 분해 패턴 두 가지: ① 상태 많은 클래스 → 협력자 모듈 + 좁은 io 인터페이스(`debug/session/sessionIo.ts`, 협력자는 세션 필드를 getter 로만 본다) ② 긴 절차 함수 → 단계 모듈 + 컨텍스트 객체(`controller/deployment/deployContext.ts`, 단계는 순서대로 호출되고 컨텍스트만 공유) | §7 표·분해 커밋 분리 |
+| 순수 먼저, 접착은 얇게 | 판단·변환·포맷은 순수 모듈(+단위 테스트), vscode 는 허용 목록(§3)에서만. 새 기능의 첫 커밋은 순수 모듈·테스트, 둘째가 UI/MCP 배선 | 구조 테스트 R1 |
+| 이동·분할은 동작 불변 증명 | 분할 전 커밋을 함께 빌드해 같은 입력으로 old/new 를 재생·비교하는 하네스(`scripts/dev/deployReplay.js` 151 시나리오, `compareTreeProvider.js` 41 상태)나 출력 고정 테스트로 차이 0 을 확인한 뒤 커밋. 하네스는 `scripts/dev/` 에 남겨 다음 분해 때 재사용 | §6 테스트 전략 |
+| 상태는 명시적으로 | 플래그 조합으로 상태를 추론하지 않는다 — 상태 타입 + 순수 전이 함수(`execution/stepGate.ts`·`spontaneousPause.ts` 가 본보기). 남은 암묵 상태 머신: `gplDebugSession._pollThreadStates`, `runtimeConsole` 재연결 | §7 표 |
+| 의존 방향은 아래로만 | 계층 방향(§2 표)·런타임 순환 금지. area 사이 방향은 아직 강제하지 않지만, 한 area 가 같은 계층의 다른 area 를 "알아야" 한다면 공통 하위 area 로 뽑는다 | 구조 테스트 R2·R3 |
+| 문서·테스트가 정본 | 규칙 변경 = architecture.md + architecture.test + AGENTS.md 요약을 같은 커밋에서 | 리뷰 |
+
+기능 추가 순서는 사용자 방침(2026-09-18)을 따른다: 요구사항 → 책임 위치 결정 → 기존 구조로 해결 가능한지 → 공통 API 정의 →
+구현 → UI/MCP 연결. "기능을 먼저 만들지 말고 책임의 위치부터 정한다."
+
 ## 3. vscode 를 import 해도 되는 순수-계층 모듈 (허용 목록)
 
 접착 계층(`activation/`·`providers/`·`language/vscode/`) 밖에서 vscode 를 쓰는 모듈은 아래와 **정확히 일치**해야 한다.
@@ -163,11 +251,11 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 | `controller/deployment/deployRecord` | `deployRecordCore`(순수)의 Memento 래퍼 |
 | `controller/debugging/debugBridge` | 디버그 세션 ↔ 확장 이벤트 버스(`EventEmitter`) |
 | `controller/debugging/breakpointSync` · `breakpointMirror` | 에디터 중단점(`debug.breakpoints`) 양방향 동기화 — 계획 계산은 `breakpointReconcile`(순수) |
-| `controller/projects/projectPicker` · `gprSyncCommand` | QuickPick·WorkspaceEdit 를 쓰는 명령 래퍼 — 규칙은 `projectPickerCore`·`project/gprSync`(순수) |
-| `debug/gplDebugSession` · `activateDebug` | DAP 세션 자체(`vscode.debug`)·구성 provider |
-| `project/projectFileScope` · `promoteSourceCommand` | `workspace.findFiles`·명령 등록 |
-| `views/*` 3개 | TreeDataProvider·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`compileStaleBadge`·`uploadProgressBar`(순수) |
-| `ai/exportAgentSetup` · `log/liveLogTerminal` | 파일 대화상자·터미널 |
+| `controller/projects/projectPicker` · `gprSyncCommand` | QuickPick·WorkspaceEdit·FileSystemWatcher 를 쓰는 명령 래퍼 — 규칙은 `projectPickerCore`·`project/gpr/gprSync`·`project/gpr/gprFolderSync`(순수) |
+| `debug/session/gplDebugSession` · `activateDebug` · `attachPreflight` | DAP 세션 자체(`vscode.debug`)·구성 provider·Attach 전 배포/정지 절차(모달·출력 채널) |
+| `project/sources/projectFileScope` · `promoteSourceCommand` | `workspace.findFiles`·명령 등록 |
+| `views/*` 4개 (`connectionStatusBar`·`controllerDashboardPanel`·`controllerTreeProvider`·`treeItems`) | TreeDataProvider·TreeItem·StatusBarItem·WebviewPanel — 표시 규칙은 `treeFormat`·`runtimeConsoleTreePresentation`·`refreshThrottle`·`threadRefreshScheduler`·`compileStaleBadge`·`uploadProgressBar`(순수) |
+| `controller/automation/exportAgentSetup` · `log/liveLogTerminal` | ExtensionContext(globalStorage 안정 사본)·워크스페이스 폴더·터미널 |
 | `config` · `extension` | 루트 모듈 |
 
 원칙: **판단은 순수 모듈에, vscode 호출은 얇은 래퍼에.** 새 기능을 넣을 때 "이 판단을 Node 단독 테스트로
@@ -222,7 +310,7 @@ refresh는 직렬 실행하고 진행 중 추가 요청을 후속 갱신으로 �
 R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Single Source of Truth)** 과
 **중복 배제 원칙(DRY, Don't Repeat Yourself)** 은 계층을 지켜도 무너진다 — 같은 판단을 여러 모듈이
 각자 구현하면 폴더 규칙은 하나도 어기지 않으면서 구현 편차(Implementation Drift)가 생긴다.
-실제로 그렇게 됐다: 수신자 타입 해석은 `language/receiverType.ts` 가 정본인데 완성 provider 는
+실제로 그렇게 됐다: 수신자 타입 해석은 `language/analysis/receiverType.ts` 가 정본인데 완성 provider 는
 자체 구현을 들고 있다가 `Thread.CurrentThread().` 뒤를 해석하지 못했고(§1-DO), 배열 요소 타입을
 벗기는 규칙은 사본이 네 벌이었다.
 
@@ -231,19 +319,21 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 
 | 판단 | 정본 | 우회 표식(R7 이 잡는 것) |
 | --- | --- | --- |
-| 파일별 심볼의 이름 인덱스 | `language/symbols/symbolIndex.ts` (`SymbolIndex`), 조립 함수는 `language/symbolNameIndex.ts` | `buildSymbolNameIndex(` 직접 호출 |
-| 수신자 체인 → 타입/홀더 | `language/receiverType.ts` (순수) | — |
-| 그 해석기에 넘길 컨텍스트 조립 | `providers/receiverContext.ts` (vscode 접착) | `buildDocumentReceiverLookup(` 직접 호출 |
-| 배열 표기·요소 타입 | `language/receiverType.ts` (`elementTypeOf`·`isArrayTypeName`) | `replace(/\[\]$/…)` |
-| 호출 인자 타입 추론(정의 이동·호버·참조 찾기의 오버로드 선택) | `language/overloadResolution.ts` (`buildCallContext`·`inferArgumentType` — 식 타입은 `receiverType.resolveExpressionType`) | `inferLiteralArgType(` 직접 호출 |
-| 참조 찾기의 출현 판정(다른 모듈 동명 선언·한정자 불일치·멤버/로컬 가림) | `language/referenceScope.ts` (`classifyReferenceOccurrence`) | 제외 사유 문자열(`'qualifier-mismatch'` 등) 직접 판정 |
-| "컴파일 검증 필요" 상태의 설명 문장(배지 툴팁·Start 확인 모달·자동화 오류) | `controller/deployment/compileStale.ts` (`describeCompileStale`) — 배지 라벨·툴팁·클릭 대상은 `views/compileStaleBadge.ts` | `소스가 아직 Compile 로 검증되지 않았습니다` 직접 조립 |
+| 파일별 심볼의 이름 인덱스 | `language/symbols/symbolIndex.ts` (`SymbolIndex`), 조립 함수는 `language/symbols/symbolNameIndex.ts` | `buildSymbolNameIndex(` 직접 호출 |
+| 수신자 체인 → 타입/홀더 | `language/analysis/receiverType.ts` (순수) | — |
+| 그 해석기에 넘길 컨텍스트 조립 | `providers/intellisense/receiverContext.ts` (vscode 접착) | `buildDocumentReceiverLookup(` 직접 호출 |
+| 배열 표기·요소 타입 | `language/analysis/receiverType.ts` (`elementTypeOf`·`isArrayTypeName`) | `replace(/\[\]$/…)` |
+| 호출 인자 타입 추론(정의 이동·호버·참조 찾기의 오버로드 선택) | `language/analysis/overloadResolution.ts` (`buildCallContext`·`inferArgumentType` — 식 타입은 `receiverType.resolveExpressionType`) | `inferLiteralArgType(` 직접 호출 |
+| 참조 찾기의 출현 판정(다른 모듈 동명 선언·한정자 불일치·멤버/로컬 가림) | `language/analysis/referenceScope.ts` (`classifyReferenceOccurrence`) | 제외 사유 문자열(`'qualifier-mismatch'` 등) 직접 판정 |
+| "컴파일 검증 필요" 상태의 설명 문장(배지 툴팁·Start 확인 모달·자동화 오류) | `controller/deployment/compileStale.ts` (`describeCompileStale`) — 배지 라벨·툴팁·클릭 대상은 `views/statusbar/compileStaleBadge.ts` | `소스가 아직 Compile 로 검증되지 않았습니다` 직접 조립 |
 | 쓰레드 목록 표·상태 집계(「전체 쓰레드 복사」·상황 스냅샷) | `controller/threads/threadReport.ts` (`renderThreadTable`·`countThreadStates`·`summarizeThreadStates`) | `\| 이름 \| 상태 \|` 표 직접 조립 / `state === 'Paused' \|\| … 'Break'` |
-| 에러 코드 → 코드/환경 분류(트리 버킷·오류 상세·배포 요약) | `controller/protocol/responseParser.ts` (`classifyErrorEntry`·`describeErrorCategory`·`getGplErrorGroup`) | `category: 'code'/'environment'` 직접 판정 |
+| 에러 코드 → 코드/환경 분류(트리 버킷·오류 상세·배포 요약) | `controller/protocol/errorLogParser.ts` (`classifyErrorEntry`·`describeErrorCategory`·`getGplErrorGroup`) | `category: 'code'/'environment'` 직접 판정 |
 | 바이트 → 사람이 읽는 크기(트리 FTP 목록·업로드 진행 바·완료 요약) | `util/formatBytes.ts` (`formatBytes`·`formatBytesAs`·`byteUnitFor`) | `.toFixed(1)} KB/MB/GB` 직접 조립 |
-| 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/deployment/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / 상태바 `업로드 완료 — 변경 없음`·크기 템플릿 직접 조립 |
-| Flash 쓰기 전원 차단 금지 문구(쓰기·`Sync`·10초 안정화·안전 미확인) | `views/flashSafetyPresentation.ts` (`presentFlashSafety`) — 절차·시간은 `controller/deployment/flashSafety.ts` | `FLASH 저장 중`·`FLASH 안전 상태 미확인` 직접 조립 |
-| 그룹 Compile 뒤 Unload 위험 판정·문구(UI 모달·AI 거부·타임아웃 안내·재부팅 해제) | `controller/commands/unloadRisk.ts` (`assessUnloadRisk`·`judgeRebootEvidence`·`unloadRiskWarning` …) — 전송 가드는 `unloadRiskGuard.ts`, 저장은 `unloadRiskStore.ts` | `'unload-after-group-compile'` 리터럴·`명령 콘솔을 끊었` 문구 직접 조립 |
+| 업로드 진행 바·완료 요약 문구(상태바 본문·툴팁·완료 표시) | `views/statusbar/uploadProgressBar.ts` (`renderBar`·`renderUploadProgress`·`renderUploadSummary`) — 집계는 `controller/deployment/uploadProgress.ts` | 블록 글자(`█░`)로 바 직접 그리기 / 상태바 `업로드 완료 — 변경 없음`·크기 템플릿 직접 조립 |
+| Flash 쓰기 전원 차단 금지 문구(쓰기·`Sync`·10초 안정화·안전 미확인) | `views/statusbar/flashSafetyPresentation.ts` (`presentFlashSafety`) — 절차·시간은 `controller/deployment/flashSafety.ts` | `FLASH 저장 중`·`FLASH 안전 상태 미확인` 직접 조립 |
+| Unload 위험 판정·문구(그룹 Compile 뒤 + 대상이 그룹 — UI 모달·AI 거부·타임아웃 안내·재부팅 해제) | `controller/commands/unloadRisk.ts` (`assessUnloadRisk(state, cmd, {targetIsGroup})`·`judgeRebootEvidence`·`unloadRiskWarning` …) — 대상 그룹 판정까지 합친 호출은 `unloadRiskGuard.assessUnloadRiskWithProjectKind`, 전송 가드는 `unloadRiskGuard.ts`, 저장은 `unloadRiskStore.ts` | `'unload-after-group-compile'` 리터럴·`명령 콘솔을 끊었` 문구 직접 조립 |
+| AI 요청에 Output 패널을 열지(상태 변경 요청만, 조용 구간) | `controller/automation/agentCommandLog.ts` (`agentRequestChangesControllerState`·`createRevealGate`) | `host.ts` 가 명령 ID 로 직접 판단 |
+| Project.gpr 소스 목록 ↔ 폴더 대조(추가/제거 계획·요약 문구) | `project/gpr/gprFolderSync.ts` (`checkGprFolderSync`·`describeGprSyncPlan`) — 자동 반영·배포 전 모달은 `controller/projects/gprSyncCommand.ts`, 배포 경고는 `deployService` | 각 호출부가 `listSourceFilesRecursive`+`planGprSync` 를 따로 조합 |
 
 새 정본을 세우면 `SSOT_RULES` 에 한 줄을 더한다(무엇을·정본은 어디·우회 표식·대신 쓸 것).
 규칙을 늘리는 비용이 낮아야 실제로 늘어난다.
@@ -322,30 +412,52 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 ## 6. 테스트 전략
 
 - **러너**: `src/test/harness.ts`(의존성 0) + `src/test/index.ts`(수동 등록). `npm test` = `tsc` + `node out/test/index.js`.
+  테스트 파일은 `src/test/<계층>/<area>/` 에 검사 대상과 같은 폴더로 둔다(§2.1 `test/`).
   새 테스트 파일은 `index.ts` 에 한 줄 import — 잊으면 구조 테스트 R4 가 실패한다.
-- **대상**: 순수 모듈 전부(2026-09-07 기준 820건). vscode 를 import 하는 모듈은 이 러너로 못 돈다 — 그래서
+- **대상**: 순수 모듈 전부(건수는 `npm test` 마지막 줄과 ai-handoff 헤더가 정본). vscode 를 import 하는 모듈은 이 러너로 못 돈다 — 그래서
   판단 로직을 순수 모듈로 빼는 것이 곧 테스트 가능성이다.
-- **구조 테스트** `architecture.test.ts` (9건): R1 vscode 허용 목록 · R2 계층 방향 · R3 런타임 순환 · R4 테스트 등록 ·
-  R5 package.json↔명령 · R6 package.json↔설정 키 · **R7 판정 정본(SSOT) 우회 금지**(§3.2.1) · R8 채널 이름 · R9 controller 기능 분류.
+- **구조 테스트** `architecture.test.ts`: R1 vscode 허용 목록 · R2 계층 방향 · R3 런타임 순환 · R4 테스트 등록 ·
+  R5 package.json↔명령 · R6 package.json↔설정 키 · **R7 판정 정본(SSOT) 우회 금지**(§3.2.1) · R8 채널 이름 · R9 기능 분류(area) ·
+  **R10 크기 상한**(§7 — 1,000줄 파일·150줄 함수는 `SIZE_DEBT` 와 §7 에 있어야 통과, 내려가면 지우라고 실패).
   실패 메시지가 위반 목록을 그대로 보여 준다.
 - **컴파일러 게이트**(tsconfig): `strict` + `noUnusedLocals` · `noUnusedParameters` · `noImplicitReturns` ·
   `noImplicitOverride` · `noFallthroughCasesInSwitch`. 쓰지 않는 매개변수는 `_` 접두.
-- **하드웨어 검증이 필요한 것**은 코드로 강제하지 않고 `docs/ai-handoff.md` §3 체크리스트로 남긴다(하드 규칙 6).
+- **하드웨어 검증이 필요한 것**은 코드로 강제하지 않고 `docs/ai-handoff-verification.md`(실사용 확인 대기 목록)에 남긴다(하드 규칙 9).
 
-## 7. 알고 있는 부채 (2026-10-22 소스 기준)
+## 7. 알고 있는 부채 (2026-11-04 소스 기준)
+
+### 7.1 크기 상한 초과 (R10 이 강제 — 목록 정본은 `architecture.test.ts` 의 `SIZE_DEBT`)
+
+AGENTS.md 구조 규칙 2(파일 1,000줄·함수 150줄)를 넘는 것. 2026-11-04 감사에서 150줄 넘는 함수 32개 중 이 표에 있던 것이
+하나뿐이라 측정을 테스트로 옮겼다. 분해는 기능 추가와 섞지 않고 별도 커밋으로, 동작 불변은 재생 하니스·출력 고정 테스트로 보인다(규칙 4).
+
+| 묶음 | 항목 | 분해 방향 |
+| --- | --- | --- |
+| 파일 | `controller/runtime/runtimeConsole`(약 1,370줄) · `debug/session/gplDebugSession`(약 3,060줄) | 아래 표의 상태 머신 분리 |
+| 파일(예외) | `language/dictionary/gplDictionaryData`(약 3,030줄) | GPL Dictionary 데이터 표 — 로직이 아니라 나누지 않는다 |
+| activation 배선 | `activateFtpCommands`(약 770) · `activateAiDebugCommands`(약 750) · `activateControllerCommands`(약 670) · `activateConnection`(약 540) · `activateLanguageFeatures`(약 470) · `activateDebugIntegration`(약 420) · `activateProjectContext`(약 380) · `activateTreeCommands`(약 380) · `activateBreakpointCommands` · `activateConsoleCommands` · `registerSaveToFlashCommand` · `registerDependencyCheck` · `reportDeploySuccess` · `runDeploy` | `deploy.ts` 분할 방식 — 명령 묶음별 형제 모듈 + 공유 상태는 컨텍스트 객체 |
+| 디버그 | `_pollThreadStates`(약 360) · `attachRequest` · `variablesRequest` · `_setBreakPointsNow`(setBreakPointsRequest 본문 — 파일별 직렬화 래퍼 뒤) · `evaluateRequest` · `queryVariableStructuredSmart` | 정지 판정을 상태 타입 + 순수 전이(`debug/execution/`)로, DAP 요청은 협력자 모듈로 |
+| 제어기 | `attempt`(consoleSocket, 약 280) · `connectInternal`(runtimeConsole, 약 250) · `runCompilePhase`(약 330) · `runUploadAndStopPhase` · `resolveDeployTarget` | 소켓 이벤트 처리기 분리 · 단계 안의 하위 단계 |
+| 언어·provider·뷰 | `parseDocumentUncached`(약 460) · `provideReferences`(약 330) · `provideDefinition` · `provideHover` · `provideFoldingRanges` · `planSourcePromotion` · `buildDiagnosticSnapshotMarkdown` | 문 종류별 순수 단계 · 판정은 `language/analysis` 로 |
+
+### 7.2 그 밖의 부채
 
 | 항목 | 크기 | 상태 |
 | --- | --- | --- |
-| `debug/gplDebugSession.ts` | 약 5,460줄, 클래스 1개 | DAP + 제어기 동작이 한 클래스 — 분해는 실기기 검증 필요(로드맵 P8) |
-| `controller/deployment/deployService.ts` `deployLocked` | 1,100줄 함수 | 배포 파이프라인 단계 분리는 하드웨어 영향(로드맵 P9) |
-| `controller/runtime/runtimeConsole.ts` | 약 1,368줄 | 재연결 상태 머신 → 명시적 상태 머신(로드맵 Phase 3) |
-| `views/controllerTreeProvider.ts` | 약 1,605줄 | 포맷 함수는 분리됨. 섹션별 노드 생성 분리는 후보 |
-| `activation/deploy.ts` | 약 1,344줄 | 결과 보고부 분리됨. 자동화 게이트·명령 6개가 남아 있다 |
-| 1403 상태 문구 두 표현 | `controller/runtime/runtimeConsolePresentation`(알림, 영문) vs `views/runtimeConsoleTreePresentation`(트리, 한국어) | 폴링 판정 정규식이 다르다 — 실기기 문구 대조 후 통일 결정 |
-| provider 별 수신자 해석 사본 | definition·hover·완성·디버그 hover | **정리됨(2026-09-10)** — 해석은 `language/receiverType`, 조립은 `providers/receiverContext` 하나로. R7 이 재발을 막는다 |
+| `debug/session/gplDebugSession.ts` | 5,753줄 → 약 3,060줄 + 협력자 10모듈 | **분해 1차 완료(2026-10-27)** — 남은 것은 DAP 요청 처리와 `_pollThreadStates` 정지 상태 머신(플래그 `_pollInFlight`·`_userActionInFlight`·`_pollRetryRequested`·`_pendingAction`·`_pendingContinue*` 조합, §7.1). 실기기 검증 전(ai-handoff §3) |
+| `controller/deployment/deployService.ts` `deployLocked` | 단계 모듈로 분리됨(2026-10-27) | 오케스트레이터 약 70줄 — 단계 본문은 `deploy*Stage.ts`, 동작 불변 |
+| `controller/runtime/runtimeConsole.ts` | 약 1,370줄 | 재연결 상태 머신 → 명시적 상태 머신(로드맵 Phase 3). `_state` 는 유니온이지만 전이 함수가 없고 `_isConnected`·`_explicitStop`·`_reconnectStopped`·`disposed` 대입이 13곳에 흩어져 있다 — `runtimeConsoleGuards.decideWatchdogAction` 처럼 순수 `decideReconnect` 로 |
+| `activation/deploy/deploy.ts` | 1,488줄 한 함수 → 허브 70줄 + 형제 모듈 15개 | **분할 완료(2026-10-27)** — 클로저 공유 상태는 `deployContext`, 순수 판정은 `deployModes`·`automationResult`·`deployTargetRules`·`autoOnSaveRules`(테스트 있음). 가장 큰 잔여는 `deployReport.ts`(약 400줄, 결과 보고 세 갈래) |
+| `views/tree/controllerTreeProvider.ts` | 약 680줄 | 2026-10-27 분리 완료(섹션·보고서·노드·표시 모듈) |
+| 1403 상태 문구 두 표현 | `controller/runtime/runtimeConsolePresentation`(알림, 영문) vs `views/tree/runtimeConsoleTreePresentation`(트리, 한국어) | 폴링 판정 정규식이 다르다 — 실기기 문구 대조 후 통일 결정 |
+| provider 별 수신자 해석 사본 | definition·hover·완성·디버그 hover | **정리됨(2026-09-10)** — 해석은 `language/analysis/receiverType`, 조립은 `providers/intellisense/receiverContext` 하나로. R7 이 재발을 막는다 |
+| `providers/navigation/referenceProvider.ts` | 1,187줄 → 432줄 | **파일 분해 완료(2026-10-27)** — 단 `provideReferences` 본문(약 330줄)은 남았다(§7.1) — 대상 복원·검색 계획·출현 스캔·중복 제거·트레이스 문구는 `language/analysis/reference{Target,Scan,Candidates,Trace}`(vscode 없음, 테스트 있음)로 옮겼고 본문은 그대로다. 동작 동일성은 원본 provider 를 vm 하니스로 돌려 얻은 표본(`referenceScan.test`)과 워크스페이스 검색 경로 대조로 확인 |
 | `config.ts` 안의 언어 헬퍼 | `getQualifiedWordAtPosition`·`isInCommentOrString`·`GPL_CONTROL_KEYWORDS` | `language/` 로 옮길 후보(`ciEq` 는 옮겼다) |
+| `controller/protocol/` 의 `gprParser`·`projectSelection`·`sourceCandidates` | `responseParser.ts` 분해(2026-10-27)로 분리됐으나 영역은 그대로 | 제어기 응답이 아니라 프로젝트 판정이므로 `project/` 로 옮길 후보 — 영역 이동은 별도 작업(배럴 경유 importer 갱신 필요) |
 | `SymbolCache` 책임 혼합 | 인덱스·프로젝트 범위·호스트·소스 로더·표현을 독립 모듈로 구성 | **분리 완료(2026-10-22)** — 공개 메서드 28개 유지, 별도 루트 호환 래퍼 없이 내부 import 이동 |
-| `controller-mcp/src/index.js` | 약 2,351줄 | MCP 서버 도구 정의 한 파일 — 별도 하위 프로젝트, 테스트 137건 |
+| `controller-mcp/src/index.js` | 약 2,830줄 | MCP 서버 도구 정의 한 파일 — 별도 하위 프로젝트(R10 측정 밖) |
+| SSOT 후보(2026-11-04 감사) | 기본 포트 1402/1403 리터럴(`controllerConnection`·`reachability` — 정본 `channelNames`) · `<STATUS>` 제거 정규식 5벌(`resourceProbes`·`io/dio`·`errorLogParser`·`threadParser`·`showVariableParser`) · `Show Thread <name>` 조립 6곳 · `getConfiguration` 직접 호출 74곳(`config.ts` 우회) | 하나씩 정본을 세우고 R7 에 한 줄씩 |
+| 루트 예외 | `controller-mcp/`(하위 프로젝트)·`samples/`(F5 개발 호스트 예제) | AGENTS.md 저장소 구조에 명시된 예외(§2.4) |
 
 ## 8. 관련 문서
 
@@ -356,9 +468,19 @@ R1·R2·R3 이 이미 강제한다. 그러나 **단일 진실 공급원(SSOT, Si
 
 ### 메모리 사전 검사
 
-`controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석하고 정책을 판정하는 순수 모듈입니다. `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사하고, `deployService`는 업로드 전에 추가 검사합니다. `memoryGuard.warnMb`(기본 4 MB)·`blockMb`(기본 2.5 MB)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 알 수 없는 측정은 정상으로 간주하지 않습니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. MCP는 Export의 `GPL_BRIDGE=only` 경로를 사용합니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
+`controller/diagnostics/memoryGuard.ts`는 Show Memory의 종결 STATUS와 Free 값을 해석해 수준(ok·warning·critical·unknown)을 판정하는 순수 모듈입니다. **경고 전용입니다** — 어느 수준도 Compile/Start/배포를 막지 않습니다(2026-10-26 사용자 결정; 종전 `blockMb` 차단은 실행 중 앱의 런타임 메모리 ~3 MB 때문에 정지 전 값으로 "잘 돌아가는 배포"를 항상 막았습니다). 측정값의 정본은 `controller/diagnostics/memoryReadings.ts`(2026-11-03)다 — 누가 보냈든 `Show Memory` 응답은 내부 송신이 기록하고, 상태 변경 명령·FTP 쓰기가 그 전 측정을 무효화하며, 트리 시스템 정보·상태 표시줄 배지·검사가 같은 값을 읽는다(R7: 문자열로 직접 보내지 않는다). `controllerConnection`은 Compile/Start를 보내기 직전 같은 직렬 큐 슬롯에서 검사하되 측정 뒤 상태 변경이 없고 15 s 안이면 다시 재지 않고, 결과를 Output·`getLastMemoryCheck()`에 남기고, `deployService`는 업로드 전에도 검사하되 그 값은 "실행 중 메모리 포함" 주석을 달아 `precheckWarnings`에만 넣고, 정지 뒤 Compile 직전 슬롯 측정이 있으면 그것으로 `result.memoryPrecheck`를 덮어씁니다. `memoryGuard.warnMb`(기본 4 MB)·`criticalMb`(기본 2.5 MB, 옛 `blockMb`는 deprecated 대체 읽기)는 현장 보고 기반의 설정 가능한 운영 기준입니다. 측정 실패(unknown)는 경고로 알리고 계속합니다. 삭제·Unload·재시도는 자동 수행하지 않습니다. Upload Only와 구형 MCP 직접 TCP 경로는 이 검사 대상이 아닙니다. 업로드 바이트로 미래 Free를 추정하는 기능과 원격 재귀 크기 집계는 아직 없습니다.
 
-사람 화면의 경고 알림은 `controller/diagnostics/memoryNotice.ts`(순수)가 정합니다 — 제어기 IP별 마지막 수준을 기억해 나빠질 때(ok→warning, warning→blocked)나 직전 알림 대비 0.5 MB 이상 줄었을 때만 알리고, 한 배포(작업 범위) 안에서는 최대 1회, 지속 상태는 상태 표시줄 항목(`$(warning) Free 2.96 MB`, 클릭 `gpl.controller.showMemoryStatus`)이 맡습니다. 차단·AI 결과 필드(`memoryPrecheck`·`precheckWarnings`)는 이 규칙과 무관하게 매번 남습니다.
+사람 화면의 경고 알림은 `controller/diagnostics/memoryNotice.ts`(순수)가 정합니다 — 제어기 IP별 마지막 수준을 기억해 나빠질 때(ok→warning, warning→critical)나 직전 알림 대비 0.5 MB 이상 줄었을 때만 알리고, 한 배포(작업 범위) 안에서는 최대 1회, 지속 상태는 상태 표시줄 항목(`$(warning) Free 2.96 MB`, 클릭 `gpl.controller.showMemoryStatus`)이 맡습니다. AI 결과 필드(`memoryPrecheck`·`precheckWarnings`)는 이 규칙과 무관하게 매번 남습니다.
+
+**심각 구간의 선택은 사람 경로의 모달**이 맡습니다(2026-10-27 사용자 요청 "막지 말고 경고하되 취소/강제 진행을 고르게"). `deployService`는 `confirmMemoryCritical` 훅이 있으면 정지 뒤 Compile/Start 직전에 한 번 더 재고 심각이면 묻습니다(취소 → `failedPhase: MEMORY_CHECK`, 업로드는 유지). `gpl.start`·FTP Run은 `activation/controller/controllerOps.confirmMemoryCriticalInteractive`를 직접 부릅니다. AI·자동화·autoOnSave는 훅을 넘기지 않아 경고만 남기고 계속합니다(모달은 브리지를 막습니다). 설정 `memoryGuard.confirmOnCritical`로 끕니다. 메모리 알림·상세·배포 중단 안내의 「Unload…」는 `gpl.controller.unloadProject`(`/GPL` 목록 QuickPick → 같은 Unload 위험 모달·전송 가드 → `<STATUS>` 판정)를 엽니다.
+
+### AI 요청과 Output 패널
+
+Agent Bridge로 들어온 요청은 `host.revealOutputForAgentRequest`가 Output 「GPL Language Support」를 열지 정합니다. 판단은 `controller/automation/agentCommandLog.ts`(순수) — **제어기 상태를 바꾸는 요청만**(원시 명령은 `consoleCommandClassifier.isReadOnlyConsoleCommand`로, 확장 명령은 `AGENT_READ_ONLY_EXTENSION_COMMANDS` 예외 목록으로) 30초 조용 구간 뒤 첫 요청에 엽니다. 조회 요청은 열지 않습니다(2026-10-27 사용자 지적: 읽기마다 보던 로그가 가려짐). 새 조회 도구를 MCP에 더하면 그 목록에도 올립니다.
+
+### Project.gpr 배포 전 대조
+
+제어기는 `.gpr`의 `ProjectSource` 목록만 컴파일합니다. 대조 계산은 `project/gpr/gprFolderSync.ts`(순수) 한 곳이고, 세 곳이 씁니다: ① `controller/projects/gprSyncCommand.ts`의 자동 반영 — VS Code 안의 생성·이름 변경·삭제와 FileSystemWatcher(외부 변경) 모두 프로젝트별 디바운스로 한 번만 묻거나(`prompt`) 반영(`auto`) ② 같은 파일의 `reconcileProjectGprBeforeDeploy` — 사람 경로의 배포·Quick Compile·Upload Only 직전에 「반영 후 / 그대로 / 취소」 모달(auto면 바로 반영, 비대화형은 auto일 때만) ③ `deployService` — 어느 경로든 남은 차이를 `precheckWarnings`·`gprSyncMismatch`로 결과에 남깁니다. 탐색 상한에 걸리면 제거 제안을 내지 않습니다(못 본 파일을 "없다"고 하지 않기 위해).
 
 ### 업로드 전 제어기 확인
 
@@ -366,4 +488,6 @@ FTP 쓰기 경로(Upload Only·Upload & Start·Quick Compile·Deploy·autoOnSave
 
 ### FTP 원격 소스 보기
 
-`controller/files/remoteSourceSession`은 VS Code를 참조하지 않고 FTP 메타데이터, 세션별 TMP 캐시와 원격 경로/URI 매핑을 소유한다. `activation/controllerRemoteFiles`가 읽기 전용 FileSystemProvider와 문서·DAP 세션의 수명을 연결하고, `activation/controllerProjectDebug`는 기존 작업공간을 유지한 채 Attach 구성을 전달한다. DAP는 명시한 원격 세션의 소스만 사용한다. `activation/controllerSourceLanguage`는 현재 열린 원격 문서를 별도 SymbolCache에 넣어 로컬 작업공간과 다른 원격 프로젝트의 심볼이 섞이지 않게 한다.
+원격 사본의 언어 기능(`activation/remote/controllerSourceLanguage`)은 연결·탐색 범위(`/GPL` 바로 아래 프로젝트)마다 독립 `SymbolCache`를 두고 열어 본 원격 파일을 인덱싱한다. 여기에 `project/remote/remoteSourceMapping`(순수)이 고른 **대응 로컬 프로젝트의 컴파일 단위**(deploy record의 `projectDir` → 작업공간 `.gpr`의 `ProjectName` → 폴더 이름 순, 후보가 여럿이면 선택하지 않음)를 씨앗으로 넣어, 열지 않은 다른 파일의 모듈로도 정의·호버·완성이 이어진다(2026-10-26 Sample Prep 보고). 열어 본 원격 사본은 TMP 캐시 루트를 최상위 폴더 기준으로 삼아 로컬 사본보다 앞서고, 로컬 파일의 정의는 `file:` 위치로 그대로 연다(편집은 로컬이 정본). 원격 사본을 열 때 대응 로컬 파일과 내용이 다르면 「로컬 열기」 안내를 한 번 띄운다.
+
+`controller/files/remoteSourceSession`은 VS Code를 참조하지 않고 FTP 메타데이터, 세션별 TMP 캐시와 원격 경로/URI 매핑을 소유한다. `activation/remote/controllerRemoteFiles`가 읽기 전용 FileSystemProvider와 문서·DAP 세션의 수명을 연결하고, `activation/remote/controllerProjectDebug`는 기존 작업공간을 유지한 채 Attach 구성을 전달한다. DAP는 명시한 원격 세션의 소스만 사용한다. `activation/remote/controllerSourceLanguage`는 현재 열린 원격 문서를 별도 SymbolCache에 넣어 로컬 작업공간과 다른 원격 프로젝트의 심볼이 섞이지 않게 한다.

@@ -113,6 +113,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | 라이브 로그 중지 | GPL: Stop Live Log Terminal (라이브 로그 중지) | `gpl.logs.liveTerminal.stop` |
 | 직접 명령 | GPL: Send Command to Controller (인자 `{command, confirmUnloadRisk?}` — 그룹 Compile 뒤 Unload 는 확인 필요) | `gpl.controller.sendCommand` |
 | Unload 위험 표시 해제 | GPL: Unload 위험 표시 해제 (그룹 Compile 뒤 — 제어기 재부팅 후) | `gpl.controller.clearUnloadRisk` |
+| 프로젝트 Unload | GPL: Unload Project (프로젝트 내리기 — 메모리 회수; `/GPL` 목록 QuickPick·이름 입력·`-all`, 사람 전용 UI — AI 는 `unload_project`/`sendCommand`) | `gpl.controller.unloadProject` |
 | 중단점 반영 | GPL: Push Editor Breakpoints to Controller | `gpl.controller.pushBreakpoints` |
 | 중단점 가져오기 | GPL: Pull Controller Breakpoints | `gpl.controller.pullBreakpoints` |
 | 중단점 새로고침 | GPL: Refresh Controller Breakpoints | `gpl.controller.refreshBreakpoints` |
@@ -126,15 +127,21 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 | DIO 강제 상태 설정(원시 명령) | GPL: DIO 강제 상태 설정 (Set DIO) — **입력·출력 신호 및 장비 동작에 영향 가능** | `gpl.controller.setDio` |
 
 일반 조작은 `gpl.controller.showIoPanel`을 사용한다. 대시보드의 **디지털 I/O** 탭은 `Show DIO`의
-`signal: 0|1`과 강제 표시 `*`를 카드로 보여 주며, 강제 ON(`1`)·강제 OFF(`-1`)·강제 해제(`0`)를
-각 신호에서 바로 선택한다. `Set DIO` 전 확인 모달은 생략하지 않는다. 강제 해제는 현재 ON/OFF 값을
-바꾸지 않고 force만 제거한다.
+`signal: 0|1`과 강제 표시 `*`를 웹 Operator 처럼 Local I/O(Digital·Soft Internal·Dedicated 제어기/축)·Remote I/O(RIO n·
+Network Node n) 그룹의 작은 칩으로 보여 준다(분류 정본: `controller/io/dioGroups.ts`, 문서 신호 번호 체계 기준).
+칩 클릭 = 현재 값의 반대로 강제(`1`/`-1`), 더블클릭 = 그 신호의 강제 해제(`0`, 강제된 신호만), 우클릭 = 강제 ON/OFF·
+강제 해제·그룹/전체 해제. 더블클릭이 토글을 두 번 보내지 않도록 클릭은 250 ms 미뤘다가 보낸다(2026-11-04 사용자 요청으로
+더블클릭 토글 → 클릭 토글로 변경). **확인 모달은 없다**(2026-10-27 사용자 요청 — 클릭·메뉴 선택이 의사 표시).
+강제 해제는 현재 ON/OFF 값을 바꾸지 않고 force만 제거한다.
+인자 없는 `Show DIO`는 Software I/O(20001~20064)를 내주지 않아(실측) 패널이 번호를 지정해 따로 조회하며, 한 줄 64개는
+`-506 *Input too long*`이라 160자 이하로 나눠 보낸다.
 
 ### AI 에이전트 전용
 
 | 목적 | 제목 | Command ID |
 | --- | --- | --- |
-| AI Agent Setup 내보내기 | GPL: Export AI Agent Setup | `gpl.ai.exportAgentSetup` |
+| AI 에이전트 MCP 등록(사용자 범위) | GPL: Register AI Agent MCP | `gpl.ai.exportAgentSetup` |
+| 예전 워크스페이스 AI 파일 정리 | GPL: Remove AI Agent Files from Workspace | `gpl.ai.cleanWorkspaceAgentSetup` |
 | AI 디버그 어시스트 | GPL: AI Debug Assist | `gpl.ai.debugAssist` |
 | 상태 조회 | GPL: AI Debug Get State | `gpl.ai.debug.getState` |
 | 중단점 설정/해제 | GPL: AI Debug Set/Clear Breakpoint | `gpl.ai.debug.setBreakpoint` / `gpl.ai.debug.clearBreakpoint` (성공하면 에디터 중단점에도 반영 — `mirror: false`로 제외) |
@@ -180,13 +187,16 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
   사람이 QuickPick 에서 고른 값) ③ 실행 가능(`.gpr` 에 `ProjectStart`) 프로젝트가 유일할 때 그것 ④ 후보가 하나뿐이면
   그것 ⑤ 그 밖에는 `PROJECT_AMBIGUOUS`. 영구 기본 프로젝트 설정은 두지 않으며, MCP는 작업 시작 시
   `project_target({projectDir})`으로 정확한 폴더를 세션에 고정한다.
-  규칙 정본은 `src/controller/projects/projectTarget.ts`(순수 로직, 단위 테스트 `src/test/projectTarget.test.ts`).
+  규칙 정본은 `src/controller/projects/projectTarget.ts`(순수 로직, 단위 테스트 `src/test/controller/projects/projectTarget.test.ts`).
 - **외부 진입점(URI, GitHub #25 → 2026-08-28 전체 개방)**: 이 확장의 **모든 `gpl.*` 명령**을 URI로 실행할 수 있다.
   `vscode://nir414.gpl-language-support/<gpl.command.id>?args=<JSON>`(인자 1개를 JSON으로), `/<gpl.command.id>?key=value&…`(평면 인자 → 객체 1개,
   숫자/불리언/JSON 리터럴 자동 변환), `/command?id=<gpl.command.id>&args=…`. 별칭(종전 호환): `/connect?ip=192.168.0.1&port=1402[&save=settings]`,
   `/disconnect`, `/getState`(결과는 Output `[AI Debug]`), `/dashboard`. 터미널: `code --open-url "vscode://nir414.gpl-language-support/gpl.ai.debug.getState"`.
   결과는 URI로 돌려받을 수 없으므로 Output(`[URI] <id> => …`)과 `gpl.ai.debug.*`의 `[AI Debug]` 로그로 확인한다. `gpl.*` 밖의 명령은 실행하지
   않는다(임의 VS Code 명령 프록시 방지 — 범위 한정이지 기능 제한이 아님). 해석 규칙: `src/controller/automation/uriDispatch.ts`.
+  **토큰(2026-11-04 §1-GZ)**: 조회 전용(`gpl.ai.debug.getConnectionState`·`gpl.ai.debug.getState`·`gpl.controller.showDashboard`)과 별칭 밖의
+  명령은 `token=` 이 `%TEMP%\gpl-controller\uri-token` 의 값과 같아야 실행한다(웹 링크 클릭만으로 제어기 명령이 나가지 않게 — 같은 PC 의
+  터미널·에이전트는 파일을 읽어 그대로 쓴다). PowerShell: `$t = Get-Content "$env:TEMP\gpl-controller\uri-token"; code --open-url "vscode://nir414.gpl-language-support/gpl.controller.threadBreak?threadName=MainThread&token=$t"`.
 - **명령 정책(`src/controller/commands/commandPolicy.ts`, 2026-08-28)** — 모든 1402 명령은 `sendCommandDetailed`의 직렬 큐 한 곳을 지나며, 여기서 확장이
   안전 조건을 **대신 기다려서** 충족시킨다(승인 모달·거부 목록 없음 — AI 접근을 막지 않는다는 사용자 결정. 예외는 되돌릴 수 없는 명령의 차단 목록 `controller/automation/aiCommandPolicy.ts` 뿐 — 현재 `gpl.saveToFlash` 1건). R1 같은 쓰레드 Step/Continue는 직전
   명령의 정지 확인 뒤·최소 간격(`gpl.debug.minStepIntervalMs`) 뒤에만 전송(#28), R2 Start/Compile/Load/Unload 전에 `Stopping` 쓰레드 정착 대기(§0.6),
@@ -199,11 +209,11 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
   확장을 통한 테스트로 넘어가지 못했다. 이제 확장이 실행 중이면 MCP의 1402 명령이 **확장의 `gpl.controller.sendCommand`**로 라우팅되어
   같은 직렬 큐·keep-alive 세션·명령 정책을 그대로 탄다(따라서 MCP 경로에도 R1/R2/R3이 적용된다). 전송은 `%TEMP%\gpl-controller\`의
   요청/응답 파일(배포 잠금과 같은 계약, 새 포트 없음), 확장 상태는 `<ip>.extension.json`(heartbeat 5 s / stale 15 s).
-  MCP 도구 `extension_status`(경로·확장 상태 확인, `wake:true`로 확장 깨우기, `hostMismatch`가 있으면 확장은 떠 있고 `.mcp.json`의 `GPL_HOST`가 연결 주소와 다른 것 — §1-ES)와 `extension_command`(확장의 `gpl.*` 명령 실행 —
+  MCP 도구 `extension_status`(경로·확장 상태 확인, `wake:true`로 확장 깨우기, `hostMismatch`는 `GPL_BRIDGE=off` 직접 접속 설정에서만 — 브리지 모드의 서버는 제어기 주소를 확장 창의 현재 연결에서 따른다, §1-GV)와 `extension_command`(확장의 `gpl.*` 명령 실행 —
   Deploy·Quick Compile·브레이크포인트 동기화·진단 스냅샷 등)가 추가됐다. 설정: 확장 `gpl.agentBridge.enabled`, MCP `GPL_BRIDGE=auto|only|off`.
-  **확장의 `GPL: Export AI Agent Setup`은 `GPL_BRIDGE=only`를 명시한다.** 사람이 VS Code에서 연결한 동안 AI도 그 한 소켓과 직렬 큐를
-  공유하고, presence/브리지 문제 때 두 번째 직접 연결로 폴백하지 않는다. `GPL: Check AI Agent Setup`은 누락·`auto`·`off`를 설정 문제로
-  보고한다. `auto`/`off`는 VS Code 없이 헤드리스 MCP 직접 접속이 필요한 개발자가 수동으로 선택하는 모드이며 동시 사용을 보장하지 않는다.
+  **확장이 등록하는 MCP(`GPL: Register AI Agent MCP`, Claude Code 사용자 범위·Codex `config.toml`)는 `GPL_BRIDGE=only`만 적고
+  제어기 주소는 적지 않는다.** 사람이 VS Code에서 연결한 동안 AI도 그 한 소켓과 직렬 큐를 공유하고, presence/브리지 문제 때 두 번째
+  직접 연결로 폴백하지 않는다. `GPL: Check AI Agent Setup`은 등록 상태(없음·옛 형식·직접 등록)와 예전 워크스페이스 파일을 보고한다. `auto`/`off`는 VS Code 없이 헤드리스 MCP 직접 접속이 필요한 개발자가 수동으로 선택하는 모드이며 동시 사용을 보장하지 않는다.
 - **VS Code 디버그 세션 종료 시 제어기 브레이크포인트는 전부 해제된다**(`disconnectRequest`가 이 세션이 설정한 BP를 `Set Nobreak`로 정리 — 다음 세션 중복 등록 방지, 의도된 동작). MCP 등 외부 클라이언트와 병행할 때는 세션 종료 후 재설정하거나 세션 없이 `gpl.controller.syncEditorBreakpoints`(에디터 BP → 제어기 실시간 동기화)를 사용한다.
 - **AI(MCP·URI·명령 콘솔)가 건 BP는 에디터 중단점에도 반영된다**(§1-CO, `gpl.controller.mirrorAiBreakpoints`, 기본 켜짐). 빨간 점으로 보이므로 사용자가 F9로 지울 수 있고, 위의 세션 종료 정리·`reconcileAll`·DAP의 파일 단위 재설정이 "에디터에 없는 BP"라며 지워 버리는 일이 없어진다. 반영은 **외부 진입점**(`gpl.controller.sendCommand` 인자 경로, `gpl.ai.debug.setBreakpoint/clearBreakpoint`)에서만 일어난다 — DAP와 에디터 동기화는 in-process 호출이라 대상이 아니다.
 
@@ -211,7 +221,7 @@ AI 도구가 VS Code extension command를 실행할 수 있는 환경이면 아�
 
 - 쓰레드: `gpl.controller.threadStart`/`threadStop`/`threadBreak`/`threadContinue`/`threadContinueNoError`/`threadStep`(Step Over)/`threadStepInto`/`threadStepOut`/`threadShowLocation`/`threadShowStack`
   — 인자는 트리 노드 `{ thread: { name, project? } }` 외에 `{ threadName: "MainThread", project?: "MergeCode" }`·`{ name }`·문자열 `"MainThread"`도 받는다(2026-08-28).
-  예: `code --open-url "vscode://nir414.gpl-language-support/gpl.controller.threadBreak?threadName=MainThread"`
+  예: `code --open-url "vscode://nir414.gpl-language-support/gpl.controller.threadBreak?threadName=MainThread&token=<uri-token>"`(토큰은 위 URI 항목)
 - FTP: `gpl.controller.ftpRun`/`ftpStop`/`ftpDownload`/`ftpDelete`/`ftpUnload` — 인자 `{ projectName: "MergeCode", remotePath: "/flash/projects/MergeCode" }`(`ftpDelete`는 `contextValue: "ftpFolder"|"ftpFile"` 추가).
 - `gpl.controller.consoleToggle`/`clearErrors`/`copyError` — 트리 노드 인자.
 

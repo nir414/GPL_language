@@ -30,6 +30,8 @@
 - [ ] **클래스 멤버 이름이 프로젝트의 Module 이름과 같지 않은지?** (대소문자 무시 — 멤버가 모듈을 가려 `-781`, 아래 0-10)
 - [ ] **같은 이름 오버로드의 반환형이 모두 같은지?** (다르면 `-741`, 아래 0-11)
 - [ ] **문자열 리터럴 하나가 100바이트를 넘지 않는지?** (118바이트에서 `-506` 관측, 아래 0-12)
+- [ ] **수 KB 이상 문자열에 `Split`을 쓰지 않았는지?** (런타임 `-506`, 아래 0-14)
+- [ ] **수학 함수에 `Math.` 접두를 붙였는지?** (`Abs(x)`는 `-729`, `Math.Abs(x)`가 맞음 — 아래 0-15)
 - [ ] VS Code에서 `*.gpl`이 `일반 텍스트`로 열리고 있진 않은지? (기본은 `vb`로 연결해 하이라이팅 유지, 폴딩은 확장에서 보정)
 - [ ] **편집기 진단(Problems)이 실제 컴파일러와 불일치할 수 있음을 인지했는지?** (GPL 특성상 파서/진단 오탐 가능 → 실제 컴파일 로그를 우선 기준으로 판단)
 
@@ -628,11 +630,28 @@ Public Function ReadFeedback() As FeedbackResult      ' ❌ -741 — 반환형�
 - 실기 관측(2026-10-23, Sample Prep `MotionSystem.gpl:373`, GPL 4.2K5): 118바이트 리터럴이 든 줄이 -506이었다.
   같은 빌드에서 304자 줄(긴 리터럴 없음)과 100바이트 리터럴은 통과했다 → 한도는 101~118바이트 사이로 추정.
 - 해결: 긴 안내문은 짧은 리터럴 여러 개를 `&`로 잇는다.
+- 같은 `-506`이 **실행 중** `String.Split`에서도 난다 — 원인이 다르므로 0-14를 본다.
 
 ## 0-13. 파일당 오류가 약 20개를 넘으면 `-737` *Too many errors*로 끊긴다
 
 컴파일러는 파일당 약 20개 오류에서 멈추므로, 그 뒤(다음 파일 포함)의 오류는 다음 컴파일에서야 보인다.
 오류를 고친 뒤 다시 컴파일했을 때 새 오류가 나타나는 것은 정상이다(2026-10-25 Sample Prep 관측).
+
+## 0-14. 긴 문자열의 `String.Split` 은 런타임 `-506` *Input too long*
+
+- 실기 관측(2026-11-03, Sample Prep APON 프로브, GPL 4.2K5 추정): 16,811자(303줄) 글의 `content.Split(Chr(10))`이
+  `-506 *Input too long*` 예외를 던졌다. 같은 호출이 641자 글에서는 정상이었다. 경계 길이는 재지 않았다.
+- 문서상 [String.Split](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/String/split.htm)에는 길이 제한이 적혀 있지 않다. `-506`의 문서 설명은 "I/O 작업이나 컴파일러가
+  내부 버퍼에 담을 수 있는 것보다 많은 입력을 받았다"이다
+  ([I/O Errors](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Error_Code/io_errors.htm)).
+- 해결: 수 KB 이상 글은 `InStr`로 구분자 위치를 찾고 `Mid`로 잘라 나눈다(같은 글로 PASS 확인).
+
+## 0-15. 수학 함수는 `Math.` 접두가 필요하다 — `Abs(x)` 는 `-729`
+
+- 실기 관측(2026-11-03, Sample Prep): 모듈 안 `Abs(x)` → 컴파일 `(-729): *Undefined symbol* Abs`.
+- 문서상 절댓값은 [Math.Abs](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/abs.htm)이다. `Abs`·`Sqrt` 등 수학 함수는 [Math 클래스](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Math/mathintro.htm)의
+  메서드이고, 접두 없는 전역 함수는 `CInt`·`CStr`·`Fix`·`Int`·`Hex`·`Rnd` 같은 변환/정수 함수뿐이다
+  ([Function Dictionary](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Function_Dictionary/functionintro.htm)). `Math.Abs`는 이번에 실기로 시험하지 않았다.
 
 ---
 
@@ -859,8 +878,8 @@ Catch
 End Try
 
 ' VB.NET 스타일 변수 선언
-Catch ex As Exception
-    Console.WriteLine(ex.Message)  ' Message는 메서드!
+Catch ex As Exception             ' Catch 뒤에 As 타입을 쓰지 않는다
+    Console.WriteLine(ex.Message)
 End Try
 ```
 
@@ -879,7 +898,13 @@ End Try
 ### 설명
 - GPL은 `On Error GoTo` 구문을 지원하지 않습니다.
 - `Catch` 블록에는 반드시 예외 변수를 명시해야 합니다.
-- `Exception.Message`는 속성이 아닌 메서드(`Message()`)입니다.
+- `Exception.Message`는 문서상 메서드로 분류되지만 구문은 괄호 없는 `exception_object.Message`이다
+  ([Exception.Message](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/exc_message.htm)). `ex.Message`·`ex.Message()` 둘 다 쓸 수 있다
+  (괄호 없는 읽기는 2026-11-03 Sample Prep 실기에서 컴파일·실행 확인).
+- **`Catch`가 받는 객체는 던진 객체가 아니다.** `Catch`는 `ErrorCode`·`Qualifier`·로봇 정보(RobotNum·Axis)만 받는 쪽 객체에 옮기므로,
+  던지기 전에 `ex.Message = "..."`로 넣은 사용자 글은 **던진 객체에만 남고** 받는 쪽에는 `*Error Code (-1)*` 같은 코드 문구가 나온다
+  (대입이 무시되는 것이 아니다. 2026-11-03·11-06 Sample Prep 실기). 사용자 글은 객체 필드 등 별도 경로로 전달한다
+  ([error-handling](error-handling.md)의 주의 상자에 실측과 `Catch` 변수가 Nothing이어도 되는 문서와 다른 동작을 적었다).
 - 예외 변수는 `Try` 블록 전에 미리 선언해야 합니다.
 
 ### 관련 에러
@@ -1143,3 +1168,16 @@ Sample Prep의 2026-10-22 GPL 4.2K5 실측 보고에서는 정상 종료·예외
 | 스레드 진입점에서 예외 처리 | 1회, Error 정지 없음 |
 
 Try마다 Catch를 추가하는 것으로 재실행을 막을 수는 없습니다. 진입점에서 예외를 처리하고, 종료가 목적이면 Stop을 사용합니다. 정리 코드의 중복 실행도 검토합니다. `gpl.diagnostics.tryWithoutCatch`는 기본 해제이며 선택 활성화 시 정보 안내만 제공합니다.
+
+### `Catch ex : Throw ex` 를 모든 Try…Finally 에 덧붙이지 않는다
+
+Catch는 선택입니다(문서상 [trycatchfinally.htm](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/trycatchfinally.htm): "either a single Catch statement or a single Finally statement or one of each"). 2026-11-06 Sample Prep 실측(GPL 4.2K5 계열 시뮬)에서 `Finally`만 쓴 꼴과 `Catch ex` + `Throw ex` + `Finally` 꼴의 결과가 같았고, 호출자가 받은 `ErrorCode`·`Message`도 같았습니다. 재던지기는 아무것도 막지 않고 코드와 스택 프레임만 늘립니다(-755 가 잦은 4 KB 스레드에서는 비용입니다).
+
+| 경우 | `Finally` 만 | `Catch`+`Throw`+`Finally` |
+| --- | --- | --- |
+| 호출자 Catch 있음, `Throw` | Finally 1회, 호출자가 코드 수신 | 같음 |
+| 호출자 Catch 있음, 런타임 오류(배열 인덱스, -767) | Finally 1회, -767 | 같음 |
+| 스레드 최상위, Catch 없음 | Finally 1회, 스레드 Error | 같음 |
+| **스택 넘침 -755**(재귀 깊이 49), 바깥 Catch 있음 | **Finally 도 실행되고 바깥 Catch 가 -755 를 받음** | — |
+
+실제로 막아야 할 것은 **스레드 진입점 최상위에 Catch 가 없는 것**입니다. 확장은 이를 정보 진단 `thread-entry-without-catch` 로 알립니다(`gpl.diagnostics.threadEntryWithoutCatch`, 기본 켜짐).

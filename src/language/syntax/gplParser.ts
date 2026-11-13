@@ -1,0 +1,977 @@
+import { escapeRegExp, splitParameters } from './cursorExpression';
+import { Declarator, parseDeclaratorList } from './declarationList';
+import { GetterBranch, parseGetterBranch } from '../analysis/getterBranch';
+
+export interface GPLSymbol {
+    name: string;
+    kind: GPLSymbolKind;
+    range: { start: number; end: number };
+    line: number;
+    /**
+     * 블록 선언(Module/Class/Sub/Function/Property)의 짝 `End …` 가 있는 물리 줄 번호(0-기준).
+     * 짝을 만나기 전이면(입력 중·비정상 소스) undefined — 소비자(개요 등)는 휴리스틱으로 대체한다.
+     * 다음 심볼 위치로 끝을 추정하던 종전 방식은 중첩 클래스·클래스 뒤 모듈 멤버에서 범위가
+     * 겹쳐, 개요의 「커서 따르기」가 엉뚱한 심볼로 튀는 원인이었다.
+     */
+    endLine?: number;
+    filePath: string;
+    module?: string;
+    className?: string;
+    /** 중첩 클래스일 때 감싸는 바깥 클래스 이름 (예: ZeroPlan > StepBatch면 StepBatch의 parent는 ZeroPlan). */
+    parentClassName?: string;
+    accessModifier?: 'public' | 'private';
+    isShared?: boolean;
+    /** True when this symbol is declared inside a Sub/Function/Property body (not indexed in workspace cache by default). */
+    isLocal?: boolean;
+    /** True when this symbol represents a procedure parameter. */
+    isParameter?: boolean;
+    parameters?: string[];
+    /**
+     * Leading `'` doc-comment block that appears immediately above the declaration
+     * (no blank line in between). Lines are joined with '\n' with the leading quote
+     * and one space stripped. Consumed by hover / completion / signature help to
+     * describe user-defined symbols. Collected for **every** declaration kind —
+     * Module, Class, Sub, Function, Property, Variable and Constant (locals
+     * included) — not only for callables.
+     */
+    docComment?: string;
+    /** Initializer value for constants (e.g. "123" from "Const X As Integer = 123"). */
+    value?: string;
+    returnType?: string;
+    /**
+     * Property 전용. Get 본문이 `Return <식>` 한 문장뿐이면 그 식(예: `m_armCount`). 디버거가 제어기 -eval의
+     * -780(프로퍼티 참조 평가 불가)을 백킹 필드 평가로 우회하는 근거(GitHub #26). 분기·계산이 있는 getter는 undefined.
+     */
+    getterReturnExpr?: string;
+    /**
+     * Property 전용. Get 본문이 `If <조건> Then Return A Else Return B` 꼴(블록/한 줄)이면 그 골격(`getterBranch.ts`).
+     * 디버거가 조건의 필드 값을 부모 덤프에서 읽어 분기를 계산하는 근거(ai-handoff §1-DS). 그 외 형태는 undefined.
+     */
+    getterBranch?: GetterBranch;
+    /** Property 전용. `Get … End Get` 블록이 있으면 true, WriteOnly(Set만)면 false. 블록을 못 훑었으면 undefined. */
+    hasGetter?: boolean;
+    /** Property 전용. 선언에 `ReadOnly` 수식어가 있으면 true(개요 detail 등 표시용). */
+    isReadOnly?: boolean;
+    /** Property 전용. 선언에 `WriteOnly` 수식어가 있으면 true. */
+    isWriteOnly?: boolean;
+    isXmlRelated?: boolean;
+    hasXmlIssues?: string[];
+}
+
+export interface GPLParseOptions {
+    /** Include local Dim/Const/Static declarations inside Sub/Function/Property bodies. Default: false */
+    includeLocals?: boolean;
+    /** Include procedure parameters as variable symbols. Default: same as includeLocals */
+    includeParameters?: boolean;
+}
+
+export enum GPLSymbolKind {
+    Module = 'module',
+    Class = 'class',
+    Function = 'function',
+    Sub = 'sub',
+    Variable = 'variable',
+    Property = 'property',
+    Constant = 'constant',
+    /**
+     * `Delegate Sub|Function name(params) [As type]` — 한 줄 **타입** 선언(본문 블록 없음). 인스턴스는 `New name(AddressOf proc)`,
+     * 타입 표기는 `As name`. `parameters`·`returnType`(Function 이면)에 시그니처를 담는다(ai-handoff §1-DU).
+     */
+    Delegate = 'delegate'
+}
+
+export class GPLParser {
+    // ── 파싱 결과 메모이즈 캐시 ──────────────────────────────────────────────
+    // parseDocument는 (content, filePath, options)에 대한 순수 함수이므로,
+    // 같은 내용/옵션이면 재파싱하지 않고 캐시 결과를 돌려준다.
+    // hover/definition 등 핫패스에서 한 요청당 동일 문서를 여러 번 파싱하던
+    // 비용(라인별 정규식 전체 재실행)을 제거한다.
+    // 128인 이유: 실사용 프로젝트(MergeCode 63파일)가 32를 넘겨 디버그 Globals 열거 시
+    // 매번 캐시가 전량 밀려나 풀 재파싱이 반복됐다. 파일 수 × 옵션 조합(2종)을 여유 있게 커버.
+    private static readonly _parseCacheMax = 128;
+    private static readonly _parseCache = new Map<string, { content: string; symbols: GPLSymbol[] }>();
+
+    static parseDocument(content: string, filePath: string, options?: GPLParseOptions): GPLSymbol[] {
+        const includeLocals = !!options?.includeLocals;
+        const includeParameters = options?.includeParameters ?? includeLocals;
+        const key = `${filePath}::${includeLocals ? 1 : 0}${includeParameters ? 1 : 0}`;
+
+        const cached = GPLParser._parseCache.get(key);
+        if (cached && cached.content === content) {
+            // LRU 갱신: 히트한 키를 delete+set으로 맨 뒤(최신)로 옮겨 recency를 유지한다.
+            GPLParser._parseCache.delete(key);
+            GPLParser._parseCache.set(key, cached);
+            // 캐시된 표준 배열은 보존하고, 호출부 변형으로부터 안전하도록 얕은 복사본을 돌려준다.
+            // 주의: 얕은 복사라 심볼 "객체"들은 호출부끼리 공유된다 — 반드시 불변으로 취급할 것.
+            return cached.symbols.slice();
+        }
+
+        const symbols = GPLParser.parseDocumentUncached(content, filePath, options);
+
+        // LRU 방식으로 캐시 크기를 제한한다(가장 오래 사용되지 않은 키부터 제거).
+        if (GPLParser._parseCache.has(key)) {
+            GPLParser._parseCache.delete(key);
+        } else if (GPLParser._parseCache.size >= GPLParser._parseCacheMax) {
+            const oldest = GPLParser._parseCache.keys().next().value;
+            if (oldest !== undefined) {
+                GPLParser._parseCache.delete(oldest);
+            }
+        }
+        GPLParser._parseCache.set(key, { content, symbols });
+        return symbols.slice();
+    }
+
+    private static parseDocumentUncached(content: string, filePath: string, options?: GPLParseOptions): GPLSymbol[] {
+        const symbols: GPLSymbol[] = [];
+        const lines = content.split('\n');
+        // Merge VB line-continuation (`_`) sequences into single logical lines so that
+        // multi-line Sub/Function/Property/declaration signatures are parsed correctly.
+        // Each logical line keeps the physical line index of its first line so symbol
+        // positions stay anchored to where the name actually appears.
+        const logicalLines = GPLParser.buildLogicalLines(lines);
+        let currentModule: string | undefined;
+        let currentClass: string | undefined;
+        // 중첩 클래스 지원: End Class에서 바깥 클래스로 복귀하기 위한 스택.
+        // (단일 변수만 쓰면 안쪽 End Class가 바깥 문맥까지 지워, 이후 멤버가 모듈 직속으로 오분류된다)
+        const classStack: string[] = [];
+        // endLine 기록용 — 아직 짝 `End …` 를 만나지 않은 열린 블록의 심볼 객체.
+        // (이름 스택(classStack)과 별도인 이유: End 를 만난 시점에 그 블록의 심볼에
+        //  끝 줄을 되적어야 하기 때문. 짝이 안 맞는 소스는 endLine 이 undefined 로 남는다)
+        let openModule: GPLSymbol | undefined;
+        const openClasses: GPLSymbol[] = [];
+        const openProcs: GPLSymbol[] = [];
+        // Accumulates the contiguous leading `'` comment block for the *next* declaration.
+        let pendingDoc: string[] = [];
+        // Track procedure-body depth (Sub/Function/Property body).
+        // 본문 안의 로컬 선언은 options.includeLocals가 켜진 경우에만 인덱싱한다
+        // (아래 blockDepth > 0 분기 참조).
+        let blockDepth = 0;
+
+        const includeLocals = !!options?.includeLocals;
+        const includeParameters = options?.includeParameters ?? includeLocals;
+
+        /** 프로시저 파라미터들을 로컬 변수 심볼로 등록 (Function/Sub 공용). */
+        const pushParameterSymbols = (line: string, i: number, name: string, startIndex: number, params: string[]): void => {
+            if (!includeParameters || params.length === 0) { return; }
+            // 파라미터는 여는 괄호 뒤에서 찾는다 — 프로시저 이름과 같은 이름(대소문자
+            // 무시)의 파라미터가 프로시저 이름 위치로 잡히지 않도록 (findNameColumn 참조).
+            const paramSearchFrom = line.indexOf('(', startIndex + name.length) + 1;
+            for (const p of params) {
+                const { name: pName, type: pType } = GPLParser.extractParamName(p);
+                if (!pName) continue;
+
+                const pStart = GPLParser.findNameColumn(line, pName, paramSearchFrom);
+                symbols.push({
+                    name: pName,
+                    kind: GPLSymbolKind.Variable,
+                    range: { start: Math.max(0, pStart), end: Math.max(0, pStart) + pName.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    returnType: pType,
+                    isLocal: true,
+                    isParameter: true
+                });
+            }
+        };
+
+        for (let li = 0; li < logicalLines.length; li++) {
+            const i = logicalLines[li].line;
+            const line = logicalLines[li].text;
+            const trimmedLine = line.trim();
+            
+            // Capture the leading `'` doc-comment block; skip blank lines.
+            // A contiguous run of comment lines directly above a declaration becomes
+            // that symbol's docComment. A blank line breaks the run.
+            if (trimmedLine.startsWith("'")) {
+                pendingDoc.push(trimmedLine.replace(/^'+[ \t]?/, ''));
+                continue;
+            }
+            if (trimmedLine === '') {
+                pendingDoc = [];
+                continue;
+            }
+
+            // Code line: consume any accumulated doc comment. Resetting here means a
+            // comment block only attaches to the declaration that immediately follows it.
+            const docComment = pendingDoc.length ? pendingDoc.join('\n') : undefined;
+            pendingDoc = [];
+
+            // Parse Module
+            const moduleMatch = trimmedLine.match(/^Module\s+(\w+)/i);
+            if (moduleMatch) {
+                currentModule = moduleMatch[1];
+                currentClass = undefined;
+                classStack.length = 0;
+                blockDepth = 0;
+                openClasses.length = 0;
+                openProcs.length = 0;
+                const startIndex = GPLParser.findNameColumn(line, moduleMatch[1]);
+                const moduleSymbol: GPLSymbol = {
+                    name: moduleMatch[1],
+                    kind: GPLSymbolKind.Module,
+                    range: { start: startIndex, end: startIndex + moduleMatch[1].length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    docComment
+                };
+                symbols.push(moduleSymbol);
+                openModule = moduleSymbol;
+                continue;
+            }
+
+            // Parse Class
+            const classMatch = trimmedLine.match(/^(Public|Private)?\s*Class\s+(\w+)/i);
+            if (classMatch) {
+                const parentClassName = classStack.length ? classStack[classStack.length - 1] : undefined;
+                classStack.push(classMatch[2]);
+                currentClass = classMatch[2];
+                blockDepth = 0;
+                const isXmlRelated = GPLParser.isXmlRelatedIdentifier(classMatch[2]);
+                const startIndex = GPLParser.findNameColumn(line, classMatch[2]);
+                const classSymbol: GPLSymbol = {
+                    name: classMatch[2],
+                    kind: GPLSymbolKind.Class,
+                    range: { start: startIndex, end: startIndex + classMatch[2].length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    accessModifier: classMatch[1] ? (classMatch[1].toLowerCase() as 'public' | 'private') : undefined,
+                    parentClassName,
+                    isXmlRelated: isXmlRelated,
+                    docComment
+                };
+                symbols.push(classSymbol);
+                openClasses.push(classSymbol);
+                openProcs.length = 0;
+                continue;
+            }
+
+            // End Class: 스택을 pop해 바깥 클래스 문맥으로 복귀한다 (중첩 클래스 지원).
+            if (trimmedLine.match(/^End\s+Class/i)) {
+                classStack.pop();
+                currentClass = classStack.length ? classStack[classStack.length - 1] : undefined;
+                blockDepth = 0;
+                const closedClass = openClasses.pop();
+                if (closedClass) { closedClass.endLine = i; }
+                openProcs.length = 0;
+                continue;
+            }
+
+            // Check for End Sub/Function/Property to end local-scope block
+            const endProcMatch = trimmedLine.match(/^End\s+(Function|Sub|Property)/i);
+            if (endProcMatch) {
+                if (blockDepth > 0) {
+                    blockDepth--;
+                }
+                // 종류가 맞는 짝일 때만 끝 줄을 기록한다 — 짝이 어긋난 소스(End 누락 등)에서
+                // 엉뚱한 블록을 닫아 범위를 오염시키지 않기 위해서다.
+                const openProc = openProcs[openProcs.length - 1];
+                if (openProc && openProc.kind === endProcMatch[1].toLowerCase()) {
+                    openProcs.pop();
+                    openProc.endLine = i;
+                }
+                continue;
+            }
+
+            // Check for End Module to reset both
+            if (trimmedLine.match(/^End\s+Module/i)) {
+                currentModule = undefined;
+                currentClass = undefined;
+                classStack.length = 0;
+                blockDepth = 0;
+                if (openModule) { openModule.endLine = i; }
+                openModule = undefined;
+                openClasses.length = 0;
+                openProcs.length = 0;
+                continue;
+            }
+
+            // Parse Delegate: `[Public|Private|…] Delegate Sub|Function name(params) [As type]` — 한 줄 타입 선언이라
+            // 블록에 들어가지 않고(End 없음) 파라미터 로컬도 만들지 않는다. Sub/Function 매처보다 앞에 둔다 —
+            // 저 매처들은 `Delegate` 를 수식어로 받지 않아 이 줄을 통째로 놓쳤고, 그래서 `New LogSinkSub(...)`·`As LogSinkSub`
+            // 의 정의 찾기·호버가 안 됐다(사용자 신고 2026-09-17, §1-DU).
+            const delegateMatch = trimmedLine.match(/^(?:(?:Public|Private|Protected|Friend|Shared|Shadows)\b\s+)*Delegate\s+(Sub|Function)\s+(\w+)/i);
+            if (delegateMatch) {
+                const name = delegateMatch[2];
+                const header = GPLParser.extractHeaderParts(trimmedLine, (delegateMatch.index ?? 0) + delegateMatch[0].length);
+                const params = splitParameters(header.paramText);
+                const returnMatch = /^function$/i.test(delegateMatch[1])
+                    ? header.afterParams.match(/^\s*As\s+(\w+)\s*(\(\s*\))?/i)
+                    : null;
+                const returnType = returnMatch ? returnMatch[1] + (returnMatch[2] ? '[]' : '') : undefined;
+                const startIndex = GPLParser.findNameColumn(line, name, line.toLowerCase().indexOf('delegate'));
+                const { accessModifier, isShared } = GPLParser.procedureModifiers(trimmedLine);
+                symbols.push({
+                    name,
+                    kind: GPLSymbolKind.Delegate,
+                    range: { start: startIndex, end: startIndex + name.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    accessModifier,
+                    isShared,
+                    parameters: params,
+                    returnType,
+                    docComment,
+                });
+                continue;
+            }
+
+            // Parse Function: token-based parsing to support any keyword order
+            const functionMatch = trimmedLine.match(/\bFunction\s+(\w+)/i);
+            if (functionMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial)\b\s+)*Function\b/i)) {
+                const name = functionMatch[1];
+                // 주석/문자열을 무력화한 코드로 괄호 구간을 정해, 파라미터 텍스트는 원본에서
+                // 잘라낸다(문자열 기본값 원문 보존). 종전 `(.*)` 캡처는 괄호/콤마가 든
+                // 후행 `' 주석`까지 삼키는 문제가 있었다.
+                const header = GPLParser.extractHeaderParts(trimmedLine, (functionMatch.index ?? 0) + functionMatch[0].length);
+                // 최상위 콤마 기준 분리 — 공백뿐인 `( )`는 0개, 기본값 속 콤마는 분리하지 않는다.
+                const params = splitParameters(header.paramText);
+                // 반환 타입의 배열 접미사(`As Integer()`)는 파서의 배열 표기 규칙대로 `Integer[]`로 기록.
+                const returnMatch = header.afterParams.match(/^\s*As\s+(\w+)\s*(\(\s*\))?/i);
+                const returnType = returnMatch ? returnMatch[1] + (returnMatch[2] ? '[]' : '') : undefined;
+                const isXmlRelated = GPLParser.isXmlRelatedIdentifier(name);
+                const xmlIssues = GPLParser.detectXmlFunctionIssues(line, name, i, lines);
+                const startIndex = GPLParser.findNameColumn(line, name);
+
+                const { accessModifier, isShared } = GPLParser.procedureModifiers(trimmedLine);
+
+                const functionSymbol: GPLSymbol = {
+                    name,
+                    kind: GPLSymbolKind.Function,
+                    range: { start: startIndex, end: startIndex + name.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    accessModifier: accessModifier,
+                    isShared: isShared,
+                    parameters: params,
+                    returnType: returnType,
+                    isXmlRelated: isXmlRelated,
+                    hasXmlIssues: xmlIssues.length > 0 ? xmlIssues : undefined,
+                    docComment
+                };
+                symbols.push(functionSymbol);
+                openProcs.push(functionSymbol);
+
+                pushParameterSymbols(line, i, name, startIndex, params);
+
+                // Enter function block (로컬 선언 처리는 includeLocals 옵션을 따른다)
+                blockDepth++;
+                continue;
+            }
+
+            // Parse Sub: token-based parsing to support any keyword order
+            const subMatch = trimmedLine.match(/\bSub\s+(\w+)/i);
+            if (subMatch && trimmedLine.match(/^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overloads|Overridable|NotOverridable|MustOverride|Shadows|Partial)\b\s+)*Sub\b/i)) {
+                const name = subMatch[1];
+                // 주석 안전 괄호 구간에서 파라미터 추출(Function과 동일 — extractHeaderParts 참조).
+                const subHeader = GPLParser.extractHeaderParts(trimmedLine, (subMatch.index ?? 0) + subMatch[0].length);
+                // 최상위 콤마 기준 분리 — 공백뿐인 `( )`는 0개, 기본값 속 콤마는 분리하지 않는다.
+                const params = splitParameters(subHeader.paramText);
+                const startIndex = GPLParser.findNameColumn(line, name);
+
+                const { accessModifier, isShared } = GPLParser.procedureModifiers(trimmedLine);
+
+                const subSymbol: GPLSymbol = {
+                    name,
+                    kind: GPLSymbolKind.Sub,
+                    range: { start: startIndex, end: startIndex + name.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    accessModifier: accessModifier,
+                    isShared: isShared,
+                    parameters: params,
+                    docComment
+                };
+                symbols.push(subSymbol);
+                openProcs.push(subSymbol);
+
+                pushParameterSymbols(line, i, name, startIndex, params);
+
+                // Enter sub block (로컬 선언 처리는 includeLocals 옵션을 따른다)
+                blockDepth++;
+                continue;
+            }
+
+            // Parse Property — Sub/Function과 동일하게 수식어 순서를 가리지 않고 매칭한다.
+            // (ReadOnly/WriteOnly/Default/Shared/Overrides 등이 Public/Private 뒤, Property 앞에 올 수 있다.
+            //  이전 정규식은 ReadOnly/WriteOnly를 빠뜨려 `Public ReadOnly Property ...`를 놓쳤다.)
+            const propertyMatch = trimmedLine.match(/^((?:(?:Public|Private|Protected|Friend|Shared|ReadOnly|WriteOnly|Default|Overrides|Overridable|NotOverridable|MustOverride|Shadows|Overloads)\b\s+)*)Property\s+(\w+)(?:\s*\([^)]*\))?(?:\s+As\s+(\w+)\s*(\(\s*\))?)?/i);
+            if (propertyMatch) {
+                const propMods = propertyMatch[1] || '';
+                const propAccess = /\bPublic\b/i.test(propMods)
+                    ? 'public'
+                    : (/\bPrivate\b/i.test(propMods) ? 'private' : undefined);
+                const getter = GPLParser.extractSimpleGetterReturn(logicalLines, li + 1);
+                // 이름 컬럼은 `Property` 키워드 뒤에서 찾는다(수식어와 이름이 같아도 어긋나지 않게).
+                // 종전의 `start: 0`(줄 전체)은 이름 바꾸기가 선언 줄 앞부분을 덮어쓰게 만들었다.
+                const propNameStart = Math.max(0, GPLParser.findNameColumn(
+                    line, propertyMatch[2], line.toLowerCase().indexOf('property') + 'property'.length
+                ));
+                const propertySymbol: GPLSymbol = {
+                    name: propertyMatch[2],
+                    kind: GPLSymbolKind.Property,
+                    range: { start: propNameStart, end: propNameStart + propertyMatch[2].length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    accessModifier: propAccess as 'public' | 'private' | undefined,
+                    isShared: /\bShared\b/i.test(propMods),
+                    isReadOnly: /\bReadOnly\b/i.test(propMods),
+                    isWriteOnly: /\bWriteOnly\b/i.test(propMods),
+                    // 배열 반환(`As Integer()`)은 `Integer[]`로 기록 — Function과 동일 규칙.
+                    returnType: propertyMatch[3] ? propertyMatch[3] + (propertyMatch[4] ? '[]' : '') : undefined,
+                    docComment,
+                    hasGetter: getter.hasGetter,
+                    ...(getter.returnExpr ? { getterReturnExpr: getter.returnExpr } : {}),
+                    ...(getter.branch ? { getterBranch: getter.branch } : {}),
+                };
+                symbols.push(propertySymbol);
+                openProcs.push(propertySymbol);
+
+                // Enter property block (if it has Get/Set); End Property will decrement.
+                blockDepth++;
+                continue;
+            }
+
+            // When requested, parse local declarations inside procedures.
+            if (blockDepth > 0 && includeLocals) {
+                // Local Const ("Const X As Integer = 1")
+                const localConstMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
+                if (localConstMatch) {
+                    const name = localConstMatch[1];
+                    const startIndex = GPLParser.findNameColumn(line, name);
+                    const localConstValue = localConstMatch[3]?.trim();
+                    symbols.push({
+                        name,
+                        kind: GPLSymbolKind.Constant,
+                        range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
+                        line: i,
+                        filePath,
+                        module: currentModule,
+                        className: currentClass,
+                        returnType: localConstMatch[2],
+                        value: localConstValue || undefined,
+                        isLocal: true,
+                        docComment
+                    });
+                    continue;
+                }
+
+                // Local Dim/Static 선언 — 콤마 다중 선언(`Dim i, j As Integer`,
+                // `Dim a As Integer, b As String`)까지 declarationList 정본으로 처리한다.
+                // 종전에는 이름을 하나만 잡아 콤마 목록 줄을 통째로 놓쳤고, 그 변수는
+                // 호버·정의 이동·이름 바꾸기에서 "정의 없음"이 됐다.
+                const localDeclPrefix = trimmedLine.match(/^(Dim|Static)\s+(Const\s+)?/i);
+                if (localDeclPrefix) {
+                    const declarators = GPLParser.declaratorsOfLine(line, localDeclPrefix[0].length);
+                    if (declarators) {
+                        const isConstant = !!localDeclPrefix[2];
+                        for (const d of declarators) {
+                            symbols.push({
+                                name: d.name,
+                                kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
+                                range: { start: d.column, end: d.column + d.name.length },
+                                line: i,
+                                filePath,
+                                module: currentModule,
+                                className: currentClass,
+                                returnType: d.type + (d.isArray ? '[]' : ''),
+                                value: isConstant ? d.init : undefined,
+                                isLocal: true,
+                                docComment
+                            });
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            if (blockDepth > 0) {
+                // Local variables inside procedures are not indexed
+                continue;
+            }
+
+            // Parse Const without Dim/Public/Private (e.g., "Const VariableID As Integer = 1869")
+            const constMatch = trimmedLine.match(/^Const\s+(\w+)\s+As\s+(\w+)(?:\s*=\s*(.+))?/i);
+            if (constMatch) {
+                const name = constMatch[1];
+                const startIndex = GPLParser.findNameColumn(line, name);
+                const rawValue = constMatch[3]?.trim();
+                symbols.push({
+                    name,
+                    kind: GPLSymbolKind.Constant,
+                    range: { start: Math.max(0, startIndex), end: Math.max(0, startIndex) + name.length },
+                    line: i,
+                    filePath,
+                    module: currentModule,
+                    className: currentClass,
+                    returnType: constMatch[2],
+                    value: rawValue || undefined,
+                    docComment
+                });
+                continue;
+            }
+            // ── 클래스/모듈 멤버 변수·상수 선언 ──────────────────────────────
+            // GPL은 수식어 순서가 자유롭다: "Public Shared Dim x"와 "Shared Public Dim x"
+            // 모두 유효하므로 Sub/Function 매치와 같은 방식으로 수식어 나열을 통째로 허용한다.
+            // bare "x As Integer"를 선언으로 오인하지 않도록 수식어 또는 Dim이 최소 하나 필요하다.
+            // 공통 접두: ((수식어+ Dim?) | Dim) — 캡처 그룹 1에 수식어 문자열이 들어간다.
+            const memberMods = (mods: string) => ({
+                accessModifier: /\bPublic\b/i.test(mods) ? 'public' as const :
+                    /\bPrivate\b/i.test(mods) ? 'private' as const : undefined,
+                isShared: /\bShared\b/i.test(mods)
+            });
+
+            // 멤버 변수·상수 (New 포함형·배열·콤마 다중 선언을 한 경로로 처리)
+            //   `Public Shared Dim storeA As New XmlStore`, `Dim kvs(100) As KeyValue`,
+            //   `Public gA, gB As Integer`, `Dim a As Integer, b As String`
+            // 선언자 형태가 아니면(예: `Public Type Foo`) undefined가 와서 아래 해석으로 넘어간다.
+            const memberDeclPrefix = trimmedLine.match(
+                /^((?:(?:Private|Public|Protected|Friend|Shared)\s+)+(?:Dim\s+)?|Dim\s+)(Const\s+)?/i
+            );
+            if (memberDeclPrefix) {
+                const declarators = GPLParser.declaratorsOfLine(line, memberDeclPrefix[0].length);
+                if (declarators) {
+                    const isConstant = !!memberDeclPrefix[2];
+                    for (const d of declarators) {
+                        symbols.push({
+                            name: d.name,
+                            kind: isConstant ? GPLSymbolKind.Constant : GPLSymbolKind.Variable,
+                            range: { start: d.column, end: d.column + d.name.length },
+                            line: i,
+                            filePath,
+                            module: currentModule,
+                            className: currentClass,
+                            ...memberMods(memberDeclPrefix[1]),
+                            returnType: d.type + (d.isArray ? '[]' : ''),
+                            value: isConstant ? d.init : undefined,
+                            docComment
+                        });
+                    }
+                    continue;
+                }
+            }
+
+            // Parse Type definition
+            const typeMatch = trimmedLine.match(/^(Public\s+)?Type\s+(\w+)/i);
+            if (typeMatch) {
+                const typeNameStart = Math.max(0, GPLParser.findNameColumn(
+                    line, typeMatch[2], line.toLowerCase().indexOf('type') + 'type'.length
+                ));
+                symbols.push({
+                    name: typeMatch[2],
+                    kind: GPLSymbolKind.Class, // Use Class kind for Type definitions
+                    range: { start: typeNameStart, end: typeNameStart + typeMatch[2].length },
+                    line: i,
+                    filePath,
+                    module: currentModule
+                });
+                continue;
+            }
+        }
+
+        return symbols;
+    }
+
+    /**
+     * 라인에서 심볼 이름의 컬럼을 대소문자 무시 + 단어 경계로 찾는다.
+     * 종전 `line.indexOf(name)`은 부분 문자열에 걸렸다(예: `Function Fun()`에서
+     * `Fun`이 `Function` 안에서 먼저 매칭, `Static tic`의 `tic`이 `Static` 안에서 매칭).
+     * fromIndex를 주면 그 위치부터 찾는다 — 파라미터는 여는 괄호 뒤부터 찾아
+     * 프로시저와 같은 이름(대소문자 무시)이어도 프로시저 이름 위치에 걸리지 않는다.
+     */
+    /**
+     * 프로시저 헤더의 수식어 추출 (키워드 순서 무관, Function/Sub 공용).
+     */
+    private static procedureModifiers(trimmedLine: string): { accessModifier?: 'public' | 'private'; isShared: boolean } {
+        const upperLine = trimmedLine.toUpperCase();
+        const accessModifier = upperLine.includes('PUBLIC') ? 'public' as const :
+                             upperLine.includes('PRIVATE') ? 'private' as const : undefined;
+        const isShared = upperLine.includes('SHARED');
+        return { accessModifier, isShared };
+    }
+
+    /**
+     * 파라미터 선언 문자열에서 이름/타입 추출.
+     * Examples:
+     * - "axis As Integer"
+     * - "ByRef settings() As AxisZeroSetting"
+     * - "Optional speed As Integer = 10"
+     * - "robotArmList() As RobotArm"
+     */
+    /**
+     * Property 선언 다음 줄부터 `End Property`까지 훑어 Get 블록 유무와, Get 본문이 `Return <식>` **한 문장**이면
+     * 그 식을 돌려준다(GitHub #26 — 디버거의 -780 우회용). 주석·빈 줄은 무시하고, Set 블록 안은 세지 않는다.
+     * `End Property` 없이 다음 선언이 시작되면 거기서 멈춘다(깨진 소스 방어). 최대 400 논리행만 본다.
+     */
+    private static extractSimpleGetterReturn(
+        logicalLines: Array<{ line: number; text: string }>,
+        from: number,
+    ): { hasGetter: boolean; returnExpr?: string; branch?: GetterBranch } {
+        const declStart = /^(?:(?:Public|Private|Protected|Friend|Shared|ReadOnly|WriteOnly|Default|Overrides|Overridable|NotOverridable|MustOverride|Shadows|Overloads)\b\s+)*(?:Sub|Function|Property|Class|Module)\b/i;
+        let inGet = false;
+        let inSet = false;
+        let hasGetter = false;
+        let stmtCount = 0;
+        let returnExpr: string | undefined;
+        // Get 본문 문장(주석 제거) — 단순 `Return` 이 아니면 분기형 골격(`If … Return A Else Return B`)인지 본다(§1-DS).
+        const getStatements: string[] = [];
+        for (let k = from; k < logicalLines.length && k < from + 400; k++) {
+            const t = logicalLines[k].text.trim();
+            if (!t || t.startsWith("'")) { continue; }
+            if (/^End\s+Property\b/i.test(t)) { break; }
+            if (declStart.test(t)) { break; }
+            if (/^Get\b/i.test(t)) { inGet = true; hasGetter = true; continue; }
+            if (/^End\s+Get\b/i.test(t)) { inGet = false; continue; }
+            if (/^Set\b/i.test(t)) { inSet = true; continue; }
+            if (/^End\s+Set\b/i.test(t)) { inSet = false; continue; }
+            if (!inGet || inSet) { continue; }
+            stmtCount++;
+            const stmt = GPLParser.stripTrailingComment(t).trim();
+            if (stmt) { getStatements.push(stmt); }
+            const rm = t.match(/^Return\s+(.+)$/i);
+            if (rm && stmtCount === 1) {
+                const expr = GPLParser.stripTrailingComment(rm[1]).trim();
+                returnExpr = expr || undefined;
+            }
+        }
+        if (stmtCount === 1 && returnExpr) { return { hasGetter, returnExpr }; }
+        const branch = stmtCount > 1 ? parseGetterBranch(getStatements) : undefined;
+        return { hasGetter, ...(branch ? { branch } : {}) };
+    }
+
+    /** 문자열 리터럴 밖의 첫 `'`부터 잘라 낸다(줄 끝 주석 제거). */
+    private static stripTrailingComment(text: string): string {
+        let inString = false;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (ch === '"') { inString = !inString; continue; }
+            if (ch === "'" && !inString) { return text.slice(0, i); }
+        }
+        return text;
+    }
+
+    private static extractParamName(param: string): { name?: string; type?: string } {
+        const cleaned = param
+            .replace(/\b(ByVal|ByRef|Optional|ParamArray)\b/gi, '')
+            .trim();
+
+        const asMatch = cleaned.match(/\bAs\s+(\w+)\s*(\(\s*,*\s*\))?/i);
+        let type = asMatch ? asMatch[1] : undefined;
+        const typeIsArray = !!(asMatch && asMatch[2]);
+
+        const beforeAs = cleaned.split(/\bAs\b/i)[0].trim();
+        if (!beforeAs) {
+            if (type && typeIsArray) { type += '[]'; }
+            return { type };
+        }
+
+        // The identifier is typically the last token before "As".
+        const tokens = beforeAs.split(/\s+/).filter(Boolean);
+        const last = tokens[tokens.length - 1] || '';
+        // 배열 파라미터(`armList() As RobotArm` / `x As Integer()`)는 로컬 배열 Dim과
+        // 동일하게 `Type[]`로 기록한다 — 호출부 인자 타입 추론(오버로드 해석)과
+        // 멤버 접근의 배열 인식이 일관되도록. (소비처는 [] 접미사를 벗겨 요소 타입을 쓴다.)
+        const nameIsArray = /\(.*\)$/.test(last);
+        if (type && (typeIsArray || nameIsArray)) { type += '[]'; }
+        const name = last.replace(/\(.*\)$/, '').replace(/[^A-Za-z0-9_]/g, '');
+        return { name: name || undefined, type };
+    }
+
+    /**
+     * 선언 접두(수식어·Dim·Static·Const) 뒤부터를 선언자 목록으로 해석한다.
+     *
+     * 주석은 잘라내고(stripToCode) 문자열 내부는 구조 판정에서 제외하므로,
+     * `Dim s As String = "a,b"  ' 메모`처럼 콤마·따옴표가 섞인 줄도 안전하다.
+     * 이름 컬럼(column)은 줄 기준 절대값으로 채워 돌려준다.
+     *
+     * @param tailStartInTrimmed trim된 줄에서 접두가 끝나는 위치
+     * @returns 선언자 목록, 선언문이 아니면 undefined
+     */
+    private static declaratorsOfLine(
+        line: string,
+        tailStartInTrimmed: number
+    ): Array<Declarator & { column: number }> | undefined {
+        const indent = line.length - line.trimStart().length;
+        const tailStart = indent + tailStartInTrimmed;
+        const code = GPLParser.stripToCode(line);
+        if (tailStart >= code.length) {
+            return undefined;
+        }
+        const list = parseDeclaratorList(line.slice(tailStart, code.length), code.slice(tailStart));
+        return list?.map(d => ({ ...d, column: tailStart + d.offset }));
+    }
+
+    private static findNameColumn(line: string, name: string, fromIndex = 0): number {
+        const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi');
+        re.lastIndex = Math.max(0, fromIndex);
+        const m = re.exec(line);
+        return m ? m.index : line.indexOf(name);
+    }
+
+    /**
+     * 프로시저 헤더에서 파라미터 목록 `(...)` 구간과 그 뒤의 코드(반환 타입 절)를 찾는다.
+     *
+     * 주석/문자열을 무력화한 코드(stripToCode — 위치 보존)로 괄호 균형을 계산해 구간을
+     * 정하고, 파라미터 텍스트는 "원본"에서 잘라낸다(문자열 기본값 `= "a,b"` 등 원문 보존).
+     * afterParams는 주석이 제거된 코드이므로 반환 타입 매칭이 후행 주석에 속지 않는다.
+     */
+    private static extractHeaderParts(line: string, nameEndIndex: number): { paramText?: string; afterParams: string } {
+        const code = GPLParser.stripToCode(line);
+
+        // 이름 뒤 첫 비공백 문자가 '('일 때만 파라미터 목록으로 본다.
+        let i = nameEndIndex;
+        while (i < code.length && (code[i] === ' ' || code[i] === '\t')) {
+            i++;
+        }
+        if (i >= code.length || code[i] !== '(') {
+            return { afterParams: code.slice(nameEndIndex) };
+        }
+
+        const open = i;
+        let depth = 0;
+        let close = -1;
+        for (let j = open; j < code.length; j++) {
+            const ch = code[j];
+            if (ch === '(') {
+                depth++;
+            } else if (ch === ')') {
+                depth--;
+                if (depth === 0) {
+                    close = j;
+                    break;
+                }
+            }
+        }
+
+        if (close < 0) {
+            // 닫는 괄호가 없는 비정상 라인 — 주석 시작 전(code 길이)까지를 파라미터로 취급.
+            return { paramText: line.slice(open + 1, code.length), afterParams: '' };
+        }
+
+        return { paramText: line.slice(open + 1, close), afterParams: code.slice(close + 1) };
+    }
+
+    static findSymbolUsages(content: string, symbolName: string): { line: number; character: number }[] {
+        const usages: { line: number; character: number }[] = [];
+        const lines = content.split('\n');
+        const symbolLower = symbolName.toLowerCase();
+        const symbolLen = symbolName.length;
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            
+            // 문자열 리터럴과 주석을 제거하여 순수 코드 영역만 추출.
+            // 기존 indexOf("'") 방식은 "it's" 같은 문자열 내 아포스트로피를 잘못 처리.
+            const searchLine = GPLParser.stripToCode(line);
+            
+            // 대소문자 무시 검색 (GPL/VB는 대소문자 무시 언어)
+            const searchLineLower = searchLine.toLowerCase();
+            let startIndex = 0;
+            while (true) {
+                const index = searchLineLower.indexOf(symbolLower, startIndex);
+                if (index === -1) break;
+                
+                // Check word boundaries
+                const prevChar = index > 0 ? searchLine[index - 1] : ' ';
+                const nextChar = index + symbolLen < searchLine.length ? searchLine[index + symbolLen] : ' ';
+                
+                // Valid if surrounded by non-word characters
+                if (!/[a-zA-Z0-9_]/.test(prevChar) && !/[a-zA-Z0-9_]/.test(nextChar)) {
+                    usages.push({
+                        line: i,
+                        character: index
+                    });
+                }
+                
+                startIndex = index + 1;
+            }
+        }
+
+        return usages;
+    }
+
+    /**
+     * 코드에서 문자열 리터럴과 인라인 주석을 제거하여 순수 코드 부분만 반환.
+     * 문자열은 공백으로, 주석 이후는 제거.
+     */
+    static stripToCode(line: string): string {
+        let result = '';
+        let inString = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inString) {
+                if (ch === '"') {
+                    // VB/GPL: "" 는 이스케이프된 따옴표
+                    if (i + 1 < line.length && line[i + 1] === '"') {
+                        result += '  '; // 위치 보존
+                        i++;
+                        continue;
+                    }
+                    inString = false;
+                }
+                result += ' '; // 문자열 내부는 공백으로 대체
+            } else {
+                if (ch === '"') {
+                    inString = true;
+                    result += ' ';
+                } else if (ch === "'") {
+                    // 인라인 주석 시작 — 나머지 무시
+                    break;
+                } else {
+                    result += ch;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * VB/GPL 줄 연속 문자(`_`)로 이어진 물리 줄들을 하나의 논리 줄로 병합한다.
+     * 반환 항목은 병합된 텍스트와, 그 논리 줄이 시작된 물리 줄 인덱스(line)를 가진다.
+     * 심볼 위치(line/column)는 이름이 실제로 등장하는 첫 물리 줄에 고정된다.
+     */
+    static buildLogicalLines(lines: string[]): { text: string; line: number }[] {
+        const result: { text: string; line: number }[] = [];
+        let i = 0;
+        while (i < lines.length) {
+            const startLine = i;
+            let merged = lines[i];
+            // 코드 영역이 ` _`(공백+밑줄)로 끝나는 동안 다음 줄을 이어 붙인다.
+            while (GPLParser.endsWithLineContinuation(merged) && i + 1 < lines.length) {
+                merged = GPLParser.stripTrailingContinuation(merged) + ' ' + lines[i + 1];
+                i++;
+            }
+            result.push({ text: merged, line: startLine });
+            i++;
+        }
+        return result;
+    }
+
+    /**
+     * 해당 줄이 VB 줄 연속(`_`)으로 끝나는지 판별.
+     * 규칙: 문자열/주석을 제외한 코드의 마지막 비공백 문자가 `_`이고,
+     * 그 앞이 공백이어야 한다(식별자 끝의 `foo_`를 연속으로 오인하지 않도록).
+     */
+    static endsWithLineContinuation(rawLine: string): boolean {
+        // stripToCode 는 원문 문자만 이어 붙이거나 공백으로 바꾸므로 `_` 가 없는 줄은 연속일 수 없다 —
+        // 대부분의 줄이 여기서 끝나 줄마다 도는 문자열 재구성·정규식을 건너뛴다.
+        if (rawLine.indexOf('_') < 0) {
+            return false;
+        }
+        const code = GPLParser.stripToCode(rawLine).trimEnd();
+        if (!code.endsWith('_')) {
+            return false;
+        }
+        if (code.length === 1) {
+            return true;
+        }
+        const prev = code[code.length - 2];
+        return prev === ' ' || prev === '\t';
+    }
+
+    /**
+     * 줄 끝의 연속 문자(`_`)와 주변 공백/CR을 제거해 병합 준비를 한다.
+     */
+    static stripTrailingContinuation(rawLine: string): string {
+        return rawLine.replace(/\s+$/, '').replace(/_$/, '').replace(/\s+$/, '');
+    }
+
+    /**
+     * XML 관련 식별자인지 확인
+     */
+    static isXmlRelatedIdentifier(name: string): boolean {
+        const xmlPatterns = [
+            /xml/i,
+            /escape/i,
+            /encode/i,
+            /decode/i,
+            /entity/i,
+            /cdata/i
+        ];
+        
+        return xmlPatterns.some(pattern => pattern.test(name));
+    }
+
+    /**
+     * XML 함수에서 발생할 수 있는 문제들을 감지
+     */
+    static detectXmlFunctionIssues(_line: string, functionName: string, lineIndex: number, allLines: string[]): string[] {
+        const issues: string[] = [];
+        
+        // XML 이스케이프 관련 함수인지 확인
+        if (!/escape.*xml|xml.*escape/i.test(functionName)) {
+            return issues;
+        }
+        
+        // 함수 본문 분석을 위해 몇 줄 더 읽기
+        const functionBody = GPLParser.getFunctionBody(lineIndex, allLines);
+        
+        // O(n²) 성능 패턴 감지 (outStr = outStr & ... 패턴)
+        if (/outStr\s*=\s*outStr\s*&/i.test(functionBody)) {
+            issues.push('O(n²) 성능 이슈: 문자열 연결 시 StringBuilder 패턴 사용 권장');
+        }
+        
+        // 재인코딩 위험 패턴 감지 (&amp; -> &amp;amp; 가능성)
+        if (functionBody.includes('&amp;') && !functionBody.includes('DecodeEntities')) {
+            issues.push('재인코딩 위험: 이미 인코딩된 입력에 대한 멱등성 고려 필요');
+        }
+        
+        // 순서 문제 감지 (& 치환이 마지막에 있지 않은 경우)
+        const ampPattern = functionBody.indexOf('&amp;');
+        const otherEntityPattern = Math.max(
+            functionBody.indexOf('&lt;'),
+            functionBody.indexOf('&gt;'),
+            functionBody.indexOf('&quot;'),
+            functionBody.indexOf('&apos;')
+        );
+        
+        if (ampPattern > -1 && otherEntityPattern > -1 && ampPattern > otherEntityPattern) {
+            issues.push('엔티티 치환 순서 오류: & 문자를 다른 엔티티보다 먼저 처리해야 함');
+        }
+        
+        // Null 체크 부족
+        if (!functionBody.includes('Nothing') && !functionBody.includes('Is Nothing')) {
+            issues.push('Null 안전성: Nothing 값에 대한 방어 코드 추가 권장');
+        }
+        
+        return issues;
+    }
+
+    /** 함수 본문 스캔 상한(줄 수) — 간단한 휴리스틱 분석용이므로 전체를 읽지 않는다. */
+    private static readonly XML_BODY_SCAN_LINES = 50;
+
+    /**
+     * 함수의 본문을 추출 (간단한 구현, 최대 XML_BODY_SCAN_LINES줄까지 스캔)
+     */
+    static getFunctionBody(startLine: number, lines: string[]): string {
+        let body = '';
+        let depth = 0;
+
+        for (let i = startLine; i < Math.min(startLine + GPLParser.XML_BODY_SCAN_LINES, lines.length); i++) {
+            const line = lines[i].trim();
+            
+            if (line.match(/^(Function|Sub)/i)) {
+                depth++;
+            } else if (line.match(/^End\s+(Function|Sub)/i)) {
+                depth--;
+                if (depth === 0) break;
+            }
+            
+            body += line + '\n';
+        }
+        
+        return body;
+    }
+}

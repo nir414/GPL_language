@@ -17,6 +17,14 @@ export function captureFilesFor(host, tmpdir = os.tmpdir()) {
   return [current.replace(/\.log$/, '.1.log'), current];
 }
 
+/** 출력 크기 상한(문자) 기본값 — 도구 결과 한도(약 50k)에 못 미치게. */
+export const DEFAULT_MAX_CHARS = 30000;
+
+/** 줄 하나가 들여쓰기 JSON 응답에서 차지하는 대략의 문자 수. */
+function approxJsonChars(hit) {
+  return JSON.stringify(hit, null, 2).length + 12;
+}
+
 const LINE_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) (?:\[([^\]]+)\] )?(.*)$/;
 const MARKER_RE = /^--- .* ---$/;
 
@@ -40,15 +48,21 @@ function toEpoch(value, name) {
  * 마커 줄은 includeMarkers(기본 true)면 시간 범위 안의 것을 패턴과 무관하게 함께 돌려준다 — 공백 구간이 "출력 없음" 인지
  * "듣지 않음" 인지 가르는 근거라서. project 필터도 마커에는 적용하지 않는다.
  */
-export function searchCapture({ files, pattern, since, until, project, maxLines = 200, includeMarkers = true }) {
+export function searchCapture({ files, pattern, since, until, project, maxResults, maxLines = 200, includeMarkers = true, latestFirst = false, maxChars = DEFAULT_MAX_CHARS }) {
   let re;
   if (pattern) {
-    try { re = new RegExp(pattern, 'i'); } catch (err) { return { ok: false, error: 'bad-pattern', detail: String(err?.message ?? err) }; }
+    // 큰 캡처 파일을 줄마다 훑으므로 파국적 백트래킹 꼴·긴 식은 거부한다(확장 runtimeConsoleBuffer.compileUntilPattern 과 같은 규칙, §1-GZ).
+    const src = String(pattern);
+    if (src.length > 200 || /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,\d*\})/.test(src)) {
+      return { ok: false, error: 'bad-pattern', detail: '200자 이하, 중첩 수량자((a+)+ 같은 꼴) 없는 정규식만 받는다.' };
+    }
+    try { re = new RegExp(src, 'i'); } catch (err) { return { ok: false, error: 'bad-pattern', detail: String(err?.message ?? err) }; }
   }
   let from; let to;
   try { from = toEpoch(since, 'since'); to = toEpoch(until, 'until'); } catch (err) { return { ok: false, error: 'bad-time', detail: err.message }; }
   const wantProject = project ? String(project).toLowerCase() : undefined;
-  const limit = Math.max(1, Math.min(2000, Math.floor(maxLines)));
+  const limit = Math.max(1, Math.min(2000, Math.floor(maxResults ?? maxLines)));
+  const charBudget = Math.max(1000, Math.floor(maxChars));
 
   const fileInfo = [];
   const hits = [];
@@ -76,14 +90,30 @@ export function searchCapture({ files, pattern, since, until, project, maxLines 
       hits.push({ ...parsed, file: path.basename(file), line: i + 1 });
     }
   }
-  const truncated = hits.length > limit;
+  // 가장 최근 것을 남긴다 — 개수 상한(maxResults) 다음 출력 크기 상한(maxChars: 도구 결과 한도 초과로 본문을 못 받던 사건, 2026-11-05).
+  let kept = hits.length > limit ? hits.slice(-limit) : hits;
+  let truncatedBy = hits.length > limit ? 'count' : undefined;
+  let used = 0;
+  let start = kept.length;
+  while (start > 0) {
+    const cost = approxJsonChars(kept[start - 1]);
+    if (used + cost > charBudget && start < kept.length) break;
+    used += cost;
+    start--;
+  }
+  if (start > 0) { kept = kept.slice(start); truncatedBy = 'chars'; }
+  const truncated = kept.length < hits.length;
   return {
     ok: true,
     files: fileInfo,
     scannedLines: scanned,
     matchedLines,
+    totalHits: hits.length,
+    returnedLines: kept.length,
     truncated,
-    lines: truncated ? hits.slice(-limit) : hits,
+    ...(truncatedBy ? { truncatedBy, omittedOldest: hits.length - kept.length } : {}),
+    latestFirst: latestFirst === true,
+    lines: latestFirst === true ? [...kept].reverse() : kept,
     ...(fileInfo.every((f) => !f.exists)
       ? { note: '캡처 파일이 없다 — 이 PC 의 확장이 이 제어기의 런타임 콘솔을 받은 적이 없거나, gpl.runtimeConsole.captureFile 설정이 꺼져 있다.' }
       : {}),

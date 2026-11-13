@@ -159,6 +159,21 @@ End Try
 Core_ErrorHandler.throwError(-1001, "Configuration invalid")
 ```
 
+> **주의 — 던진 객체에 넣은 `Message` 글은 받는 쪽으로 가지 않는다. `Catch`가 받는 객체는 던진 객체가 아니다.**
+> `Catch`는 던진 객체를 그대로 넘기지 않고 `ErrorCode`·`Qualifier`·로봇 정보(RobotNum·Axis)만 받는 쪽 객체에 옮긴다
+> ([Exception.Message](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/exc_message.htm)는 이 값들로 글을 만든다).
+> 그래서 던지기 전에 대입한 `Message`는 **던진 객체에만 남고**(대입 자체가 무시되는 것은 아니다), 받는 쪽은 `*Error Code (-1)*` 같은 코드 문구를 본다.
+>
+> - 2026-11-03 Sample Prep 실기: `EXC.ThrowError(-1, "APON line 2 col 4: ...")`로 던진 예외를 `Catch`에서 읽자 `ex.Message` = `*Error Code (-1)*`였다.
+> - 2026-11-06 Sample Prep 실기(`EXID_Probe`, GPL 4.2K5, 모듈 변수에 던질 객체를 보관하고 `Catch c`에서 `c Is s_keep` 비교):
+>   잡은 객체 ≠ 던진 객체(던진 객체는 대입한 글이 남아 있고 잡은 객체는 코드 문구), 던진 뒤 원래 객체를 바꿔도 잡은 쪽은 그대로,
+>   `Catch` 안에서 다시 던져도 바깥 `Catch`는 또 다른 객체, 잡은 객체에 대입한 `Message`는 그대로 읽힌다.
+> - `Catch` 변수에 `New`로 만든 객체가 있으면 그 객체에 채운다(같은 객체). 변수가 Nothing(`Dim c As Exception`)이어도 새 객체를 만들어 동작했다 —
+>   문서상 [catch_try.htm](https://www2.brooksautomation.com/Controller_Software/Software_Reference/GPL_Dictionary/Exception_Handling/catch_try.htm)은
+>   "exception_object must already have a data section allocated"라 적어 **문서와 다른 실측**이다(그래도 `Dim … As New Exception`이 문서에 맞는 안전한 쓰임이다).
+> - 실용 결론: 받는 쪽에 설명을 넘겨야 하면 던지기 전에 객체 필드(예: `LastError`)에 두고 받는 쪽이 그 필드를 읽는다.
+>   `throwError`에 넘긴 글은 던지는 쪽 로그용으로만 본다.
+
 ### throwError (로봇 에러 정보 포함)
 ```vb
 Core_ErrorHandler.throwError(-1038, "Motion error", 1, &HF)

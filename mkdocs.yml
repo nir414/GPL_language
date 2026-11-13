@@ -6,6 +6,7 @@ repo_name: nir414/GPL_language
 edit_uri: edit/main/docs/
 
 docs_dir: docs
+site_dir: dist/site
 
 # ai-handoff.md 와 그 월별 아카이브(archive/handoff/)는 AI 작업자용 저장소 전용 문서이므로
 # 사이트에서 제외한다.
@@ -13,7 +14,10 @@ docs_dir: docs
 exclude_docs: |
   .*
   /ai-handoff.md
+  /ai-handoff-verification.md
   /archive/handoff/
+  /requests.md
+  /requirements.txt
 
 theme:
   name: material
@@ -86,6 +90,7 @@ nav:
       - 에러 방지 체크리스트: gpl-language/error-prevention.md
       - 스레딩: gpl-language/threading.md
       - 스레드 안전성: gpl-language/thread-safety.md
+      - 메모리 아끼기: gpl-language/memory-costs.md
       - 네트워킹: gpl-language/networking.md
       - 파일 입출력: gpl-language/file-io.md
   - 개발 가이드:
@@ -94,6 +99,7 @@ nav:
       - 설계 원칙: development/design-principles.md
       - 아키텍처(계층 규칙): development/architecture.md
       - Broker/Workbench 아키텍처: development/broker-workbench-architecture.md
+      - 작업 기록 규칙: development/record-keeping.md
   - 레퍼런스:
       - GPL Dictionary: reference/dictionary.md
       - 콘솔 명령: reference/console-commands.md

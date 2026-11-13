@@ -12,11 +12,14 @@
  * 그래서 이 모듈의 기본 판정은 **`Show Thread -web` 목록에 항목이 있으면 동작 중**이다.
  * 상태 문자열은 사용자에게 이유를 설명할 때만 쓴다(`describeThreadActivity`).
  *
+ * 예외(2026-11-05): AI 경로의 `/GPL` 비우기만 `stop_threads` 와 같은 정착 판정(`isSettledState`)을 쓴다 —
+ * Idle/Stopped/Error 로 남은 쓰레드는 막지 않는다(`remoteFolderClear.judgeAiClearThreadGate`). 사람 경로·배포 게이트는 위 규약 그대로다.
+ *
  * 프로젝트 단위 판정은 ① `project` 컬럼 일치 ② 쓰레드 이름 == 프로젝트명(기본 이름 규칙)
  * ③ 쓰레드 이름 == `_Cmd_<프로젝트명>`(Execute 쓰레드) 중 하나라도 맞으면 그 프로젝트가 동작 중이다.
  * `Start -name` 으로 이름을 바꾼 쓰레드는 ①로 잡힌다.
  *
- * 단위 테스트: src/test/threadActivity.test.ts
+ * 단위 테스트: src/test/controller/threads/threadActivity.test.ts
  */
 
 /** 판정에 필요한 최소 형태 — responseParser.ThreadInfo 가 그대로 들어맞는다. */
@@ -42,7 +45,7 @@ export function isSettledState(state: string | undefined): boolean {
  *
  * `Stopped`(완전 종료)와 달리 **디버거가 붙어 검사 가능한** 상태다 — 트리의 정지 전이 이벤트,
  * AI 디버그 API 의 대상 선택, Break/Step 완료 판정이 모두 이 기준을 쓴다.
- * 종전에는 같은 집합이 activation/controllerOps 와 views/controllerTreeProvider 에 따로 있었다(§1-DD).
+ * 종전에는 같은 집합이 activation/controller/controllerOps 와 views/tree/controllerTreeProvider 에 따로 있었다(§1-DD).
  */
 export const PAUSED_THREAD_STATES: ReadonlySet<string> = new Set(['Paused', 'Break', 'Error']);
 

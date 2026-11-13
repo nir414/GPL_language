@@ -16,7 +16,7 @@
  *   stale = (pid > 0 && 프로세스 없음) || now - heartbeat > DEPLOY_LOCK_STALE_MS
  *   획득 = O_EXCL 생성('wx'); 갱신 = 임시 파일 + rename(원자적); 해제 = 자기 레코드(pid·since 일치)일 때만 삭제.
  *
- * vscode에 의존하지 않는다(단위 테스트 가능: src/test/deployLock.test.ts).
+ * vscode에 의존하지 않는다(단위 테스트 가능: src/test/controller/deployment/deployLock.test.ts).
  */
 
 import * as fs from 'fs';
@@ -35,6 +35,20 @@ export const DEPLOY_LOCK_STALE_MS = 30_000;
 /** 보유 중 heartbeat 갱신 주기. STALE_MS보다 충분히 짧아야 한다. */
 export const DEPLOY_LOCK_HEARTBEAT_MS = 5_000;
 export const DEPLOY_LOCK_DIR_NAME = 'gpl-controller';
+/** 잠금 파일 교체(rename)가 공유 위반(EPERM/EBUSY/EACCES)으로 거절될 때의 재시도 횟수·간격(ms, 회차에 비례). */
+export const DEPLOY_LOCK_RENAME_ATTEMPTS = 4;
+export const DEPLOY_LOCK_RENAME_RETRY_MS = 15;
+const DEPLOY_LOCK_RENAME_RETRY_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/** 동기 대기 — 잠금 갱신은 동기 API 로 짜여 있어(획득·하트비트) 이벤트 루프를 잠깐 멈춘다(수십 ms 상한). */
+function sleepSync(ms: number): void {
+	try {
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+	} catch {
+		const until = Date.now() + ms;
+		while (Date.now() < until) { /* busy wait fallback */ }
+	}
+}
 
 export interface DeployLockRecord {
 	version: number;
@@ -89,6 +103,8 @@ export interface DeployLockEnv {
 	/** 0이면 heartbeat 타이머를 돌리지 않는다(테스트). */
 	heartbeatIntervalMs?: number;
 	staleMs?: number;
+	/** 잠금 파일 교체(rename) — 테스트가 EPERM 공유 위반을 재현할 때 주입한다. 기본 `fs.renameSync`. */
+	renameFile?: (from: string, to: string) => void;
 }
 
 export function defaultDeployLockDir(): string {
@@ -131,6 +147,7 @@ export class DeployLock {
 	private readonly pidAlive: (pid: number) => boolean;
 	private readonly heartbeatIntervalMs: number;
 	private readonly staleMs: number;
+	private readonly renameFile: (from: string, to: string) => void;
 
 	constructor(readonly ip: string, env: DeployLockEnv = {}) {
 		this.dir = env.dir ?? defaultDeployLockDir();
@@ -140,6 +157,7 @@ export class DeployLock {
 		this.pidAlive = env.pidAlive ?? isPidAlive;
 		this.heartbeatIntervalMs = env.heartbeatIntervalMs ?? DEPLOY_LOCK_HEARTBEAT_MS;
 		this.staleMs = env.staleMs ?? DEPLOY_LOCK_STALE_MS;
+		this.renameFile = env.renameFile ?? ((from, to) => fs.renameSync(from, to));
 	}
 
 	get filePath(): string {
@@ -308,12 +326,22 @@ export class DeployLock {
 		const file = this.filePath;
 		const tmp = `${file}.${this.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(record));
-		try {
-			fs.renameSync(tmp, file);
-		} catch (err) {
-			try { fs.unlinkSync(tmp); } catch { /* noop */ }
-			throw err;
+		// Windows 에서 다른 프로세스(MCP 서버·다른 창)가 같은 순간 잠금 파일을 읽고 있으면 rename 이 EPERM/EBUSY 로 거절된다
+		// (2026-10-27 inbox "deploy_lock_rename_EPERM": 153개 배포 중 1회, 같은 요청 재시도로 성공). 공유 위반은 ms 단위로 풀리므로
+		// 짧게 몇 번 더 시도하고, 그래도 안 되면 종전처럼 던진다(호출부가 UPLOAD 실패로 보고).
+		let lastErr: unknown;
+		for (let attempt = 1; attempt <= DEPLOY_LOCK_RENAME_ATTEMPTS; attempt++) {
+			try {
+				this.renameFile(tmp, file);
+				return;
+			} catch (err: any) {
+				lastErr = err;
+				if (!DEPLOY_LOCK_RENAME_RETRY_CODES.has(String(err?.code ?? '')) || attempt === DEPLOY_LOCK_RENAME_ATTEMPTS) { break; }
+				sleepSync(DEPLOY_LOCK_RENAME_RETRY_MS * attempt);
+			}
 		}
+		try { fs.unlinkSync(tmp); } catch { /* noop */ }
+		throw lastErr;
 	}
 
 	private tryUnlink(): void {

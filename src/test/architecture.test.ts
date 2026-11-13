@@ -14,18 +14,19 @@ import { test } from './harness';
  *  R1 vscode 의존 허용 목록 — activation/·providers/·language/vscode/ 밖에서 vscode 를 import 하는 모듈은 명시 목록과 정확히 일치해야 한다.
  *  R2 계층 의존 방향 — 폴더(계층)별로 import 해도 되는 계층만 허용한다(같은 계층은 항상 허용).
  *  R3 런타임 import 순환 없음 — `import type` 은 지워지므로 제외.
- *  R4 테스트 등록 누락 없음 — src/test/*.test.ts 는 모두 index.ts 가 import 한다(수동 등록이라 잊기 쉽다).
+ *  R4 테스트 등록 누락 없음 — src/test/ 아래 모든 *.test.ts 는 index.ts 가 import 한다(수동 등록이라 잊기 쉽다).
  *  R5 package.json ↔ 코드 — 선언된 명령·메뉴/키바인딩/활성화 이벤트가 가리키는 명령은 소스에서 등록돼 있어야 한다.
  *  R6 설정 키 — 코드가 읽는 `gpl.*` 설정 키는 package.json 에 선언돼 있어야 한다(오타 방지).
  *  R7 판정 정본(SSOT) 우회 금지 — "이 판단은 여기서만 한다"고 정한 규칙을 다른 모듈이 손으로 다시 구현하지 않는다.
- *  R9 controller 기능 분류 — 파일은 책임에 맞는 하위 폴더에 두고 루트에 다시 쌓지 않는다.
+ *  R9 기능 분류(area) — 계층 폴더의 파일은 책임에 맞는 하위 폴더에 두고 계층 루트에 다시 쌓지 않는다. test/ 는 src 폴더를 거울처럼 따른다.
+ *  R10 크기 상한 — 1,000줄 넘는 파일·150줄 넘는 이름 있는 함수는 SIZE_DEBT 목록과 architecture.md §7 에 올라 있어야 한다(내려가면 지운다).
  */
 
 const ROOT = path.resolve(__dirname, '../..');
 const SRC = path.join(ROOT, 'src');
 
 type Layer =
-    | 'util' | 'language' | 'project' | 'log' | 'controller' | 'debug' | 'views' | 'providers' | 'activation' | 'ai'
+    | 'util' | 'language' | 'project' | 'log' | 'controller' | 'debug' | 'views' | 'providers' | 'activation'
     | 'config' | 'languageVscode' | 'extension' | 'test';
 
 /** 계층별로 import 해도 되는 다른 계층(같은 계층은 항상 허용). 근거는 docs/development/architecture.md §계층 규칙. */
@@ -40,10 +41,9 @@ const ALLOWED_DEPENDENCIES: Record<Layer, readonly Layer[]> = {
     debug: ['controller', 'project', 'language', 'util'],
     views: ['controller', 'util', 'config'],
     providers: ['language', 'project', 'util', 'config', 'languageVscode'],
-    ai: ['controller', 'util'],
-    activation: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'languageVscode'],
-    extension: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'ai', 'config', 'languageVscode', 'activation'],
-    test: ['util', 'language', 'log', 'project', 'config', 'controller', 'languageVscode', 'debug', 'views', 'providers', 'ai', 'activation'],
+    activation: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'config', 'languageVscode'],
+    extension: ['controller', 'project', 'language', 'util', 'log', 'views', 'providers', 'debug', 'config', 'languageVscode', 'activation'],
+    test: ['util', 'language', 'log', 'project', 'config', 'controller', 'languageVscode', 'debug', 'views', 'providers', 'activation'],
 };
 
 /** activation/·providers/·language/vscode/ 는 VS Code 접착 계층이라 전부 vscode 를 써도 된다. 그 밖은 여기 있는 모듈만. */
@@ -56,13 +56,13 @@ const VSCODE_ALLOWED_MODULES: ReadonlySet<string> = new Set([
     'controller/deployment/deployRecord', 'controller/deployment/deployService', 'controller/projects/gprSyncCommand', 'controller/projects/projectPicker',
     'controller/runtime/runtimeConsole',
     // debug — DAP 세션과 구성 provider
-    'debug/activateDebug', 'debug/gplDebugSession',
+    'debug/session/activateDebug', 'debug/session/gplDebugSession', 'debug/session/attachPreflight',
     // project — 워크스페이스 검색·명령 래퍼
-    'project/projectFileScope', 'project/promoteSourceCommand',
+    'project/sources/projectFileScope', 'project/gpr/promoteSourceCommand',
     // views
-    'views/connectionStatusBar', 'views/controllerDashboardPanel', 'views/controllerTreeProvider',
+    'views/statusbar/connectionStatusBar', 'views/dashboard/controllerDashboardPanel', 'views/tree/controllerTreeProvider', 'views/tree/treeItems',
     // 단일 파일 계층
-    'ai/exportAgentSetup', 'log/liveLogTerminal',
+    'controller/automation/exportAgentSetup', 'log/liveLogTerminal',
 ]);
 
 interface ImportEdge { from: string; to: string; typeOnly: boolean; spec: string }
@@ -86,20 +86,40 @@ const files = walk(SRC);
 const modules = new Set(files.map(moduleOf));
 const sources = new Map(files.map(f => [moduleOf(f), fs.readFileSync(f, 'utf8')] as const));
 
-/** 기능별 분류 정본은 architecture.md §2.1. 중첩 깊이는 제한하지 않는다. */
-const CONTROLLER_AREAS: ReadonlySet<string> = new Set([
-    'connection', 'commands', 'protocol', 'runtime', 'deployment', 'files',
-    'projects', 'threads', 'debugging', 'automation', 'diagnostics', 'io',
-]);
+/**
+ * 계층별 기능 분류(area) 정본은 architecture.md §2.1. 계층 폴더 바로 아래에는 area 폴더만 두고, 파일은 그 안에 둔다
+ * (area 안을 더 나누는 것은 자유 — 중첩 깊이는 제한하지 않는다). 파일 한두 개인 계층(util·ai·log)은 분류하지 않는다.
+ */
+const LAYER_AREAS: Readonly<Record<string, readonly string[]>> = {
+    language: ['syntax', 'dictionary', 'symbols', 'analysis', 'checks', 'documentation', 'xml', 'vscode'],
+    project: ['sources', 'gpr', 'remote', 'symbols'],
+    controller: ['connection', 'commands', 'protocol', 'runtime', 'deployment', 'files',
+        'projects', 'threads', 'debugging', 'automation', 'diagnostics', 'io'],
+    debug: ['session', 'execution', 'evaluation'],
+    views: ['statusbar', 'tree', 'dashboard'],
+    providers: ['navigation', 'structure', 'intellisense', 'diagnostics'],
+    activation: ['controller', 'remote', 'deploy', 'debug', 'language', 'ai'],
+    // test/ 는 검사 대상 모듈의 폴더를 거울처럼 따른다(test/<계층>/<area>/…). scripts 는 scripts/*.js 의 테스트.
+    test: ['util', 'language', 'project', 'controller', 'debug', 'views', 'providers', 'activation', 'scripts'],
+};
+/** 분류 밖에 남아도 되는 계층 루트 모듈 — 허브와 테스트 러너뿐. */
+const LAYER_ROOT_MODULES: ReadonlySet<string> = new Set(['activation/host', 'test/harness', 'test/index', 'test/architecture.test']);
 
-test('구조 R9: controller 모듈은 기능별 하위 폴더에 속한다', () => {
+test('구조 R9: 계층의 모듈은 기능별 하위 폴더(area)에 속하고 계층 루트에 다시 쌓이지 않는다', () => {
     const unclassified = [...modules].filter(mod => {
-        if (!mod.startsWith('controller/')) { return false; }
         const parts = mod.split('/');
-        return parts.length < 3 || !CONTROLLER_AREAS.has(parts[1]);
+        const areas = LAYER_AREAS[parts[0]];
+        if (!areas || LAYER_ROOT_MODULES.has(mod)) { return false; }
+        return parts.length < 3 || !areas.includes(parts[1]);
     });
     assert.deepStrictEqual(unclassified, [],
-        `기능 분류가 없는 controller 모듈: ${unclassified.join(', ')} — architecture.md §2.1 과 CONTROLLER_AREAS 를 함께 갱신할 것`);
+        `기능 분류가 없는 모듈: ${unclassified.join(', ')} — architecture.md §2.1 과 LAYER_AREAS 를 함께 갱신할 것`);
+    // 테스트 폴더는 src 의 폴더를 거울처럼 따른다 — 없는 폴더를 가리키면 오타이거나 대상이 옮겨진 뒤 남은 것.
+    const orphanDirs = [...modules]
+        .filter(mod => mod.startsWith('test/') && !LAYER_ROOT_MODULES.has(mod) && !mod.startsWith('test/scripts/'))
+        .map(mod => path.posix.dirname(mod).slice('test/'.length))
+        .filter((dir, i, all) => all.indexOf(dir) === i && !fs.existsSync(path.join(SRC, dir)));
+    assert.deepStrictEqual(orphanDirs, [], `src 에 대응 폴더가 없는 테스트 폴더: ${orphanDirs.join(', ')}`);
 });
 
 function importsOf(mod: string): { edges: ImportEdge[]; vscode: boolean; specs: string[] } {
@@ -282,44 +302,44 @@ const SSOT_RULES: readonly SsotRule[] = [
     {
         what: '파일별 심볼의 이름 인덱스 조립 (Provider와 문서 로더에 별도 이름 캐시를 만들지 않는다)',
         pattern: /buildSymbolNameIndex\s*\(/,
-        ownedBy: ['language/symbolNameIndex', 'language/symbols/symbolIndex'],
+        ownedBy: ['language/symbols/symbolNameIndex', 'language/symbols/symbolIndex'],
         requires: ['buildSymbolNameIndex', 'SymbolIndex'],
         use: 'language/symbols/symbolIndex.SymbolIndex.findAllByName / findDefinitionMatches',
     },
     {
         what: '수신자(receiver) 해석 컨텍스트 조립 — 문서 파싱 + 프로시저 범위 + 내장 사전 훅',
         pattern: /buildDocumentReceiverLookup\s*\(/,
-        ownedBy: ['language/receiverType', 'providers/receiverContext'],
+        ownedBy: ['language/analysis/receiverType', 'providers/intellisense/receiverContext'],
         requires: ['buildDocumentReceiverLookup', 'buildReceiverContext'],
-        use: 'providers/receiverContext.buildReceiverContext',
+        use: 'providers/intellisense/receiverContext.buildReceiverContext',
     },
     {
         what: '배열 타입의 요소 타입 벗기기 (`Foo[]` → `Foo`)',
         pattern: /replace\(\s*\/\\\[\\\]\$\//,
-        ownedBy: ['language/receiverType'],
+        ownedBy: ['language/analysis/receiverType'],
         requires: ['elementTypeOf', 'isArrayTypeName'],
-        use: 'language/receiverType.elementTypeOf / isArrayTypeName',
+        use: 'language/analysis/receiverType.elementTypeOf / isArrayTypeName',
     },
     {
         what: '호출 인자 타입 추론 (정의 이동·호버·참조 찾기의 오버로드 선택이 같은 규칙을 쓰게)',
         pattern: /inferLiteralArgType\s*\(/,
-        ownedBy: ['language/overloadResolution'],
+        ownedBy: ['language/analysis/overloadResolution'],
         requires: ['inferArgumentType', 'buildCallContext', 'rankOverloadMatches'],
-        use: 'language/overloadResolution.buildCallContext / inferArgumentType',
+        use: 'language/analysis/overloadResolution.buildCallContext / inferArgumentType',
     },
     {
         what: '참조 찾기의 출현 판정 — 다른 모듈의 동명 선언·한정자 불일치·멤버 가림 (provider 가 이름 매치 뒤 손으로 다시 판정하지 않게)',
         pattern: /'(other-module-decl|qualifier-mismatch|shadowed-by-member|shadowed-by-local|ambiguous-unqualified)'/,
-        ownedBy: ['language/referenceScope'],
+        ownedBy: ['language/analysis/referenceScope'],
         requires: ['classifyReferenceOccurrence', 'containerAt', 'declarationAt', 'qualifierAt'],
-        use: 'language/referenceScope.classifyReferenceOccurrence',
+        use: 'language/analysis/referenceScope.classifyReferenceOccurrence',
     },
     {
         what: '"컴파일 검증 필요" 상태의 설명 문장 (배지 툴팁·Start 확인 모달·자동화 COMPILE_UNVERIFIED 가 공유)',
         pattern: /소스가 아직 Compile ?로 검증되지 않았습니다/,
         ownedBy: ['controller/deployment/compileStale'],
         requires: ['describeCompileStale'],
-        use: 'controller/deployment/compileStale.describeCompileStale (배지 라벨·툴팁·클릭은 views/compileStaleBadge)',
+        use: 'controller/deployment/compileStale.describeCompileStale (배지 라벨·툴팁·클릭은 views/statusbar/compileStaleBadge)',
     },
     {
         what: '쓰레드 목록 표·상태 집계 (「전체 쓰레드 복사」와 상황 스냅샷이 공유 — 보이는 것과 복사되는 것을 같게)',
@@ -331,9 +351,9 @@ const SSOT_RULES: readonly SsotRule[] = [
     {
         what: '에러 코드 → 코드/환경 분류 (트리 버킷·오류 상세 보고서·배포 요약이 공유). 공식 범위 표가 근거',
         pattern: /category:\s*'(code|environment)'/,
-        ownedBy: ['controller/protocol/responseParser'],
+        ownedBy: ['controller/protocol/errorLogParser'],
         requires: ['getGplErrorGroup', 'describeErrorCategory', 'classifyErrorEntry'],
-        use: 'controller/protocol/responseParser.classifyErrorEntry (라벨은 describeErrorCategory, 범위는 getGplErrorGroup)',
+        use: 'controller/protocol/errorLogParser.classifyErrorEntry (라벨은 describeErrorCategory, 범위는 getGplErrorGroup)',
     },
     {
         what: '바이트 → 사람이 읽는 크기 (트리 FTP 목록·업로드 진행 바·완료 요약이 공유 — B 정수, 그 위는 소수 1자리)',
@@ -345,23 +365,23 @@ const SSOT_RULES: readonly SsotRule[] = [
     {
         what: '업로드 진행 바·완료 요약 문구 (상태바 본문·툴팁·완료 표시 — 다른 표면이 바를 다시 그리지 않게)',
         pattern: /[█▏▎▍▌▋▊▉░]|업로드 완료 (— 변경 없음|\$\{)/,
-        ownedBy: ['views/uploadProgressBar'],
+        ownedBy: ['views/statusbar/uploadProgressBar'],
         requires: ['renderBar', 'renderUploadProgress', 'renderUploadSummary'],
-        use: 'views/uploadProgressBar.renderUploadProgress / renderUploadSummary (집계는 controller/deployment/uploadProgress, 보이기·타이밍은 views/connectionStatusBar)',
+        use: 'views/statusbar/uploadProgressBar.renderUploadProgress / renderUploadSummary (집계는 controller/deployment/uploadProgress, 보이기·타이밍은 views/statusbar/connectionStatusBar)',
     },
     {
         what: 'Flash 쓰기 전원 차단 금지 상태바 문구 (쓰기·Sync·안정화·미확인 단계가 공유)',
         pattern: /FLASH (저장 중|쓰기 완료 대기|안정화|안전 상태 미확인)/,
-        ownedBy: ['views/flashSafetyPresentation'],
+        ownedBy: ['views/statusbar/flashSafetyPresentation'],
         requires: ['presentFlashSafety'],
-        use: 'views/flashSafetyPresentation.presentFlashSafety (절차·시간은 controller/deployment/flashSafety)',
+        use: 'views/statusbar/flashSafetyPresentation.presentFlashSafety (절차·시간은 controller/deployment/flashSafety)',
     },
     {
         what: 'GPL 심볼 → VS Code SymbolKind 대응 (개요·워크스페이스 심볼이 공유 — 같은 심볼이 두 곳에서 다른 종류로 보이지 않게)',
         pattern: /vscode\.SymbolKind\.(Module|Class|Method|Function|Property|Field|Constant|Variable)\b/,
-        ownedBy: ['providers/symbolKinds'],
+        ownedBy: ['providers/structure/symbolKinds'],
         requires: ['toVsCodeSymbolKind'],
-        use: 'providers/symbolKinds.toVsCodeSymbolKind (분류·detail·계층은 language/outlineModel)',
+        use: 'providers/structure/symbolKinds.toVsCodeSymbolKind (분류·detail·계층은 language/symbols/outlineModel)',
     },
     {
         what: '제어기 연결 세션 상태 (쓰기는 host.setControllerConnected 한 곳, 읽기는 정본 — 뷰의 연결 플래그를 상태 출처로 쓰지 않게)',
@@ -376,6 +396,13 @@ const SSOT_RULES: readonly SsotRule[] = [
         ownedBy: ['controller/commands/unloadRisk'],
         requires: ['assessUnloadRisk', 'judgeRebootEvidence', 'unloadRiskWarning', 'unloadRiskRefusalDetail', 'unloadTimeoutGuidance'],
         use: 'controller/commands/unloadRisk.assessUnloadRisk / judgeRebootEvidence (전송 가드는 unloadRiskGuard, 저장은 unloadRiskStore)',
+    },
+    {
+        what: '여유 메모리 측정값 (`Show Memory` 응답은 전송 경로가 정본에 기록하고 트리·배지·검사가 같은 값을 읽는다 — 화면마다 따로 해석·보관하지 않게)',
+        pattern: /\(\s*['"`]Show Memory['"`]/,
+        ownedBy: ['controller/diagnostics/resourceProbes', 'controller/diagnostics/memoryReadings'],
+        requires: ['PROBE_MEMORY_CMD', 'parseShowMemory', 'controllerMemoryReadings', 'isReadingReusable'],
+        use: 'controller/diagnostics/resourceProbes.PROBE_MEMORY_CMD 로 보내고 controller/diagnostics/memoryReadings.controllerMemoryReadings 를 읽는다',
     },
 ];
 
@@ -411,4 +438,101 @@ test('구조 R7: 판정 정본(SSOT)을 우회해 같은 판단을 다시 구현
         }
     }
     assert.deepStrictEqual(violations, [], `판정 정본 우회:\n  ${violations.join('\n  ')}`);
+});
+
+// ─── R10: 크기 상한은 분해 신호 — 넘는 것은 부채 표에 올라 있어야 한다 (2026-11-04) ──────────────────
+// AGENTS.md 구조 규칙 2(파일 1,000줄·함수 150줄)는 문서에만 있어서 조용히 무너졌다 — 감사 결과 150줄을 넘는 함수
+// 32개 중 부채 표(architecture.md §7)에 오른 것은 하나뿐이었다. 그래서 측정을 테스트로 옮기고, 넘는 것은 아래 목록과
+// §7 양쪽에 있어야 통과하게 한다. 분해해서 상한 아래로 내려가면 목록에서 지우라고 실패한다(낡은 부채 기록 방지).
+// 함수는 이름이 있는 것(선언·메서드·접근자·생성자·이름 있는 변수/속성에 대입한 화살표 함수)만 잰다.
+
+const FILE_LINE_LIMIT = 1000;
+const FUNCTION_LINE_LIMIT = 150;
+
+/** 상한을 넘는 파일(`모듈`)·함수(`모듈#이름`) — 정본은 architecture.md §7. 줄 수는 적지 않는다(바뀔 때마다 고치지 않게). */
+const SIZE_DEBT: ReadonlySet<string> = new Set([
+    // 파일
+    'controller/runtime/runtimeConsole',
+    'debug/session/gplDebugSession',
+    'language/dictionary/gplDictionaryData', // 내장 사전 데이터 표 — 로직이 아니라 분해 대상이 아니다(§7)
+    // activation 의 배선 함수 — 클로저 하나에 명령 등록이 몰려 있다(deploy.ts 분할 방식으로 형제 모듈로)
+    'activation/ai/aiDebugCommands#activateAiDebugCommands',
+    'activation/controller/connection#activateConnection',
+    'activation/controller/consoleCommands#activateConsoleCommands',
+    'activation/controller/controllerCommands#activateControllerCommands',
+    'activation/controller/treeCommands#activateTreeCommands',
+    'activation/debug/breakpointCommands#activateBreakpointCommands',
+    'activation/debug/debugIntegration#activateDebugIntegration',
+    'activation/deploy/deployReport#reportDeploySuccess',
+    'activation/deploy/projectContext#activateProjectContext',
+    'activation/deploy/runDeploy#runDeploy',
+    'activation/deploy/saveToFlashCommand#registerSaveToFlashCommand',
+    'activation/language/dependencyCheckCommands#registerDependencyCheck',
+    'activation/language/languageFeatures#activateLanguageFeatures',
+    'activation/remote/ftpCommands#activateFtpCommands',
+    // 제어기·디버그
+    'controller/connection/consoleSocket#attempt',
+    'controller/deployment/deployCompileStage#runCompilePhase',
+    'controller/deployment/deployTargetStage#resolveDeployTarget',
+    'controller/deployment/deployUploadStage#runUploadAndStopPhase',
+    'controller/runtime/runtimeConsole#connectInternal',
+    'debug/evaluation/variableEvaluator#queryVariableStructuredSmart',
+    'debug/session/gplDebugSession#_pollThreadStates',
+    'debug/session/gplDebugSession#attachRequest',
+    'debug/session/gplDebugSession#evaluateRequest',
+    'debug/session/gplDebugSession#_setBreakPointsNow',
+    'debug/session/gplDebugSession#variablesRequest',
+    // 언어·provider·뷰
+    'language/syntax/gplParser#parseDocumentUncached',
+    'project/gpr/sourcePromotion#planSourcePromotion',
+    'providers/intellisense/hoverProvider#provideHover',
+    'providers/navigation/definitionProvider#provideDefinition',
+    'providers/navigation/referenceProvider#provideReferences',
+    'providers/structure/foldingRangeProvider#provideFoldingRanges',
+    'views/tree/snapshotMarkdown#buildDiagnosticSnapshotMarkdown',
+]);
+
+function measureOversized(): Map<string, number> {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ts: typeof import('typescript') = require('typescript');
+    const over = new Map<string, number>();
+    for (const [mod, text] of sources) {
+        if (layerOf(mod) === 'test') { continue; }
+        const lines = text.split('\n').length;
+        if (lines > FILE_LINE_LIMIT) { over.set(mod, lines); }
+        const sf = ts.createSourceFile(`${mod}.ts`, text, ts.ScriptTarget.Latest, true);
+        const visit = (n: import('typescript').Node): void => {
+            let name: string | undefined;
+            if ((ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n) || ts.isGetAccessor(n) || ts.isSetAccessor(n)) && n.name && n.body) {
+                name = n.name.getText(sf);
+            } else if (ts.isConstructorDeclaration(n) && n.body) {
+                name = 'constructor';
+            } else if ((ts.isArrowFunction(n) || ts.isFunctionExpression(n))
+                && (ts.isVariableDeclaration(n.parent) || ts.isPropertyDeclaration(n.parent) || ts.isPropertyAssignment(n.parent))) {
+                name = n.parent.name.getText(sf);
+            }
+            if (name) {
+                const start = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line;
+                const end = sf.getLineAndCharacterOfPosition(n.getEnd()).line;
+                if (end - start + 1 > FUNCTION_LINE_LIMIT) { over.set(`${mod}#${name}`, end - start + 1); }
+            }
+            ts.forEachChild(n, visit);
+        };
+        visit(sf);
+    }
+    return over;
+}
+
+test('구조 R10: 1,000줄 넘는 파일·150줄 넘는 함수는 부채 목록과 architecture.md §7 에 올라 있다', () => {
+    const over = measureOversized();
+    const unlisted = [...over].filter(([k]) => !SIZE_DEBT.has(k)).map(([k, n]) => `${k} (${n}줄)`);
+    assert.deepStrictEqual(unlisted, [],
+        `크기 상한 초과가 부채 목록에 없다 — 분해하거나(협력자 모듈 + 좁은 io), SIZE_DEBT 와 architecture.md §7 에 이유와 함께 올릴 것:\n  ${unlisted.join('\n  ')}`);
+    const stale = [...SIZE_DEBT].filter(k => !over.has(k));
+    assert.deepStrictEqual(stale, [], `상한 아래로 내려간 항목이 부채 목록에 남아 있다 — SIZE_DEBT 와 §7 에서 지울 것:\n  ${stale.join('\n  ')}`);
+
+    const doc = fs.readFileSync(path.join(ROOT, 'docs/development/architecture.md'), 'utf8');
+    const section7 = doc.slice(doc.indexOf('## 7.'), doc.indexOf('## 8.'));
+    const undocumented = [...SIZE_DEBT].filter(k => !section7.includes(k.includes('#') ? k.split('#')[1] : k));
+    assert.deepStrictEqual(undocumented, [], `architecture.md §7 에 없는 부채 항목:\n  ${undocumented.join('\n  ')}`);
 });

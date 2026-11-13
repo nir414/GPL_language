@@ -1,5 +1,5 @@
 /**
- * 그룹 Compile 뒤 Unload 위험 판정의 정본 (vscode 무의존 — 단위 테스트: src/test/unloadRisk.test.ts).
+ * 그룹 Compile 뒤 Unload 위험 판정의 정본 (vscode 무의존 — 단위 테스트: src/test/controller/commands/unloadRisk.test.ts).
  *
  * 배경(2026-10-22~23 Sample Prep 실측, inbox `unload-guard-request_v1` 외 3건):
  *  - 같은 부팅에서 **ProjectStart 없는 그룹 .gpr(Lib 등)을 Compile 한 뒤** `Unload <project>` 또는 `Unload -all` 을 보내면
@@ -170,23 +170,40 @@ export interface UnloadRiskAssessment {
     groupProjects: string[];
     /** 가장 최근 그룹 Compile 시각. */
     lastGroupCompileAt?: number;
+    /**
+     * Unload 대상 자체가 ProjectStart 없는 그룹(라이브러리)으로 **확인된** 경우(2026-10-27 사용자 관측: `Lib_Net` 처럼
+     * ProjectStart 없는 .gpr 의 프로젝트를 Unload 하면 제어기가 멈췄다 — 회피 방법 미확인). 워크스페이스에 없어 모르면 false.
+     */
+    targetIsGroup: boolean;
+}
+
+export interface AssessUnloadRiskOptions {
+    /** 호출측이 `.gpr` 로 확인한 "대상이 그룹이다". 모르면 생략(false). */
+    targetIsGroup?: boolean;
 }
 
 /**
  * Unload 명령의 위험 판정 — **모든 경로가 이 함수 하나를 쓴다.** Unload 가 아니면 undefined.
- * 대상이 그룹이든 앱이든 같다(10-23 17:51 앱 `Unload BinderR3` 도 같은 증상이었다).
+ * 위험 근거는 둘이다: ① 이 부팅에서 그룹 Compile 표시가 있다(대상이 그룹이든 앱이든 같다 — 10-23 17:51 앱 `Unload BinderR3`
+ * 도 같은 증상이었다) ② 대상 프로젝트 자체가 그룹으로 확인됐다(`opts.targetIsGroup`). 둘 중 하나면 확인을 거친다.
  */
-export function assessUnloadRisk(state: UnloadRiskState | undefined, command: string): UnloadRiskAssessment | undefined {
+export function assessUnloadRisk(
+    state: UnloadRiskState | undefined,
+    command: string,
+    opts: AssessUnloadRiskOptions = {},
+): UnloadRiskAssessment | undefined {
     const unload = parseUnloadCommand(command);
     if (!unload) { return undefined; }
     const marks = [...(state?.marks ?? [])].sort((a, b) => a.at - b.at);
+    const targetIsGroup = opts.targetIsGroup === true && !unload.all && !!unload.target;
     return {
-        risky: marks.length > 0,
+        risky: marks.length > 0 || targetIsGroup,
         command: command.trim(),
         scope: unload.all ? 'all' : 'project',
         ...(unload.target && !unload.all ? { target: unload.target } : {}),
         groupProjects: marks.map(m => m.project),
         ...(marks.length > 0 ? { lastGroupCompileAt: marks[marks.length - 1].at } : {}),
+        targetIsGroup,
     };
 }
 
@@ -247,31 +264,45 @@ function groupLabel(a: UnloadRiskAssessment): string {
 const EVIDENCE_LINE = `이 조합은 지금까지 ${UNLOAD_RISK_EVIDENCE.observed}번 중 ${UNLOAD_RISK_EVIDENCE.disrupted}번 명령 콘솔을 끊었고`
     + ` (${UNLOAD_RISK_EVIDENCE.period} 실측), 최근 사례는 제어기 재부팅으로만 복구됐습니다.`;
 
+/** 대상이 그룹으로 확인된 경우의 근거 문장(2026-10-27 관측 — 횟수 집계는 아직 없다). */
+const TARGET_GROUP_LINE = (target: string | undefined): string =>
+    `대상 '${target ?? '?'}' 은(는) .gpr 에 ProjectStart 가 없는 그룹(라이브러리) 프로젝트입니다 — `
+    + '그룹 프로젝트를 Unload 하면 제어기가 멈춘 사례가 보고됐고(2026-10-27 Sample Prep), 회피 방법은 아직 없습니다.';
+
 /** 사람용 모달 — 버튼은 호출측이 「그래도 Unload」/「취소」로 단다. */
 export function unloadRiskWarning(a: UnloadRiskAssessment): { message: string; detail: string } {
-    return {
-        message: `${a.command} — 이 부팅에서 그룹 프로젝트(${groupLabel(a)})를 Compile 한 뒤의 Unload 입니다. ${EVIDENCE_LINE}`,
-        detail: [
-            `그룹 Compile: ${groupLabel(a)} (마지막 ${hhmm(a.lastGroupCompileAt)})`,
-            '원인은 아직 모릅니다 — 여유 메모리·대상이 그룹인지 앱인지·-all 여부와 무관하게 재현됐습니다.',
-            '메모리 회수 등으로 꼭 필요할 때만 보내고, 명령 콘솔이 끊기면 제어기 재부팅을 준비하세요.',
-            '라이브러리(Lib)는 업로드만 하고 앱 Compile 로 검증하면 이 상태를 피할 수 있습니다.',
-            '재부팅이 확인되면 표시는 자동으로 풀립니다(확인되지 않으면 명령 팔레트 「GPL: Unload 위험 표시 해제」).',
-        ].join('\n'),
-    };
+    const hasMarks = a.groupProjects.length > 0;
+    const message = hasMarks
+        ? `${a.command} — 이 부팅에서 그룹 프로젝트(${groupLabel(a)})를 Compile 한 뒤의 Unload 입니다. ${EVIDENCE_LINE}`
+        : `${a.command} — ${TARGET_GROUP_LINE(a.target)}`;
+    const detail = [
+        ...(hasMarks ? [`그룹 Compile: ${groupLabel(a)} (마지막 ${hhmm(a.lastGroupCompileAt)})`] : []),
+        ...(hasMarks && a.targetIsGroup ? [TARGET_GROUP_LINE(a.target)] : []),
+        '원인은 아직 모릅니다 — 여유 메모리·대상이 그룹인지 앱인지·-all 여부와 무관하게 재현됐습니다.',
+        '메모리 회수 등으로 꼭 필요할 때만 보내고, 명령 콘솔이 끊기면 제어기 재부팅을 준비하세요.',
+        '라이브러리(Lib)는 업로드만 하고 앱 Compile 로 검증하면 이 상태를 피할 수 있습니다.',
+        ...(hasMarks ? ['재부팅이 확인되면 표시는 자동으로 풀립니다(확인되지 않으면 명령 팔레트 「GPL: Unload 위험 표시 해제」).'] : []),
+    ].join('\n');
+    return { message, detail };
 }
 
 /** AI 경로 거부 사유 — 사용자 동의 없이 confirm 을 붙이지 않게 한다. */
 export function unloadRiskRefusalDetail(a: UnloadRiskAssessment): string {
-    return `${a.command} 를 보내지 않았습니다 — 같은 부팅에서 그룹 프로젝트(ProjectStart 없는 .gpr: ${groupLabel(a)})를 `
-        + `Compile 한 뒤의 Unload 입니다. ${EVIDENCE_LINE} `
+    const reason = a.groupProjects.length > 0
+        ? `같은 부팅에서 그룹 프로젝트(ProjectStart 없는 .gpr: ${groupLabel(a)})를 Compile 한 뒤의 Unload 입니다. ${EVIDENCE_LINE}`
+            + (a.targetIsGroup ? ` ${TARGET_GROUP_LINE(a.target)}` : '')
+        : TARGET_GROUP_LINE(a.target);
+    return `${a.command} 를 보내지 않았습니다 — ${reason} `
         + '사용자에게 이 위험을 알리고 **동의를 받은 뒤에만** confirm:true 로 다시 호출하십시오. '
         + '메모리 회수가 목적이면 제어기 재부팅이 더 빠를 수 있습니다.';
 }
 
 /** Unload 가 위험 상태에서 타임아웃했을 때 — 일반 복구 대기 안내 대신 바로 알린다. */
 export function unloadTimeoutGuidance(a: UnloadRiskAssessment): string {
-    return `그룹 프로젝트(${groupLabel(a)}) Compile 뒤의 ${a.command} 가 응답 없이 끝났습니다. `
+    const context = a.groupProjects.length > 0
+        ? `그룹 프로젝트(${groupLabel(a)}) Compile 뒤의 ${a.command}`
+        : `그룹 프로젝트 '${a.target ?? '?'}' 를 내리는 ${a.command}`;
+    return `${context} 가 응답 없이 끝났습니다. `
         + '이 조합은 지금까지 복구에 제어기 재부팅이 필요했습니다 — 채널 복구 대기(최대 180초)를 기다리기보다 '
         + '진행 중 작업과 모션 상태를 확인한 뒤 제어기 재부팅을 고려하세요. 같은 Unload 를 다시 보내지 마세요.';
 }

@@ -117,22 +117,23 @@ export function classifyCommandFailure(err: unknown): { kind: ProbeFailureKind; 
     if (/\bECONNREFUSED\b/.test(text)) { return { kind: 'refused', detail }; }
     if (/\b(EHOSTUNREACH|ENETUNREACH|EHOSTDOWN|ENETDOWN)\b/.test(text)) { return { kind: 'unreachable', detail }; }
     if (/\b(ECONNRESET|EPIPE)\b/.test(text)) { return { kind: 'reset', detail }; }
-    if (/\b(ETIMEDOUT|COMMAND_TIMEOUT)\b/.test(text) || /\btimeout\b/i.test(message)) { return { kind: 'timeout', detail }; }
+    if (/\b(ETIMEDOUT|COMMAND_TIMEOUT|CONNECT_TIMEOUT)\b/.test(text) || /\btimeout\b/i.test(message)) { return { kind: 'timeout', detail }; }
     if (/\bECONNCLOSED\b/.test(text) || /closed without response/i.test(message)) { return { kind: 'closed', detail }; }
     return { kind: 'other', detail };
 }
 
 /**
- * 프로브 응답 raw → 결과. 살아 있음의 기준은 `<STATUS>` 존재(STATUS 코드가 0이 아니어도 제어기가 응답한 것).
+ * 프로브 응답 raw → 결과. 살아 있음의 기준은 닫힌 `</STATUS>` 블록(STATUS 코드가 0이 아니어도 제어기가 응답한 것).
  * 소켓 종료로 잘린 부분 응답·HTTP 교차 응답은 실패('incomplete') — 종전 trySendCommand 기준(null 만 실패)에서는
- * 이런 응답이 "성공"으로 카운터를 리셋했다.
+ * 이런 응답이 "성공"으로 카운터를 리셋했다. 여는 태그만 보고 판정하면 `<STATUS>0` 에서 잘린 응답도 성공이 되므로
+ * 하드 규칙 2(`</STATUS>` 까지 읽고 판정)에 맞춰 닫는 태그를 요구한다(2026-11-04 §1-GZ).
  */
 export function probeOutcomeFromResponse(raw: string): ProbeOutcome {
-    if (typeof raw === 'string' && raw.includes('<STATUS>')) {
+    if (typeof raw === 'string' && raw.includes('</STATUS>')) {
         return { ok: true, raw };
     }
     const bytes = typeof raw === 'string' ? raw.length : 0;
-    return { ok: false, kind: 'incomplete', detail: `<STATUS> 없는 응답 (${bytes} bytes)` };
+    return { ok: false, kind: 'incomplete', detail: `</STATUS> 없는 응답 (${bytes} bytes)` };
 }
 
 export function isDefinitiveFailure(kind: ProbeFailureKind): boolean {

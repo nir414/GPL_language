@@ -3,10 +3,10 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { buildLibraryGraph, DEFAULT_SOURCE_EXTENSIONS, isSkippedScanDir } from '../../project/projectSources';
-import { controllerLibraryCandidates } from '../../project/controllerProjectDebug';
-import { parseGprText } from '../../project/gprSync';
-import { CONTROLLER_PROJECT_MANIFEST_FILE, writeControllerProjectManifest } from '../../project/controllerProjectWorkspace';
+import { buildLibraryGraph, DEFAULT_SOURCE_EXTENSIONS, isSkippedScanDir } from '../../project/sources/projectSources';
+import { controllerLibraryCandidates } from '../../project/remote/controllerProjectDebug';
+import { parseGprText } from '../../project/gpr/gprSync';
+import { CONTROLLER_PROJECT_MANIFEST_FILE, writeControllerProjectManifest } from '../../project/remote/controllerProjectWorkspace';
 import { FtpEntry, listRemoteDir, readRemoteFile } from './ftpClient';
 
 export const REMOTE_SOURCE_SCHEME = 'gpl-ftp';

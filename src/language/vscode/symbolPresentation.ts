@@ -1,9 +1,29 @@
 import * as vscode from 'vscode';
-import type { GPLSymbol } from '../gplParser';
+import type { GPLSymbol } from '../syntax/gplParser';
 import type { SymbolIndex } from '../symbols/symbolIndex';
-import { renderResolvedDocMarkdown, resolveOverloadDoc } from '../docCommentOverloads';
+import { renderResolvedDocMarkdown, resolveOverloadDoc } from '../documentation/docCommentOverloads';
+
+/**
+ * 워크스페이스 심볼 완성 목록 캐시 — 인덱스 변경 번호(`generation`)가 같으면 같은 배열을 돌려준다.
+ * 식별자 완성 요청마다 모든 심볼로 항목을 다시 만들고 문서(Markdown)까지 렌더링하던 비용이 요청 시간의 대부분이었다
+ * (2026-11-13 측정: 심볼 4,068개에서 요청 34 ms 중 32 ms, 심볼 수에 비례). 문서는 항목이 목록에서 선택될 때
+ * `resolveSymbolCompletionItem` 이 채운다. 돌려준 배열·항목은 여러 요청이 함께 쓰므로 호출측이 고치지 않는다.
+ */
+const completionCache = new WeakMap<SymbolIndex, { generation: number; items: vscode.CompletionItem[] }>();
+/** 캐시된 완성 항목 → 그 항목을 만든 심볼과 인덱스(문서를 나중에 채울 때 쓴다). */
+const completionSymbols = new WeakMap<vscode.CompletionItem, { symbol: GPLSymbol; index: SymbolIndex }>();
+
+/** 워크스페이스 심볼 완성 항목이면 문서를 채우고 true. 다른 출처의 항목(내장·키워드·지역)이면 손대지 않고 false. */
+export function resolveSymbolCompletionItem(item: vscode.CompletionItem): boolean {
+    const origin = completionSymbols.get(item);
+    if (!origin) { return false; }
+    if (item.documentation === undefined) { item.documentation = buildSymbolDocumentation(origin.symbol, origin.index); }
+    return true;
+}
 
 export function getCompletionItems(index: SymbolIndex): vscode.CompletionItem[] {
+    const cached = completionCache.get(index);
+    if (cached && cached.generation === index.generation) { return cached.items; }
     const items: vscode.CompletionItem[] = [];
     const seenNames = new Set<string>();
 
@@ -27,8 +47,8 @@ export function getCompletionItems(index: SymbolIndex): vscode.CompletionItem[] 
         }
         item.detail = detail;
 
-        // Add documentation (signature codeblock + doc-comment when available)
-        item.documentation = buildSymbolDocumentation(symbol, index);
+        // 문서(시그니처 코드블록 + 문서화 주석)는 선택될 때 채운다 — resolveSymbolCompletionItem.
+        completionSymbols.set(item, { symbol, index });
 
         // Add snippet for functions/subs
         if ((symbol.kind === 'function' || symbol.kind === 'sub') && symbol.parameters) {
@@ -39,6 +59,7 @@ export function getCompletionItems(index: SymbolIndex): vscode.CompletionItem[] 
         items.push(item);
     }
 
+    completionCache.set(index, { generation: index.generation, items });
     return items;
 }
 

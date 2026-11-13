@@ -70,3 +70,41 @@ test('searchCapture: 잘못된 패턴·시각은 구조화된 오류, 파일이 
   assert.equal(none.ok, true);
   assert.match(none.note, /캡처 파일이 없다/);
 });
+
+test('searchCapture: maxResults·latestFirst·totalHits, maxLines 는 옛 이름', () => {
+  const body = Array.from({ length: 5 }, (_, i) => `2026-10-22T00:0${i}:00.000Z line ${i}`).join('\n');
+  const { files, cleanup } = withFiles([null, body]);
+  try {
+    const r = searchCapture({ files, maxResults: 3, maxLines: 1, latestFirst: true });
+    assert.equal(r.truncated, true);
+    assert.equal(r.truncatedBy, 'count');
+    assert.equal(r.totalHits, 5);
+    assert.equal(r.returnedLines, 3);
+    assert.equal(r.omittedOldest, 2);
+    assert.equal(r.latestFirst, true);
+    assert.deepEqual(r.lines.map((l) => l.text), ['line 4', 'line 3', 'line 2']);
+    const asc = searchCapture({ files, maxResults: 3 });
+    assert.deepEqual(asc.lines.map((l) => l.text), ['line 2', 'line 3', 'line 4']);
+    const legacy = searchCapture({ files, maxLines: 2 });
+    assert.equal(legacy.returnedLines, 2);
+    const all = searchCapture({ files });
+    assert.equal(all.truncated, false);
+    assert.equal(all.truncatedBy, undefined);
+  } finally { cleanup(); }
+});
+
+test('searchCapture: 출력 크기 상한(maxChars)을 넘으면 오래된 것부터 버리고 truncatedBy:chars, 한 줄은 항상 남긴다', () => {
+  const body = Array.from({ length: 50 }, (_, i) => `2026-10-22T00:${String(i).padStart(2, '0')}:00.000Z Ports ready ${'x'.repeat(100)} ${i}`).join('\n');
+  const { files, cleanup } = withFiles([null, body]);
+  try {
+    const r = searchCapture({ files, pattern: 'Ports ready', maxChars: 3000 });
+    assert.equal(r.totalHits, 50);
+    assert.equal(r.truncated, true);
+    assert.equal(r.truncatedBy, 'chars');
+    assert.ok(r.returnedLines >= 1 && r.returnedLines < 50);
+    assert.ok(JSON.stringify(r.lines, null, 2).length <= 3000 + 200);
+    assert.match(r.lines[r.lines.length - 1].text, / 49$/, '가장 최근 줄이 남는다');
+    const tiny = searchCapture({ files, pattern: 'Ports ready', maxChars: 1000 });
+    assert.ok(tiny.returnedLines >= 1);
+  } finally { cleanup(); }
+});

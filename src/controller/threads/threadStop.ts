@@ -31,7 +31,7 @@
  * if (!outcome.ok) { showFailure(outcome); }
  * ```
  *
- * 단위 테스트: `src/test/threadStop.test.ts` (가짜 IO 로 시나리오를 재현한다).
+ * 단위 테스트: `src/test/controller/threads/threadStop.test.ts` (가짜 IO 로 시나리오를 재현한다).
  */
 
 import { NO_STATUS_CODE, SHOW_THREAD_LIST_CMD, ThreadInfo, parseStatus, parseThreadList } from '../protocol/responseParser';

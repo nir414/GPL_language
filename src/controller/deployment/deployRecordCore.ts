@@ -11,12 +11,13 @@
  * 여전히 1402 live `<STATUS>`로만 하며(§0 하드 규칙), 이 비교 결과는 "소스가 컴파일본보다 새로울 수
  * 있다"는 경고의 근거로만 쓴다.
  *
- * vscode 의존 래퍼(EventEmitter/Memento 연결)는 deployRecord.ts. 단위 테스트: src/test/deployRecord.test.ts.
+ * vscode 의존 래퍼(EventEmitter/Memento 연결)는 deployRecord.ts. 단위 테스트: src/test/controller/deployment/deployRecord.test.ts.
  */
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { LibraryProvenance } from './libraryProvenance';
 
 export interface FileStamp {
     size: number;
@@ -33,6 +34,13 @@ export interface CompiledRecord {
     compiledAt: number;
     /** key = projectDir 기준 상대 경로('/' 구분, 원래 대소문자). 비교는 대소문자 무시 */
     files: Record<string, FileStamp>;
+    /**
+     * 배포 전처리 사본을 올려 컴파일했으면 그 요약(deployPreprocess) — 제어기 `/GPL` 소스가 로컬 원본과 다르다는 표시.
+     * `files` 는 여전히 **로컬 원본** 지문이다(줄 번호가 같으므로 BP 신뢰성 판정은 원본 기준이 맞다).
+     */
+    preprocess?: { options: string; excludedFiles: string[]; removedMembers?: number };
+    /** 이 배포가 함께 올린 라이브러리의 출처·업로드 해시(libraryProvenance) — `list_remote_projects` 의 `lastCompiledFrom` 에 그대로 보인다. */
+    libraries?: LibraryProvenance[];
 }
 
 export interface SnapshotDiff {

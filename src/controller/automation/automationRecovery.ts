@@ -1,6 +1,6 @@
 /**
  * 자동화 오류의 **복구 지시** — 호출자(AI/MCP)가 오류 문장을 해석해 다음 행동을 지어내지 않게 한다.
- * vscode 무의존 — 단위 테스트: `src/test/automationRecovery.test.ts`.
+ * vscode 무의존 — 단위 테스트: `src/test/controller/automation/automationRecovery.test.ts`.
  *
  * 왜(2026-09-10 사용자 개선안 §15~§17): 지금까지 자동화 실패는 `error` 코드 + 사람이 읽는 `detail`
  * 이었다. 코드 자체는 구조화돼 있었지만 **"그래서 무엇을 하면 되는가"는 문장 안에만** 있었다. 그러다 보니
@@ -160,6 +160,27 @@ const DEFAULT_HINT: RecoveryHint = {
 export function recoveryFor(code: string | undefined): RecoveryHint {
     if (!code) { return DEFAULT_HINT; }
     return TABLE[code] ?? DEFAULT_HINT;
+}
+
+/**
+ * FTP 타임아웃(`Timeout (control socket)` 등)으로 보이는 메시지인가. 2026-11-05 inbox: 같은 부팅 4번째 재배포 사이클에서
+ * FTP 제어 소켓 타임아웃 → 1402 끊김이 났는데, 응답이 "같은 요청 재시도 가능"이라 19초 뒤 재시도가 나가 채널 교란을 키웠다.
+ */
+export function isFtpTimeoutMessage(message: string | undefined): boolean {
+    return /\btimeout\b|timed out|ETIMEDOUT/i.test(message ?? '');
+}
+
+/** 업로드 단계의 FTP 타임아웃 — 곧바로 같은 배포를 다시 보내지 않고 먼저 관측한다. */
+export const DEPLOY_UPLOAD_TIMEOUT_RECOVERY: RecoveryHint = {
+    action: 'CHECK_OPERATION', retryCurrentCommand: false, safeToRepeat: false,
+    detail: 'FTP 타임아웃으로 업로드가 중단됐다. **같은 배포를 곧바로 다시 보내지 말 것** — 타임아웃은 명령 콘솔 연결 유실로 이어진 적이 있다(같은 부팅 4번째 재배포 사이클). '
+        + 'controller_status 로 명령 콘솔·FTP 상태를 먼저 관측하고, 응답이 안정된 뒤 다시 시도할 것. 재부팅·전원 재투입은 사용자 확인 없이 권하지 말 것.',
+};
+
+/** 배포 실패의 복구 지시 — 단계 코드에 더해 업로드 타임아웃은 재시도를 막는다. */
+export function deployFailureRecovery(failedPhase: string | undefined, message?: string): RecoveryHint {
+    if (failedPhase === 'UPLOAD' && isFtpTimeoutMessage(message)) { return DEPLOY_UPLOAD_TIMEOUT_RECOVERY; }
+    return recoveryFor(deployPhaseCode(failedPhase));
 }
 
 /** 배포 단계 → 오류 코드. `failedPhase` 를 그대로 코드 이름으로 쓴다(표를 두 벌 유지하지 않기 위해). */

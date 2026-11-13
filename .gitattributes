@@ -1,0 +1,15 @@
+# 저장소의 텍스트 파일은 LF 로 저장하고 LF 로 꺼낸다(2026-11-04 §1-GZ).
+# 인덱스는 이미 전부 LF 였지만 core.autocrlf=true 와 도구마다 다른 쓰기 방식 때문에 작업 트리가 LF/CRLF 로 섞여
+# (src/ 에서 CRLF 177 · LF 259) 패치 스크립트가 줄바꿈을 따로 맞춰야 했다. 이 설정은 인덱스 내용을 바꾸지 않는다 —
+# 이미 꺼내 둔 CRLF 파일은 다음에 다시 꺼낼 때(또는 `git checkout -- <파일>`) LF 가 된다.
+* text=auto eol=lf
+
+# Windows 셸이 CRLF 를 요구하는 형식(지금은 없음 — 생기면 여기서 예외로 둔다).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 이진 파일
+*.png binary
+*.ico binary
+*.vsix binary
+*.pcapng binary

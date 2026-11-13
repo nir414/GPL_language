@@ -209,6 +209,29 @@ export function summarizeOperationResult(rec) {
     const u = r.uploadStats;
     parts.push(`uploaded ${u.uploaded ?? '?'} · skipped ${u.skipped ?? '?'}${u.deleted ? ` · deleted ${u.deleted}` : ''}`);
   }
+  if (Array.isArray(r.libraryUploads) && r.libraryUploads.length > 0) {
+    parts.push(`libs ${r.libraryUploads.map((l) => `${l.raw ?? '?'} ${l.uploaded ?? '?'}/${l.skipped ?? '?'}`).join(', ')}`);
+  }
+  // 라이브러리 출처(SVN) 한 줄 — `libs PaL v2@r5405(pinned) · Gantry v2@HEAD+3M`(확장 libraryProvenance.describeLibraries).
+  if (typeof r.librarySummary === 'string' && r.librarySummary) parts.push(r.librarySummary);
+  // 배포 전 라이브러리 검사 — 문제 있는 것만(ok 는 말하지 않는다). 확인 불가(previousUpload unknown)는 일치가 아니다.
+  if (r.preflight && typeof r.preflight === 'object' && Array.isArray(r.preflight.libraries)) {
+    const bad = r.preflight.libraries.filter((l) => l && l.status && l.status !== 'ok');
+    if (bad.length > 0) parts.push(`libPreflight ${bad.map((l) => `${l.name} ${l.status}`).join(', ')}${r.preflight.blocked ? ' (blocked)' : ''}`);
+  }
+  // 배포 전처리(주석 제거·미사용 제외) — /GPL 에 원본이 아닌 사본을 올렸다는 사실과 줄인 양.
+  if (r.preprocess && typeof r.preprocess === 'object') {
+    const p = r.preprocess;
+    if (p.applied === false) {
+      parts.push('preprocess skipped');
+    } else {
+      const saved = typeof p.savedBytes === 'number' ? ` −${(p.savedBytes / 1024).toFixed(0)} KB` : '';
+      const excluded = Array.isArray(p.excluded) && p.excluded.length > 0 ? ` · excluded ${p.excluded.length}` : '';
+      const members = typeof p.removedMemberCount === 'number' && p.removedMemberCount > 0 ? ` · members −${p.removedMemberCount}` : '';
+      const kept = typeof p.keptCount === 'number' && p.keptCount > 0 ? ` · kept ${p.keptCount}` : '';
+      parts.push(`preprocess${saved}${excluded}${kept}${members}`);
+    }
+  }
   if (typeof r.compileErrorCount === 'number') parts.push(`compileErrors ${r.compileErrorCount}`);
   if (r.provenance && typeof r.provenance === 'object' && typeof r.provenance.inSync === 'boolean') {
     const changed = Array.isArray(r.provenance.changedSinceUpload) ? r.provenance.changedSinceUpload.length : null;

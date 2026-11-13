@@ -1,11 +1,11 @@
 import * as path from 'path';
-import { GPLParser, GPLSymbol } from '../gplParser';
-import { ciEq } from '../identifiers';
-import { getParameterArity, argCountMatchesArity } from '../cursorExpression';
-import { CallContext, toCallContext, rankOverloadMatches } from '../overloadResolution';
-import { buildSymbolNameIndex } from '../symbolNameIndex';
-import { filterOverloadSiblings } from '../docCommentOverloads';
-import { isDeclaredIn, ReceiverHolder } from '../receiverType';
+import { GPLParser, GPLSymbol } from '../syntax/gplParser';
+import { ciEq } from '../syntax/identifiers';
+import { getParameterArity, argCountMatchesArity } from '../syntax/cursorExpression';
+import { CallContext, toCallContext, rankOverloadMatches } from '../analysis/overloadResolution';
+import { buildSymbolNameIndex } from './symbolNameIndex';
+import { filterOverloadSiblings } from '../documentation/docCommentOverloads';
+import { isDeclaredIn, ReceiverHolder } from '../analysis/receiverType';
 import { normalizePathKey } from '../../util/pathKey';
 
 /** 프로젝트 구성의 구현은 호출부가 소유한다. */
@@ -33,6 +33,15 @@ export class SymbolIndex {
         this.symbols.clear();
         this.nameIndex.clear();
         this.fileRevisions.clear();
+        this.changeSequence++;
+    }
+
+    /**
+     * 인덱스 내용이 바뀔 때마다 오르는 번호(단조 증가). 이름 → 파일 대응(어느 모듈이 어느 파일에 있는가)에 기대어 계산한
+     * 결과를 캐시하는 쪽이 "본문은 같지만 대응이 바뀌었는가"를 가르는 데 쓴다(모듈을 다른 파일로 옮긴 뒤의 낡은 의존).
+     */
+    public get generation(): number {
+        return this.changeSequence;
     }
 
     /** 새 읽기 요청도 이전 요청을 무효화한다. clear 뒤에도 번호를 재사용하지 않는다. */

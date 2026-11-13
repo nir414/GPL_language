@@ -9,8 +9,8 @@ applyTo: "src/**/*.ts"
 - `*.gpl` / `*.gpo` 판별은 `document.languageId`만 믿지 말고 반드시 `isGplDocument()`를 사용한다.
 - GPL/VB.NET 심볼 비교는 대소문자를 무시하므로 반드시 `ciEq()`를 사용한다.
 - Function/Sub 이름은 PascalCase를 사용한다. 단, 생성자 `Sub New(...)`는 예외다.
-- `docs/`는 GPL 로봇 프로젝트 문서이며 확장 코드와 별개다.
-- 구문 강조는 `syntaxes/gpl.tmGrammar.json`의 VB.NET 재사용 방식을 유지하고, 불필요한 커스텀 문법 추가를 피한다.
+- `docs/`는 확장의 사용자·개발·레퍼런스 문서(MkDocs)와 AI 인계 문서이며 확장 소스가 아니다.
+- 구문 강조는 `assets/syntaxes/gpl.tmGrammar.json`의 VB.NET 재사용 방식을 유지하고, 불필요한 커스텀 문법 추가를 피한다.
 - 새 기능을 직접 구현하기 전에 기존 의존성이나 검증된 npm 패키지 활용 가능성을 먼저 확인한다.
 
 ## 파싱/심볼 관련 원칙
@@ -40,7 +40,7 @@ GPL Dictionary 기준 각 선언문 앞에 올 수 있는 수식어 (대소문�
 
 ## tmGrammar 패턴 작성 규칙
 
-`syntaxes/gpl.tmGrammar.json`에 선언문 패턴 추가 시 반드시 지킬 규칙:
+`assets/syntaxes/gpl.tmGrammar.json`에 선언문 패턴 추가 시 반드시 지킬 규칙:
 
 1. **줄 시작 앵커(`^`) 사용 금지** — 수식어가 앞에 오면 매칭이 깨짐
 2. **`\s*\b` 사용하여 VB.NET 패턴과 경쟁 우위 확보**
@@ -70,10 +70,8 @@ GPL Dictionary 기준 각 선언문 앞에 올 수 있는 수식어 (대소문�
 
 ## 변경 후 확인
 
-- 코드 수정 시 `docs/releases/process.md`의 SemVer 정책에 맞는 버전 결정
-- `README.md`에 현재 버전 표기가 있다면 동기화
-- `npm run pre-release-check`
-- `npm run compile`
+- `npm test`(컴파일 + 단위·구조 테스트)
+- 사용자 대면 변경이면 `gpl-release.instructions.md` 순서(버전 결정은 patch 기본 → `pre-release-check` → 패키징)를 따른다.
 
 ## 작업 중 발견한 문제 → 즉시 수정
 

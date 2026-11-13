@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { appendLiveLog } from '../../log/liveLogTerminal';
-import { formatConsoleCommandClassification } from '../commands/consoleCommandClassifier';
+import { affectsThreadState, formatConsoleCommandClassification, isReadOnlyConsoleCommand } from '../commands/consoleCommandClassifier';
 import { ResponseBodyStreamer } from './trafficResponseBody';
 import { sendConsoleCommand, recordTrafficLine, TrafficDirection } from './consoleSocket';
 import type { CommandResponse } from './consoleSocket';
@@ -12,9 +12,17 @@ import { ControllerCommandPolicy, DEFAULT_COMMAND_POLICY_OPTIONS, commandChannel
 import type { CommandPolicyOptions, CommandChannelTraits } from '../commands/commandPolicy';
 import { parseStatus, parseThreadList, SHOW_THREAD_LIST_CMD } from '../protocol/responseParser';
 import { effectiveKeepAlive } from './connectionSession';
-import { checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryPrecheck } from '../diagnostics/memoryGuard';
+import { resolveControllerIp, pickIpSaveScope } from './ipSource';
+import type { ResolvedControllerIp } from './ipSource';
+import { assessMemory, checkMemory, DEFAULT_MEMORY_GUARD, needsMemoryGuard, MemoryGuardOptions, MemoryPrecheck } from '../diagnostics/memoryGuard';
 import { guardBeforeSend, observeAfterResponse, unloadFailureGuidance } from '../commands/unloadRiskGuard';
-import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast } from '../diagnostics/memoryNotice';
+import { parseUnloadCommand } from '../commands/unloadRisk';
+import { MemoryNoticeTracker, formatMemoryDetail, formatMemoryToast, memoryBadge } from '../diagnostics/memoryNotice';
+import { PROBE_MEMORY_CMD } from '../diagnostics/resourceProbes';
+import { controllerMemoryReadings, isMemoryProbeCommand } from '../diagnostics/memoryReadings';
+import type { MemoryReading } from '../diagnostics/memoryReadings';
+import { RecentCommandLog } from './recentCommands';
+import type { RecentCommandRecord } from './recentCommands';
 
 export { isPolicyError, PolicyError } from '../commands/commandPolicy';
 export type { PolicyErrorCode } from '../commands/commandPolicy';
@@ -270,10 +278,33 @@ export function getSessionControllerOverride(): { ip?: string; port?: number } {
 	return { ip: _sessionIpOverride, port: _sessionPortOverride };
 }
 
+// 이 워크스페이스에서 마지막으로 연결에 성공한 IP(메모리 사본). 영속은 activation 이 workspaceState 로 한다(ipSource.ts).
+let _lastConnectedIp: string | undefined;
+
+export function setLastConnectedIp(ip: string | undefined): void {
+	_lastConnectedIp = ip && ip.trim() ? ip.trim() : undefined;
+}
+
+/** 지금 유효한 제어기 IP 와 그 출처(세션 > 워크스페이스 설정 > 마지막 연결 > User 설정 > 기본값). */
+export function resolveControllerIpSource(): ResolvedControllerIp {
+	const cfg = vscode.workspace.getConfiguration('gpl.controller');
+	return resolveControllerIp({ sessionOverride: _sessionIpOverride, inspect: cfg.inspect('ip'), lastConnected: _lastConnectedIp });
+}
+
+/** IP 를 설정에 저장한다 — 워크스페이스 값이 이미 있으면 그 범위, 아니면 User(새 워크스페이스 파일을 만들지 않는다). */
+export async function saveControllerIpSetting(ip: string): Promise<'workspace' | 'global'> {
+	const cfg = vscode.workspace.getConfiguration('gpl.controller');
+	const scope = pickIpSaveScope(cfg.inspect('ip'));
+	await cfg.update('ip', ip, scope === 'workspace' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global);
+	return scope;
+}
+
 export function getControllerConfig(): ControllerConfig {
 	const cfg = vscode.workspace.getConfiguration('gpl.controller');
 	const rawIp = cfg.get('ip');
-	const settingsIp = typeof rawIp === 'string' ? rawIp : (rawIp as any)?.ip ?? '192.168.0.1';
+	const legacyIp = typeof rawIp === 'string' ? rawIp : (rawIp as any)?.ip ?? '192.168.0.1';
+	const resolved = resolveControllerIpSource();
+	const settingsIp = resolved.source === 'default' ? legacyIp : resolved.ip;
 	const settingsPort = cfg.get<number>('port') ?? DEFAULT_PORT;
 	return {
 		ip: _sessionIpOverride ?? settingsIp,
@@ -386,12 +417,18 @@ export function sendCommandDetailed(
 		try {
 			response = await sendCommandDetailedInternal(wire, config, options);
 		} catch (err) {
+			noteThreadStateCommand(wire);
+			noteRecentCommand(wire, undefined, err);
+			if (parseUnloadCommand(wire)) { noteGplCleared(controllerId); }
 			// 채널 교란 가능 명령이 응답 없이 끝났으면 연결 건강 모니터에 알린다 → recovering (2026-08-31).
 			// 정책이 보류한 경우(PolicyError)는 여기 오지 않는다 — 제어기에 아무것도 보내지 않았으므로.
 			notifyDisruptiveFailure(wire, err);
 			attachUnloadRiskGuidance(wire, controllerId, err);
 			throw err;
 		}
+		noteThreadStateCommand(wire);
+		noteRecentCommand(wire, response);
+		if (parseUnloadCommand(wire)) { noteGplCleared(controllerId); }
 		if (policyOn) {
 			commandPolicy.after(wire, response.raw, response.meta.statusTagReceived, Date.now());
 		}
@@ -403,18 +440,49 @@ export function sendCommandDetailed(
 // ── 메모리 경고 알림 (2026-10-23 Sample Prep 「경고 알림이 Compile·Start·배포마다 쌓임」) ──────────────
 // 판정(차단·AI 결과 필드)은 종전 그대로이고, 사람 화면의 알림만 controller/diagnostics/memoryNotice.ts 규칙으로 줄인다:
 // 나빠질 때만 알림 · 같은 경고 반복은 Output 한 줄 · 한 작업 안에서는 최대 1회 · 지속 상태는 상태 표시줄 항목.
+//
+// 측정값은 controller/diagnostics/memoryReadings 가 정본이다(2026-11-03). 누가 보냈든 `Show Memory` 응답은 내부 송신
+// (sendCommandDetailedInternal)이 기록하고, 상태 표시줄 배지·상세는 그 기록을 따른다 — 트리 시스템 정보·대시보드가 잰 값과
+// Compile/Start 검사가 잰 값이 서로 다른 화면에 따로 보이지 않게. 알림(토스트)만 작업 검사가 정한다.
 const memoryNotices = new MemoryNoticeTracker();
 let _memoryStatusObserver: ((ip: string, check: MemoryPrecheck, badge: { text: string; tooltip: string } | null | undefined) => void) | null = null;
-let _lastMemoryCheck: { ip: string; check: MemoryPrecheck; at: number } | undefined;
+/** 작업 검사(checkMemoryBeforeOperation)의 마지막 결과. `at` = 검사 시각, `measuredAt` = 그 값을 잰 시각(재사용이면 더 이르다). */
+let _lastMemoryCheck: { ip: string; check: MemoryPrecheck; at: number; measuredAt: number } | undefined;
+/** 누가 쟀든 마지막 측정의 판정(상태 표시줄 상세용). */
+let _latestMemoryAssessment: { ip: string; check: MemoryPrecheck; at: number; command: string } | undefined;
 
-/** 메모리 검사 결과 관찰자 — 상태 표시줄 경고 항목이 받는다(badge: null 숨김 / undefined 유지). */
+function readMemoryGuardOptions(): MemoryGuardOptions {
+	const settings = vscode.workspace.getConfiguration('gpl.controller');
+	// `criticalMb` 가 종전 `blockMb`(deprecated) 를 대체한다 — 사용자가 옛 키만 설정해 뒀으면 그 값을 심각 기준으로 쓴다.
+	const legacyBlock = settings.inspect<number>('memoryGuard.blockMb');
+	const legacyValue = legacyBlock?.workspaceFolderValue ?? legacyBlock?.workspaceValue ?? legacyBlock?.globalValue;
+	const criticalInspect = settings.inspect<number>('memoryGuard.criticalMb');
+	const criticalSet = criticalInspect?.workspaceFolderValue ?? criticalInspect?.workspaceValue ?? criticalInspect?.globalValue;
+	return {
+		warnMb: settings.get<number>('memoryGuard.warnMb', DEFAULT_MEMORY_GUARD.warnMb),
+		criticalMb: criticalSet ?? legacyValue ?? DEFAULT_MEMORY_GUARD.criticalMb,
+	};
+}
+
+controllerMemoryReadings.onDidRecord((reading: MemoryReading) => {
+	const check = assessMemory(reading.raw, readMemoryGuardOptions());
+	_latestMemoryAssessment = { ip: reading.ip, check, at: reading.at, command: reading.command };
+	try { _memoryStatusObserver?.(reading.ip, check, memoryBadge(check) ?? null); } catch { /* 관찰자 예외는 무시 */ }
+});
+
+/** 메모리 측정 관찰자 — 상태 표시줄 경고 항목이 받는다(badge: null 숨김 / undefined 유지). 모든 측정마다 불린다. */
 export function setMemoryStatusObserver(fn: ((ip: string, check: MemoryPrecheck, badge: { text: string; tooltip: string } | null | undefined) => void) | null): void {
 	_memoryStatusObserver = fn;
 }
 
-/** 마지막 메모리 검사(상태 표시줄 클릭 상세용). */
-export function getLastMemoryCheck(): { ip: string; check: MemoryPrecheck; at: number } | undefined {
+/** 마지막 작업 검사(배포가 「정지 뒤 Compile 직전 측정」을 고를 때 쓴다). */
+export function getLastMemoryCheck(): { ip: string; check: MemoryPrecheck; at: number; measuredAt: number } | undefined {
 	return _lastMemoryCheck;
+}
+
+/** 누가 쟀든 마지막 측정의 판정 — 상태 표시줄 상세·트리와 같은 값. */
+export function getLatestMemoryAssessment(): { ip: string; check: MemoryPrecheck; at: number; command: string } | undefined {
+	return _latestMemoryAssessment;
 }
 
 /** 상세 문구(임계값·안내) — 상태 표시줄 클릭·알림의 「자세히」가 쓴다. 문구 정본은 memoryNotice.formatMemoryDetail. */
@@ -436,27 +504,36 @@ export function beginMemoryNoticeScope(ip: string): () => void {
 	};
 }
 
-/** 배포는 업로드 전, Compile/Start는 해당 명령의 직렬 큐 슬롯에서 각각 현재 Free를 확인한다. */
+/**
+ * 배포는 업로드 전, Compile/Start는 해당 명령의 직렬 큐 슬롯에서 각각 현재 Free를 확인한다.
+ * 측정 뒤 상태 변경(상태 변경 명령·FTP 쓰기)이 없고 MEMORY_READING_REUSE_MS 안의 측정이 있으면 다시 재지 않는다
+ * (2026-11-03 — 「심각이면 묻기」 검사 직후의 큐 슬롯 검사가 같은 값을 한 번 더 재던 중복). Stop·Compile·업로드 뒤에는 값이
+ * 실제로 달라지므로 그때는 새로 잰다.
+ */
 export async function checkMemoryBeforeOperation(config?: Partial<ControllerConfig>, insideQueue = false): Promise<MemoryPrecheck> {
-	const settings = vscode.workspace.getConfiguration('gpl.controller');
-	const options = {
-		warnMb: settings.get<number>('memoryGuard.warnMb', DEFAULT_MEMORY_GUARD.warnMb),
-		blockMb: settings.get<number>('memoryGuard.blockMb', DEFAULT_MEMORY_GUARD.blockMb),
-	};
+	const options = readMemoryGuardOptions();
 	const send = insideQueue ? sendCommandDetailedInternal : sendCommandDetailed;
 	const ip = { ...getControllerConfig(), ...config }.ip;
-	return checkMemory(async () => (await send('Show Memory', config, { waitForStatusClose: true })).raw, options, check => {
+	const reused = controllerMemoryReadings.reusable(ip, Date.now());
+	const probe = reused
+		? async () => reused.raw
+		: async () => (await send(PROBE_MEMORY_CMD, config, { waitForStatusClose: true })).raw;
+	return checkMemory(probe, options, check => {
+		const at = Date.now();
 		// Output 에는 매번 전문(긴 안내 포함)을 남긴다 — AI 결과 필드(memoryPrecheck.message)와 같은 문장.
-		logTraffic('---', `memory: ${check.level} — ${check.message}`);
-		_lastMemoryCheck = { ip, check, at: Date.now() };
+		const reuseNote = reused ? ` (재사용 — ${at - reused.at} ms 전 ${reused.command} 측정, 그 뒤 상태 변경 없음)` : '';
+		logTraffic('---', `memory: ${check.level} — ${check.message}${reuseNote}`);
+		_lastMemoryCheck = { ip, check, at, measuredAt: reused ? reused.at : at };
 		const decision = memoryNotices.evaluate(ip, check);
-		if ((check.level === 'warning' || check.level === 'blocked') && !decision.toast) {
+		if ((check.level === 'warning' || check.level === 'critical') && !decision.toast) {
 			logTraffic('---', `memory: 알림 생략(${decision.reason}) — 상태 표시줄에 표시 중`);
 		}
-		try { _memoryStatusObserver?.(ip, check, decision.badge); } catch { /* 관찰자 예외는 무시 */ }
+		// 배지는 측정 기록(controllerMemoryReadings.onDidRecord)이 갱신한다 — 여기서 다시 부르지 않는다.
 		if (decision.toast) {
-			void vscode.window.showWarningMessage(formatMemoryToast(check), '자세히').then(pick => {
+			// 「Unload…」: 메모리 회수 수단을 알림에서 바로 — Unload 로 상당 부분 회복됨을 사용자가 확인(2026-10-27). 위험 판정은 그 명령이 한다.
+			void vscode.window.showWarningMessage(formatMemoryToast(check), 'Unload…', '자세히').then(pick => {
 				if (pick === '자세히') { void vscode.commands.executeCommand(SHOW_MEMORY_STATUS_COMMAND); }
+				else if (pick === 'Unload…') { void vscode.commands.executeCommand(UNLOAD_PROJECT_COMMAND); }
 			});
 		}
 	});
@@ -464,6 +541,8 @@ export async function checkMemoryBeforeOperation(config?: Partial<ControllerConf
 
 /** 상태 표시줄 메모리 경고 항목·알림의 「자세히」가 여는 명령(activation 에서 등록). */
 export const SHOW_MEMORY_STATUS_COMMAND = 'gpl.controller.showMemoryStatus';
+/** 메모리 알림·상세·배포 중단 안내의 「Unload…」가 여는 명령(activation/remote/ftpCommands 에서 등록) — /GPL 프로젝트를 골라 내린다. */
+export const UNLOAD_PROJECT_COMMAND = 'gpl.controller.unloadProject';
 
 // ── 정체 확인용 관측 기록 (controller/connection/controllerIdentity.ts) ─────────────────────
 // 업로드 전 정체 확인이 "같은 작업 안에서 이미 받은 STATUS" 를 재사용하려면 마지막 STATUS 수신을 알아야 한다.
@@ -483,6 +562,56 @@ export function noteCommandChannelLoss(ip: string, at: number = Date.now()): voi
 
 export function getLastCommandChannelLoss(ip: string): number | undefined {
 	return _lastChannelLoss && _lastChannelLoss.ip === ip ? _lastChannelLoss.at : undefined;
+}
+
+// 이 확장이 `/GPL` 을 일부러 비운 마지막 시각(제어기별) — 비운 직후 배포의 "재부팅 정황" 오탐을 막는다(2026-11-05 inbox).
+// 기록처: 보낸 `Unload`(앱 Unload 는 /GPL/<앱> 폴더까지 지운다), 비우기 이벤트(extension.ts 가 onRemoteFolderCleared 로 알린다).
+const _lastGplCleared = new Map<string, number>();
+
+/** `/GPL` 을 일부러 비웠음을 기록한다(Unload 전송·FTP 비우기). */
+export function noteGplCleared(ip: string, at: number = Date.now()): void {
+	_lastGplCleared.set(ip, at);
+}
+
+export function getLastGplClear(ip: string): number | undefined {
+	return _lastGplCleared.get(ip);
+}
+
+// ── 최근 상태 변경 명령 (controller/connection/recentCommands.ts, 2026-11-03) ──────────────────────
+// 유실 사후 스냅샷의 "직전 상태 변경 명령" 근거. 응답 없이 끝난 교란 명령(아래 관찰자)만으로는 `Stop -all` 처럼 정상 응답한
+// 뒤 채널이 끊긴 사례(2026-11-02 09:18 등 8건)가 "직전 명령 없음"으로 찍혔다. 읽기 전용 폴링은 넣지 않는다.
+const recentCommands = new RecentCommandLog();
+
+function noteRecentCommand(command: string, response: CommandResponse | undefined, err?: unknown): void {
+	if (isReadOnlyConsoleCommand(command)) { return; }
+	const at = Date.now();
+	if (!response) {
+		recentCommands.add({ command, at, outcome: 'failed', failure: classifyCommandFailure(err).kind });
+	} else if (response.meta.statusTagReceived) {
+		recentCommands.add({ command, at, outcome: 'status', statusCode: parseStatus(response.raw).code });
+	} else {
+		recentCommands.add({ command, at, outcome: 'no-status' });
+	}
+}
+
+// ── 쓰레드를 움직이는 명령의 응답 관찰자 (2026-11-04) ──────────────────────
+// Start·Stop·Execute·Continue 등은 응답 뒤 수백 ms~수 초에 걸쳐 쓰레드 상태가 바뀐다. 보낸 경로(트리·명령 팔레트·배포·
+// AI 브리지)가 저마다 갱신을 부르지 않아도, 응답(실패 포함 — 실행됐을 수 있다)을 여기서 한 번 알려 트리가 짧은 간격으로
+// 다시 조회하게 한다. 판정 정본은 consoleCommandClassifier.affectsThreadState.
+let _threadStateCommandObserver: ((command: string) => void) | null = null;
+
+export function setThreadStateCommandObserver(fn: ((command: string) => void) | null): void {
+	_threadStateCommandObserver = fn;
+}
+
+function noteThreadStateCommand(command: string): void {
+	if (!affectsThreadState(command)) { return; }
+	try { _threadStateCommandObserver?.(command.trim().replace(/\s+/g, ' ')); } catch { /* 관찰자 예외는 무시 */ }
+}
+
+/** 이 창에서 보낸 최근 상태 변경 명령(오래된 순, 최대 30건). */
+export function getRecentStateChangingCommands(): readonly RecentCommandRecord[] {
+	return recentCommands.list();
 }
 
 // ── 채널 교란 관찰자 (2026-08-31) ───────────────────────────────────────────
@@ -554,6 +683,12 @@ function sendCommandDetailedInternal(
 		? new ResponseBodyStreamer(line => logTraffic(' | ', line), { maxChars: trafficOpts.maxResponseChars })
 		: null;
 
+	// 메모리 측정값 정본(memoryReadings): 상태를 바꿀 수 있는 명령은 보내는 순간 그 전 측정을 재사용 불가로 만든다
+	// (응답 실패여도 제어기가 실행했을 수 있다). 분류가 unknown 인 명령도 읽기 전용이 아니므로 바꾼 것으로 친다.
+	if (!isReadOnlyConsoleCommand(command)) {
+		controllerMemoryReadings.noteChange(cfg.ip, Date.now(), command.trim());
+	}
+
 	return sendConsoleCommand(
 		command,
 		{ ip: cfg.ip, port: cfg.port, preferIPv4: cfg.preferIPv4 },
@@ -566,12 +701,19 @@ function sendCommandDetailedInternal(
 			// 연결 해제 상태에서는 설정과 무관하게 단발 연결 — 해제된 창이 1402 세션을 쥐지 않게(connectionSession.ts).
 			keepAlive: effectiveKeepAlive(keepAlive.enabled),
 			keepAliveIdleCloseMs: keepAlive.idleCloseMs,
+			connectTimeoutMs: getConnectTimeoutMs(),
+			// 보관 소켓이 명령 전달 뒤 끊겼을 때 재전송은 조회 명령만(§1-GZ) — 상태 변경 명령은 실행됐을 수 있다.
+			retryAfterDeliveryIsSafe: isReadOnlyConsoleCommand(command),
 		},
 		{ log: logTraffic, body: bodyLog },
 	).then(response => {
 		// 정체 확인(controllerIdentity)이 같은 작업 안의 STATUS 를 재사용할 수 있게 마지막 수신을 기억한다.
 		if (response.meta.statusTagReceived) {
 			_lastConsoleStatus = { ip: cfg.ip, at: Date.now(), command, statusCode: parseStatus(response.raw).code };
+			// 누가 보냈든(작업 검사·트리 시스템 정보·대시보드·AI 상태 조회) `Show Memory` 응답은 여기서 한 번 기록한다.
+			if (isMemoryProbeCommand(command)) {
+				controllerMemoryReadings.record(cfg.ip, response.raw, Date.now(), command.trim().replace(/\s+/g, ' '));
+			}
 		}
 		return response;
 	});
@@ -605,6 +747,19 @@ export function getConnectionProbeTimeoutMs(): number {
 	return typeof raw === 'number' && Number.isFinite(raw)
 		? Math.max(MIN_CONNECTION_PROBE_TIMEOUT_MS, Math.floor(raw))
 		: DEFAULT_CONNECTION_PROBE_TIMEOUT_MS;
+}
+
+// 새 1402 연결의 TCP 핸드셰이크 상한(consoleSocket connectTimeoutMs). 직결 제어기 실측 p50 8 ms·최대 1.1 s(2026-10-27,
+// 사후 스냅샷 25건) — 답 없는 SYN 에 명령 타임아웃(8~10 s) 전체를 쓰지 않게 3 s 로 둔다. 0 이면 끔(종전).
+const DEFAULT_CONNECT_TIMEOUT_MS = 3000;
+const MIN_CONNECT_TIMEOUT_MS = 500;
+
+/** `gpl.controller.connectTimeoutMs` — 명령마다 읽는다. 0 = 끔, 그 외 하한 500. */
+export function getConnectTimeoutMs(): number {
+	const raw = vscode.workspace.getConfiguration('gpl.controller').get<number>('connectTimeoutMs', DEFAULT_CONNECT_TIMEOUT_MS);
+	if (typeof raw !== 'number' || !Number.isFinite(raw)) { return DEFAULT_CONNECT_TIMEOUT_MS; }
+	const v = Math.floor(raw);
+	return v <= 0 ? 0 : Math.max(MIN_CONNECT_TIMEOUT_MS, v);
 }
 
 // 채널 교란 뒤 복구 대기 상한(connectionHealth.recoveryWindowMs). 0 이면 recovering 을 쓰지 않는다(= 종전 판정 그대로).

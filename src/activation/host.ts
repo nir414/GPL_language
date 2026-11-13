@@ -14,29 +14,30 @@
  */
 import * as vscode from 'vscode';
 import { SymbolCache } from '../language/vscode/symbolCache';
-import { GPLDiagnosticProvider } from '../providers/diagnosticProvider';
+import { GPLDiagnosticProvider } from '../providers/diagnostics/diagnosticProvider';
 import { getControllerConfig, setIdlePingActive } from '../controller/connection/controllerConnection';
 import { isControllerSessionConnected, setControllerSessionConnected } from '../controller/connection/connectionSession';
 import { AgentBridgeServer, newExtensionInstanceId } from '../controller/automation/agentBridge';
-import { createRevealGate } from '../controller/automation/agentCommandLog';
+import { agentRequestChangesControllerState, createRevealGate } from '../controller/automation/agentCommandLog';
 import { ConnectionHealthMonitor, ConnectionHealthProber } from '../controller/connection/connectionHealth';
 import { EditorBreakpointSync } from '../controller/debugging/breakpointSync';
 import { ControllerBreakpointMirror } from '../controller/debugging/breakpointMirror';
 import { checkProjectName, checkRemotePath, describeProjectNameProblem } from '../controller/projects/projectNameGuard';
 import { getDeployLock, describeDeployLock, DeployLockRecord } from '../controller/deployment/deployLock';
-import { CompileStaleInfo, CompileStaleTracker } from '../controller/deployment/compileStale';
+import { CompileStaleInfo, CompileStaleTracker, describeCompiledRelease, describeRemaining } from '../controller/deployment/compileStale';
+import { isLibraryProjectDir, readCompiledLibraryValues } from '../controller/deployment/compiledLibraries';
 import { ControllerEventLog } from '../controller/diagnostics/recentEvents';
 import { RuntimeConsole, RuntimeConsoleStatusSnapshot } from '../controller/runtime/runtimeConsole';
-import { ControllerTreeProvider, RuntimeErrorContext } from '../views/controllerTreeProvider';
+import { ControllerTreeProvider, RuntimeErrorContext } from '../views/tree/controllerTreeProvider';
 import type { SituationDeploySnapshot } from '../controller/deployment/deployOutcome';
-import { ConnectionStatusBar } from '../views/connectionStatusBar';
+import { ConnectionStatusBar } from '../views/statusbar/connectionStatusBar';
 import { appendLiveLog } from '../log/liveLogTerminal';
 import { fireDebugPollTrigger } from '../controller/debugging/debugBridge';
 import { EXTENSION_VERSION } from '../config';
-import type { ProjectContextApi } from './projectContext';
-import type { ConnectionApi } from './connection';
-import type { DeployApi } from './deploy';
-import type { ExecutionDecorations } from './debugDecorations';
+import type { ProjectContextApi } from './deploy/projectContext';
+import type { ConnectionApi } from './controller/connection';
+import type { DeployApi } from './deploy/deploy';
+import type { ExecutionDecorations } from './debug/debugDecorations';
 
 export class ExtensionHost {
 	// ── 서비스(불변) ──────────────────────────────────────────────────────────────
@@ -71,7 +72,7 @@ export class ExtensionHost {
 	/**
 	 * 세션 대상 프로젝트 **폴더**(단일 출처, 메모리 전용) — 자동화 대상 해석(`project_target`·`gpl.automation.target`,
 	 * `controller/projects/projectTarget.ts` 규칙 3), 사람의 QuickPick 선택, 디버그 세션의 `projectDir` 가 갱신한다.
-	 * 배포 대상이면서 **동명 소스 해석의 1순위 기준**이다(`project/compileUnitTarget.ts`) — 제어기는 파일명만
+	 * 배포 대상이면서 **동명 소스 해석의 1순위 기준**이다(`project/sources/compileUnitTarget.ts`) — 제어기는 파일명만
 	 * 주므로, 과제별 동명 프로젝트가 여럿인 워크스페이스에서 이 값이 없으면 어느 사본을 열지 임의로 갈린다.
 	 */
 	sessionTargetDir: string | undefined;
@@ -86,8 +87,12 @@ export class ExtensionHost {
 	 * "컴파일 검증 필요" 상태 — /GPL 소스는 업로드됐지만 Compile로 검증되지 않은 프로젝트.
 	 * 상태와 규칙은 `controller/deployment/compileStale.ts`(순수 모듈)에 있고, 여기서는 로그·UI 반영만 얹는다.
 	 * 해제는 `onDidRecordCompiled` 구독으로도 일어나므로 F5(deployBeforeAttach)·MCP 경로에서도 배지가 남지 않는다.
+	 * 제어기별·workspaceState 영속(§1-GN) — 연결은 activate() 가 `attach(context.workspaceState)` 로 한다.
 	 */
-	readonly compileStaleProjects = new CompileStaleTracker();
+	readonly compileStaleProjects = new CompileStaleTracker(err => {
+		// 저장 실패는 기록의 유실일 뿐 배포 동작에 영향이 없다 — 조용히 로그만.
+		this.log(`[Deploy] 컴파일 검증 상태 저장 실패(무시): ${(err as any)?.message ?? err}`);
+	});
 	/** 에디터 중단점 → 제어기 실시간 동기화(§1-AP). activateBreakpointCommands 가 만든다. */
 	breakpointSync: EditorBreakpointSync | undefined;
 	/** 제어기 → 에디터 중단점 미러(§1-CO). activateBreakpointCommands 가 만든다. */
@@ -178,25 +183,81 @@ export class ExtensionHost {
 	}
 
 	// ── "컴파일 검증 필요" 상태 ──────────────────────────────────────────────────
-	findCompileStale(projectName: string): CompileStaleInfo | undefined {
-		return this.compileStaleProjects.find(projectName);
+	// 상태는 제어기(ip)별이다(§1-GN). mark/clear 는 설정의 현재 제어기 주소에 묶고, Compile 성공 기록(onDidRecordCompiled)처럼
+	// 제어기를 아는 호출자는 `ip` 를 명시한다. 뷰에는 대표 1건이 아니라 현재 제어기의 전체 목록을 넘긴다.
+	/** 현재 설정의 제어기 주소 — 상태의 키. */
+	private compileStaleIp(): string {
+		return getControllerConfig().ip;
+	}
+
+	findCompileStale(projectName: string, ip: string = this.compileStaleIp()): CompileStaleInfo | undefined {
+		return this.compileStaleProjects.find(ip, projectName);
+	}
+
+	/** 현재 제어기의 미검증 목록(오래된 → 최근 표시 순). 선택 창·상황 스냅샷이 쓴다. */
+	listCompileStale(ip: string = this.compileStaleIp()): CompileStaleInfo[] {
+		return this.compileStaleProjects.list(ip);
 	}
 
 	markCompileStale(projectName: string, reason: string, projectDir?: string): void {
-		const info = this.compileStaleProjects.mark(projectName, reason, projectDir);
+		const ip = this.compileStaleIp();
+		const library = projectDir ? isLibraryProjectDir(projectDir) : undefined;
+		const info = this.compileStaleProjects.mark(ip, projectName, reason, projectDir, Date.now(), library);
 		if (!info) { return; }
-		this.log(`[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (Start 는 -compile 로 컴파일 — 소스 에러가 있으면 Start 실패, 먼저 Quick Compile 권장)`);
-		this.controllerTree?.setCompileStale(info);
-		this.statusBar?.setCompileStale(info);
+		this.log(info.library
+			? `[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (ProjectStart 없는 라이브러리 — 이를 ProjectLibrary 로 쓰는 실행 프로젝트의 Compile/Start 성공이 함께 해제)`
+			: `[Deploy] 컴파일 검증 필요: ${projectName} — ${reason} (Start 는 -compile 로 컴파일 — 소스 에러가 있으면 Start 실패, 먼저 Quick Compile 권장)`);
+		this.syncCompileStaleViews(ip);
 	}
 
-	clearCompileStale(projectName: string): void {
-		const done = this.compileStaleProjects.clear(projectName);
+	clearCompileStale(projectName: string, ip: string = this.compileStaleIp()): void {
+		const done = this.compileStaleProjects.clear(ip, projectName);
 		// 없던 항목이면 조용히 끝낸다 — 같은 Compile이 직접 호출과 onDidRecordCompiled로 두 번 들어와도 로그가 겹치지 않는다.
 		if (!done) { return; }
-		this.log(`[Deploy] 컴파일 검증 필요 상태 해제: ${projectName}`);
-		this.controllerTree?.setCompileStale(done.next);
-		this.statusBar?.setCompileStale(done.next);
+		this.log(`[Deploy] 컴파일 검증 필요 상태 해제: ${projectName}${describeRemaining(done.remaining)}`);
+		this.syncCompileStaleViews(ip);
+	}
+
+	/**
+	 * Compile 성공 기록(onDidRecordCompiled)의 해제 — 그 프로젝트와, `.gpr` 의 `ProjectLibrary`(전이 포함)로 함께 컴파일된
+	 * 라이브러리 항목을 한 줄 로그로 지운다(2026-11-03 inbox ①). 해제한 것이 없으면 조용하다.
+	 */
+	clearCompileStaleAfterCompile(projectName: string, ip: string, projectDir: string | undefined): void {
+		const libraries = projectDir ? readCompiledLibraryValues(projectDir) : [];
+		const done = this.compileStaleProjects.clearCompiled(ip, projectName, libraries);
+		const line = describeCompiledRelease(done);
+		if (!line) { return; }
+		this.log(`[Deploy] ${line}`);
+		this.syncCompileStaleViews(ip);
+	}
+
+	/** 이름 여럿 해제 — 제어기 /GPL 에서 폴더가 지워졌거나 사용자가 목록에서 지웠을 때. `why` 는 로그 꼬리. */
+	releaseCompileStale(projectNames: readonly string[], why: string, ip: string = this.compileStaleIp()): void {
+		const done = this.compileStaleProjects.clearMany(ip, projectNames);
+		if (done.cleared.length === 0) { return; }
+		this.log(`[Deploy] 컴파일 검증 필요 상태 해제: ${done.cleared.map(i => i.projectName).join(', ')} — ${why}${describeRemaining(done.remaining)}`);
+		this.syncCompileStaleViews(ip);
+	}
+
+	/** 라이브러리 여부를 모르는 저장 항목(필드 도입 전)을 `.gpr` 로 보충한다 — 활성화 때 한 번. */
+	backfillCompileStaleLibraryFlags(): void {
+		for (const info of this.compileStaleProjects.list()) {
+			if (info.library !== undefined || !info.projectDir) { continue; }
+			const library = isLibraryProjectDir(info.projectDir);
+			if (library !== undefined) { this.compileStaleProjects.setLibrary(info.ip, info.projectName, library); }
+		}
+	}
+
+	/**
+	 * 트리·상태바에 현재 제어기의 미검증 목록을 반영한다. 활성화(영속분 로드 뒤)·연결 상태 변화(제어기가 바뀌었을 수 있다)·
+	 * mark/clear 에서 부른다. 다른 제어기(`ip`)의 변화면 화면은 그대로다.
+	 */
+	syncCompileStaleViews(ip: string = this.compileStaleIp()): void {
+		const current = this.compileStaleIp();
+		if (ip.trim().toLowerCase() !== current.trim().toLowerCase()) { return; }
+		const items = this.compileStaleProjects.list(current);
+		this.controllerTree?.setCompileStale(items);
+		this.statusBar?.setCompileStale(items);
 	}
 
 	// ── 런타임 콘솔(1403) 싱글톤 ───────────────────────────────────────────────────
@@ -247,9 +308,13 @@ export class ExtensionHost {
 					this.healthMonitor?.reportHint('runtime-console', `${status.state}${status.lastErrorCode ? ` ${status.lastErrorCode}` : ''} — ${status.reason}`);
 				}
 			});
+			// 1403 상태 이벤트(`<E>1,N</E>` 등 — 콘솔 출력 줄은 오지 않는다): 디버그 중이면 어댑터 즉시 폴,
+			// 아니면 트리가 정규 폴을 기다리지 않고 쓰레드 목록을 다시 본다(2026-11-04).
 			runtimeConsole.onDidReceiveData(() => {
 				if (this.isDebugSessionActive) {
 					fireDebugPollTrigger();
+				} else {
+					this.controllerTree?.requestThreadRefresh('런타임 콘솔 상태 이벤트');
 				}
 			});
 			this.runtimeConsoleHooksBound = true;
@@ -294,6 +359,8 @@ export class ExtensionHost {
 		// 해제 뒤에는 전송 계층이 1402 소켓을 보관하지 않는다(connectionSession.effectiveKeepAlive).
 		setControllerSessionConnected(connected, options?.reason);
 		this.statusBar?.setConnected(connected);
+		// 제어기가 바뀌었을 수 있다 — "컴파일 검증 필요" 는 제어기별이므로 지금 주소의 목록으로 다시 맞춘다(§1-GN).
+		this.syncCompileStaleViews();
 		this.updateUiContexts(connected);
 		this.controllerTree?.setConnected(connected, { refresh: options?.refreshTree, reason: options?.reason });
 		// 연결 건강 모니터도 같은 상태로 맞춘다 — 해제(명시적/유실)면 진행 중인 재프로브를 멈춘다.
@@ -323,10 +390,15 @@ export class ExtensionHost {
 	/**
 	 * AI 요청이 **조용한 뒤 처음** 올 때 Output 「GPL Language Support」를 연다(포커스는 유지) — 사용자의 배포·명령은
 	 * 패널을 열어 로그가 보였는데 AI 경유 동작은 보이지 않았다(§1-EO). 판단(`createRevealGate`)은 순수 모듈에 있다.
+	 *
+	 * 단 **조회 요청(Show Thread·변수 읽기·목록·상태 조회)으로는 열지 않는다** — AI 가 데이터를 읽을 때마다 사용자가 보던
+	 * GPL Console/Live Log 가 Output 으로 덮였다(2026-10-27 지적). 조용 구간도 상태 변경 요청 기준으로만 잰다
+	 * (읽기 폴링이 구간을 계속 갱신해 정작 Start/배포에서 안 열리는 일이 없게).
 	 */
 	private readonly agentRevealDue = createRevealGate();
-	private revealOutputForAgentRequest(): void {
+	private revealOutputForAgentRequest(command: string, args: unknown): void {
 		if (vscode.workspace.getConfiguration('gpl.agentBridge').get<boolean>('revealOutput', true) !== true) { return; }
+		if (!agentRequestChangesControllerState(command, args)) { return; }
 		if (this.agentRevealDue(Date.now())) { this.outputChannel.show(true); }
 	}
 
@@ -349,7 +421,7 @@ export class ExtensionHost {
 			// MCP 가 projectDir 로 어느 창에 보낼지 고르는 근거(§6).
 			workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath),
 			execute: (command, args) => {
-				this.revealOutputForAgentRequest();
+				this.revealOutputForAgentRequest(command, args);
 				return Promise.resolve(
 					args === undefined
 						? vscode.commands.executeCommand(command)

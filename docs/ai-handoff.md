@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.18** (시뮬 제어기 실기 시험으로 찾은 디버깅·배포·진단 문제 수정, 1759/1759 · MCP 213/213. 상세는 §1-HH.)
-- **직전 세션: §1-HH** — "192.168.0.1 시뮬 제어기에 연결해 테스트하며 개선" → App 정지·Unload(사용자 동의) 뒤 시험 프로젝트로 배포·BP·스텝·변수·전처리 점검. `Exit Property` -719·`:` -722 진단, 호출자 프레임 줄 복원, listLocals 대체, NUL 오판, ErrorLog 이번 배포분, FTP 시각 수정. 새 MCP 응답·DAP 스택 줄은 실기 재확인 전(verification §1-HH). /GPL 에 시험 폴더 남음.
+- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.19** (중첩 라이브러리 중단점 규칙 실측·이름 규칙 정정, 1760/1760 · MCP 214/214. 상세는 §1-HI.)
+- **직전 세션: §1-HI** — "중첩 라이브러리(`Lib/v1`)에서 BP 가 안 걸린다, 방법을 찾아 달라" → 시뮬 제어기 실측: `Set Break` 는 `/GPL` 바로 아래 폴더 이름만 받아 중첩 리프는 지정 불가, **맨 위 `.gpr` 하나 + 하위 폴더 소스**면 걸림(실제 Lib/v1 로 확인). 확장의 라이브러리 이름 규칙(ProjectName → 폴더 이름) 정정, 중첩이면 사유·해법 안내. 구조 변경·평탄화 기능은 사용자 결정 대기(§3).
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -82,6 +82,7 @@
 > **실사용·실기·UI 확인 항목은 `docs/ai-handoff-verification.md`로 옮겼다(2026-11-04).** 이 절에는 코드 작업과 결정 대기만
 > 둔다. 새 VSIX의 확인 항목은 그 파일에 추가한다(규칙: `docs/development/record-keeping.md`).
 
+- [ ] **(2026-11-13, §1-HI) 중첩 라이브러리 — 사용자 결정·후속.** ① Sample Prep `Lib/v1` 을 "맨 위 `.gpr` 하나 + 하위 폴더 소스"로 바꿀지(생성 도우미 `captures/v1test/make_root_gpr.js`, 리프 `.gpr`·앱의 `ProjectLibrary` 줄 정리는 사용자 저장소 작업) ② 그 편집을 좌우 미리보기 + 승인으로 해 주는 확장 명령(「중단점용 소스 승격」의 라이브러리 단위 판) ③ 디스크의 리프 구조는 두고 **배포 사본에서만 평탄화**(`ProjectLibrary="Lib\Core\Log"` → `/GPL/Lib_Core_Log`, `.gpr` 참조 고쳐 쓰기, BP·오류 위치 역대응) — 전처리 스테이지·`libraryUploadPlan`·`breakpointTarget` 에 걸친 큰 작업이라 결정 뒤 착수 ④ `.gpr` 하나 형태에서 하위 폴더의 쓰이지 않는 리프 `Project.gpr` 까지 올라간다(V1Lib 56파일 중 52개) — 라이브러리 루트 `.gpr` 이 소스를 직접 등재하면 하위 `.gpr` 을 업로드에서 뺄지 ⑤ 연결된 창이 없을 때 1402 경로가 세션 대상 창이 아니라 리더 창으로 간다(`pickConsoleRouteInstance` 에 세션 대상 우선) ⑥ 그룹 Compile 뒤 Unload 먹통의 이름 무관 여부 A/B(재부팅 위험 — 사용자 동의 뒤).
 - [ ] **(2026-11-13, §1-HH) 실기 시험 후속.** ① Running 쓰레드의 `Show Thread` 줄도 "다음 문장" 줄로 나온다(`Thread.Sleep` 12 → 13 `End While`) — 트리·대시보드 위치 표시에 `callSiteLine` 식 보정을 넣을지(정지 쓰레드는 정확) ② `callSiteLine` 을 라이브러리 소스(`<lib>/<file>`)·원격 소스 세션에서도 확인 ③ `Exit Property`·`:` 구분을 docs/gpl-language/common-mistakes 에 실측표로 ④ 문서와 다른 실측(Exit Property, 이름 없는 Show Variable)을 다른 펌웨어에서 재확인할 기회가 있으면 기록.
 - [ ] **(2026-11-13, §1-HG) 수신함 보류 — 다음 작업 후보.** 원문은 수신함 `done/` 의 같은 이름 파일.
   ① 라이브러리 버전 v2 #8 배포 묶음 내보내기(`GPL: Export Deployed Bundle` — §1-HG 의 `libraries` 출처·해시 위에) ② #4 라이브러리 두 판의 Public 선언 차이 목록 ③ #5 고정 external 안 파일 편집 경고 ④ #6 `.gpr` 지시문으로 형제 밖 라이브러리 경로
@@ -417,7 +418,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GY ~ §1-HH)만 둔다.
+본문에는 **최근 10개 세션**(§1-GZ ~ §1-HI)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있고, 그 세션들의 인덱스는 [archive/handoff/index.md](archive/handoff/index.md)에 있다.
 아래 §1-0 에는 본문에 있는 세션의 행만 둔다.
 
@@ -428,16 +429,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GX (2026-11-03 ~ 11-04) | 9 |
-| (본문 아래) | §1-GY ~ §1-HH (2026-11-04 ~ 11-13) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GY (2026-11-03 ~ 11-04) | 10 |
+| (본문 아래) | §1-GZ ~ §1-HI (2026-11-04 ~ 11-13) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GX 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GY 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GY | 11-04 | **AI 지침 정리** — `AGENTS.md` 정본화(`CLAUDE.md` 는 `@AGENTS.md` import), 요청 이력의 방침(커밋 자유·합쇼체 문구·포커스 강제 금지·/flash/projects) 명문화, `record-keeping.md`, §3 실사용 확인 117건 → `ai-handoff-verification.md`, 아카이브 인덱스 196행 → `archive/handoff/index.md`, 하드 규칙 번호 §0 로 통일(모션 6→9). 문서 전용 | 본문 ↓ |
 | §1-GZ | 11-04 | **프로젝트 문제점 리뷰 후속 — 명령 안전·정지 판정 경합·메모리 자동 회수·의존성** — 1402 한 줄 검증(CR/LF 거부)·전달 뒤 재전송은 조회만·UTF-8·닫힌 STATUS·줄 번호 140 수정, 브리지 정지 명령 우선·URI 토큰·상태 모르면 Step/Continue 거부, 디버거 액션 세대·잔류 pending·BP 요청 직렬화, 메모리 부족 시 정지 → Unload 자동 회수(`memoryGuard.autoUnload`), basic-ftp 6.2.5·@types/vscode ~1.74·CI Node 22·.gitattributes. 0.27.10 | 본문 ↓ |
 | §1-HA | 11-04 | **대시보드 축 위치 리밋 막대·추이 그래프 통합·전원/축/좌표 DataID 전환·I/O 클릭 토글** — 4.2K5 실측: `Execute Robot.WhereAngles`/`Where` 는 값 없음, `Execute Controller.PowerEnabled` -712, Execute 명령 상한 136자 → `pd 3504/3506/230/116/2002/16077/16078`(순수 `robotAxes.ts`), 로봇 전체 막대(양끝 소프트 리밋·5% 근접·이동), 「추이」 한 카드 5차트(같은 차트 함수·눈금·호버), 칩 클릭 토글·더블클릭 해제. 1646/1646. 0.27.11 | 본문 ↓ |
 | §1-HB | 11-04 | **대시보드 I/O 칩 8열 격자 · Soft DIO 64 상한 실측** — 칩 flex-wrap → 8열 격자(64 = 8×8, bank 96 = 12×8, 좁으면 4열), 그룹은 multi-column 단에 쌓기. 4.2K5 실측 `Signal.DIO(20065)` = -1517(PDB 505 의 "~21000" 과 다름, com_dio 표 20001~20064 가 맞음). 1646/1646. 0.27.12 | 본문 ↓ |
@@ -447,65 +447,12 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-HF | 11-06 | **최적화기 정밀도·범위 확장 + 컴파일 메모리 추정 + 메모리 진단 보정** — Sample Prep 실측(_mem.zip cost-table·unreferenced-members)·ChatGPT 정리 반영: 문자열은 이름 모양만 참조, 매개변수·맨 바깥 지역 가림, 안 쓰는 지역 Dim(87 B)·빈 Module(≈190 B) 제거, `compileCostModel`(원본 4.09 MB 추정 vs 실측 4.13 MB) → `preprocess.estimatedCompile`. 스테이지 dry-run 컴파일 4.1 → 3.5 MB 추정·소스 2.0 → 1.0 MB, 보고서 미참조 299개 중 249개 일치. Mid 누수 조건 정밀화(사용자 Function 결과 제외), `string-field-empty-init`(+183 B/칸), 문서 스레드 정정. 1719/1719 · MCP 188/188. 0.27.16 | 본문 ↓ |
 | §1-HG | 11-13 | **수신함 Sample Prep 보고 11건 — 4갈래 병렬 처리** — MCP: 미연결 창 `extension-disconnected` 즉시 거부·작업 폴더 양방향 일치·창 고정(`extension_resolve`)·런타임 콘솔 세션 대상 경로(`routeMismatch`)·`bridge-host-mismatch`·번들 다운그레이드 방지·버전 경고, 제어기 IP 워크스페이스별 기억(`workspaceState`)·`autoConnectOnStartup`(opt-in); 제어기 정체 `controllerIdentity`(pd 110/114)·`expectedSerial`·스택 사용률·DataID 307 안내·전원 pd 230; 진단 `missing-final-newline`(-505)·`create-directory-device-root`(-300)·`thread-entry-without-catch`, Catch 정정 문서; 전처리 `Device_HanyoungML` 오포함(매개변수 가림·선언 줄 자기 이름) 수정·`preprocess.kept`, 라이브러리 출처(SVN·업로드 해시)·`gpl.deploy.libraryPreflight`. 1752/1752 · MCP 206/206. 0.27.17 | 본문 ↓ |
 | §1-HH | 11-13 | **시뮬 제어기 실기 시험 — 디버깅·배포 점검과 수정** — 4.2K5 실측: `Exit Property` -719(`exit-property-rejected`)·`:` 문장 구분 -722(`statement-separator-colon`)·이름 없는 `Show Variable` -505(listLocals 를 로컬 소스 + -eval 로)·`Show Stack` 호출자 프레임은 다음 문장 줄(`callSiteLine` 로 호출 줄 복원)·run_to_line 빈 줄 → 다음 실행 줄(`adjustedTo`), 런타임 콘솔 NUL 로 인한 `PARSER_STALLED` 오판 해소, 배포 ErrorLog 이번 배포분만(`errorLogSinceDeploy`), FTP LIST 시각 2001년 수정, 콘솔 읽기 `remaining`·`matchAheadSeq`, 스택 열 순서·controllerIdentity·pd 230 실기 확인. 1759/1759 · MCP 213/213. 0.27.18 | 본문 ↓ |
+| §1-HI | 11-13 | **중첩(Group–Leaf) 라이브러리 중단점 — 제어기 규칙 실측과 해법** — `Set Break` 프로젝트 인자 = `ProjectLibrary` 값 = `/GPL` 바로 아래 폴더 이름(ProjectName 아님), 파일 = `ProjectSource` 표기(역슬래시), 중첩 값(`Lib\Core\Log`)은 24종 표기 모두 -508/-205 로 지정 불가. 해법: 라이브러리 맨 위 `.gpr` 하나에 하위 폴더 소스 직접 등재(실제 Lib/v1 83파일로 Compile·BP 히트, 전처리로 4파일만 업로드). 폴더명 `Lib` 는 무관. `breakpointTarget` 이름 규칙 정정·중첩 안내, MCP 재작성 역슬래시·중첩 거부, project-file-gpr.md §4.1. 1760/1760 · MCP 214/214. 0.27.19 | 본문 ↓ |
 ---
 
-**최근 세션 본문 — §1-GY ~ §1-HH (2026-11-04~11-13).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-GZ ~ §1-HI (2026-11-04~11-13).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GY. 2026-11-04 세션 — AI 지침 정리: AGENTS.md 정본화 · ai-handoff 다이어트 · 하드 규칙 번호 통일 (문서 전용, 버전 변경 없음)
-
-### 증상(요청)
-
-- "프로젝트 지침을 개선하는 게 좋을 것 같다 — 지금 어떻게 되어 있나" → 현황 요약 보고 뒤 "사용자 요청 이력을 확인해 보며
-  권장 방식으로 개선해 달라".
-
-### 원인(검토 결과)
-
-1. **사본 드리프트** — `CLAUDE.md`·`AGENTS.md` 가 같은 내용의 사본이라 이미 어긋나 있었다(R10 문구·`scripts/dev/` 줄이 AGENTS 에
-   없음, AGENTS 끝에 Cowork 시절 문구 「함부로 편집하지 마세요」 잔재).
-2. **필독 문서 재팽창** — `ai-handoff.md` 1,506줄/290KB(08-31 정리 때 960줄). §3 이 133KB(46%)였고 그 대부분이 버전마다 하나씩
-   쌓이고 닫히지 않는 "새 VSIX 실사용·실기·UI 확인"이었다. §1-0 인덱스도 60KB. 헤더·§1 10세션 규칙은 지켜졌지만 §3·인덱스에는
-   상한 규칙이 없었다.
-3. **낡거나 충돌하는 서술** — Copilot 지침의 "`docs/`=GPL 로봇 프로젝트 문서", "VSIX 경로만 안내", 없어진 `_debug_cycle.ps1`;
-   release/typescript 지침의 "README 버전 동기화"(실제로는 `pre-release-check` 가 README 버전 표기를 **금지**); "커밋은 요청 시만"
-   (10-27 이후 커밋은 자유, push·태그·릴리스만 확인).
-4. **하드 규칙 번호 2벌** — 옛 CLAUDE.md 요약은 6=모션 규칙, §0 은 6=`Stop` 접수. 소스 주석이 "하드 규칙 6"(모션)과 "§0.6"(Stop)을
-   섞어 썼다. 요약에는 §0.6·§0.8 이 빠져 있었다.
-5. **요청 이력에만 있던 방침** — Claude Code 대화 77개의 사용자 메시지 216건을 훑어 보니, 저장소 지침에 없고 auto memory 에만
-   있던 방침이 있었다: 커밋 자유/push 확인(10-27), 사용자 대면 문구 합쇼체·지시투 금지(09-11, 저장소 기록 없음), 패널 포커스
-   강제 금지·로그 기본 켬(10-27), `/flash/projects` 제안 금지(11-03), 넓은 위임 방식(09-07·10-27), 하위 모델(10-27).
-   memory 는 Claude 에만 보이므로 Codex·Copilot 은 이 방침을 몰랐다.
-
-### 조치(의도와 방법)
-
-- **21e9d82 — 지침 정본 하나로.** `AGENTS.md` 를 정본으로 재작성(읽는 순서·작업별 정본 표·작업 방식·하드 규칙·제품 규칙·
-  마칠 때·구조 규칙·저장소 구조). `CLAUDE.md` 는 `@AGENTS.md` import + Claude Code 전용(MCP·하위 모델·worktree·세션 조율)만.
-  Codex·Copilot 은 AGENTS.md 를 직접 읽는다. 기록 세칙은 `docs/development/record-keeping.md` 로 분리(mkdocs nav 등재).
-  `.github/copilot-instructions.md` 는 AGENTS.md 를 가리키는 허브로, release/typescript 지침의 낡은 서술 정정.
-  "CLAUDE.md 하드 규칙 N" 참조(ci.yml·bundle-mcp.js·src 주석 3·architecture.md·docs/README)를 AGENTS.md 로.
-- **이 커밋 — ai-handoff 다이어트.** §3 의 실사용 확인 항목 117개를 `docs/ai-handoff-verification.md` 로 원문 그대로 옮기고
-  (분류는 제목 기준 스크립트 + 결정·조사·리팩터링 류 제외, 목록 검토 후 적용), §1-0 의 아카이브 행 196개를
-  `docs/archive/handoff/index.md` 로 옮겼다(링크 경로만 상대 경로로 고침). 두 파일 모두 MkDocs 제외. 아카이브 5개의
-  "전체 세션 인덱스" 안내를 새 파일로. §1-GO 를 2026-10 아카이브로(10세션 유지).
-- **하드 규칙 번호 통일.** §0 번호를 정본으로: §0.4 를 "리눅스 샌드박스에서만"으로 한정, 모션 규칙을 §0.9 로 편입, `/flash/projects`
-  를 §0.10 으로 신설. 소스 주석의 "하드 규칙 6"(모션 의미) 10곳(src 7파일)과 문서 10곳을 "하드 규칙 9"로 — "§0.6"(Stop 접수) 참조는
-  그대로 둔다. 아카이브 원문은 고치지 않았다(AGENTS.md §4 에 옛 번호 안내).
-
-### 검증
-
-- `npx tsc --noEmit` 통과, `npm test` **1608/1608**(src 변경은 주석뿐).
-- 옮기기 무손실: `git diff` 의 삭제 줄이 체크리스트 항목·인덱스 행·들여쓴 연속 줄·빈 줄뿐인지 필터로 확인(그 밖의 삭제 0).
-  `ai-handoff.md` 290KB → 약 120KB.
-- 버전·VSIX 없음(문서·주석 전용, 사용자 대면 동작 변화 없음).
-
-### 남은 일
-
-- §3 결정: `ai-handoff-verification.md` 117건 중 08~09월 항목 다수는 이미 실사용으로 확인됐거나 이후 변경으로 무의미해졌을
-  가능성이 크다 — 사용자와 한 번 훑어 일괄 정리할지.
-- Copilot 이 `chat.useAgentsMdFile` 로 AGENTS.md 를 실제로 읽는지는 문서상 동작이다 — Copilot Chat 에서 확인 안 함.
-- 작업 중 실수: git-bash `sed -i` 가 CRLF 파일의 CR 을 지운다(인덱스는 LF 라 git 내용 변화는 없음). 작업 트리 EOL 이 바뀌었을 수 있는
-  파일: ci.yml·bundle-mcp.js·deployStartStage.ts·remoteSourceMapping.ts·architecture.test.ts·architecture.md·docs/README.md.
 
 ## 1-GZ. 2026-11-04 세션 — 프로젝트 문제점 리뷰 후속: 명령 안전 · 정지 판정 경합 · 메모리 자동 회수 · 의존성 (0.27.10)
 
@@ -923,3 +870,44 @@ JointOnly · ctor Init · Catch 새 객체 · try-finally · thread-block/Mid ·
 
 - 제어기 `/GPL` 에 시험 폴더(syntax_tour·probe_exitprop·probe_callerline·probe_loop·LtApp·LtLib)가 남아 있다 — 지우기는 사용자 동의 뒤. Sample Prep App 은 내려간 상태.
 - 관찰만 한 것(§3): Running 쓰레드의 `Show Thread` 줄도 Sleep 다음 문장 줄로 나온다(`Thread.Sleep` 12 → 13) — 트리 표시 보정 여부, `c.Count`(-780)·`c.current`(-729) 는 객체 덤프로만 읽힘(기존 사실).
+
+## 1-HI. 2026-11-13 세션 — 중첩(Group–Leaf) 라이브러리 중단점: 제어기 규칙 실측과 해법 (0.27.19)
+
+### 증상(요청)
+
+"`V2\Lib\v1` 같은 중첩 라이브러리 구조를 쓰고 싶은데 브레이크포인트가 안 걸려 난감. 지금은 `V2\Lib\v2` 처럼 풀어 쓰는데 불편하다.
+디버깅할 방법을 찾아 달라. 예전의 중첩 폴더 Unload/Load 문제가 `Lib` 폴더명 때문이었는지도 검토."
+`Lib/v1` = 리프마다 `.gpr`(51개)·`ProjectLibrary="Lib\Core\Log"` 꼴, `Lib/v2` = `PaL`·`Gantry` 두 폴더에 파일을 접두어로 펼친 형태.
+
+### 실측(G2400C 4.2K5 시뮬 192.168.0.1, 프로브 `captures/nesttest`·`nesttest2`·`v1test` — git 미추적)
+
+- `Set Break` 의 프로젝트 인자 = **`ProjectLibrary` 값 = `/GPL` 바로 아래 폴더 이름**. 형제 폴더 `FDir`(ProjectName `FName`): `Set Break FDir "F.gpl"4` → 0·히트, `FName` → -508.
+  §1-HC 는 PaL·Gantry 처럼 폴더명 = ProjectName 인 경우만 봐서 "라이브러리 ProjectName" 으로 적었다(틀린 일반화 — 정정).
+- 파일 인자 = 라이브러리 `.gpr` 의 `ProjectSource` 표기 그대로 역슬래시. `.gpr` 하나 + 하위 폴더 소스(`TLib`, `ProjectSource="Core\Log\Logger.gpl"`):
+  `Set Break TLib "Core\Log\Logger.gpl"4` → 0·히트, `/` 표기는 -508. 위치 표기는 `<ProjectLibrary 값>/<ProjectSource 표기>`(`TLib/Core\Log\Logger.gpl`).
+- **중첩 라이브러리(`ProjectLibrary="NLib\Core\Log"`)는 지정 불가**: 메인 프로젝트 + 파일명/경로 6종, 폴더명·ProjectName·최상위 폴더 + 하위 경로 8종 → -508,
+  값 자체를 프로젝트 인자로(`\`·`/`·따옴표·`\\`·`/GPL/…`) → -205, 모두 24종. Compile·Start·Step into·Show Stack(`NLib\Core\Log/Logger.gpl`)은 정상.
+  없는 프로젝트·파일·줄도 전부 -508 이라 오류 코드로 원인을 가를 수 없다. 2026-08-31 의 "12종 -508"(메인 폴더 안 중첩)과 같은 결론.
+- 폴더 이름 **`Lib` 는 문제 아님**: `/GPL/Lib` 을 중첩 리프로 참조한 앱, `.gpr` 하나 + 하위 폴더 소스로 참조한 앱 모두 Compile·Start·`Set Break Lib …`·Stop·Unload 정상
+  (`Lib` 는 GPL 예약어지만 프로젝트 이름으로는 통과). 예전 Unload 먹통은 그룹(ProjectStart 없는 `.gpr`) Compile 뒤 Unload 조합(§1-FR·§1-GJ)이고 이번엔 재현 시험을 하지 않았다
+  (재부팅 위험 — 사용자 동의 필요).
+- 실제 `Lib/v1` 사본을 "맨 위 `.gpr` 하나 + 하위 폴더 소스 83개"로 묶고 로거만 쓰는 앱을 `excludeUnreachableLibraryFiles` 로 배포: 1.64 MB → 4파일 15.6 KB 업로드,
+  Compile 0, `Set Break V1Lib "Core\Log\Logger.gpl"84` 히트, 그 프레임 `msg`·`context` 조회.
+
+### 조치(a1bcc5e)
+
+- `project/remote/breakpointTarget.ts`: 라이브러리 이름을 `ProjectName` 대신 **그 노드를 가리키는 `ProjectLibrary` 값**으로, 파일은 라이브러리 `.gpr` 의 `ProjectSource` 표기로.
+  값이 여러 조각(중첩)이면 `nestedLibraryRef` + 사유·해법 메시지를 주고 보내지 않는다(DAP 중단점 메시지, AI `nested-library-unaddressable`, BP Sync 로그).
+  `listLibraryProjectNames` = 낱말 하나인 값, `listNestedLibraryRefs` = 중첩 값.
+- MCP `libraryLocation.js`: `<lib>/<file>` 재작성의 파일 부분을 역슬래시로(종전 `Set Break TLib "Core/Log/Logger.gpl"` -508), 중첩 위치는 `refused:"nested-library-unaddressable"`(not-sent, 해법 포함).
+- 문서 `docs/reference/project-file-gpr.md` §4.1(배치별 표·시도한 표기·권장 구조). 생성 도우미 `captures/v1test/make_root_gpr.js`(표준 출력만, 파일 안 고침 — `Lib/v1` 에서 81개 등재·미등재 2개 보고).
+
+### 검증
+
+- `npm test` 1760/1760, `controller-mcp` 214/214. 제어기 규칙은 위 실측, 확장 쪽 새 경로(DAP 메시지·MCP 거부)는 단위 테스트(실측 배치 그대로) — 설치 뒤 실사용 확인은 verification §1-HI.
+- VSIX: `dist/gpl-language-support-0.27.19.vsix` — 1,838,033 bytes, SHA-256 `25C3F1DB7D447D43D92B6E5F369A58DCB023865EF272C032982D0C7CCC9B0A69`. 패키징 경고는 vsce 번들 권장 하나.
+
+### 남은 일(§3 「(2026-11-13, §1-HI)」)
+
+- 사용자 결정: ① `Lib/v1` 을 "맨 위 `.gpr` 하나" 형태로 바꿀지 ② 그 편집을 미리보기로 해 주는 확장 명령을 만들지 ③ 리프 `.gpr` 구조를 디스크에 그대로 두고 배포 사본에서만 평탄화(`/GPL/Lib_Core_Log`)하는 기능을 만들지.
+- 그룹 Compile 뒤 Unload 먹통이 이름(`Lib`)과 무관한지의 A/B 재현은 미실시(재부팅 필요할 수 있음).

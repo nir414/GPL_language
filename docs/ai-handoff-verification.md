@@ -11,6 +11,11 @@
 
 ## 확인 대기 항목
 
+- [ ] **(2026-11-13, §1-HI) 0.27.19 라이브러리 중단점 — 실사용 확인(시뮬레이션 제어기, Start 를 보낸다 — 모션 없는 `captures/nesttest` 프로브 권장).**
+  ① `captures/nesttest/FApp` 을 F5 → `FDir/F.gpl`(ProjectName 이 폴더명과 다름)·`TLib/Core/Log/Logger.gpl`(하위 폴더 소스) 거터 중단점이 검증됨(빨간 점)으로 뜨고 서는지.
+  ② `captures/nesttest/NApp` 을 F5 → `NLib/Core/Log/Logger.gpl` 중단점이 회색(미검증) + 마우스를 올리면 "중첩 라이브러리…" 사유가 보이는지, Step Into 로는 들어가지는지.
+  ③ `/mcp` 재연결 뒤 `set_breakpoint({file:"TLib/Core/Log/Logger.gpl"})` → `Set Break TLib "Core\Log\Logger.gpl"` 로 나가 STATUS 0, `set_breakpoint({file:"NLib/Core/Log/Logger.gpl"})` → `refused:"nested-library-unaddressable"`(전송 없음).
+
 - [ ] **(2026-11-13, §1-HH) 0.27.18 — 실기 재확인(시뮬레이션 제어기, Start·Step 을 보낸다 — 모션 없는 `captures/probe-callerline` 권장).**
   ① F5 로 `Callee` 안 BP 에 선 뒤 호출 스택의 `Main` 프레임을 누르면 호출 줄(7·12·16·19·20)이 강조되는지(전에는 다음 문장 줄). ② `/mcp` 재연결 뒤 `debug_snapshot({listLocals:true})` 의 `locals.names·values`, `show_stack` 의 `frames[].callLine`, 빈 줄로 `run_to_line` → `adjustedTo`.
   ③ 실행 뒤 한동안 두어도 「GPL Traffic」 에 `EVENT=PARSER_STALLED pending=1B` 가 안 생기는지. ④ 배포 Output 의 `이번 배포 이후 새 ErrorLog 없음 (이전 기록 N건)`. ⑤ `list_remote_projects.newestModifiedAt` 연도, 업데이트 뒤 첫 배포가 전체 업로드로 한 번 도는지.

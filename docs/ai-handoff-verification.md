@@ -14,6 +14,7 @@
 - [ ] **(2026-11-13, §1-HI) 0.27.19 라이브러리 중단점 — 실사용 확인(시뮬레이션 제어기, Start 를 보낸다 — 모션 없는 `captures/nesttest` 프로브 권장).**
   ① `captures/nesttest/FApp` 을 F5 → `FDir/F.gpl`(ProjectName 이 폴더명과 다름)·`TLib/Core/Log/Logger.gpl`(하위 폴더 소스) 거터 중단점이 검증됨(빨간 점)으로 뜨고 서는지.
   ② `captures/nesttest/NApp` 을 F5 → `NLib/Core/Log/Logger.gpl` 중단점이 회색(미검증) + 마우스를 올리면 "중첩 라이브러리…" 사유가 보이는지, Step Into 로는 들어가지는지.
+  ④ (0.27.20, 제어기 불필요) `.gpr` 이 없는 라이브러리 폴더에서 「Sync Project Sources」 → 모달이 "ProjectStart 없이(라이브러리 프로젝트로)" 라고 안내하고 만든 파일에 `ProjectStart` 줄이 없는지, 하위 폴더 소스가 `Core\Log\Logger.gpl` 꼴로 들어가는지(QuickPick·모달은 자동 시험 밖).
   ③ `/mcp` 재연결 뒤 `set_breakpoint({file:"TLib/Core/Log/Logger.gpl"})` → `Set Break TLib "Core\Log\Logger.gpl"` 로 나가 STATUS 0, `set_breakpoint({file:"NLib/Core/Log/Logger.gpl"})` → `refused:"nested-library-unaddressable"`(전송 없음).
 
 - [ ] **(2026-11-13, §1-HH) 0.27.18 — 실기 재확인(시뮬레이션 제어기, Start·Step 을 보낸다 — 모션 없는 `captures/probe-callerline` 권장).**

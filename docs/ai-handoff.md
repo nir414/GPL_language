@@ -1,6 +1,6 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.19** (중첩 라이브러리 중단점 규칙 실측·이름 규칙 정정, 1760/1760 · MCP 214/214. 상세는 §1-HI.)
+- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.20** (중첩 라이브러리 중단점 규칙 실측·이름 규칙 정정, 라이브러리용 `.gpr` 생성 보정, 1763/1763 · MCP 214/214. 상세는 §1-HI.)
 - **직전 세션: §1-HI** — "중첩 라이브러리(`Lib/v1`)에서 BP 가 안 걸린다, 방법을 찾아 달라" → 시뮬 제어기 실측: `Set Break` 는 `/GPL` 바로 아래 폴더 이름만 받아 중첩 리프는 지정 불가, **맨 위 `.gpr` 하나 + 하위 폴더 소스**면 걸림(실제 Lib/v1 로 확인). 확장의 라이브러리 이름 규칙(ProjectName → 폴더 이름) 정정, 중첩이면 사유·해법 안내. 구조 변경·평탄화 기능은 사용자 결정 대기(§3).
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
@@ -82,7 +82,7 @@
 > **실사용·실기·UI 확인 항목은 `docs/ai-handoff-verification.md`로 옮겼다(2026-11-04).** 이 절에는 코드 작업과 결정 대기만
 > 둔다. 새 VSIX의 확인 항목은 그 파일에 추가한다(규칙: `docs/development/record-keeping.md`).
 
-- [ ] **(2026-11-13, §1-HI) 중첩 라이브러리 — 사용자 결정·후속.** ① Sample Prep `Lib/v1` 을 "맨 위 `.gpr` 하나 + 하위 폴더 소스"로 바꿀지(생성 도우미 `captures/v1test/make_root_gpr.js`, 리프 `.gpr`·앱의 `ProjectLibrary` 줄 정리는 사용자 저장소 작업) ② 그 편집을 좌우 미리보기 + 승인으로 해 주는 확장 명령(「중단점용 소스 승격」의 라이브러리 단위 판) ③ 디스크의 리프 구조는 두고 **배포 사본에서만 평탄화**(`ProjectLibrary="Lib\Core\Log"` → `/GPL/Lib_Core_Log`, `.gpr` 참조 고쳐 쓰기, BP·오류 위치 역대응) — 전처리 스테이지·`libraryUploadPlan`·`breakpointTarget` 에 걸친 큰 작업이라 결정 뒤 착수 ④ `.gpr` 하나 형태에서 하위 폴더의 쓰이지 않는 리프 `Project.gpr` 까지 올라간다(V1Lib 56파일 중 52개) — 라이브러리 루트 `.gpr` 이 소스를 직접 등재하면 하위 `.gpr` 을 업로드에서 뺄지 ⑤ 연결된 창이 없을 때 1402 경로가 세션 대상 창이 아니라 리더 창으로 간다(`pickConsoleRouteInstance` 에 세션 대상 우선) ⑥ 그룹 Compile 뒤 Unload 먹통의 이름 무관 여부 A/B(재부팅 위험 — 사용자 동의 뒤).
+- [ ] **(2026-11-13, §1-HI) 중첩 라이브러리 — 사용자 결정·후속.** ① Sample Prep `Lib/v1` 을 "맨 위 `.gpr` 하나 + 하위 폴더 소스"로 바꿀지(리프·그룹 `.gpr` 을 지우고 루트 `.gpr` 하나만 남긴 뒤 「Sync Project Sources」가 하위 폴더 소스를 채운다 — §1-HI 덧붙임. 앱의 `ProjectLibrary` 줄 정리는 사용자 저장소 작업) ② 그 편집을 좌우 미리보기 + 승인으로 해 주는 확장 명령(「중단점용 소스 승격」의 라이브러리 단위 판) ③ 디스크의 리프 구조는 두고 **배포 사본에서만 평탄화**(`ProjectLibrary="Lib\Core\Log"` → `/GPL/Lib_Core_Log`, `.gpr` 참조 고쳐 쓰기, BP·오류 위치 역대응) — 전처리 스테이지·`libraryUploadPlan`·`breakpointTarget` 에 걸친 큰 작업이라 결정 뒤 착수 ④ `.gpr` 하나 형태에서 하위 폴더의 쓰이지 않는 리프 `Project.gpr` 까지 올라간다(V1Lib 56파일 중 52개) — 라이브러리 루트 `.gpr` 이 소스를 직접 등재하면 하위 `.gpr` 을 업로드에서 뺄지 ⑤ 연결된 창이 없을 때 1402 경로가 세션 대상 창이 아니라 리더 창으로 간다(`pickConsoleRouteInstance` 에 세션 대상 우선) ⑥ 그룹 Compile 뒤 Unload 먹통의 이름 무관 여부 A/B(재부팅 위험 — 사용자 동의 뒤).
 - [ ] **(2026-11-13, §1-HH) 실기 시험 후속.** ① Running 쓰레드의 `Show Thread` 줄도 "다음 문장" 줄로 나온다(`Thread.Sleep` 12 → 13 `End While`) — 트리·대시보드 위치 표시에 `callSiteLine` 식 보정을 넣을지(정지 쓰레드는 정확) ② `callSiteLine` 을 라이브러리 소스(`<lib>/<file>`)·원격 소스 세션에서도 확인 ③ `Exit Property`·`:` 구분을 docs/gpl-language/common-mistakes 에 실측표로 ④ 문서와 다른 실측(Exit Property, 이름 없는 Show Variable)을 다른 펌웨어에서 재확인할 기회가 있으면 기록.
 - [ ] **(2026-11-13, §1-HG) 수신함 보류 — 다음 작업 후보.** 원문은 수신함 `done/` 의 같은 이름 파일.
   ① 라이브러리 버전 v2 #8 배포 묶음 내보내기(`GPL: Export Deployed Bundle` — §1-HG 의 `libraries` 출처·해시 위에) ② #4 라이브러리 두 판의 Public 선언 차이 목록 ③ #5 고정 external 안 파일 편집 경고 ④ #6 `.gpr` 지시문으로 형제 밖 라이브러리 경로
@@ -871,7 +871,7 @@ JointOnly · ctor Init · Catch 새 객체 · try-finally · thread-block/Mid ·
 - 제어기 `/GPL` 에 시험 폴더(syntax_tour·probe_exitprop·probe_callerline·probe_loop·LtApp·LtLib)가 남아 있다 — 지우기는 사용자 동의 뒤. Sample Prep App 은 내려간 상태.
 - 관찰만 한 것(§3): Running 쓰레드의 `Show Thread` 줄도 Sleep 다음 문장 줄로 나온다(`Thread.Sleep` 12 → 13) — 트리 표시 보정 여부, `c.Count`(-780)·`c.current`(-729) 는 객체 덤프로만 읽힘(기존 사실).
 
-## 1-HI. 2026-11-13 세션 — 중첩(Group–Leaf) 라이브러리 중단점: 제어기 규칙 실측과 해법 (0.27.19)
+## 1-HI. 2026-11-13 세션 — 중첩(Group–Leaf) 라이브러리 중단점: 제어기 규칙 실측과 해법 (0.27.19 · 0.27.20)
 
 ### 증상(요청)
 
@@ -906,6 +906,16 @@ JointOnly · ctor Init · Catch 새 객체 · try-finally · thread-block/Mid ·
 
 - `npm test` 1760/1760, `controller-mcp` 214/214. 제어기 규칙은 위 실측, 확장 쪽 새 경로(DAP 메시지·MCP 거부)는 단위 테스트(실측 배치 그대로) — 설치 뒤 실사용 확인은 verification §1-HI.
 - VSIX: `dist/gpl-language-support-0.27.19.vsix` — 1,838,033 bytes, SHA-256 `25C3F1DB7D447D43D92B6E5F369A58DCB023865EF272C032982D0C7CCC9B0A69`. 패키징 경고는 vsce 번들 권장 하나.
+
+### 덧붙임 — `.gpr` 소스 목록 동기화 시험(0.27.20, 9027d5c)
+
+사용자 질문 "gpr 자동 생성 기능 테스트는 해봤어?" — 앞에서는 제 스크립트만 돌렸고 확장의 「Sync Project Sources」는 확인하지 않았었다. 실제 `Lib/v1` 사본 세 벌로 순수 모듈(`checkGprFolderSync`·`applyGprSync`)을 돌렸다(명령의 QuickPick·모달 UI 는 AI 가 조작할 수 없어 미확인).
+
+- 리프·그룹 `.gpr` 을 지우고 루트 `.gpr` 하나만: 하위 폴더 소스 **83개를 `Core\Log\Logger.gpl` 꼴로 추가**, 다시 대조하면 동기화됨 → 권장 구조는 이 기능만으로 만들고 유지된다(제 스크립트 불필요).
+- 원본 그대로(리프 `.gpr` 51개): 리프 폴더는 중첩 프로젝트로 빠지고, 어느 `.gpr` 에도 없는 `Frame\Tool\ToolTable.gpl`·`Frame\Tree\FrameTree.gpl` 2개만 루트(그룹) `.gpr` 에 추가 제안 — 지금 이 두 파일은 아무도 컴파일하지 않는다.
+- 루트에 직접 등재 + 리프 `.gpr` 남김: "동기화됨"으로 나오지만 리프 폴더에 새 파일이 생기면 리프 `.gpr` 로 가고 루트는 낡는다 → 구조를 바꿀 때 리프 `.gpr` 은 지워야 한다.
+- 결함: `.gpr` 이 없는 폴더에 새로 만들 때 늘 `ProjectStart="Main"` 을 달았다 — 라이브러리가 실행 프로젝트·컴파일 루트로 보인다. 소스에 `Sub Main` 선언이 없으면 `ProjectStart` 줄 없이 만든다(`detectStartProcedure`, `createGprText({projectStart:null})`).
+- `npm test` 1763/1763. VSIX: `dist/gpl-language-support-0.27.20.vsix` — 1,838,736 bytes, SHA-256 `BC4F6744B5E672745410B9C300DD492AE24D7B4EC1981B6CB14CAF3EC199900D`. 패키징 경고는 vsce 번들 권장 하나.
 
 ### 남은 일(§3 「(2026-11-13, §1-HI)」)
 

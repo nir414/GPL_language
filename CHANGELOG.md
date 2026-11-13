@@ -2,6 +2,12 @@
 
 이 프로젝트의 주요 변경 사항은 이 파일에 기록한다.
 
+## [0.27.20] - 2026-11-13
+
+### Fixed
+
+- 「Sync Project Sources」로 `Project.gpr` 를 새로 만들 때, 소스에 `Sub Main` 이 없으면 `ProjectStart` 줄 없이 라이브러리 프로젝트로 만듭니다. 종전에는 늘 `ProjectStart="Main"` 이 붙어 라이브러리가 실행 프로젝트로 보였습니다.
+
 ## [0.27.19] - 2026-11-13
 
 ### Fixed

@@ -17,8 +17,9 @@ test('MCP 등록 항목: 주소·프로젝트를 적지 않고 브리지 전용�
 
 test('MCP 등록 판정: 없음·옛 형식(우리 것)·다른 파일(직접 등록)을 가른다', () => {
 	assert.strictEqual(classifyEntry(undefined, STABLE).state, 'absent');
-	// 경로 대소문자·구분자 차이는 같은 파일이다.
-	assert.strictEqual(classifyEntry({ command: 'node.exe', args: [STABLE.toLowerCase().replace(/\\/g, '/')], env: { GPL_BRIDGE: 'only' } }, STABLE).state, 'current');
+	// Windows 에서는 경로 대소문자·구분자 차이가 같은 파일이다(경로 키는 플랫폼 규칙을 따른다 — Linux CI 는 그대로 비교).
+	const sameFile = process.platform === 'win32' ? STABLE.toLowerCase().replace(/\\/g, '/') : STABLE;
+	assert.strictEqual(classifyEntry({ command: 'node.exe', args: [sameFile], env: { GPL_BRIDGE: 'only' } }, STABLE).state, 'current');
 	const legacy = classifyEntry({ type: 'stdio', command: 'node', args: [STABLE], env: { GPL_BRIDGE: 'only', GPL_HOST: '192.168.0.1', GPL_PORT: '1402' } }, STABLE);
 	assert.strictEqual(legacy.state, 'outdated');
 	assert.match(legacy.detail ?? '', /GPL_HOST\/GPL_PORT/);

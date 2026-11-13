@@ -155,8 +155,8 @@ test('dependencyCheck: ProjectName 은 폴더 이름과 같아야 한다 — 그
     const caseOnly = at('BinderR4', 'ProjectBegin\r\n  ProjectName="binderr4"\r\nProjectEnd')!;
     assert.ok(caseOnly.message.includes('대소문자가 다릅니다'));
     assert.strictEqual((caseOnly.fix as { text: string }).text, '  ProjectName="BinderR4"', '들여쓰기는 유지');
-    const dup = projectNameMismatch({ gprPath: 'C:\\p\\Lib\\Data\\Project.gpr', text: 'ProjectBegin\nProjectName="Lib_Data"\nProjectEnd' },
-        ['C:\\p\\Gantry\\Data\\Project.gpr'])!;
+    const dup = projectNameMismatch({ gprPath: path.join('C:\\p', 'Lib', 'Data', 'Project.gpr'), text: 'ProjectBegin\nProjectName="Lib_Data"\nProjectEnd' },
+        [path.join('C:\\p', 'Gantry', 'Data', 'Project.gpr')])!;
     assert.ok(dup.message.includes('Gantry\\Data') && dup.message.includes('겹칩니다'), '고치면 겹치는 폴더 이름을 알린다');
     assert.deepStrictEqual(at('X', 'ProjectBegin\nProjectSource="a.gpl"\nProjectEnd')!.fix,
         { kind: 'insert', insertLine: 1, text: 'ProjectName="X"', title: 'ProjectName="X" 추가' });

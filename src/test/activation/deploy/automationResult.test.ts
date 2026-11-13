@@ -31,7 +31,8 @@ test('automationResult: isAutomationFailure 는 ok:false + error 문자열만 �
 });
 
 test('automationResult: 세션 대상 상태 — 고정된 대상은 경로 키 비교(대소문자·구분자 무시)로 찾고 후보에 라이브러리 참조를 싣는다', () => {
-	const status = describeSessionTargetStatus(candidates, 'c:/ws/main');
+	// 대소문자·구분자 무시는 Windows 경로 키 규칙이다 — 다른 OS(Linux CI)에서는 같은 표기로 찾는다.
+	const status = describeSessionTargetStatus(candidates, process.platform === 'win32' ? 'c:/ws/main' : 'C:\\ws\\Main');
 	assert.deepStrictEqual(status.target, { project: 'Main', dir: 'C:\\ws\\Main', runnable: true });
 	assert.deepStrictEqual(status.candidates, [
 		{ project: 'Main', dir: 'C:\\ws\\Main', runnable: true },

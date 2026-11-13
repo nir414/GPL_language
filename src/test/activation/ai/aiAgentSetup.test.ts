@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as vm from 'vm';
 import { test } from '../../harness';
-import { GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, LEGACY_GUIDE_FILE_HEADER } from '../../../controller/automation/agentSetupChecks';
+import { GUIDE_BEGIN, GUIDE_END, GUIDE_VERSION_MARK, LEGACY_GUIDE_FILE_HEADER, readCodexEntry } from '../../../controller/automation/agentSetupChecks';
 
 /** vm 컨텍스트에서 만든 배열·객체는 프로토타입이 달라 deepStrictEqual 이 실패한다 — 값만 비교한다. */
 const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -178,7 +178,8 @@ test('AI MCP 등록: Codex 가 설치돼 있으면 config.toml 에도 등록하�
 	assert.strictEqual(result.codex.action, 'registered');
 	const toml = env.read(env.codexToml);
 	assert.ok(toml.startsWith('[features]\r\nx = true\r\n\r\n[mcp_servers.gpl-controller]\r\n'));
-	assert.ok(toml.includes(`args = ['${env.stable}']`));
+	// 따옴표 형식은 경로에 역슬래시가 있는지에 따라 다르다(Windows literal / POSIX basic) — 읽은 값으로 비교한다.
+	assert.deepStrictEqual(readCodexEntry(toml)?.args, [env.stable]);
 	assert.strictEqual(result.report.codex.state, 'current');
 });
 

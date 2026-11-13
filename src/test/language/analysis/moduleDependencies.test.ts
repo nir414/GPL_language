@@ -1,10 +1,13 @@
 import * as assert from 'assert';
+import { sep } from 'path';
 import { test } from '../../harness';
 import { GPLParser, GPLSymbol } from '../../../language/syntax/gplParser';
 import { collectRequiredFiles, DependencyLookup, orderRequiredFiles, RequiredFile, scanChains } from '../../../language/analysis/moduleDependencies';
 import { buildReceiverContextFromText } from '../../../providers/intellisense/receiverContext';
 
 const src = (...lines: string[]): string => lines.join('\n');
+/** 픽스처 경로를 이 OS 의 구분자로 — 제품 코드는 path.basename(플랫폼 기본)을 쓰므로 Linux CI 에서도 같은 결과가 나오게 한다. */
+const native = (p: string): string => p.replace(/\\/g, sep);
 
 /** 실제 배선(requiresHeaderPlan)과 같은 수신자 조립으로 계산한다. */
 function collect(text: string, filePath: string, lookup: DependencyLookup): RequiredFile[] {
@@ -23,7 +26,7 @@ function lookupOf(files: Record<string, string>, sameUnit: (candidate: string) =
 }
 
 const LIB = {
-    'C:\\p\\Lib\\MotionSystem.gpl': src(
+    [native('C:\\p\\Lib\\MotionSystem.gpl')]: src(
         'Module MSY',
         '    Public Class MotionSystem',
         '        Public Function OpenLines() As Boolean',
@@ -37,7 +40,7 @@ const LIB = {
         '    End Sub',
         'End Module',
     ),
-    'C:\\p\\Lib\\Logger.gpl': src(
+    [native('C:\\p\\Lib\\Logger.gpl')]: src(
         'Module LOG',
         '    Public Sub Write(msg As String)',
         '    End Sub',
@@ -45,7 +48,7 @@ const LIB = {
         '    End Sub',
         'End Module',
     ),
-    'C:\\p\\Lib\\Worker.gpl': src(
+    [native('C:\\p\\Lib\\Worker.gpl')]: src(
         'Module RWK',
         '    Public Class RobotWorker',
         '        Public Shared Sub ResetSharedState()',
@@ -53,11 +56,11 @@ const LIB = {
         '    End Class',
         'End Module',
     ),
-    'C:\\p\\Lib\\DupA.gpl': src('Module DPA', '    Public Sub Same()', '    End Sub', 'End Module'),
-    'C:\\p\\Lib\\DupB.gpl': src('Module DPB', '    Public Sub Same()', '    End Sub', 'End Module'),
+    [native('C:\\p\\Lib\\DupA.gpl')]: src('Module DPA', '    Public Sub Same()', '    End Sub', 'End Module'),
+    [native('C:\\p\\Lib\\DupB.gpl')]: src('Module DPB', '    Public Sub Same()', '    End Sub', 'End Module'),
 };
 
-const MACHINE_PATH = 'C:\\p\\App\\Machine.gpl';
+const MACHINE_PATH = native('C:\\p\\App\\Machine.gpl');
 const MACHINE = src(
     "'Requires:",
     "' - MotionSystem.gpl (Module MSY): MotionSystem(OpenLines, Shutdown)",
@@ -106,22 +109,22 @@ test('moduleDependencies: 로컬이 가린 이름과 자기 파일 선언은 의
         '    End Sub',
         'End Module',
     );
-    const path = 'C:\\p\\App\\App.gpl';
+    const path = native('C:\\p\\App\\App.gpl');
     assert.deepStrictEqual(collect(text, path, lookupOf({ ...LIB, [path]: text })), []);
 });
 
 test('moduleDependencies: 같은 컴파일 단위 후보를 우선하고, 다른 프로젝트에 복제된 같은 파일은 한 항목으로 접는다', () => {
-    const copy = 'C:\\other\\Lib\\Logger.gpl';
+    const copy = native('C:\\other\\Lib\\Logger.gpl');
     const text = src('Module APP', '    Public Sub Run()', '        LOG.Write("a")', '    End Sub', 'End Module');
-    const path = 'C:\\p\\App\\App.gpl';
-    const files = collect(text, path, lookupOf({ ...LIB, [copy]: LIB['C:\\p\\Lib\\Logger.gpl'] }, c => c.startsWith('C:\\p\\')));
-    assert.deepStrictEqual(files.map(f => f.filePath), ['C:\\p\\Lib\\Logger.gpl']);
-    const unknownUnit = collect(text, path, lookupOf({ ...LIB, [copy]: LIB['C:\\p\\Lib\\Logger.gpl'] }, () => false));
+    const path = native('C:\\p\\App\\App.gpl');
+    const files = collect(text, path, lookupOf({ ...LIB, [copy]: LIB[native('C:\\p\\Lib\\Logger.gpl')] }, c => c.startsWith(native('C:\\p\\'))));
+    assert.deepStrictEqual(files.map(f => f.filePath), [native('C:\\p\\Lib\\Logger.gpl')]);
+    const unknownUnit = collect(text, path, lookupOf({ ...LIB, [copy]: LIB[native('C:\\p\\Lib\\Logger.gpl')] }, () => false));
     assert.strictEqual(unknownUnit.length, 1, '경계를 모르면 사본은 같은 파일명·모듈로 접힌다');
 });
 
 test('moduleDependencies: 순서를 주면 그 순서, 모르는 파일은 뒤에 파일명 순', () => {
     const files = collect(MACHINE, MACHINE_PATH, lookupOf(LIB));
-    const order = new Map([['C:\\p\\Lib\\Worker.gpl', 0], ['C:\\p\\Lib\\MotionSystem.gpl', 1]]);
+    const order = new Map([[native('C:\\p\\Lib\\Worker.gpl'), 0], [native('C:\\p\\Lib\\MotionSystem.gpl'), 1]]);
     assert.deepStrictEqual(orderRequiredFiles(files, p => order.get(p)).map(f => f.fileName), ['Worker.gpl', 'MotionSystem.gpl', 'Logger.gpl']);
 });

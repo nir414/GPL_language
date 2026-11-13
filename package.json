@@ -1675,6 +1675,24 @@
                     "default": true,
                     "description": "업로드(Upload Only·Deploy·Upload & Start·Quick Compile) 때 .gpr 의 ProjectLibrary 를 따라가, 프로젝트 폴더 밖이지만 같은 projects 폴더 안에 있는 라이브러리(예: projects/Main 이 참조하는 projects/Libraries)를 /GPL/<ProjectLibrary 값> 으로 함께 올립니다. 프로젝트 폴더 안의 라이브러리는 원래 함께 올라갑니다. 내장형 패키지(ProjectStart 가 있는 상위 .gpr 안의 하위 패키지, 예: BinderR4\\Gantry\\Data)의 라이브러리는 그 컴파일 루트에 속하므로 따로 올리지 않습니다. 변경분만 올리고 원격 전용 파일은 지우지 않습니다. 저장 시 자동 업로드(autoOnSave)에는 적용되지 않습니다."
                 },
+                "gpl.deploy.libraryPreflight": {
+                    "scope": "resource",
+                    "type": "object",
+                    "default": {},
+                    "markdownDescription": "배포(Upload Only·Deploy·Upload & Start·Quick Compile) 전에 함께 컴파일되는 라이브러리(.gpr 의 `ProjectLibrary`)마다 출처를 검사합니다. 폴더·`Project.gpr` 존재, `svn:externals` 값과 실제 작업 사본의 URL·revision 어긋남(고정 드리프트), 커밋하지 않은 로컬 변경, 원격에 마지막으로 올린 출처와 이번 로컬 출처의 일치 여부(일치·불일치·확인 불가)를 보고하고, 결과는 배포 결과와 작업 기록의 `preflight` 에 남습니다. SVN 정보를 읽지 못하면(svn 없음·작업 사본 아님) 검사 없이 계속합니다. **기본은 경고만 하고 막지 않습니다.**\n\n- `blockOn`: 이 항목에 해당하면 배포를 멈춥니다. `missing`(폴더·Project.gpr 없음), `pinnedDrift`(externals 와 작업 사본 불일치), `modified`(커밋하지 않은 변경), `uploadMismatch`(이전 업로드 출처와 다름). 확인 불가는 일치로 보지 않지만 막지도 않습니다.\n\n예: `{ \"blockOn\": [\"missing\", \"pinnedDrift\"] }`",
+                    "properties": {
+                        "blockOn": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["missing", "pinnedDrift", "modified", "uploadMismatch"]
+                            },
+                            "default": [],
+                            "description": "배포를 멈출 검사 항목(missing·pinnedDrift·modified·uploadMismatch). 비어 있으면 경고만 합니다."
+                        }
+                    },
+                    "additionalProperties": false
+                },
                 "gpl.deploy.preprocess": {
                     "scope": "resource",
                     "type": "object",

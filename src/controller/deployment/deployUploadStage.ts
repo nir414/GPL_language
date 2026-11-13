@@ -29,6 +29,7 @@ import { stopGateLabelFor, uploadLockStageFor } from './deployModes';
 import { runStopGate } from './deployStopStage';
 import { recoverMemoryBeforeUpload } from './deployMemoryRecovery';
 import { preparePreprocess } from './deployPreprocessStage';
+import { recordUploadedLibrary } from './libraryPreflightStage';
 
 /** 업로드 작업의 결과 — 예외를 던지지 않고 돌려준다(Promise.all에서 다른 쪽을 끝까지 기다리기 위해). */
 export type UploadOutcome = { ok: true; pendingDeletes: RemoteFileRef[] } | { ok: false; message: string };
@@ -167,6 +168,7 @@ export async function runUploadAndStopPhase(ctx: DeployContext, project: DeployP
                 const stale = prepared?.staleExcludedRefs(lib.remoteDir, getSyncManifest(cfg.ip, lib.remoteDir)) ?? [];
                 if (stale.length > 0) { staleExcluded.push({ remoteDir: lib.remoteDir, refs: stale }); }
                 result.libraryUploads.push({ ...lib, uploaded: stats.uploaded, skipped: stats.skipped });
+                recordUploadedLibrary(ctx, lib, prepared?.uploadDirFor(lib.localDir) ?? lib.localDir);
                 pushTrace(`│ ✔ Library done: ${stats.uploaded} sent, ${stats.skipped} skipped (${lib.remoteDir})`);
             } catch (e: any) {
                 const cancelled = isUploadCancelledError(e) || isCancelled();

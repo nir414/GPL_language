@@ -72,6 +72,7 @@ import './controller/files/basicFtpCompat.test';
 import './controller/deployment/uploadProgress.test';
 import './controller/deployment/libraryUploadPlan.test';
 import './controller/deployment/deployPreprocess.test';
+import './controller/deployment/libraryProvenance.test';
 import './views/statusbar/uploadProgressBar.test';
 import './controller/deployment/flashSafety.test';
 import './util/formatBytes.test';

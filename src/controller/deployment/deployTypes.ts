@@ -5,6 +5,8 @@
  */
 
 import type { CommandResponseMeta } from '../connection/controllerConnection';
+import type { LibraryProvenance } from './libraryProvenance';
+import type { LibraryPreflightResult } from './libraryPreflight';
 import type { PostStartRuntimeError, PostStartWatchOutcome } from '../threads/postStartWatch';
 import type { CompileError } from '../protocol/responseParser';
 import type { DeployLockRecord } from './deployLock';
@@ -202,6 +204,12 @@ export interface DeployResult {
     uploadStats?: { uploaded: number; skipped: number; totalBytes: number; deleted?: number };
     /** 함께 올린 라이브러리(`uploadLibraries`) — 올린 순서. 실패하면 거기까지(실패한 것 제외). */
     libraryUploads?: { raw: string; localDir: string; remoteDir: string; uploaded: number; skipped: number }[];
+    /** 라이브러리별 출처·업로드 집합 해시(libraryProvenance.ts) — 함께 올린 라이브러리만. svn 정보가 없으면 `vcs:null`. */
+    libraries?: LibraryProvenance[];
+    /** 한 줄 요약(`libs PaL v2@r5405(pinned) · Gantry v2@HEAD+3M`) — 배포 전 검사에서 읽은 출처 기준. */
+    librarySummary?: string;
+    /** 배포 전 라이브러리 검사 결과(libraryPreflight.ts) — 기본은 경고만, 설정 `gpl.deploy.libraryPreflight.blockOn` 이 막을 수 있다. */
+    preflight?: LibraryPreflightResult;
     /** 배포 전처리를 켰으면 그 결과(사본 위치·줄인 바이트·제외 파일). 켜지 않았으면 undefined. */
     preprocess?: DeployPreprocessSummary;
     failedPhase?: DeployPhase;

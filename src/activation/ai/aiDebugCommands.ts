@@ -20,6 +20,7 @@ import { listRemoteDir, listRemoteDirs, normalizeAbsoluteRemoteDir } from '../..
 import { classifyRemoteClearRoot, clearRemoteFolderEntries, judgeAiClearThreadGate, selectRemoteClearTargets } from '../../controller/files/remoteFolderClear';
 import { verifyControllerForFtpWrite } from '../../controller/connection/controllerIdentityIo';
 import { getCompiledRecord } from '../../controller/deployment/deployRecord';
+import { describeLibraries } from '../../controller/deployment/libraryProvenance';
 import { compileUntilPattern } from '../../controller/runtime/runtimeConsoleBuffer';
 import { SHOW_THREAD_LIST_CMD, parseBreakList, parseStack, parseStatus, parseThreadList } from '../../controller/protocol/responseParser';
 import { buildStepCommand } from '../../controller/commands/stepCommand';
@@ -507,6 +508,8 @@ export function activateAiDebugCommands(host: ExtensionHost): void {
 					projectDir: rec.projectDir,
 					compiledAt: new Date(rec.compiledAt).toISOString(),
 					...(rec.preprocess ? { preprocess: rec.preprocess } : {}),
+					// 함께 올린 라이브러리의 SVN 출처·업로드 해시 — 어느 버전 라이브러리로 컴파일했는지.
+					...(rec.libraries && rec.libraries.length > 0 ? { libraries: rec.libraries, librarySummary: describeLibraries(rec.libraries) } : {}),
 				} : null,
 			};
 		});

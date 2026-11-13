@@ -89,6 +89,7 @@ export function recordCompileSnapshot(ctx: DeployContext): void {
             projectDir: options.projectDir,
             compiledAt: Date.now(),
             files,
+            ...(result.libraries && result.libraries.length > 0 ? { libraries: result.libraries } : {}),
             ...(ctx.preprocess ? {
                 preprocess: {
                     options: describePreprocessOptions(ctx.preprocess.options),

@@ -1,7 +1,7 @@
 # AI 인계 자료 — GPL Language Support 확장 작업 핸드오프
 
-- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.20** (중첩 라이브러리 중단점 규칙 실측·이름 규칙 정정, 라이브러리용 `.gpr` 생성 보정, 1763/1763 · MCP 214/214. 상세는 §1-HI.)
-- **직전 세션: §1-HI** — "중첩 라이브러리(`Lib/v1`)에서 BP 가 안 걸린다, 방법을 찾아 달라" → 시뮬 제어기 실측: `Set Break` 는 `/GPL` 바로 아래 폴더 이름만 받아 중첩 리프는 지정 불가, **맨 위 `.gpr` 하나 + 하위 폴더 소스**면 걸림(실제 Lib/v1 로 확인). 확장의 라이브러리 이름 규칙(ProjectName → 폴더 이름) 정정, 중첩이면 사유·해법 안내. 구조 변경·평탄화 기능은 사용자 결정 대기(§3).
+- **최종 갱신: 2026-11-13** · 현재 package 버전 **0.27.21** (코드 리뷰 반영 6건, 완성 목록 캐시로 요청 850 → 42/0.001 ms, 1767/1767 · MCP 216/216. 상세는 §1-HJ.)
+- **직전 세션: §1-HJ** — "다른 AI 에게 코드 리뷰를 시켜 개선하고, 성능 개선 방법(Go 전환 포함)을 알려 달라" → 하위 에이전트 3개의 리뷰를 소스·재현으로 대조해 6건 수정(도달성 판정의 타입 이름 누락이 가장 큼), 성능은 실측: 완성 요청이 요청마다 전부 다시 계산해 850 ms 였던 것을 캐시로 해소. Go 재작성은 권하지 않고 esbuild 번들·Requires 대조 지연 등을 §3 에 측정값과 함께 남김.
 - 대상 저장소: `C:\Users\Doyun\Documents\GitHub\GPL_language` (VS Code 확장 `nir414.gpl-language-support`)
 - 테스트 대상 프로젝트: `C:\SVN\pa\trunk\develop\07. Others\37. 핵산 Oligo 합성과제\시뮬레이션\projects\MergeCode` (65 파일)
 - 제어기: G2400C, GPL 4.2K5, `192.168.0.1` (명령 1402 / 런타임 콘솔 1403)
@@ -82,6 +82,7 @@
 > **실사용·실기·UI 확인 항목은 `docs/ai-handoff-verification.md`로 옮겼다(2026-11-04).** 이 절에는 코드 작업과 결정 대기만
 > 둔다. 새 VSIX의 확인 항목은 그 파일에 추가한다(규칙: `docs/development/record-keeping.md`).
 
+- [ ] **(2026-11-13, §1-HJ) 리뷰·성능 후속.** 성능(측정값은 §1-HJ): ① 확장 본체 esbuild 번들(로드 250 → 90 ms, 파일 392 → 약 70 — `--main-fields=module,main`, `__dirname` 의존 없음. 패키징·F5 경로가 바뀌어 실제 VS Code 활성화 확인 필요 — 사용자와 함께) ② 진단의 Requires 헤더 대조를 저장 시·긴 지연으로(큰 파일 110~180 ms/멈춤) ③ 의존성 자동 검사의 캐시 키를 "이름 → 파일 대응이 바뀔 때"로(지금은 타이핑마다 무효) ④ `.gpr` 변경 때 인덱스를 비우지 않고 차이만 반영 ⑤ 참조 검색 역인덱스 ⑥ Agent Bridge 폴링 완화. 리뷰에서 남긴 것: ⑦ `Case 1: y = 2`·`Label: x = 1` 의 `:` 를 4.2K5 에서 실측해 `statement-separator-colon` 범위 확정(지금 Case 꼴은 error 로 뜬다) ⑧ `ProjectLibrary="..\X"`·절대 경로 표기의 제어기 동작 실측(지금은 중첩으로 거부) ⑨ `callSiteLine` 의 줄 이음·여러 줄 조건 ⑩ 연결 직후 정체 조회(pd 4건)를 연결 세대 확인·한 번 경고로 ⑪ `last-connected` IP 가 User 설정 `gpl.controller.ip` 보다 앞서는 우선순위(§1-HG 설계 — 설정을 고쳐도 다음 연결까지 옛 IP, 사용자 판단) ⑫ FTP LIST `Feb 29`(윤년 아님) ⑬ 라이브러리 업로드 뒤 동기 해시(큰 라이브러리에서 호스트 정지) ⑭ externals 속성을 3단계 위까지만 찾음.
 - [ ] **(2026-11-13, §1-HI) 중첩 라이브러리 — 사용자 결정·후속.** ① Sample Prep `Lib/v1` 을 "맨 위 `.gpr` 하나 + 하위 폴더 소스"로 바꿀지(리프·그룹 `.gpr` 을 지우고 루트 `.gpr` 하나만 남긴 뒤 「Sync Project Sources」가 하위 폴더 소스를 채운다 — §1-HI 덧붙임. 앱의 `ProjectLibrary` 줄 정리는 사용자 저장소 작업) ② 그 편집을 좌우 미리보기 + 승인으로 해 주는 확장 명령(「중단점용 소스 승격」의 라이브러리 단위 판) ③ 디스크의 리프 구조는 두고 **배포 사본에서만 평탄화**(`ProjectLibrary="Lib\Core\Log"` → `/GPL/Lib_Core_Log`, `.gpr` 참조 고쳐 쓰기, BP·오류 위치 역대응) — 전처리 스테이지·`libraryUploadPlan`·`breakpointTarget` 에 걸친 큰 작업이라 결정 뒤 착수 ④ `.gpr` 하나 형태에서 하위 폴더의 쓰이지 않는 리프 `Project.gpr` 까지 올라간다(V1Lib 56파일 중 52개) — 라이브러리 루트 `.gpr` 이 소스를 직접 등재하면 하위 `.gpr` 을 업로드에서 뺄지 ⑤ 연결된 창이 없을 때 1402 경로가 세션 대상 창이 아니라 리더 창으로 간다(`pickConsoleRouteInstance` 에 세션 대상 우선) ⑥ 그룹 Compile 뒤 Unload 먹통의 이름 무관 여부 A/B(재부팅 위험 — 사용자 동의 뒤).
 - [ ] **(2026-11-13, §1-HH) 실기 시험 후속.** ① Running 쓰레드의 `Show Thread` 줄도 "다음 문장" 줄로 나온다(`Thread.Sleep` 12 → 13 `End While`) — 트리·대시보드 위치 표시에 `callSiteLine` 식 보정을 넣을지(정지 쓰레드는 정확) ② `callSiteLine` 을 라이브러리 소스(`<lib>/<file>`)·원격 소스 세션에서도 확인 ③ `Exit Property`·`:` 구분을 docs/gpl-language/common-mistakes 에 실측표로 ④ 문서와 다른 실측(Exit Property, 이름 없는 Show Variable)을 다른 펌웨어에서 재확인할 기회가 있으면 기록.
 - [ ] **(2026-11-13, §1-HG) 수신함 보류 — 다음 작업 후보.** 원문은 수신함 `done/` 의 같은 이름 파일.
@@ -418,7 +419,7 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 
 ## 1. 세션 이력 — 최근 세션 + 전체 인덱스
 
-본문에는 **최근 10개 세션**(§1-GZ ~ §1-HI)만 둔다.
+본문에는 **최근 10개 세션**(§1-HA ~ §1-HJ)만 둔다.
 그 이전은 월별 아카이브에 원문 그대로 있고, 그 세션들의 인덱스는 [archive/handoff/index.md](archive/handoff/index.md)에 있다.
 아래 §1-0 에는 본문에 있는 세션의 행만 둔다.
 
@@ -429,16 +430,15 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | [2026-08](archive/handoff/2026-08.md) | §1-AM ~ §1-CM (2026-08-05 ~ 2026-08-31) | 53 |
 | [2026-09](archive/handoff/2026-09.md) | §1-CN ~ §1-EE (2026-09-02 ~ 09-30) | 44 |
 | [2026-10](archive/handoff/2026-10.md) | §1-EF ~ §1-GO (2026-10-02 ~ 10-28, §1-FR 2건) | 63 |
-| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GY (2026-11-03 ~ 11-04) | 10 |
-| (본문 아래) | §1-GZ ~ §1-HI (2026-11-04 ~ 11-13) | 10 |
+| [2026-11](archive/handoff/2026-11.md) | §1-GP ~ §1-GZ (2026-11-03 ~ 11-04) | 11 |
+| (본문 아래) | §1-HA ~ §1-HJ (2026-11-04 ~ 11-13) | 10 |
 
 ### 1-0. 전체 세션 인덱스
 
-본문 세션만 둔다. 아카이브된 §1-A ~ §1-GY 는 [archive/handoff/index.md](archive/handoff/index.md).
+본문 세션만 둔다. 아카이브된 §1-A ~ §1-GZ 는 [archive/handoff/index.md](archive/handoff/index.md).
 
 | § | 날짜 | 주제 | 위치 |
 | --- | --- | --- | --- |
-| §1-GZ | 11-04 | **프로젝트 문제점 리뷰 후속 — 명령 안전·정지 판정 경합·메모리 자동 회수·의존성** — 1402 한 줄 검증(CR/LF 거부)·전달 뒤 재전송은 조회만·UTF-8·닫힌 STATUS·줄 번호 140 수정, 브리지 정지 명령 우선·URI 토큰·상태 모르면 Step/Continue 거부, 디버거 액션 세대·잔류 pending·BP 요청 직렬화, 메모리 부족 시 정지 → Unload 자동 회수(`memoryGuard.autoUnload`), basic-ftp 6.2.5·@types/vscode ~1.74·CI Node 22·.gitattributes. 0.27.10 | 본문 ↓ |
 | §1-HA | 11-04 | **대시보드 축 위치 리밋 막대·추이 그래프 통합·전원/축/좌표 DataID 전환·I/O 클릭 토글** — 4.2K5 실측: `Execute Robot.WhereAngles`/`Where` 는 값 없음, `Execute Controller.PowerEnabled` -712, Execute 명령 상한 136자 → `pd 3504/3506/230/116/2002/16077/16078`(순수 `robotAxes.ts`), 로봇 전체 막대(양끝 소프트 리밋·5% 근접·이동), 「추이」 한 카드 5차트(같은 차트 함수·눈금·호버), 칩 클릭 토글·더블클릭 해제. 1646/1646. 0.27.11 | 본문 ↓ |
 | §1-HB | 11-04 | **대시보드 I/O 칩 8열 격자 · Soft DIO 64 상한 실측** — 칩 flex-wrap → 8열 격자(64 = 8×8, bank 96 = 12×8, 좁으면 4열), 그룹은 multi-column 단에 쌓기. 4.2K5 실측 `Signal.DIO(20065)` = -1517(PDB 505 의 "~21000" 과 다름, com_dio 표 20001~20064 가 맞음). 1646/1646. 0.27.12 | 본문 ↓ |
 | §1-HC | 11-05 | **수신함 Sample Prep 보고 11건 — 멀티 에이전트 처리** — 라이브러리(`ProjectLibrary`) 소스 거터 BP 를 `Set Break <lib> "<file>"` 로(`breakpointSendTarget` 단일화, 못 보내면 verified:false), MCP `<lib>/<file>` 재작성·`atRequestedLine` 정규화, Delegate·AddressOf 진단 5종(-205/-712/-741/-729), `source-missing` 낡은 진단(세대 키 캐시·외부 변경 워처), 런타임 콘솔 정체 감지(`parserStalled`), MCP `unload_project` 생략 = 세션 대상(-all 은 `all:true`)·/GPL 비우기 Idle 통과·디버그 세션 가드(`confirmDebugSession`)·작업 기록 `libraryUploads`·비운 뒤 rebootHint 억제·FTP 타임아웃 재시도 금지·검색 `maxResults`. 1688/1688 · MCP 188/188. 0.27.13 | 본문 ↓ |
@@ -448,81 +448,12 @@ src/providers/navigation/referenceProvider.ts       # scanDocumentText 라인별
 | §1-HG | 11-13 | **수신함 Sample Prep 보고 11건 — 4갈래 병렬 처리** — MCP: 미연결 창 `extension-disconnected` 즉시 거부·작업 폴더 양방향 일치·창 고정(`extension_resolve`)·런타임 콘솔 세션 대상 경로(`routeMismatch`)·`bridge-host-mismatch`·번들 다운그레이드 방지·버전 경고, 제어기 IP 워크스페이스별 기억(`workspaceState`)·`autoConnectOnStartup`(opt-in); 제어기 정체 `controllerIdentity`(pd 110/114)·`expectedSerial`·스택 사용률·DataID 307 안내·전원 pd 230; 진단 `missing-final-newline`(-505)·`create-directory-device-root`(-300)·`thread-entry-without-catch`, Catch 정정 문서; 전처리 `Device_HanyoungML` 오포함(매개변수 가림·선언 줄 자기 이름) 수정·`preprocess.kept`, 라이브러리 출처(SVN·업로드 해시)·`gpl.deploy.libraryPreflight`. 1752/1752 · MCP 206/206. 0.27.17 | 본문 ↓ |
 | §1-HH | 11-13 | **시뮬 제어기 실기 시험 — 디버깅·배포 점검과 수정** — 4.2K5 실측: `Exit Property` -719(`exit-property-rejected`)·`:` 문장 구분 -722(`statement-separator-colon`)·이름 없는 `Show Variable` -505(listLocals 를 로컬 소스 + -eval 로)·`Show Stack` 호출자 프레임은 다음 문장 줄(`callSiteLine` 로 호출 줄 복원)·run_to_line 빈 줄 → 다음 실행 줄(`adjustedTo`), 런타임 콘솔 NUL 로 인한 `PARSER_STALLED` 오판 해소, 배포 ErrorLog 이번 배포분만(`errorLogSinceDeploy`), FTP LIST 시각 2001년 수정, 콘솔 읽기 `remaining`·`matchAheadSeq`, 스택 열 순서·controllerIdentity·pd 230 실기 확인. 1759/1759 · MCP 213/213. 0.27.18 | 본문 ↓ |
 | §1-HI | 11-13 | **중첩(Group–Leaf) 라이브러리 중단점 — 제어기 규칙 실측과 해법** — `Set Break` 프로젝트 인자 = `ProjectLibrary` 값 = `/GPL` 바로 아래 폴더 이름(ProjectName 아님), 파일 = `ProjectSource` 표기(역슬래시), 중첩 값(`Lib\Core\Log`)은 24종 표기 모두 -508/-205 로 지정 불가. 해법: 라이브러리 맨 위 `.gpr` 하나에 하위 폴더 소스 직접 등재(실제 Lib/v1 83파일로 Compile·BP 히트, 전처리로 4파일만 업로드). 폴더명 `Lib` 는 무관. `breakpointTarget` 이름 규칙 정정·중첩 안내, MCP 재작성 역슬래시·중첩 거부, project-file-gpr.md §4.1. 1760/1760 · MCP 214/214. 0.27.19 | 본문 ↓ |
+| §1-HJ | 11-13 | **다른 AI 코드 리뷰 반영 + 성능 측정·개선** — 하위 에이전트 3개(수정 금지)로 `91447fb..HEAD` 와 뜨거운 경로를 리뷰, 25건을 소스·재현으로 대조. 수정: 도달성 판정이 `Dim motor As Motor` 에서 타입 이름을 지워 Class 파일이 업로드에서 빠지던 것(`typeWords`), 클래스 `Sub Main` 을 시작 프로시저로 보던 것, ErrorLog 시각 키 2^53 초과, 라이브러리 기록 저장소의 창 간 덮어쓰기, `svn status` 실패를 변경 0건으로 읽던 것, MCP listLocals 줄 이음. 성능: 완성 요청 약 850 ms → 42 ms(첫)·0.001 ms(이후) — 목록 캐시 + 문서 지연 렌더링(V2 심볼 58,967 실측). Go 재작성은 권하지 않음(근거·측정 본문), 다음 후보는 esbuild 번들(로드 250 → 90 ms). 1767/1767 · MCP 216/216. 0.27.21 | 본문 ↓ |
 ---
 
-**최근 세션 본문 — §1-GZ ~ §1-HI (2026-11-04~11-13).** 이 아래부터는 세션 원문이다.
+**최근 세션 본문 — §1-HA ~ §1-HJ (2026-11-04~11-13).** 이 아래부터는 세션 원문이다.
 
 > §1-FR은 독립된 로컬·원격 작업에서 중복 사용됐다. 기존 참조와 원문을 보존하며, PR #36 병합 검증과 제어기 프로젝트 디버깅을 제목·개별 링크로 구분한다.
-
-## 1-GZ. 2026-11-04 세션 — 프로젝트 문제점 리뷰 후속: 명령 안전 · 정지 판정 경합 · 메모리 자동 회수 · 의존성 (0.27.10)
-
-### 증상(요청)
-
-1. "프로젝트 문제점 검토 리뷰" — 테스트·CI·의존성·문서를 직접 보고, 디버그 세션·제어기 통신·MCP 안전 장치는 검토 에이전트 3개로 나눠
-   찾은 뒤 핵심 항목을 코드로 다시 확인해 보고했다(안전 S1~S7, 디버거 D1~D8, 통신, 도구, 프로세스).
-2. 사용자 결정: "AI 가 Unload 는 가능해야 한다 — 반복 컴파일에서 매번 허가받으면 불편하니 램이 부족하면 자동으로 Unload 하고
-   진행하도록. 나머지는 권장 개선 방향으로 수정." 자동 Unload 범위는 「대상 외 로드된 것도 전부」, 그룹 Compile 표시가 있으면
-   「자동 Unload 건너뛰기」(질문으로 확인).
-
-### 원인(리뷰에서 확인한 것)
-
-- **명령 한 줄 검증 없음(S1)**: `controller_command` 문자열이나 `thread`·`expression`·`file` 인자에 CR/LF 가 있으면 제어기는 두 명령으로
-  실행하는데, Unload 위험·배포 잠금·명령 정책·재전송 안전 판정은 첫 단어만 봤다(`Show Thread\r\nUnload -all` 이 조회로 분류).
-- **전달 뒤 재전송(S2)**: keep-alive stale 재시도가 "write 성공 뒤 0바이트 close/error" 에도 같은 명령을 새 연결로 다시 보냈다(확장
-  `consoleSocket`·MCP `console.js` 둘 다) — 제어기가 실행 뒤 끊은 경우(Unload 사례)와 구별할 수 없어 Start/Unload/Step 이중 실행 위험.
-- **브리지 대기열 막힘(S3)**: 확장 브리지는 요청을 하나씩 처리하고 실행 상한이 없어, 확인 창 등으로 끝나지 않는 명령 하나가 뒤의
-  `softestop`·`stop_threads` 를 막았다.
-- **URI 무인증(S7)**: 웹 링크로 `vscode://…/gpl.controller.sendCommand?command=…` 를 열면(허용 창 "다시 묻지 않음" 뒤) 명령이 나갔다.
-- MCP `step_thread`·`continue_thread`·`run_to_line` 은 사전 상태 조회가 실패하면 그냥 진행했고(S5), `run_to_line` 은 예외 시 임시 BP 가
-  남았다(S6). `untilPattern` 정규식은 확장 호스트에서 그대로 실행됐다.
-- **줄 번호 140**: `stripXmlTags` 가 태그만 지워 `|14</DATA><STATUS>0` → 줄 140. 직접 재현(배포 재생 하니스 기준 커밋도 이 버그로 10 을 냈다).
-  `parseStatus`·연결 프로브는 여는 `<STATUS>` 만 봐서 잘린 응답의 숫자를 코드로 읽을 수 있었다. 1402 는 `ascii` 로 송수신해 한글이 깨졌다.
-- **디버거**: 액션 전에 나간 폴 응답이 pending step 에 적용돼 옛 줄로 스텝 완료(D1/D2), 쓰레드 종료 시 continue 외 pending 미해제,
-  이미 Paused 쓰레드의 Pause·Error 로 남은 Step 이 끝나지 않음, `_userActionInFlight` 불리언, disconnect 뒤 이벤트, 같은 파일
-  `setBreakPointsRequest` 겹침.
-- **도구**: basic-ftp 5.3.0 보안 권고 2건, CI Node 20(EOL), `@types/vscode` 1.116 설치(engines 1.74), 작업 트리 EOL 혼재.
-
-### 조치(의도와 방법)
-
-- **1402 명령(7933122)** — `consoleSocket.invalidCommandReason`·MCP `console.invalidCommandReason`·`batch.normalizeCommandInput` 이 CR/LF·C0
-  제어 문자를 거부(`INVALID_COMMAND`, sent:false, 연결도 열지 않음). stale 재시도는 write 실패면 항상, 전달 뒤면 조회 명령만
-  (`retryAfterDeliveryIsSafe` ← `isReadOnlyConsoleCommand`, MCP 는 `isRetrySafeCommand`), 그 외는 sent:true 로 reject. 송신 UTF-8, 수신 latin1 누적
-  → `latin1ToUtf8`(본문 실시간 표시는 StringDecoder). idle 조기 완료도 `afterPendingIo` 뒤 + 마지막 chunk 시각 재확인. `stripXmlTags` 닫는
-  태그 → 줄바꿈, `parseStatus`·`probeOutcomeFromResponse` 는 닫힌 `</STATUS>` 만. 1403: payload 수신 시 백오프 리셋, `connect` 동기 예외 복구,
-  종료 시 수신 플래그 리셋.
-- **AI 안전(daa26d8)** — 브리지 `runsOutsideBridgeQueue`(Stop·SoftEStop·Break sendCommand·runtimeConsoleRead 는 대기열 밖), 직렬 요청은
-  `bridgeQueueStallLimitMs`(TTL+15 s) 넘으면 다음으로. URI 는 `uriCommandNeedsToken` — 조회 3종·별칭 밖은 `token=` 이
-  `%TEMP%\gpl-controller\uri-token`(`uriToken.ensureUriToken`, PC 사용자 단위 1개)과 같아야 실행(런북 갱신). MCP `threadStateUnknownRefusal`,
-  `run_to_line` try/finally, 정규식 200자·중첩 수량자 거부.
-- **디버거(02aac31)** — `_actionSeq`(액션 시작마다 증가, 폴 시작 값과 다르면 응답 폐기·재폴), 종료 쓰레드의 모든 pending 해제,
-  `pauseOnAlreadyPaused`, Error 로 남은 step/pause 완료(exception), `_userActionsInFlight` 카운터, 폴 반복의 await 뒤 연결 확인,
-  disconnect 에서 `_previousThreadStates`·`_pendingThreadId` 초기화, Continue 연속 Paused 확정에 500 ms 하한, `setBreakPointsRequest` 파일별 직렬화
-  (본문 `_setBreakPointsNow`, SIZE_DEBT 이름 갱신).
-- **메모리 자동 회수(df563f4, 신규 `controller/deployment/deployMemoryRecovery.ts`)** — 업로드 전 측정이 경고(warnMb) 미만이면 정지 게이트 →
-  재측정 → 여전히 모자라면 `/GPL` 폴더 중 실행 프로젝트를 하나씩 `Unload`(대상은 맨 끝, 180 s·`</STATUS>` 대기) → 재측정 → 업로드.
-  업로드 전에 하는 이유: `Unload <앱>` 은 `/GPL/<앱>` 을 지운다(10월 실측). 대상을 내렸으면 변경 파일만이 아니라 전체 업로드, 업로드 지문
-  폐기. 그룹 Compile 표시가 있으면 통째로 건너뜀(문구는 `unloadRiskWarning` — R7), 그룹·워크스페이스 밖 프로젝트는 Unload 안 함,
-  Upload Only·skipStop·autoOnSave 제외, 결과 미확정이면 업로드 전에 멈춤(MEMORY_CHECK). 설정 `gpl.controller.memoryGuard.autoUnload`(기본 켬),
-  `result.memoryRecovery`·작업 요약·MCP 지침 한 줄. 메모리 안내 문구의 "Unload 는 자동으로 하지 않는다" 는 고쳤다.
-- **의존성·CI(5621847)** — basic-ftp 6.2.5(6.0 의 PASV 다른 호스트 거부는 실기 확인 전까지 `allowSeparateTransferHost:true`), 최소 FTP 서버
-  회귀 테스트(`basicFtpCompat.test.ts`), `@types/vscode ~1.74.0`(오류 0), `npm audit fix`(개발 13 → 5), CI Node 22, `.gitattributes`(`* text=auto eol=lf`,
-  인덱스 변경 0).
-- **결정으로 바꾸지 않은 것** — S4(AI 가 `clearUnloadRisk{confirm:true}` 로 위험 표시를 지울 수 있음): 사용자 결정 "AI 도 Unload 할 수
-  있어야" 에 따라 그대로 둔다. 명시적 위험 Unload 는 여전히 confirm:true 가 필요하다.
-
-### 검증
-
-- `npm test` **1630/1630**(신규 22건), `controller-mcp` `node --test` **174/174**(신규 6건).
-- `scripts/dev/deployReplay.js`: 이 세션 전 커밋(19f96e6)을 따로 빌드해 같은 하니스로 돌린 결과 6건 차이(앞선 의도된 변경)였고, 지금은
-  10건 — 늘어난 4건은 모두 줄 번호 10 → 1(fixture `|1</DATA><STATUS>0`) 버그 수정이다. 메모리 충분 경로의 명령·이벤트 순서는 같다.
-- 실기·UI 는 돌리지 않았다 — `docs/ai-handoff-verification.md` §1-GZ 항목.
-- VSIX: `dist/gpl-language-support-0.27.10.vsix` — 1,722,568 bytes, SHA-256 `58AEE1A29D389F48BCF8956BB3E76C46D6F4178B36BC1772FD312DB14C88FC47`. 경고는 기존과 같은 번들링 권고(371 파일)뿐, 실패 없음. 번들 basic-ftp 6.2.5 확인.
-
-### 남은 일
-
-- 실기 확인(verification §1-GZ): 메모리 자동 회수 실제 회수량·Unload 소요, basic-ftp 6 실제 제어기 FTP(PASV 주소가 접속 IP 와 같으면
-  `allowSeparateTransferHost` 줄 삭제), URI 토큰, 한글 프로젝트명 1402 송수신.
-- §3: `@vscode/vsce` 메이저 업그레이드(개발 의존 취약점 5건), D6(폴 중 예외 시 정지 알림 유실 — 낮음), `setBreakPointsRequest` 직렬화 테스트.
 
 ## 1-HA. 2026-11-04 세션 — 대시보드 축 위치 리밋 막대 · 추이 그래프 통합 · 전원/축/좌표 DataID 전환 · I/O 클릭 토글 (0.27.11)
 
@@ -921,3 +852,56 @@ JointOnly · ctor Init · Catch 새 객체 · try-finally · thread-block/Mid ·
 
 - 사용자 결정: ① `Lib/v1` 을 "맨 위 `.gpr` 하나" 형태로 바꿀지 ② 그 편집을 미리보기로 해 주는 확장 명령을 만들지 ③ 리프 `.gpr` 구조를 디스크에 그대로 두고 배포 사본에서만 평탄화(`/GPL/Lib_Core_Log`)하는 기능을 만들지.
 - 그룹 Compile 뒤 Unload 먹통이 이름(`Lib`)과 무관한지의 A/B 재현은 미실시(재부팅 필요할 수 있음).
+
+## 1-HJ. 2026-11-13 세션 — 다른 AI 코드 리뷰 반영과 성능 측정·개선 (0.27.21)
+
+### 요청
+
+"다른 AI 에게 코드 리뷰 시켜서 검토 후 개선 작업 진행해봐. 성능 개선을 위해 어떤 걸 시도해 볼 수 있지? Go 언어로 바꾸면 더 빨라지려나? 다른 추천은?"
+
+### 진행
+
+- 하위 에이전트(Sonnet) 3개에 **수정 금지·발견만 보고**로 맡겼다: ① `91447fb..HEAD` 의 language·project·debug·MCP ② 같은 범위의 controller·activation ③ 확장 호스트의 뜨거운 경로(성능). 보고 25건을 소스·재현으로 대조한 뒤 확인된 것만 고쳤다.
+- 성능은 추측 대신 측정했다 — `scripts/dev/index-performance.js`(완성 목록 측정 추가), 모듈 로드 시간, esbuild 임시 번들 비교.
+
+### 고친 결함(리뷰 발견 → 대조 → 수정)
+
+| 발견 | 대조 | 조치 |
+| --- | --- | --- |
+| 배포 전처리의 도달성 판정이 `Dim motor As Motor`·`ByVal config As Config`·모듈 직속 `Private motor As Motor` 에서 타입 이름을 지움 → `Class Motor` 파일이 업로드에서 빠짐 | 3가지 입력 모두 재현 | `As`·`New`·`Inherits`·`Implements` 바로 뒤 낱말을 `typeWords` 로 늘 참조 처리(`sourceReachability.ts`). 실제 프로젝트(v1test 4/83, Binder App+PaL 30/35, Gantry 7/7) 도달 집합은 전후 동일 |
+| `detectStartProcedure` 가 클래스의 `Sub Main` 메서드도 시작 프로시저로 봄 | 정규식 확인 | 파서 심볼(모듈 직속 Sub)로 판정 |
+| `controllerStampKey` 17자리 정수가 2^53 초과(…123 → …124), 같은 초 항목을 '이전'으로 숨김 | 실행으로 확인 | 초 단위 14자리 키 — 같은 초는 숨기지 않는 쪽 |
+| `LibraryProvenanceStore` 가 attach 때 한 번만 읽어 다른 창의 업로드를 모르고 덮어씀 | 코드 확인 | 읽기·쓰기 전에 Memento 와 병합(키마다 나중 기록 우선). 창 사이 전파는 두 창으로 실측하지 않음 |
+| `svn status` 실패·시간 초과를 "변경 0건"으로 읽음 | 코드 확인 | `statusUnknown` — 이전 업로드와 '일치'로 보지 않고 확인하지 못했다고 남김(막지는 않음). 경로의 `@` 는 끝에 `@` 를 붙여 peg 로 읽히지 않게(`svnTarget`, 문서상 https://svnbook.red-bean.com/en/1.7/svn.advanced.pegrevs.html) |
+| MCP `listLocals` 가 줄 이음(` _`) 머리 줄의 매개변수를 놓침, `Rem` 줄을 코드로 봄 | 실행으로 확인 | `joinContinuation`, `onlyNonCodeBetween` 에 Rem |
+
+고치지 않고 남긴 것(§3): `Case 1: y = 2` 에 `statement-separator-colon` 이 error 로 뜨는 것(4.2K5 에서 `Case n:` 꼴 미실측), `ProjectLibrary="..\X"` 를 중첩으로 거부(미실측 표기), `callSiteLine` 의 줄 이음·여러 줄 조건 경우, 연결 직후 정체 조회 4건이 명령 큐 앞에 서는 것, `last-connected` IP 가 User 설정보다 앞서는 것(§1-HG 의 의도된 설계 — 사용자 판단 필요), Feb 29 LIST 시각, 라이브러리 업로드 뒤 동기 해시.
+
+### 성능 — 측정값
+
+대상: Sample Prep `V2` 폴더 전체(.gpl 658개 · 19.6 MB · 531,252줄 · 심볼 58,967개), 이 PC, VS Code 밖(node + vscodeMock) 측정.
+
+| 항목 | 값 |
+| --- | --- |
+| 전체 인덱싱 | 1.9~2.0 s (읽기 0.62~0.66 · 파싱 1.1~1.2 · 인덱스 0.23~0.26) — 시작 시 1회, 비동기 |
+| 호버 / 정의 조회 | 0.4 ms / 0.002 ms |
+| **완성 요청 1회** | **종전 약 850 ms(모든 심볼 항목 + 문서 렌더링) → 인덱스가 바뀐 뒤 첫 요청 42 ms, 이후 0.001 ms** |
+| 확장 모듈 로드(`require`) | 파일 284개 230~290 ms(따뜻한 디스크) · esbuild 한 파일 번들 80~105 ms |
+
+- **적용(0.27.21)**: 워크스페이스 심볼 완성 목록을 인덱스 변경 번호로 캐시하고 문서는 선택될 때(`resolveCompletionItem`) 만든다(`symbolPresentation.ts`). 코드 액션은 문서 버전 단위로 검사 결과를 기억한다.
+- **Go 로 옮기는 것에 대한 판단**: 권하지 않는다. 확장 호스트 API 는 JS 라 Go 는 별도 프로세스(LSP 서버)로만 쓸 수 있고, 플랫폼별 바이너리·IPC·파서와 검사 71,000줄 재작성이 따른다. 줄일 수 있는 것은 시작 시 한 번의 파싱 1.1 s 정도인데, 체감 지연의 원인은 언어 속도가 아니라 "요청마다 전부 다시 계산"이었고(위 850 ms) 캐시로 해결됐다. 제어기 쪽 지연(Compile·FTP·명령 왕복)은 제어기와 네트워크가 정한다.
+
+### 남은 성능 후보(§3, 측정값 포함)
+
+1. 확장 본체 esbuild 번들 — 로드 250 → 90 ms, VSIX 파일 392 → 약 70개. `__dirname` 의존 없음(확인), `jsonc-parser` 는 `--main-fields=module,main` 필요(임시 번들로 확인). 패키징·F5 경로가 바뀌므로 실제 VS Code 활성화 확인이 필요하다.
+2. 진단의 Requires 헤더 대조 — 2,400~3,500줄 파일에서 타이핑이 멈출 때마다 110~180 ms(리뷰어 측정). 저장 시 또는 더 긴 지연으로.
+3. 의존성 자동 검사 — 저장마다 프로젝트 전체, 캐시 키(`indexGeneration`)가 타이핑마다 올라 재사용이 안 됨(84파일 0.56~0.84 s). 이름 → 파일 대응이 바뀔 때만 올리거나 파일 단위로 무효화.
+4. `.gpr` 변경 → 인덱스를 비우고 전체 재인덱싱(그동안 완성·정의가 빈다) — 소스 목록 차이만 반영.
+5. 참조 검색이 요청마다 모든 파일을 디스크에서 읽음(84파일 42~120 ms) — 낱말 → 파일 역인덱스.
+6. Agent Bridge 300 ms 폴링(`fs.watch` 가 이미 빠른 경로) — 주기 완화.
+
+### 검증
+
+- `npm test` 1767/1767, MCP 216/216. 새 테스트: 타입 자리 낱말 6경우, 클래스 `Sub Main`, 시각 키(안전 정수·같은 초), 두 창 저장소 병합, `statusUnknown`·`svnTarget`, 줄 이음 머리 줄·Rem, 완성 목록 캐시·지연 문서.
+- VSIX: `dist/gpl-language-support-0.27.21.vsix` — 1,842,519 bytes, SHA-256 `77924234DB9811F947FDDD6FD4FD0D2EA230CD4051E329782AC5E82DDBC42474`. 패키징 경고는 vsce 번들 권장 하나.
+- 미검증: 실제 VS Code 에서의 완성 목록 문서 표시(선택 시 채워지는지), 제어기 연동 경로(이번 변경은 제어기를 쓰지 않았다).

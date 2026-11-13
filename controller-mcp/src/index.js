@@ -1677,7 +1677,8 @@ async function guardDebugSession(tool, { confirmDebugSession, action } = {}) {
 tool('list_remote_projects',
   '제어기 `/GPL`(기본) 아래 프로젝트 폴더 목록 — 이름·파일 수·바이트·최근 수정 시각과, 확장이 아는 **마지막 업로드 출처(로컬 폴더)**. ' +
   '"Unload 했는데 메모리가 안 풀린다 / Start 가 -200" 이면 먼저 이걸로 **다른 프로젝트가 /GPL 에 남아 있는지** 볼 것(개선 요청 §8). ' +
-  '읽기 전용(FTP LIST) — 정리는 사용자 동의를 받은 뒤 `clear_remote_folder` 로 한다(/GPL 만). 확장 브리지가 필요하다.',
+  '읽기 전용(FTP LIST) — 정리는 사용자 동의를 받은 뒤 `clear_remote_folder` 로 한다(/GPL 만). 확장 브리지가 필요하다. ' +
+  '제어기 경로는 대소문자를 구분한다(2026-11-13 실측: /flash/data/LABWARE ≠ labware).',
   {
     root: z.string().optional().describe('조회할 원격 루트(기본 /GPL). /flash/projects 도 가능'),
     extensionInstanceId: z.string().optional().describe('FTP 를 열 VS Code 창(생략하면 현재 경로)'),

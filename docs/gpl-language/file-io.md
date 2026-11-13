@@ -10,6 +10,8 @@ GPL(Guidance Programming Language)의 파일 입출력 API와 Flash 메모리 �
 ## 저장 경로와 Flash 메모리 특성
 
 - **Flash 경로**: `/flash/` — 영구 저장. **쓰기 횟수 수명 제한**이 있으므로 빈번한 쓰기를 피한다.
+  - **경로는 대소문자를 구분한다.** 실제 폴더가 `/flash/data/labware/` 일 때 `/flash/data/LABWARE/TLW.apon` 은 *file not found* 였다
+    (2026-11-13 Sample Prep 실측, G2400C). 문서상 근거는 찾지 못했다(실측만). 사용자 입력을 경로에 이어 붙이는 코드는 대소문자를 한 가지로 맞춘다.
 - **ROMDISK 경로**: `/ROMDISK/` — 휘발성 임시 저장, 직접 쓰기에 적합.
   - **부팅 직후에는 하위 폴더가 없다.** `StreamWriter`는 폴더를 만들지 않으므로 `/ROMDISK/tmp/...`에 처음 쓰면 `-508` *File not found*가 난다.
     쓰기 전에 `File.CreateDirectory`를 부르고 `-510`(이미 있음)은 성공으로 본다(아래 [common-mistakes 0-6-1](common-mistakes.md)).

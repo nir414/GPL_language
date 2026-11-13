@@ -131,7 +131,19 @@ async function main() {
                 hoverTimes.push(performance.now() - t);
             }
         }
+        // 완성 목록: 처음 만들기(인덱스가 바뀐 직후) · 다시 부르기(캐시) · 종전 방식 추정(목록 + 모든 항목의 문서 렌더링)
+        const timeOnce = fn => { const t = performance.now(); const r = fn(); return [performance.now() - t, r]; };
+        const [completionBuild, completionItems] = timeOnce(() => cache.getCompletionItems());
+        const completionRepeat = median([0, 1, 2, 3, 4].map(() => timeOnce(() => cache.getCompletionItems())[0]));
+        const seenNames = new Set();
+        const firstByName = symbols.filter(s => { const k = s.name.toLowerCase(); if (seenNames.has(k)) { return false; } seenNames.add(k); return true; });
+        const [completionDocsAll] = timeOnce(() => { for (const s of firstByName) { cache.buildSymbolDocumentation(s); } });
+        const [completionResolveOne] = timeOnce(() => cache.resolveCompletionItem(completionItems[0]));
+
         const f = n => +n.toFixed(2);
+        console.log('completion list (ms): ' + JSON.stringify({
+            items: completionItems.length, build: f(completionBuild), repeat: +completionRepeat.toFixed(4),
+            eagerDocsForAll: f(completionDocsAll), resolveOne: +completionResolveOne.toFixed(3) }));
         console.log(JSON.stringify({ files: fileCount, indexedFiles: cache.listIndexedFiles().length, symbols: symbols.length, digest }));
         console.log('phase (median of ' + iterations + ', ms): ' + JSON.stringify({
             total: f(median(runs.map(r => r.total))), read: f(median(runs.map(r => r.read))),

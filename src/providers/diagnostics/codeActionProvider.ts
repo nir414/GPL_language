@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { XmlUtils } from '../../language/xml/xmlUtils';
 import { provideDocCommentCodeActions } from '../intellisense/docCommentProvider';
-import { CompilerSymbolLookup, findAllCompilerCheckFindings } from '../../language/checks/compilerChecks';
+import { CompilerCheckFinding, CompilerSymbolLookup, findAllCompilerCheckFindings } from '../../language/checks/compilerChecks';
 import { COMPILER_CHECK_SOURCE } from './diagnosticProvider';
 import { REQUIRES_HEADER_CODE, REQUIRES_HEADER_SOURCE } from './requiresHeaderPlan';
 
@@ -69,12 +69,28 @@ export class GPLCodeActionProvider implements vscode.CodeActionProvider {
         return action;
     }
 
+    /** 마지막으로 계산한 문서 한 건의 검사 결과 — 같은 문서 버전이면 다시 돌리지 않는다. */
+    private findingsMemo?: { uri: string; version: number; findings: CompilerCheckFinding[] };
+
+    /**
+     * 문서의 실기 확인 검사 결과(문서 버전 단위로 기억). 코드 액션은 커서가 움직일 때마다, 그리고 범위 안 진단마다 불리는데
+     * 그때마다 파일 전체 검사를 다시 돌렸다(큰 파일에서 한 번에 수십 ms × 진단 수 — 2026-11-13 측정).
+     */
+    private compilerCheckFindings(document: vscode.TextDocument): CompilerCheckFinding[] {
+        const uri = document.uri.toString();
+        const memo = this.findingsMemo;
+        if (memo && memo.uri === uri && memo.version === document.version) { return memo.findings; }
+        const findings = findAllCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup);
+        this.findingsMemo = { uri, version: document.version, findings };
+        return findings;
+    }
+
     /**
      * 실기 확인 검사(compilerChecks)의 `fix` — 진단과 같은 순수 판정을 다시 돌려 같은 줄·열·코드의 발견에서 치환 텍스트를 얻는다.
      * (진단 객체는 편집기를 거치며 복사돼 부가 데이터를 실을 수 없다.)
      */
     private createCompilerCheckFixAction(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction | undefined {
-        const finding = findAllCompilerCheckFindings(document.getText(), document.uri.fsPath, this.symbolLookup).find(f =>
+        const finding = this.compilerCheckFindings(document).find(f =>
             f.fix && f.code === diagnostic.code && f.line === diagnostic.range.start.line && f.start === diagnostic.range.start.character);
         if (!finding?.fix) { return undefined; }
         const action = new vscode.CodeAction(finding.fix.title, vscode.CodeActionKind.QuickFix);

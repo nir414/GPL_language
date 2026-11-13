@@ -25,6 +25,14 @@ export class GPLCompletionProvider implements vscode.CompletionItemProvider {
     /** 한정자 미해석 시의 멤버 후보(내장 dotted 멤버의 tail) — 상수 데이터라 1회만 만든다. */
     private static _anyMemberCompletionsCache: vscode.CompletionItem[] | undefined;
 
+    /**
+     * 목록에서 항목이 선택될 때 불린다 — 워크스페이스 심볼 항목의 문서를 이때 만든다(목록을 만들 때 수천 개를 미리 렌더링하지 않는다).
+     * 다른 출처의 항목은 이미 문서를 갖고 있어 그대로 돌려준다.
+     */
+    resolveCompletionItem(item: vscode.CompletionItem, _token: vscode.CancellationToken): vscode.ProviderResult<vscode.CompletionItem> {
+        return this.symbolCache.resolveCompletionItem(item);
+    }
+
     provideCompletionItems(
         document: vscode.TextDocument,
         position: vscode.Position,

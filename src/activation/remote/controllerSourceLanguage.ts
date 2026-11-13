@@ -9,6 +9,7 @@ import {
 } from '../../project/remote/remoteSourceMapping';
 import type { LocalProjectMatch } from '../../project/remote/remoteSourceMapping';
 import { SymbolCache } from '../../language/vscode/symbolCache';
+import { resolveSymbolCompletionItem } from '../../language/vscode/symbolPresentation';
 import { GPLCompletionProvider } from '../../providers/intellisense/completionProvider';
 import { GPLDefinitionProvider } from '../../providers/navigation/definitionProvider';
 import { GPLDocumentSymbolProvider } from '../../providers/structure/documentSymbolProvider';
@@ -210,6 +211,11 @@ export function activateControllerSourceLanguage(host: ExtensionHost): void {
 			provideCompletionItems(document, position, token, context) {
 				const source = prepare(document);
 				return source?.service.completion.provideCompletionItems(source.document, position, token, context);
+			},
+			// 워크스페이스 심볼 항목의 문서는 선택될 때 채운다 — 항목이 자기 출처(심볼·인덱스)를 기억하므로 어느 소스의 것이든 같은 함수로 된다.
+			resolveCompletionItem(item) {
+				resolveSymbolCompletionItem(item);
+				return item;
 			},
 		}, '.', '&'),
 		vscode.languages.registerHoverProvider(selectors, {

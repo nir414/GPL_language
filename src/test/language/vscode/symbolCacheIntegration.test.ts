@@ -206,10 +206,22 @@ test('SymbolCache 조립: 완성 항목은 중복 이름을 접고 문서·스�
     ].join('\n')));
     const items = s.cache.getCompletionItems().filter((item: any) => item.label === 'Pick');
     assert.strictEqual(items.length, 1);
+    // 문서는 항목이 선택될 때 채운다(목록을 만들 때 모든 심볼의 문서를 미리 렌더링하지 않는다).
+    assert.strictEqual(items[0].documentation, undefined);
+    assert.strictEqual(s.cache.resolveCompletionItem(items[0]), items[0]);
     assert.ok(items[0].documentation.value.includes('Function Pick'));
     assert.ok(items[0].documentation.value.includes('값을 돌려준다.'));
     assert.ok(items[0].insertText.value.startsWith('Pick(${1:'));
     assert.strictEqual(items[0].documentation.isTrusted, false);
+    // 인덱스가 그대로면 같은 배열을 돌려주고, 문서가 바뀌면 새로 만든다. 심볼 항목이 아닌 것은 손대지 않는다.
+    assert.strictEqual(s.cache.getCompletionItems(), s.cache.getCompletionItems());
+    const before = s.cache.getCompletionItems();
+    s.cache.updateDocument(s.document('Other.gpl', ['Public Sub Extra()', 'End Sub'].join('\n')));
+    const after = s.cache.getCompletionItems();
+    assert.notStrictEqual(after, before);
+    assert.ok(after.some((item: any) => item.label === 'Extra'));
+    const foreign: any = { label: 'x' };
+    assert.strictEqual(s.cache.resolveCompletionItem(foreign).documentation, undefined);
 });
 
 test('SymbolCache: 참조 검색도 설정된 UTF-16 디코더를 사용한다', async () => {

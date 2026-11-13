@@ -7,7 +7,7 @@ import { isMissingFile } from '../symbols/symbolLocations';
 import { SymbolIndex } from '../symbols/symbolIndex';
 import { SymbolProjectScope } from '../../project/symbols/symbolProjectScope';
 import { WorkspaceSourceLoader, FileReferences } from './workspaceSourceLoader';
-import { getCompletionItems, buildSymbolDocumentation, getCompletionItemKind } from './symbolPresentation';
+import { getCompletionItems, buildSymbolDocumentation, getCompletionItemKind, resolveSymbolCompletionItem } from './symbolPresentation';
 
 /** 기존 Provider API를 유지하면서 인덱스·프로젝트 경계·VS Code 연동의 수명주기를 조립한다. */
 export class SymbolCache {
@@ -131,8 +131,15 @@ export class SymbolCache {
         return references;
     }
 
+    /** 워크스페이스 심볼 완성 항목 — 인덱스가 바뀌기 전까지 같은 배열이다(고치지 말 것). 문서는 `resolveCompletionItem` 이 채운다. */
     public getCompletionItems(): vscode.CompletionItem[] {
         return getCompletionItems(this.index);
+    }
+
+    /** 완성 항목이 선택될 때 문서를 채운다 — 워크스페이스 심볼 항목이 아니면 그대로 둔다. */
+    public resolveCompletionItem(item: vscode.CompletionItem): vscode.CompletionItem {
+        resolveSymbolCompletionItem(item);
+        return item;
     }
 
     public buildSymbolDocumentation(symbol: GPLSymbol): vscode.MarkdownString {
